@@ -4,6 +4,7 @@ import std;
 
 import xlings.core.xvm.types;
 import xlings.libs.json;
+import xlings.platform;
 
 export namespace xlings::xvm {
 
@@ -408,48 +409,38 @@ VersionDB versions_from_json(const nlohmann::json& j) {
     return db;
 }
 
+// Resolve a project-style workspace value (string | platform-conditional
+// object) to a single version string. Lifted out of workspace_from_json
+// so subos_workspace_from_json can reuse the same fallback semantics
+// when it falls through to the form-(3) platform branch. Returns
+// std::nullopt when the value has no matching platform key and no
+// `default` key — caller decides whether to skip or error.
+inline std::optional<std::string>
+resolve_platform_workspace_value_(const nlohmann::json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (!value.is_object()) {
+        return std::nullopt;
+    }
+    if (!platform::OS_NAME.empty()) {
+        auto platformIt = value.find(std::string(platform::OS_NAME));
+        if (platformIt != value.end() && platformIt->is_string()) {
+            return platformIt->get<std::string>();
+        }
+    }
+    if (auto defaultIt = value.find("default");
+        defaultIt != value.end() && defaultIt->is_string()) {
+        return defaultIt->get<std::string>();
+    }
+    return std::nullopt;
+}
+
 Workspace workspace_from_json(const nlohmann::json& j) {
     Workspace ws;
     if (!j.is_object()) return ws;
-
-    auto current_platform_key = []() -> std::string_view {
-#if defined(_WIN32)
-        return "windows";
-#elif defined(__APPLE__)
-        return "macosx";
-#elif defined(__linux__)
-        return "linux";
-#else
-        return "";
-#endif
-    };
-
-    auto resolve_workspace_version = [&](const nlohmann::json& value) -> std::optional<std::string> {
-        if (value.is_string()) {
-            return value.get<std::string>();
-        }
-        if (!value.is_object()) {
-            return std::nullopt;
-        }
-
-        auto platformKey = current_platform_key();
-        if (!platformKey.empty()) {
-            auto platformIt = value.find(std::string(platformKey));
-            if (platformIt != value.end() && platformIt->is_string()) {
-                return platformIt->get<std::string>();
-            }
-        }
-
-        if (auto defaultIt = value.find("default");
-            defaultIt != value.end() && defaultIt->is_string()) {
-            return defaultIt->get<std::string>();
-        }
-
-        return std::nullopt;
-    };
-
     for (auto it = j.begin(); it != j.end(); ++it) {
-        if (auto resolved = resolve_workspace_version(it.value())) {
+        if (auto resolved = resolve_platform_workspace_value_(it.value())) {
             ws[it.key()] = *resolved;
         }
     }
@@ -485,33 +476,6 @@ SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
     SubosWorkspace sws;
     if (!j.is_object()) return sws;
 
-    auto current_platform_key = []() -> std::string_view {
-#if defined(_WIN32)
-        return "windows";
-#elif defined(__APPLE__)
-        return "macosx";
-#elif defined(__linux__)
-        return "linux";
-#else
-        return "";
-#endif
-    };
-
-    auto resolve_platform = [&](const nlohmann::json& value) -> std::optional<std::string> {
-        auto platformKey = current_platform_key();
-        if (!platformKey.empty()) {
-            auto platformIt = value.find(std::string(platformKey));
-            if (platformIt != value.end() && platformIt->is_string()) {
-                return platformIt->get<std::string>();
-            }
-        }
-        if (auto defaultIt = value.find("default");
-            defaultIt != value.end() && defaultIt->is_string()) {
-            return defaultIt->get<std::string>();
-        }
-        return std::nullopt;
-    };
-
     for (auto it = j.begin(); it != j.end(); ++it) {
         const auto& key = it.key();
         const auto& value = it.value();
@@ -543,8 +507,11 @@ SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
             continue;
         }
 
-        // Form (3): platform-conditional fallback
-        if (auto resolved = resolve_platform(value)) {
+        // Form (3): platform-conditional fallback. Reuses the project-style
+        // resolver — subos files don't normally carry this shape, but
+        // honoring it here means a hand-edited subos file with platform
+        // branches behaves the same way the project manifest would.
+        if (auto resolved = resolve_platform_workspace_value_(value)) {
             sws.active[key] = *resolved;
         }
     }

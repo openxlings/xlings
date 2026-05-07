@@ -2,12 +2,12 @@
 
 ## 2026
 
-### 2026-05 (v0.4.19)
+### 2026-05 (v0.4.18)
 
-- **subos workspace schema 升级:`{active, installed[]}` 形式 (Plan C2,PR A)**
+- **subos workspace schema 升级:`{active, installed[]}` 形式 (Plan C2,PR A) (#273)**
   - 0.4.18 `2026-05-07-xlings-cmd-subos-binding-analysis.md` 里的 C 系方案落地第一步:**subos** 的 `.xlings.json` 中 `workspace` 每个 target 的 value 从原本的 `"<version>"` 字符串升级为对象形式 `{ "active": "X", "installed": ["X","Y","Z"] }`。**project** `.xlings.json` 不动 —— 它是声明意图(`xxx = { linux = "..." }` 平台条件式)而非运行时状态,无需 `installed`。
   - **解析层(`xvm::subos_workspace_from_json`)三种 value 形态都接收**:
-    1. 字符串 `"1.2.3"`(0.4.19 之前的旧文件,自动当作 `active`,`installed[]` 留空,下次 save 自动改写)。
+    1. 字符串 `"1.2.3"`(0.4.18 之前的旧文件,自动当作 `active`,`installed[]` 留空,下次 save 自动改写)。
     2. 对象 `{active, installed}`(新形式)。
     3. 对象 `{linux: ..., windows: ..., default: ...}`(平台条件式 fallback,subos 文件本来不会出现这个形态,但用户手编时容忍掉)。
   - **形态 (2) vs (3) 的歧义靠保留 key 区分**(C2 design 里的 Plan 1):object 出现 `active` 或 `installed` 这两个 key → 当作新形式;否则按平台条件解析。两套 schema 永远不会撞到同一份文件里。
@@ -18,11 +18,10 @@
     - `process_xvm_operations_` remove(无论是 user-initiated remove 还是 install-time upgrade) → 同步从 `installed[]` 抹掉 `ver_key`(再次防御:detach_current_subos_ 通常已经先抹了,但 install upgrade 路径不走 detach)。
     - `detach_current_subos_` → 永远先把 `version` 从 `installed[]` 移除;如果它正好是 active,则做 sysroot 拆除并**自动 fallback 到 `installed[]` 里剩余最高版本**(列表是 sorted ascending,`back()` 即最高);剩余为空才清空 active pointer。**避免"删了 active 之后命令就完全报错"的硬中断**。
   - 影响范围:`config.cppm`、`xvm/db.cppm`、`xvm/types.cppm`(新增 `WorkspaceInstalled` 类型 + `SubosWorkspace` 结构)、`xim/installer.cppm`、`profile.cppm`(GC scan 同时看两边)。**没有 schema 强制升级步骤** —— 旧文件第一次 save 才被改写。
-  - **compat 入口**:`xself::compat::v0_4_19::kSchemaForm` 是空 sentinel,文档化此次 schema migration,挂在 `removal_target: 0.6.0`(到时把 `subos_workspace_from_json` 里支持字符串形态的分支也一起删掉)。
-  - 测试:新增 `subos_workspace_c2_schema_test.sh`(4 个 scenario,覆盖 lazy migration、active+installed 并存、save invariant、active-less object 的容忍读取)。原 `remove_self_guard_test.sh` 里把 workspace value 当字符串读的 python helper 升级为兼容 dict / str 两种。
-  - **下一步(PR B,后续 release)**:`xlings list / use / update` 加 subos-aware 过滤(只显示当前 subos 的 `installed[]` 视图),把这次落下来的数据模型用起来。
-
-### 2026-05 (v0.4.18)
+  - **compat 入口**:`xself::compat::v0_4_18::kSchemaForm` 是空 sentinel,文档化此次 schema migration,挂在 `removal_target: 0.6.0`(到时把 `subos_workspace_from_json` 里支持字符串形态的分支也一起删掉)。
+  - **db.cppm 顺手清理**:之前 `workspace_from_json` 内嵌一份 `current_platform_key` lambda,硬编码 `linux` / `macosx` / `windows`,这次新加 `subos_workspace_from_json` 又复制了一份。两个都改成直接用 `platform::OS_NAME`(per-OS 模块已经导出的常量,`src/platform/{linux,macos,windows}.cppm`)。重复实现合并到 `resolve_platform_workspace_value_` 一个 helper 里。
+  - 测试:新增 `subos_workspace_c2_schema_test.sh`(4 个 scenario,覆盖 lazy migration、active+installed 并存、save invariant、active-less object 的容忍读取);**原 7 个 e2e 测试**里把 workspace value 当字符串读的 python helper 全部升级成兼容 dict / str 两种(`remove_self_guard`、`remove_multi_version`、`xlings_self_replace`、`self_doctor`、`update_package`、`cli_target_compat`、`install_idempotent`)。
+  - **下一步(后续 release)**:`xlings list / use / update` 加 subos-aware 过滤(只显示当前 subos 的 `installed[]` 视图),把这次落下来的数据模型用起来。
 
 - **prompt marker subos 名色调:bold green → bold magenta(8-color "经典紫")(#272)**
   - 用户反馈 v0.4.17 的 bold-green 名字跟周围 prompt 颜色站位不协调,绿色和 entering message 的 magenta、switched message 的 cyan 混在一起会让 prompt 看着乱。
