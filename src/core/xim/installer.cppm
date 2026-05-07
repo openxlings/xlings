@@ -367,27 +367,32 @@ void remove_target_shims_(const std::string& target, const std::string& version)
 
     // A program's shim is a generic dispatcher to the bootstrap; the actual
     // version it routes to is the workspace pointer (read at runtime). So
-    // the shim is only stale when the *last* version of the name is being
-    // removed. With surviving versions still in the DB, the shim must stay
-    // — the uninstall path elsewhere auto-switches the workspace to the
-    // highest remaining version, and the shim resolves through that.
+    // the shim is only stale when **the current subos** has dropped its
+    // last version of the name. With surviving versions still in this
+    // subos's installed[], the shim must stay — auto-fallback in
+    // detach_current_subos_ updates `active` to the highest remaining
+    // version and the shim resolves through that.
     //
-    // Removing the shim too eagerly (the previous behavior) leaves PATH
-    // pointing nowhere even though the version DB still holds installs,
-    // surfacing as "command not found" for node/npm/npx/mdbook etc. after
-    // `xlings remove <pkg>@<one-version>`.
-    auto is_last_version_for = [&](const std::string& name,
-                                   const std::string& ver) {
-        auto* vi = xvm::get_vinfo(db, name);
-        if (!vi) return true;
-        for (auto& [v, _] : vi->versions) {
-            if (v != ver) return false;
-        }
-        return true;
+    // 0.4.19+: this check is now scoped to the **current subos's
+    // installed[]**, not the global versions DB. Pre-0.4.19 the gate
+    // was `is_last_version_for(global)`, which under-removed: subos A
+    // could drain its installed[] for a target while subos B still had
+    // some other version of it, leaving a stale shim in A's bin/. With
+    // C2 schema each subos's bin/ is independent — so is each subos's
+    // shim-lifetime decision.
+    //
+    // Caller contract: detach_current_subos_ has already pruned
+    // `version` from this subos's installed[] before calling us. So
+    // checking "is the post-removal installed[] empty?" gives the
+    // correct answer.
+    const auto& wsi = Config::workspace_installed();
+    auto subos_has_any_version_of = [&](const std::string& name) {
+        auto it = wsi.find(name);
+        return it != wsi.end() && !it->second.empty();
     };
 
     auto mainName = (vinfo && !vinfo->filename.empty()) ? vinfo->filename : target;
-    if (is_last_version_for(target, version)) {
+    if (!subos_has_any_version_of(target)) {
         auto mainShim = binDir / mainName;
         if (fs::exists(mainShim, ec) || fs::is_symlink(mainShim, ec)) {
             ec.clear();
@@ -399,7 +404,7 @@ void remove_target_shims_(const std::string& target, const std::string& version)
     for (auto& [bindingName, vermap] : vinfo->bindings) {
         auto vit = vermap.find(version);
         if (vit == vermap.end()) continue;
-        if (!is_last_version_for(bindingName, vit->second)) continue;
+        if (subos_has_any_version_of(bindingName)) continue;  // still in use here
         auto bindPath = binDir / bindingName;
         ec.clear();
         if (fs::exists(bindPath, ec) || fs::is_symlink(bindPath, ec)) {
@@ -1605,32 +1610,89 @@ public:
 
                 xvm::remove_version(Config::versions_mut(), op.name, effective_version);
 
-                // Decide the new active binding for this op.name.
+                // 0.4.19+: also drop `effective_version` from this subos's
+                // installed[] (detach_current_subos_ already pruned it for
+                // op.name == detachTarget, but sibling ops emitted by the
+                // recipe — e.g. xvm.remove("npm") when uninstalling node —
+                // never went through detach).
+                {
+                    auto& wsi_mut = Config::workspace_installed_mut();
+                    if (auto it = wsi_mut.find(op.name); it != wsi_mut.end()) {
+                        auto erased = std::remove_if(it->second.begin(),
+                                                     it->second.end(),
+                            [&](const std::string& v) {
+                                return v == effective_version
+                                    || xvm::strip_namespace(v) == effective_version;
+                            });
+                        it->second.erase(erased, it->second.end());
+                        if (it->second.empty()) wsi_mut.erase(it);
+                    }
+                }
+
                 auto dit = Config::versions_mut().find(op.name);
+
+                // Decide the new active binding for this op.name.
+                //
+                // 0.4.19+: fallback candidates come from the **current subos's
+                // installed[]** set, not the global versions DB. Pre-fix the
+                // auto-switch picked the highest remaining version across
+                // ALL subos (`pick_highest_version(dit->second.versions)`) —
+                // which leaked another subos's choices into this one. Concrete
+                // case: subos A has rm-fixture@1.0.0, subos B has rm-fixture@2.0.0.
+                // `xlings remove rm-fixture` in B would auto-set B.workspace[rm-fixture]
+                // to "1.0.0" — a version B never opted into. With C2 schema
+                // each subos has its own opt-in set, so the fallback must
+                // come from the same set; if it's empty, clear the pointer
+                // (and drop the shim) instead of inventing one.
+                const auto& wsi_view = Config::workspace_installed();
+                auto subos_pick_highest = [&](const std::string& name) -> std::string {
+                    auto wit = wsi_view.find(name);
+                    if (wit == wsi_view.end() || wit->second.empty()) return {};
+                    // installed[] is stored sorted ascending → back() is highest
+                    return wit->second.back();
+                };
+
                 bool survivors = (dit != Config::versions_mut().end()
                                   && !dit->second.versions.empty());
                 if (!survivors) {
-                    // Package fully gone — clear workspace binding and drop
-                    // the PATH shim with it.
+                    // Package fully gone from the global DB — clear workspace
+                    // binding and drop the PATH shim with it. (subos's
+                    // installed[] is already empty by construction.)
                     Config::workspace_mut().erase(op.name);
                     remove_shim_if_present();
                 } else if (prev_active.empty() || prev_active == effective_version) {
-                    // We just removed the active version (or detach already cleared the
-                    // slot for detachTarget). Auto-switch to the highest remaining
-                    // semver so leftover versions stay reachable. Keep the shim —
-                    // it dispatches to the bootstrap, which resolves the active
-                    // version at runtime via the workspace pointer we just updated.
-                    Config::workspace_mut()[op.name] =
-                        xvm::pick_highest_version(dit->second.versions);
-                } else {
-                    // A non-active version was removed; keep the previous active if still
-                    // present, otherwise fall back to highest remaining. Shim survives
-                    // for the same reason as above.
-                    if (dit->second.versions.contains(prev_active)) {
-                        Config::workspace_mut()[op.name] = prev_active;
+                    // We just removed the active version (or detach already cleared
+                    // the slot for detachTarget). Auto-switch to highest version
+                    // this subos has opted into; if none, clear pointer + shim.
+                    auto fallback = subos_pick_highest(op.name);
+                    if (!fallback.empty()) {
+                        Config::workspace_mut()[op.name] = fallback;
                     } else {
-                        Config::workspace_mut()[op.name] =
-                            xvm::pick_highest_version(dit->second.versions);
+                        Config::workspace_mut().erase(op.name);
+                        remove_shim_if_present();
+                    }
+                } else {
+                    // A non-active version was removed; keep the previous active
+                    // if it's still in this subos's installed[], otherwise pick
+                    // highest remaining (or clear).
+                    auto fallback = subos_pick_highest(op.name);
+                    bool prev_still_in_subos = false;
+                    if (auto wit = wsi_view.find(op.name); wit != wsi_view.end()) {
+                        for (auto& v : wit->second) {
+                            if (v == prev_active
+                                || xvm::strip_namespace(v) == xvm::strip_namespace(prev_active)) {
+                                prev_still_in_subos = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (prev_still_in_subos) {
+                        Config::workspace_mut()[op.name] = prev_active;
+                    } else if (!fallback.empty()) {
+                        Config::workspace_mut()[op.name] = fallback;
+                    } else {
+                        Config::workspace_mut().erase(op.name);
+                        remove_shim_if_present();
                     }
                 }
             } else if (op.op == "remove_headers") {

@@ -928,13 +928,15 @@ export int run(int argc, char* argv[]) {
         // list
         .subcommand("list")
             .description("List installed packages")
+            .option(cmdline::Option("all").short_name('a').help("Show packages across all subos (default: current subos only)"))
             .arg("filter").help("Filter pattern")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
                 std::string filter;
                 if (args.positional_count() > 0)
                     filter = std::string(args.positional(0));
-                return xim::cmd_list(filter, stream);
+                bool show_all = args.is_flag_set("all");
+                return xim::cmd_list(filter, stream, show_all);
             }))
 
         // info
@@ -951,9 +953,11 @@ export int run(int argc, char* argv[]) {
 
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`
         // (one-shot form, matching install/remove). Bare `<name>` lists
-        // installed versions.
+        // installed versions in the current subos; pass `--all` to widen
+        // to the global view (every version every subos has ever installed).
         .subcommand("use")
             .description("Switch tool version")
+            .option(cmdline::Option("all").short_name('a').help("Show versions across all subos (default: current subos only)"))
             .arg("target").required().help("Tool name (or name@ver one-shot)")
             .arg("version").help("Version to switch to (omit to list installed versions)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
@@ -968,11 +972,12 @@ export int run(int argc, char* argv[]) {
                     log::error("  hint: use `<name>@<version>` or `<name> <version>`");
                     return 1;
                 }
+                bool show_all = args.is_flag_set("all");
                 auto first = std::string(args.positional(0));
                 if (n == 1) {
                     auto at = first.find('@');
                     if (at == std::string::npos)
-                        return xvm::cmd_list_versions(first, stream);
+                        return xvm::cmd_list_versions(first, stream, show_all);
                     return xvm::cmd_use(first.substr(0, at),
                                         first.substr(at + 1), stream);
                 }
