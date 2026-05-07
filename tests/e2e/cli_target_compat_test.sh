@@ -111,7 +111,14 @@ active_version() {
   python3 - "$HOME_DIR" <<'PY'
 import json, sys, pathlib
 ws = json.loads(pathlib.Path(sys.argv[1], "subos/default/.xlings.json").read_text())
-print((ws.get("workspace") or {}).get("dpkg", "<none>"))
+entry = (ws.get("workspace") or {}).get("dpkg")
+# 0.4.19+: workspace value is {active, installed[]} dict; tolerate both forms.
+if isinstance(entry, dict):
+    print(entry.get("active", "<none>"))
+elif isinstance(entry, str):
+    print(entry)
+else:
+    print("<none>")
 PY
 }
 

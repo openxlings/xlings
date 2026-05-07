@@ -4,6 +4,30 @@
 
 ### 2026-05 (v0.4.18)
 
+- **subos workspace schema 升级:`{active, installed[]}` 形式 (Plan C2,PR A) (#273)**
+  - 0.4.18 `2026-05-07-xlings-cmd-subos-binding-analysis.md` 里的 C 系方案落地第一步:**subos** 的 `.xlings.json` 中 `workspace` 每个 target 的 value 从原本的 `"<version>"` 字符串升级为对象形式 `{ "active": "X", "installed": ["X","Y","Z"] }`。**project** `.xlings.json` 不动 —— 它是声明意图(`xxx = { linux = "..." }` 平台条件式)而非运行时状态,无需 `installed`。
+  - **解析层(`xvm::subos_workspace_from_json`)三种 value 形态都接收**:
+    1. 字符串 `"1.2.3"`(0.4.18 之前的旧文件,自动当作 `active`,`installed[]` 留空,下次 save 自动改写)。
+    2. 对象 `{active, installed}`(新形式)。
+    3. 对象 `{linux: ..., windows: ..., default: ...}`(平台条件式 fallback,subos 文件本来不会出现这个形态,但用户手编时容忍掉)。
+  - **形态 (2) vs (3) 的歧义靠保留 key 区分**(C2 design 里的 Plan 1):object 出现 `active` 或 `installed` 这两个 key → 当作新形式;否则按平台条件解析。两套 schema 永远不会撞到同一份文件里。
+  - **写入层(`xvm::subos_workspace_to_json`)永远输出新形式**,且强制不变量:`active` 出现在序列化结果里时,一定也出现在 `installed[]` 里(serializer 自动补)。`installed[]` 排序稳定,降低 git diff 噪音。
+  - **GC refcount 修正(`installer::is_version_referenced_anywhere_`)**:之前只检查"某 subos 的 active == version"。新形式下,某 subos 可能保留 X 在 `installed[]` 但 active 是别的版本,这种 case 之前会被误判为"无人用",触发 GC 把 payload 删掉。现在跨 subos refcount 同时遍历 active 和 `installed[]`,**两者任一命中就视为被引用**。
+  - **install / remove 维护 `installed[]`**:
+    - `process_xvm_operations_` add(program 类型) → 把 `ver_key` 加进当前 subos 的 `installed[]`(去重);active pointer 仍按旧规则(无 active 或 `--use` 时切到新版本)。
+    - `process_xvm_operations_` remove(无论是 user-initiated remove 还是 install-time upgrade) → 同步从 `installed[]` 抹掉 `ver_key`(再次防御:detach_current_subos_ 通常已经先抹了,但 install upgrade 路径不走 detach)。
+    - `detach_current_subos_` → 永远先把 `version` 从 `installed[]` 移除;如果它正好是 active,则做 sysroot 拆除并**自动 fallback 到 `installed[]` 里剩余最高版本**(列表是 sorted ascending,`back()` 即最高);剩余为空才清空 active pointer。**避免"删了 active 之后命令就完全报错"的硬中断**。
+  - 影响范围:`config.cppm`、`xvm/db.cppm`、`xvm/types.cppm`(新增 `WorkspaceInstalled` 类型 + `SubosWorkspace` 结构)、`xim/installer.cppm`、`profile.cppm`(GC scan 同时看两边)。**没有 schema 强制升级步骤** —— 旧文件第一次 save 才被改写。
+  - **compat 入口**:`xself::compat::v0_4_18::kSchemaForm` 是空 sentinel,文档化此次 schema migration,挂在 `removal_target: 0.6.0`(到时把 `subos_workspace_from_json` 里支持字符串形态的分支也一起删掉)。
+  - **db.cppm 顺手清理**:之前 `workspace_from_json` 内嵌一份 `current_platform_key` lambda,硬编码 `linux` / `macosx` / `windows`,这次新加 `subos_workspace_from_json` 又复制了一份。两个都改成直接用 `platform::OS_NAME`(per-OS 模块已经导出的常量,`src/platform/{linux,macos,windows}.cppm`)。重复实现合并到 `resolve_platform_workspace_value_` 一个 helper 里。
+  - 测试:新增 `subos_workspace_c2_schema_test.sh`(4 个 scenario,覆盖 lazy migration、active+installed 并存、save invariant、active-less object 的容忍读取);**原 7 个 e2e 测试**里把 workspace value 当字符串读的 python helper 全部升级成兼容 dict / str 两种(`remove_self_guard`、`remove_multi_version`、`xlings_self_replace`、`self_doctor`、`update_package`、`cli_target_compat`、`install_idempotent`)。
+  - **下一步(后续 release)**:`xlings list / use / update` 加 subos-aware 过滤(只显示当前 subos 的 `installed[]` 视图),把这次落下来的数据模型用起来。
+
+- **Windows CI / release xrepo 缓存路径修复 (#273)**
+  - 现象:Linux / macOS 的 `Cache xrepo packages` 步骤缓存命中正常(每次 ~5MB / ~3MB),但 **Windows 这个缓存从来没有上传过**(`gh api repos/.../actions/caches` 里 `xmake-pkgs-Windows-*` 一条都没有)。导致 Windows 每次 PR / release 都从源码重编 libarchive + zstd + bzip2 + lz4 + zlib via MSVC,**`Configure xmake` 单步耗时 ~8 分钟**。
+  - 根因:xmake 的 global dir 在 Windows 上是 `%LOCALAPPDATA%\.xmake`(xmake 源码 `_global_dir()`:`LOCALAPPDATA → APPDATA → USERPROFILE`,然后拼 `.xmake`)。原 workflow 缓存路径 `~\.xmake\packages` 在 GitHub Actions runner 上展开成 `%USERPROFILE%\.xmake\packages` —— 一个 xmake 根本不写入的目录。所以缓存步骤每次都"成功"但实际什么都没缓存。
+  - 修复:`xlings-ci-windows.yml` 和 `release.yml` 的 Windows 缓存路径都从 `~\.xmake\packages` 改成 `~\AppData\Local\.xmake\packages`。Linux / macOS 的路径不动(那两个平台 `~/.xmake/packages` 就是 xmake 实际用的位置)。冷启动第一次仍然 ~8 分钟,之后命中缓存应该和 Linux/macOS 相当(~30 秒)。
+
 - **prompt marker subos 名色调:bold green → bold magenta(8-color "经典紫")(#272)**
   - 用户反馈 v0.4.17 的 bold-green 名字跟周围 prompt 颜色站位不协调,绿色和 entering message 的 magenta、switched message 的 cyan 混在一起会让 prompt 看着乱。
   - 三种 shell(bash/zsh、fish、PowerShell)同步切到 SGR `\033[1;35m`(8-color magenta,大多数终端 theme 渲染为低饱和度紫色)。括号 `[xsubos:` 和 `]` 仍是 slate-400 灰。`NO_COLOR` / `TERM=dumb` 仍走纯文本 fallback。

@@ -174,7 +174,10 @@ assert vers == ["1.0.0", "2.0.0"], \
     f"S1: DB should have [1.0.0, 2.0.0] after removing active 3.0.0; got {vers}"
 
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-active = (ws.get("workspace") or {}).get("rm-fixture")
+entry = (ws.get("workspace") or {}).get("rm-fixture")
+# 0.4.19+: workspace value is {active, installed[]} dict; pre-0.4.19 was a
+# bare string. Tolerate both.
+active = entry.get("active") if isinstance(entry, dict) else entry
 assert active == "2.0.0", \
     f"S1: active should auto-switch to highest remaining (2.0.0); got {active!r}"
 PY
@@ -201,7 +204,8 @@ vers = sorted((data.get("versions") or {}).get("rm-fixture", {}).get("versions",
 assert vers == ["2.0.0"], f"S2: DB should only contain [2.0.0]; got {vers}"
 
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-active = (ws.get("workspace") or {}).get("rm-fixture")
+entry = (ws.get("workspace") or {}).get("rm-fixture")
+active = entry.get("active") if isinstance(entry, dict) else entry
 assert active == "2.0.0", \
     f"S2: active must remain 2.0.0 after removing non-active 1.0.0; got {active!r}"
 PY

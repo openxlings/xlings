@@ -54,7 +54,15 @@ active_version() {
 import json, sys, pathlib
 home = sys.argv[1]
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-print((ws.get("workspace") or {}).get("xlings", "<none>"))
+entry = (ws.get("workspace") or {}).get("xlings")
+# 0.4.19+: workspace value is {active, installed[]} dict; pre-0.4.19 was a
+# bare string. Tolerate both.
+if isinstance(entry, dict):
+    print(entry.get("active", "<none>"))
+elif isinstance(entry, str):
+    print(entry)
+else:
+    print("<none>")
 PY
 }
 

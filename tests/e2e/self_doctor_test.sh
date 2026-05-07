@@ -213,8 +213,11 @@ data = json.loads(pathlib.Path(home, ".xlings.json").read_text())
 assert "doctor-fixture" in (data.get("versions") or {}), \
     "S8: --fix must NOT remove doctor-fixture from versions DB"
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-assert (ws.get("workspace") or {}).get("doctor-fixture") == "1.0.0", \
-    "S8: --fix must NOT clear workspace pointer"
+entry = (ws.get("workspace") or {}).get("doctor-fixture")
+# 0.4.19+: workspace value is {active, installed[]} dict; tolerate both forms.
+active = entry.get("active") if isinstance(entry, dict) else entry
+assert active == "1.0.0", \
+    f"S8: --fix must NOT clear workspace pointer; got active={active!r}"
 PY
 [[ -e "$SHIM" ]] || fail "S8: --fix must NOT remove shim file (only hints user to install)"
 

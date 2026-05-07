@@ -52,6 +52,12 @@ private:
     xvm::Workspace globalWorkspace_;
     xvm::Workspace projectWorkspace_;       // from project .xlings.json
     xvm::Workspace projectSubosWorkspace_;  // from project-local subos file
+    // Per-subos installed[] sets, paired with the matching workspace map.
+    // Only subos files (global subos and project subos) carry installed[];
+    // the project manifest's workspace is intent-only and has no
+    // corresponding installed map (Plan 3 of the C2 schema design).
+    xvm::WorkspaceInstalled globalInstalled_;
+    xvm::WorkspaceInstalled projectSubosInstalled_;
     bool hasProjectConfig_ = false;
     bool forceGlobalScope_ = false;
     std::filesystem::path projectDir_;      // directory containing project .xlings.json
@@ -189,14 +195,19 @@ private:
         }
     }
 
-    static xvm::Workspace load_workspace_from_file_(const std::filesystem::path& path) {
+    // Read a subos `.xlings.json` workspace section. Returns the new
+    // SubosWorkspace bundle so callers get both `active` (Workspace) and
+    // `installed[]` (WorkspaceInstalled). Legacy string-form values still
+    // parse cleanly — installed[] just stays empty until the next save
+    // re-emits the file in C2 form.
+    static xvm::SubosWorkspace load_workspace_from_file_(const std::filesystem::path& path) {
         namespace fs = std::filesystem;
         if (!fs::exists(path)) return {};
         try {
             auto content = platform::read_file_to_string(path.string());
             auto json = nlohmann::json::parse(content, nullptr, false);
             if (!json.is_discarded() && json.contains("workspace") && json["workspace"].is_object()) {
-                return xvm::workspace_from_json(json["workspace"]);
+                return xvm::subos_workspace_from_json(json["workspace"]);
             }
         } catch (...) {}
         return {};
@@ -461,7 +472,11 @@ private:
         // with XLINGS_ACTIVE_SUBOS set, which then corrupts that subos
         // when `xvm use` writes back through save_workspace().
         auto subosConfigPath = paths_.homeDir / "subos" / paths_.activeSubos / ".xlings.json";
-        globalWorkspace_ = load_workspace_from_file_(subosConfigPath);
+        {
+            auto sws = load_workspace_from_file_(subosConfigPath);
+            globalWorkspace_ = std::move(sws.active);
+            globalInstalled_ = std::move(sws.installed);
+        }
 
         // Load project-level config (walk up from cwd)
         load_project_config_();
@@ -553,17 +568,20 @@ private:
 
                 if (!projectSubosName_.empty()) {
                     projectSubosMode_ = ProjectSubosMode::Named;
-                    projectSubosWorkspace_ =
-                        load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
+                    auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
+                    projectSubosWorkspace_ = std::move(sws.active);
+                    projectSubosInstalled_ = std::move(sws.installed);
                 } else {
                     projectSubosMode_ = ProjectSubosMode::Anonymous;
                     if (hasProjectStateJson && projectStateJson.contains("workspace") &&
                         projectStateJson["workspace"].is_object()) {
-                        projectSubosWorkspace_ =
-                            xvm::workspace_from_json(projectStateJson["workspace"]);
+                        auto sws = xvm::subos_workspace_from_json(projectStateJson["workspace"]);
+                        projectSubosWorkspace_ = std::move(sws.active);
+                        projectSubosInstalled_ = std::move(sws.installed);
                     } else {
-                        projectSubosWorkspace_ =
-                            load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
+                        auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
+                        projectSubosWorkspace_ = std::move(sws.active);
+                        projectSubosInstalled_ = std::move(sws.installed);
                     }
                 }
             }
@@ -808,6 +826,25 @@ public:
             self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosWorkspace_;
         return self.projectWorkspace_;
     }
+
+    // Read access to per-subos installed[] sets, paired with the
+    // workspace returned by workspace()/workspace_mut(). Only meaningful
+    // for subos-side writes (project manifest path returns an empty
+    // installed map since the project file format has no installed).
+    [[nodiscard]] static const xvm::WorkspaceInstalled& workspace_installed() {
+        auto& self = instance_();
+        if (!self.hasProjectConfig_) return self.globalInstalled_;
+        if (self.projectSubosMode_ == ProjectSubosMode::Named ||
+            self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosInstalled_;
+        return self.globalInstalled_;
+    }
+    [[nodiscard]] static xvm::WorkspaceInstalled& workspace_installed_mut() {
+        auto& self = instance_();
+        if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalInstalled_;
+        if (self.projectSubosMode_ == ProjectSubosMode::Named ||
+            self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosInstalled_;
+        return self.globalInstalled_;
+    }
     [[nodiscard]] static bool has_project_config() { return instance_().hasProjectConfig_; }
 
     // Force all version/workspace writes to go to global scope.
@@ -934,11 +971,32 @@ public:
             } catch (...) { json = nlohmann::json::object(); }
         }
 
-        auto& workspace = useProject
-            ? ((self.projectSubosMode_ == ProjectSubosMode::Named ||
-                self.projectSubosMode_ == ProjectSubosMode::Anonymous) ? self.projectSubosWorkspace_ : self.projectWorkspace_)
-            : self.globalWorkspace_;
-        json["workspace"] = xvm::workspace_to_json(workspace);
+        // All four destination paths above target subos-side files
+        // (named project subos, anonymous project subos / state file, or
+        // global subos directory). The user-authored project manifest
+        // (`<proj>/.xlings.json`) is read-only from save_workspace's
+        // perspective and never reached here. So we always emit the
+        // 0.4.19+ C2 form via subos_workspace_to_json — backward-compat
+        // for legacy string-form values is in the *read* path
+        // (subos_workspace_from_json).
+        xvm::SubosWorkspace sws;
+        if (useProject &&
+            (self.projectSubosMode_ == ProjectSubosMode::Named ||
+             self.projectSubosMode_ == ProjectSubosMode::Anonymous)) {
+            sws.active = self.projectSubosWorkspace_;
+            sws.installed = self.projectSubosInstalled_;
+        } else if (useProject) {
+            // Reachable only via the third save-path branch above (project
+            // mode without a subos mode, currently unreachable in practice
+            // because load_project_config_from_dir_ always forces
+            // Anonymous when subos is unset). Write the project manifest
+            // workspace through with no installed[] info.
+            sws.active = self.projectWorkspace_;
+        } else {
+            sws.active = self.globalWorkspace_;
+            sws.installed = self.globalInstalled_;
+        }
+        json["workspace"] = xvm::subos_workspace_to_json(sws);
         platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
     }
 

@@ -267,7 +267,7 @@ std::filesystem::path current_workspace_config_path_() {
     return Config::paths().homeDir / "subos" / Config::paths().activeSubos / ".xlings.json";
 }
 
-xvm::Workspace load_workspace_file_(const std::filesystem::path& path) {
+xvm::SubosWorkspace load_workspace_file_(const std::filesystem::path& path) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return {};
     try {
@@ -275,7 +275,7 @@ xvm::Workspace load_workspace_file_(const std::filesystem::path& path) {
         auto json = nlohmann::json::parse(content, nullptr, false);
         if (json.is_discarded() || !json.is_object()) return {};
         if (!json.contains("workspace") || !json["workspace"].is_object()) return {};
-        return xvm::workspace_from_json(json["workspace"]);
+        return xvm::subos_workspace_from_json(json["workspace"]);
     } catch (...) {
         return {};
     }
@@ -330,9 +330,30 @@ bool is_version_referenced_anywhere_(PackageScope scope,
         if (!excludeCanonical.empty() && !ec && canonical == excludeCanonical) {
             continue;
         }
-        auto workspace = load_workspace_file_(configPath);
-        auto it = workspace.find(target);
-        if (it != workspace.end() && it->second == version) return true;
+        // 0.4.19+: a payload is "referenced" by a subos if EITHER its
+        // active version equals `version` OR `version` appears in that
+        // subos's installed[] set. Pre-0.4.19 the active-only check was
+        // sufficient because installed[] didn't exist; with C2 schema a
+        // user can `xlings remove` the active version while still having
+        // other installed versions, and a payload that only appears in
+        // some other subos's installed[] (but not its active) must still
+        // pin its xpkgs/ directory against GC.
+        //
+        // Stored values are namespaced (`ns:1.0` for non-primary repos,
+        // bare for primary), but `version` from the caller is bare —
+        // accept either form, same as detach_current_subos_.
+        auto matches = [&](std::string_view stored) {
+            return stored == version
+                || xvm::strip_namespace(std::string(stored)) == version;
+        };
+        auto sws = load_workspace_file_(configPath);
+        if (auto it = sws.active.find(target);
+            it != sws.active.end() && matches(it->second)) return true;
+        if (auto it = sws.installed.find(target); it != sws.installed.end()) {
+            for (auto& v : it->second) {
+                if (matches(v)) return true;
+            }
+        }
     }
     return false;
 }
@@ -390,25 +411,75 @@ void remove_target_shims_(const std::string& target, const std::string& version)
 
 void detach_current_subos_(const std::string& target, const std::string& version) {
     auto& ws = Config::workspace_mut();
-    auto wit = ws.find(target);
-    if (wit == ws.end() || wit->second != version) return;
+    auto& wsi = Config::workspace_installed_mut();
 
-    auto db = Config::versions();
-    auto sysroot_include = Config::paths().subosDir / "usr" / "include";
-    auto sysroot_lib = Config::paths().libDir;
+    // Stored ver-key in workspace/installed[] is namespaced
+    // (`make_ns_version(version_ns, ver)`) — for the primary repo this
+    // is bare, but for `fromsource:` / `myrepo:` packages it carries the
+    // `ns:` prefix. Callers (uninstall) pass us a bare `version` (the
+    // user's typed value, or PackageMatch.version which is always bare).
+    // Match either form so non-primary-namespace removes don't silently
+    // leave stale active+installed entries.
+    auto matches = [&](std::string_view stored) {
+        return stored == version || xvm::strip_namespace(std::string(stored)) == version;
+    };
 
-    if (auto* vdata = xvm::get_vdata(db, target, version)) {
-        if (!vdata->includedir.empty()) {
-            xvm::remove_headers(vdata->includedir, sysroot_include);
-        }
-        if (!vdata->libdir.empty()) {
-            xvm::remove_libdir(vdata->libdir, sysroot_lib);
+    // Step 1 (0.4.19+): always drop `version` from this subos's
+    // installed[] set, even when it isn't the currently active version.
+    // The set is the per-subos opt-in list; an explicit `xlings remove
+    // foo@X` always means "this subos no longer wants X".
+    bool installedChanged = false;
+    if (auto it = wsi.find(target); it != wsi.end()) {
+        auto& list = it->second;
+        auto pred = [&](const std::string& v) { return matches(v); };
+        auto erased = std::remove_if(list.begin(), list.end(), pred);
+        if (erased != list.end()) {
+            list.erase(erased, list.end());
+            installedChanged = true;
+            if (list.empty()) wsi.erase(it);
         }
     }
 
-    remove_target_shims_(target, version);
-    ws.erase(wit);
-    Config::save_workspace();
+    // Step 2: if `version` was the active pointer, do the actual subos
+    // teardown (remove headers / libs / shims) and then either fall
+    // back to another installed version or clear the pointer entirely.
+    auto wit = ws.find(target);
+    bool wasActive = wit != ws.end() && matches(wit->second);
+
+    if (wasActive) {
+        auto db = Config::versions();
+        auto sysroot_include = Config::paths().subosDir / "usr" / "include";
+        auto sysroot_lib = Config::paths().libDir;
+        if (auto* vdata = xvm::get_vdata(db, target, version)) {
+            if (!vdata->includedir.empty()) {
+                xvm::remove_headers(vdata->includedir, sysroot_include);
+            }
+            if (!vdata->libdir.empty()) {
+                xvm::remove_libdir(vdata->libdir, sysroot_lib);
+            }
+        }
+        remove_target_shims_(target, version);
+
+        // Auto-fallback: when the user removes the active version but
+        // still has other versions installed in this subos, switch
+        // active to the highest remaining (installed[] is stored
+        // sorted ascending by subos_workspace_to_json — `back()` is
+        // the lexicographically-highest, which approximates "newest"
+        // for typical semver-ish version strings).
+        //
+        // The shim for the fallback version already exists from its
+        // earlier install — only the active pointer needs updating;
+        // headers/libs are NOT auto-relinked (lazy: next call to
+        // `xlings use` would do that explicitly). This avoids a
+        // surprise sysroot reshuffle on every remove.
+        if (auto sit = wsi.find(target); sit != wsi.end() && !sit->second.empty()) {
+            wit->second = sit->second.back();
+        } else {
+            ws.erase(wit);
+        }
+    }
+
+    if (wasActive || installedChanged) Config::save_workspace();
 }
 
 void process_xvm_operations_(const PlanNode& node,
@@ -476,6 +547,19 @@ void process_xvm_operations_(const PlanNode& node,
                 bool didActivate = !hasActive || useAfterInstall;
                 if (didActivate) {
                     Config::workspace_mut()[op.name] = ver_key;
+                }
+
+                // 0.4.19+: track ver_key in this subos's installed[] set.
+                // Independent of the active-pointer decision above — a
+                // version is "installed in this subos" once the package
+                // recipe has been run for it, regardless of whether it's
+                // the currently selected one. The set is what powers
+                // subos-aware list/use/update in the next PR.
+                {
+                    auto& list = Config::workspace_installed_mut()[op.name];
+                    if (std::find(list.begin(), list.end(), ver_key) == list.end()) {
+                        list.push_back(ver_key);
+                    }
                 }
                 if (std::filesystem::exists(xlings_bin)) {
                     std::string shim_name = op.name;
@@ -569,6 +653,34 @@ void process_xvm_operations_(const PlanNode& node,
                 }
             }
             Config::workspace_mut().erase(op.name);
+
+            // 0.4.19+: keep installed[] in sync with the versions DB
+            // wipe. detach_current_subos_ usually pruned `op.version`
+            // already (in the user-initiated remove flow), but
+            // install-time upgrades (recipe emits xvm:remove for the
+            // old version before xvm:add for the new) reach this op
+            // without going through detach. The version key inside
+            // installed[] is the namespaced form (`ns:ver` or bare —
+            // see `add` path above for derivation). Match either form
+            // so we don't leave stale entries when op.version arrives
+            // as a bare string from a recipe even though storage is
+            // namespaced.
+            auto& wsi = Config::workspace_installed_mut();
+            if (op.version.empty()) {
+                wsi.erase(op.name);
+            } else {
+                if (auto it = wsi.find(op.name); it != wsi.end()) {
+                    auto& list = it->second;
+                    auto erased = std::remove_if(list.begin(), list.end(),
+                        [&](const std::string& v) {
+                            return v == op.version
+                                || xvm::strip_namespace(v) == op.version;
+                        });
+                    list.erase(erased, list.end());
+                    if (list.empty()) wsi.erase(it);
+                }
+            }
+
             if (op.version.empty()) {
                 db.erase(op.name);
             } else {

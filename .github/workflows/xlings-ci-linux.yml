@@ -245,6 +245,10 @@ jobs:
         run: |
           bash tests/e2e/build_deps_split_test.sh
 
+      - name: "E2E-22: subos workspace C2 schema (active+installed[] form, lazy migration)"
+        run: |
+          bash tests/e2e/subos_workspace_c2_schema_test.sh
+
       - name: Attach artifact
         uses: actions/upload-artifact@v4
         if: success()

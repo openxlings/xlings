@@ -166,6 +166,44 @@ void auto_upgrade_profiles_if_stale(const fs::path& home_dir);
 
 } // namespace v0_4_17
 
+// =======================================================================
+// COMPAT(0.4.18 → drop in 0.6.0)  removal_target: 0.6.0
+//
+// 0.4.18 changed the subos `.xlings.json` workspace value type from a
+// plain version string to an object with `{active, installed[]}` fields
+// (the "C2 schema"). The new form lets each subos track its own opt-in
+// version set independently of the global `versions` payload metadata,
+// which in turn lets `xlings list / use / update` give a per-subos view
+// (subsequent PR in the rollout plan) and lets the GC refcount honor
+// inactive installs (the `installed[]` set holds versions that should
+// keep their payloads pinned even when not currently active).
+//
+// The compat surface is in two places, both in the parser, NOT here:
+//
+//   1. `xvm::subos_workspace_from_json` (src/core/xvm/db.cppm) accepts
+//      the legacy string value as form (1) and silently lifts it into
+//      a SubosWorkspace with `installed[]` empty.
+//   2. The save path in `Config::save_workspace` always emits the new
+//      object form, so any subos file written by 0.4.18+ is immediately
+//      in C2 form. Lazy migration: the first install / use / remove
+//      after upgrade rewrites the file.
+//
+// There's no helper function to call here — the change is fully passive.
+// This block exists only as documentation and as a removal anchor: when
+// 0.6.0 lands and we no longer support direct upgrades from ≤0.4.17,
+// rip out the form-(1) string branch in subos_workspace_from_json and
+// delete this block.
+// =======================================================================
+export namespace v0_4_18 {
+
+// Sentinel marker — referencing this from other modules will surface
+// as a build error once this namespace is deleted, the same way the
+// other compat blocks in this file work. No code currently references
+// it; it exists to make the removal trace concrete.
+inline constexpr std::string_view kSchemaForm = "subos workspace = {active, installed[]}";
+
+} // namespace v0_4_18
+
 
 // =======================================================================
 // Implementations

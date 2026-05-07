@@ -4,6 +4,7 @@ import std;
 
 import xlings.core.xvm.types;
 import xlings.libs.json;
+import xlings.platform;
 
 export namespace xlings::xvm {
 
@@ -408,48 +409,38 @@ VersionDB versions_from_json(const nlohmann::json& j) {
     return db;
 }
 
+// Resolve a project-style workspace value (string | platform-conditional
+// object) to a single version string. Lifted out of workspace_from_json
+// so subos_workspace_from_json can reuse the same fallback semantics
+// when it falls through to the form-(3) platform branch. Returns
+// std::nullopt when the value has no matching platform key and no
+// `default` key — caller decides whether to skip or error.
+inline std::optional<std::string>
+resolve_platform_workspace_value_(const nlohmann::json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (!value.is_object()) {
+        return std::nullopt;
+    }
+    if (!platform::OS_NAME.empty()) {
+        auto platformIt = value.find(std::string(platform::OS_NAME));
+        if (platformIt != value.end() && platformIt->is_string()) {
+            return platformIt->get<std::string>();
+        }
+    }
+    if (auto defaultIt = value.find("default");
+        defaultIt != value.end() && defaultIt->is_string()) {
+        return defaultIt->get<std::string>();
+    }
+    return std::nullopt;
+}
+
 Workspace workspace_from_json(const nlohmann::json& j) {
     Workspace ws;
     if (!j.is_object()) return ws;
-
-    auto current_platform_key = []() -> std::string_view {
-#if defined(_WIN32)
-        return "windows";
-#elif defined(__APPLE__)
-        return "macosx";
-#elif defined(__linux__)
-        return "linux";
-#else
-        return "";
-#endif
-    };
-
-    auto resolve_workspace_version = [&](const nlohmann::json& value) -> std::optional<std::string> {
-        if (value.is_string()) {
-            return value.get<std::string>();
-        }
-        if (!value.is_object()) {
-            return std::nullopt;
-        }
-
-        auto platformKey = current_platform_key();
-        if (!platformKey.empty()) {
-            auto platformIt = value.find(std::string(platformKey));
-            if (platformIt != value.end() && platformIt->is_string()) {
-                return platformIt->get<std::string>();
-            }
-        }
-
-        if (auto defaultIt = value.find("default");
-            defaultIt != value.end() && defaultIt->is_string()) {
-            return defaultIt->get<std::string>();
-        }
-
-        return std::nullopt;
-    };
-
     for (auto it = j.begin(); it != j.end(); ++it) {
-        if (auto resolved = resolve_workspace_version(it.value())) {
+        if (auto resolved = resolve_platform_workspace_value_(it.value())) {
             ws[it.key()] = *resolved;
         }
     }
@@ -461,6 +452,114 @@ nlohmann::json workspace_to_json(const Workspace& ws) {
     for (auto it = ws.begin(); it != ws.end(); ++it) {
         j[it->first] = it->second;
     }
+    return j;
+}
+
+// Subos-flavored workspace parser. Accepts three value shapes per target:
+//
+//   1. string                      (legacy, pre-0.4.19) — active version,
+//                                  no installed[] info available
+//   2. {active, installed[]}       (current, 0.4.19+)   — both fields
+//   3. {linux|windows|macosx|...}  (project-style)      — resolved to a
+//                                  single string the same way project files
+//                                  resolve it; subos files normally don't
+//                                  have this shape but we accept it as a
+//                                  graceful fallback so users who ever
+//                                  hand-edit a subos file aren't surprised
+//
+// Disambiguation between (2) and (3) is by reserved-key detection: the
+// presence of an "active" or "installed" key marks form (2). This is the
+// "Plan 1" disambiguation strategy from the C2 design discussion — `active`
+// and `installed` cannot meaningfully be platform names, so the two object
+// shapes can never collide.
+SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
+    SubosWorkspace sws;
+    if (!j.is_object()) return sws;
+
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const auto& key = it.key();
+        const auto& value = it.value();
+
+        if (value.is_string()) {
+            // Legacy form: bare version string. installed[] left empty —
+            // callers that maintain installed[] (install/remove flow) will
+            // populate it on next write, lazily migrating the file.
+            sws.active[key] = value.get<std::string>();
+            continue;
+        }
+
+        if (!value.is_object()) continue;
+
+        // Form (2): C2 object form
+        bool hasActive = value.contains("active");
+        bool hasInstalled = value.contains("installed");
+        if (hasActive || hasInstalled) {
+            if (hasActive && value.at("active").is_string()) {
+                sws.active[key] = value.at("active").get<std::string>();
+            }
+            if (hasInstalled && value.at("installed").is_array()) {
+                std::vector<std::string> installed;
+                for (auto& v : value.at("installed")) {
+                    if (v.is_string()) installed.push_back(v.get<std::string>());
+                }
+                if (!installed.empty()) sws.installed[key] = std::move(installed);
+            }
+            continue;
+        }
+
+        // Form (3): platform-conditional fallback. Reuses the project-style
+        // resolver — subos files don't normally carry this shape, but
+        // honoring it here means a hand-edited subos file with platform
+        // branches behaves the same way the project manifest would.
+        if (auto resolved = resolve_platform_workspace_value_(value)) {
+            sws.active[key] = *resolved;
+        }
+    }
+
+    return sws;
+}
+
+// Subos workspace serializer. Always emits the C2 object form with
+// `active` and `installed` keys. The `installed` set is normalized to
+// always include the active version (write-time invariant: an active
+// version is implicitly installed). `installed` is omitted from output
+// when empty, keeping legacy entries — those that were read in form (1)
+// and never had an install/remove since — visually compact.
+//
+// Stable sort on installed[] so json diffs remain reviewable across runs.
+nlohmann::json subos_workspace_to_json(const SubosWorkspace& sws) {
+    nlohmann::json j = nlohmann::json::object();
+
+    // Union of all target keys present in either map
+    std::set<std::string> keys;
+    for (auto& [k, _] : sws.active) keys.insert(k);
+    for (auto& [k, _] : sws.installed) keys.insert(k);
+
+    for (const auto& key : keys) {
+        std::string active;
+        if (auto it = sws.active.find(key); it != sws.active.end()) {
+            active = it->second;
+        }
+
+        std::vector<std::string> installed;
+        if (auto it = sws.installed.find(key); it != sws.installed.end()) {
+            installed = it->second;
+        }
+        if (!active.empty() &&
+            std::find(installed.begin(), installed.end(), active) == installed.end()) {
+            installed.push_back(active);
+        }
+        std::sort(installed.begin(), installed.end());
+
+        nlohmann::json entry = nlohmann::json::object();
+        if (!active.empty()) entry["active"] = active;
+        if (!installed.empty()) {
+            entry["installed"] = nlohmann::json::array();
+            for (auto& v : installed) entry["installed"].push_back(v);
+        }
+        j[key] = std::move(entry);
+    }
+
     return j;
 }
 

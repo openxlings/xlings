@@ -195,9 +195,20 @@ std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
 
     // Build a map: xpkg_dir_name/version -> key, from versions DB paths
     // e.g., "xim-x-gcc/15.1.0" from path "/home/.../.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin"
-    auto add_refs_from_workspace = [&](const xvm::Workspace& ws) {
-        for (auto& [target, activeVer] : ws) {
-            // Find this target in the versions DB
+    //
+    // Pin every payload of every target name that appears in either the
+    // active or installed[] map. (The lambda is intentionally coarse:
+    // currently a target name in workspace pins ALL versions of that
+    // target; finer-grained per-version pinning is a separate
+    // refactor.) The 0.4.19 fix here is to also walk installed[] —
+    // pre-fix, a target only pinned in installed[] of some subos (e.g.
+    // after `xlings remove` cleared its active but the user kept
+    // installed[]) was eligible for GC.
+    auto add_refs_from_subos_workspace = [&](const xvm::SubosWorkspace& sws) {
+        std::set<std::string> targetNames;
+        for (auto& [target, _] : sws.active) targetNames.insert(target);
+        for (auto& [target, _] : sws.installed) targetNames.insert(target);
+        for (auto& target : targetNames) {
             auto it = globalDB.find(target);
             if (it == globalDB.end()) continue;
             for (auto& [verKey, vdata] : it->second.versions) {
@@ -232,7 +243,7 @@ std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
                 auto content = platform::read_file_to_string(wsPath.string());
                 auto json = nlohmann::json::parse(content, nullptr, false);
                 if (!json.is_discarded() && json.contains("workspace"))
-                    add_refs_from_workspace(xvm::workspace_from_json(json["workspace"]));
+                    add_refs_from_subos_workspace(xvm::subos_workspace_from_json(json["workspace"]));
             } catch (...) {}
         }
     }
@@ -257,8 +268,9 @@ export std::vector<std::string> find_subos_referencing(
             auto content = platform::read_file_to_string(wsPath.string());
             auto json = nlohmann::json::parse(content, nullptr, false);
             if (json.is_discarded() || !json.contains("workspace")) continue;
-            auto ws = xvm::workspace_from_json(json["workspace"]);
-            if (ws.contains(target)) result.push_back(name);
+            auto sws = xvm::subos_workspace_from_json(json["workspace"]);
+            if (sws.active.contains(target) || sws.installed.contains(target))
+                result.push_back(name);
         } catch (...) {}
     }
     return result;

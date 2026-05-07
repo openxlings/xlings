@@ -51,10 +51,20 @@ jobs:
       # bulk of Configure time is xrepo building libarchive + its
       # compression backends with MSVC; caching those object trees here
       # is the same single-step win as on Linux/macOS.
+      #
+      # xmake's global package root differs from POSIX: on Windows it
+      # lives under %LOCALAPPDATA%\.xmake (xmake source: _global_dir()
+      # returns LOCALAPPDATA → APPDATA → USERPROFILE, in that order, with
+      # `.xmake` appended). The cache used to point at `~\.xmake\packages`
+      # which is %USERPROFILE%\.xmake — a directory xmake never writes
+      # to, so every Windows run silently missed the cache and rebuilt
+      # libarchive/zstd/bzip2/lz4/zlib from source (~8 min Configure
+      # phase). After this fix the Windows Configure drops to roughly
+      # the same time as Linux/macOS once the cache warms up.
       - name: Cache xrepo packages
         uses: actions/cache@v4
         with:
-          path: ~\.xmake\packages
+          path: ~\AppData\Local\.xmake\packages
           key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             xmake-pkgs-${{ runner.os }}-

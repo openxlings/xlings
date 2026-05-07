@@ -120,7 +120,8 @@ python3 - "$HOME_DIR" 1.0.0 <<'PY' || fail "S2 setup: workspace active version w
 import json, sys, pathlib
 home, want = sys.argv[1:]
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-got = (ws.get("workspace") or {}).get("upgrade-fixture")
+entry = (ws.get("workspace") or {}).get("upgrade-fixture")
+got = entry.get("active") if isinstance(entry, dict) else entry  # 0.4.19 schema
 assert got == want, f"expected active={want}, got {got!r}"
 PY
 
@@ -138,7 +139,8 @@ python3 - "$HOME_DIR" 2.0.0 <<'PY' || fail "S2 DB state wrong"
 import json, sys, pathlib
 home, want = sys.argv[1:]
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
-got = (ws.get("workspace") or {}).get("upgrade-fixture")
+entry = (ws.get("workspace") or {}).get("upgrade-fixture")
+got = entry.get("active") if isinstance(entry, dict) else entry  # 0.4.19 schema
 assert got == want, f"S2: active should switch to {want}, got {got!r}"
 PY
 
