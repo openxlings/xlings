@@ -23,6 +23,11 @@
   - 测试:新增 `subos_workspace_c2_schema_test.sh`(4 个 scenario,覆盖 lazy migration、active+installed 并存、save invariant、active-less object 的容忍读取);**原 7 个 e2e 测试**里把 workspace value 当字符串读的 python helper 全部升级成兼容 dict / str 两种(`remove_self_guard`、`remove_multi_version`、`xlings_self_replace`、`self_doctor`、`update_package`、`cli_target_compat`、`install_idempotent`)。
   - **下一步(后续 release)**:`xlings list / use / update` 加 subos-aware 过滤(只显示当前 subos 的 `installed[]` 视图),把这次落下来的数据模型用起来。
 
+- **Windows CI / release xrepo 缓存路径修复 (#273)**
+  - 现象:Linux / macOS 的 `Cache xrepo packages` 步骤缓存命中正常(每次 ~5MB / ~3MB),但 **Windows 这个缓存从来没有上传过**(`gh api repos/.../actions/caches` 里 `xmake-pkgs-Windows-*` 一条都没有)。导致 Windows 每次 PR / release 都从源码重编 libarchive + zstd + bzip2 + lz4 + zlib via MSVC,**`Configure xmake` 单步耗时 ~8 分钟**。
+  - 根因:xmake 的 global dir 在 Windows 上是 `%LOCALAPPDATA%\.xmake`(xmake 源码 `_global_dir()`:`LOCALAPPDATA → APPDATA → USERPROFILE`,然后拼 `.xmake`)。原 workflow 缓存路径 `~\.xmake\packages` 在 GitHub Actions runner 上展开成 `%USERPROFILE%\.xmake\packages` —— 一个 xmake 根本不写入的目录。所以缓存步骤每次都"成功"但实际什么都没缓存。
+  - 修复:`xlings-ci-windows.yml` 和 `release.yml` 的 Windows 缓存路径都从 `~\.xmake\packages` 改成 `~\AppData\Local\.xmake\packages`。Linux / macOS 的路径不动(那两个平台 `~/.xmake/packages` 就是 xmake 实际用的位置)。冷启动第一次仍然 ~8 分钟,之后命中缓存应该和 Linux/macOS 相当(~30 秒)。
+
 - **prompt marker subos 名色调:bold green → bold magenta(8-color "经典紫")(#272)**
   - 用户反馈 v0.4.17 的 bold-green 名字跟周围 prompt 颜色站位不协调,绿色和 entering message 的 magenta、switched message 的 cyan 混在一起会让 prompt 看着乱。
   - 三种 shell(bash/zsh、fish、PowerShell)同步切到 SGR `\033[1;35m`(8-color magenta,大多数终端 theme 渲染为低饱和度紫色)。括号 `[xsubos:` 和 `]` 仍是 slate-400 灰。`NO_COLOR` / `TERM=dumb` 仍走纯文本 fallback。

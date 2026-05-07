@@ -180,10 +180,15 @@ jobs:
 
       # Cache xrepo's compiled C++ deps so Release builds reuse what
       # the per-PR CI just built. See xlings-ci-linux.yml for rationale.
+      # Path note: xmake's global dir on Windows is %LOCALAPPDATA%\.xmake,
+      # NOT %USERPROFILE%\.xmake — see the matching comment in
+      # xlings-ci-windows.yml. Pre-fix this cache silently never
+      # populated, so Release builds rebuilt libarchive/zstd/bzip2/lz4
+      # from source on every release.
       - name: Cache xrepo packages
         uses: actions/cache@v4
         with:
-          path: ~\.xmake\packages
+          path: ~\AppData\Local\.xmake\packages
           key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             xmake-pkgs-${{ runner.os }}-
