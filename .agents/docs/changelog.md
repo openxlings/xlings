@@ -4,6 +4,12 @@
 
 ### 2026-05 (v0.4.19)
 
+- **subos `xlings install` / `remove` 跨 subos workspace 污染修复(0.4.19 critical)**
+  - 报告:在 fresh subos `tmp` 里 `xlings install pkg@2.0.0 -y` 然后 `xlings remove pkg -y`,**tmp 的 workspace 被污染成 default subos 的版本(比如 `pkg: 1.0.0/[1.0.0]`)**,而 tmp 从未装过 1.0.0。tmp 的 shim 也跟着 active 错误版本残留。
+  - 根因:`installer.cppm` `uninstall()` 内联 xvm-ops loop(line ~1647)在 active 版本被卸时,fallback active pointer 用的是 **global versions DB** 的 `pick_highest_version`,subos-blind。具体说:tmp 卸 2.0.0 → detach 已正确清空 tmp.workspace[pkg],但接下来的 ops loop 看 global DB(还留着 default 用的 1.0.0)→ 把 1.0.0 写回 tmp.workspace。属于 0.4.18 之前就存在的旧 bug,但只有 C2 schema 落地、跨 subos 装不同版本之后才能稳定复现。
+  - 修复:fallback 改成只看**当前 subos 的 `installed[]`**,空就清掉 workspace pointer 并删 shim(不再"凭空"分配一个本 subos 没 opt-in 的版本)。同一个 loop 也补上 sibling op(比如 node 的 npm/npx)的 `installed[]` 同步删除。
+  - 锁住:新增 `subos_install_remove_isolation_test.sh`(default 装 1.0.0,tmp 装 2.0.0,tmp remove 后断言 6 项:tmp.workspace 空、default 不变、tmp shim 删、default shim 留、payload 2.0.0 物理删除、payload 1.0.0 保留),作为 E2E-23 加进 CI。
+
 - **`xlings list / use / remove` 全部 subos-aware (PR B,接 0.4.18 的 C2 schema)**
   - 0.4.18 落了 `installed[]` 数据,但 user-visible 的几个命令还是从全局 `versions` DB 读 —— 在新建的空 subos 里跑这些命令体感像啥都没改。这次把 shim + use + list + remove 全部改成读 `Config::workspace_installed()`。
   - **shim 错误提示**(`src/core/xvm/shim.cppm`)三态区分:
