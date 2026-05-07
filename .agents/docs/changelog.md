@@ -2,6 +2,22 @@
 
 ## 2026
 
+### 2026-05 (v0.4.19)
+
+- **`xlings list / use / remove` 全部 subos-aware (PR B,接 0.4.18 的 C2 schema)**
+  - 0.4.18 落了 `installed[]` 数据,但 user-visible 的几个命令还是从全局 `versions` DB 读 —— 在新建的空 subos 里跑这些命令体感像啥都没改。这次把 shim + use + list + remove 全部改成读 `Config::workspace_installed()`。
+  - **shim 错误提示**(`src/core/xvm/shim.cppm`)三态区分:
+    - 当前 subos `installed[]` 里有 program 但没 active → `no active version of '...' in current subos` + `available: <subos-scoped 列表>` + `hint: xlings use ...`
+    - 当前 subos 没有但全局 DB 有 → `'X' is not installed in current subos` + `hint: xlings install X`(payload 在别的 subos 装过,这个 subos 需要显式 opt-in)
+    - 全局也没有 → `'X' is not installed` + `hint: xlings install X`
+  - **`xlings use <pkg>`(无 version)** 默认只列当前 subos `installed[]` 里的版本,标题改成 `<pkg> versions (current subos)`;加 `--all` / `-a` flag 切回全局视图(`<pkg> versions (all subos)`)。subos `installed[]` 为空时报错并提示 `xlings install`,不再丢一个空 panel 让用户猜。
+  - **`xlings use <pkg> <ver>` auto-add 语义**:用户在 fresh subos 里 `use` 一个全局 versions DB 已知但当前 subos 没装的版本 → **自动把版本加进 `installed[]` 然后切 active**,不强迫用户先 `install`。payload 全局共享,这个操作零成本。
+  - **`xlings list`** 默认只列当前 subos `installed[]` 的包,标题 `Installed packages (current subos):`;加 `--all` / `-a` 看全局 (`Installed packages (all subos):`)。空时给 hint。
+  - **`xlings remove <pkg>` 拒绝 fresh subos 的"假 remove"**(`src/core/xim/commands.cppm`):pre-fix 的现象是 `xlings remove gcc` 在没装 gcc 的 subos 里也会"成功",因为 catalog resolve 到 latest declared version、active workspace 是空所以 detach no-op、跨 subos refcount 看到别的 subos 装了 gcc 就走"detach only"分支并报告 `✓ removed (subos: tmp)`。新逻辑在 cmd_remove 入口处先检查 `Config::workspace()` + `Config::workspace_installed()`,**不在当前 subos 直接报错** + 列出哪些 subos 装了这个包 + 给出切 subos 的命令。
+  - **`xlings update`** 不需要改 —— 它已经走 `effective_workspace` 拿 `currentActive`,空就报 not installed。已经 subos-aware 了。
+  - 影响:`shim.cppm` / `xvm/commands.cppm` / `xim/commands.cppm` / `cli.cppm`。新加 `cmd_list / cmd_list_versions(..., bool all = false)`。
+  - 后续:还可以再加 `xlings list <pkg>` 也支持(目前 list 是顶层包列表,不是某 pkg 的版本列表)、`xlings status` 显示 subos 的 installed[] 总览 —— 但这次先把用户报告的 case 全部修掉,别的小 polish 后续 patch 处理。
+
 ### 2026-05 (v0.4.18)
 
 - **subos workspace schema 升级:`{active, installed[]}` 形式 (Plan C2,PR A) (#273)**

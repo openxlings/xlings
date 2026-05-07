@@ -120,22 +120,38 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     auto version = get_active_version(workspace, program_name);
     auto db = Config::versions();
     if (version.empty()) {
-        // Differentiate "not installed" from "installed but no active":
-        //   * 0 versions in the global versions DB → user needs `install`
-        //   * ≥1 version exists → user needs `use` to pin one
-        // The previous "xlings use <pkg> <version>" hint is misleading when
-        // the package isn't installed at all (e.g. immediately after
-        // `xlings remove <pkg>` left an orphan shim in PATH from another
-        // subos's bin, the workspace lookup returns empty AND the global
-        // DB returns empty too).
-        auto all = get_all_versions(db, program_name);
-        if (all.empty()) {
-            log::error("xlings: '{}' is not installed", program_name);
-            log::error("  hint: xlings install {}", program_name);
+        // Tri-state diagnostic, scoped to the CURRENT subos's installed[]
+        // (NOT the global versions DB — pre-0.4.19 the "available" list
+        // showed every version every subos had ever installed, which was
+        // misleading from inside a fresh / pruned subos):
+        //
+        //   * installed[] empty + global DB empty       → never installed
+        //   * installed[] empty + global DB has entries → installed in
+        //     another subos, current subos has no view of it (suggest
+        //     `xlings install` — payload is shared, but this subos
+        //     needs to opt in)
+        //   * installed[] non-empty                     → some versions
+        //     are opted-in but no active pointer; list THOSE versions
+        //     and tell the user to `xlings use` one of them
+        const auto& subos_installed = Config::workspace_installed();
+        std::vector<std::string> here;
+        if (auto it = subos_installed.find(program_name); it != subos_installed.end()) {
+            here = it->second;
+        }
+
+        if (here.empty()) {
+            auto global_all = get_all_versions(db, program_name);
+            if (global_all.empty()) {
+                log::error("xlings: '{}' is not installed", program_name);
+                log::error("  hint: xlings install {}", program_name);
+            } else {
+                log::error("xlings: '{}' is not installed in current subos", program_name);
+                log::error("  hint: xlings install {}", program_name);
+            }
         } else {
             log::error("xlings: no active version of '{}' in current subos", program_name);
             std::string avail;
-            for (auto& v : all) {
+            for (auto& v : here) {
                 if (!avail.empty()) avail += " ";
                 avail += v;
             }

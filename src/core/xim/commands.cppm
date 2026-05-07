@@ -12,6 +12,7 @@ import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
 import xlings.core.log;
 import xlings.core.config;
+import xlings.core.profile;
 import xlings.runtime;
 import xlings.libs.json;
 import xlings.core.i18n;
@@ -403,6 +404,57 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
     std::string displayVersion;
     std::string subos = Config::paths().activeSubos;
 
+    // 0.4.19+: subos-membership guard.
+    //
+    // Pre-fix: in a fresh (or pruned) subos, `xlings remove gcc` would
+    // reach the catalog, resolve to whatever version the recipe declared
+    // as "default", attempt detach (no-op since gcc is not in this
+    // subos's workspace), then succeed via the cross-subos refcount
+    // path because gcc IS installed in some OTHER subos. Net effect:
+    // confusing "✓ removed (subos: tmp)" output for a version the user
+    // never had. Refuse early and tell them where the package actually
+    // lives.
+    {
+        auto stripVer = [](const std::string& s) {
+            auto at = s.find('@');
+            return (at == std::string::npos) ? s : s.substr(0, at);
+        };
+        auto bareWithoutVer = stripVer(target);
+        auto bareName = bareWithoutVer.substr(bareWithoutVer.rfind(':') + 1);
+
+        const auto& ws  = Config::workspace();
+        const auto& wsi = Config::workspace_installed();
+        bool in_active    = ws.contains(bareName) && !ws.at(bareName).empty();
+        bool in_installed = wsi.contains(bareName) && !wsi.at(bareName).empty();
+
+        if (!in_active && !in_installed) {
+            // Idempotent no-op: matching the existing "remove what isn't
+            // there is success" convention (covered by S4 of
+            // remove_multi_version_test.sh — it explicitly asserts
+            // exit 0 + no `removed.*subos` summary). We exit 0 with a
+            // visible diagnostic so humans see what happened without
+            // breaking scripts that re-run `remove` defensively.
+            log::warn("xlings: '{}' is not installed in current subos '{}'",
+                      bareName, subos);
+
+            // Helpful diagnostic: which subos(es) DO have this package?
+            auto referencing = xlings::profile::find_subos_referencing(
+                Config::paths().homeDir, bareName);
+            std::erase(referencing, subos);
+            if (!referencing.empty()) {
+                std::string list;
+                for (auto& n : referencing) {
+                    if (!list.empty()) list += ", ";
+                    list += n;
+                }
+                log::warn("  installed in subos: {}", list);
+                log::warn("  hint: `xlings subos use {}` then `xlings remove {}`",
+                          referencing.front(), bareName);
+            }
+            return 0;
+        }
+    }
+
     std::string resolveTarget = target;
     if (target.find('@') == std::string::npos) {
         auto bareName = target.substr(target.rfind(':') + 1);
@@ -556,7 +608,17 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
 }
 
 // === list command ===
-int cmd_list(const std::string& filter, EventStream& stream) {
+//
+// 0.4.19+: by default, list only packages opted into the **current
+// subos** (i.e. present in `Config::workspace_installed()`). Pass
+// `all=true` (CLI: `--all`) to widen back to "every package whose
+// payload exists on disk anywhere", which is the pre-0.4.19 default.
+//
+// `match.installed` (catalog-side) tracks "payload directory exists on
+// disk in xpkgs/" — that's *globally* installed and shared across
+// subos. The new C2 schema stores per-subos opt-in via
+// `workspace_installed`, so the subos-scoped list intersects the two.
+int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
     auto& catalog = get_catalog();
     if (!catalog.is_loaded()) {
         log::error("package index not available");
@@ -565,14 +627,30 @@ int cmd_list(const std::string& filter, EventStream& stream) {
 
     auto results = catalog.search(filter.empty() ? "" : filter, detect_platform());
 
-    // Filter to only installed packages
+    const auto& wsi = Config::workspace_installed();
+    auto in_current_subos = [&](const std::string& name, const std::string& version) {
+        auto it = wsi.find(name);
+        if (it == wsi.end()) return false;
+        for (auto& v : it->second) {
+            if (v == version || xvm::strip_namespace(v) == version) return true;
+        }
+        return false;
+    };
+
     std::vector<PackageMatch> installed;
     for (auto& match : results) {
-        if (match.installed) installed.push_back(std::move(match));
+        if (!match.installed) continue;
+        if (!all && !in_current_subos(match.name, match.version)) continue;
+        installed.push_back(std::move(match));
     }
 
     if (installed.empty()) {
-        log::println("no installed packages found");
+        if (all) {
+            log::println("no installed packages found");
+        } else {
+            log::println("no packages installed in current subos");
+            log::println("  hint: `xlings list --all` to see globally-installed packages");
+        }
         return 0;
     }
 
@@ -583,7 +661,8 @@ int cmd_list(const std::string& filter, EventStream& stream) {
         listItems.push_back({match.canonicalName + "@" + match.version, desc});
     }
     nlohmann::json listPayload;
-    listPayload["title"] = "Installed packages:";
+    listPayload["title"] = all ? "Installed packages (all subos):"
+                               : "Installed packages (current subos):";
     listPayload["items"] = std::move(listItems);
     listPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", listPayload.dump()});

@@ -118,6 +118,33 @@ void remove_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
     }
 }
 
+// Helper: filter a list of version keys (`ns:ver` or bare) down to those
+// that appear in the current subos's installed[] for `target`. Tolerant
+// of bare-vs-namespaced mismatch the same way detach_current_subos_ is —
+// the stored form is namespaced for non-primary repos but callers may
+// pass bare versions.
+inline std::vector<std::string>
+filter_to_subos_installed_(const std::string& target,
+                           const std::vector<std::string>& candidates) {
+    const auto& wsi = Config::workspace_installed();
+    auto it = wsi.find(target);
+    if (it == wsi.end()) return {};
+    const auto& installed = it->second;
+
+    auto in_installed = [&](const std::string& v) {
+        for (auto& sv : installed) {
+            if (sv == v || strip_namespace(sv) == v) return true;
+        }
+        return false;
+    };
+
+    std::vector<std::string> out;
+    for (auto& v : candidates) {
+        if (in_installed(v)) out.push_back(v);
+    }
+    return out;
+}
+
 // xlings use <target> <version>
 // Updates the active subos workspace and creates/updates bin/ hardlinks
 int cmd_use(const std::string& target, const std::string& version, EventStream& stream) {
@@ -221,9 +248,24 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     collect_bindings(target, resolved);
 
-    // Update workspace for all nodes in the binding tree
+    // Update workspace for all nodes in the binding tree, and opt this
+    // subos into the version's installed[] set if it wasn't already.
+    //
+    // The auto-add semantics (0.4.19+): if the user does `xlings use gcc 11.5.0`
+    // in a fresh subos that doesn't have 11.5.0 in `installed[]` but the
+    // payload IS registered in the global versions DB (e.g. another subos
+    // installed it), we add 11.5.0 to this subos's installed[] silently
+    // — payload is shared, so this is a free operation. Without this,
+    // `use` in a fresh subos would always have to be preceded by
+    // `install`, making subos creation feel heavier than it is.
+    auto& wsi = Config::workspace_installed_mut();
     for (auto& [name, ver] : to_switch) {
         Config::workspace_mut()[name] = ver;
+        auto& list = wsi[name];
+        if (std::find(list.begin(), list.end(), ver) == list.end()) {
+            list.push_back(ver);
+            log::debug("auto-add to installed[]: {} += {}", name, ver);
+        }
         log::debug("binding sync: {} -> {}", name, ver);
     }
     Config::save_workspace();
@@ -290,8 +332,20 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     return 0;
 }
 
-// List versions for a target (used by `xlings use <target>` without version)
-int cmd_list_versions(const std::string& target, EventStream& stream) {
+// List versions for a target.
+//
+// Used by `xlings use <target>` (no version) — output drives the
+// interactive picker / info panel. 0.4.19+: defaults to **current
+// subos scope** (only versions in `installed[]`), so a fresh subos
+// shows an empty / minimal list rather than every version every other
+// subos has ever installed. Pass `all=true` to opt back into the
+// pre-0.4.19 global view (CLI exposes this via `--all`).
+//
+// When `all=false` and the current subos has no installed[] entries
+// for the target, we fall back to global with an explanatory hint —
+// otherwise the user would just see an empty panel and not know what
+// to do next.
+int cmd_list_versions(const std::string& target, EventStream& stream, bool all = false) {
     auto db = Config::versions();
 
     if (!has_target(db, target)) {
@@ -301,10 +355,40 @@ int cmd_list_versions(const std::string& target, EventStream& stream) {
 
     auto workspace = Config::effective_workspace();
     auto active = get_active_version(workspace, target);
-    auto all = get_all_versions(db, target);
+    auto global_all = get_all_versions(db, target);
+
+    std::vector<std::string> versions;
+    std::string title;
+    if (all) {
+        versions = global_all;
+        title = target + " versions (all subos)";
+    } else {
+        versions = filter_to_subos_installed_(target, global_all);
+        if (versions.empty()) {
+            // Empty subos installed[] for this target — show a hint
+            // instead of an empty panel. The global list is informational
+            // so the user can pick a version to install.
+            log::error("'{}' is not installed in current subos", target);
+            if (!global_all.empty()) {
+                std::string avail;
+                for (auto& v : global_all) {
+                    if (!avail.empty()) avail += " ";
+                    avail += v;
+                }
+                log::error("  globally available: {}", avail);
+                log::error("  hint: xlings install {}@<version>"
+                           " (or `xlings use {} --all` to see global view)",
+                           target, target);
+            } else {
+                log::error("  hint: xlings install {}", target);
+            }
+            return 1;
+        }
+        title = target + " versions (current subos)";
+    }
 
     nlohmann::json fieldsJson = nlohmann::json::array();
-    for (auto& ver : all) {
+    for (auto& ver : versions) {
         auto vdata = get_vdata(db, target, ver);
         std::string path_info;
         if (vdata && !vdata->path.empty()) path_info = vdata->path;
@@ -312,7 +396,7 @@ int cmd_list_versions(const std::string& target, EventStream& stream) {
         fieldsJson.push_back({{"label", ver}, {"value", path_info}, {"highlight", highlight}});
     }
     nlohmann::json payload;
-    payload["title"] = target + " versions";
+    payload["title"] = title;
     payload["fields"] = std::move(fieldsJson);
     stream.emit(DataEvent{"info_panel", payload.dump()});
 
