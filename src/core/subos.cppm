@@ -125,7 +125,7 @@ inline constexpr std::string_view kEtcNsswitch =
 // Lay down /etc/{passwd,group,hosts,nsswitch.conf} templates inside
 // the sandbox subos directory. Files are only written if absent — a
 // returning user's customizations survive subos use re-init.
-inline void write_etc_templates_(const fs::path& subos_dir) {
+void write_etc_templates_(const fs::path& subos_dir) {
     auto etc = subos_dir / "etc";
     fs::create_directories(etc);
 
@@ -143,7 +143,7 @@ inline void write_etc_templates_(const fs::path& subos_dir) {
 // Initialize sandbox-specific directory layout in addition to the
 // regular subos dirs. /root is $HOME inside; /tmp is per-sandbox tmp.
 // /etc gets the templates above.
-inline void init_sandbox_layout_(const fs::path& subos_dir) {
+void init_sandbox_layout_(const fs::path& subos_dir) {
     fs::create_directories(subos_dir / "root");
     fs::create_directories(subos_dir / "tmp");
     write_etc_templates_(subos_dir);
@@ -440,17 +440,31 @@ namespace sandbox_detail_ {
 //   3. PATH-resolved `proot`                                 (system pkg)
 //
 // Returns the path to a usable proot, or unexpected with a hint string.
-inline std::expected<fs::path, std::string>
+std::expected<fs::path, std::string>
 locate_proot_(const fs::path& home_dir) {
     namespace fs = std::filesystem;
     std::error_code ec;
 
     // (1) xpkg-managed (look at versions DB)
+    //
+    // Iterating with explicit directory_iterator + sentinel comparison
+    // (not range-for over a wrapper) sidesteps a libstdc++ copy-ctor
+    // visibility issue we hit on gcc 15.1.0 musl-cross when this header
+    // is exposed via BMI: the range-for path required `directory_iterator
+    // (directory_iterator const&)` to be visible at the inline expansion
+    // site inside another module's TU, and the cross-toolchain link
+    // surfaced it as "undefined reference to __cxx11::directory_iterator
+    // ctor" in capabilities.cppm. Using sentinel `{}` comparison avoids
+    // the copy entirely.
     auto xpkgs_dir = home_dir / "data" / "xpkgs";
     auto xpkg_proot_root = xpkgs_dir / "xim-x-proot";
     if (fs::is_directory(xpkg_proot_root, ec)) {
-        for (auto& entry : platform::dir_entries(xpkg_proot_root)) {
-            auto candidate = entry.path() / "bin" / "proot";
+        std::error_code it_ec;
+        for (auto it = fs::directory_iterator(xpkg_proot_root, it_ec);
+             !it_ec && it != fs::directory_iterator{};
+             it.increment(it_ec))
+        {
+            auto candidate = it->path() / "bin" / "proot";
             if (fs::is_regular_file(candidate, ec)) return candidate;
         }
     }
@@ -484,7 +498,7 @@ locate_proot_(const fs::path& home_dir) {
 
 // Build the proot argv for entering a sandbox subos. Output layout
 // matches the design doc §3.3.
-inline std::vector<std::string>
+std::vector<std::string>
 build_proot_argv_(const fs::path& proot_bin,
                   const fs::path& subos_dir,
                   const fs::path& home_dir,
