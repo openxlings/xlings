@@ -2,6 +2,20 @@
 
 ## 2026
 
+### 2026-05 (v0.4.20)
+
+- **大型 tarball 解压性能修复:libarchive read block 64 KiB → 4 MiB,跳过 NSS lookup**
+  - 用户报告:`xlings install local:musl-gcc@15.1.0`(847 MiB tarball)整个安装阶段挂在 "下载阶段" ~217 秒,实际是解压。raw `tar -xzf` 同一文件 9.2 秒,**xlings ~23×**。
+  - 实测定位(在用户原始 tarball 上跑):
+    - **read block 大小**:`archive_read_open_filename` 默认参数 65536 字节 → 每 GiB ~16k 次 read syscall。改成 4 MiB(GNU tar 内部用的量级)后,syscall 数掉一个数量级。
+    - **NSS lookup**:`archive_write_disk_set_standard_lookup` 给每个 unique uname/gname 调 `getpwnam_r`/`getgrnam_r`。在 LDAP / sssd / nscd 慢的环境下这一项可能挂秒级。xim-pkgindex tarball 一律 root:root,改成自定义 lookup callback 永远返回 0,绕掉整条 NSS 路径。
+  - **效果**(808 MiB musl-gcc tarball):
+    - 修复前(实测旧逻辑):**~217 s**
+    - 修复后(本 patch):**5.79 s**(比 `tar -xpf` 9.31 s 还快 60%,因为没有 subprocess 启动开销 + pipe IPC)
+    - 提速 **~37×**
+  - **不引入新代码路径**:之前考虑过加 `posix_spawn("tar -xpf")` 子进程方案,实测对比发现 Tier 1 单独已经超过了 subprocess 路径(在多数硬件上 zlib 单线程 + 4 MiB block 已经接近 IO 上限,subprocess 启动成本反而拖慢小 archive 4 倍)。因此**直接增强 libarchive 路径**,不加 fallback / dispatcher / env var。
+  - 改动量:`src/core/xim/extract.cppm` 改 ~30 行,无新模块、无新依赖、无新 escape hatch。
+
 ### 2026-05 (v0.4.19)
 
 - **subos `xlings install` / `remove` 跨 subos workspace 污染修复(0.4.19 critical)**
