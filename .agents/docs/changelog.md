@@ -2,6 +2,32 @@
 
 ## 2026
 
+### 2026-05 (v0.4.21)
+
+- **subos sandbox 模式:proot 文件系统隔离,无 sudo,Linux 专属**
+  - 设计文档:[`docs/plans/2026-05-09-subos-sandbox-design.md`](../../docs/plans/2026-05-09-subos-sandbox-design.md)。
+  - subos 现在有第三种类型 — **sandbox**(在原有 global / shell-level 之上)。通过 proot `-R` + 选择性 bind 实现 fs 视图隔离,**dotfile 完全独立**(`~/.gitconfig`、`~/.cache`、`~/.npm` 等不再污染宿主),**zero sudo**(用户态 ptrace,不需要 user-namespace,绕过 Ubuntu 24.04+ 的 AppArmor `unprivileged_userns` 限制)。
+  - **命令面只动一个 flag**:`xlings subos new <name> --sandbox-shell <xpkg>`。`subos use <name>` 自动检测 `.xlings.json` 里的 `sandbox-shell` 字段决定是否走 proot 路径(有 → sandbox;无 → 现有 global / shell-level 行为,**零回归**)。
+  - **FS 映射(进入后 inside view)**:
+    - `/` = `~/.xlings/subos/<name>/`(rootfs,sandbox 物理目录)
+    - `/bin/`、`/etc/`、`/root/`(=`$HOME`)、`/tmp/` = sandbox 私有
+    - `/xlings/` ← bind `~/.xlings/`(整个 xlings 宇宙,xlings 二进制 + 全局 xpkgs 池都在这一条 bind 下)
+    - `/proc /sys /dev /etc/resolv.conf` ← bind 自宿主(内核接口 + DNS)
+    - `/etc/{passwd,group,hosts,nsswitch.conf}` ← 显式 bind 自 sandbox 自家模板,**覆盖 proot 默认对宿主 /etc/* 的 kompat 自动 bind**(否则 sandbox 内 `cat /etc/passwd` 会看到宿主全部用户)
+  - **用户身份**:`proot -0` 伪装 root(`whoami` → root, `id -u` → 0)。理由:多数工具 `geteuid != 0` 直接报错;业界惯例(Termux / proot-distro / Toolbox 全用 -0);文件 ownership 实际是宿主真实 uid,退出后用户能正常读写。
+  - **subos 创建时 xlings 自动写 4 个 /etc/* 模板**(passwd / group / hosts / nsswitch.conf,共 ~80 字节);加上 root/、tmp/ 空目录;sandbox 物理目录初始约 1 KB(不含 shell xpkg)。
+  - **proot 二进制探测顺序**:`xim:proot` xpkg → `~/.xlings/runtimedir/proot` → 系统 PATH。三处都没 → 报错并提示 `apt install proot` / `dnf install proot` / 手动放到 `runtimedir/`。**V1.1 不自动下载**(后续可加)。
+  - **嵌套 sandbox 拒绝**:在 sandbox 内再跑 `xlings subos use <name>` 会被拦下(env + `/.xlings.json` 双检测),提示 `type 'exit' first`。proot 嵌套 ptrace 行为不稳定,直接禁掉。
+  - **平台明示**:macOS / Windows 上 `--sandbox-shell` 在 `subos new` 阶段就被拒绝,**不静默降级**(避免欺骗用户以为有隔离)。
+  - **限制 / 跟其他 OS 的不同**(写在设计文档里,运行时 `subos info` 后续可输出):
+    - 共享内核(`uname -r` = 宿主)、共享网络栈、共享 PID 视图(`ps aux` 看到全部宿主进程)
+    - 不能 `mount`、`insmod`、改 hostname,这些需要 CAP_SYS_ADMIN
+    - 没装 apt / apk / dnf,**xlings 是唯一包管理器**(用 `xlings install <xpkg>`)
+    - syscall-heavy workload 慢 30-50%(proot ptrace 拦截开销)
+  - 改动量:`src/core/subos.cppm` ~270 LOC(sandbox 创建 + 进入 + proot 探测 + argv 构造);`tests/e2e/subos_sandbox_test.sh` ~150 LOC(7 scenario);`.github/workflows/xlings-ci-linux.yml` 加 E2E-25。**没有新模块**,纯增量。
+  - 测试覆盖:S1-S7(目录布局 / etc 模板 / config 字段 / 普通 subos 不受影响 / proot 缺失提示 / 真实进入 sandbox 验 root + /etc 隔离 / 删除清零)。本机静态 `/bin/busybox` 当 shell stand-in 验证完整流。
+  - **后续(不在 V1.1)**:`xim:proot` xpkg(自家供应链)、`xlings subos use --sandbox-shell <new>` 换 shell、`--bring-in <path>` 选择性 dotfile bind、bwrap 后端(在 user-ns 可用的内核上自动选 bwrap,接 IsolationBackend 抽象)、OverlayFS 多 sandbox 共享 base layer。
+
 ### 2026-05 (v0.4.20)
 
 - **嵌套 xlings home 时 project discovery 越界污染修复 (#276)**
