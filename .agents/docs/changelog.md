@@ -2,6 +2,28 @@
 
 ## 2026
 
+### 2026-05 (v0.4.22)
+
+- **subos sandbox 一步到位 + 真正能跑 elfpatched binary**
+  - V1.1(0.4.21)的痛点:`subos new <name> --sandbox-shell xim:fish` 只写 config,不装 shell,不连 binary。用户 `subos use` 报错"shell not found",**提示又让用户先 `subos use && xlings install`** —— 死循环。就算手动 `xlings install fish` 把 fish 装进默认 subos,fish 仍然不在 sandbox 自己的 `bin/`,**且进入 sandbox 后 elfpatched fish 找不到 loader**(绝对宿主路径在 proot rootfs 里指向空目录)。
+  - **V1.2 修复(`src/core/subos.cppm`)**:
+    1. **`subos new --sandbox-shell` 创建期 eager install + symlink**:写完 sandbox 目录布局后,把 `--sandbox-shell` 指定的 xpkg 通过 `xim::cmd_install` 装好(yes=true 静默),从 xvm DB 解析其 bindir,**symlink `<sandbox>/bin/<basename>` → `<xpkg-payload>/bin/<basename>`**。一行命令拿到可用的 sandbox。
+    2. **proot argv 加 `--bind=<home_dir>:<home_dir>` 自映射**。xim 装的 binary 经 elfpatch 后 interpreter / rpath 是宿主绝对路径(如 `/home/<user>/.xlings/data/xpkgs/xim-x-d2x/.../ld-linux-x86-64.so.2`)。proot `-R <sandbox>` 会把绝对路径路由到 `<sandbox>/<原路径>`(空目录 → loader 找不到 → 启动即死)。**自映射让那条绝对路径在 sandbox 内仍然指向宿主真实位置**,fish / bash / zsh 等动态链接的 elf 可执行原生跑起来。`/xlings` 那条 bind 是面向用户的便捷别名,这条自映射才是让 binary 真正能跑的关键。
+    3. **`subos use` lazy 自愈**:进入路径检查到 `<sandbox>/bin/<shell>` 缺失或 dangling(用户后来 `xlings remove xim:fish` 把 payload 删了)→ 直接复用 hydrate 流程重装 + 重连。原死循环错误提示删掉,换成可执行的 `xlings install <xpkg>`(没记 xpkg id 的兜底分支)。
+    4. **顺手修一个 dangling-pointer bug**:`Config::versions()` 是 by-value 返回临时 VersionDB,把它当 `get_vdata(Config::versions(), ...)` 的实参用,返回的 `VData*` 在表达式结束就指向已析构的临时对象 —— 落在 `vd->path` 上观察到一段乱码字符,导致 `fs::exists` 始终 false。**改成先 bind 到 local `auto db = Config::versions();`** 再传 `get_vdata(db, ...)`。这种坑全文件 grep 一遍,后续 PR 应该全 audit。
+  - 用户可见 UX:
+    ```
+    xlings subos new sb --sandbox-shell xim:fish    # 自动装 fish + 连进 sb/bin/fish
+    xlings subos use sb                              # proot 直接进,fish 真能用
+    xlings remove xim:fish && xlings subos use sb    # 自愈:重装 + 重连,继续进
+    ```
+  - **测试(`tests/e2e/subos_sandbox_test.sh`)**:`xim:sh` 改成本地 fixture xpkg(用宿主 busybox,无网络依赖),从 7 scenario 扩到 8 scenario:
+    - S1 加 symlink 验证(target 必须落在 `data/xpkgs/xim-x-sh` 下)
+    - S6 删掉手动 `cp busybox` 一步,验证 hydrate 流程交付的 binary 也能在 proot 里跑通
+    - **新增 S7**:rm 掉 sandbox 的 shell symlink,下一次 `subos use` 必须自动恢复 symlink
+    - 旧 S7 (remove cleanup) 改成 S8
+  - 改动量:subos.cppm +~150 LOC(helper + 2 调用点 + bind 一行);test +~80 LOC(fixture + S1/S6/S7 改写)。版本 0.4.21 → 0.4.22。
+
 ### 2026-05 (v0.4.21)
 
 - **subos sandbox 模式:proot 文件系统隔离,无 sudo,Linux 专属**

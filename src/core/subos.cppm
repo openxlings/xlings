@@ -24,6 +24,8 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
+import xlings.core.xvm.db;
+import xlings.core.xim.commands;
 
 namespace xlings::subos {
 
@@ -143,6 +145,15 @@ void write_etc_templates_(const fs::path& subos_dir) {
 // Initialize sandbox-specific directory layout in addition to the
 // regular subos dirs. /root is $HOME inside; /tmp is per-sandbox tmp.
 // /etc gets the templates above.
+// Forward declaration — definition lives in the second sandbox_detail_
+// block alongside locate_proot_ / build_proot_argv_, which it depends on.
+// create_impl_ (between the two blocks) calls this for the eager-install
+// path on `subos new --sandbox-shell`.
+int ensure_shell_installed_and_linked_(const fs::path& sandbox_dir,
+                                       const std::string& xpkg_id,
+                                       const std::string& shell_inside_path,
+                                       EventStream& stream);
+
 void init_sandbox_layout_(const fs::path& subos_dir) {
     fs::create_directories(subos_dir / "root");
     fs::create_directories(subos_dir / "tmp");
@@ -252,6 +263,21 @@ int create_impl_(const std::string& name, const fs::path& customDir,
     if (!json.contains("subos")) json["subos"] = nlohmann::json::object();
     json["subos"][name] = {{"dir", customDir.empty() ? "" : customDir.string()}};
     write_config_json_(configPath, json);
+
+    // Sandbox: install the configured shell xpkg and symlink its binary
+    // into <sandbox>/bin/<basename> so `subos use <name>` can exec it.
+    // Done at create time so the user's mental model holds:
+    // "I asked for a sandbox with this shell — it's ready."
+    if (sandboxShellXpkg.has_value()) {
+#if defined(__linux__)
+        auto bare = *sandboxShellXpkg;
+        if (auto colon = bare.rfind(':'); colon != std::string::npos)
+            bare = bare.substr(colon + 1);
+        auto rc = sandbox_detail_::ensure_shell_installed_and_linked_(
+            dir, *sandboxShellXpkg, "/bin/" + bare, stream);
+        if (rc != 0) return rc;
+#endif
+    }
 
     nlohmann::json payload;
     payload["name"] = name;
@@ -536,10 +562,153 @@ build_proot_argv_(const fs::path& proot_bin,
         std::format("--bind={}:/etc/hosts",        (etc / "hosts").string()),
         std::format("--bind={}:/etc/nsswitch.conf",(etc / "nsswitch.conf").string()),
         std::format("--bind={}:/xlings", home_dir.string()),
+        // Self-bind xlings home at its host absolute path. xim-installed
+        // binaries are elfpatched with the absolute host path of their
+        // loader / rpath libs (e.g. ld-linux from xim:d2x). Without this
+        // bind, those paths route to <rootfs>/<host-path> which is empty,
+        // and the shell fails to start with "no such file or directory".
+        // The /xlings bind above is for user-facing convenience; this
+        // self-bind is what makes elfpatched binaries actually run.
+        std::format("--bind={}:{}", home_dir.string(), home_dir.string()),
         "--cwd=/root",
         shell_path,
     };
     return argv;
+}
+
+// Ensure the configured sandbox shell binary is installed and present at
+// `<sandbox>/bin/<basename>` as a symlink to the xim-managed payload.
+// Idempotent — safe to re-run from `subos new --sandbox-shell` (eager
+// hydration) and from `subos use <sandbox>` (lazy self-heal when the
+// payload was removed or the symlink dangles).
+//
+// Strategy:
+//   1. If the destination exists and resolves to a real file, no-op.
+//   2. Otherwise, ensure the xpkg is installed (call xim::cmd_install
+//      with yes=true). The install registers a bindir in the xvm DB.
+//   3. Resolve <bindir>/<basename> from the xvm DB and symlink it into
+//      the sandbox's bin/.
+//
+// Returns 0 on success. On failure emits an ErrorEvent and returns 1.
+int ensure_shell_installed_and_linked_(const fs::path& sandbox_dir,
+                                       const std::string& xpkg_id,
+                                       const std::string& shell_inside_path,
+                                       EventStream& stream)
+{
+    namespace fs = std::filesystem;
+
+    // bare name = xpkg id with namespace prefix stripped (xim:fish → fish)
+    std::string bare = xpkg_id;
+    if (auto colon = bare.rfind(':'); colon != std::string::npos)
+        bare = bare.substr(colon + 1);
+
+    // shell_inside_path looks like "/bin/fish"; strip leading '/' to get
+    // the host-side path under <sandbox_dir>.
+    auto rel = shell_inside_path;
+    if (!rel.empty() && rel.front() == '/') rel.erase(0, 1);
+    auto shell_dst = sandbox_dir / rel;
+    auto basename  = fs::path(shell_inside_path).filename().string();
+
+    std::error_code ec;
+
+    // Already there and resolves to a real file → done.
+    if (fs::exists(shell_dst, ec) && !ec) return 0;
+    ec.clear();
+
+    // Dangling symlink (target gone) → remove so create_symlink can run.
+    if (fs::is_symlink(shell_dst, ec)) {
+        fs::remove(shell_dst, ec);
+        ec.clear();
+    }
+
+    // Look up the xpkg in the xvm DB. If no version is registered yet,
+    // run a full install pass — xim::cmd_install handles download +
+    // extract + install hook + xvm registration.
+    //
+    // Important: Config::versions() returns the merged DB BY VALUE, so
+    // the returned object is a temporary. We MUST bind it to a local
+    // variable before pulling pointers out of it (`get_vdata` returns
+    // a pointer into the DB). Calling Config::versions() inline as a
+    // function argument creates a temporary that dies at the end of
+    // the expression, leaving `vd` dangling — observed as a corrupted
+    // path string and a spurious "shell binary not found" error.
+    auto db = Config::versions();
+    auto resolved = xvm::match_version(db, bare, "");
+    if (resolved.empty()) {
+        std::vector<std::string> targets = { xpkg_id };
+        auto rc = xim::cmd_install(targets, /*yes=*/true,
+                                   /*noDeps=*/false, stream);
+        if (rc != 0) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = std::format(
+                    "failed to install sandbox shell xpkg '{}'", xpkg_id),
+                .recoverable = true,
+                .hint = std::format(
+                    "try manually: xlings install {} (then re-run subos use)",
+                    xpkg_id),
+            });
+            return 1;
+        }
+        db = Config::versions();
+        resolved = xvm::match_version(db, bare, "");
+        if (resolved.empty()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = std::format(
+                    "xpkg '{}' installed but no version in xvm DB "
+                    "(unexpected — package may not register a binary)",
+                    xpkg_id),
+                .recoverable = false,
+            });
+            return 1;
+        }
+    }
+
+    auto* vd = xvm::get_vdata(db, bare, resolved);
+    if (!vd || vd->path.empty()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format(
+                "xpkg '{}' has no bindir registered in xvm DB", xpkg_id),
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    auto bindir = fs::path(xvm::expand_path(
+        vd->path, Config::paths().homeDir.string()));
+    auto shell_src = bindir / basename;
+    if (!fs::exists(shell_src, ec)) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format(
+                "shell binary '{}' not found in xpkg payload (looked at {})",
+                basename, shell_src.string()),
+            .recoverable = false,
+            .hint = std::format(
+                "the xpkg '{}' may not provide a binary called '{}'",
+                xpkg_id, basename),
+        });
+        return 1;
+    }
+
+    fs::create_directories(shell_dst.parent_path(), ec);
+    ec.clear();
+    fs::create_symlink(shell_src, shell_dst, ec);
+    if (ec) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = std::format(
+                "failed to symlink {} -> {}: {}",
+                shell_dst.string(), shell_src.string(), ec.message()),
+            .recoverable = false,
+        });
+        return 1;
+    }
+    log::debug("[sandbox] hydrated shell {} -> {}",
+               shell_dst.string(), shell_src.string());
+    return 0;
 }
 
 } // namespace sandbox_detail_
@@ -598,9 +767,13 @@ int use_sandbox_(const std::string& name, EventStream& stream) {
         return 1;
     }
 
-    // Sanity: shell binary exists in subos. If not, the user probably
-    // hasn't run `xlings install <shell-xpkg>` yet (V1.1 doesn't
-    // auto-install at create-time). Print a helpful hint.
+    // Self-heal: shell binary may be missing because the user removed
+    // the underlying xpkg (`xlings remove ...`) after creating the
+    // sandbox, leaving a dangling symlink. Re-run the hydrate path,
+    // which is idempotent and reinstalls the xpkg if needed. Eager
+    // install at `subos new` is the primary path; this is the
+    // recovery path so users never get stuck in chicken-and-egg
+    // (can't `subos use` to install, can't install without entering).
     auto host_shell_path = subos_dir / shell_path.substr(
         shell_path.front() == '/' ? 1 : 0);  // strip leading "/"
     if (!fs::exists(host_shell_path)) {
@@ -610,21 +783,27 @@ int use_sandbox_(const std::string& name, EventStream& stream) {
         {
             xpkg_id = subos_config["sandbox-shell-xpkg"].get<std::string>();
         }
-        std::string hint = xpkg_id.empty()
-            ? std::format("install a shell into subos '{}' first", name)
-            : std::format(
-                "install the configured shell first:\n"
-                "    xlings subos use {} && xlings install {}",
-                name, xpkg_id);
-        stream.emit(ErrorEvent{
-            .code = ErrorCode::NotFound,
-            .message = std::format(
-                "sandbox shell '{}' not found in subos '{}' (expected at {})",
-                shell_path, name, host_shell_path.string()),
-            .recoverable = true,
-            .hint = std::move(hint),
-        });
-        return 1;
+        if (xpkg_id.empty()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = std::format(
+                    "sandbox shell '{}' not found in subos '{}' (expected at {})",
+                    shell_path, name, host_shell_path.string()),
+                .recoverable = false,
+                .hint = std::format(
+                    "no sandbox-shell-xpkg recorded — recreate the subos: "
+                    "xlings subos remove {} && xlings subos new {} --sandbox-shell <xpkg>",
+                    name, name),
+            });
+            return 1;
+        }
+        log::info("[sandbox] shell missing — rehydrating from xpkg '{}'",
+                  xpkg_id);
+        if (auto rc = sandbox_detail_::ensure_shell_installed_and_linked_(
+                subos_dir, xpkg_id, shell_path, stream); rc != 0)
+        {
+            return rc;
+        }
     }
 
     nlohmann::json payload;
