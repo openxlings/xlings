@@ -4,7 +4,19 @@
 
 ### 2026-05 (v0.4.20)
 
-- **大型 tarball 解压性能修复:libarchive read block 64 KiB → 4 MiB,跳过 NSS lookup**
+- **嵌套 xlings home 时 project discovery 越界污染修复 (#276)**
+  - 报告:用 xlings 安装 mcpp(mcpp 的 payload 里**包了一个独立的 xlings home** —— 内层 `XLINGS_HOME=$MCPP_HOME/registry`,`registry/` 落在 `~/.xlings/data/xpkgs/<repo>-x-mcpp/<ver>/registry`),内层 xlings 启动后,workspace / subos / install 路径全部跑偏到 `~/.xlings/.xlings/{subos,data,...}` 这种根本不存在的伪 project tree。下游所有 install/shim/workspace 操作的"现实"和 mcpp recipe 看到的"现实"分裂。
+  - 根因(`src/core/config.cppm` `load_project_config_()`):cwd 向上 walk 找 `.xlings.json` 时,只用 `curNorm != homeNorm` 跳过自家 home,**没有挡别家**。内层 walk 会越过自己的 home 之后,继续向上爬到外层 `~/.xlings/.xlings.json` —— 那个文件其实是另一个 xlings home 的全局配置,但 walk 把它当 project root 加载了。
+  - 修复:加 xlings-home 边界检测。任何同时含 `.xlings.json` **和** `subos/` **同级目录**的位置都识别为某个 xlings home(自家或别家),walk 在那里 break,绝不当 project 加载。可靠依据:project layout 的 subos 在 `<proj>/.xlings/subos/`(多一层 `.xlings/`),不会和 home 的 `<home>/subos/` 撞名。原 `curNorm != homeNorm` 检查被 break 取代(自家 home 也满足签名,break 已覆盖)。
+  - 同样的边界检测也加到 `XLINGS_PROJECT_DIR` env-var fallback 路径上 —— env 指向某个 xlings home 时也拒绝(否则等于绕过 walk 检查重新引入污染)。
+  - 锁住:新增 `nested_xlings_home_test.sh`(4 个 scenario,作为 E2E-24 加入 CI):
+    - S1:内层 xlings cwd 在 `registry/data/runtimedir` → 不进 project mode,XLINGS_HOME 报内层
+    - S2:常规 user project(不在任何 xlings home 下面)→ project mode 仍正确触发
+    - S3:cwd `/tmp` + XLINGS_HOME=内层 → 不会误把任何 home 当 project
+    - S4:`XLINGS_PROJECT_DIR=外层 home` 显式指过去 → 也被 boundary 检查拒绝
+  - 影响 LOC:`config.cppm` ~25 行,新增 e2e ~100 行。无 schema 变更,无 API 变更,纯 walk 逻辑收紧。
+
+- **大型 tarball 解压性能修复:libarchive read block 64 KiB → 4 MiB,跳过 NSS lookup (#275)**
   - 用户报告:`xlings install local:musl-gcc@15.1.0`(847 MiB tarball)整个安装阶段挂在 "下载阶段" ~217 秒,实际是解压。raw `tar -xzf` 同一文件 9.2 秒,**xlings ~23×**。
   - 实测定位(在用户原始 tarball 上跑):
     - **read block 大小**:`archive_read_open_filename` 默认参数 65536 字节 → 每 GiB ~16k 次 read syscall。改成 4 MiB(GNU tar 内部用的量级)后,syscall 数掉一个数量级。
