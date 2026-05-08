@@ -614,16 +614,44 @@ private:
         // whenever it loads a real project, so subprocesses can recover the
         // intended project context even when their cwd is outside the project
         // tree).
+        // 0.4.20+: xlings-home boundary detection.
+        //
+        // A directory that contains BOTH `.xlings.json` and a `subos/`
+        // sibling directory is an xlings home (ours or some other one) —
+        // never a user project. Project layouts have their state under
+        // `.xlings/subos/`, NOT a bare `subos/` at the same level as
+        // the manifest. Stop walking at any such boundary.
+        //
+        // Without this, a nested xlings home (e.g. mcpp packaged under
+        // ~/.xlings/data/xpkgs/<repo>-x-mcpp/<ver>/registry/, where the
+        // inner xlings sets XLINGS_HOME to the registry dir) would see
+        // its CWD walk skip the inner home (homeNorm match), continue
+        // upward through the package layers, and ultimately mis-load the
+        // OUTER ~/.xlings/.xlings.json as if it were a user project root.
+        // That polluted projectDir_ with the outer home and routed every
+        // subsequent install/shim/workspace path into a phantom
+        // ~/.xlings/.xlings/{subos,data,...} tree disjoint from where
+        // mcpp's recipe actually puts its files.
+        //
+        // The boundary check subsumes the previous `curNorm != homeNorm`
+        // gate: our own home also matches the signature, so the break
+        // covers it. Any directory that "looks like" an xlings home
+        // (regardless of whose) terminates the project walk.
+        auto looks_like_xlings_home = [&](const fs::path& dir) {
+            std::error_code lec;
+            return fs::is_directory(dir / "subos", lec);
+        };
+
         fs::path cur = startDir;
         while (!cur.empty()) {
             auto cfg = cur / ".xlings.json";
             if (fs::exists(cfg, ec) && fs::is_regular_file(cfg, ec)) {
-                auto curNorm = fs::weakly_canonical(cur, ec);
-                if (curNorm != homeNorm) {
-                    load_project_config_from_dir_(cur);
-                    if (hasProjectConfig_) return;     // real project loaded
-                    // else: projectScope:false skip — keep walking, then env fallback
+                if (looks_like_xlings_home(cur)) {
+                    break;                              // hit an xlings home — never project
                 }
+                load_project_config_from_dir_(cur);
+                if (hasProjectConfig_) return;          // real project loaded
+                // else: projectScope:false skip — keep walking, then env fallback
             }
             auto parent = cur.parent_path();
             if (parent == cur) break;
@@ -639,8 +667,12 @@ private:
                 auto dir = fs::path(env_project);
                 auto cfgFile = dir / ".xlings.json";
                 if (fs::exists(cfgFile, ec) && fs::is_regular_file(cfgFile, ec)) {
-                    auto dirNorm = fs::weakly_canonical(dir, ec);
-                    if (dirNorm != homeNorm) {
+                    // Same xlings-home boundary check as the CWD walk:
+                    // an env-var pointing at any xlings home (ours or a
+                    // different one) is rejected, since project mode
+                    // would derive paths that don't match the home's
+                    // actual layout.
+                    if (!looks_like_xlings_home(dir)) {
                         load_project_config_from_dir_(dir);
                     }
                 }

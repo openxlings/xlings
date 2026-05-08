@@ -253,6 +253,10 @@ jobs:
         run: |
           bash tests/e2e/subos_install_remove_isolation_test.sh
 
+      - name: "E2E-24: nested xlings home (project discovery boundary)"
+        run: |
+          bash tests/e2e/nested_xlings_home_test.sh
+
       - name: Attach artifact
         uses: actions/upload-artifact@v4
         if: success()
