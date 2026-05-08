@@ -96,9 +96,84 @@ void update_current_symlink_(EventStream& stream,
     }
 }
 
-export int create(const std::string& name, const fs::path& customDir,
-                  EventStream& stream) {
+// ─────────────────────────────────────────────────────────────────────
+// Sandbox subos helpers (0.4.21+)
+//
+// A "sandbox" subos is a regular subos plus a `sandbox-shell` field in
+// its .xlings.json. At `subos use` time, presence of that field triggers
+// the proot-based fs-isolated entry path (see use_sandbox_) instead of
+// the env-spawn shell-level path. Sandbox subos design lives in
+// docs/plans/2026-05-09-subos-sandbox-design.md.
+// ─────────────────────────────────────────────────────────────────────
+
+namespace sandbox_detail_ {
+
+// Minimum /etc/* templates a sandbox needs so:
+//   - whoami / id work (passwd has root entry)
+//   - /etc/hosts resolves localhost without hitting DNS
+//   - getent users / nsswitch behaves
+// Total ~80 bytes. xlings writes these on `subos new --sandbox-shell`.
+inline constexpr std::string_view kEtcPasswd =
+    "root:x:0:0:root:/root:/bin/sh\n";
+inline constexpr std::string_view kEtcGroup =
+    "root:x:0:\n";
+inline constexpr std::string_view kEtcHosts =
+    "127.0.0.1 localhost\n::1 localhost\n";
+inline constexpr std::string_view kEtcNsswitch =
+    "hosts: files dns\npasswd: files\ngroup: files\n";
+
+// Lay down /etc/{passwd,group,hosts,nsswitch.conf} templates inside
+// the sandbox subos directory. Files are only written if absent — a
+// returning user's customizations survive subos use re-init.
+void write_etc_templates_(const fs::path& subos_dir) {
+    auto etc = subos_dir / "etc";
+    fs::create_directories(etc);
+
+    auto try_write = [&](const fs::path& path, std::string_view body) {
+        if (fs::exists(path)) return;
+        platform::write_string_to_file(path.string(), std::string(body));
+    };
+
+    try_write(etc / "passwd", kEtcPasswd);
+    try_write(etc / "group", kEtcGroup);
+    try_write(etc / "hosts", kEtcHosts);
+    try_write(etc / "nsswitch.conf", kEtcNsswitch);
+}
+
+// Initialize sandbox-specific directory layout in addition to the
+// regular subos dirs. /root is $HOME inside; /tmp is per-sandbox tmp.
+// /etc gets the templates above.
+void init_sandbox_layout_(const fs::path& subos_dir) {
+    fs::create_directories(subos_dir / "root");
+    fs::create_directories(subos_dir / "tmp");
+    write_etc_templates_(subos_dir);
+}
+
+} // namespace sandbox_detail_
+
+// Internal worker — exported variants below dispatch into this with
+// or without a sandbox-shell xpkg. Keeping the public `create(name,
+// dir, stream)` signature byte-stable for ABI compatibility with
+// existing capability layer / external imports of the BMI.
+int create_impl_(const std::string& name, const fs::path& customDir,
+                 EventStream& stream,
+                 std::optional<std::string> sandboxShellXpkg) {
     auto& p = Config::paths();
+
+    // Sandbox mode is Linux-only. Reject early with a clear hint.
+    if (sandboxShellXpkg.has_value()) {
+#if !defined(__linux__)
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "--sandbox-shell is only supported on Linux (current: "
+                       + std::string(platform::OS_NAME) + ")",
+            .recoverable = false,
+            .hint = "create a regular subos by omitting --sandbox-shell, "
+                    "or use the global / shell-level subos modes",
+        });
+        return 1;
+#endif
+    }
 
     if (name == "current") {
         stream.emit(ErrorEvent{
@@ -139,11 +214,30 @@ export int create(const std::string& name, const fs::path& customDir,
     fs::create_directories(dir / "usr");
     fs::create_directories(dir / "generations");
 
-    // Create empty .xlings.json with workspace
+    // Sandbox subos: lay down /etc templates + /root + /tmp on top of
+    // the regular subos directory layout. The regular dirs above are
+    // still created (other code paths assume `bin/`, `lib/` exist).
+    if (sandboxShellXpkg.has_value()) {
+        sandbox_detail_::init_sandbox_layout_(dir);
+    }
+
+    // Create empty .xlings.json with workspace; sandbox-shell field
+    // gets written below if applicable.
     auto subosConfig = dir / ".xlings.json";
     if (!fs::exists(subosConfig)) {
         nlohmann::json j;
         j["workspace"] = nlohmann::json::object();
+        if (sandboxShellXpkg.has_value()) {
+            // sandbox-shell stored as the inside-view path for now.
+            // Convention: xlings install <xpkg> drops the binary into
+            // bin/<basename>, so /bin/<basename> is its inside path.
+            // Bare-name xpkg → /bin/<bare>. ns:name → strip ns prefix.
+            auto bare = *sandboxShellXpkg;
+            if (auto colon = bare.rfind(':'); colon != std::string::npos)
+                bare = bare.substr(colon + 1);
+            j["sandbox-shell"] = "/bin/" + bare;
+            j["sandbox-shell-xpkg"] = *sandboxShellXpkg;  // remember the xpkg id for lazy install
+        }
         write_config_json_(subosConfig, j);
     }
 
@@ -164,6 +258,25 @@ export int create(const std::string& name, const fs::path& customDir,
     payload["dir"]  = dir.string();
     stream.emit(DataEvent{"subos_created", payload.dump()});
     return 0;
+}
+
+// Public exports.
+//
+// `create` keeps its original 3-arg signature byte-stable so existing
+// callers (capabilities.cppm, downstream BMI consumers) link against
+// the same symbol. `create_sandbox` is a separate symbol for the
+// sandbox flow — splitting avoids cross-TU BMI / ABI churn that
+// inflicting an extra default param on `create` would cause under
+// gcc 15.1.0 musl-cross (observed as spurious link errors in CI).
+export int create(const std::string& name, const fs::path& customDir,
+                  EventStream& stream) {
+    return create_impl_(name, customDir, stream, std::nullopt);
+}
+
+export int create_sandbox(const std::string& name, const fs::path& customDir,
+                          const std::string& sandboxShellXpkg,
+                          EventStream& stream) {
+    return create_impl_(name, customDir, stream, sandboxShellXpkg);
 }
 
 // `xlings subos use` modes:
@@ -305,6 +418,256 @@ int use_emit_shell(const std::string& name,
     return 0;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Sandbox subos entry — proot-based fs-isolated session.
+//
+// Triggered when `subos use <name>` reads a subos config that has the
+// `sandbox-shell` field. Only available on Linux (proot uses ptrace +
+// Linux syscall conventions). On non-Linux platforms the sandbox config
+// is rejected at create time, so this code path is unreachable there;
+// guard with #if defined(__linux__) and stub elsewhere.
+//
+// See docs/plans/2026-05-09-subos-sandbox-design.md for full rationale.
+// ─────────────────────────────────────────────────────────────────────
+
+namespace sandbox_detail_ {
+
+// Probe order for the proot binary:
+//   1. ~/.xlings/data/xpkgs/xim-x-proot/<active>/bin/proot   (xpkg-managed,
+//      future once xim:proot ships)
+//   2. ~/.xlings/runtimedir/proot                            (auto-fetch
+//      cache, populated on first sandbox use)
+//   3. PATH-resolved `proot`                                 (system pkg)
+//
+// Returns the path to a usable proot, or unexpected with a hint string.
+std::expected<fs::path, std::string>
+locate_proot_(const fs::path& home_dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // (1) xpkg-managed (look at versions DB)
+    //
+    // Iterating with explicit directory_iterator + sentinel comparison
+    // (not range-for over a wrapper) sidesteps a libstdc++ copy-ctor
+    // visibility issue we hit on gcc 15.1.0 musl-cross when this header
+    // is exposed via BMI: the range-for path required `directory_iterator
+    // (directory_iterator const&)` to be visible at the inline expansion
+    // site inside another module's TU, and the cross-toolchain link
+    // surfaced it as "undefined reference to __cxx11::directory_iterator
+    // ctor" in capabilities.cppm. Using sentinel `{}` comparison avoids
+    // the copy entirely.
+    auto xpkgs_dir = home_dir / "data" / "xpkgs";
+    auto xpkg_proot_root = xpkgs_dir / "xim-x-proot";
+    if (fs::is_directory(xpkg_proot_root, ec)) {
+        // Sentinel form (`it != default_sentinel`) instead of comparing
+        // two directory_iterators directly. Clang/libc++ only provides
+        // the sentinel comparison in C++20+; comparing two
+        // directory_iterators yields "invalid operands to binary
+        // expression" on macOS clang. Sentinel form works on both
+        // libstdc++ (Linux gcc) and libc++ (macOS clang).
+        std::error_code it_ec;
+        for (auto it = fs::directory_iterator(xpkg_proot_root, it_ec);
+             !it_ec && it != std::default_sentinel;
+             it.increment(it_ec))
+        {
+            auto candidate = it->path() / "bin" / "proot";
+            if (fs::is_regular_file(candidate, ec)) return candidate;
+        }
+    }
+
+    // (2) auto-fetch cache
+    auto runtime_proot = home_dir / "runtimedir" / "proot";
+    if (fs::is_regular_file(runtime_proot, ec)) return runtime_proot;
+
+    // (3) PATH-resolved
+    if (auto* path_env = std::getenv("PATH"); path_env && *path_env) {
+        std::string_view pv = path_env;
+        std::size_t start = 0;
+        while (start <= pv.size()) {
+            auto end = pv.find(':', start);
+            auto seg = pv.substr(start, end == std::string_view::npos
+                                        ? pv.size() - start : end - start);
+            if (!seg.empty()) {
+                auto candidate = fs::path(seg) / "proot";
+                if (fs::is_regular_file(candidate, ec)) return candidate;
+            }
+            if (end == std::string_view::npos) break;
+            start = end + 1;
+        }
+    }
+
+    return std::unexpected(
+        "proot not found. Install via your package manager "
+        "(e.g. `sudo apt install proot` / `sudo dnf install proot`) "
+        "or place a proot binary at ~/.xlings/runtimedir/proot");
+}
+
+// Build the proot argv for entering a sandbox subos. Output layout
+// matches the design doc §3.3.
+std::vector<std::string>
+build_proot_argv_(const fs::path& proot_bin,
+                  const fs::path& subos_dir,
+                  const fs::path& home_dir,
+                  const std::string& subos_name,
+                  const std::string& shell_path)
+{
+    // proot's CLI uses positional args for the inside-sandbox command;
+    // no `--` separator (passing `--` triggers `unknown option '--'`).
+    //
+    // Note on /etc bindings: proot 5.x has built-in "kompat" auto-binds
+    // for /etc/{passwd,group,hosts,host.conf,localtime,mtab,networks,
+    // nsswitch.conf,resolv.conf} that surface host versions inside the
+    // guest rootfs. For sandbox semantics we want our own templates
+    // (which xlings wrote at subos creation time) to take precedence —
+    // explicit per-file --bind=<sandbox-etc-file>:<inside-path> overrides
+    // the auto-bind. /etc/resolv.conf stays bound to host so DNS works.
+    auto etc = subos_dir / "etc";
+    std::vector<std::string> argv = {
+        proot_bin.string(),
+        "-0",                                            // fake root (uid 0 from getuid)
+        "-R", subos_dir.string(),                        // rootfs
+        "--bind=/proc:/proc",
+        "--bind=/sys:/sys",
+        "--bind=/dev:/dev",
+        "--bind=/etc/resolv.conf:/etc/resolv.conf",      // DNS from host
+        // sandbox-owned /etc files (override proot kompat auto-binds)
+        std::format("--bind={}:/etc/passwd",       (etc / "passwd").string()),
+        std::format("--bind={}:/etc/group",        (etc / "group").string()),
+        std::format("--bind={}:/etc/hosts",        (etc / "hosts").string()),
+        std::format("--bind={}:/etc/nsswitch.conf",(etc / "nsswitch.conf").string()),
+        std::format("--bind={}:/xlings", home_dir.string()),
+        "--cwd=/root",
+        shell_path,
+    };
+    return argv;
+}
+
+} // namespace sandbox_detail_
+
+// Internal — not exported. `xlings subos use <name>` reaches here when
+// the subos's .xlings.json carries a `sandbox-shell` field.
+int use_sandbox_(const std::string& name, EventStream& stream) {
+    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+
+    // Refuse nested sandbox entry. xlings already running inside a sandbox
+    // (XLINGS_ACTIVE_SUBOS set + we're seeing a sandbox config marker) —
+    // ptrace-based reroot inside a ptrace-based reroot is asking for
+    // trouble (proot quirks, exec-veto loops). Tell the user to exit first.
+    if (!utils::get_env_or_default("XLINGS_ACTIVE_SUBOS").empty()
+        && fs::exists("/.xlings.json"))
+    {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "cannot enter sandbox from inside another sandbox",
+            .recoverable = true,
+            .hint = "type 'exit' first to leave the current one",
+        });
+        return 1;
+    }
+
+    auto& p = Config::paths();
+    auto subos_dir = p.homeDir / "subos" / name;
+
+    // Read sandbox-shell path from this subos's config.
+    auto subos_config_path = subos_dir / ".xlings.json";
+    auto subos_config = read_config_json_(subos_config_path);
+    std::string shell_path;
+    if (subos_config.contains("sandbox-shell")
+        && subos_config["sandbox-shell"].is_string())
+    {
+        shell_path = subos_config["sandbox-shell"].get<std::string>();
+    }
+    if (shell_path.empty()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "subos '" + name + "' has no sandbox-shell field",
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Probe proot.
+    auto proot = sandbox_detail_::locate_proot_(p.homeDir);
+    if (!proot) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::move(proot).error(),
+            .recoverable = false,
+            .hint = "see docs/plans/2026-05-09-subos-sandbox-design.md",
+        });
+        return 1;
+    }
+
+    // Sanity: shell binary exists in subos. If not, the user probably
+    // hasn't run `xlings install <shell-xpkg>` yet (V1.1 doesn't
+    // auto-install at create-time). Print a helpful hint.
+    auto host_shell_path = subos_dir / shell_path.substr(
+        shell_path.front() == '/' ? 1 : 0);  // strip leading "/"
+    if (!fs::exists(host_shell_path)) {
+        std::string xpkg_id;
+        if (subos_config.contains("sandbox-shell-xpkg")
+            && subos_config["sandbox-shell-xpkg"].is_string())
+        {
+            xpkg_id = subos_config["sandbox-shell-xpkg"].get<std::string>();
+        }
+        std::string hint = xpkg_id.empty()
+            ? std::format("install a shell into subos '{}' first", name)
+            : std::format(
+                "install the configured shell first:\n"
+                "    xlings subos use {} && xlings install {}",
+                name, xpkg_id);
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = std::format(
+                "sandbox shell '{}' not found in subos '{}' (expected at {})",
+                shell_path, name, host_shell_path.string()),
+            .recoverable = true,
+            .hint = std::move(hint),
+        });
+        return 1;
+    }
+
+    nlohmann::json payload;
+    payload["name"] = name;
+    payload["mode"] = "sandbox";
+    payload["shell"] = shell_path;
+    stream.emit(DataEvent{"subos_entering", payload.dump()});
+
+    // Flush before exec/spawn (same reasoning as use_spawn_shell).
+    std::cout.flush();
+    std::cerr.flush();
+
+#if defined(__linux__)
+    // Set sandbox-friendly env before proot exec.
+    platform::set_env_variable("XLINGS_HOME", "/xlings");
+    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+    platform::set_env_variable("HOME", "/root");
+    platform::set_env_variable("USER", "root");
+    platform::set_env_variable(
+        "PATH", "/bin:/xlings/bin:/usr/bin:/usr/local/bin");
+
+    // Build argv and exec proot.
+    auto argv = sandbox_detail_::build_proot_argv_(
+        *proot, subos_dir, p.homeDir, name, shell_path);
+    std::vector<char*> c_argv;
+    c_argv.reserve(argv.size() + 1);
+    for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+    c_argv.push_back(nullptr);
+
+    ::execvp(c_argv[0], c_argv.data());
+    log::error("failed to exec proot '{}': {}", proot->string(),
+               std::strerror(errno));
+    return 127;
+#else
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = "sandbox subos is only supported on Linux",
+        .recoverable = false,
+    });
+    return 1;
+#endif
+}
+
 // Spawn a fresh interactive shell with XLINGS_ACTIVE_SUBOS set. Uses execvp
 // to replace the current process — xlings exits, the new shell takes its
 // place, and `exit` returns to the parent shell with original env intact.
@@ -329,6 +692,23 @@ int use_emit_shell(const std::string& name,
 // want flat semantics type `exit` first.
 int use_spawn_shell(const std::string& name, EventStream& stream) {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+
+    // Sandbox dispatch: if this subos has a `sandbox-shell` field in its
+    // .xlings.json, route to the proot-based entry instead of the
+    // env-spawn shell. Detection is cheap (one JSON file read), so we do
+    // it on every `subos use` rather than a separate command surface —
+    // the user types `xlings subos use foo` regardless of subos type.
+    {
+        auto& p = Config::paths();
+        auto subos_cfg = read_config_json_(
+            p.homeDir / "subos" / name / ".xlings.json");
+        if (subos_cfg.contains("sandbox-shell")
+            && subos_cfg["sandbox-shell"].is_string()
+            && !subos_cfg["sandbox-shell"].get<std::string>().empty())
+        {
+            return use_sandbox_(name, stream);
+        }
+    }
 
     auto already = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
     if (already == name) {
@@ -555,7 +935,35 @@ export int run(int argc, char* argv[], EventStream& stream) {
 
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
-        return create(argv[3], {}, stream);
+        // Parse: xlings subos new <name> [--sandbox-shell <xpkg>]
+        std::string name;
+        std::optional<std::string> sandbox_shell;
+        for (int i = 3; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--sandbox-shell") {
+                if (i + 1 >= argc) {
+                    usageError("--sandbox-shell needs an xpkg argument");
+                    return 1;
+                }
+                sandbox_shell = argv[++i];
+            }
+            else if (a.rfind("--sandbox-shell=", 0) == 0) {
+                sandbox_shell = a.substr(16);
+            }
+            else if (!a.empty() && a[0] != '-' && name.empty()) {
+                name = std::move(a);
+            }
+            else {
+                usageError("unknown option for `xlings subos new`: " + a);
+                return 1;
+            }
+        }
+        if (name.empty()) {
+            usageError("missing <name> for: xlings subos new");
+            return 1;
+        }
+        if (sandbox_shell) return create_sandbox(name, {}, *sandbox_shell, stream);
+        return create(name, {}, stream);
     }
     if (sub == "use") {
         // Flags supported:
