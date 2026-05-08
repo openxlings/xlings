@@ -459,9 +459,15 @@ locate_proot_(const fs::path& home_dir) {
     auto xpkgs_dir = home_dir / "data" / "xpkgs";
     auto xpkg_proot_root = xpkgs_dir / "xim-x-proot";
     if (fs::is_directory(xpkg_proot_root, ec)) {
+        // Sentinel form (`it != default_sentinel`) instead of comparing
+        // two directory_iterators directly. Clang/libc++ only provides
+        // the sentinel comparison in C++20+; comparing two
+        // directory_iterators yields "invalid operands to binary
+        // expression" on macOS clang. Sentinel form works on both
+        // libstdc++ (Linux gcc) and libc++ (macOS clang).
         std::error_code it_ec;
         for (auto it = fs::directory_iterator(xpkg_proot_root, it_ec);
-             !it_ec && it != fs::directory_iterator{};
+             !it_ec && it != std::default_sentinel;
              it.increment(it_ec))
         {
             auto candidate = it->path() / "bin" / "proot";
