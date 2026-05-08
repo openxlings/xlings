@@ -151,9 +151,13 @@ inline void init_sandbox_layout_(const fs::path& subos_dir) {
 
 } // namespace sandbox_detail_
 
-export int create(const std::string& name, const fs::path& customDir,
-                  EventStream& stream,
-                  std::optional<std::string> sandboxShellXpkg = std::nullopt) {
+// Internal worker — exported variants below dispatch into this with
+// or without a sandbox-shell xpkg. Keeping the public `create(name,
+// dir, stream)` signature byte-stable for ABI compatibility with
+// existing capability layer / external imports of the BMI.
+int create_impl_(const std::string& name, const fs::path& customDir,
+                 EventStream& stream,
+                 std::optional<std::string> sandboxShellXpkg) {
     auto& p = Config::paths();
 
     // Sandbox mode is Linux-only. Reject early with a clear hint.
@@ -254,6 +258,25 @@ export int create(const std::string& name, const fs::path& customDir,
     payload["dir"]  = dir.string();
     stream.emit(DataEvent{"subos_created", payload.dump()});
     return 0;
+}
+
+// Public exports.
+//
+// `create` keeps its original 3-arg signature byte-stable so existing
+// callers (capabilities.cppm, downstream BMI consumers) link against
+// the same symbol. `create_sandbox` is a separate symbol for the
+// sandbox flow — splitting avoids cross-TU BMI / ABI churn that
+// inflicting an extra default param on `create` would cause under
+// gcc 15.1.0 musl-cross (observed as spurious link errors in CI).
+export int create(const std::string& name, const fs::path& customDir,
+                  EventStream& stream) {
+    return create_impl_(name, customDir, stream, std::nullopt);
+}
+
+export int create_sandbox(const std::string& name, const fs::path& customDir,
+                          const std::string& sandboxShellXpkg,
+                          EventStream& stream) {
+    return create_impl_(name, customDir, stream, sandboxShellXpkg);
 }
 
 // `xlings subos use` modes:
@@ -919,7 +942,8 @@ export int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
-        return create(name, {}, stream, sandbox_shell);
+        if (sandbox_shell) return create_sandbox(name, {}, *sandbox_shell, stream);
+        return create(name, {}, stream);
     }
     if (sub == "use") {
         // Flags supported:
