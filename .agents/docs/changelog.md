@@ -2,6 +2,32 @@
 
 ## 2026
 
+### 2026-05 (v0.4.24) — Sandbox V4 修关键 P0 bug:`xlings install` 进 sandbox 后实际"装到正确 subos"
+
+V4 (0.4.23) 出来后用户实测发现 install 看着成功但装的包根本不在 PATH 里。把现场拼起来,**根因不是 install 自己的 bug**,而是两个环境层面的设计漏洞:
+
+1. **`<subos>/.xlings.json` 被 xlings 项目发现误识别为 anonymous project root**
+   - 用户:`subos use tmp --sandbox` 后 `xlings install bwrap`,bwrap 落在 `<subos>/.xlings/subos/_/bin/`,不在 `<subos>/tmp/bin/`(PATH 找不到)。
+   - xlings 项目发现(`config.cppm load_project_config_`)从 cwd 向上 walk,找 `.xlings.json`。在 V4 sandbox 内,cwd = `/home/<user>`,walk 到 `/` 时找到 `/.xlings.json`(= `<subos>/.xlings.json`,subos workspace 文件)。
+   - 0.4.20 加的 xlings-home boundary check:目录同时含 `.xlings.json` AND `subos/` 子目录则视为 xlings home,不是 user project,**终止 walk**。
+   - V4 sandbox 的 `<subos>/` 含 `.xlings.json` 但**没有 `subos/` 子目录** → boundary check 失败 → 把 `/.xlings.json` 当成 anonymous project → `paths_.activeSubos = "_"` → 覆盖了 per-shell `XLINGS_ACTIVE_SUBOS=tmp` → 所有路径都歪了。
+   - **修复**:`init_sandbox_dirs_` 多加一行 `mkdir <subos>/subos/`(空目录,纯 marker)。inside sandbox 看到 `/.xlings.json` + `/subos/` → boundary 触发 → 不进入 project mode → activeSubos 用 env = "tmp" → install 路径正确。
+
+2. **PATH 不会自动包含 sandbox subos bin**
+   - V4 进 sandbox 时只设 `HOME / XLINGS_ACTIVE_SUBOS / XLINGS_SUBOS_MODE`,**没设 PATH**。bash 继承父进程(host xlings)PATH ── 包含 `/home/speak/.xlings/data/xpkgs/...`、`/home/speak/.xlings/subos/default/bin` 这种 host 路径,但**不**包含 `~/.xlings/subos/tmp/bin`(sandbox 当前 subos 的 bin)。
+   - 即使 install 落到正确位置,PATH 也找不到。
+   - **修复**:`use_sandbox_mode_` exec proot 前显式设 `PATH=$HOME/.xlings/subos/<name>/bin:$HOME/.xlings/bin:/usr/local/bin:/usr/bin:/bin`(per-subos bin 第一,xlings 全局 bin 第二,host POSIX 兜底)。
+   - 同时 `init_sandbox_dirs_` 在 `<subos>/home/<user>/` 写**最小 `.bashrc` / `.profile` / `.config/fish/config.fish`**,各自 source `~/.xlings/config/shell/xlings-profile.{sh,fish}`。交互式 shell 起来时 profile 被 source,XLINGS_SUBOS_MODE 被读到 → 提示符切成 `<xsubos:tmp>`(就是 0.4.23 标的 V4 区分符)。非交互 shell(`bash -c`、脚本)走显式 PATH 兜底。两条路都不漏。
+
+**用户报告里的"3 个 bug"实际是 2 个根因**(那条"`xlings install` 跟 per-shell 解耦"的判断**误诊**了 ── install 其实读 `XLINGS_ACTIVE_SUBOS` env 没问题,问题在 env 被项目发现给覆盖了,以及 PATH 不包含正确 subos bin)。
+
+E2E 加 3 个 regression 场景(11 → 14 scenarios):
+- **S11**:`<subos>/subos/` marker dir 必须存在(boundary check 锚)
+- **S12**:非交互 shell 进 sandbox PATH 第一段必须是 `<home>/.xlings/subos/<name>/bin`
+- **S13**:seeded `.bashrc` / `.profile` / `config.fish` 必须 chain 到 xlings profile
+
+改动量:`subos.cppm` ~50 行(init_sandbox_dirs_ 加 marker + rc seeding,use_sandbox_mode_ 加 PATH 设置),`subos_sandbox_test.sh` +30 行 regression。版本 0.4.23 → 0.4.24。
+
 ### 2026-05 (v0.4.23) — Sandbox V4 重设计 (BREAKING)
 
 - **`--sandbox` 是 `use` 的修饰符,不再是 subos 的 type** —— 一个 boolean flag。同一个 subos 可以选择带或不带 sandbox 隔离进入,正交两个维度。
