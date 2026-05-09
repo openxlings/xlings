@@ -560,6 +560,13 @@ build_proot_argv_(const fs::path& proot_bin,
         // resolve libs without scanning every dir)
         "--bind=/etc/resolv.conf:/etc/resolv.conf",
         "--bind=/etc/ld.so.cache:/etc/ld.so.cache",
+        // CA certificates for TLS. Without this, curl/wget/git over
+        // HTTPS fail with "error setting certificate file" (exit 77).
+        // Different distros store CA bundles in different paths;
+        // bind both common locations (missing ones are silently ignored
+        // by proot — it only errors if the SOURCE doesn't exist, and
+        // we guard with fs::is_directory).
+        "--bind=/etc/ssl:/etc/ssl",
         // sandbox-owned /etc templates (passwd has the real user entry +
         // root; getpwuid(real_uid) inside the sandbox returns the right
         // home / shell). proot -r doesn't auto-bind these — explicit binds
@@ -614,6 +621,13 @@ build_proot_argv_(const fs::path& proot_bin,
         std::format("--cwd={}", user_home),
         shell_path,
     };
+    // Fedora / RHEL store CA bundles under /etc/pki (in addition to
+    // or instead of /etc/ssl). Bind if present on host.
+    {
+        std::error_code ec;
+        if (fs::is_directory("/etc/pki", ec))
+            argv.insert(argv.end() - 2, "--bind=/etc/pki:/etc/pki");
+    }
     return argv;
 }
 
@@ -717,21 +731,53 @@ struct BackendInfo {
     fs::path binary;
 };
 
+// Check if AppArmor restricts unprivileged user namespaces (Ubuntu 24+).
+bool is_userns_restricted_() {
+    // Read directly from /proc — platform::read_file_to_string may not
+    // handle /proc pseudo-files correctly (size 0 on stat, content
+    // only available via read(2)).
+    std::ifstream f("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    if (!f.is_open()) return false;
+    int val = 0;
+    f >> val;
+    return val == 1;
+}
+
+// Show bwrap hint — only on first sandbox use of a subos (detected by
+// whether <subos>/home/ exists; init_sandbox_dirs_ creates it, so if
+// it's missing, this is the first --sandbox entry for this subos).
+void maybe_show_bwrap_hint_(const fs::path& subos_dir) {
+    // Already shown for this subos? Check if sandbox dirs exist (= not first use)
+    std::error_code ec;
+    if (fs::is_directory(subos_dir / "home", ec)) return;  // not first time
+
+    if (is_userns_restricted_()) {
+        log::info("bwrap: unprivileged user namespaces restricted by AppArmor");
+        log::info("  to enable (permanent):");
+        log::info("    echo 'kernel.apparmor_restrict_unprivileged_userns = 0' "
+                  "| sudo tee /etc/sysctl.d/99-userns.conf");
+        log::info("    sudo sysctl -p /etc/sysctl.d/99-userns.conf");
+        log::info("  using proot fallback for now");
+    } else {
+        log::info("bwrap found but sandbox probe failed");
+        log::info("  try: sudo apt install bubblewrap (Ubuntu/Debian)");
+        log::info("       sudo dnf install bubblewrap (Fedora)");
+        log::info("  using proot fallback for now");
+    }
+}
+
 std::optional<BackendInfo>
-detect_backend_(const fs::path& home_dir) {
+detect_backend_(const fs::path& home_dir,
+                const fs::path& subos_dir = {}) {
     // 1. bwrap (system then xim pool) — preferred for native compat
     if (auto bin = locate_bwrap_(home_dir)) {
         if (probe_bwrap_(*bin))
             return BackendInfo{ SandboxBackend::Bwrap, *bin };
     }
 
-    // bwrap found but probe failed → hint
-    {
-        auto sys = locate_bwrap_(home_dir);
-        if (sys) {
-            log::info("bwrap found but sandbox probe failed (namespace restricted?)");
-            log::info("  for best experience: sudo apt install bubblewrap");
-        }
+    // bwrap found but probe failed → show hint (first use only)
+    if (locate_bwrap_(home_dir) && !subos_dir.empty()) {
+        maybe_show_bwrap_hint_(subos_dir);
     }
 
     // 2. proot — zero-privilege fallback
@@ -751,10 +797,8 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
         if (bin && probe_bwrap_(*bin)) return 0;
     }
 
-    // bwrap installed but namespace restricted → hint + proot fallback
-    log::info("bwrap needs system permissions for namespace support");
-    log::info("  to enable: sudo apt install bubblewrap");
-    log::info("  using proot fallback for now");
+    // bwrap installed but namespace restricted → proot fallback
+    // (hint already shown by detect_backend_ on first use)
 
     std::vector<std::string> t = {"xim:proot"};
     return xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
@@ -827,7 +871,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
         backend = BackendInfo{ SandboxBackend::Proot, *bin };
     } else {
         // Auto-detect: bwrap preferred, proot fallback
-        backend = sandbox_detail_::detect_backend_(p.homeDir);
+        backend = sandbox_detail_::detect_backend_(p.homeDir, subos_dir);
         if (!backend) {
             auto rc = sandbox_detail_::auto_install_backend_(p.homeDir, stream);
             if (rc != 0) {
@@ -839,7 +883,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
                 });
                 return 1;
             }
-            backend = sandbox_detail_::detect_backend_(p.homeDir);
+            backend = sandbox_detail_::detect_backend_(p.homeDir, subos_dir);
             if (!backend) {
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::NotFound,
