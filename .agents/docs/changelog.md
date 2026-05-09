@@ -2,6 +2,55 @@
 
 ## 2026
 
+### 2026-05 (v0.4.23) — Sandbox V4 重设计 (BREAKING)
+
+- **`--sandbox` 是 `use` 的修饰符,不再是 subos 的 type** —— 一个 boolean flag。同一个 subos 可以选择带或不带 sandbox 隔离进入,正交两个维度。
+
+  ```
+  xlings subos new mybox            # 普通 subos,不变
+  xlings subos use mybox             # 普通进入,提示符 [xsubos:mybox]
+  xlings subos use mybox --sandbox   # NEW:fs 隔离进入,提示符 <xsubos:mybox>
+  ```
+
+  设计文档:[`.agents/docs/sandbox-v4-design.md`](sandbox-v4-design.md)。
+
+- **核心心智**:sandbox = 普通 subos + dotfile 隔离 + 必要 host 系统目录 RO 复用 + xlings home RW 共享。
+  - **私有(对应 `<subos>/{home/<user>, tmp, etc/...}` 子树)**:`$HOME`、`/tmp`、`/etc/{passwd,group,hosts,nsswitch.conf}`(模板用真实 user,不再是 root 行)
+  - **host RO**:`/proc /sys /dev`、`/etc/resolv.conf`、`/etc/ld.so.cache`、`/usr`(POSIX 工具 + 库)、`/usr/lib:/lib`、`/usr/lib64:/lib64`(usrmerge 兼容)
+  - **host RW**:`~/.xlings`(嵌套 bind 在 `/home/<user>` 之上 ── proot 子路径覆盖父路径) ── 这就是为什么 sandbox 里 `xlings install/list/remove` 跟外面一模一样:同一个 xpkg 池,同一个 xvm DB,workspace 仍然 per-subos
+  - **真实 user 身份**:proot 不带 `-0`,`whoami` 返回 `speak`(uid 1000),`$HOME=/home/speak`,`$USER=speak`。sandbox 内创建的文件 owner 自然连续,出 sandbox 后用户能直接读写
+  - **shell 跟外界一致**:sandbox 用 `$SHELL`(用户当前 shell)。`/bin/<x>` 自动翻译成 `/usr/bin/<x>` 因为 sandbox `/bin` 私有不带 host 二进制
+
+- **删除的旧实现**(V1.1-V1.3,0.4.21-0.4.22):
+  - `xlings subos new --sandbox-shell <xpkg>` flag 删除(parser 直接报 unknown option)
+  - `.xlings.json` 里 `sandbox-shell` / `sandbox-shell-xpkg` 字段不再读写(老 sandbox 的字段被静默忽略)
+  - `create_sandbox()`、`use_sandbox_()`、`ensure_shell_installed_and_linked_()` 函数全删
+  - `<subos>/root`、`<subos>/etc/passwd`(只 root 行)等老布局停止生成
+  - **不做老 sandbox 迁移**:0.4.21-0.4.22 创建的 sandbox `subos use --sandbox` 会 work(init_sandbox_dirs_ idempotent),但老的 `<subos>/root` `<subos>/bin/<shell>` symlink 静静躺着不影响。要彻底清掉 → `subos remove + subos new`
+
+- **提示符切括号**:profile_resources.cppm bump 9 → 10。bash/zsh/fish/pwsh 4 个 profile 各加一个 `XLINGS_SUBOS_MODE=sandbox` 检查分支,选 `<>` 替代 `[]`。idempotency 检查涵盖两种括号形式,re-source 安全。
+
+- **用户体验**:
+  ```
+  $ xlings subos new mybox
+  $ xlings subos use mybox --sandbox
+  <xsubos:mybox> $ whoami                    # speak,真实身份
+  <xsubos:mybox> $ echo $HOME                # /home/speak,但是 sandbox 私有 dir
+  <xsubos:mybox> $ ls ~/                      # 空(只有 .xlings,因为它是宿主 RW bind)
+  <xsubos:mybox> $ xlings install fish        # 跟宿主一样,装到宿主 xpkg 池,workspace 进 mybox
+  <xsubos:mybox> $ fish                       # 启动 fish
+  <xsubos:mybox> $ exit
+  $ ls ~/.config                              # 宿主 ~/.config,sandbox 内的修改不可见 ── 没污染
+  ```
+
+- **修了哪些 0.4.22 实测 bug**(全部由 V4 设计自动解决):
+  - `cd /root: Permission denied` → V4 不去 `/root`,$HOME 是 `/home/<user>`(私有 dir,真实 user owner,可写)
+  - `ls`、`uname` not found → V4 把 `/usr` 整个 RO bind 进来,所有 host coreutils 可用
+  - sandbox 里 `xlings install` 不生效 → V4 把 host `~/.xlings` RW bind 进 sandbox,xlings 看到的是同一个 home,普通 subos workspace activation 流程跑通
+  - elfpatched binary 不能跑 → 没有这个问题了,因为 sandbox 装的包是 sandbox 自己装的(走宿主 xlings install 路径,落到宿主池,跟外面一致)
+
+- **改动量**:`src/core/subos.cppm` 净 -150 LOC(删的比加的多);`profile_resources.cppm` +30 LOC(4 个 shell 都加 mode 分支);`tests/e2e/subos_sandbox_test.sh` 全重写 11 个场景。版本 0.4.22 → 0.4.23。
+
 ### 2026-05 (v0.4.22)
 
 - **subos sandbox 一步到位 + 真正能跑 elfpatched binary**

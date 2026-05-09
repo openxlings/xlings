@@ -57,10 +57,15 @@ namespace xlings::xself::profile_resources {
 //       name in bold green
 //   9 — subos name color shifts from bold green to bold magenta (8-color
 //       SGR 35) for a calmer "purple" reading; brackets stay slate-400
-export inline constexpr std::string_view kVersion = "9";
+//  10 — sandbox-mode prompt: when XLINGS_SUBOS_MODE=sandbox is set in
+//       env (set by `xlings subos use --sandbox`), the prompt pill
+//       uses angle brackets `<xsubos:<name>>` instead of square
+//       `[xsubos:<name>]` — visually obvious which entry mode the
+//       shell is in. Re-source idempotency checks BOTH bracket forms.
+export inline constexpr std::string_view kVersion = "10";
 
 export inline constexpr std::string_view bash_sh =
-R"XPROFILE(# xlings-profile-version: 9
+R"XPROFILE(# xlings-profile-version: 10
 # Xlings Shell Profile (bash/zsh)
 
 _xlings_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
@@ -91,31 +96,40 @@ esac
 # correctly; bash's \[...\] line-wrap markers are skipped because zsh
 # would render them literally — the marker is short enough that any
 # line-wrap glitch is barely noticeable.
+# Sandbox-mode (XLINGS_SUBOS_MODE=sandbox) flips the brackets to angle:
+#   normal subos use:   [xsubos:foo]
+#   subos use --sandbox: <xsubos:foo>
+# Idempotency check covers both bracket forms so re-source is safe.
 if [ -n "${XLINGS_ACTIVE_SUBOS-}" ] && [ -n "${PS1-}" ]; then
     case "$PS1" in
         *"[xsubos:$XLINGS_ACTIVE_SUBOS]"*) ;;
+        *"<xsubos:$XLINGS_ACTIVE_SUBOS>"*) ;;
         *)
+            if [ "${XLINGS_SUBOS_MODE-}" = "sandbox" ]; then
+                _xlings_lb='<'; _xlings_rb='>'
+            else
+                _xlings_lb='['; _xlings_rb=']'
+            fi
             if [ -z "${NO_COLOR-}" ] && [ -n "${TERM-}" ] && [ "$TERM" != "dumb" ]; then
                 # Brackets / "xsubos:" label tinted slate-400 gray; subos
-                # name itself in bold magenta (SGR 1;35) — calmer "purple"
-                # than truecolor magenta and rendered consistently across
-                # terminals.
+                # name itself in bold magenta (SGR 1;35).
                 _xlings_esc=$(printf '\033')
                 _xlings_g="${_xlings_esc}[38;2;148;163;184m"
                 _xlings_n="${_xlings_esc}[1;35m"
                 _xlings_r="${_xlings_esc}[0m"
-                PS1="${_xlings_g}[xsubos:${_xlings_n}${XLINGS_ACTIVE_SUBOS}${_xlings_r}${_xlings_g}]${_xlings_r} ${PS1}"
+                PS1="${_xlings_g}${_xlings_lb}xsubos:${_xlings_n}${XLINGS_ACTIVE_SUBOS}${_xlings_r}${_xlings_g}${_xlings_rb}${_xlings_r} ${PS1}"
                 unset _xlings_esc _xlings_g _xlings_n _xlings_r
             else
-                PS1="[xsubos:${XLINGS_ACTIVE_SUBOS}] ${PS1}"
+                PS1="${_xlings_lb}xsubos:${XLINGS_ACTIVE_SUBOS}${_xlings_rb} ${PS1}"
             fi
+            unset _xlings_lb _xlings_rb
             ;;
     esac
 fi
 )XPROFILE";
 
 export inline constexpr std::string_view fish =
-R"XPROFILE(# xlings-profile-version: 9
+R"XPROFILE(# xlings-profile-version: 10
 # Xlings Shell Profile (fish)
 
 set -l _script_dir (dirname (status filename))
@@ -143,21 +157,24 @@ if set -q XLINGS_ACTIVE_SUBOS
     end
     function fish_prompt
         if set -q XLINGS_ACTIVE_SUBOS
+            # Sandbox mode flips brackets: <xsubos:foo> instead of [xsubos:foo]
+            if test "$XLINGS_SUBOS_MODE" = "sandbox"
+                set _xlings_lb "<"; set _xlings_rb ">"
+            else
+                set _xlings_lb "["; set _xlings_rb "]"
+            end
             if not set -q NO_COLOR; and set -q TERM; and test "$TERM" != "dumb"
-                # Brackets / "xsubos:" label slate-400 gray; subos name
-                # in bold magenta (the 8-color "purple") for a calmer
-                # tone than the truecolor magenta used by entering.
                 set_color 94a3b8
-                echo -n "[xsubos:"
+                echo -n "$_xlings_lb""xsubos:"
                 set_color --bold magenta
                 echo -n "$XLINGS_ACTIVE_SUBOS"
                 set_color normal
                 set_color 94a3b8
-                echo -n "]"
+                echo -n "$_xlings_rb"
                 set_color normal
                 echo -n " "
             else
-                echo -n "[xsubos:$XLINGS_ACTIVE_SUBOS] "
+                echo -n "$_xlings_lb""xsubos:$XLINGS_ACTIVE_SUBOS""$_xlings_rb "
             end
         end
         _xlings_orig_fish_prompt
@@ -166,7 +183,7 @@ end
 )XPROFILE";
 
 export inline constexpr std::string_view pwsh =
-R"XPROFILE(# xlings-profile-version: 9
+R"XPROFILE(# xlings-profile-version: 10
 # Xlings Shell Profile (PowerShell)
 
 $env:XLINGS_HOME = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -190,16 +207,20 @@ if ($env:XLINGS_ACTIVE_SUBOS) {
     }
     function global:prompt {
         $useColor = (-not $env:NO_COLOR) -and $env:TERM -ne 'dumb'
+        # Sandbox mode flips brackets: <xsubos:foo> instead of [xsubos:foo]
+        if ($env:XLINGS_SUBOS_MODE -eq 'sandbox') {
+            $lb = '<'; $rb = '>'
+        } else {
+            $lb = '['; $rb = ']'
+        }
         if ($useColor) {
-            # Brackets / "xsubos:" label slate-400 gray; subos name in
-            # bold magenta (8-color "purple") for a calmer tone.
             $e = [char]27
             $g = "$e[38;2;148;163;184m"
             $n = "$e[1;35m"
             $r = "$e[0m"
-            Write-Host -NoNewline "$g[xsubos:$n$($env:XLINGS_ACTIVE_SUBOS)$r$g]$r "
+            Write-Host -NoNewline "$g$lb`xsubos:$n$($env:XLINGS_ACTIVE_SUBOS)$r$g$rb$r "
         } else {
-            Write-Host -NoNewline "[xsubos:$($env:XLINGS_ACTIVE_SUBOS)] "
+            Write-Host -NoNewline "$lb`xsubos:$($env:XLINGS_ACTIVE_SUBOS)$rb "
         }
         & $function:_xlings_orig_prompt
     }
