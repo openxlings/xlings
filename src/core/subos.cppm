@@ -527,10 +527,81 @@ locate_proot_(const fs::path& home_dir) {
         "or place a proot binary at ~/.xlings/runtimedir/proot");
 }
 
-// Build the proot argv for `subos use --sandbox` entry. V4 layout:
-// real user identity (no `-0`), bare chroot (`-r`, no auto-binds), with
-// explicit binds chosen for "isolate $HOME / /tmp / /etc; share xlings,
-// kernel, POSIX userland from host". See .agents/docs/sandbox-v4-design.md.
+// ── Unified bind list (shared by proot + bwrap) ──────────────────────
+//
+// Both backends use the SAME set of host-RO paths and sandbox-private
+// overrides. This ensures identical security profile (same info exposed,
+// same paths isolated) regardless of backend. Only the CLI syntax
+// differs: proot uses `--bind=src:dst`, bwrap uses `--ro-bind src dst`
+// or `--bind src dst`.
+//
+// Design principle: MINIMAL host exposure. Only bind paths that are
+// functionally required. Everything else stays invisible (proot: maps
+// to empty <subos>/<path>; bwrap: not bound at all).
+//
+// See .agents/docs/sandbox-v5-dual-backend-design.md for rationale.
+
+struct SandboxBind {
+    std::string src;
+    std::string dst;
+    bool readonly;   // true = host RO; false = sandbox RW override
+};
+
+std::vector<SandboxBind>
+sandbox_binds_(const fs::path& subos_dir,
+               const fs::path& host_xlings_home,
+               const std::string& user)
+{
+    auto etc = subos_dir / "etc";
+    auto user_home = "/home/" + user;
+
+    std::error_code ec;
+
+    // Helper: add a host-RO bind only if the source path exists on this
+    // system. Different distros have different layouts — /etc/alternatives
+    // is Debian/Ubuntu only, /etc/pki is Fedora/RHEL only, /usr/lib64
+    // may not exist on 32-bit or some ARM, /etc/localtime may be absent
+    // in minimal containers. Skipping non-existent sources prevents
+    // proot/bwrap from erroring with "No such file or directory".
+    auto try_ro = [&](std::vector<SandboxBind>& v,
+                      const char* src, const char* dst) {
+        if (fs::exists(src, ec))
+            v.push_back({src, dst, true});
+    };
+
+    std::vector<SandboxBind> binds;
+
+    // ── Host RO: POSIX userland (tools + libs + loader) ──
+    try_ro(binds, "/usr", "/usr");
+    try_ro(binds, "/bin", "/bin");
+    try_ro(binds, "/usr/lib", "/lib");
+    try_ro(binds, "/usr/lib64", "/lib64");   // may not exist on 32-bit / ARM
+
+    // ── Host RO: /etc (by-need, not entire /etc) ──
+    // Only paths with functional need. NOT /etc/hostname, /etc/fstab,
+    // /etc/crontab, /etc/NetworkManager (no need + info leak).
+    try_ro(binds, "/etc/resolv.conf", "/etc/resolv.conf");   // DNS
+    try_ro(binds, "/etc/ld.so.cache", "/etc/ld.so.cache");   // loader cache
+    try_ro(binds, "/etc/ssl", "/etc/ssl");                    // TLS CA (most distros)
+    try_ro(binds, "/etc/pki", "/etc/pki");                    // TLS CA (Fedora/RHEL)
+    try_ro(binds, "/etc/alternatives", "/etc/alternatives");  // symlink dispatch (Debian/Ubuntu)
+    try_ro(binds, "/etc/localtime", "/etc/localtime");        // timezone
+
+    // ── Sandbox RW: private overrides ──
+    binds.push_back({(subos_dir / "home").string(), "/home", false});
+    binds.push_back({host_xlings_home.string(), user_home + "/.xlings", false});
+    binds.push_back({(subos_dir / "tmp").string(), "/tmp", false});
+
+    // ── Sandbox: NSS templates (real user + root only) ──
+    binds.push_back({(etc / "passwd").string(), "/etc/passwd", false});
+    binds.push_back({(etc / "group").string(), "/etc/group", false});
+    binds.push_back({(etc / "hosts").string(), "/etc/hosts", false});
+    binds.push_back({(etc / "nsswitch.conf").string(), "/etc/nsswitch.conf", false});
+
+    return binds;
+}
+
+// Build proot argv from unified bind list.
 std::vector<std::string>
 build_proot_argv_(const fs::path& proot_bin,
                   const fs::path& subos_dir,
@@ -538,124 +609,39 @@ build_proot_argv_(const fs::path& proot_bin,
                   const std::string& user,
                   const std::string& shell_path)
 {
-    // proot CLI uses positional args for the inside-sandbox command;
-    // no `--` separator (proot rejects bare `--` with "unknown option").
-    auto etc = subos_dir / "etc";
-    auto subos_home = subos_dir / "home";
     auto user_home = "/home/" + user;
     std::vector<std::string> argv = {
         proot_bin.string(),
-        // -r (bare chroot) instead of -R. -R auto-binds $HOME from host
-        // (proot manpage: "host's $HOME → guest's $HOME"); with $HOME =
-        // /home/<user> set below, that would shadow our sandbox-private
-        // <subos>/home/<user> with the host's real home — full read-write
-        // access to host dotfiles. -r leaves us in full control of binds.
-        // No `-0` either: V4 preserves real user identity (no fake root).
-        "-r", subos_dir.string(),
-        // Kernel pseudo-fs (must come from host)
+        "-r", subos_dir.string(),   // chroot (not -R: no auto-binds)
         "--bind=/proc:/proc",
         "--bind=/sys:/sys",
         "--bind=/dev:/dev",
-        // DNS + dynamic-linker cache (loader needs /etc/ld.so.cache to
-        // resolve libs without scanning every dir)
-        "--bind=/etc/resolv.conf:/etc/resolv.conf",
-        "--bind=/etc/ld.so.cache:/etc/ld.so.cache",
-        // CA certificates for TLS. Without this, curl/wget/git over
-        // HTTPS fail with "error setting certificate file" (exit 77).
-        // Different distros store CA bundles in different paths;
-        // bind both common locations (missing ones are silently ignored
-        // by proot — it only errors if the SOURCE doesn't exist, and
-        // we guard with fs::is_directory).
-        "--bind=/etc/ssl:/etc/ssl",
-        // sandbox-owned /etc templates (passwd has the real user entry +
-        // root; getpwuid(real_uid) inside the sandbox returns the right
-        // home / shell). proot -r doesn't auto-bind these — explicit binds
-        // are what surface them.
-        std::format("--bind={}:/etc/passwd",       (etc / "passwd").string()),
-        std::format("--bind={}:/etc/group",        (etc / "group").string()),
-        std::format("--bind={}:/etc/hosts",        (etc / "hosts").string()),
-        std::format("--bind={}:/etc/nsswitch.conf",(etc / "nsswitch.conf").string()),
-        // Host /usr provides the POSIX userland (mkdir, uname, ls, cat,
-        // sh, ...). Without this even basic startup of fish / bash
-        // (which spawn `mkdir`, `uname` from their config.* / .bashrc)
-        // fails immediately. /lib and /lib64 overlaid onto host's
-        // /usr/lib* match the modern usrmerge layout (Ubuntu 22+,
-        // Fedora, Arch, recent Debian) so ELF interpreters baked as
-        // /lib64/ld-linux* resolve correctly.
-        "--bind=/usr:/usr",
-        "--bind=/usr/lib:/lib",
-        "--bind=/usr/lib64:/lib64",
-        // /bin from host. Sandbox's <subos>/bin/ holds xlings shims
-        // (openclaw, node, xlings, ...) but NOT POSIX /bin tools (sh,
-        // bash, ls, cat, grep, ...). libc system()/popen() hardcode
-        // /bin/sh; scripts use #!/bin/bash; tools reference /bin/ls
-        // etc. Without this bind, all of those fail silently (RC=255).
-        //
-        // Shim access is unaffected: shims are reachable via the
-        // ~/.xlings nested bind at /home/<user>/.xlings/subos/<name>/
-        // bin/ which is PATH's first segment — /bin is never the path
-        // used for shim lookup, so covering it with host /bin costs
-        // nothing and fixes the entire /bin/<tool> class of failures.
-        //
-        // On usrmerge distros (Ubuntu 22+, Fedora, Arch): host /bin is
-        // a symlink to usr/bin → proot follows → same as /usr/bin.
-        // On non-merged: host /bin is a real dir with coreutils.
-        // Either way sandbox gets a working /bin.
-        "--bind=/bin:/bin",
-        // /home: parent bind to sandbox-private dir. This gives dotfile
-        // isolation — anything the user writes under their home goes
-        // into <subos>/home/<user>/ and doesn't pollute host ~/.
-        std::format("--bind={}:/home", subos_home.string()),
-        // ~/.xlings: nested bind ON TOP of the parent /home bind. proot
-        // resolves the more-specific path first, so /home/<user>/.xlings
-        // hits this host-bound path while everything else under
-        // /home/<user>/ stays in the sandbox-private dir. Effect:
-        //   - sandbox-private:  ~/.config, ~/.cache, ~/.bashrc, ...
-        //   - host-shared:      ~/.xlings/data/xpkgs/, .xlings.json, etc.
-        // The host-shared path makes `xlings install/list/use` inside
-        // the sandbox behave EXACTLY like outside (same xpkg pool, same
-        // xvm DB, workspace per-subos as always — sandbox is just a
-        // different way to enter the same subos).
-        std::format("--bind={}:{}/.xlings",
-                    host_xlings_home.string(), user_home),
-        std::format("--cwd={}", user_home),
-        shell_path,
     };
-    // Fedora / RHEL store CA bundles under /etc/pki (in addition to
-    // or instead of /etc/ssl). Bind if present on host.
-    {
-        std::error_code ec;
-        if (fs::is_directory("/etc/pki", ec))
-            argv.insert(argv.end() - 2, "--bind=/etc/pki:/etc/pki");
+
+    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user)) {
+        argv.push_back(std::format("--bind={}:{}", b.src, b.dst));
     }
+
+    argv.push_back(std::format("--cwd={}", user_home));
+    argv.push_back(shell_path);
     return argv;
 }
 
 // ── bwrap backend (V5) ────────────────────────────────────────────────
 
-// Locate bwrap binary. Priority: system PATH (distro package with proper
-// perms) > xim pool (user-installed, works on systems where unprivileged
-// user namespaces are allowed).
+// Locate bwrap binary. Priority:
+//   1. /usr/bin/bwrap directly (distro package with AppArmor profile —
+//      most reliable on Ubuntu 24+, avoids xlings shim in PATH)
+//   2. xim:bwrap pool (~/.xlings/data/xpkgs/xim-x-bwrap/<ver>/bin)
+//   3. PATH search (last — may hit xlings shim which dispatches to
+//      xim:bwrap; shim itself can't do --ro-bind)
 std::expected<fs::path, std::string>
 locate_bwrap_(const fs::path& home_dir) {
     std::error_code ec;
 
-    // (1) system bwrap (/usr/bin/bwrap from apt/dnf — may have setuid
-    //     or AppArmor profile, most reliable on Ubuntu 24+)
-    if (auto* path_env = std::getenv("PATH"); path_env && *path_env) {
-        std::string_view pv = path_env;
-        std::size_t start = 0;
-        while (start <= pv.size()) {
-            auto end = pv.find(':', start);
-            auto seg = pv.substr(start, end == std::string_view::npos
-                                        ? pv.size() - start : end - start);
-            if (!seg.empty()) {
-                auto candidate = fs::path(seg) / "bwrap";
-                if (fs::is_regular_file(candidate, ec)) return candidate;
-            }
-            if (end == std::string_view::npos) break;
-            start = end + 1;
-        }
+    // (1) Direct system paths (bypass PATH which may have xlings shim)
+    for (auto sys : {"/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
+        if (fs::is_regular_file(sys, ec)) return fs::path(sys);
     }
 
     // (2) xim:bwrap pool
@@ -672,23 +658,20 @@ locate_bwrap_(const fs::path& home_dir) {
     }
 
     return std::unexpected(
-        "bwrap not found. Install via `sudo apt install bubblewrap` "
-        "(recommended) or `xlings install bwrap`");
+        "bwrap not found. Install via system package manager "
+        "(e.g. `sudo apt install bubblewrap`) or `xlings install bwrap`");
 }
 
-// Probe whether a bwrap binary can actually create a sandbox. This is
-// the ONLY reliable test — don't guess from sysctl / AppArmor / caps.
-// Runs `bwrap --ro-bind / / -- /bin/true` and checks exit code.
-// Takes < 50ms on any modern system.
+// Probe whether a bwrap binary can actually create a sandbox.
 bool probe_bwrap_(const fs::path& bwrap_bin) {
     auto cmd = bwrap_bin.string()
              + " --ro-bind / / -- /bin/true 2>/dev/null";
     return std::system(cmd.c_str()) == 0;
 }
 
-// Build bwrap argv. Model: host entire rootfs read-only, then override
-// sandbox-private paths. Much simpler than proot (which builds up from
-// an empty rootfs). See .agents/docs/sandbox-v5-dual-backend-design.md.
+// Build bwrap argv from unified bind list. Uses targeted --ro-bind
+// instead of `--ro-bind / /` to match proot's security profile
+// (same host paths exposed, same sandbox-private paths).
 std::vector<std::string>
 build_bwrap_argv_(const fs::path& bwrap_bin,
                   const fs::path& subos_dir,
@@ -696,30 +679,23 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   const std::string& user,
                   const std::string& shell_path)
 {
-    auto etc = subos_dir / "etc";
     auto user_home = "/home/" + user;
-    return {
+    std::vector<std::string> argv = {
         bwrap_bin.string(),
-        // Host rootfs read-only — gives /bin /usr /lib /lib64 /etc in
-        // one shot. No need for individual binds for coreutils, loader,
-        // DNS config, etc.
-        "--ro-bind", "/", "/",
-        // Kernel pseudo-fs (fresh instances, not host's)
         "--dev", "/dev",
         "--proc", "/proc",
-        // Sandbox-private overrides
-        "--bind", (subos_dir / "home").string(), "/home",
-        "--bind", host_xlings_home.string(), user_home + "/.xlings",
-        "--bind", (subos_dir / "tmp").string(), "/tmp",
-        // Sandbox NSS templates (override host /etc/*)
-        "--bind", (etc / "passwd").string(), "/etc/passwd",
-        "--bind", (etc / "group").string(), "/etc/group",
-        "--bind", (etc / "hosts").string(), "/etc/hosts",
-        "--bind", (etc / "nsswitch.conf").string(), "/etc/nsswitch.conf",
-        // Entry
-        "--chdir", user_home,
-        "--", shell_path, "-i",
     };
+
+    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user)) {
+        if (b.readonly) {
+            argv.insert(argv.end(), {"--ro-bind", b.src, b.dst});
+        } else {
+            argv.insert(argv.end(), {"--bind", b.src, b.dst});
+        }
+    }
+
+    argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path, "-i"});
+    return argv;
 }
 
 // ── Backend detection + auto-install ─────────────────────────────────
@@ -731,39 +707,19 @@ struct BackendInfo {
     fs::path binary;
 };
 
-// Check if AppArmor restricts unprivileged user namespaces (Ubuntu 24+).
-bool is_userns_restricted_() {
-    // Read directly from /proc — platform::read_file_to_string may not
-    // handle /proc pseudo-files correctly (size 0 on stat, content
-    // only available via read(2)).
-    std::ifstream f("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
-    if (!f.is_open()) return false;
-    int val = 0;
-    f >> val;
-    return val == 1;
-}
-
 // Show bwrap hint — only on first sandbox use of a subos (detected by
 // whether <subos>/home/ exists; init_sandbox_dirs_ creates it, so if
 // it's missing, this is the first --sandbox entry for this subos).
 void maybe_show_bwrap_hint_(const fs::path& subos_dir) {
-    // Already shown for this subos? Check if sandbox dirs exist (= not first use)
+    // Only show on first --sandbox use of this subos (home/ not yet created)
     std::error_code ec;
-    if (fs::is_directory(subos_dir / "home", ec)) return;  // not first time
+    if (fs::is_directory(subos_dir / "home", ec)) return;
 
-    if (is_userns_restricted_()) {
-        log::info("bwrap: unprivileged user namespaces restricted by AppArmor");
-        log::info("  to enable (permanent):");
-        log::info("    echo 'kernel.apparmor_restrict_unprivileged_userns = 0' "
-                  "| sudo tee /etc/sysctl.d/99-userns.conf");
-        log::info("    sudo sysctl -p /etc/sysctl.d/99-userns.conf");
-        log::info("  using proot fallback for now");
-    } else {
-        log::info("bwrap found but sandbox probe failed");
-        log::info("  try: sudo apt install bubblewrap (Ubuntu/Debian)");
-        log::info("       sudo dnf install bubblewrap (Fedora)");
-        log::info("  using proot fallback for now");
-    }
+    log::info("bwrap sandbox not available (namespace permission needed)");
+    log::info("  to enable (recommended, per-binary, safe):");
+    log::info("    sudo apt install bubblewrap    (Ubuntu/Debian)");
+    log::info("    sudo dnf install bubblewrap    (Fedora/RHEL)");
+    log::info("  using proot fallback for now");
 }
 
 std::optional<BackendInfo>
@@ -911,15 +867,9 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     auto shell = utils::get_env_or_default("SHELL");
     if (shell.empty()) shell = "/bin/sh";
 
-    // proot-specific: translate /bin/<x> → /usr/bin/<x> since proot's
-    // /bin is host-bound but $SHELL might reference /bin/bash which on
-    // usrmerge is a symlink proot can't follow. bwrap doesn't need this
-    // — its --ro-bind / / makes /bin/bash the real host binary.
-    if (backend->type == SandboxBackend::Proot && shell.starts_with("/bin/")) {
-        auto candidate = "/usr/bin/" + shell.substr(5);
-        std::error_code ec;
-        if (fs::exists(candidate, ec)) shell = std::move(candidate);
-    }
+    // Both backends bind /bin from host (proot: --bind=/bin:/bin;
+    // bwrap: --ro-bind /bin /bin), so /bin/bash etc. resolve natively.
+    // No shell path translation needed.
 
     // ── Event ──
     nlohmann::json payload;
