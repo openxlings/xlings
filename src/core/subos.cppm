@@ -124,11 +124,19 @@ void update_current_symlink_(EventStream& stream,
 
 namespace sandbox_detail_ {
 
-// /etc/* template builders. We write per-user passwd/group at sandbox
-// init time so getpwuid(real_uid) inside the sandbox returns the real
-// user's home (= /home/<user>) and shell ── most CLI tools depend on
-// this. Root is also included so anything that does getpwuid(0) (some
-// scripts assume "root must exist") doesn't bail.
+// /etc/* template builders + sandbox dir layout init. uid_t / gid_t
+// are POSIX types — Windows MSVC doesn't have them. Sandbox is
+// Linux-only by design (proot uses ptrace + Linux syscall semantics);
+// the only caller (use_sandbox_mode_) is also Linux-guarded, so we
+// guard these helpers too rather than fight the type system with
+// platform-portable substitutes.
+#if defined(__linux__) || defined(__APPLE__)
+
+// We write per-user passwd/group at sandbox init time so getpwuid
+// (real_uid) inside the sandbox returns the real user's home
+// (= /home/<user>) and shell — most CLI tools depend on this. Root
+// is also included so anything that does getpwuid(0) (scripts that
+// assume "root must exist") doesn't bail.
 std::string make_etc_passwd_(const std::string& user, uid_t uid, gid_t gid) {
     return std::format(
         "root:x:0:0:root:/root:/bin/sh\n"
@@ -168,6 +176,8 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
     try_write(etc / "hosts", kEtcHosts);
     try_write(etc / "nsswitch.conf", kEtcNsswitch);
 }
+
+#endif // __linux__ / __APPLE__
 
 } // namespace sandbox_detail_
 
