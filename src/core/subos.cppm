@@ -551,24 +551,47 @@ build_proot_argv_(const fs::path& proot_bin,
     std::vector<std::string> argv = {
         proot_bin.string(),
         "-0",                                            // fake root (uid 0 from getuid)
-        "-R", subos_dir.string(),                        // rootfs
+        // -r (bare chroot) instead of -R. -R auto-binds $HOME from host
+        // into the guest at the same path (proot manpage: "host's $HOME
+        // → guest's $HOME"). Combined with our env $HOME=/root, this means
+        // *host's* /root (typically owned by real root, mode 700) shadows
+        // the sandbox's own <subos>/root — fish & co. trying to mkdir
+        // ~/.config/fish hit EACCES because they're writing to host /root,
+        // not the sandbox copy. -r gives us a bare chroot with NO auto-
+        // binds; we add only the binds we want, none of them $HOME.
+        "-r", subos_dir.string(),
+        // Kernel pseudo-fs (must come from host)
         "--bind=/proc:/proc",
         "--bind=/sys:/sys",
         "--bind=/dev:/dev",
-        "--bind=/etc/resolv.conf:/etc/resolv.conf",      // DNS from host
-        // sandbox-owned /etc files (override proot kompat auto-binds)
+        // DNS + dynamic-linker cache (loader needs /etc/ld.so.cache to
+        // find libs in /lib /usr/lib without scanning every dir)
+        "--bind=/etc/resolv.conf:/etc/resolv.conf",
+        "--bind=/etc/ld.so.cache:/etc/ld.so.cache",
+        // sandbox-owned /etc templates (the canonical user/group/hosts
+        // view inside the sandbox — proot -r doesn't auto-bind these,
+        // so the explicit binds below are what surface them)
         std::format("--bind={}:/etc/passwd",       (etc / "passwd").string()),
         std::format("--bind={}:/etc/group",        (etc / "group").string()),
         std::format("--bind={}:/etc/hosts",        (etc / "hosts").string()),
         std::format("--bind={}:/etc/nsswitch.conf",(etc / "nsswitch.conf").string()),
+        // Host /usr provides the POSIX userland (mkdir, uname, ls, cat,
+        // sh, ...) the sandbox's own bin/ doesn't have. Without this even
+        // fish's embedded config.fish fails immediately on `mkdir -p`.
+        // /lib /lib64 overlaid onto host's usr/lib* match the modern
+        // usrmerge layout (Ubuntu 22+, Fedora, Arch, recent Debian) so
+        // ELF interpreters baked as /lib64/ld-linux* resolve. Older
+        // non-merged distros lose access to /bin tools that aren't in
+        // /usr/bin — handle if-when reported.
+        "--bind=/usr:/usr",
+        "--bind=/usr/lib:/lib",
+        "--bind=/usr/lib64:/lib64",
+        // xlings home: /xlings is the user-facing alias, host self-bind
+        // is what makes elfpatched binaries' absolute interpreter / rpath
+        // paths resolve (interpreter is set to absolute host path by
+        // elfpatch). Without this, the loader at the absolute path can't
+        // be found inside proot.
         std::format("--bind={}:/xlings", home_dir.string()),
-        // Self-bind xlings home at its host absolute path. xim-installed
-        // binaries are elfpatched with the absolute host path of their
-        // loader / rpath libs (e.g. ld-linux from xim:d2x). Without this
-        // bind, those paths route to <rootfs>/<host-path> which is empty,
-        // and the shell fails to start with "no such file or directory".
-        // The /xlings bind above is for user-facing convenience; this
-        // self-bind is what makes elfpatched binaries actually run.
         std::format("--bind={}:{}", home_dir.string(), home_dir.string()),
         "--cwd=/root",
         shell_path,

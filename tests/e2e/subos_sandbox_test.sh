@@ -191,7 +191,14 @@ if curl -fsLo "$HOME_DIR/runtimedir/proot" \
      https://proot.gitlab.io/proot/bin/proot 2>/dev/null; then
   chmod +x "$HOME_DIR/runtimedir/proot"
   if [[ -x /bin/busybox ]] && file /bin/busybox 2>/dev/null | grep -q "statically linked"; then
-    out_inside="$(echo 'echo "I_AM_$(whoami)_UID_$(id -u)"; echo "PASSWD_FIRST=$(head -1 /etc/passwd)"; ls /xlings 2>/dev/null | head -3 | tr "\n" " "; echo "<-- /xlings"; exit' | \
+    # Inside-sandbox script:
+    #   1. fake-root identity (whoami / id)
+    #   2. /etc/passwd is our sandbox template (not host's)
+    #   3. /root is the SANDBOX'S /root (not host's) — write a marker
+    #      file and verify it lands in <sandbox>/root, not /root on host
+    #   4. /usr/bin host-bound tools work (uname is busybox here, but on
+    #      a real flow host /usr/bin/uname would be invoked)
+    out_inside="$(echo 'echo "I_AM_$(whoami)_UID_$(id -u)"; echo "PASSWD_FIRST=$(head -1 /etc/passwd)"; touch /root/.sandbox_marker_S6 && echo "ROOT_WRITE_OK"; ls /xlings 2>/dev/null | head -3 | tr "\n" " "; echo "<-- /xlings"; exit' | \
       ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
         timeout 10 "$XLINGS_BIN" subos use mybox ) 2>&1 || true)"
     echo "$out_inside" | grep -q "I_AM_root_UID_0" \
@@ -200,7 +207,14 @@ $out_inside"
     echo "$out_inside" | grep -q "PASSWD_FIRST=root:x:0:0:root:/root:/bin/sh" \
       || fail "S6: /etc/passwd inside sandbox is not our template:
 $out_inside"
-    log "  ✓ inside sandbox: whoami=root, /etc/passwd matches sandbox template"
+    echo "$out_inside" | grep -q "ROOT_WRITE_OK" \
+      || fail "S6: writing to /root inside sandbox failed (probably proot
+auto-bound host /root over sandbox /root — regression of 0.4.23 fix):
+$out_inside"
+    [[ -f "$HOME_DIR/subos/mybox/root/.sandbox_marker_S6" ]] \
+      || fail "S6: /root marker did not land in <sandbox>/root — probably
+proot is binding host /root over the sandbox /root again"
+    log "  ✓ sandbox: fake-root + sandbox /etc/passwd + sandbox /root writable"
   else
     log "  (skip: no static /bin/busybox to invoke as sandbox shell)"
   fi

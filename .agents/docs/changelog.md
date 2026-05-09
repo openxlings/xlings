@@ -2,6 +2,35 @@
 
 ## 2026
 
+### 2026-05 (v0.4.23)
+
+- **subos sandbox 真正可用:`/root` 不再被宿主 `/root` 遮蔽 + POSIX 工具齐全**
+  - 0.4.22 用户实测 `xlings subos use sandbox-test`(shell 是 fish):
+    1. `/root/.config/fish` 创建报 `Permission denied (os error 13)`
+    2. `/root/.local/share/fish` 同样写不进
+    3. `mkdir`、`uname` 全部 `Unknown command`
+    4. fish embedded config 整段 fail,sandbox 进去就是个半瘫的 shell
+  - **根因 1(关键)**:proot 的 `-R` 是 `-r + 一堆 -b`,文档里那串"sane defaults" **包括 `--bind=$HOME`** ── 把宿主 `$HOME` 自动 bind 到 guest 的 `$HOME` 同一路径。我们在 `use_sandbox_` 里 `setenv("HOME", "/root")` 后 exec proot,proot 读到 `$HOME=/root` 就把**宿主 `/root`**(典型权限 `drwx------ root root`)bind 到了 sandbox 的 `/root`,直接遮蔽我们 `<sandbox>/root`。fish 写 `/root/.config/fish` 实际是写宿主 `/root`,真实 uid 是 `speak`,kernel 一看 owner=root mode=700 → EACCES。proot `-0` 是用户态 ptrace 假 root,**不能绕过 kernel 的真实 perm 检查**。
+  - **根因 2**:sandbox `/bin` 只有那一条 shell symlink,`/usr/bin` 不存在,fish 跑 `mkdir -p ~/.config/fish/{...}` 立刻 ENOENT。整个 POSIX userland 缺席。
+  - **修复(`src/core/subos.cppm` `build_proot_argv_`)**:
+    1. **`-R` → `-r`**:换成裸 chroot,自己掌控所有 bind,不让 proot 偷塞 `$HOME`、`/tmp`、`/run` 这些。
+    2. **显式 `--bind=/etc/ld.so.cache:/etc/ld.so.cache`**:loader 缓存,不带的话 `ld-linux` 找库要遍历整个目录树。
+    3. **`--bind=/usr:/usr` + `/usr/lib:/lib` + `/usr/lib64:/lib64`**:把宿主整个 POSIX userland(coreutils / sh / loader / 共享库)挂进来。usrmerge 主流发行版(Ubuntu 22+ / Fedora / Arch / 近期 Debian)的 `/lib` `/lib64` 在宿主上本来就是 `usr/lib*` 的 symlink,这套挂法跟它们的真实 layout 一致。非 usrmerge 的老发行版会少 `/bin/<tool>`(如果 `/usr/bin` 没有),先放着,有用户报再处理。
+    4. **`/etc/{passwd,group,hosts,nsswitch.conf}` 显式 bind 保留**:proot `-r` 不会自动 bind,所以这几条原本就是必须显式给的(0.4.21 已经在那);改用 `-r` 之后行为反而更"如实",再没有 proot kompat 默认 bind 跟我们抢。
+    5. **`<home>:<home>` 自映射保留**(0.4.22 加的):elfpatched ELF 的 absolute interpreter / rpath 路径靠这条 bind 在 sandbox 内仍能 resolve。
+  - **没动但相关的设计点**:`/tmp` 现在是 sandbox 私有(不再 bind 宿主 `/tmp`)── 跟 sandbox 语义一致(进程产生的临时文件不污染宿主)。`/run`、`/var/log` 同样不挂,绝大多数交互式 shell + 普通工具不需要,需要时再单独 bind。
+  - **用户可见 UX**:
+    ```
+    xlings subos new sandbox-test --sandbox-shell fish    # 创建 + 自动装 fish + 联通
+    xlings subos use sandbox-test
+    sandbox> mkdir -p /root/.config/myapp                  # ✓
+    sandbox> ls /root/.config/                              # 看到 fish + myapp,sandbox 私有
+    sandbox> uname -a                                       # ✓ 宿主 /usr/bin/uname
+    sandbox> cat /etc/passwd                                # 只有 root: 行(sandbox 模板),宿主用户不外泄
+    ```
+  - **测试(`tests/e2e/subos_sandbox_test.sh` S6 加强)**:进入 sandbox 后 `touch /root/.sandbox_marker_S6` + 跳出后断言文件**确实落在 `<sandbox>/root/`**(不是宿主 `/root`)── 这条 assert 是 0.4.22 那个 bind-shadow bug 的 regression guard,如果以后又有人不小心引回 `-R` 或 bind `$HOME`,S6 立刻挂。
+  - 改动量:subos.cppm `build_proot_argv_` ~30 行(注释占大头);test S6 +6 行 assert;版本 0.4.22 → 0.4.23。
+
 ### 2026-05 (v0.4.22)
 
 - **subos sandbox 一步到位 + 真正能跑 elfpatched binary**
