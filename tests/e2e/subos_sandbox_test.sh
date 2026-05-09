@@ -249,13 +249,33 @@ grep -q "xlings-profile.fish" "$HOME_DIR/subos/mybox/home/$USER/.config/fish/con
   || fail "S13: config.fish doesn't chain to xlings-profile.fish"
 log "  ✓ .bashrc, .profile, .config/fish/config.fish all seeded"
 
-# ── S14: subos remove cleans up everything (including sandbox dirs)
-log "S14: subos remove cleans up entirely"
+# ── S14: /bin/sh exists inside sandbox (system()/popen()/shebang dispatch)
+# Without /bin/sh, libc system()/popen() and any tool with `#!/bin/sh`
+# shebang fails silently with exit 255. xlings shim's platform::exec
+# uses system() under the hood — observed symptom: any xvm-managed
+# binary that goes through alias dispatch (openclaw, claude alias=node
+# "...cli.js", etc.) silently exits 255 with no output.
+#
+# Fix: --bind=/usr/bin/sh:/bin/sh in proot args. The bind is
+# unconditional (every sandbox session gets it).
+log "S14: /bin/sh resolves inside sandbox (system()/shebang dispatch)"
+out_sh="$(echo 'ls -la /bin/sh 2>&1; echo MARKER; sh -c "echo SHELL_OK"; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
+echo "$out_sh" | grep -q "/bin/sh" || fail "S14: /bin/sh not visible:
+$out_sh"
+echo "$out_sh" | grep -q "SHELL_OK" || fail "S14: /bin/sh -c failed:
+$out_sh"
+log "  ✓ /bin/sh resolves and executes (system() works)"
+
+# ── S15: subos remove cleans up everything (including sandbox dirs)
+log "S15: subos remove cleans up entirely"
 run_x subos remove mybox >/dev/null 2>&1 || true
-[[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "S14: subos dir not removed"
+[[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "S15: subos dir not removed"
 log "  ✓ sandbox subos removed cleanly"
 
-log "PASS: subos sandbox V4 (Linux) — 14 scenarios"
+log "PASS: subos sandbox V4 (Linux) — 15 scenarios"
 
 else
 # ─────────────────────────────────────────────────────────────────────

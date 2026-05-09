@@ -577,6 +577,23 @@ build_proot_argv_(const fs::path& proot_bin,
         "--bind=/usr:/usr",
         "--bind=/usr/lib:/lib",
         "--bind=/usr/lib64:/lib64",
+        // /bin from host. Sandbox's <subos>/bin/ holds xlings shims
+        // (openclaw, node, xlings, ...) but NOT POSIX /bin tools (sh,
+        // bash, ls, cat, grep, ...). libc system()/popen() hardcode
+        // /bin/sh; scripts use #!/bin/bash; tools reference /bin/ls
+        // etc. Without this bind, all of those fail silently (RC=255).
+        //
+        // Shim access is unaffected: shims are reachable via the
+        // ~/.xlings nested bind at /home/<user>/.xlings/subos/<name>/
+        // bin/ which is PATH's first segment — /bin is never the path
+        // used for shim lookup, so covering it with host /bin costs
+        // nothing and fixes the entire /bin/<tool> class of failures.
+        //
+        // On usrmerge distros (Ubuntu 22+, Fedora, Arch): host /bin is
+        // a symlink to usr/bin → proot follows → same as /usr/bin.
+        // On non-merged: host /bin is a real dir with coreutils.
+        // Either way sandbox gets a working /bin.
+        "--bind=/bin:/bin",
         // /home: parent bind to sandbox-private dir. This gives dotfile
         // isolation — anything the user writes under their home goes
         // into <subos>/home/<user>/ and doesn't pollute host ~/.

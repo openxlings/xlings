@@ -2,6 +2,25 @@
 
 ## 2026
 
+### 2026-05 (v0.4.25) — Sandbox V4 修 `/bin/sh` 缺失:任何 system()/popen() 都失败
+
+- **现象**(用户报):sandbox 里 `xlings install openclaw` 看着成功,但 `openclaw --version` 啥输出都没,`echo $?` 是 255。`xlings install claude-code` 也类似(还有 npm postinstall 崩溃叠加问题)。
+- **根因**:V4 sandbox 的 `/bin/` 只放 subos 自己的 shim(xlings + 装的包),**没有 `/bin/sh`**。但:
+  - libc 的 `system()` / `popen()` 都硬编码 `fork+exec("/bin/sh", "-c", cmd)`
+  - 所有 `#!/bin/sh` shebang 脚本依赖 `/bin/sh`
+  - **xlings 自己的 shim dispatch**(`xvm/shim.cppm` `platform::exec`)走的就是 `system()` ── 所以一旦 xvm-managed 工具走 alias dispatch(openclaw, claude 的 `alias = node "..."` 等),**没 `/bin/sh` 就直接 exit 255 静默死**。
+  - 用户看到的"`openclaw` 跑了没输出 RC=255",根本不是 openclaw 的 bug,是 xlings shim → system() → /bin/sh 不存在 → 255 链路。
+- **修复**(`build_proot_argv_` 加一行):
+  ```cpp
+  "--bind=/usr/bin/sh:/bin/sh",
+  ```
+  V4 已经把宿主 `/usr` 整体 RO bind 进 sandbox,`/usr/bin/sh` 在 sandbox 内是可见的(分发版 symlink 链 /usr/bin/sh → dash/bash/busybox 的解析靠 proot 路径处理跑通)。把它再绑到经典路径 `/bin/sh`,libc 和所有 shebang 都满意。
+- **验证**:`openclaw --version` → `OpenClaw 2026.5.7 (eeef486)` 正常,RC=0。
+- **测试**:`tests/e2e/subos_sandbox_test.sh` 加 S14:验证 `/bin/sh` resolves + `sh -c "echo SHELL_OK"` 成功。14 → 15 scenarios。
+- **未在本版本解决**:`xlings install <pkg-with-native-postinstall>`(如 claude-code,某些 native npm 模块在 proot 下 ptrace 拦截 + glibc 内存管理 trigger `double free or corruption`)。这是 proot 自身的 native module 兼容问题,需要 xpkg 加 `--ignore-scripts` 或者长期换 sandbox 后端到 bwrap (user-namespace,无 ptrace) 才能根治。临时 workaround:在 host 上装 native-heavy 包,sandbox 用来 *运行* 而不是 *安装*。
+
+版本 0.4.24 → 0.4.25。改动量:`subos.cppm` +13 行(注释 + 1 bind),test +12 行(S14 regression),changelog 一条。
+
 ### 2026-05 (v0.4.24) — Sandbox V4 修关键 P0 bug:`xlings install` 进 sandbox 后实际"装到正确 subos"
 
 V4 (0.4.23) 出来后用户实测发现 install 看着成功但装的包根本不在 PATH 里。把现场拼起来,**根因不是 install 自己的 bug**,而是两个环境层面的设计漏洞:
