@@ -555,40 +555,48 @@ sandbox_binds_(const fs::path& subos_dir,
     auto etc = subos_dir / "etc";
     auto user_home = "/home/" + user;
 
-    std::vector<SandboxBind> binds = {
-        // ── Host RO: POSIX userland (tools + libs + loader) ──
-        {"/usr", "/usr", true},
-        {"/bin", "/bin", true},
-        {"/usr/lib", "/lib", true},       // usrmerge alias
-        {"/usr/lib64", "/lib64", true},    // loader (ld-linux)
+    std::error_code ec;
 
-        // ── Host RO: /etc (by-need, not entire /etc) ──
-        // Only paths with functional need. NOT /etc/hostname, /etc/fstab,
-        // /etc/crontab, /etc/NetworkManager (no need + info leak).
-        {"/etc/resolv.conf", "/etc/resolv.conf", true},      // DNS
-        {"/etc/ld.so.cache", "/etc/ld.so.cache", true},      // loader cache
-        {"/etc/ssl", "/etc/ssl", true},                       // TLS CA certs
-        {"/etc/alternatives", "/etc/alternatives", true},     // symlink dispatch (awk/vi)
-        {"/etc/localtime", "/etc/localtime", true},           // timezone
-
-        // ── Sandbox RW: private overrides ──
-        {(subos_dir / "home").string(), "/home", false},
-        {host_xlings_home.string(), user_home + "/.xlings", false},
-        {(subos_dir / "tmp").string(), "/tmp", false},
-
-        // ── Sandbox: NSS templates (real user + root only) ──
-        {(etc / "passwd").string(), "/etc/passwd", false},
-        {(etc / "group").string(), "/etc/group", false},
-        {(etc / "hosts").string(), "/etc/hosts", false},
-        {(etc / "nsswitch.conf").string(), "/etc/nsswitch.conf", false},
+    // Helper: add a host-RO bind only if the source path exists on this
+    // system. Different distros have different layouts — /etc/alternatives
+    // is Debian/Ubuntu only, /etc/pki is Fedora/RHEL only, /usr/lib64
+    // may not exist on 32-bit or some ARM, /etc/localtime may be absent
+    // in minimal containers. Skipping non-existent sources prevents
+    // proot/bwrap from erroring with "No such file or directory".
+    auto try_ro = [&](std::vector<SandboxBind>& v,
+                      const char* src, const char* dst) {
+        if (fs::exists(src, ec))
+            v.push_back({src, dst, true});
     };
 
-    // Fedora / RHEL: CA bundles also under /etc/pki
-    {
-        std::error_code ec;
-        if (fs::is_directory("/etc/pki", ec))
-            binds.push_back({"/etc/pki", "/etc/pki", true});
-    }
+    std::vector<SandboxBind> binds;
+
+    // ── Host RO: POSIX userland (tools + libs + loader) ──
+    try_ro(binds, "/usr", "/usr");
+    try_ro(binds, "/bin", "/bin");
+    try_ro(binds, "/usr/lib", "/lib");
+    try_ro(binds, "/usr/lib64", "/lib64");   // may not exist on 32-bit / ARM
+
+    // ── Host RO: /etc (by-need, not entire /etc) ──
+    // Only paths with functional need. NOT /etc/hostname, /etc/fstab,
+    // /etc/crontab, /etc/NetworkManager (no need + info leak).
+    try_ro(binds, "/etc/resolv.conf", "/etc/resolv.conf");   // DNS
+    try_ro(binds, "/etc/ld.so.cache", "/etc/ld.so.cache");   // loader cache
+    try_ro(binds, "/etc/ssl", "/etc/ssl");                    // TLS CA (most distros)
+    try_ro(binds, "/etc/pki", "/etc/pki");                    // TLS CA (Fedora/RHEL)
+    try_ro(binds, "/etc/alternatives", "/etc/alternatives");  // symlink dispatch (Debian/Ubuntu)
+    try_ro(binds, "/etc/localtime", "/etc/localtime");        // timezone
+
+    // ── Sandbox RW: private overrides ──
+    binds.push_back({(subos_dir / "home").string(), "/home", false});
+    binds.push_back({host_xlings_home.string(), user_home + "/.xlings", false});
+    binds.push_back({(subos_dir / "tmp").string(), "/tmp", false});
+
+    // ── Sandbox: NSS templates (real user + root only) ──
+    binds.push_back({(etc / "passwd").string(), "/etc/passwd", false});
+    binds.push_back({(etc / "group").string(), "/etc/group", false});
+    binds.push_back({(etc / "hosts").string(), "/etc/hosts", false});
+    binds.push_back({(etc / "nsswitch.conf").string(), "/etc/nsswitch.conf", false});
 
     return binds;
 }
