@@ -770,16 +770,6 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
 int use_sandbox_mode_(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "") {
-#if !defined(__linux__)
-    stream.emit(ErrorEvent{
-        .code = ErrorCode::InvalidInput,
-        .message = "sandbox mode (`subos use --sandbox`) is only supported "
-                   "on Linux (current: " + std::string(platform::OS_NAME) + ")",
-        .recoverable = false,
-        .hint = "drop --sandbox to use the regular env-spawn shell mode",
-    });
-    return 1;
-#else
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
     // Refuse nested sandbox entry.
@@ -796,7 +786,77 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     auto& p = Config::paths();
     auto subos_dir = p.homeDir / "subos" / name;
 
-    // ── Backend selection ──
+    // ── Resolve user ──
+#if defined(_WIN32)
+    auto user = utils::get_env_or_default("USERNAME");
+    if (user.empty()) user = "user";
+#else
+    auto user = utils::get_env_or_default("USER");
+    if (user.empty()) user = "user";
+#endif
+
+    auto sandbox_home = (subos_dir / "home" / user).string();
+    auto sandbox_tmp = (subos_dir / "tmp").string();
+
+    // ── Lazy init sandbox dirs ──
+    fs::create_directories(subos_dir / "home" / user);
+    fs::create_directories(subos_dir / "tmp");
+
+#if defined(__linux__) || defined(__APPLE__)
+    // Seed shell rc files so profile is sourced (prompt pill + PATH)
+    {
+        auto user_home_dir = subos_dir / "home" / user;
+        auto try_write = [](const fs::path& path, std::string_view body) {
+            if (fs::exists(path)) return;
+            platform::write_string_to_file(path.string(), std::string(body));
+        };
+        try_write(user_home_dir / ".bashrc",
+            "# xlings sandbox bashrc\n"
+            "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
+            "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
+            "fi\n");
+        try_write(user_home_dir / ".profile",
+            "# xlings sandbox profile\n"
+            "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
+        auto fish_dir = user_home_dir / ".config" / "fish";
+        fs::create_directories(fish_dir);
+        try_write(fish_dir / "config.fish",
+            "# xlings sandbox fish config\n"
+            "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+            "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+            "end\n");
+        try_write(user_home_dir / ".zshrc",
+            "# xlings sandbox zshrc\n"
+            "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
+            "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
+            "fi\n");
+    }
+#endif
+
+    // ── Common env (all platforms) ──
+    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+    platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
+
+    nlohmann::json payload;
+    payload["name"] = name;
+    payload["mode"] = "sandbox";
+
+    std::cout.flush();
+    std::cerr.flush();
+
+#if defined(__linux__)
+    // ═══════════════════════════════════════════════════════════════
+    // Linux L3: FS view isolation via bwrap/proot
+    // ═══════════════════════════════════════════════════════════════
+
+    // /etc templates for Linux sandbox (NSS)
+    {
+        auto uid = ::getuid();
+        auto gid = ::getgid();
+        sandbox_detail_::init_sandbox_dirs_(subos_dir, user, uid, gid);
+    }
+
+    // Backend selection
     using sandbox_detail_::SandboxBackend;
     using sandbox_detail_::BackendInfo;
     std::optional<BackendInfo> backend;
@@ -826,7 +886,6 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
         }
         backend = BackendInfo{ SandboxBackend::Proot, *bin };
     } else {
-        // Auto-detect: bwrap preferred, proot fallback
         backend = sandbox_detail_::detect_backend_(p.homeDir, subos_dir);
         if (!backend) {
             auto rc = sandbox_detail_::auto_install_backend_(p.homeDir, stream);
@@ -854,43 +913,19 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     auto backend_name = (backend->type == SandboxBackend::Bwrap) ? "bwrap" : "proot";
     log::debug("sandbox backend: {}", backend_name);
 
-    // ── Resolve user identity ──
-    auto user = utils::get_env_or_default("USER");
-    if (user.empty()) user = "user";
-    auto uid = ::getuid();
-    auto gid = ::getgid();
-
-    // ── Lazy init sandbox dirs ──
-    sandbox_detail_::init_sandbox_dirs_(subos_dir, user, uid, gid);
-
     auto user_home = "/home/" + user;
     auto shell = utils::get_env_or_default("SHELL");
     if (shell.empty()) shell = "/bin/sh";
 
-    // Both backends bind /bin from host (proot: --bind=/bin:/bin;
-    // bwrap: --ro-bind /bin /bin), so /bin/bash etc. resolve natively.
-    // No shell path translation needed.
-
-    // ── Event ──
-    nlohmann::json payload;
-    payload["name"] = name;
-    payload["mode"] = "sandbox";
     payload["backend"] = backend_name;
     payload["shell"] = shell;
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
-    std::cout.flush();
-    std::cerr.flush();
-
-    // ── Env (unified, backend-independent) ──
-    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
-    platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
     platform::set_env_variable("HOME", user_home);
     platform::set_env_variable("PATH", std::format(
         "{}/.xlings/subos/{}/bin:{}/.xlings/bin:/usr/local/bin:/usr/bin:/bin",
         user_home, name, user_home));
 
-    // ── Build argv ──
     std::vector<std::string> argv;
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
@@ -900,7 +935,6 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
             backend->binary, subos_dir, p.homeDir, user, shell);
     }
 
-    // ── Exec ──
     std::vector<char*> c_argv;
     c_argv.reserve(argv.size() + 1);
     for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
@@ -909,6 +943,70 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     ::execvp(c_argv[0], c_argv.data());
     log::error("failed to exec {} '{}': {}", backend_name,
                backend->binary.string(), std::strerror(errno));
+    return 127;
+
+#elif defined(__APPLE__)
+    // ═══════════════════════════════════════════════════════════════
+    // macOS L2: HOME redirect (dotfile isolation)
+    // ═══════════════════════════════════════════════════════════════
+
+    auto shell = utils::get_env_or_default("SHELL");
+    if (shell.empty()) shell = "/bin/zsh";  // macOS default
+
+    payload["backend"] = "home-redirect";
+    payload["shell"] = shell;
+    stream.emit(DataEvent{"subos_entering", payload.dump()});
+
+    platform::set_env_variable("HOME", sandbox_home);
+    platform::set_env_variable("TMPDIR", sandbox_tmp);
+    platform::set_env_variable("XDG_CONFIG_HOME", sandbox_home + "/.config");
+    platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "/.local/share");
+    platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "/.cache");
+    platform::set_env_variable("XDG_STATE_HOME", sandbox_home + "/.local/state");
+
+    ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
+    log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
+    return 127;
+
+#elif defined(_WIN32)
+    // ═══════════════════════════════════════════════════════════════
+    // Windows L2: USERPROFILE redirect (dotfile isolation)
+    // ═══════════════════════════════════════════════════════════════
+
+    // Pre-create AppData structure
+    fs::create_directories(fs::path(sandbox_home) / "AppData" / "Roaming");
+    fs::create_directories(fs::path(sandbox_home) / "AppData" / "Local");
+
+    payload["backend"] = "home-redirect";
+    stream.emit(DataEvent{"subos_entering", payload.dump()});
+
+    platform::set_env_variable("USERPROFILE", sandbox_home);
+    platform::set_env_variable("APPDATA", sandbox_home + "\\AppData\\Roaming");
+    platform::set_env_variable("LOCALAPPDATA", sandbox_home + "\\AppData\\Local");
+    platform::set_env_variable("TEMP", sandbox_tmp);
+    platform::set_env_variable("TMP", sandbox_tmp);
+    platform::set_env_variable("XDG_CONFIG_HOME", sandbox_home + "\\.config");
+    platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "\\.local\\share");
+    platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "\\.cache");
+
+    // Windows: CreateProcess + WaitForSingleObject (same as use_spawn_shell)
+    constexpr const char* shells[] = { "pwsh.exe", "powershell.exe", "cmd.exe" };
+    for (auto* exe : shells) {
+        STARTUPINFOA si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        std::string cmdline = exe;
+        if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
+                             TRUE, 0, nullptr, nullptr, &si, &pi)) {
+            ::WaitForSingleObject(pi.hProcess, INFINITE);
+            DWORD exitCode = 0;
+            ::GetExitCodeProcess(pi.hProcess, &exitCode);
+            ::CloseHandle(pi.hThread);
+            ::CloseHandle(pi.hProcess);
+            return static_cast<int>(exitCode);
+        }
+    }
+    log::error("could not launch any shell on Windows");
     return 127;
 #endif
 }
