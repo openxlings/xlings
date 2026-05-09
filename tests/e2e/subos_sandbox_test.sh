@@ -282,15 +282,49 @@ log "PASS: subos sandbox V5 (Linux) — 15 scenarios"
 
 else
 # ─────────────────────────────────────────────────────────────────────
-# macOS / Windows: --sandbox should be rejected
+# macOS / Windows: L2 sandbox (HOME redirect, no FS isolation)
 # ─────────────────────────────────────────────────────────────────────
-log "non-Linux: subos use --sandbox rejected with clear hint"
+log "non-Linux ($(uname -s)): L2 sandbox via HOME redirect"
 mkdir -p "$HOME_DIR/subos/default/bin"
 run_x subos new mybox >/dev/null
-out="$(run_x subos use mybox --sandbox 2>&1 || true)"
-echo "$out" | grep -q "only supported on Linux" \
-  || fail "expected 'only supported on Linux' on $(uname -s), got:
+
+# SM1: --sandbox should NOT be rejected anymore (cross-platform L2)
+log "SM1: subos use --sandbox enters (not rejected)"
+out="$(echo 'echo SANDBOX_L2_OK; echo HOME=$HOME; echo XLINGS_SUBOS_MODE=$XLINGS_SUBOS_MODE; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="${USER:-$(whoami)}" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin:/usr/local/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
+echo "$out" | grep -q "SANDBOX_L2_OK" \
+  || fail "SM1: sandbox didn't enter on $(uname -s):
 $out"
-log "  ✓ rejected on $(uname -s)"
-log "PASS: subos sandbox V5 (non-Linux) — rejection path"
+log "  ✓ sandbox entered on $(uname -s)"
+
+# SM2: HOME points to sandbox-private dir
+echo "$out" | grep -q "HOME=.*subos/mybox/home" \
+  || fail "SM2: HOME not redirected to sandbox dir:
+$out"
+log "  ✓ HOME redirected to sandbox home"
+
+# SM3: XLINGS_SUBOS_MODE=sandbox set
+echo "$out" | grep -q "XLINGS_SUBOS_MODE=sandbox" \
+  || fail "SM3: XLINGS_SUBOS_MODE not set:
+$out"
+log "  ✓ XLINGS_SUBOS_MODE=sandbox"
+
+# SM4: dotfile isolation — write inside, host unaffected
+marker_file="$HOME/.xlings-sandbox-sm4-marker-$$"
+echo "echo test > '$marker_file'; exit" | \
+  ( cd /tmp && env -i HOME="$HOME" USER="${USER:-$(whoami)}" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin:/usr/local/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) >/dev/null 2>&1 || true
+[[ ! -e "$marker_file" ]] \
+  || fail "SM4: sandbox write leaked to host!"
+log "  ✓ dotfile isolation (host \$HOME clean)"
+
+# SM5: subos remove works
+run_x subos remove mybox >/dev/null 2>&1 || true
+[[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "SM5: subos dir not removed"
+log "  ✓ subos removed cleanly"
+
+log "PASS: subos sandbox ($(uname -s)) — 5 scenarios (L2 HOME redirect)"
 fi
