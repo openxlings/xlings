@@ -198,13 +198,64 @@ echo "$out_plain" | grep -q "HOME=$HOME" \
 $out_plain"
 log "  ✓ plain subos use: no XLINGS_SUBOS_MODE, host \$HOME preserved"
 
-# ── S11: subos remove cleans up everything (including sandbox dirs)
-log "S11: subos remove cleans up entirely"
+# ── S11: empty <subos>/subos/ marker dir is created at sandbox init
+# Without this marker, `<subos>/.xlings.json` at the chroot root gets
+# treated as an anonymous-project root, which OVERRIDES per-shell
+# XLINGS_ACTIVE_SUBOS=mybox and routes install / shim / workspace
+# into <subos>/.xlings/subos/_/ instead of <subos>/. Symptom from
+# user side: `xlings install foo` reports success but the binary
+# isn't on PATH because shim went to the wrong dir.
+#
+# The fix is the empty marker: xlings's project discovery (config.cppm
+# load_project_config_) treats any dir containing both `.xlings.json`
+# AND a `subos/` sibling as an xlings home (boundary, NOT a project).
+# We seed an empty `<subos>/subos/` so the chroot root looks like an
+# xlings home from the project-discovery walk's POV.
+log "S11: <subos>/subos/ marker dir created (project-discovery boundary fix)"
+[[ -d "$HOME_DIR/subos/mybox/subos" ]] \
+  || fail "S11: <subos>/subos/ marker dir missing — boundary check
+won't fire, project discovery will misfire and override XLINGS_ACTIVE_SUBOS"
+log "  ✓ <subos>/subos/ marker exists"
+
+# ── S12: explicit PATH front-loads <subos>/bin (non-interactive defensive)
+# Interactive shells source the seeded .bashrc which sets PATH via the
+# xlings profile; non-interactive shells (`bash -c`, scripts) skip the
+# rc files. Both paths should still see the per-subos bin first because
+# we set PATH explicitly in env before exec proot.
+log "S12: PATH front-loads <subos>/bin even in non-interactive shell"
+out_path="$(echo 'echo "PATH:$PATH"; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
+echo "$out_path" | grep -q "PATH:/home/$USER/.xlings/subos/mybox/bin:" \
+  || fail "S12: PATH first segment is NOT <home>/.xlings/subos/mybox/bin:
+$out_path"
+log "  ✓ PATH starts with /home/$USER/.xlings/subos/mybox/bin"
+
+# ── S13: seeded shell rc files exist (interactive prompt-pill plumbing)
+# init_sandbox_dirs_ writes minimal .bashrc / .profile / config.fish
+# into <subos>/home/<user>/ that source the host xlings profile. Without
+# these, interactive sandbox sessions don't get PATH adjusted, prompt
+# pill never appears (XLINGS_SUBOS_MODE is set in env but the shell
+# never sources the profile that consumes it).
+log "S13: seeded shell rc files chain to host xlings profile"
+[[ -f "$HOME_DIR/subos/mybox/home/$USER/.bashrc" ]] \
+  || fail "S13: .bashrc not seeded"
+grep -q "xlings-profile.sh" "$HOME_DIR/subos/mybox/home/$USER/.bashrc" \
+  || fail "S13: .bashrc doesn't chain to xlings-profile.sh"
+[[ -f "$HOME_DIR/subos/mybox/home/$USER/.config/fish/config.fish" ]] \
+  || fail "S13: fish config.fish not seeded"
+grep -q "xlings-profile.fish" "$HOME_DIR/subos/mybox/home/$USER/.config/fish/config.fish" \
+  || fail "S13: config.fish doesn't chain to xlings-profile.fish"
+log "  ✓ .bashrc, .profile, .config/fish/config.fish all seeded"
+
+# ── S14: subos remove cleans up everything (including sandbox dirs)
+log "S14: subos remove cleans up entirely"
 run_x subos remove mybox >/dev/null 2>&1 || true
-[[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "S11: subos dir not removed"
+[[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "S14: subos dir not removed"
 log "  ✓ sandbox subos removed cleanly"
 
-log "PASS: subos sandbox V4 (Linux) — 11 scenarios"
+log "PASS: subos sandbox V4 (Linux) — 14 scenarios"
 
 else
 # ─────────────────────────────────────────────────────────────────────

@@ -154,6 +154,32 @@ inline constexpr std::string_view kEtcHosts =
 inline constexpr std::string_view kEtcNsswitch =
     "hosts: files dns\npasswd: files\ngroup: files\n";
 
+// Minimal user shell rc files written into <subos>/home/<user>/ at
+// init. Without these, bash starts with no .bashrc / .profile (sandbox
+// $HOME is fresh empty dir, dotfile isolation by design) and never
+// sources the xlings profile — so the prompt pill is missing AND
+// PATH doesn't pick up the per-subos bin dir. We seed minimal rc
+// files that just chain into the host xlings profile; user can edit
+// these to add their own customizations later (they're sandbox-private
+// so they won't pollute host).
+inline constexpr std::string_view kSandboxBashrc =
+    "# xlings sandbox bashrc — chains to host xlings profile so PATH /\n"
+    "# prompt pill / XLINGS_BIN are set up. Edit this file to add your\n"
+    "# own customizations (it's sandbox-private at <subos>/home/<user>).\n"
+    "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
+    "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
+    "fi\n";
+inline constexpr std::string_view kSandboxProfile =
+    "# xlings sandbox profile (sourced by sh / bash login shells)\n"
+    "if [ -r \"$HOME/.bashrc\" ]; then\n"
+    "    . \"$HOME/.bashrc\"\n"
+    "fi\n";
+inline constexpr std::string_view kSandboxFishConfig =
+    "# xlings sandbox fish config — chains to host xlings profile\n"
+    "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+    "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+    "end\n";
+
 // Initialize the sandbox-specific dirs / templates inside an existing
 // subos. Idempotent: only writes files that don't yet exist, so a
 // returning sandbox session won't clobber user customizations and a
@@ -162,10 +188,25 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
                         const std::string& user,
                         uid_t uid, gid_t gid)
 {
-    fs::create_directories(subos_dir / "home" / user);
+    auto user_home = subos_dir / "home" / user;
+    fs::create_directories(user_home);
     fs::create_directories(subos_dir / "tmp");
     auto etc = subos_dir / "etc";
     fs::create_directories(etc);
+
+    // Empty `subos/` marker dir at sandbox root. xlings's project
+    // discovery walks cwd → / looking for `.xlings.json`; it stops at
+    // any dir that ALSO contains a `subos/` sibling (xlings-home
+    // boundary check, see config.cppm load_project_config_). Without
+    // this marker, the sandbox's own `<subos>/.xlings.json` (the
+    // workspace file, which appears at `/.xlings.json` inside the
+    // chroot) gets misinterpreted as an anonymous-project root, which
+    // OVERRIDES the per-shell XLINGS_ACTIVE_SUBOS=<name> and routes
+    // all install / shim / workspace paths into a phantom
+    // `<subos>/.xlings/subos/_/` tree disjoint from where PATH points.
+    // Empty `<subos>/subos/` ≈ "this is an xlings-managed dir, not a
+    // user project root" — boundary check terminates the walk.
+    fs::create_directories(subos_dir / "subos");
 
     auto try_write = [&](const fs::path& path, std::string_view body) {
         if (fs::exists(path)) return;
@@ -175,6 +216,14 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
     try_write(etc / "group", make_etc_group_(user, gid));
     try_write(etc / "hosts", kEtcHosts);
     try_write(etc / "nsswitch.conf", kEtcNsswitch);
+
+    // Seed shell rc files so the xlings profile gets sourced (PATH +
+    // prompt pill). Sandbox-private; user can edit freely.
+    try_write(user_home / ".bashrc", kSandboxBashrc);
+    try_write(user_home / ".profile", kSandboxProfile);
+    auto fish_config_dir = user_home / ".config" / "fish";
+    fs::create_directories(fish_config_dir);
+    try_write(fish_config_dir / "config.fish", kSandboxFishConfig);
 }
 
 #endif // __linux__ / __APPLE__
@@ -649,12 +698,29 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream) {
     std::cout.flush();
     std::cerr.flush();
 
-    // Set sandbox-friendly env before proot exec. The shell sources
-    // its profile, profile reads XLINGS_SUBOS_MODE and decorates PS1
-    // with `<xsubos:<name>>` instead of the default `[xsubos:<name>]`.
+    // Set sandbox-friendly env before proot exec.
+    //
+    // The shell sources its profile (via the seeded .bashrc / config.fish
+    // in <subos>/home/<user>/), profile reads XLINGS_SUBOS_MODE and
+    // decorates PS1 with `<xsubos:<name>>` instead of the default
+    // `[xsubos:<name>]`.
+    //
+    // PATH is set explicitly here as a defensive baseline: interactive
+    // shells will re-set it via the profile (which knows about
+    // XLINGS_ACTIVE_SUBOS), but non-interactive shells (`echo ... |
+    // bash`, scripts run with `bash -c`) skip rc files. Without this
+    // explicit set, those see whatever PATH the host xlings inherited
+    // — typically full of /home/speak/.xlings/data/xpkgs/... and host
+    // subos bin paths — none of which point inside the sandbox. The
+    // baseline below front-loads the per-subos bin and the xlings home
+    // bin so installed shims are reachable, then falls through to host
+    // /usr/bin etc. (visible via the /usr RO bind).
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
     platform::set_env_variable("HOME", user_home);
+    platform::set_env_variable("PATH", std::format(
+        "{}/.xlings/subos/{}/bin:{}/.xlings/bin:/usr/local/bin:/usr/bin:/bin",
+        user_home, name, user_home));
 
     auto argv = sandbox_detail_::build_proot_argv_(
         *proot, subos_dir, p.homeDir, user, shell);
