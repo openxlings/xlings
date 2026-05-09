@@ -2,7 +2,21 @@
 
 ## 2026
 
-### 2026-05 (v0.4.25) — Sandbox V4 修 `/bin/sh` 缺失:任何 system()/popen() 都失败
+### 2026-05 (v0.4.25) — Sandbox V5:双后端 bwrap + proot 自动切换 + `/bin` 从宿主挂载
+
+- **双后端自动检测**:`xlings subos use <name> --sandbox` 自动选最优 backend:
+  - bwrap 优先(mount namespace,native 全兼容,无 ptrace 开销)
+  - proot 兜底(零权限要求,ptrace 模式有 native 限制)
+  - 自动安装:首次 `--sandbox` 如果没有任何 backend,静默 `xlings install xim:bwrap`,probe 失败则装 `xim:proot`
+  - Ubuntu 24+ bwrap namespace 受限时提示 `sudo apt install bubblewrap`,自动用 proot
+- **可选指定后端**:`--sandbox bwrap` / `--sandbox proot`(缺省 = 自动)
+- **`--bind=/bin:/bin`**:宿主 `/bin` 整体挂进 sandbox,`/bin/sh` `/bin/bash` `/bin/ls` 全齐,解决 `system()` / shebang / POSIX 工具缺失
+- **同一 subos 任意后端切换**:bwrap 进、proot 进、普通进 —— dotfile 持久,workspace 持久,backend 无痕
+- **entering 消息标注 backend**:`▸ entering subos mybox (sandbox: bwrap)` / `(sandbox: proot)`
+- 设计文档:[`.agents/docs/sandbox-v5-dual-backend-design.md`](sandbox-v5-dual-backend-design.md)
+- E2E 15 scenarios(S3 改为 auto-install 验证)
+
+### 2026-05 (v0.4.25-pre) — Sandbox 修 `/bin/sh` 缺失(被 V5 吸收)
 
 - **现象**(用户报):sandbox 里 `xlings install openclaw` 看着成功,但 `openclaw --version` 啥输出都没,`echo $?` 是 255。`xlings install claude-code` 也类似(还有 npm postinstall 崩溃叠加问题)。
 - **根因**:V4 sandbox 的 `/bin/` 只放 subos 自己的 shim(xlings + 装的包),**没有 `/bin/sh`**。但:

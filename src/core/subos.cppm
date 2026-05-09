@@ -24,6 +24,7 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
+import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 
 namespace xlings::subos {
 
@@ -616,21 +617,159 @@ build_proot_argv_(const fs::path& proot_bin,
     return argv;
 }
 
+// ── bwrap backend (V5) ────────────────────────────────────────────────
+
+// Locate bwrap binary. Priority: system PATH (distro package with proper
+// perms) > xim pool (user-installed, works on systems where unprivileged
+// user namespaces are allowed).
+std::expected<fs::path, std::string>
+locate_bwrap_(const fs::path& home_dir) {
+    std::error_code ec;
+
+    // (1) system bwrap (/usr/bin/bwrap from apt/dnf — may have setuid
+    //     or AppArmor profile, most reliable on Ubuntu 24+)
+    if (auto* path_env = std::getenv("PATH"); path_env && *path_env) {
+        std::string_view pv = path_env;
+        std::size_t start = 0;
+        while (start <= pv.size()) {
+            auto end = pv.find(':', start);
+            auto seg = pv.substr(start, end == std::string_view::npos
+                                        ? pv.size() - start : end - start);
+            if (!seg.empty()) {
+                auto candidate = fs::path(seg) / "bwrap";
+                if (fs::is_regular_file(candidate, ec)) return candidate;
+            }
+            if (end == std::string_view::npos) break;
+            start = end + 1;
+        }
+    }
+
+    // (2) xim:bwrap pool
+    auto xpkg_root = home_dir / "data" / "xpkgs" / "xim-x-bwrap";
+    if (fs::is_directory(xpkg_root, ec)) {
+        std::error_code it_ec;
+        for (auto it = fs::directory_iterator(xpkg_root, it_ec);
+             !it_ec && it != std::default_sentinel;
+             it.increment(it_ec))
+        {
+            auto candidate = it->path() / "bin" / "bwrap";
+            if (fs::is_regular_file(candidate, ec)) return candidate;
+        }
+    }
+
+    return std::unexpected(
+        "bwrap not found. Install via `sudo apt install bubblewrap` "
+        "(recommended) or `xlings install bwrap`");
+}
+
+// Probe whether a bwrap binary can actually create a sandbox. This is
+// the ONLY reliable test — don't guess from sysctl / AppArmor / caps.
+// Runs `bwrap --ro-bind / / -- /bin/true` and checks exit code.
+// Takes < 50ms on any modern system.
+bool probe_bwrap_(const fs::path& bwrap_bin) {
+    auto cmd = bwrap_bin.string()
+             + " --ro-bind / / -- /bin/true 2>/dev/null";
+    return std::system(cmd.c_str()) == 0;
+}
+
+// Build bwrap argv. Model: host entire rootfs read-only, then override
+// sandbox-private paths. Much simpler than proot (which builds up from
+// an empty rootfs). See .agents/docs/sandbox-v5-dual-backend-design.md.
+std::vector<std::string>
+build_bwrap_argv_(const fs::path& bwrap_bin,
+                  const fs::path& subos_dir,
+                  const fs::path& host_xlings_home,
+                  const std::string& user,
+                  const std::string& shell_path)
+{
+    auto etc = subos_dir / "etc";
+    auto user_home = "/home/" + user;
+    return {
+        bwrap_bin.string(),
+        // Host rootfs read-only — gives /bin /usr /lib /lib64 /etc in
+        // one shot. No need for individual binds for coreutils, loader,
+        // DNS config, etc.
+        "--ro-bind", "/", "/",
+        // Kernel pseudo-fs (fresh instances, not host's)
+        "--dev", "/dev",
+        "--proc", "/proc",
+        // Sandbox-private overrides
+        "--bind", (subos_dir / "home").string(), "/home",
+        "--bind", host_xlings_home.string(), user_home + "/.xlings",
+        "--bind", (subos_dir / "tmp").string(), "/tmp",
+        // Sandbox NSS templates (override host /etc/*)
+        "--bind", (etc / "passwd").string(), "/etc/passwd",
+        "--bind", (etc / "group").string(), "/etc/group",
+        "--bind", (etc / "hosts").string(), "/etc/hosts",
+        "--bind", (etc / "nsswitch.conf").string(), "/etc/nsswitch.conf",
+        // Entry
+        "--chdir", user_home,
+        "--", shell_path, "-i",
+    };
+}
+
+// ── Backend detection + auto-install ─────────────────────────────────
+
+enum class SandboxBackend { Bwrap, Proot };
+
+struct BackendInfo {
+    SandboxBackend type;
+    fs::path binary;
+};
+
+std::optional<BackendInfo>
+detect_backend_(const fs::path& home_dir) {
+    // 1. bwrap (system then xim pool) — preferred for native compat
+    if (auto bin = locate_bwrap_(home_dir)) {
+        if (probe_bwrap_(*bin))
+            return BackendInfo{ SandboxBackend::Bwrap, *bin };
+    }
+
+    // bwrap found but probe failed → hint
+    {
+        auto sys = locate_bwrap_(home_dir);
+        if (sys) {
+            log::info("bwrap found but sandbox probe failed (namespace restricted?)");
+            log::info("  for best experience: sudo apt install bubblewrap");
+        }
+    }
+
+    // 2. proot — zero-privilege fallback
+    if (auto bin = locate_proot_(home_dir))
+        return BackendInfo{ SandboxBackend::Proot, *bin };
+
+    return std::nullopt;
+}
+
+int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
+    // Try bwrap first (no sudo — just download static binary)
+    log::info("installing sandbox backend...");
+    {
+        std::vector<std::string> t = {"xim:bwrap"};
+        xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
+        auto bin = locate_bwrap_(home_dir);
+        if (bin && probe_bwrap_(*bin)) return 0;
+    }
+
+    // bwrap installed but namespace restricted → hint + proot fallback
+    log::info("bwrap needs system permissions for namespace support");
+    log::info("  to enable: sudo apt install bubblewrap");
+    log::info("  using proot fallback for now");
+
+    std::vector<std::string> t = {"xim:proot"};
+    return xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
+}
+
 } // namespace sandbox_detail_
 
-// V4 sandbox entry. Reached only via `xlings subos use <name> --sandbox`.
-// Linux-only (proot uses ptrace + Linux syscall semantics). On non-Linux
-// the dispatcher in use_spawn_shell rejects --sandbox before reaching here.
+// V5 sandbox entry. Reached via `xlings subos use <name> --sandbox [backend]`.
+// Linux-only. Dual backend: bwrap (preferred, native compat) or proot
+// (fallback, zero-privilege). Auto-detects which is available; user can
+// force one via `--sandbox bwrap` or `--sandbox proot`.
 //
-// What it does:
-//   1. proot probe (same as V1 — locate_proot_)
-//   2. lazy init of <subos>/{home/<user>, tmp, etc/...} via init_sandbox_dirs_
-//   3. set env: XLINGS_ACTIVE_SUBOS, XLINGS_SUBOS_MODE=sandbox, HOME=/home/<user>
-//   4. build proot argv with V4 binds, execvp
-//
-// XLINGS_SUBOS_MODE=sandbox is the marker the shell profile checks to
-// switch the prompt pill from `[xsubos:<name>]` to `<xsubos:<name>>`.
-int use_sandbox_mode_(const std::string& name, EventStream& stream) {
+// See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
+int use_sandbox_mode_(const std::string& name, EventStream& stream,
+                      const std::string& preferred_backend = "") {
 #if !defined(__linux__)
     stream.emit(ErrorEvent{
         .code = ErrorCode::InvalidInput,
@@ -643,10 +782,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream) {
 #else
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
-    // Refuse nested sandbox entry. ptrace-based reroot inside a
-    // ptrace-based reroot is unstable (proot quirks, exec-veto loops).
-    // Detection: XLINGS_SUBOS_MODE=sandbox in env means we're already in
-    // one; tell the user to exit first.
+    // Refuse nested sandbox entry.
     if (utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox") {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
@@ -660,78 +796,99 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream) {
     auto& p = Config::paths();
     auto subos_dir = p.homeDir / "subos" / name;
 
-    auto proot = sandbox_detail_::locate_proot_(p.homeDir);
-    if (!proot) {
-        stream.emit(ErrorEvent{
-            .code = ErrorCode::NotFound,
-            .message = std::move(proot).error(),
-            .recoverable = false,
-            .hint = "see .agents/docs/sandbox-v4-design.md",
-        });
-        return 1;
+    // ── Backend selection ──
+    using sandbox_detail_::SandboxBackend;
+    using sandbox_detail_::BackendInfo;
+    std::optional<BackendInfo> backend;
+
+    if (preferred_backend == "bwrap") {
+        auto bin = sandbox_detail_::locate_bwrap_(p.homeDir);
+        if (!bin || !sandbox_detail_::probe_bwrap_(*bin)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "bwrap not available or namespace probe failed",
+                .recoverable = false,
+                .hint = "try: sudo apt install bubblewrap\n"
+                        "  or drop the backend argument to auto-detect",
+            });
+            return 1;
+        }
+        backend = BackendInfo{ SandboxBackend::Bwrap, *bin };
+    } else if (preferred_backend == "proot") {
+        auto bin = sandbox_detail_::locate_proot_(p.homeDir);
+        if (!bin) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = std::move(bin).error(),
+                .recoverable = false,
+            });
+            return 1;
+        }
+        backend = BackendInfo{ SandboxBackend::Proot, *bin };
+    } else {
+        // Auto-detect: bwrap preferred, proot fallback
+        backend = sandbox_detail_::detect_backend_(p.homeDir);
+        if (!backend) {
+            auto rc = sandbox_detail_::auto_install_backend_(p.homeDir, stream);
+            if (rc != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = "failed to install sandbox backend",
+                    .recoverable = false,
+                    .hint = "manually: sudo apt install bubblewrap (or: xlings install proot)",
+                });
+                return 1;
+            }
+            backend = sandbox_detail_::detect_backend_(p.homeDir);
+            if (!backend) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = "no sandbox backend available after install attempt",
+                    .recoverable = false,
+                });
+                return 1;
+            }
+        }
     }
 
-    // Resolve the real user identity. We rely on $USER for the username
-    // (the standard convention; setpwent / getpwuid is libc-heavy and
-    // proot would re-route it anyway). uid / gid come from getuid /
-    // getgid — the kernel value, since we're not using `-0`.
+    auto backend_name = (backend->type == SandboxBackend::Bwrap) ? "bwrap" : "proot";
+    log::debug("sandbox backend: {}", backend_name);
+
+    // ── Resolve user identity ──
     auto user = utils::get_env_or_default("USER");
-    if (user.empty()) user = "user";  // defensive; unset $USER is rare
+    if (user.empty()) user = "user";
     auto uid = ::getuid();
     auto gid = ::getgid();
 
-    // Lazy init: create sandbox-private dirs and /etc templates if not
-    // already there. Idempotent — repeat `subos use --sandbox` is cheap.
+    // ── Lazy init sandbox dirs ──
     sandbox_detail_::init_sandbox_dirs_(subos_dir, user, uid, gid);
 
     auto user_home = "/home/" + user;
     auto shell = utils::get_env_or_default("SHELL");
     if (shell.empty()) shell = "/bin/sh";
 
-    // /bin is sandbox-private and only contains the subos's shims, NOT
-    // the host's coreutils / shells. The user's $SHELL on a usrmerge
-    // distro is typically /bin/bash (a symlink to /usr/bin/bash on
-    // host), but proot doesn't follow that — inside the sandbox view
-    // /bin/bash resolves to <subos>/bin/bash which doesn't exist.
-    //
-    // Translate /bin/<x> → /usr/bin/<x> when the latter exists on
-    // host (which means it'll exist inside the sandbox too via the
-    // /usr RO bind). For all other $SHELL values (full path under
-    // /usr/bin, or path under ~/.xlings/data/xpkgs via the nested
-    // .xlings bind), use as-is — they already resolve correctly.
-    if (shell.starts_with("/bin/")) {
+    // proot-specific: translate /bin/<x> → /usr/bin/<x> since proot's
+    // /bin is host-bound but $SHELL might reference /bin/bash which on
+    // usrmerge is a symlink proot can't follow. bwrap doesn't need this
+    // — its --ro-bind / / makes /bin/bash the real host binary.
+    if (backend->type == SandboxBackend::Proot && shell.starts_with("/bin/")) {
         auto candidate = "/usr/bin/" + shell.substr(5);
         std::error_code ec;
         if (fs::exists(candidate, ec)) shell = std::move(candidate);
     }
 
+    // ── Event ──
     nlohmann::json payload;
     payload["name"] = name;
     payload["mode"] = "sandbox";
+    payload["backend"] = backend_name;
     payload["shell"] = shell;
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
-    // Flush before exec (buffered output is lost across execve(2)).
     std::cout.flush();
     std::cerr.flush();
 
-    // Set sandbox-friendly env before proot exec.
-    //
-    // The shell sources its profile (via the seeded .bashrc / config.fish
-    // in <subos>/home/<user>/), profile reads XLINGS_SUBOS_MODE and
-    // decorates PS1 with `<xsubos:<name>>` instead of the default
-    // `[xsubos:<name>]`.
-    //
-    // PATH is set explicitly here as a defensive baseline: interactive
-    // shells will re-set it via the profile (which knows about
-    // XLINGS_ACTIVE_SUBOS), but non-interactive shells (`echo ... |
-    // bash`, scripts run with `bash -c`) skip rc files. Without this
-    // explicit set, those see whatever PATH the host xlings inherited
-    // — typically full of /home/speak/.xlings/data/xpkgs/... and host
-    // subos bin paths — none of which point inside the sandbox. The
-    // baseline below front-loads the per-subos bin and the xlings home
-    // bin so installed shims are reachable, then falls through to host
-    // /usr/bin etc. (visible via the /usr RO bind).
+    // ── Env (unified, backend-independent) ──
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
     platform::set_env_variable("HOME", user_home);
@@ -739,16 +896,25 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream) {
         "{}/.xlings/subos/{}/bin:{}/.xlings/bin:/usr/local/bin:/usr/bin:/bin",
         user_home, name, user_home));
 
-    auto argv = sandbox_detail_::build_proot_argv_(
-        *proot, subos_dir, p.homeDir, user, shell);
+    // ── Build argv ──
+    std::vector<std::string> argv;
+    if (backend->type == SandboxBackend::Bwrap) {
+        argv = sandbox_detail_::build_bwrap_argv_(
+            backend->binary, subos_dir, p.homeDir, user, shell);
+    } else {
+        argv = sandbox_detail_::build_proot_argv_(
+            backend->binary, subos_dir, p.homeDir, user, shell);
+    }
+
+    // ── Exec ──
     std::vector<char*> c_argv;
     c_argv.reserve(argv.size() + 1);
     for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
     c_argv.push_back(nullptr);
 
     ::execvp(c_argv[0], c_argv.data());
-    log::error("failed to exec proot '{}': {}", proot->string(),
-               std::strerror(errno));
+    log::error("failed to exec {} '{}': {}", backend_name,
+               backend->binary.string(), std::strerror(errno));
     return 127;
 #endif
 }
@@ -776,14 +942,13 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream) {
 // the parent shell's env, which exec(2) cannot do). Users who really
 // want flat semantics type `exit` first.
 int use_spawn_shell(const std::string& name, EventStream& stream,
-                    bool sandbox = false)
+                    bool sandbox = false,
+                    const std::string& sandbox_backend = "")
 {
-    // V4: --sandbox is a `use`-time modifier. Dispatch to the proot
-    // path when set; otherwise the regular env-spawn shell behavior
-    // (this function's body) runs unchanged. Old V1.1-V1.3 detection
-    // of the `sandbox-shell` field in .xlings.json is GONE — the user
-    // explicitly opts into sandbox via the flag now.
-    if (sandbox) return use_sandbox_mode_(name, stream);
+    // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
+    // sandbox path when set; auto-detect backend (bwrap preferred, proot
+    // fallback) or use the explicitly requested one.
+    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
@@ -1051,6 +1216,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
         std::string mode = "spawn";        // default
         std::string shell_kind = "sh";
         bool sandbox = false;
+        std::string sandbox_backend;       // "" = auto, "bwrap", "proot"
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -1066,6 +1232,14 @@ export int run(int argc, char* argv[], EventStream& stream) {
             }
             else if (a == "--sandbox") {
                 sandbox = true;
+                // Optional backend argument: --sandbox bwrap | --sandbox proot
+                if (i + 1 < argc) {
+                    std::string next = argv[i + 1];
+                    if (next == "bwrap" || next == "proot") {
+                        sandbox_backend = next;
+                        ++i;
+                    }
+                }
             }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
@@ -1079,7 +1253,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
 
         if (mode == "global") return use_global(name, stream);
         if (mode == "shell")  return use_emit_shell(name, shell_kind, stream);
-        return use_spawn_shell(name, stream, sandbox);
+        return use_spawn_shell(name, stream, sandbox, sandbox_backend);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
