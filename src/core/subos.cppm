@@ -209,6 +209,31 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
     // user project root" — boundary check terminates the walk.
     fs::create_directories(subos_dir / "subos");
 
+    // Pseudo-root for proot chroot (`-r`). Using an empty directory
+    // that is NOT the subos_dir itself avoids a proot detranslate_path
+    // bug: when the subos rootfs is under `~/.xlings/` and proot
+    // also has `--bind=~/.xlings:~/.xlings`, the host path
+    // `~/.xlings/subos/<name>/usr` is ambiguously interpretable as
+    // both "rootfs + /usr" (→ matches --bind=/usr:/usr) and "~/.xlings
+    // bind + subos/<name>/usr" (→ the real subos dir). proot chooses
+    // the former, causing `cd subos/<name>/usr && ls` to show host
+    // /usr instead of the subos's own usr/.
+    //
+    // Fix: use `<subos>/sandbox-root/` (always empty, mode 0555) as
+    // the proot chroot root. Since `sandbox-root/usr` never exists,
+    // the detranslate prefix-strip cannot produce `/usr`, and the
+    // ambiguity disappears. All real content is bind-mounted in.
+    {
+        auto sandbox_root = subos_dir / "sandbox-root";
+        fs::create_directories(sandbox_root);
+        std::error_code perm_ec;
+        fs::permissions(sandbox_root,
+                        fs::perms::owner_read | fs::perms::owner_exec |
+                        fs::perms::group_read | fs::perms::group_exec |
+                        fs::perms::others_read | fs::perms::others_exec,
+                        fs::perm_options::replace, perm_ec);
+    }
+
     auto try_write = [&](const fs::path& path, std::string_view body) {
         if (fs::exists(path)) return;
         platform::write_string_to_file(path.string(), std::string(body));
@@ -610,9 +635,14 @@ build_proot_argv_(const fs::path& proot_bin,
                   const std::string& shell_path)
 {
     auto user_home = "/home/" + user;
+    // Use sandbox-root/ as the chroot root instead of subos_dir itself.
+    // This avoids the proot detranslate_path bug where host paths under
+    // subos_dir (e.g. subos/<name>/usr) get mis-translated to /usr when
+    // the rootfs prefix is stripped. See init_sandbox_dirs_ for details.
+    auto proot_root = subos_dir / "sandbox-root";
     std::vector<std::string> argv = {
         proot_bin.string(),
-        "-r", subos_dir.string(),   // chroot (not -R: no auto-binds)
+        "-r", proot_root.string(),
         "--bind=/proc:/proc",
         "--bind=/sys:/sys",
         "--bind=/dev:/dev",
