@@ -1071,6 +1071,11 @@ public:
             ctx.xpkg_dir = node.pkgFile.parent_path();
             ctx.project_data_dir = Config::project_data_dir();
             ctx.subos_sysrootdir = Config::paths().subosDir.string();
+            // pkgindex_dir: package index repo root (for custom module loading).
+            // pkgFile layout: <pkgindex>/pkgs/<letter>/<name>.lua → 3 levels up.
+            ctx.pkgindex_dir = node.pkgFile.parent_path()
+                                           .parent_path()
+                                           .parent_path().string();
             ctx.deps_list = node.deps;                  // legacy union (compat)
             ctx.runtime_deps_list = node.runtime_deps;  // split form
             ctx.build_deps_list   = node.build_deps;
@@ -1514,6 +1519,9 @@ public:
         ctx.install_dir = installDir;
         ctx.xpkg_dir = pkgFile.parent_path();
         ctx.subos_sysrootdir = Config::paths().subosDir.string();
+        ctx.pkgindex_dir = pkgFile.parent_path()
+                                  .parent_path()
+                                  .parent_path().string();
 
         if (executor.has_hook(mcpplibs::xpkg::HookType::Uninstall)) {
             log::debug("uninstalling {}...", name);
