@@ -963,6 +963,16 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     } else {
         argv = sandbox_detail_::build_proot_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell);
+        // proot v5.4.0 removed seccomp event ordering guards that were
+        // present in v5.3.0 (IS_IN_SYSENTER guard in event.c). Under
+        // high syscall load (e.g. npm installing 500+ packages), seccomp
+        // traps and PTRACE_SYSCALL events arrive out of order, causing
+        // translate_syscall() to run on inconsistent tracee state →
+        // talloc pool corruption → double free / malloc crash.
+        // PROOT_NO_SECCOMP=1 forces the traditional PTRACE_SYSCALL-only
+        // flow, avoiding the event ordering issue. Slightly slower but
+        // completely stable.
+        platform::set_env_variable("PROOT_NO_SECCOMP", "1");
     }
 
     std::vector<char*> c_argv;
