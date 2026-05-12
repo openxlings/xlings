@@ -6,6 +6,7 @@ import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.log;
+import xlings.core.semver;
 import xlings.platform;
 
 export namespace xlings::xim {
@@ -87,11 +88,13 @@ resolve(IndexManager& index,
             if (latestIt != versions.end() && !latestIt->second.ref.empty()) {
                 return latestIt->second.ref;
             }
-            std::string best;
+            std::vector<std::string> available;
             for (auto& [ver, _] : versions) {
-                if (ver != "latest" && ver > best) best = ver;
+                if (ver != "latest") available.push_back(ver);
             }
-            return best;
+            if (available.empty()) return std::string{};
+            semver::sort_desc(available);
+            return available[0];
         };
 
         // Load full package data to get deps and version info
@@ -139,12 +142,14 @@ resolve(IndexManager& index,
                     if (latestIt != versions.end() && !latestIt->second.ref.empty()) {
                         node.version = latestIt->second.ref;
                     } else {
-                        // Pick lexicographically greatest non-"latest" version
-                        std::string best;
+                        std::vector<std::string> available;
                         for (auto& [ver, _] : versions) {
-                            if (ver != "latest" && ver > best) best = ver;
+                            if (ver != "latest") available.push_back(ver);
                         }
-                        node.version = best;
+                        if (!available.empty()) {
+                            semver::sort_desc(available);
+                            node.version = available[0];
+                        }
                     }
                 }
             }
