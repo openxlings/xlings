@@ -8,6 +8,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;
+import xlings.core.semver;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -165,26 +166,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
             log::error("no versions installed for '{}'", target);
             return 1;
         }
-        // sort_desc: highest version first
-        std::ranges::sort(all, [](const std::string& a, const std::string& b) {
-            auto split = [](const std::string& s) {
-                std::vector<int> parts;
-                std::istringstream iss(s);
-                std::string part;
-                while (std::getline(iss, part, '.')) {
-                    int n = 0;
-                    std::from_chars(part.data(), part.data() + part.size(), n);
-                    parts.push_back(n);
-                }
-                return parts;
-            };
-            auto pa = split(strip_namespace(a));
-            auto pb = split(strip_namespace(b));
-            for (std::size_t i = 0; i < std::min(pa.size(), pb.size()); ++i) {
-                if (pa[i] != pb[i]) return pa[i] > pb[i];
-            }
-            return pa.size() > pb.size();
-        });
+        semver::sort_desc(all);
         resolved = all[0];
     } else {
         // Fuzzy match version

@@ -8,6 +8,7 @@ import xlings.core.log;
 import xlings.core.xim.index;
 import xlings.core.xim.repo;
 import xlings.core.xim.libxpkg.types.type;
+import xlings.core.semver;
 
 namespace xpkg = mcpplibs::xpkg;
 
@@ -110,34 +111,38 @@ std::string select_version_(const xpkg::Package& pkg,
 
     auto& versions = platformIt->second;
     if (!versionHint.empty()) {
+        // Direct exact match (handles "latest" ref resolution too)
         auto directIt = versions.find(versionHint);
         if (directIt != versions.end()) {
             return directIt->second.ref.empty() ? versionHint : directIt->second.ref;
         }
-        std::string best;
+        // Semver range/prefix matching against available versions
+        std::vector<std::string> available;
         for (auto& [ver, _] : versions) {
-            if (ver == "latest") continue;
-            if (ver.rfind(versionHint, 0) == 0 && ver > best) {
-                best = ver;
-            }
+            if (ver != "latest") available.push_back(ver);
         }
-        return best;
+        return semver::select_best(available, versionHint);
     }
 
+    // No hint: resolve "latest" ref or pick highest
     auto latestIt = versions.find("latest");
     if (latestIt != versions.end() && !latestIt->second.ref.empty()) {
         return latestIt->second.ref;
     }
 
-    std::string best;
+    std::vector<std::string> available;
     for (auto& [ver, _] : versions) {
-        if (ver != "latest" && ver > best) best = ver;
+        if (ver != "latest") available.push_back(ver);
+    }
+    if (!available.empty()) {
+        semver::sort_desc(available);
+        return available[0];
     }
     // If no numbered version found but "latest" exists (no ref), use it directly
-    if (best.empty() && latestIt != versions.end()) {
+    if (latestIt != versions.end()) {
         return "latest";
     }
-    return best;
+    return {};
 }
 
 std::string make_canonical_name_(const std::string& namespaceName,
