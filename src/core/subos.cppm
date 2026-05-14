@@ -303,14 +303,27 @@ bool is_mounted_(const fs::path& path) {
 }
 
 // Mount an image file at mountpoint. Supports multi-terminal reuse.
-int mount_image_(const fs::path& img, const fs::path& mountpoint) {
+// After mount, chown the mountpoint root to the calling user so
+// subsequent directory/file creation doesn't need sudo.
+int mount_image_(const fs::path& img, const fs::path& mountpoint,
+                 const std::string& user = {}) {
     fs::create_directories(mountpoint);
     if (is_mounted_(mountpoint)) return 0;  // already mounted
 
     // sudo mount (universally available)
     auto cmd = "sudo mount -o loop " + img.string() + " "
                + mountpoint.string();
-    return std::system(cmd.c_str());
+    auto rc = std::system(cmd.c_str());
+    if (rc != 0) return rc;
+
+    // ext4 root dir is owned by root after mkfs; chown to real user
+    // so sandbox init can create dirs without sudo.
+    if (!user.empty()) {
+        auto chown_cmd = "sudo chown " + user + ":" + user + " "
+                         + mountpoint.string();
+        std::system(chown_cmd.c_str());
+    }
+    return 0;
 }
 
 // Unmount an image file.
@@ -1012,7 +1025,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
             });
             return 1;
         }
-        auto rc = sandbox_detail_::mount_image_(img, image_mountpoint);
+        auto rc = sandbox_detail_::mount_image_(img, image_mountpoint, user);
         if (rc != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Internal,
