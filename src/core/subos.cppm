@@ -11,6 +11,7 @@ module;
 #include <cerrno>
 #include <cstring>
 #include <unistd.h>
+#include <sys/wait.h>
 #endif
 
 export module xlings.core.subos;
@@ -122,6 +123,36 @@ void update_current_symlink_(EventStream& stream,
 // retain those fields; V4 silently ignores them, and `subos use
 // --sandbox` works on them because init_sandbox_dirs_ is idempotent.
 // ─────────────────────────────────────────────────────────────────────
+
+// ── Storage mode (V6) ──────────────────────────────────────────────
+// Storage isolation mode for sandbox data. Set at subos creation time
+// via `--storage <mode>`, persisted in subos/.xlings.json["storage"].
+// Non-shared modes force sandbox entry (mount namespace required).
+enum class StorageMode { Shared, Image, Tmpfs };
+
+inline std::string storage_to_string_(StorageMode m) {
+    switch (m) {
+    case StorageMode::Image: return "image";
+    case StorageMode::Tmpfs: return "tmpfs";
+    default: return "shared";
+    }
+}
+
+inline StorageMode storage_from_string_(const std::string& s) {
+    if (s == "image") return StorageMode::Image;
+    if (s == "tmpfs") return StorageMode::Tmpfs;
+    return StorageMode::Shared;
+}
+
+// Read storage mode from subos config file.
+StorageMode read_storage_mode_(const fs::path& subos_dir) {
+    auto cfg = subos_dir / ".xlings.json";
+    if (!fs::exists(cfg)) return StorageMode::Shared;
+    auto json = read_config_json_(cfg);
+    if (json.contains("storage") && json["storage"].is_string())
+        return storage_from_string_(json["storage"].get<std::string>());
+    return StorageMode::Shared;
+}
 
 namespace sandbox_detail_ {
 
@@ -254,13 +285,48 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
 
 #endif // __linux__ / __APPLE__
 
+// ── Image storage helpers (V6) ────────────────────────────────────
+
+// Create a sparse ext4 image file. Idempotent.
+int init_image_(const fs::path& img, const std::string& size) {
+    if (fs::exists(img)) return 0;
+    auto truncate_cmd = "truncate -s " + size + " " + img.string();
+    if (std::system(truncate_cmd.c_str()) != 0) return 1;
+    auto mkfs_cmd = "mkfs.ext4 -F -m 0 -q " + img.string() + " 2>/dev/null";
+    return std::system(mkfs_cmd.c_str());
+}
+
+// Check if a path is already a mountpoint.
+bool is_mounted_(const fs::path& path) {
+    auto cmd = "mountpoint -q " + path.string() + " 2>/dev/null";
+    return std::system(cmd.c_str()) == 0;
+}
+
+// Mount an image file at mountpoint. Supports multi-terminal reuse.
+int mount_image_(const fs::path& img, const fs::path& mountpoint) {
+    fs::create_directories(mountpoint);
+    if (is_mounted_(mountpoint)) return 0;  // already mounted
+
+    // sudo mount (universally available)
+    auto cmd = "sudo mount -o loop " + img.string() + " "
+               + mountpoint.string();
+    return std::system(cmd.c_str());
+}
+
+// Unmount an image file.
+int unmount_image_(const fs::path& mountpoint) {
+    if (!is_mounted_(mountpoint)) return 0;
+    auto cmd = "sudo umount " + mountpoint.string() + " 2>/dev/null";
+    return std::system(cmd.c_str());
+}
+
 } // namespace sandbox_detail_
 
-// Create a regular subos. V4: there is only one create path; sandbox
-// is a `use`-time modifier (`--sandbox`), not a create-time property.
-// The sandbox-private dirs (<subos>/{home/<user>, tmp, etc/...}) are
-// laid down lazily on first `subos use --sandbox`, not here.
+// Create a subos. V6: storage mode is a creation-time property
+// (`--storage image|tmpfs|shared`). Non-shared modes force sandbox
+// entry at use-time. The sandbox-private dirs are laid down lazily.
 export int create(const std::string& name, const fs::path& customDir,
+                  StorageMode storage, const std::string& imageSize,
                   EventStream& stream) {
     auto& p = Config::paths();
 
@@ -307,7 +373,26 @@ export int create(const std::string& name, const fs::path& customDir,
     if (!fs::exists(subosConfig)) {
         nlohmann::json j;
         j["workspace"] = nlohmann::json::object();
+        if (storage != StorageMode::Shared)
+            j["storage"] = storage_to_string_(storage);
+        if (storage == StorageMode::Image)
+            j["imageSize"] = imageSize;
         write_config_json_(subosConfig, j);
+    }
+
+    // Image mode: create sparse ext4 image
+    if (storage == StorageMode::Image) {
+        auto rc = sandbox_detail_::init_image_(dir / "home.img", imageSize);
+        if (rc != 0) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "failed to create home.img",
+                .recoverable = false,
+                .hint = "ensure mkfs.ext4 is available (e2fsprogs)",
+            });
+            return 1;
+        }
+        fs::create_directories(dir / ".mountpoint");
     }
 
     // Create shim hardlinks from xlings binary
@@ -325,8 +410,15 @@ export int create(const std::string& name, const fs::path& customDir,
     nlohmann::json payload;
     payload["name"] = name;
     payload["dir"]  = dir.string();
+    payload["storage"] = storage_to_string_(storage);
     stream.emit(DataEvent{"subos_created", payload.dump()});
     return 0;
+}
+
+// Back-compat overload (no storage argument → shared).
+export int create(const std::string& name, const fs::path& customDir,
+                  EventStream& stream) {
+    return create(name, customDir, StorageMode::Shared, "50G", stream);
 }
 
 // `xlings subos use` modes:
@@ -575,19 +667,15 @@ struct SandboxBind {
 std::vector<SandboxBind>
 sandbox_binds_(const fs::path& subos_dir,
                const fs::path& host_xlings_home,
-               const std::string& user)
+               const std::string& user,
+               StorageMode storage = StorageMode::Shared,
+               const fs::path& mountpoint = {})
 {
     auto etc = subos_dir / "etc";
     auto user_home = "/home/" + user;
 
     std::error_code ec;
 
-    // Helper: add a host-RO bind only if the source path exists on this
-    // system. Different distros have different layouts — /etc/alternatives
-    // is Debian/Ubuntu only, /etc/pki is Fedora/RHEL only, /usr/lib64
-    // may not exist on 32-bit or some ARM, /etc/localtime may be absent
-    // in minimal containers. Skipping non-existent sources prevents
-    // proot/bwrap from erroring with "No such file or directory".
     auto try_ro = [&](std::vector<SandboxBind>& v,
                       const char* src, const char* dst) {
         if (fs::exists(src, ec))
@@ -600,24 +688,30 @@ sandbox_binds_(const fs::path& subos_dir,
     try_ro(binds, "/usr", "/usr");
     try_ro(binds, "/bin", "/bin");
     try_ro(binds, "/usr/lib", "/lib");
-    try_ro(binds, "/usr/lib64", "/lib64");   // may not exist on 32-bit / ARM
+    try_ro(binds, "/usr/lib64", "/lib64");
 
-    // ── Host RO: /etc (by-need, not entire /etc) ──
-    // Only paths with functional need. NOT /etc/hostname, /etc/fstab,
-    // /etc/crontab, /etc/NetworkManager (no need + info leak).
-    try_ro(binds, "/etc/resolv.conf", "/etc/resolv.conf");   // DNS
-    try_ro(binds, "/etc/ld.so.cache", "/etc/ld.so.cache");   // loader cache
-    try_ro(binds, "/etc/ssl", "/etc/ssl");                    // TLS CA (most distros)
-    try_ro(binds, "/etc/pki", "/etc/pki");                    // TLS CA (Fedora/RHEL)
-    try_ro(binds, "/etc/alternatives", "/etc/alternatives");  // symlink dispatch (Debian/Ubuntu)
-    try_ro(binds, "/etc/localtime", "/etc/localtime");        // timezone
+    // ── Host RO: /etc (by-need) ──
+    try_ro(binds, "/etc/resolv.conf", "/etc/resolv.conf");
+    try_ro(binds, "/etc/ld.so.cache", "/etc/ld.so.cache");
+    try_ro(binds, "/etc/ssl", "/etc/ssl");
+    try_ro(binds, "/etc/pki", "/etc/pki");
+    try_ro(binds, "/etc/alternatives", "/etc/alternatives");
+    try_ro(binds, "/etc/localtime", "/etc/localtime");
 
-    // ── Sandbox RW: private overrides ──
-    binds.push_back({(subos_dir / "home").string(), "/home", false});
+    // ── Sandbox RW: private overrides (storage-dependent) ──
+    if (storage == StorageMode::Shared) {
+        binds.push_back({(subos_dir / "home").string(), "/home", false});
+        binds.push_back({(subos_dir / "tmp").string(), "/tmp", false});
+    } else if (storage == StorageMode::Image) {
+        // home from mounted image; tmp uses bwrap --tmpfs (added in argv)
+        binds.push_back({mountpoint.string(), "/home", false});
+    }
+    // tmpfs: home and tmp handled by bwrap --tmpfs (no bind needed)
+
+    // xlings shared — always bound regardless of storage mode
     binds.push_back({host_xlings_home.string(), user_home + "/.xlings", false});
-    binds.push_back({(subos_dir / "tmp").string(), "/tmp", false});
 
-    // ── Sandbox: NSS templates (real user + root only) ──
+    // ── Sandbox: NSS templates ──
     binds.push_back({(etc / "passwd").string(), "/etc/passwd", false});
     binds.push_back({(etc / "group").string(), "/etc/group", false});
     binds.push_back({(etc / "hosts").string(), "/etc/hosts", false});
@@ -700,7 +794,9 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   const fs::path& subos_dir,
                   const fs::path& host_xlings_home,
                   const std::string& user,
-                  const std::string& shell_path)
+                  const std::string& shell_path,
+                  StorageMode storage = StorageMode::Shared,
+                  const fs::path& mountpoint = {})
 {
     auto user_home = "/home/" + user;
     std::vector<std::string> argv = {
@@ -709,12 +805,23 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
         "--proc", "/proc",
     };
 
-    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user)) {
+    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user,
+                                   storage, mountpoint)) {
         if (b.readonly) {
             argv.insert(argv.end(), {"--ro-bind", b.src, b.dst});
         } else {
             argv.insert(argv.end(), {"--bind", b.src, b.dst});
         }
+    }
+
+    // tmpfs mode: home and tmp are pure memory (exit = gone)
+    if (storage == StorageMode::Tmpfs) {
+        argv.insert(argv.end(), {"--tmpfs", user_home});
+        argv.insert(argv.end(), {"--tmpfs", "/tmp"});
+    }
+    // image mode: tmp uses tmpfs (home is bind-mounted from .mountpoint)
+    if (storage == StorageMode::Image) {
+        argv.insert(argv.end(), {"--tmpfs", "/tmp"});
     }
 
     argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path, "-i"});
@@ -806,6 +913,9 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     auto& p = Config::paths();
     auto subos_dir = p.homeDir / "subos" / name;
 
+    // ── Storage mode (V6) ──
+    auto storage = read_storage_mode_(subos_dir);
+
     // ── Resolve user ──
 #if defined(_WIN32)
     auto user = utils::get_env_or_default("USERNAME");
@@ -818,14 +928,24 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     auto sandbox_home = (subos_dir / "home" / user).string();
     auto sandbox_tmp = (subos_dir / "tmp").string();
 
-    // ── Lazy init sandbox dirs ──
-    fs::create_directories(subos_dir / "home" / user);
-    fs::create_directories(subos_dir / "tmp");
+    // Image mountpoint (populated in the Linux block below if image mode)
+    fs::path image_mountpoint;
+    if (storage == StorageMode::Image)
+        image_mountpoint = subos_dir / ".mountpoint";
+
+    // ── Lazy init sandbox dirs (shared mode only) ──
+    if (storage == StorageMode::Shared) {
+        fs::create_directories(subos_dir / "home" / user);
+        fs::create_directories(subos_dir / "tmp");
+    }
 
 #if defined(__linux__) || defined(__APPLE__)
-    // Seed shell rc files so profile is sourced (prompt pill + PATH)
-    {
+    // Seed shell rc files so profile is sourced (prompt pill + PATH).
+    // For image mode, rc files go into the mounted image (deferred until
+    // after mount in the Linux block below). For shared/tmpfs, seed now.
+    if (storage == StorageMode::Shared) {
         auto user_home_dir = subos_dir / "home" / user;
+        fs::create_directories(user_home_dir);
         auto try_write = [](const fs::path& path, std::string_view body) {
             if (fs::exists(path)) return;
             platform::write_string_to_file(path.string(), std::string(body));
@@ -869,11 +989,75 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     // Linux L3: FS view isolation via bwrap/proot
     // ═══════════════════════════════════════════════════════════════
 
+    // image/tmpfs storage requires bwrap (mount namespace needed)
+    if (storage != StorageMode::Shared && !preferred_backend.empty()
+        && preferred_backend == "proot") {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "image/tmpfs storage requires bwrap sandbox backend",
+            .recoverable = false,
+            .hint = "run: xlings install bwrap",
+        });
+        return 1;
+    }
+
+    // ── Image mode: mount image before sandbox entry ──
+    if (storage == StorageMode::Image) {
+        auto img = subos_dir / "home.img";
+        if (!fs::exists(img)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "home.img not found — was this subos created with --storage image?",
+                .recoverable = false,
+            });
+            return 1;
+        }
+        auto rc = sandbox_detail_::mount_image_(img, image_mountpoint);
+        if (rc != 0) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "failed to mount home.img",
+                .recoverable = false,
+                .hint = "ensure you have sudo permission for mount",
+            });
+            return 1;
+        }
+    }
+
     // /etc templates for Linux sandbox (NSS)
     {
         auto uid = ::getuid();
         auto gid = ::getgid();
         sandbox_detail_::init_sandbox_dirs_(subos_dir, user, uid, gid);
+        // For image mode, init home and seed shell rc files inside the mount
+        if (storage == StorageMode::Image) {
+            auto mp_home = image_mountpoint / user;
+            fs::create_directories(mp_home);
+            auto try_write = [](const fs::path& path, std::string_view body) {
+                if (fs::exists(path)) return;
+                platform::write_string_to_file(path.string(), std::string(body));
+            };
+            try_write(mp_home / ".bashrc",
+                "# xlings sandbox bashrc\n"
+                "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
+                "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
+                "fi\n");
+            try_write(mp_home / ".profile",
+                "# xlings sandbox profile\n"
+                "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
+            auto fish_dir = mp_home / ".config" / "fish";
+            fs::create_directories(fish_dir);
+            try_write(fish_dir / "config.fish",
+                "# xlings sandbox fish config\n"
+                "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+                "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+                "end\n");
+            try_write(mp_home / ".zshrc",
+                "# xlings sandbox zshrc\n"
+                "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
+                "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
+                "fi\n");
+        }
     }
 
     // Backend selection
@@ -939,8 +1123,24 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
         }
     }
 
+    // image/tmpfs requires bwrap — reject proot after auto-detect
+    if (storage != StorageMode::Shared
+        && backend->type != SandboxBackend::Bwrap) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = storage_to_string_(storage)
+                       + " storage requires bwrap (proot does not support mount namespace)",
+            .recoverable = false,
+            .hint = "run: xlings install bwrap",
+        });
+        if (storage == StorageMode::Image)
+            sandbox_detail_::unmount_image_(image_mountpoint);
+        return 1;
+    }
+
     auto backend_name = (backend->type == SandboxBackend::Bwrap) ? "bwrap" : "proot";
-    log::debug("sandbox backend: {}", backend_name);
+    log::debug("sandbox backend: {} storage: {}", backend_name,
+               storage_to_string_(storage));
 
     auto user_home = "/home/" + user;
     auto shell = utils::get_env_or_default("SHELL");
@@ -948,6 +1148,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
 
     payload["backend"] = backend_name;
     payload["shell"] = shell;
+    payload["storage"] = storage_to_string_(storage);
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
     platform::set_env_variable("HOME", user_home);
@@ -958,19 +1159,11 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     std::vector<std::string> argv;
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
-            backend->binary, subos_dir, p.homeDir, user, shell);
+            backend->binary, subos_dir, p.homeDir, user, shell,
+            storage, image_mountpoint);
     } else {
         argv = sandbox_detail_::build_proot_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell);
-        // proot v5.4.0 removed seccomp event ordering guards that were
-        // present in v5.3.0 (IS_IN_SYSENTER guard in event.c). Under
-        // high syscall load (e.g. npm installing 500+ packages), seccomp
-        // traps and PTRACE_SYSCALL events arrive out of order, causing
-        // translate_syscall() to run on inconsistent tracee state →
-        // talloc pool corruption → double free / malloc crash.
-        // PROOT_NO_SECCOMP=1 forces the traditional PTRACE_SYSCALL-only
-        // flow, avoiding the event ordering issue. Slightly slower but
-        // completely stable.
         platform::set_env_variable("PROOT_NO_SECCOMP", "1");
     }
 
@@ -978,6 +1171,28 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     c_argv.reserve(argv.size() + 1);
     for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
     c_argv.push_back(nullptr);
+
+    // Image mode: fork+exec+wait so we can unmount after sandbox exits.
+    // Shared/tmpfs: execvp replaces the process (no cleanup needed).
+    if (storage == StorageMode::Image) {
+        auto pid = ::fork();
+        if (pid < 0) {
+            log::error("fork failed: {}", std::strerror(errno));
+            sandbox_detail_::unmount_image_(image_mountpoint);
+            return 1;
+        }
+        if (pid == 0) {
+            // Child: enter sandbox
+            ::execvp(c_argv[0], c_argv.data());
+            log::error("failed to exec {}: {}", backend_name, std::strerror(errno));
+            ::_exit(127);
+        }
+        // Parent: wait then unmount
+        int status = 0;
+        ::waitpid(pid, &status, 0);
+        sandbox_detail_::unmount_image_(image_mountpoint);
+        return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    }
 
     ::execvp(c_argv[0], c_argv.data());
     log::error("failed to exec {} '{}': {}", backend_name,
@@ -1076,6 +1291,19 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
                     const std::string& sandbox_backend = "")
 {
+    // V6: non-shared storage modes force sandbox entry (mount namespace
+    // required for image mount / tmpfs). Auto-enable with a hint.
+    {
+        auto& p = Config::paths();
+        auto subos_dir = p.homeDir / "subos" / name;
+        auto storage = read_storage_mode_(subos_dir);
+        if (storage != StorageMode::Shared && !sandbox) {
+            log::info("storage={} requires sandbox, entering sandbox mode...",
+                      storage_to_string_(storage));
+            sandbox = true;
+        }
+    }
+
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
     // fallback) or use the explicitly requested one.
@@ -1308,13 +1536,27 @@ export int run(int argc, char* argv[], EventStream& stream) {
 
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
-        // Parse: xlings subos new <name>
-        // (--sandbox-shell removed in 0.4.23 V4: sandbox is a `use` modifier
-        // now, not a creation property — see .agents/docs/sandbox-v4-design.md)
+        // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>]
         std::string name;
+        StorageMode storage = StorageMode::Shared;
+        std::string imageSize = "50G";
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
-            if (!a.empty() && a[0] != '-' && name.empty()) {
+            if (a == "--storage" && i + 1 < argc) {
+                auto s = std::string(argv[++i]);
+                if (s == "image") storage = StorageMode::Image;
+                else if (s == "tmpfs") storage = StorageMode::Tmpfs;
+                else if (s == "shared") storage = StorageMode::Shared;
+                else {
+                    usageError("unknown storage mode: " + s
+                               + " (valid: shared, image, tmpfs)");
+                    return 1;
+                }
+            }
+            else if (a == "--image-size" && i + 1 < argc) {
+                imageSize = argv[++i];
+            }
+            else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
             else {
@@ -1326,7 +1568,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
-        return create(name, {}, stream);
+        return create(name, {}, storage, imageSize, stream);
     }
     if (sub == "use") {
         // Flags supported:
