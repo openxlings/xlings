@@ -13,10 +13,12 @@ host 上可以直接浏览沙箱内的文件和目录结构。对于隐私敏感
 ## 二、设计原则
 
 1. **storage 是 subos 的创建时属性**，不是运行时选项
-2. **非 shared 模式自动进入 sandbox**，用户无需手动加 `--sandbox`
+2. **storage 与 sandbox 是正交两个维度**（V4 一致）：shell-level 永远只换 env/PATH；image / tmpfs 只在 `--sandbox` 路径里被消费
 3. **xlings 共享部分（`~/.xlings`）始终复用**，不受 storage 模式影响
 4. **向后兼容**，现有 subos 默认 `shared`，行为不变
 5. **工具链自管理**，所有依赖通过 xim 包生态安装
+
+> **设计变更**: 早期 V6 (2026-05) 让"非 shared 自动进入 sandbox"，把 storage 和 sandbox 焊死成一个轴，违反 V4 正交原则。该耦合已在 followup PR (`fix/subos-sandbox-ux-hotfix`) 移除 — 详见 `sandbox-v6-followup-fixes-2026-05-15.md`。
 
 ## 三、存储模式
 
@@ -28,10 +30,16 @@ xlings subos new dev                          # 默认 shared
 xlings subos new dev --storage image          # ext4 镜像
 xlings subos new dev --storage tmpfs          # 内存盘
 
-# 使用时行为由 storage 自动决定
-xlings subos use dev                          # shared → shell 或 sandbox 皆可
-xlings subos use dev                          # image  → 自动 sandbox，提示用户
-xlings subos use dev --sandbox                # 任意模式均可显式指定 sandbox
+# 使用时 storage 与 sandbox 维度正交（修订自早期 V6 设计）
+xlings subos use dev                          # shell-level（env/PATH 切换）
+                                              # storage=image|tmpfs 时打 info：
+                                              #   "storage=X is sandbox-only;
+                                              #    entering shell-level
+                                              #    (use --sandbox to activate)"
+xlings subos use dev --sandbox                # sandbox-level
+                                              # storage=image → 挂 image
+                                              # storage=tmpfs → tmpfs
+                                              # storage=shared → 普通 bind
 ```
 
 ### 3.2 模式对比
@@ -42,26 +50,24 @@ xlings subos use dev --sandbox                # 任意模式均可显式指定 s
 | `image` | 一个 `.img` 文件 | 是 | ~0% | mount 时 | 支持 | 不支持 |
 | `tmpfs` | 无（内存中） | 否 | 0% | 否 | 支持 | 不支持 |
 
-### 3.3 use 时的 storage → sandbox 自动映射
+### 3.3 use 时的 storage / sandbox 维度（修订）
 
 ```
 use_spawn_shell() 入口:
     ↓
-读取 subos/.xlings.json → storage = ?
+sandbox 参数 = 用户显式提供 (--sandbox or not)，与 storage 无关
     ↓
-shared:
-    sandbox 参数为准（当前行为不变）
-    ├── 用户加了 --sandbox → sandbox 模式
-    └── 用户没加 --sandbox → shell 模式
-    
-image / tmpfs:
-    强制走 sandbox 模式（数据隔离依赖 mount namespace）
-    ├── 用户没加 --sandbox → 自动启用，输出提示：
-    │   "[info] storage=image requires sandbox, entering sandbox mode..."
-    └── 用户加了 --sandbox → 正常进入
-    
-    若 sandbox backend 不可用（如只有 proot）:
-    → 报错："image/tmpfs storage requires bwrap sandbox backend"
+sandbox=false:
+    走 shell-level 路径 (env/PATH 切换，无挂载、无特权操作)
+    ├── storage=shared → 直接进
+    └── storage=image|tmpfs → 打一行 info 提示 storage 未激活，进 shell
+
+sandbox=true:
+    走 sandbox 路径 (bwrap 优先, proot fallback)
+    ├── storage=shared → 普通 bind mount 模板
+    ├── storage=image  → 挂 home.img 到 .mountpoint
+    ├── storage=tmpfs  → bwrap --tmpfs
+    └── image/tmpfs + backend=proot → 拒绝，提示 bwrap 不可用真实原因
 ```
 
 ## 四、磁盘布局

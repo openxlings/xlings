@@ -2,13 +2,22 @@
 
 ## 2026
 
+### 2026-05 — Subos sandbox UX hotfix (V6 followup)
+
+- **storage 与 sandbox 解耦**:`xlings subos use <name>` 不再因 `storage=image|tmpfs` 自动强制 `--sandbox`。V4 的"两个维度正交"原则恢复 —— shell-level 永远只换 env/PATH，image/tmpfs 仅在显式 `--sandbox` 时被消费。shell-level 进入非 shared subos 时打一行 info 提示 storage 未激活。
+- **`probe_bwrap_` 改用 `platform::run_command_capture` 并透出真实 stderr**:之前用 `system() + 2>/dev/null` 把"binary build 不支持 setuid"、"AppArmor 拦截 userns"、"内核禁 unprivileged_userns_clone"三种完全不同的失败压扁成 bool,用户只能看到无信息量的 `run: xlings install bwrap`。现在 probe 返回 `(ok, output)`,新增 `classify_bwrap_probe_error_` 按已知关键字分流到 actionable hint,未匹配的原始 stderr 透传。
+- **`subos remove` 先 umount image storage**:V6 image storage 异常退出会留下 `.mountpoint` 活挂载。之前 `rm -rf` 要么 EBUSY 卡死要么递归进活挂载误删 image 内容(home.img 被标 `(deleted)`)。remove 现在检测到活挂载先 `unmount_image_`,失败时拒绝继续以保护数据。Linux 专用路径(`#if defined(__linux__)`),其它平台不变。
+- **image/tmpfs 在 proot fallback 时输出真实 bwrap probe 错误**:之前 image storage 撞上 proot fallback 会无脑提示 `run: xlings install bwrap`(即便 bwrap 已装)。现在重跑一次 probe,把分流后的真错误抛给用户。
+
+设计文档:[`.agents/docs/sandbox-v6-followup-fixes-2026-05-15.md`](sandbox-v6-followup-fixes-2026-05-15.md)
+
 ### 2026-05 (v0.4.25) — Sandbox V5:双后端 bwrap + proot 自动切换 + `/bin` 从宿主挂载
 
 - **双后端自动检测**:`xlings subos use <name> --sandbox` 自动选最优 backend:
   - bwrap 优先(mount namespace,native 全兼容,无 ptrace 开销)
   - proot 兜底(零权限要求,ptrace 模式有 native 限制)
   - 自动安装:首次 `--sandbox` 如果没有任何 backend,静默 `xlings install xim:bwrap`,probe 失败则装 `xim:proot`
-  - Ubuntu 24+ bwrap namespace 受限时提示 `sudo apt install bubblewrap`,自动用 proot
+  - Ubuntu 24+ bwrap namespace 受限时回落 proot(后续 followup hotfix 改为透出真实 probe stderr,见 2026-05 V6 followup 条目)
 - **可选指定后端**:`--sandbox bwrap` / `--sandbox proot`(缺省 = 自动)
 - **`--bind=/bin:/bin`**:宿主 `/bin` 整体挂进 sandbox,`/bin/sh` `/bin/bash` `/bin/ls` 全齐,解决 `system()` / shebang / POSIX 工具缺失
 - **同一 subos 任意后端切换**:bwrap 进、proot 进、普通进 —— dotfile 持久,workspace 持久,backend 无痕

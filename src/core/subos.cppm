@@ -4,6 +4,7 @@ module;
 // pull these in, and we want execl/errno (POSIX) or CreateProcess
 // (Win32) without #include in the named-module purview (which the
 // standard forbids for headers that aren't importable units).
+#include <cstdio>  // stderr (used by std::println(stderr, ...))
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -127,7 +128,9 @@ void update_current_symlink_(EventStream& stream,
 // ── Storage mode (V6) ──────────────────────────────────────────────
 // Storage isolation mode for sandbox data. Set at subos creation time
 // via `--storage <mode>`, persisted in subos/.xlings.json["storage"].
-// Non-shared modes force sandbox entry (mount namespace required).
+// `image` and `tmpfs` are consumed only on the sandbox path; shell-
+// level entry stays env/PATH-only regardless of storage mode (the two
+// axes are orthogonal per V4 design — see use_spawn_shell).
 enum class StorageMode { Shared, Image, Tmpfs };
 
 inline std::string storage_to_string_(StorageMode m) {
@@ -535,10 +538,26 @@ int use_global(const std::string& name, EventStream& stream) {
 // kept available for tests and power users that want eval-able output
 // without a sub-shell layer. The default user-facing path is
 // use_spawn_shell; --shell is intentionally not in the help text.
+// Shell-level entry never activates storage isolation (V4 orthogonality
+// — see use_spawn_shell). Emit a single hint to stderr if the subos
+// was created with image/tmpfs storage so the user understands the
+// attribute is dormant in this entry. Writes to stderr (not stdout)
+// so the --shell <kind> path stays eval-safe.
+void warn_storage_dormant_on_shell_(const std::string& name) {
+    auto& p = Config::paths();
+    auto storage = read_storage_mode_(p.homeDir / "subos" / name);
+    if (storage == StorageMode::Shared) return;
+    std::println(stderr,
+                 "[xlings] storage={} is sandbox-only; entering "
+                 "shell-level (use --sandbox to activate)",
+                 storage_to_string_(storage));
+}
+
 int use_emit_shell(const std::string& name,
                           std::string_view shell_kind,
                           EventStream& stream) {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    warn_storage_dormant_on_shell_(name);
 
     auto& p = Config::paths();
     auto bin_dir = p.homeDir / "subos" / name / "bin";
@@ -769,9 +788,12 @@ build_proot_argv_(const fs::path& proot_bin,
 // Locate bwrap binary — only searches xim:bwrap pool.
 // System-installed bwrap (/usr/bin/bwrap) is intentionally skipped:
 // distro packages lack setuid, and AppArmor/kernel restrictions on
-// unprivileged user namespaces make them unreliable on Ubuntu 24+,
-// Fedora, etc. xim:bwrap sets setuid in its config() hook, so the
-// xim-managed binary is the only one guaranteed to work.
+// unprivileged user namespaces make system binaries unreliable on
+// Ubuntu 24+, Fedora, etc. xim:bwrap is built with
+// `-Dsupport_setuid=true` (xlings-res/bwrap mirror) and its install
+// hook sets the binary setuid root (chmod 4755) — that combination is
+// what makes the xim-managed binary work across distros where unpriv
+// userns is restricted.
 std::expected<fs::path, std::string>
 locate_bwrap_(const fs::path& home_dir) {
     std::error_code ec;
@@ -793,10 +815,57 @@ locate_bwrap_(const fs::path& home_dir) {
 }
 
 // Probe whether a bwrap binary can actually create a sandbox.
-bool probe_bwrap_(const fs::path& bwrap_bin) {
-    auto cmd = bwrap_bin.string()
-             + " --ro-bind / / -- /bin/true 2>/dev/null";
-    return std::system(cmd.c_str()) == 0;
+// Returns {ok, output}. `output` captures stdout+stderr (the platform
+// helper appends `2>&1` internally) so callers can classify the
+// failure cause — see classify_bwrap_probe_error_ for the known modes.
+std::pair<bool, std::string>
+probe_bwrap_(const fs::path& bwrap_bin) {
+    auto cmd = platform::shell_quote(bwrap_bin.string())
+             + " --ro-bind / / -- /bin/true";
+    auto [status, output] = platform::run_command_capture(cmd);
+    return { status == 0, std::move(output) };
+}
+
+// Translate a failed bwrap probe's captured output into an actionable
+// hint. Three known modes; anything else falls through to "show the
+// raw stderr" so users always see the truth instead of a stale
+// "xlings install bwrap" suggestion that won't help.
+std::string classify_bwrap_probe_error_(const std::string& output,
+                                         const fs::path& bin) {
+    if (output.find("setuid use of bubblewrap is not supported")
+        != std::string::npos)
+    {
+        return "xim:bwrap binary was built without setuid support; "
+               "rebuild xlings-res/bwrap mirror with "
+               "`-Dsupport_setuid=true` and bump the version\n"
+               "  binary: " + bin.string();
+    }
+    if (output.find("setting up uid map: Permission denied")
+        != std::string::npos
+        || output.find("write to uid_map failed")
+        != std::string::npos)
+    {
+        return "kernel restricts unprivileged user namespaces "
+               "(LSM/AppArmor)\n"
+               "  check: cat /proc/sys/kernel/"
+               "apparmor_restrict_unprivileged_userns\n"
+               "  workaround: sudo sysctl -w "
+               "kernel.apparmor_restrict_unprivileged_userns=0";
+    }
+    if (output.find("clone() failed: Operation not permitted")
+        != std::string::npos
+        || output.find("user namespaces are not enabled")
+        != std::string::npos)
+    {
+        return "kernel disables unprivileged_userns_clone\n"
+               "  check: cat /proc/sys/kernel/"
+               "unprivileged_userns_clone";
+    }
+    auto trimmed = output;
+    while (!trimmed.empty() &&
+           (trimmed.back() == '\n' || trimmed.back() == '\r'))
+        trimmed.pop_back();
+    return "bwrap probe failed; raw output:\n  " + trimmed;
 }
 
 // Build bwrap argv from unified bind list. Uses targeted --ro-bind
@@ -867,7 +936,7 @@ detect_backend_(const fs::path& home_dir,
                 const fs::path& subos_dir = {}) {
     // 1. bwrap (xim pool) — preferred for native compat
     if (auto bin = locate_bwrap_(home_dir)) {
-        if (probe_bwrap_(*bin))
+        if (probe_bwrap_(*bin).first)
             return BackendInfo{ SandboxBackend::Bwrap, *bin };
     }
 
@@ -890,7 +959,7 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
         std::vector<std::string> t = {"xim:bwrap"};
         xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
         auto bin = locate_bwrap_(home_dir);
-        if (bin && probe_bwrap_(*bin)) return 0;
+        if (bin && probe_bwrap_(*bin).first) return 0;
     }
 
     // bwrap installed but namespace restricted → proot fallback
@@ -1089,13 +1158,13 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
             });
             return 1;
         }
-        if (!sandbox_detail_::probe_bwrap_(*bin)) {
+        if (auto probe = sandbox_detail_::probe_bwrap_(*bin); !probe.first) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::NotFound,
-                .message = "bwrap namespace probe failed (permission denied)",
+                .message = "bwrap probe failed",
                 .recoverable = false,
-                .hint = "try: sudo chmod 4755 " + bin->string()
-                        + "\n  or: xlings install bwrap  (auto-configures setuid)",
+                .hint = sandbox_detail_::classify_bwrap_probe_error_(
+                            probe.second, *bin),
             });
             return 1;
         }
@@ -1139,12 +1208,25 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     // image/tmpfs requires bwrap — reject proot after auto-detect
     if (storage != StorageMode::Shared
         && backend->type != SandboxBackend::Bwrap) {
+        // If bwrap is actually installed but probe failed (the common
+        // case that triggers the proot fallback), surface the real
+        // probe error rather than the misleading "xlings install bwrap"
+        // suggestion that won't help.
+        std::string hint = "run: xlings install bwrap";
+        if (auto bin = sandbox_detail_::locate_bwrap_(p.homeDir)) {
+            if (auto probe = sandbox_detail_::probe_bwrap_(*bin);
+                !probe.first)
+            {
+                hint = sandbox_detail_::classify_bwrap_probe_error_(
+                            probe.second, *bin);
+            }
+        }
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = storage_to_string_(storage)
                        + " storage requires bwrap (proot does not support mount namespace)",
             .recoverable = false,
-            .hint = "run: xlings install bwrap",
+            .hint = std::move(hint),
         });
         if (storage == StorageMode::Image)
             sandbox_detail_::unmount_image_(image_mountpoint);
@@ -1304,23 +1386,18 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
                     const std::string& sandbox_backend = "")
 {
-    // V6: non-shared storage modes force sandbox entry (mount namespace
-    // required for image mount / tmpfs). Auto-enable with a hint.
-    {
-        auto& p = Config::paths();
-        auto subos_dir = p.homeDir / "subos" / name;
-        auto storage = read_storage_mode_(subos_dir);
-        if (storage != StorageMode::Shared && !sandbox) {
-            log::info("storage={} requires sandbox, entering sandbox mode...",
-                      storage_to_string_(storage));
-            sandbox = true;
-        }
-    }
-
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
     // fallback) or use the explicitly requested one.
+    //
+    // Storage mode (image/tmpfs) and sandbox are orthogonal axes per
+    // V4 design: shell-level entry only swaps env/PATH and never
+    // mounts. Image / tmpfs only take effect when `--sandbox` is
+    // explicitly passed — earlier V6 auto-upgrade fused the two axes
+    // and made `subos use <image-subos>` silently require root, bwrap,
+    // and a working mount namespace just to switch shells.
     if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend);
+    warn_storage_dormant_on_shell_(name);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
@@ -1453,6 +1530,32 @@ export int remove(const std::string& name, EventStream& stream) {
 
     auto dir = Config::subos_dir(name);
     if (fs::exists(dir)) {
+        // V6: image-storage subos has an ext4 mount at <subos>/.mountpoint.
+        // remove_all would either (a) hit EBUSY at the mountpoint, leaving
+        // a half-cleaned tree behind, or (b) silently recurse into the
+        // live mount and erase the image's contents before EBUSY surfaces.
+        // Detect and umount first.
+#if defined(__linux__)
+        auto mountpoint = dir / ".mountpoint";
+        if (fs::exists(mountpoint)
+            && sandbox_detail_::is_mounted_(mountpoint))
+        {
+            if (sandbox_detail_::unmount_image_(mountpoint) != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Permission,
+                    .message = "failed to unmount " + mountpoint.string()
+                               + " (image storage subos); refusing to "
+                                 "remove to avoid corrupting the live "
+                                 "filesystem",
+                    .recoverable = true,
+                    .hint = "ensure no shell is inside this subos, then "
+                            "retry — or manually: sudo umount "
+                            + mountpoint.string(),
+                });
+                return 1;
+            }
+        }
+#endif
         std::error_code ec;
         fs::remove_all(dir, ec);
         if (ec) {
