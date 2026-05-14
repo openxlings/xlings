@@ -659,22 +659,16 @@ build_proot_argv_(const fs::path& proot_bin,
 
 // ── bwrap backend (V5) ────────────────────────────────────────────────
 
-// Locate bwrap binary. Priority:
-//   1. /usr/bin/bwrap directly (distro package with AppArmor profile —
-//      most reliable on Ubuntu 24+, avoids xlings shim in PATH)
-//   2. xim:bwrap pool (~/.xlings/data/xpkgs/xim-x-bwrap/<ver>/bin)
-//   3. PATH search (last — may hit xlings shim which dispatches to
-//      xim:bwrap; shim itself can't do --ro-bind)
+// Locate bwrap binary — only searches xim:bwrap pool.
+// System-installed bwrap (/usr/bin/bwrap) is intentionally skipped:
+// distro packages lack setuid, and AppArmor/kernel restrictions on
+// unprivileged user namespaces make them unreliable on Ubuntu 24+,
+// Fedora, etc. xim:bwrap sets setuid in its config() hook, so the
+// xim-managed binary is the only one guaranteed to work.
 std::expected<fs::path, std::string>
 locate_bwrap_(const fs::path& home_dir) {
     std::error_code ec;
 
-    // (1) Direct system paths (bypass PATH which may have xlings shim)
-    for (auto sys : {"/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
-        if (fs::is_regular_file(sys, ec)) return fs::path(sys);
-    }
-
-    // (2) xim:bwrap pool
     auto xpkg_root = home_dir / "data" / "xpkgs" / "xim-x-bwrap";
     if (fs::is_directory(xpkg_root, ec)) {
         std::error_code it_ec;
@@ -688,8 +682,7 @@ locate_bwrap_(const fs::path& home_dir) {
     }
 
     return std::unexpected(
-        "bwrap not found. Install via system package manager "
-        "(e.g. `sudo apt install bubblewrap`) or `xlings install bwrap`");
+        "bwrap not installed, run: xlings install bwrap");
 }
 
 // Probe whether a bwrap binary can actually create a sandbox.
@@ -741,21 +734,18 @@ struct BackendInfo {
 // whether <subos>/home/ exists; init_sandbox_dirs_ creates it, so if
 // it's missing, this is the first --sandbox entry for this subos).
 void maybe_show_bwrap_hint_(const fs::path& subos_dir) {
-    // Only show on first --sandbox use of this subos (home/ not yet created)
     std::error_code ec;
     if (fs::is_directory(subos_dir / "home", ec)) return;
 
-    log::info("bwrap sandbox not available (namespace permission needed)");
-    log::info("  to enable (recommended, per-binary, safe):");
-    log::info("    sudo apt install bubblewrap    (Ubuntu/Debian)");
-    log::info("    sudo dnf install bubblewrap    (Fedora/RHEL)");
+    log::info("bwrap not installed or namespace probe failed");
+    log::info("  to enable bwrap (recommended): xlings install bwrap");
     log::info("  using proot fallback for now");
 }
 
 std::optional<BackendInfo>
 detect_backend_(const fs::path& home_dir,
                 const fs::path& subos_dir = {}) {
-    // 1. bwrap (system then xim pool) — preferred for native compat
+    // 1. bwrap (xim pool) — preferred for native compat
     if (auto bin = locate_bwrap_(home_dir)) {
         if (probe_bwrap_(*bin))
             return BackendInfo{ SandboxBackend::Bwrap, *bin };
@@ -774,7 +764,7 @@ detect_backend_(const fs::path& home_dir,
 }
 
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
-    // Try bwrap first (no sudo — just download static binary)
+    // Try bwrap first (build from source, config hook sets setuid)
     log::info("installing sandbox backend...");
     {
         std::vector<std::string> t = {"xim:bwrap"};
@@ -893,13 +883,22 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
 
     if (preferred_backend == "bwrap") {
         auto bin = sandbox_detail_::locate_bwrap_(p.homeDir);
-        if (!bin || !sandbox_detail_::probe_bwrap_(*bin)) {
+        if (!bin) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::NotFound,
-                .message = "bwrap not available or namespace probe failed",
+                .message = "bwrap not installed",
                 .recoverable = false,
-                .hint = "try: sudo apt install bubblewrap\n"
-                        "  or drop the backend argument to auto-detect",
+                .hint = "run: xlings install bwrap",
+            });
+            return 1;
+        }
+        if (!sandbox_detail_::probe_bwrap_(*bin)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "bwrap namespace probe failed (permission denied)",
+                .recoverable = false,
+                .hint = "try: sudo chmod 4755 " + bin->string()
+                        + "\n  or: xlings install bwrap  (auto-configures setuid)",
             });
             return 1;
         }
@@ -924,7 +923,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
                     .code = ErrorCode::NotFound,
                     .message = "failed to install sandbox backend",
                     .recoverable = false,
-                    .hint = "manually: sudo apt install bubblewrap (or: xlings install proot)",
+                    .hint = "manually: xlings install bwrap (or: xlings install proot)",
                 });
                 return 1;
             }
