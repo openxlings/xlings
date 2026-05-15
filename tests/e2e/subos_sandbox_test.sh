@@ -141,6 +141,28 @@ echo "$out_passwd" | grep -q "^$USER:x:$(id -u):" \
 $out_passwd"
 log "  ✓ /etc/passwd: only root + $USER, no host user leak"
 
+# ── S6b: bwrap must not force an interactive prompt for piped commands
+log "S6b: bwrap backend keeps non-interactive command output prompt-free"
+out_bwrap_probe="$(echo 'echo BWRAP_BACKEND_OK; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox bwrap ) 2>&1 || true)"
+if echo "$out_bwrap_probe" | grep -q "BWRAP_BACKEND_OK"; then
+  out_bwrap_passwd="$(echo 'cat /etc/passwd; echo MARKER_END; exit' | \
+    ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+        PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+        timeout 10 "$XLINGS_BIN" subos use mybox --sandbox bwrap ) 2>&1 || true)"
+  echo "$out_bwrap_passwd" | grep -q "^root:x:0:0:root:" \
+    || fail "S6b: bwrap non-interactive output was prompt-polluted:
+$out_bwrap_passwd"
+  echo "$out_bwrap_passwd" | grep -q "^$USER:x:$(id -u):" \
+    || fail "S6b: bwrap missing real-user entry:
+$out_bwrap_passwd"
+  log "  ✓ bwrap non-interactive output starts at real command output"
+else
+  log "  (skip: bwrap backend unavailable in this environment)"
+fi
+
 # ── S7: dotfile isolation — sandbox writes to /home/<user> stay private
 log "S7: writing to ~/ inside sandbox doesn't pollute host"
 marker_file="$HOME/.xlings-sandbox-test-marker-$$"
