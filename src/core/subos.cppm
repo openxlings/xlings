@@ -437,6 +437,272 @@ export int create(const std::string& name, const fs::path& customDir,
     return create(name, customDir, StorageMode::Shared, "50G", stream);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// M2: subos new --from <spec>
+//
+// Two flavours dispatched by spec shape:
+//   1. pkg-spec (`<ns>:<name>[@<ver>]` or `<name>@<ver>`): the source is
+//      a `type="subos"` xpkg. If not yet installed, this auto-invokes
+//      `xlings install <spec>` (E5 — agent always 1 command). After
+//      install, the base lives at xpkgs/<ns>-x-<name>/<ver>/.
+//   2. local-name: source is an existing subos in subos/<name>/. Plain
+//      local fork.
+//
+// Both flavours land in subos/<new-name>/ with content copied from the
+// base. xpkg deps remain global (shared via xpkgs/) so the fork is
+// near-instant for shared storage; image storage clones home.img too.
+//
+// Cross-platform copy: Linux reflink-where-possible via `cp -a
+// --reflink=auto`, macOS APFS clonefile via `cp -ac`, Windows std::fs
+// recursive copy (full byte copy).
+//
+// Refs: .agents/docs/subos-as-xpkg-design-2026-05-16.md (M2, E1-E5).
+namespace new_from_detail_ {
+
+bool is_pkg_spec_(const std::string& spec) {
+    return spec.find(':') != std::string::npos || spec.find('@') != std::string::npos;
+}
+
+// Parse `[<ns>:]<name>[@<ver>]` → {ns, name, ver}. Empty ns if absent;
+// empty ver if absent ("latest" semantics handled downstream).
+struct PkgRef {
+    std::string ns;
+    std::string name;
+    std::string ver;
+};
+
+PkgRef parse_pkg_spec_(const std::string& spec) {
+    PkgRef r;
+    std::string rest = spec;
+    if (auto colon = rest.find(':'); colon != std::string::npos) {
+        r.ns = rest.substr(0, colon);
+        rest = rest.substr(colon + 1);
+    }
+    if (auto at = rest.find('@'); at != std::string::npos) {
+        r.name = rest.substr(0, at);
+        r.ver  = rest.substr(at + 1);
+    } else {
+        r.name = rest;
+    }
+    return r;
+}
+
+// Recursive directory copy with reflink/clonefile preferred where the
+// filesystem supports COW. Falls back to full byte-copy. Excludes the
+// caller's xlings binary shims (those are minted fresh in the target).
+int copy_tree_(const fs::path& src, const fs::path& dst,
+               EventStream& stream) {
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "failed to create fork target dir: " + ec.message(),
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Use the system cp with reflink/clonefile flags; falls back to
+    // full copy when the FS doesn't support it. Skip the bin/ subtree
+    // here — shims are regenerated below.
+    std::string copy_cmd;
+#if defined(__linux__)
+    // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
+    // COW where available (btrfs/xfs) and full copy otherwise.
+    copy_cmd = std::format(
+        "cp -a --reflink=auto '{}/.' '{}/'", src.string(), dst.string());
+#elif defined(__APPLE__)
+    // APFS clonefile via /bin/cp -c
+    copy_cmd = std::format("cp -ac '{}/.' '{}/'", src.string(), dst.string());
+#endif
+
+    if (!copy_cmd.empty()) {
+        auto rc = std::system(copy_cmd.c_str());
+        if (rc != 0) {
+            log::warn("cp -a/--reflink failed (rc={}), falling back to "
+                      "std::filesystem::copy", rc);
+            fs::copy(src, dst,
+                     fs::copy_options::recursive |
+                     fs::copy_options::overwrite_existing |
+                     fs::copy_options::copy_symlinks, ec);
+            if (ec) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "fork copy failed: " + ec.message(),
+                    .recoverable = false,
+                });
+                return 1;
+            }
+        }
+    } else {
+        // Windows / generic
+        fs::copy(src, dst,
+                 fs::copy_options::recursive |
+                 fs::copy_options::overwrite_existing |
+                 fs::copy_options::copy_symlinks, ec);
+        if (ec) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "fork copy failed: " + ec.message(),
+                .recoverable = false,
+            });
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Locate xpkgs/<ns>-x-<name>/<ver>/ for a parsed pkg ref. Returns empty
+// path if no matching install exists.
+fs::path locate_base_pkg_(const PkgRef& ref) {
+    auto& p = Config::paths();
+    auto storeName = ref.ns.empty() ? ref.name : (ref.ns + "-x-" + ref.name);
+    auto base = p.dataDir / "xpkgs" / storeName;
+    if (!fs::is_directory(base)) return {};
+
+    // Specific version requested
+    if (!ref.ver.empty()) {
+        auto candidate = base / ref.ver;
+        return fs::is_directory(candidate) ? candidate : fs::path{};
+    }
+
+    // No version → take the highest-sorted installed version directory.
+    fs::path latest;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(base, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
+        if (it->is_directory(ec)) latest = it->path();
+    }
+    return latest;
+}
+
+} // namespace new_from_detail_
+
+export int new_from(const std::string& name, const fs::path& customDir,
+                    StorageMode storage, const std::string& imageSize,
+                    const std::string& fromSpec, EventStream& stream) {
+    auto& p = Config::paths();
+
+    fs::path baseDir;
+
+    if (new_from_detail_::is_pkg_spec_(fromSpec)) {
+        // ── pkg-spec path: locate or install the base xpkg ────────────
+        auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
+        baseDir = new_from_detail_::locate_base_pkg_(ref);
+
+        if (baseDir.empty()) {
+            // Auto-install (E5a): invoke `xlings install <spec>` so the
+            // base lands at xpkgs/<ns>-x-<name>/<ver>/. We use the host
+            // xlings binary (same process binary) so the install runs
+            // with the same context (XLINGS_HOME, mirror config, etc.).
+            log::info("base subos pkg '{}' not installed; auto-installing...",
+                      fromSpec);
+            auto xlings_bin = p.homeDir / "xlings";
+            if (!fs::exists(xlings_bin))
+                xlings_bin = p.homeDir / "bin" / "xlings";
+
+            auto cmd = std::format("{} install -y {}",
+                                   xlings_bin.string(), fromSpec);
+            auto rc = std::system(cmd.c_str());
+            if (rc != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "auto-install of base '" + fromSpec
+                               + "' failed",
+                    .recoverable = true,
+                    .hint = "run manually: xlings install " + fromSpec,
+                });
+                return 1;
+            }
+            baseDir = new_from_detail_::locate_base_pkg_(ref);
+        }
+
+        if (baseDir.empty()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "couldn't locate base pkg payload for '" + fromSpec
+                           + "' after install",
+                .recoverable = false,
+            });
+            return 1;
+        }
+    } else {
+        // ── local fork path: source is an existing subos by name ──────
+        baseDir = p.homeDir / "subos" / fromSpec;
+        if (!fs::is_directory(baseDir)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "source subos '" + fromSpec + "' not found",
+                .recoverable = true,
+                .hint = "list available: xlings subos list",
+            });
+            return 1;
+        }
+    }
+
+    // Validate base shape: must contain .xlings.json for fork to make sense
+    if (!fs::is_regular_file(baseDir / ".xlings.json")) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "source '" + fromSpec
+                       + "' has no .xlings.json (not a valid fork source)",
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Create target subos via standard `create`. This sets up
+    // bin/lib/usr/generations, writes initial .xlings.json, optionally
+    // creates home.img, and registers the subos.
+    if (auto rc = create(name, customDir, storage, imageSize, stream); rc != 0) {
+        return rc;
+    }
+
+    auto dstDir = customDir.empty() ? (p.homeDir / "subos" / name) : customDir;
+
+    // Overlay base content on top — workspace (.xlings.json), any
+    // templates/static files. We re-issue create()'s file writes
+    // afterwards for storage/imageSize keys so the new subos's own
+    // storage choice wins over the base's. The base's .xlings.json
+    // workspace map is the data we want to inherit.
+    if (auto rc = new_from_detail_::copy_tree_(baseDir, dstDir, stream); rc != 0) {
+        return rc;
+    }
+
+    // Restore storage/imageSize fields in target's .xlings.json since
+    // copy_tree_ overwrote it with base's version (base usually has no
+    // explicit storage key — it inherits at fork time).
+    auto subosCfgPath = dstDir / ".xlings.json";
+    auto subosCfg = read_config_json_(subosCfgPath);
+    if (storage != StorageMode::Shared)
+        subosCfg["storage"] = storage_to_string_(storage);
+    else
+        subosCfg.erase("storage");
+    if (storage == StorageMode::Image)
+        subosCfg["imageSize"] = imageSize;
+    else
+        subosCfg.erase("imageSize");
+    write_config_json_(subosCfgPath, subosCfg);
+
+    // Re-mint subos shims (they may have been clobbered by copy_tree_
+    // if base happened to ship its own bin/ — defensive).
+    auto xlingsBin = p.homeDir / "xlings";
+    if (!fs::exists(xlingsBin))
+        xlingsBin = p.homeDir / "bin" / "xlings";
+    if (fs::exists(xlingsBin)) {
+        xself::ensure_subos_shims(dstDir / "bin", xlingsBin, p.homeDir);
+    }
+
+    nlohmann::json payload;
+    payload["name"]    = name;
+    payload["from"]    = fromSpec;
+    payload["base"]    = baseDir.string();
+    payload["storage"] = storage_to_string_(storage);
+    stream.emit(DataEvent{"subos_forked", payload.dump()});
+    return 0;
+}
+
 // `xlings subos use` modes:
 //
 //   spawn  (default) — exec a fresh interactive $SHELL with
@@ -1708,10 +1974,15 @@ export int run(int argc, char* argv[], EventStream& stream) {
 
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
-        // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>]
+        // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>] [--from <spec>]
         std::string name;
         StorageMode storage = StorageMode::Shared;
         std::string imageSize = "50G";
+        // M2: --from <spec> creates the new subos by forking an existing
+        // source. Spec containing `:` or `@` is treated as a pkg-spec
+        // (auto-installs the base xpkg if missing); bare name is treated
+        // as a local subos to fork from.
+        std::string fromSpec;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--storage" && i + 1 < argc) {
@@ -1728,6 +1999,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
             else if (a == "--image-size" && i + 1 < argc) {
                 imageSize = argv[++i];
             }
+            else if (a == "--from" && i + 1 < argc) {
+                fromSpec = argv[++i];
+            }
+            else if (a.rfind("--from=", 0) == 0) {
+                fromSpec = a.substr(7);
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -1739,6 +2016,9 @@ export int run(int argc, char* argv[], EventStream& stream) {
         if (name.empty()) {
             usageError("missing <name> for: xlings subos new");
             return 1;
+        }
+        if (!fromSpec.empty()) {
+            return new_from(name, {}, storage, imageSize, fromSpec, stream);
         }
         return create(name, {}, storage, imageSize, stream);
     }
