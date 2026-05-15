@@ -27,6 +27,7 @@ import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
+import xlings.core.subos.keeper;
 
 namespace xlings::subos {
 
@@ -1968,7 +1969,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
             .code = ErrorCode::InvalidInput,
             .message = std::string(detail),
             .recoverable = false,
-            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i> [name]",
+            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop> [name]",
         });
     };
 
@@ -2047,6 +2048,16 @@ export int run(int argc, char* argv[], EventStream& stream) {
         // level and sandbox modes. Internally routed to `sh -c <cmd>`
         // (POSIX) or `pwsh -Command <cmd>` / `cmd /c <cmd>` (Windows).
         std::string cmd;
+        // M5: explicit keeper policy overrides (D9). The runtime auto-
+        // default (storage=image|tmpfs + sandbox + Linux → keeper on,
+        // TTL=5min) is encoded in keeper::should_auto_keeper. These
+        // flags let the user override per call:
+        //   --no-keep      force disable (one-shot, even if auto would)
+        //   --keep         never-expiring (use until `subos stop`)
+        //   --ttl <sec>    custom idle TTL
+        bool no_keep = false;
+        bool keep_forever = false;
+        int  ttl_sec = 0;                  // 0 = use default
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -2077,6 +2088,31 @@ export int run(int argc, char* argv[], EventStream& stream) {
             else if (a.rfind("--cmd=", 0) == 0) {
                 cmd = a.substr(6);
             }
+            // M5 keeper policy flags. The runtime spawning of the keeper
+            // is wired separately (see keeper.cppm); these flags are
+            // accepted on the CLI and threaded through for forward
+            // compatibility. Auto-default (D9) is governed by
+            // should_auto_keeper() at runtime.
+            else if (a == "--no-keep") {
+                no_keep = true;
+            }
+            else if (a == "--keep") {
+                keep_forever = true;
+            }
+            else if (a == "--ttl" && i + 1 < argc) {
+                try { ttl_sec = std::stoi(argv[++i]); }
+                catch (...) {
+                    usageError("--ttl expects an integer (seconds)");
+                    return 1;
+                }
+            }
+            else if (a.rfind("--ttl=", 0) == 0) {
+                try { ttl_sec = std::stoi(std::string(a.substr(6))); }
+                catch (...) {
+                    usageError("--ttl=<sec> expects an integer");
+                    return 1;
+                }
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -2086,6 +2122,11 @@ export int run(int argc, char* argv[], EventStream& stream) {
             }
         }
         if (name.empty()) { usageError("missing <name> for: xlings subos use"); return 1; }
+
+        if (no_keep && keep_forever) {
+            usageError("--no-keep and --keep are mutually exclusive");
+            return 1;
+        }
 
         if (mode == "global") {
             if (!cmd.empty()) {
@@ -2111,6 +2152,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
         return remove(argv[3], stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
+    if (sub == "stop") {
+        // M4/D9: stop the auto-keeper for a sandboxed subos.
+        // Safe to invoke even when no keeper is running — it's a no-op.
+        if (argc < 4) { usageError("missing <name> for: xlings subos stop"); return 1; }
+        return keeper::stop_keeper(argv[3]);
+    }
 
     usageError("unknown subcommand: " + sub);
     return 1;
