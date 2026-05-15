@@ -877,6 +877,7 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   const fs::path& host_xlings_home,
                   const std::string& user,
                   const std::string& shell_path,
+                  bool interactive_shell,
                   StorageMode storage = StorageMode::Shared,
                   const fs::path& mountpoint = {})
 {
@@ -906,7 +907,8 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
         argv.insert(argv.end(), {"--tmpfs", "/tmp"});
     }
 
-    argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path, "-i"});
+    argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path});
+    if (interactive_shell) argv.push_back("-i");
     return argv;
 }
 
@@ -1250,12 +1252,15 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     platform::set_env_variable("PATH", std::format(
         "{}/.xlings/subos/{}/bin:{}/.xlings/bin:/usr/local/bin:/usr/bin:/bin",
         user_home, name, user_home));
+    // bwrap `sh -i` prints prompts/job-control warnings into piped CI
+    // commands; keep `-i` only for real terminal sessions.
+    const bool interactive_shell = ::isatty(STDIN_FILENO) == 1;
 
     std::vector<std::string> argv;
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell,
-            storage, image_mountpoint);
+            interactive_shell, storage, image_mountpoint);
     } else {
         argv = sandbox_detail_::build_proot_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell);
