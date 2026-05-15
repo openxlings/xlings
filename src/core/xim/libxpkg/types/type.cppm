@@ -76,7 +76,7 @@ struct PlanNode {
     bool alreadyInstalled { false };
     bool isSystemPM { false };
     PackageScope scope { PackageScope::Global };
-    int pkgType { 0 };  // 0=Package, 1=Script, 2=Template, 3=Config
+    int pkgType { 0 };  // 0=Package, 1=Script, 2=Template, 3=Config, 4=Subos
 
     // Explicit special members to work around GCC 15 module linker bug
     PlanNode() = default;

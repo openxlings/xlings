@@ -25,6 +25,7 @@ xpkg::PackageType int_to_type(int v) {
         case 1: return xpkg::PackageType::Script;
         case 2: return xpkg::PackageType::Template;
         case 3: return xpkg::PackageType::Config;
+        case 4: return xpkg::PackageType::Subos;
         default: return xpkg::PackageType::Package;
     }
 }
