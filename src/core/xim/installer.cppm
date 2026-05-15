@@ -60,6 +60,56 @@ std::filesystem::path runtime_dir_(const PlanNode& node,
     return dataRoot / "runtimedir";
 }
 
+std::filesystem::path xpkg_snapshot_file_(const std::filesystem::path& installDir) {
+    return installDir / ".xpkg.lua";
+}
+
+std::expected<void, std::string>
+save_xpkg_snapshot_(const std::filesystem::path& sourcePkgFile,
+                    const std::filesystem::path& installDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    if (sourcePkgFile.empty()
+        || !fs::exists(sourcePkgFile, ec)
+        || !fs::is_regular_file(sourcePkgFile, ec)) {
+        return std::unexpected(
+            std::format("xpkg snapshot source not found: {}", sourcePkgFile.string()));
+    }
+
+    fs::create_directories(installDir, ec);
+    if (ec) {
+        return std::unexpected(
+            std::format("failed to create install dir for xpkg snapshot: {}", ec.message()));
+    }
+
+    auto snapshotFile = xpkg_snapshot_file_(installDir);
+    ec.clear();
+    if (fs::exists(snapshotFile, ec)) {
+        ec.clear();
+        if (fs::equivalent(sourcePkgFile, snapshotFile, ec) && !ec) return {};
+    }
+
+    ec.clear();
+    fs::copy_file(sourcePkgFile, snapshotFile, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        return std::unexpected(
+            std::format("failed to save xpkg snapshot {}: {}",
+                        snapshotFile.string(), ec.message()));
+    }
+    return {};
+}
+
+std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkgFile,
+                                           const std::filesystem::path& installDir) {
+    std::error_code ec;
+    auto snapshotFile = xpkg_snapshot_file_(installDir);
+    if (std::filesystem::exists(snapshotFile, ec)) {
+        return snapshotFile;
+    }
+    return indexPkgFile;
+}
+
 bool is_archive_(const std::filesystem::path& path) {
     auto filename = path.filename().string();
     return filename.ends_with(".tar.gz")
@@ -1404,6 +1454,17 @@ public:
                 continue;
             }
 
+            if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
+                !snapshot) {
+                log::error("failed to save xpkg snapshot for {}: {}",
+                           node.name, snapshot.error());
+                if (onStatus) {
+                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                               snapshot.error() });
+                }
+                continue;
+            }
+
             if (catalog_) {
                 catalog_->mark_installed(PackageMatch{
                     .rawName = node.rawName,
@@ -1503,7 +1564,12 @@ public:
             return {};
         }
 
-        auto execResult = mcpplibs::xpkg::create_executor(pkgFile);
+        auto executorPkgFile = detail_::uninstall_xpkg_file_(pkgFile, installDir);
+        if (executorPkgFile != pkgFile) {
+            log::debug("using xpkg snapshot for uninstall: {}", executorPkgFile.string());
+        }
+
+        auto execResult = mcpplibs::xpkg::create_executor(executorPkgFile);
         if (!execResult) {
             return std::unexpected(execResult.error());
         }
