@@ -547,10 +547,16 @@ void warn_storage_dormant_on_shell_(const std::string& name) {
     auto& p = Config::paths();
     auto storage = read_storage_mode_(p.homeDir / "subos" / name);
     if (storage == StorageMode::Shared) return;
-    std::println(stderr,
-                 "[xlings] storage={} is sandbox-only; entering "
-                 "shell-level (use --sandbox to activate)",
-                 storage_to_string_(storage));
+    // Hint disabled: wording was ambiguous ("use --sandbox to activate"
+    // reads as either the verb or the `subos use` command) and it fired
+    // on every shell-level entry for image/tmpfs subos, becoming noise
+    // once the user already knows the layout. Revisit with a clearer
+    // one-time / opt-in form before re-enabling.
+    // std::println(stderr,
+    //              "[xlings] storage={} is sandbox-only; entering "
+    //              "shell-level (use --sandbox to activate)",
+    //              storage_to_string_(storage));
+    (void)storage;
 }
 
 int use_emit_shell(const std::string& name,
