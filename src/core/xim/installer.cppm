@@ -20,6 +20,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
+import xlings.core.xim.libxpkg.types.subos;
 import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
@@ -1361,6 +1362,15 @@ public:
                     }
                     continue;
                 }
+            } else if (!payloadInstalled && node.pkgType == 4 /* Subos */) {
+                log::debug("installing subos base {}...", node.name);
+                if (!subos::default_install(node, ctx)) {
+                    if (onStatus) {
+                        onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                                   "default subos install failed" });
+                    }
+                    continue;
+                }
             }
 
             if (!payloadInstalled && extractedRoot && !detail_::has_directory_entries_(ctx.install_dir)) {
@@ -1442,6 +1452,14 @@ public:
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    "default script config failed" });
+                    }
+                    continue;
+                }
+            } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 4 /* Subos */) {
+                if (!subos::default_config(node, dataDir)) {
+                    if (onStatus) {
+                        onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                                   "default subos config failed" });
                     }
                     continue;
                 }
@@ -1598,18 +1616,27 @@ public:
                     std::format("uninstall hook failed: {}", result.error));
             }
         } else {
-            // Check if this is a script-type package and run default uninstall
+            // Check if this is a script-type or subos-type package and run default uninstall
             bool isScriptType = false;
+            bool isSubosType  = false;
             if (catalog_ && resolvedMatch) {
                 auto pkg = catalog_->load_package(*resolvedMatch);
-                if (pkg) isScriptType = (pkg->type == mcpplibs::xpkg::PackageType::Script);
+                if (pkg) {
+                    isScriptType = (pkg->type == mcpplibs::xpkg::PackageType::Script);
+                    isSubosType  = (pkg->type == mcpplibs::xpkg::PackageType::Subos);
+                }
             } else if (index_) {
                 auto* entry = index_->find_entry(targetName);
-                if (entry) isScriptType = (entry->type == mcpplibs::xpkg::PackageType::Script);
+                if (entry) {
+                    isScriptType = (entry->type == mcpplibs::xpkg::PackageType::Script);
+                    isSubosType  = (entry->type == mcpplibs::xpkg::PackageType::Subos);
+                }
             }
+            std::string ver = resolvedMatch ? resolvedMatch->version : std::string{};
             if (isScriptType) {
-                std::string ver = resolvedMatch ? resolvedMatch->version : std::string{};
                 script::default_uninstall(ctx.pkg_name, ver);
+            } else if (isSubosType) {
+                subos::default_uninstall(ctx.pkg_name, ver);
             }
         }
 

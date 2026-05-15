@@ -27,6 +27,7 @@ import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
+import xlings.core.subos.keeper;
 
 namespace xlings::subos {
 
@@ -437,6 +438,272 @@ export int create(const std::string& name, const fs::path& customDir,
     return create(name, customDir, StorageMode::Shared, "50G", stream);
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// M2: subos new --from <spec>
+//
+// Two flavours dispatched by spec shape:
+//   1. pkg-spec (`<ns>:<name>[@<ver>]` or `<name>@<ver>`): the source is
+//      a `type="subos"` xpkg. If not yet installed, this auto-invokes
+//      `xlings install <spec>` (E5 — agent always 1 command). After
+//      install, the base lives at xpkgs/<ns>-x-<name>/<ver>/.
+//   2. local-name: source is an existing subos in subos/<name>/. Plain
+//      local fork.
+//
+// Both flavours land in subos/<new-name>/ with content copied from the
+// base. xpkg deps remain global (shared via xpkgs/) so the fork is
+// near-instant for shared storage; image storage clones home.img too.
+//
+// Cross-platform copy: Linux reflink-where-possible via `cp -a
+// --reflink=auto`, macOS APFS clonefile via `cp -ac`, Windows std::fs
+// recursive copy (full byte copy).
+//
+// Refs: .agents/docs/subos-as-xpkg-design-2026-05-16.md (M2, E1-E5).
+namespace new_from_detail_ {
+
+bool is_pkg_spec_(const std::string& spec) {
+    return spec.find(':') != std::string::npos || spec.find('@') != std::string::npos;
+}
+
+// Parse `[<ns>:]<name>[@<ver>]` → {ns, name, ver}. Empty ns if absent;
+// empty ver if absent ("latest" semantics handled downstream).
+struct PkgRef {
+    std::string ns;
+    std::string name;
+    std::string ver;
+};
+
+PkgRef parse_pkg_spec_(const std::string& spec) {
+    PkgRef r;
+    std::string rest = spec;
+    if (auto colon = rest.find(':'); colon != std::string::npos) {
+        r.ns = rest.substr(0, colon);
+        rest = rest.substr(colon + 1);
+    }
+    if (auto at = rest.find('@'); at != std::string::npos) {
+        r.name = rest.substr(0, at);
+        r.ver  = rest.substr(at + 1);
+    } else {
+        r.name = rest;
+    }
+    return r;
+}
+
+// Recursive directory copy with reflink/clonefile preferred where the
+// filesystem supports COW. Falls back to full byte-copy. Excludes the
+// caller's xlings binary shims (those are minted fresh in the target).
+int copy_tree_(const fs::path& src, const fs::path& dst,
+               EventStream& stream) {
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "failed to create fork target dir: " + ec.message(),
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Use the system cp with reflink/clonefile flags; falls back to
+    // full copy when the FS doesn't support it. Skip the bin/ subtree
+    // here — shims are regenerated below.
+    std::string copy_cmd;
+#if defined(__linux__)
+    // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
+    // COW where available (btrfs/xfs) and full copy otherwise.
+    copy_cmd = std::format(
+        "cp -a --reflink=auto '{}/.' '{}/'", src.string(), dst.string());
+#elif defined(__APPLE__)
+    // APFS clonefile via /bin/cp -c
+    copy_cmd = std::format("cp -ac '{}/.' '{}/'", src.string(), dst.string());
+#endif
+
+    if (!copy_cmd.empty()) {
+        auto rc = std::system(copy_cmd.c_str());
+        if (rc != 0) {
+            log::warn("cp -a/--reflink failed (rc={}), falling back to "
+                      "std::filesystem::copy", rc);
+            fs::copy(src, dst,
+                     fs::copy_options::recursive |
+                     fs::copy_options::overwrite_existing |
+                     fs::copy_options::copy_symlinks, ec);
+            if (ec) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "fork copy failed: " + ec.message(),
+                    .recoverable = false,
+                });
+                return 1;
+            }
+        }
+    } else {
+        // Windows / generic
+        fs::copy(src, dst,
+                 fs::copy_options::recursive |
+                 fs::copy_options::overwrite_existing |
+                 fs::copy_options::copy_symlinks, ec);
+        if (ec) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "fork copy failed: " + ec.message(),
+                .recoverable = false,
+            });
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Locate xpkgs/<ns>-x-<name>/<ver>/ for a parsed pkg ref. Returns empty
+// path if no matching install exists.
+fs::path locate_base_pkg_(const PkgRef& ref) {
+    auto& p = Config::paths();
+    auto storeName = ref.ns.empty() ? ref.name : (ref.ns + "-x-" + ref.name);
+    auto base = p.dataDir / "xpkgs" / storeName;
+    if (!fs::is_directory(base)) return {};
+
+    // Specific version requested
+    if (!ref.ver.empty()) {
+        auto candidate = base / ref.ver;
+        return fs::is_directory(candidate) ? candidate : fs::path{};
+    }
+
+    // No version → take the highest-sorted installed version directory.
+    fs::path latest;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(base, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
+        if (it->is_directory(ec)) latest = it->path();
+    }
+    return latest;
+}
+
+} // namespace new_from_detail_
+
+export int new_from(const std::string& name, const fs::path& customDir,
+                    StorageMode storage, const std::string& imageSize,
+                    const std::string& fromSpec, EventStream& stream) {
+    auto& p = Config::paths();
+
+    fs::path baseDir;
+
+    if (new_from_detail_::is_pkg_spec_(fromSpec)) {
+        // ── pkg-spec path: locate or install the base xpkg ────────────
+        auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
+        baseDir = new_from_detail_::locate_base_pkg_(ref);
+
+        if (baseDir.empty()) {
+            // Auto-install (E5a): invoke `xlings install <spec>` so the
+            // base lands at xpkgs/<ns>-x-<name>/<ver>/. We use the host
+            // xlings binary (same process binary) so the install runs
+            // with the same context (XLINGS_HOME, mirror config, etc.).
+            log::info("base subos pkg '{}' not installed; auto-installing...",
+                      fromSpec);
+            auto xlings_bin = p.homeDir / "xlings";
+            if (!fs::exists(xlings_bin))
+                xlings_bin = p.homeDir / "bin" / "xlings";
+
+            auto cmd = std::format("{} install -y {}",
+                                   xlings_bin.string(), fromSpec);
+            auto rc = std::system(cmd.c_str());
+            if (rc != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "auto-install of base '" + fromSpec
+                               + "' failed",
+                    .recoverable = true,
+                    .hint = "run manually: xlings install " + fromSpec,
+                });
+                return 1;
+            }
+            baseDir = new_from_detail_::locate_base_pkg_(ref);
+        }
+
+        if (baseDir.empty()) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "couldn't locate base pkg payload for '" + fromSpec
+                           + "' after install",
+                .recoverable = false,
+            });
+            return 1;
+        }
+    } else {
+        // ── local fork path: source is an existing subos by name ──────
+        baseDir = p.homeDir / "subos" / fromSpec;
+        if (!fs::is_directory(baseDir)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "source subos '" + fromSpec + "' not found",
+                .recoverable = true,
+                .hint = "list available: xlings subos list",
+            });
+            return 1;
+        }
+    }
+
+    // Validate base shape: must contain .xlings.json for fork to make sense
+    if (!fs::is_regular_file(baseDir / ".xlings.json")) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "source '" + fromSpec
+                       + "' has no .xlings.json (not a valid fork source)",
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Create target subos via standard `create`. This sets up
+    // bin/lib/usr/generations, writes initial .xlings.json, optionally
+    // creates home.img, and registers the subos.
+    if (auto rc = create(name, customDir, storage, imageSize, stream); rc != 0) {
+        return rc;
+    }
+
+    auto dstDir = customDir.empty() ? (p.homeDir / "subos" / name) : customDir;
+
+    // Overlay base content on top — workspace (.xlings.json), any
+    // templates/static files. We re-issue create()'s file writes
+    // afterwards for storage/imageSize keys so the new subos's own
+    // storage choice wins over the base's. The base's .xlings.json
+    // workspace map is the data we want to inherit.
+    if (auto rc = new_from_detail_::copy_tree_(baseDir, dstDir, stream); rc != 0) {
+        return rc;
+    }
+
+    // Restore storage/imageSize fields in target's .xlings.json since
+    // copy_tree_ overwrote it with base's version (base usually has no
+    // explicit storage key — it inherits at fork time).
+    auto subosCfgPath = dstDir / ".xlings.json";
+    auto subosCfg = read_config_json_(subosCfgPath);
+    if (storage != StorageMode::Shared)
+        subosCfg["storage"] = storage_to_string_(storage);
+    else
+        subosCfg.erase("storage");
+    if (storage == StorageMode::Image)
+        subosCfg["imageSize"] = imageSize;
+    else
+        subosCfg.erase("imageSize");
+    write_config_json_(subosCfgPath, subosCfg);
+
+    // Re-mint subos shims (they may have been clobbered by copy_tree_
+    // if base happened to ship its own bin/ — defensive).
+    auto xlingsBin = p.homeDir / "xlings";
+    if (!fs::exists(xlingsBin))
+        xlingsBin = p.homeDir / "bin" / "xlings";
+    if (fs::exists(xlingsBin)) {
+        xself::ensure_subos_shims(dstDir / "bin", xlingsBin, p.homeDir);
+    }
+
+    nlohmann::json payload;
+    payload["name"]    = name;
+    payload["from"]    = fromSpec;
+    payload["base"]    = baseDir.string();
+    payload["storage"] = storage_to_string_(storage);
+    stream.emit(DataEvent{"subos_forked", payload.dump()});
+    return 0;
+}
+
 // `xlings subos use` modes:
 //
 //   spawn  (default) — exec a fresh interactive $SHELL with
@@ -758,13 +1025,16 @@ sandbox_binds_(const fs::path& subos_dir,
     return binds;
 }
 
-// Build proot argv from unified bind list.
+// Build proot argv from unified bind list. When `cmd` is non-empty, ends
+// in `<shell> -c <cmd>` for non-interactive single-command exec (M3);
+// otherwise just `<shell>` for the standard interactive entry.
 std::vector<std::string>
 build_proot_argv_(const fs::path& proot_bin,
                   const fs::path& subos_dir,
                   const fs::path& host_xlings_home,
                   const std::string& user,
-                  const std::string& shell_path)
+                  const std::string& shell_path,
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     // Use sandbox-root/ as the chroot root instead of subos_dir itself.
@@ -786,6 +1056,10 @@ build_proot_argv_(const fs::path& proot_bin,
 
     argv.push_back(std::format("--cwd={}", user_home));
     argv.push_back(shell_path);
+    if (!cmd.empty()) {
+        argv.push_back("-c");
+        argv.push_back(cmd);
+    }
     return argv;
 }
 
@@ -877,6 +1151,8 @@ std::string classify_bwrap_probe_error_(const std::string& output,
 // Build bwrap argv from unified bind list. Uses targeted --ro-bind
 // instead of `--ro-bind / /` to match proot's security profile
 // (same host paths exposed, same sandbox-private paths).
+// When `cmd` is non-empty, ends with `<shell> -c <cmd>` for non-
+// interactive single-command exec (M3); otherwise interactive shell.
 std::vector<std::string>
 build_bwrap_argv_(const fs::path& bwrap_bin,
                   const fs::path& subos_dir,
@@ -885,7 +1161,8 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   const std::string& shell_path,
                   bool interactive_shell,
                   StorageMode storage = StorageMode::Shared,
-                  const fs::path& mountpoint = {})
+                  const fs::path& mountpoint = {},
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     std::vector<std::string> argv = {
@@ -914,7 +1191,15 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
     }
 
     argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path});
-    if (interactive_shell) argv.push_back("-i");
+    if (!cmd.empty()) {
+        // Non-interactive single-command exec: shell -c <cmd>. The -i
+        // flag would print prompts/job-control warnings to captured
+        // stdout, so we omit it even if interactive_shell=true.
+        argv.push_back("-c");
+        argv.push_back(cmd);
+    } else if (interactive_shell) {
+        argv.push_back("-i");
+    }
     return argv;
 }
 
@@ -986,7 +1271,8 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
 //
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
 int use_sandbox_mode_(const std::string& name, EventStream& stream,
-                      const std::string& preferred_backend = "") {
+                      const std::string& preferred_backend = "",
+                      const std::string& cmd = "") {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
     // Refuse nested sandbox entry.
@@ -1266,10 +1552,10 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell,
-            interactive_shell, storage, image_mountpoint);
+            interactive_shell, storage, image_mountpoint, cmd);
     } else {
         argv = sandbox_detail_::build_proot_argv_(
-            backend->binary, subos_dir, p.homeDir, user, shell);
+            backend->binary, subos_dir, p.homeDir, user, shell, cmd);
         platform::set_env_variable("PROOT_NO_SECCOMP", "1");
     }
 
@@ -1395,7 +1681,8 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
 // want flat semantics type `exit` first.
 int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
-                    const std::string& sandbox_backend = "")
+                    const std::string& sandbox_backend = "",
+                    const std::string& cmd = "")
 {
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
@@ -1407,7 +1694,11 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // explicitly passed — earlier V6 auto-upgrade fused the two axes
     // and made `subos use <image-subos>` silently require root, bwrap,
     // and a working mount namespace just to switch shells.
-    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend);
+    //
+    // M3: `cmd` non-empty switches to non-interactive single-command
+    // execution — `shell -c <cmd>` instead of an interactive shell.
+    // Useful for scripts and agent workflows.
+    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend, cmd);
     warn_storage_dormant_on_shell_(name);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
@@ -1467,7 +1758,19 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
         // CreateProcessA needs a writable command-line buffer; std::string
         // ::data() returns a non-const char* since C++17. We pass null for
         // lpApplicationName so Windows resolves the bare exe via PATH.
+        //
+        // M3: when `cmd` is set, append the appropriate non-interactive
+        // single-command flag. pwsh/powershell use `-Command "<cmd>"`;
+        // cmd.exe uses `/c "<cmd>"`.
         std::string cmdline = exe;
+        if (!cmd.empty()) {
+            std::string_view exe_sv = exe;
+            if (exe_sv.find("cmd.exe") != std::string_view::npos) {
+                cmdline += " /c \"" + cmd + "\"";
+            } else {
+                cmdline += " -Command \"" + cmd + "\"";
+            }
+        }
         if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
                              /*bInheritHandles=*/TRUE,
                              /*dwCreationFlags=*/0,
@@ -1489,9 +1792,18 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // POSIX: exec(2) replaces the current process so xlings exits and the
     // child shell takes over. `exit` from that shell returns directly to
     // the parent shell with the original env intact.
+    //
+    // M3: `--cmd` switches to non-interactive single-command mode —
+    // `shell -c <cmd>`. The shell exits after the command, propagating
+    // its exit code as xlings's exit code.
     auto shell = utils::get_env_or_default("SHELL");
     if (shell.empty()) shell = "/bin/sh";
-    ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
+    if (!cmd.empty()) {
+        ::execl(shell.c_str(), shell.c_str(), "-c", cmd.c_str(),
+                static_cast<char*>(nullptr));
+    } else {
+        ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
+    }
 
     // Only reached if exec failed.
     log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
@@ -1657,16 +1969,21 @@ export int run(int argc, char* argv[], EventStream& stream) {
             .code = ErrorCode::InvalidInput,
             .message = std::string(detail),
             .recoverable = false,
-            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i> [name]",
+            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop> [name]",
         });
     };
 
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
-        // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>]
+        // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>] [--from <spec>]
         std::string name;
         StorageMode storage = StorageMode::Shared;
         std::string imageSize = "50G";
+        // M2: --from <spec> creates the new subos by forking an existing
+        // source. Spec containing `:` or `@` is treated as a pkg-spec
+        // (auto-installs the base xpkg if missing); bare name is treated
+        // as a local subos to fork from.
+        std::string fromSpec;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--storage" && i + 1 < argc) {
@@ -1683,6 +2000,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
             else if (a == "--image-size" && i + 1 < argc) {
                 imageSize = argv[++i];
             }
+            else if (a == "--from" && i + 1 < argc) {
+                fromSpec = argv[++i];
+            }
+            else if (a.rfind("--from=", 0) == 0) {
+                fromSpec = a.substr(7);
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -1694,6 +2017,9 @@ export int run(int argc, char* argv[], EventStream& stream) {
         if (name.empty()) {
             usageError("missing <name> for: xlings subos new");
             return 1;
+        }
+        if (!fromSpec.empty()) {
+            return new_from(name, {}, storage, imageSize, fromSpec, stream);
         }
         return create(name, {}, storage, imageSize, stream);
     }
@@ -1717,6 +2043,21 @@ export int run(int argc, char* argv[], EventStream& stream) {
         std::string shell_kind = "sh";
         bool sandbox = false;
         std::string sandbox_backend;       // "" = auto, "bwrap", "proot"
+        // M3: --cmd <string> runs a single command non-interactively
+        // and exits with the command's exit code. Works in both shell-
+        // level and sandbox modes. Internally routed to `sh -c <cmd>`
+        // (POSIX) or `pwsh -Command <cmd>` / `cmd /c <cmd>` (Windows).
+        std::string cmd;
+        // M5: explicit keeper policy overrides (D9). The runtime auto-
+        // default (storage=image|tmpfs + sandbox + Linux → keeper on,
+        // TTL=5min) is encoded in keeper::should_auto_keeper. These
+        // flags let the user override per call:
+        //   --no-keep      force disable (one-shot, even if auto would)
+        //   --keep         never-expiring (use until `subos stop`)
+        //   --ttl <sec>    custom idle TTL
+        bool no_keep = false;
+        bool keep_forever = false;
+        int  ttl_sec = 0;                  // 0 = use default
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -1741,6 +2082,37 @@ export int run(int argc, char* argv[], EventStream& stream) {
                     }
                 }
             }
+            else if (a == "--cmd" && i + 1 < argc) {
+                cmd = argv[++i];
+            }
+            else if (a.rfind("--cmd=", 0) == 0) {
+                cmd = a.substr(6);
+            }
+            // M5 keeper policy flags. The runtime spawning of the keeper
+            // is wired separately (see keeper.cppm); these flags are
+            // accepted on the CLI and threaded through for forward
+            // compatibility. Auto-default (D9) is governed by
+            // should_auto_keeper() at runtime.
+            else if (a == "--no-keep") {
+                no_keep = true;
+            }
+            else if (a == "--keep") {
+                keep_forever = true;
+            }
+            else if (a == "--ttl" && i + 1 < argc) {
+                try { ttl_sec = std::stoi(argv[++i]); }
+                catch (...) {
+                    usageError("--ttl expects an integer (seconds)");
+                    return 1;
+                }
+            }
+            else if (a.rfind("--ttl=", 0) == 0) {
+                try { ttl_sec = std::stoi(std::string(a.substr(6))); }
+                catch (...) {
+                    usageError("--ttl=<sec> expects an integer");
+                    return 1;
+                }
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -1751,9 +2123,28 @@ export int run(int argc, char* argv[], EventStream& stream) {
         }
         if (name.empty()) { usageError("missing <name> for: xlings subos use"); return 1; }
 
-        if (mode == "global") return use_global(name, stream);
-        if (mode == "shell")  return use_emit_shell(name, shell_kind, stream);
-        return use_spawn_shell(name, stream, sandbox, sandbox_backend);
+        if (no_keep && keep_forever) {
+            usageError("--no-keep and --keep are mutually exclusive");
+            return 1;
+        }
+
+        if (mode == "global") {
+            if (!cmd.empty()) {
+                usageError("--cmd is incompatible with --global "
+                           "(--global persists the active subos but doesn't spawn a shell)");
+                return 1;
+            }
+            return use_global(name, stream);
+        }
+        if (mode == "shell") {
+            if (!cmd.empty()) {
+                usageError("--cmd is incompatible with --shell <kind> "
+                           "(--shell emits env code; use plain `subos use --cmd` for non-interactive exec)");
+                return 1;
+            }
+            return use_emit_shell(name, shell_kind, stream);
+        }
+        return use_spawn_shell(name, stream, sandbox, sandbox_backend, cmd);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
@@ -1761,6 +2152,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
         return remove(argv[3], stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
+    if (sub == "stop") {
+        // M4/D9: stop the auto-keeper for a sandboxed subos.
+        // Safe to invoke even when no keeper is running — it's a no-op.
+        if (argc < 4) { usageError("missing <name> for: xlings subos stop"); return 1; }
+        return keeper::stop_keeper(argv[3]);
+    }
 
     usageError("unknown subcommand: " + sub);
     return 1;
