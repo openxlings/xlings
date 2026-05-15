@@ -758,13 +758,16 @@ sandbox_binds_(const fs::path& subos_dir,
     return binds;
 }
 
-// Build proot argv from unified bind list.
+// Build proot argv from unified bind list. When `cmd` is non-empty, ends
+// in `<shell> -c <cmd>` for non-interactive single-command exec (M3);
+// otherwise just `<shell>` for the standard interactive entry.
 std::vector<std::string>
 build_proot_argv_(const fs::path& proot_bin,
                   const fs::path& subos_dir,
                   const fs::path& host_xlings_home,
                   const std::string& user,
-                  const std::string& shell_path)
+                  const std::string& shell_path,
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     // Use sandbox-root/ as the chroot root instead of subos_dir itself.
@@ -786,6 +789,10 @@ build_proot_argv_(const fs::path& proot_bin,
 
     argv.push_back(std::format("--cwd={}", user_home));
     argv.push_back(shell_path);
+    if (!cmd.empty()) {
+        argv.push_back("-c");
+        argv.push_back(cmd);
+    }
     return argv;
 }
 
@@ -877,6 +884,8 @@ std::string classify_bwrap_probe_error_(const std::string& output,
 // Build bwrap argv from unified bind list. Uses targeted --ro-bind
 // instead of `--ro-bind / /` to match proot's security profile
 // (same host paths exposed, same sandbox-private paths).
+// When `cmd` is non-empty, ends with `<shell> -c <cmd>` for non-
+// interactive single-command exec (M3); otherwise interactive shell.
 std::vector<std::string>
 build_bwrap_argv_(const fs::path& bwrap_bin,
                   const fs::path& subos_dir,
@@ -885,7 +894,8 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   const std::string& shell_path,
                   bool interactive_shell,
                   StorageMode storage = StorageMode::Shared,
-                  const fs::path& mountpoint = {})
+                  const fs::path& mountpoint = {},
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     std::vector<std::string> argv = {
@@ -914,7 +924,15 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
     }
 
     argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path});
-    if (interactive_shell) argv.push_back("-i");
+    if (!cmd.empty()) {
+        // Non-interactive single-command exec: shell -c <cmd>. The -i
+        // flag would print prompts/job-control warnings to captured
+        // stdout, so we omit it even if interactive_shell=true.
+        argv.push_back("-c");
+        argv.push_back(cmd);
+    } else if (interactive_shell) {
+        argv.push_back("-i");
+    }
     return argv;
 }
 
@@ -986,7 +1004,8 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
 //
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
 int use_sandbox_mode_(const std::string& name, EventStream& stream,
-                      const std::string& preferred_backend = "") {
+                      const std::string& preferred_backend = "",
+                      const std::string& cmd = "") {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
     // Refuse nested sandbox entry.
@@ -1266,10 +1285,10 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell,
-            interactive_shell, storage, image_mountpoint);
+            interactive_shell, storage, image_mountpoint, cmd);
     } else {
         argv = sandbox_detail_::build_proot_argv_(
-            backend->binary, subos_dir, p.homeDir, user, shell);
+            backend->binary, subos_dir, p.homeDir, user, shell, cmd);
         platform::set_env_variable("PROOT_NO_SECCOMP", "1");
     }
 
@@ -1395,7 +1414,8 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
 // want flat semantics type `exit` first.
 int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
-                    const std::string& sandbox_backend = "")
+                    const std::string& sandbox_backend = "",
+                    const std::string& cmd = "")
 {
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
@@ -1407,7 +1427,11 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // explicitly passed — earlier V6 auto-upgrade fused the two axes
     // and made `subos use <image-subos>` silently require root, bwrap,
     // and a working mount namespace just to switch shells.
-    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend);
+    //
+    // M3: `cmd` non-empty switches to non-interactive single-command
+    // execution — `shell -c <cmd>` instead of an interactive shell.
+    // Useful for scripts and agent workflows.
+    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend, cmd);
     warn_storage_dormant_on_shell_(name);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
@@ -1467,7 +1491,19 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
         // CreateProcessA needs a writable command-line buffer; std::string
         // ::data() returns a non-const char* since C++17. We pass null for
         // lpApplicationName so Windows resolves the bare exe via PATH.
+        //
+        // M3: when `cmd` is set, append the appropriate non-interactive
+        // single-command flag. pwsh/powershell use `-Command "<cmd>"`;
+        // cmd.exe uses `/c "<cmd>"`.
         std::string cmdline = exe;
+        if (!cmd.empty()) {
+            std::string_view exe_sv = exe;
+            if (exe_sv.find("cmd.exe") != std::string_view::npos) {
+                cmdline += " /c \"" + cmd + "\"";
+            } else {
+                cmdline += " -Command \"" + cmd + "\"";
+            }
+        }
         if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
                              /*bInheritHandles=*/TRUE,
                              /*dwCreationFlags=*/0,
@@ -1489,9 +1525,18 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // POSIX: exec(2) replaces the current process so xlings exits and the
     // child shell takes over. `exit` from that shell returns directly to
     // the parent shell with the original env intact.
+    //
+    // M3: `--cmd` switches to non-interactive single-command mode —
+    // `shell -c <cmd>`. The shell exits after the command, propagating
+    // its exit code as xlings's exit code.
     auto shell = utils::get_env_or_default("SHELL");
     if (shell.empty()) shell = "/bin/sh";
-    ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
+    if (!cmd.empty()) {
+        ::execl(shell.c_str(), shell.c_str(), "-c", cmd.c_str(),
+                static_cast<char*>(nullptr));
+    } else {
+        ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
+    }
 
     // Only reached if exec failed.
     log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
@@ -1717,6 +1762,11 @@ export int run(int argc, char* argv[], EventStream& stream) {
         std::string shell_kind = "sh";
         bool sandbox = false;
         std::string sandbox_backend;       // "" = auto, "bwrap", "proot"
+        // M3: --cmd <string> runs a single command non-interactively
+        // and exits with the command's exit code. Works in both shell-
+        // level and sandbox modes. Internally routed to `sh -c <cmd>`
+        // (POSIX) or `pwsh -Command <cmd>` / `cmd /c <cmd>` (Windows).
+        std::string cmd;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -1741,6 +1791,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
                     }
                 }
             }
+            else if (a == "--cmd" && i + 1 < argc) {
+                cmd = argv[++i];
+            }
+            else if (a.rfind("--cmd=", 0) == 0) {
+                cmd = a.substr(6);
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -1751,9 +1807,23 @@ export int run(int argc, char* argv[], EventStream& stream) {
         }
         if (name.empty()) { usageError("missing <name> for: xlings subos use"); return 1; }
 
-        if (mode == "global") return use_global(name, stream);
-        if (mode == "shell")  return use_emit_shell(name, shell_kind, stream);
-        return use_spawn_shell(name, stream, sandbox, sandbox_backend);
+        if (mode == "global") {
+            if (!cmd.empty()) {
+                usageError("--cmd is incompatible with --global "
+                           "(--global persists the active subos but doesn't spawn a shell)");
+                return 1;
+            }
+            return use_global(name, stream);
+        }
+        if (mode == "shell") {
+            if (!cmd.empty()) {
+                usageError("--cmd is incompatible with --shell <kind> "
+                           "(--shell emits env code; use plain `subos use --cmd` for non-interactive exec)");
+                return 1;
+            }
+            return use_emit_shell(name, shell_kind, stream);
+        }
+        return use_spawn_shell(name, stream, sandbox, sandbox_backend, cmd);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
