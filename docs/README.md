@@ -1,161 +1,117 @@
-# xlings 项目文档
+# xlings 文档
 
-## 项目简介
+xlings 是一个通用包管理基础设施,支持多版本共存、OS-like SubOS 环境隔离和去中心化包索引生态。可以作为操作系统的系统级包管理器使用。
 
-**xlings** 是一个跨平台通用包管理器，核心理念是 **"一切皆可成包"**。
+## 目录
 
-- **当前版本**: v0.4.0
-- **技术架构**: C++23 模块单二进制 multicall 架构
-- **核心模块**:
-  - **xim** — 安装管理（多版本共存、依赖解析、并行下载）
-  - **xvm** — 版本管理（Shim 机制、版本切换）
-- **环境隔离**: SubOS 隔离环境 + 项目级 `.xlings.json` 配置
-- **平台支持**: Linux / macOS / Windows
-
-**外部链接**:
-
-| 资源 | 链接 |
-|------|------|
-| 官网 | https://xlings.d2learn.org |
-| 包索引 | [xim-pkgindex](https://github.com/openxlings/xim-pkgindex) |
-| 论坛 | https://forum.d2learn.org/category/9/xlings |
-| QQ 群 | 167535744 / 1006282943 |
-
----
-
-## 文档索引
-
-### 入门与使用
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [README.md](../README.md) | 英文快速开始、安装、使用示例 | 部分过时 |
-| [README.zh.md](../README.zh.md) | 中文版 | 部分过时 |
-| [changelog.md](../.agents/docs/changelog.md) | 变更日志 | 当前 |
-
-### 架构与设计
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [architecture.md](../.agents/docs/architecture.md) | 完整架构设计 | 当前 |
-| [linux_adaptation_plan.md](../.agents/docs/linux_adaptation_plan.md) | Linux 适配方案 | 当前 |
-| [log-system-design.md](../.agents/docs/log-system-design.md) | 日志系统设计 | 设计提案 |
-| [shim-optimization-design.md](../.agents/docs/shim-optimization-design.md) | Shim 优化设计 | 设计提案 |
-
-### C++23 迁移设计
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [mcpp-version/README.md](../.agents/docs/mcpp-version/README.md) | C++23 迁移导航入口（25+ 设计文档，60+ 任务） | 部分过时 |
-
-> 完整迁移设计文档列表请查看 [.agents/docs/mcpp-version/README.md](../.agents/docs/mcpp-version/README.md)
-
-### 组件文档
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [core/xim/README.md](../core/xim/README.md) | xim 模块架构与用法 | 当前 |
-| [core/xvm/README.md](../core/xvm/README.md) | xvm 模块用法与迁移指南 | 当前 |
-
-### XPackage 生态
-
-#### libxpkg — 规范实现库
-
-- **仓库**: [github.com/mcpplibs/libxpkg](https://github.com/mcpplibs/libxpkg)
-- **简介**: C++23 独立库，负责解析/索引/搜索/执行 xpkg
-- **四层模块**:
-  - `xpkg` — 包模型定义
-  - `loader` — xpkg 文件解析
-  - `index` — 包索引与搜索
-  - `executor` — 安装执行引擎
-- **xlings 集成点**: `xim.index`、`xim.catalog`、`xim.installer`
-
-#### xim-pkgindex — 官方包索引
-
-- **仓库**: [github.com/openxlings/xim-pkgindex](https://github.com/openxlings/xim-pkgindex)
-- **简介**: 61 个 xpkg 包定义 + V1 规范 + Pytest 测试框架
-- **关键文档**:
-  - [xpackage-spec.md](https://github.com/openxlings/xim-pkgindex/blob/main/docs/xpackage-spec.md) — xpkg 规范
-  - [add-xpackage.md](https://github.com/openxlings/xim-pkgindex/blob/main/docs/add-xpackage.md) — 添加包指南
-  - [test/design.md](https://github.com/openxlings/xim-pkgindex/blob/main/test/design.md) — 测试框架设计
-
-#### xpkg 规范要点
-
-- **格式**: Lua 文件，包含 `package` 表（静态元数据）和 hooks（运行时逻辑）
-- **xpm 平台矩阵**: 按平台/版本定义下载资源
-- **标准 hook**: `installed` / `install` / `config` / `uninstall`
-- **内置 API**: `pkginfo`、`xvm`、`system`、`log`、`utils`、`json`、`elfpatch`、`pkgmanager`
-
-### 测试
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [tests/README.md](../tests/README.md) | 测试概览与运行方式 | 部分过时 |
-
-### 开发者指南
-
-| 文档 | 说明 | 状态 |
-|------|------|------|
-| [AGENTS.md](../AGENTS.md) | 构建、测试、平台指南 | 部分过时 |
-
-### AI Agents 相关
-
-| 目录 | 说明 |
-|------|------|
-| [.agents/skills/](../.agents/skills/) | Agent 操作技能（构建指南、使用指南、UI 设计） |
-| [.agents/plans/](../.agents/plans/) | Agent 实施方案 |
-| [.agents/tasks/](../.agents/tasks/) | Agent 任务拆分 |
-
-> `.agents/` 是 AI Agent 的知识库，帮助 Agent 理解并贡献 xlings 项目。
+- **[一、快速开始](#一快速开始)**
+  - [1.1 安装](#11-安装)
+  - [1.2 基本使用](#12-基本使用)
+  - [1.3 典型场景](#13-典型场景)
+  - [1.4 SubOS 环境隔离](#14-subos-环境隔离)
+  - [1.5 包索引](#15-包索引)
+- **[二、使用指南](#二使用指南)**
+  - [2.1 多版本管理](quick-start/multi-version.md)
+  - [2.2 项目环境](quick-start/project-env.md)
+  - [2.3 SubOS 与 Agent](quick-start/subos-and-agent.md)
+  - [2.4 自定义包索引](quick-start/custom-index.md)
+- **[三、高级主题](#三高级主题)**
+  - [3.1 架构](#31-架构)
+  - [3.2 设计](#32-设计)
+  - [3.3 规范](#33-规范)
 
 ---
 
-## 贡献者指南
+## 一、快速开始
 
-- **Issues 与 Bug 修复** — [官网指南](https://xlings.d2learn.org)
-- **添加 XPackage 包** — [官网指南](https://xlings.d2learn.org) / [xim-pkgindex 仓库](https://github.com/openxlings/xim-pkgindex)
-- **文档编写** — [官网指南](https://xlings.d2learn.org)
-- **社区**: [论坛](https://forum.d2learn.org/category/9/xlings) / QQ 群 167535744 / 1006282943
+### 1.1 安装
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+
+# Windows PowerShell
+irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex
+```
+
+### 1.2 基本使用
+
+```bash
+xlings install gcc@16 node@24 cmake    # 安装工具(支持指定版本)
+xlings use gcc@16                       # 切换当前使用的版本
+xlings search python                    # 搜索可用包
+xlings list                             # 查看已安装的包
+xlings remove gcc                       # 卸载
+```
+
+### 1.3 典型场景
+
+| 场景 | 操作 |
+|------|------|
+| 多版本共存 | `xlings install gcc@16 gcc@11` 后通过 `xlings use` 切换 |
+| 项目环境复现 | 在项目目录放 `.xlings.json` 声明依赖,`xlings install` 一键安装 |
+| 为 Agent 创建隔离环境 | `xlings subos new agent-ws --from subos:dev-env@latest` |
+| 进入隔离的 SubOS | `xlings subos use agent-ws --sandbox` |
+| 在 SubOS 中执行命令 | `xlings subos use agent-ws --sandbox --cmd "python run.py"` |
+
+### 1.4 SubOS 环境隔离
+
+SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需求:
+
+| 级别 | 隔离范围 | 需要 root | 适用场景 |
+|------|----------|:---------:|----------|
+| Shell | 工具版本 | 否 | 日常开发、版本切换 |
+| FS | 文件系统(HOME, /tmp) | 否 | Agent 运行、实验、不信任代码 |
+| Image | 块设备完整隔离 | 是 | 重型工作负载 |
+
+### 1.5 包索引
+
+支持同时使用多个包索引仓库:
+
+- 官方索引:`openxlings/xim-pkgindex`
+- 第三方社区索引:任何人可以创建
+- 自建私有索引:团队内部使用
 
 ---
 
-## 文档状态说明
+## 二、使用指南
 
-### 状态标签
+详细的操作说明,按主题组织。
 
-| 标签 | 含义 |
+| 文档 | 内容 |
 |------|------|
-| 当前 | 内容准确，与代码一致 |
-| 部分过时 | 核心内容正确，部分细节需更新 |
-| 过时 | 内容严重过时，仅供参考 |
-| 设计提案 | 设计方案文档，未完全实现 |
-| 规划中 | 尚未开始实现 |
-
-### 已知问题
-
-| 文档 | 问题 |
-|------|------|
-| `docs/quick_start.md` | 严重过时：引用 pre-v0.0.4 CLI（已归档） |
-| `README.md` / `README.zh.md` | CAUTION 横幅说"迁移中"，但 xim/xvm 迁移已在 v0.4.0 完成 |
-| `tests/README.md` | 测试数量与实际不符 |
-| `AGENTS.md` | 仍引用已移除的 Rust xvm 构建命令 |
-| `mcpp-version/README.md` | Gap 分析引用已删除的 `shims.rs` |
-| `.agents/skills/xlings-build/SKILL.md` | 仍含 `cargo build` 命令 |
+| [多版本管理](quick-start/multi-version.md) | 安装、切换、共存原理 |
+| [项目环境](quick-start/project-env.md) | .xlings.json 配置、一键安装、项目级 SubOS |
+| [SubOS 与 Agent](quick-start/subos-and-agent.md) | 创建隔离环境、运行 Agent、多实例 |
+| [自定义包索引](quick-start/custom-index.md) | 搭建私有仓库、添加第三方索引 |
+| 从源码构建 | 构建 xlings 本身 *(见 README)* |
 
 ---
 
-## 阅读指南
+## 三、高级主题
 
-根据你的角色，推荐以下阅读路径：
+面向需要了解内部实现或参与开发的读者。
 
-**用户**:
-[README.md](../README.md) → [官网](https://xlings.d2learn.org) → [xim README](../core/xim/README.md) → [xvm README](../core/xvm/README.md)
+### 3.1 架构
 
-**开发者**:
-[AGENTS.md](../AGENTS.md) → [architecture.md](../.agents/docs/architecture.md) → [tests/README.md](../tests/README.md) → [changelog.md](../.agents/docs/changelog.md)
+| 文档 | 内容 |
+|------|------|
+| [系统架构概览](architecture/overview.md) | 模块关系、数据布局、安装流程、隔离模型 |
 
-**包贡献者**:
-[xpackage-spec.md](https://github.com/openxlings/xim-pkgindex/blob/main/docs/xpackage-spec.md) → [add-xpackage.md](https://github.com/openxlings/xim-pkgindex/blob/main/docs/add-xpackage.md) → 示例包 → [测试框架](https://github.com/openxlings/xim-pkgindex/blob/main/test/design.md)
+### 3.2 设计
 
-**设计贡献者**:
-[architecture.md](../.agents/docs/architecture.md) → [mcpp-version/README.md](../.agents/docs/mcpp-version/README.md) → 设计文档 → [tasks/](../.agents/tasks/)
+| 文档 | 内容 |
+|------|------|
+| [SubOS-as-XPKG](design/subos-as-xpkg.md) | type="subos" 包格式、fork 机制、非交互执行 |
+| [xvm 版本管理](design/xvm-version-management.md) | 版本视图 + 引用计数实现多版本共存 |
+| [SubOS 隔离机制](design/subos-isolation.md) | 三级隔离(shell / FS / image)的实现细节 |
+| [包索引生态](design/package-index-ecosystem.md) | 去中心化索引设计 |
+| [Interface 协议](design/interface-protocol.md) | `xlings interface` NDJSON 通信协议 |
+
+### 3.3 规范
+
+| 文档 | 内容 |
+|------|------|
+| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook 约定 |
+| [.xlings.json 字段](spec/xlings-json-schema.md) | 配置文件各字段语义 |
+| [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求/响应/事件协议 |

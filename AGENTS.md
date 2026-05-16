@@ -2,158 +2,137 @@
 
 ## Project Overview
 
-`xlings` is a cross-platform tool/package manager project with:
-- a C++23 core application in `core/`
-- a Rust-based `xvm` / `xvm-shim` runtime in `core/xvm/`
-- a Lua-based `xim` package-management layer in `core/xim/`
-- release assembly scripts in `tools/`
-- CI workflows in `.github/workflows/`
+`xlings` is a universal package management infrastructure tool with OS-like SubOS isolation. Single static binary, C++23 modules throughout, cross-platform (Linux / macOS / Windows).
 
-Treat this repository as a multi-language, multi-platform build and packaging project. Do not assume Linux-only workflows unless the task is explicitly Linux-specific.
+Core capabilities:
+- **Package management** — install/remove/search/update with multi-version coexistence
+- **SubOS isolation** — 3 levels (shell / FS sandbox / image), rootless (except image mode)
+- **Decentralized index** — official + third-party + self-hosted package repos
+- **Agent integration** — NDJSON interface (`xlings interface`), SubOS for agent-owned envs
+- **Version view + ref-counting** — N isolated environments share one copy of package payloads
 
-## Repository Areas
+## Repository Structure
 
-Important directories:
-- `core/`: C++23 application modules and entrypoint
-- `core/xvm/`: Rust binaries and tests
-- `core/xim/`: Lua/xmake package-management logic
-- `config/`: shipped config, i18n, shell, and xvm templates
-- `tools/`: platform release scripts and install helpers
-- `tests/e2e/`: end-to-end and regression tests
-- `docs/`: design notes, migration docs, and implementation plans
-- `Agents/skills/`: project-local Codex skills for this repo
+```
+src/
+├── main.cpp                         # Entry point
+├── cli.cppm                         # CLI dispatch (positional + flag parsing)
+├── interface.cppm                   # NDJSON programmatic interface (protocol v1.0)
+├── core/
+│   ├── config.cppm                  # 3-layer config (global → subos → project)
+│   ├── subos.cppm                   # SubOS lifecycle (create/use/fork/remove/stop)
+│   ├── subos/keeper.cppm            # Auto-keeper primitives (Linux namespace reuse)
+│   ├── xself.cppm                   # Self-install/update
+│   ├── xself/                       # Self-management submodules
+│   ├── xim/                         # Package management subsystem
+│   │   ├── installer.cppm           # Install orchestration (type dispatch)
+│   │   ├── resolver.cppm            # DAG dependency resolution
+│   │   ├── downloader.cppm          # Parallel download + SHA256
+│   │   ├── index.cppm               # Package index + cache
+│   │   ├── catalog.cppm             # Multi-repo catalog loading
+│   │   └── libxpkg/types/           # Per-type handlers:
+│   │       ├── type.cppm            #   PlanNode, enums, shared types
+│   │       ├── script.cppm          #   type="script" default hooks
+│   │       └── subos.cppm           #   type="subos" default hooks
+│   └── xvm/                         # Version management
+│       ├── db.cppm                  # VersionDB CRUD + JSON
+│       ├── shim.cppm                # Multicall shim dispatch
+│       └── commands.cppm            # xvm commands (use, list, register)
+├── platform.cppm                    # Cross-platform abstractions
+├── platform/                        # Platform implementations
+├── libs/                            # Vendored libs (json, tinyhttps)
+└── ui/                              # TUI (ftxui-based)
 
-## Build Systems
+tests/
+├── e2e/                             # End-to-end shell tests
+│   ├── project_test_lib.sh          # Shared helpers (find_xlings_bin, run_xlings)
+│   ├── fixtures/                    # Test fixture packages
+│   └── subos_xpkg_*.sh             # SubOS-as-xpkg e2e tests
+└── (unit tests via xmake build xlings_tests)
 
-This repo has two build paths:
+.agents/
+├── docs/                            # Agent working docs (see .agents/docs/README.md)
+├── skills/                          # Agent skills (this section)
+├── plans/                           # Implementation plans
+└── tasks/                           # Task tracking
+```
 
-| Component | Tool | Typical output |
-|-----------|------|----------------|
-| C++23 core (`core/*.cppm`, `core/main.cpp`) | `xmake` | `build/<platform>/<arch>/release/xlings` |
-| Rust xvm/xvm-shim (`core/xvm/`) | `cargo` | `core/xvm/target/release/{xvm,xvm-shim}` or platform target dir |
+## Build System
 
-For packaged deliverables, prefer the checked-in release scripts:
-- Linux: `tools/linux_release.sh`
-- macOS: `tools/macos_release.sh`
-- Windows: `tools/windows_release.ps1`
-
-## Platform Guidance
-
-### Linux
-
-Canonical repo flow:
-- install `xlings` first via quick install
-- use `xlings install musl-gcc@15.1.0 -y`
-- configure `xmake` with the musl SDK
-- build C++ via `xmake`
-- build Rust via `cargo`
-- use `tools/linux_release.sh` for package assembly
-
-Common setup:
+Single build tool: **xmake** (C++23 modules).
 
 ```bash
-source ~/.bashrc
-MUSL_SDK="${XLINGS_HOME:-$HOME/.xlings}/data/xpkgs/musl-gcc/15.1.0"
-export CC=x86_64-linux-musl-gcc
-export CXX=x86_64-linux-musl-g++
-export PATH="$MUSL_SDK/bin:$PATH"
+# Setup (from repo root):
+xlings install              # installs xmake, cmake, ninja, toolchain from .xlings.json
+xlings use gcc@16.1.0       # switch to glibc-linked dev toolchain
 
-xmake f -c -p linux -m release --sdk="$MUSL_SDK" --cross=x86_64-linux-musl- --cc="$CC" --cxx="$CXX" -y
-xmake build xlings -y
-cargo build --manifest-path core/xvm/Cargo.toml --release
+# Build:
+xmake build xlings           # dev binary → build/linux/x86_64/release/xlings
+
+# Test:
+xmake build xlings_tests && xmake run xlings_tests   # unit tests
+XLINGS_BIN=$(find build -path '*/release/xlings' -type f | head -1) \
+  bash tests/e2e/<test>.sh                             # e2e tests
 ```
 
-If musl helper binaries fail due to missing loader path, create the loader symlink used by CI/release tooling:
+For release packaging (static binary):
+- Linux: `tools/linux_release.sh` (musl-gcc static)
+- macOS: `tools/macos_release.sh` (LLVM)
+- Windows: `tools/windows_release.ps1` (MSVC)
 
-```bash
-sudo mkdir -p /home/xlings/.xlings_data/lib
-sudo chown "$(id -u):$(id -g)" /home/xlings/.xlings_data/lib
-ln -sfn "$MUSL_SDK/x86_64-linux-musl/lib/libc.so" /home/xlings/.xlings_data/lib/ld-musl-x86_64.so.1
+## Key Development Patterns
+
+### CLI argparse
+
+Manual positional parsing in each subcommand's `run()` function (see `subos.cppm` line ~1700). Pattern:
+```cpp
+for (int i = 3; i < argc; ++i) {
+    std::string a = argv[i];
+    if (a == "--flag" && i + 1 < argc) { value = argv[++i]; }
+    else if (!a.empty() && a[0] != '-' && name.empty()) { name = std::move(a); }
+    else { usageError("unknown option: " + a); return 1; }
+}
 ```
 
-### macOS
+### Type-specific install dispatch
 
-Canonical repo flow:
-- install `xmake` and `llvm@20` with Homebrew
-- configure `xmake` with `--toolchain=llvm`
-- build C++ via `xmake`
-- build Rust via `cargo`
-- use `tools/macos_release.sh` for package assembly
+`installer.cppm` checks `node.pkgType`:
+- 0 = Package (standard: extract + hook)
+- 1 = Script (default_install copies .lua)
+- 4 = Subos (default_install creates skeleton + .xlings.json)
 
-Common setup:
+### E2E test pattern
 
-```bash
-brew install xmake llvm@20
-xmake f -p macosx -m release --toolchain=llvm --sdk=/opt/homebrew/opt/llvm@20 -y
-xmake build xlings -y
-cargo build --manifest-path core/xvm/Cargo.toml --release
+Use `project_test_lib.sh` helpers. Key functions:
+- `find_xlings_bin` — locates built binary
+- `run_xlings "$HOME_DIR" "$ROOT_DIR" <args>` — isolated execution
+- `require_fixture_index` — ensures pkgindex fixture present
+
+### Upstream dependency
+
+`mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via xmake dep:
+```lua
+add_requires("mcpplibs-xpkg 0.0.41")
 ```
+For joint development: `xmake f --local_libxpkg=/path/to/libxpkg`
 
-### Windows
+## Agent Skills
 
-Canonical repo flow:
-- use the default MSVC-capable environment
-- configure `xmake` for Windows
-- build C++ via `xmake`
-- build Rust via `cargo`
-- use `tools/windows_release.ps1` for package assembly
+| Skill | Purpose |
+|-------|---------|
+| `xlings-usage` | Complete xlings usage guide (install, subos, project mode, agent workflows) |
+| `xlings-contributing` | Contribution workflow (issue → implement → test → PR → CI) |
+| `xlings-build` | Platform-specific build instructions (Linux musl / macOS LLVM / Windows MSVC) |
+| `xlings-quickstart` | Quick-start operations (legacy, see xlings-usage for updated version) |
+| `system-design` | System design patterns |
+| `mcpp-style-ref` | C++ coding style reference |
 
-Common setup:
+## Important Rules
 
-```powershell
-xmake f -p windows -m release -y
-xmake build xlings -y
-cargo build --manifest-path core/xvm/Cargo.toml --release
-```
-
-## Testing
-
-Default validation targets:
-- Rust tests: `cargo test --manifest-path core/xvm/Cargo.toml --all-targets`
-- Rust lint: `cargo clippy --manifest-path core/xvm/Cargo.toml`
-- Linux regression: `bash tests/e2e/bugfix_regression_test.sh`
-- Linux usability: `bash tests/e2e/linux_usability_test.sh`
-- macOS usability: `bash tests/e2e/macos_usability_test.sh build/release.tar.gz`
-- Windows usability: `pwsh tests/e2e/windows_usability_test.ps1 -ArchivePath build\\release.zip`
-
-After any successful build, prefer these smoke checks:
-
-```bash
-xlings -h
-xlings config
-xvm --version
-xlings install d2x -y
-```
-
-If network access is unavailable, explicitly report that the `d2x` install smoke test was skipped.
-
-## Key Gotchas
-
-- The root `xmake.lua` defines the C++ build target only.
-- The `xim` task is defined in `core/xim/xmake.lua`, which is a separate xmake project used with `xmake xim -P <dir>`.
-- Never pass the source root as `-P` for `xim` tasks unless the layout explicitly matches the package root expectations.
-- After installing `xlings`, `source ~/.bashrc` may be required so `~/.xlings/subos/current/bin` is on `PATH`.
-- When `XLINGS_HOME` points at the source tree, `xlings install` can still fall through to the installed `~/.xlings` layout.
-- Linux release builds are intentionally aligned to `musl-gcc@15.1.0` for static output.
-- Prefer CI workflow files over memory when reproducing exact platform behavior.
-
-## Skills
-
-This repo includes project-local skills under `Agents/skills/`.
-
-Use these when they match the task:
-- `xlings-quickstart`: installation, basic usage, namespace/index flows, and important project links
-  - `Agents/skills/xlings-quickstart/SKILL.md`
-- `xlings-build`: Linux/macOS/Windows build, toolchain prep, release scripts, and post-build verification
-  - `Agents/skills/xlings-build/SKILL.md`
-
-When a task matches one of these skills, open the corresponding `SKILL.md` first and follow it before inventing new workflow steps.
-
-## Preferred Sources Of Truth
-
-When instructions disagree, use this priority:
-1. current CI workflow files in `.github/workflows/`
-2. current release scripts in `tools/`
-3. checked-in project skills in `Agents/skills/`
-4. repo docs in `docs/`
-5. older assumptions from prior conversations
+1. **Use xlings for tool installation** — always `xlings install <tool>`, never apt/brew/curl
+2. **Toolchain**: `xlings use gcc@16.1.0` for dev builds (avoids musl/glibc link conflicts)
+3. **Test isolation**: every e2e test uses temp XLINGS_HOME, never touches real user env
+4. **Commit convention**: `<type>(<scope>): <description>` — feat/fix/chore/docs/test
+5. **Squash merge**: PRs are squash-merged to main, one clean commit per feature
+6. **CI must pass**: Linux + macOS + Windows; don't bypass with `--no-verify`
+7. **No unnecessary changes**: don't add comments/docstrings/refactors beyond what's asked
