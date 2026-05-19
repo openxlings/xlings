@@ -3228,6 +3228,166 @@ TEST(ThemeIcons, InfoPanelEmitsIconBytesToStdout) {
 }
 
 // ============================================================
+// marker binding-root tests (COMPAT 0.4.37)
+// ============================================================
+
+TEST(XvmDbTest, AddMarkerType) {
+    xlings::xvm::VersionDB db;
+
+    // Register a marker entry (library/toolkit package, not an executable)
+    xlings::xvm::add_version(db, "my-sdk", "1.0.0", "/pkg/my-sdk-1.0", "marker");
+
+    EXPECT_TRUE(xlings::xvm::has_target(db, "my-sdk"));
+    EXPECT_TRUE(xlings::xvm::has_version(db, "my-sdk", "1.0.0"));
+
+    auto* vinfo = xlings::xvm::get_vinfo(db, "my-sdk");
+    ASSERT_NE(vinfo, nullptr);
+    EXPECT_EQ(vinfo->type, "marker");
+
+    auto* vdata = xlings::xvm::get_vdata(db, "my-sdk", "1.0.0");
+    ASSERT_NE(vdata, nullptr);
+    EXPECT_EQ(vdata->path, "/pkg/my-sdk-1.0");
+}
+
+TEST(XvmDbTest, MarkerAsBindingRoot) {
+    xlings::xvm::VersionDB db;
+
+    // Register marker as binding root
+    xlings::xvm::add_version(db, "my-sdk", "1.0.0", "/pkg/my-sdk-1.0", "marker");
+
+    // Register tools bound to the marker
+    xlings::xvm::add_version(db, "tool-a", "1.0.0", "/pkg/my-sdk-1.0/bin",
+                             "program", "tool-a", "tool-a", "", "my-sdk@1.0.0");
+    xlings::xvm::add_version(db, "tool-b", "1.0.0", "/pkg/my-sdk-1.0/bin",
+                             "program", "tool-b", "tool-b", "", "my-sdk@1.0.0");
+
+    // Verify bidirectional bindings: my-sdk <-> tool-a, my-sdk <-> tool-b
+    auto* sdk_info = xlings::xvm::get_vinfo(db, "my-sdk");
+    ASSERT_NE(sdk_info, nullptr);
+    EXPECT_TRUE(sdk_info->bindings.contains("tool-a"));
+    EXPECT_TRUE(sdk_info->bindings.contains("tool-b"));
+
+    auto* tool_a_info = xlings::xvm::get_vinfo(db, "tool-a");
+    ASSERT_NE(tool_a_info, nullptr);
+    EXPECT_TRUE(tool_a_info->bindings.contains("my-sdk"));
+
+    // Verify binding tree traversal starting from marker root
+    std::map<std::string, std::string> to_switch;
+    std::set<std::string> visited;
+    std::function<void(const std::string&, const std::string&)> collect;
+    collect = [&](const std::string& node, const std::string& ver) {
+        if (visited.contains(node)) return;
+        visited.insert(node);
+        to_switch[node] = ver;
+        auto info = xlings::xvm::get_vinfo(db, node);
+        if (!info) return;
+        for (auto& [peer, vermap] : info->bindings) {
+            auto it = vermap.find(ver);
+            if (it != vermap.end()) collect(peer, it->second);
+        }
+    };
+    collect("my-sdk", "1.0.0");
+
+    // All three should be collected: marker + 2 tools
+    EXPECT_EQ(to_switch.size(), 3u);
+    EXPECT_TRUE(to_switch.contains("my-sdk"));
+    EXPECT_TRUE(to_switch.contains("tool-a"));
+    EXPECT_TRUE(to_switch.contains("tool-b"));
+}
+
+TEST(XvmDbTest, MarkerMultipleVersionsBinding) {
+    xlings::xvm::VersionDB db;
+
+    // Install v1.0
+    xlings::xvm::add_version(db, "my-sdk", "1.0.0", "/pkg/v1", "marker");
+    xlings::xvm::add_version(db, "tool-a", "1.0.0", "/pkg/v1/bin",
+                             "program", "tool-a", "", "", "my-sdk@1.0.0");
+
+    // Install v2.0
+    xlings::xvm::add_version(db, "my-sdk", "2.0.0", "/pkg/v2", "marker");
+    xlings::xvm::add_version(db, "tool-a", "2.0.0", "/pkg/v2/bin",
+                             "program", "tool-a", "", "", "my-sdk@2.0.0");
+
+    // Switching to my-sdk@2.0.0 should cascade to tool-a@2.0.0
+    std::map<std::string, std::string> to_switch;
+    std::set<std::string> visited;
+    std::function<void(const std::string&, const std::string&)> collect;
+    collect = [&](const std::string& node, const std::string& ver) {
+        if (visited.contains(node)) return;
+        visited.insert(node);
+        to_switch[node] = ver;
+        auto info = xlings::xvm::get_vinfo(db, node);
+        if (!info) return;
+        for (auto& [peer, vermap] : info->bindings) {
+            auto it = vermap.find(ver);
+            if (it != vermap.end()) collect(peer, it->second);
+        }
+    };
+    collect("my-sdk", "2.0.0");
+
+    EXPECT_EQ(to_switch.size(), 2u);
+    EXPECT_EQ(to_switch["my-sdk"], "2.0.0");
+    EXPECT_EQ(to_switch["tool-a"], "2.0.0");
+
+    // Switching to my-sdk@1.0.0 should cascade to tool-a@1.0.0
+    to_switch.clear();
+    visited.clear();
+    collect("my-sdk", "1.0.0");
+
+    EXPECT_EQ(to_switch.size(), 2u);
+    EXPECT_EQ(to_switch["my-sdk"], "1.0.0");
+    EXPECT_EQ(to_switch["tool-a"], "1.0.0");
+}
+
+TEST(XvmDbTest, MarkerJsonRoundTrip) {
+    xlings::xvm::VersionDB db;
+
+    xlings::xvm::add_version(db, "my-sdk", "1.0.0", "/pkg/v1", "marker");
+    xlings::xvm::add_version(db, "tool-a", "1.0.0", "/pkg/v1/bin",
+                             "program", "tool-a", "", "", "my-sdk@1.0.0");
+
+    // Serialize
+    auto j = xlings::xvm::versions_to_json(db);
+
+    // Deserialize
+    auto db2 = xlings::xvm::versions_from_json(j);
+
+    // Verify marker type preserved
+    auto* vinfo = xlings::xvm::get_vinfo(db2, "my-sdk");
+    ASSERT_NE(vinfo, nullptr);
+    EXPECT_EQ(vinfo->type, "marker");
+
+    // Verify bindings preserved
+    EXPECT_TRUE(vinfo->bindings.contains("tool-a"));
+    auto* tool_info = xlings::xvm::get_vinfo(db2, "tool-a");
+    ASSERT_NE(tool_info, nullptr);
+    EXPECT_TRUE(tool_info->bindings.contains("my-sdk"));
+}
+
+TEST(XvmDbTest, MarkerNamespaced) {
+    xlings::xvm::VersionDB db;
+
+    // Non-primary repo: namespace "myrepo"
+    xlings::xvm::add_version(db, "my-sdk", "1.0.0", "/pkg/v1", "marker",
+                             "", "", "myrepo");
+    xlings::xvm::add_version(db, "tool-a", "1.0.0", "/pkg/v1/bin",
+                             "program", "tool-a", "", "myrepo",
+                             "my-sdk@1.0.0");
+
+    // Version key should be namespaced
+    EXPECT_TRUE(xlings::xvm::has_version(db, "my-sdk", "myrepo:1.0.0"));
+    EXPECT_TRUE(xlings::xvm::has_version(db, "tool-a", "myrepo:1.0.0"));
+
+    // Bindings should use namespaced keys
+    auto* sdk_info = xlings::xvm::get_vinfo(db, "my-sdk");
+    ASSERT_NE(sdk_info, nullptr);
+    auto bit = sdk_info->bindings.find("tool-a");
+    ASSERT_NE(bit, sdk_info->bindings.end());
+    // The binding maps namespaced version of tool-a to namespaced version of my-sdk
+    EXPECT_TRUE(bit->second.contains("myrepo:1.0.0"));
+}
+
+// ============================================================
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

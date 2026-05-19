@@ -538,6 +538,16 @@ void detach_current_subos_(const std::string& target, const std::string& version
     if (wasActive || installedChanged) Config::save_workspace();
 }
 
+// Compute the namespace prefix for version keys. Primary-repo packages
+// get bare versions; other repos get "ns:version" to allow coexistence.
+std::string compute_version_ns_(const PlanNode& node) {
+    auto& globalRepos = Config::global_index_repos();
+    bool isPrimary = !globalRepos.empty()
+        && node.namespaceName == globalRepos[0].name;
+    return (!isPrimary && !node.namespaceName.empty())
+        ? node.namespaceName : std::string{};
+}
+
 void process_xvm_operations_(const PlanNode& node,
                              const std::filesystem::path& dataDir,
                              mcpplibs::xpkg::PackageExecutor& executor,
@@ -558,17 +568,7 @@ void process_xvm_operations_(const PlanNode& node,
     if (!std::filesystem::exists(xlings_bin))
         xlings_bin = paths.homeDir / "xlings";
 
-    // Determine namespace for version keys: primary repo gets bare versions,
-    // other repos get "ns:version" to allow coexistence.
-    std::string version_ns;
-    {
-        auto& globalRepos = Config::global_index_repos();
-        bool isPrimary = !globalRepos.empty()
-            && node.namespaceName == globalRepos[0].name;
-        if (!isPrimary && !node.namespaceName.empty()) {
-            version_ns = node.namespaceName;
-        }
-    }
+    std::string version_ns = compute_version_ns_(node);
 
     for (auto& op : xvm_ops) {
         if (op.op == "add") {
@@ -744,6 +744,29 @@ void process_xvm_operations_(const PlanNode& node,
             }
         }
     }
+
+    // Lint D1: warn if config hook registered tools but not package.name itself.
+    // This helps xpkg authors discover the binding-root pattern.
+    {
+        bool root_registered = false;
+        bool has_any_add = false;
+        for (auto& op : xvm_ops) {
+            if (op.op == "add") {
+                has_any_add = true;
+                if (op.name == node.name) {
+                    root_registered = true;
+                    break;
+                }
+            }
+        }
+        if (has_any_add && !root_registered) {
+            log::warn("[xpkg-lint] '{}@{}': config hook registered tool(s) but "
+                      "not package.name — consider adding xvm:add(\"{}\", ..., "
+                      "\"marker\") as binding root",
+                      node.name, node.version, node.name);
+        }
+    }
+
     Config::save_versions();
     Config::save_workspace();
 }
@@ -766,6 +789,58 @@ bool run_config_hook_(const PlanNode& node,
     }
     process_xvm_operations_(node, dataDir, executor, useAfterInstall);
     return true;
+}
+
+// COMPAT(0.4.37 → drop in 0.6.0): auto-register a "marker" entry for
+// packages whose config hook (or lack thereof) didn't register
+// package.name in the XVM database. Without this, subos-scoped
+// `xlings list`, `xlings uninstall`, and binding-root version switching
+// silently fail for library/toolkit packages that only register their
+// sub-tools. Once all xpkgs explicitly register a binding root, this
+// compat shim can be removed.
+void ensure_binding_root_registered_(const PlanNode& node,
+                                     const std::filesystem::path& dataDir) {
+    if (node.kind == DepKind::Build) return;
+
+    std::string version_ns = compute_version_ns_(node);
+    auto ver_key = xvm::make_ns_version(version_ns, node.version);
+    const auto& wsi = Config::workspace_installed();
+
+    // Check: is node.name already tracked in current subos?
+    if (auto it = wsi.find(node.name); it != wsi.end()) {
+        for (auto& v : it->second) {
+            if (v == ver_key || xvm::strip_namespace(v) == node.version)
+                return;  // already registered — nothing to do
+        }
+    }
+
+    // Check VersionDB — another subos may have registered it but this
+    // subos hasn't opted in yet.
+    auto db = Config::versions();
+    auto resolved = xvm::match_version(db, node.name, node.version);
+
+    if (resolved.empty()) {
+        // Not in VersionDB at all — inject marker entry
+        std::string path = ((node.storeRoot.empty()
+            ? (dataDir / "xpkgs") : node.storeRoot)
+            / detail_::effective_store_name_(node)
+            / node.version).string();
+
+        xvm::add_version(Config::versions_mut(),
+                         node.name, node.version, path,
+                         "marker", "", "", version_ns, "");
+        Config::save_versions();
+    }
+
+    // Ensure current subos tracks this version
+    auto& list = Config::workspace_installed_mut()[node.name];
+    if (std::find(list.begin(), list.end(), ver_key) == list.end()) {
+        list.push_back(ver_key);
+    }
+    Config::save_workspace();
+
+    log::debug("[{}] COMPAT: auto-registered as marker (binding root), ver={}",
+               node.name, ver_key);
 }
 
 bool register_platform_loader_sandbox_(lua::State* L, const std::string& platform) {
@@ -1471,6 +1546,11 @@ public:
                 }
                 continue;
             }
+
+            // COMPAT(0.4.37 → drop in 0.6.0): ensure package.name is
+            // registered as a marker binding root if the config hook
+            // (or default config) didn't register it explicitly.
+            detail_::ensure_binding_root_registered_(node, dataDir);
 
             if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
                 !snapshot) {
