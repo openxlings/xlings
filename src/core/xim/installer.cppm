@@ -21,7 +21,8 @@ import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
 import xlings.core.xim.libxpkg.types.subos;
-import xlings.core.xim.compat;
+import xlings.core.compat.xim;
+import xlings.core.compat.xself;
 import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
@@ -559,7 +560,7 @@ void process_xvm_operations_(const PlanNode& node,
     if (!std::filesystem::exists(xlings_bin))
         xlings_bin = paths.homeDir / "xlings";
 
-    std::string version_ns = compat::v0_4_37::compute_version_ns(node);
+    std::string version_ns = compat::xim::v0_4_37::compute_version_ns(node);
 
     for (auto& op : xvm_ops) {
         if (op.op == "add") {
@@ -642,7 +643,7 @@ void process_xvm_operations_(const PlanNode& node,
                     }
                     // COMPAT(0.4.8 → drop in 0.6.0): opportunistic legacy
                     // alias cleanup, alongside the bootstrap replacement.
-                    xself::compat::v0_4_8::cleanup_legacy_alias_shims(paths.binDir, xlings_bin);
+                    compat::xself::v0_4_8::cleanup_legacy_alias_shims(paths.binDir, xlings_bin);
                 }
             } else if (type == "lib" && !op.bindir.empty()) {
                 // Install lib symlink to subos lib dir
@@ -1489,7 +1490,7 @@ public:
             // COMPAT(0.4.37 → drop in 0.6.0): ensure package.name is
             // registered as a marker binding root if the config hook
             // (or default config) didn't register it explicitly.
-            compat::v0_4_37::ensure_binding_root_registered(node, dataDir);
+            compat::xim::v0_4_37::ensure_binding_root_registered(node, dataDir);
 
             if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
                 !snapshot) {

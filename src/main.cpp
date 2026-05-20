@@ -5,8 +5,8 @@ import xlings.core.config;
 import xlings.platform;
 import xlings.core.xvm.shim;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
-// See xself/compat.cppm — each compat lives in its own version sub-namespace.
-import xlings.core.xself.compat;
+// See compat/ directory — each compat lives in its own version sub-namespace.
+import xlings.core.compat.xself;
 
 #ifdef _WIN32
 #include <io.h>
@@ -41,10 +41,10 @@ int main(int argc, char* argv[]) {
     // COMPAT(0.4.8 → drop in 0.6.0): short-command aliases (xim/xvm/xself/
     // xsubos/xinstall) were removed in 0.4.8. If the user invoked one —
     // usually via a leftover symlink from an older install or a hand-typed
-    // habit — print a migration error (centralized in xself::compat::v0_4_8)
+    // habit — print a migration error (centralized in compat::xself::v0_4_8)
     // and exit with code 2 instead of falling through to shim_dispatch's
     // cryptic "no version set for X".
-    if (xlings::xself::compat::v0_4_8::report_deprecated_alias_if_match(program_name)) {
+    if (xlings::compat::xself::v0_4_8::report_deprecated_alias_if_match(program_name)) {
         return 2;
     }
 
@@ -53,7 +53,7 @@ int main(int argc, char* argv[]) {
     // call ensure_home_layout), the on-disk shell profiles will be stale.
     // Have the new binary auto-upgrade them on its first run. Cheap on the
     // unchanged path (one read + version compare per profile file).
-    xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
+    xlings::compat::xself::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
 
     int rc;
     if (xlings::xvm::is_xlings_binary(program_name)) {

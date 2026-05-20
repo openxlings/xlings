@@ -1,16 +1,15 @@
 // xim-specific cross-version compatibility shim collection.
 //
-// Follows the same convention as xself/compat.cppm: each compat feature
-// lives in its own `vX_Y_Z` sub-namespace so the version it dates from
-// is visible at every call site, and so a clean removal is a one-shot
-// operation:
+// Each compat feature lives in its own `vX_Y_Z` sub-namespace so the
+// version it dates from is visible at every call site, and so a clean
+// removal is a one-shot operation:
 //
 //   1. Bump the codebase past the removal target.
 //   2. Delete the matching `namespace vX_Y_Z { ... }` block in this file.
-//   3. Rebuild — every reference to `xim::compat::vX_Y_Z::*` surfaces as
+//   3. Rebuild — every reference to `compat::xim::vX_Y_Z::*` surfaces as
 //      a hard build error. Delete the call and any surrounding
 //      `COMPAT(X.Y.Z → drop in A.B.C)` marker comment. No grep needed.
-export module xlings.core.xim.compat;
+export module xlings.core.compat.xim;
 
 import std;
 import xlings.core.log;
@@ -20,7 +19,7 @@ import xlings.core.xvm.db;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
 
-namespace xlings::xim::compat {
+namespace xlings::compat::xim {
 
 // =======================================================================
 // COMPAT(0.4.37 → drop in 0.6.0)  removal_target: 0.6.0
@@ -48,7 +47,7 @@ export namespace v0_4_37 {
 // get bare versions; other repos get "ns:version" to allow coexistence.
 // Shared with process_xvm_operations_ (which duplicates this logic
 // internally; a future cleanup can unify them).
-inline std::string compute_version_ns(const PlanNode& node) {
+inline std::string compute_version_ns(const ::xlings::xim::PlanNode& node) {
     auto& globalRepos = Config::global_index_repos();
     bool isPrimary = !globalRepos.empty()
         && node.namespaceName == globalRepos[0].name;
@@ -56,9 +55,9 @@ inline std::string compute_version_ns(const PlanNode& node) {
         ? node.namespaceName : std::string{};
 }
 
-void ensure_binding_root_registered(const PlanNode& node,
+void ensure_binding_root_registered(const ::xlings::xim::PlanNode& node,
                                     const std::filesystem::path& dataDir) {
-    if (node.kind == DepKind::Build) return;
+    if (node.kind == ::xlings::xim::DepKind::Build) return;
 
     std::string version_ns = compute_version_ns(node);
     auto ver_key = xvm::make_ns_version(version_ns, node.version);
@@ -81,7 +80,7 @@ void ensure_binding_root_registered(const PlanNode& node,
         // Not in VersionDB at all — inject marker entry
         std::string path = ((node.storeRoot.empty()
             ? (dataDir / "xpkgs") : node.storeRoot)
-            / xim::package_store_name(node.namespaceName, node.name)
+            / ::xlings::xim::package_store_name(node.namespaceName, node.name)
             / node.version).string();
 
         xvm::add_version(Config::versions_mut(),
@@ -103,4 +102,4 @@ void ensure_binding_root_registered(const PlanNode& node,
 
 } // namespace v0_4_37
 
-} // namespace xlings::xim::compat
+} // namespace xlings::compat::xim

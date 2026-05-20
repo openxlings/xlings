@@ -1854,7 +1854,7 @@ TEST_F(ShimCreateTest, EnsureSubosShimsCreatesAll) {
     }
 }
 
-// COMPAT(0.4.8 → drop in 0.6.0): tests for xself::compat::cleanup_legacy_alias_shims.
+// COMPAT(0.4.8 → drop in 0.6.0): tests for compat::xself::cleanup_legacy_alias_shims.
 // Delete this whole TEST_F block when the compat module is removed.
 TEST_F(ShimCreateTest, CleanupLegacyAliasShimsRemovesOnlyMatchingSymlinks) {
 #if defined(_WIN32)
@@ -1875,7 +1875,7 @@ TEST_F(ShimCreateTest, CleanupLegacyAliasShimsRemovesOnlyMatchingSymlinks) {
     auto userFile = binDir / "xim";
     std::ofstream(userFile) << "user data\n";
 
-    xlings::xself::compat::v0_4_8::cleanup_legacy_alias_shims(binDir, src);
+    xlings::compat::xself::v0_4_8::cleanup_legacy_alias_shims(binDir, src);
 
     // Regular user file with a colliding name must survive.
     EXPECT_TRUE(fs::exists(userFile));

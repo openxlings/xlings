@@ -307,7 +307,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         // alias symlinks (xim/xvm/...) left over from xlings ≤ 0.4.7.
         // Lands on this path during `xlings self update`, which ends with
         // `xlings use xlings latest` — so first-upgrade self-heals.
-        xself::compat::v0_4_8::cleanup_legacy_alias_shims(p.binDir, xlings_bin);
+        compat::xself::v0_4_8::cleanup_legacy_alias_shims(p.binDir, xlings_bin);
     }
 
     log::info("{} -> {}", target, resolved);

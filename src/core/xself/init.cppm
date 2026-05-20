@@ -7,8 +7,8 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 // Cross-version compat (currently: legacy alias cleanup, profile upgrade).
-// See xself/compat.cppm — each compat lives in its own version sub-namespace.
-import xlings.core.xself.compat;
+// See compat/xself.cppm — each compat lives in its own version sub-namespace.
+import xlings.core.compat.xself;
 // Generated at build time from config/shell/*.{sh,fish,ps1}; see xmake.lua.
 import xlings.core.xself.profile_resources;
 
@@ -134,7 +134,7 @@ void ensure_subos_shims(const fs::path& target_bin_dir,
     }
 
     // COMPAT(0.4.8 → drop in 0.6.0): one-shot migration cleanup.
-    compat::v0_4_8::cleanup_legacy_alias_shims(target_bin_dir, shim_src);
+    compat::xself::v0_4_8::cleanup_legacy_alias_shims(target_bin_dir, shim_src);
 
     platform::make_files_executable(target_bin_dir);
 }

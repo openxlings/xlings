@@ -1,4 +1,4 @@
-// Cross-version compatibility shim collection.
+// xself-specific cross-version compatibility shim collection.
 //
 // Each compat feature lives in its own `vX_Y_Z` sub-namespace so the
 // version it dates from is visible at every call site, and so a clean
@@ -6,7 +6,7 @@
 //
 //   1. Bump the codebase past the removal target.
 //   2. Delete the matching `namespace vX_Y_Z { ... }` block in this file.
-//   3. Rebuild — every reference to `xself::compat::vX_Y_Z::*` surfaces as
+//   3. Rebuild — every reference to `compat::xself::vX_Y_Z::*` surfaces as
 //      a hard build error. Delete the call and any surrounding
 //      `COMPAT(X.Y.Z → drop in A.B.C)` marker comment. No grep needed.
 //
@@ -15,14 +15,14 @@
 //   * permanent self-heal  (profile auto-upgrade — keeps paying off as
 //                           the embedded resource version evolves)
 // The `removal_target` line in each block tells you which is which.
-export module xlings.core.xself.compat;
+export module xlings.core.compat.xself;
 
 import std;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.xself.profile_resources;
 
-namespace xlings::xself::compat {
+namespace xlings::compat::xself {
 
 namespace fs = std::filesystem;
 
@@ -141,11 +141,11 @@ bool report_deprecated_alias_if_match(std::string_view program_name);
 // `v0_4_17::auto_upgrade_profiles_if_stale` is therefore wired into the
 // xlings binary's startup so that the new binary, on its first run after
 // a self-update, brings the on-disk profiles up to whatever
-// `profile_resources::kVersion` it was compiled with. Idempotent — same
+// `::xlings::xself::profile_resources::kVersion` it was compiled with. Idempotent — same
 // version is a no-op, mismatched version overwrites with the new bytes
 // (preserving any user comments below the marker line).
 //
-// Lives in compat.cppm because it's how we paper over the "old xlings's
+// Lives in compat because it's how we paper over the "old xlings's
 // install path didn't propagate profile content" gap. Stays permanently:
 // every time we bump kVersion in a future release, the same hook delivers
 // the new profile to existing users without requiring a manual
@@ -155,7 +155,7 @@ bool report_deprecated_alias_if_match(std::string_view program_name);
 export namespace v0_4_17 {
 
 // Cheap startup hook: if any of the three shell profiles have a version
-// marker that differs from `profile_resources::kVersion`, rewrite them.
+// marker that differs from `::xlings::xself::profile_resources::kVersion`, rewrite them.
 // Otherwise no-op (single small read per file). Safe to call on every
 // xlings invocation — total cost on the unchanged path is well under 1 ms.
 //
@@ -271,19 +271,19 @@ void auto_upgrade_profiles_if_stale(const fs::path& home_dir) {
         std::string_view  bytes;
     };
     const Slot slots[] = {
-        { "xlings-profile.sh",   profile_resources::bash_sh },
-        { "xlings-profile.fish", profile_resources::fish    },
-        { "xlings-profile.ps1",  profile_resources::pwsh    },
+        { "xlings-profile.sh",   ::xlings::xself::profile_resources::bash_sh },
+        { "xlings-profile.fish", ::xlings::xself::profile_resources::fish    },
+        { "xlings-profile.ps1",  ::xlings::xself::profile_resources::pwsh    },
     };
 
     for (auto& s : slots) {
         auto path = config_dir / s.filename;
-        if (!detail_::needs_profile_upgrade(path, profile_resources::kVersion))
+        if (!detail_::needs_profile_upgrade(path, ::xlings::xself::profile_resources::kVersion))
             continue;
         try {
             platform::write_string_to_file(path.string(), std::string(s.bytes));
             log::debug("[compat] upgraded {} to profile version {}",
-                       path.string(), profile_resources::kVersion);
+                       path.string(), ::xlings::xself::profile_resources::kVersion);
         } catch (...) {
             // Profile upgrade is opportunistic — failure shouldn't block
             // the actual command the user invoked.
@@ -293,4 +293,4 @@ void auto_upgrade_profiles_if_stale(const fs::path& home_dir) {
 
 } // namespace v0_4_17
 
-} // namespace xlings::xself::compat
+} // namespace xlings::compat::xself

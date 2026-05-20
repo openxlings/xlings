@@ -3,8 +3,8 @@ export module xlings.core.xself.doctor;
 import std;
 import xlings.core.xself.init;   // create_shim, LinkResult
 // Cross-version compat module (legacy alias names + safety predicate
-// live under v0_4_8). See xself/compat.cppm.
-import xlings.core.xself.compat;
+// live under v0_4_8). See compat/xself.cppm.
+import xlings.core.compat.xself;
 
 import xlings.core.config;
 import xlings.libs.json;
@@ -160,7 +160,7 @@ export int cmd_doctor(EventStream& stream, bool fix) {
     // COMPAT(0.4.8 → drop in 0.6.0): Check 2.5 — legacy alias shims
     // (xim/xvm/xself/xsubos/xinstall).
     //
-    // Names + predicate are owned by xself::compat. Doctor differs from
+    // Names + predicate are owned by compat::xself. Doctor differs from
     // the silent cleanup helper only in that it reports each finding and
     // gates removal on `--fix`. Both share the safety predicate so they
     // agree on what counts as "safe to remove".
@@ -169,9 +169,9 @@ export int cmd_doctor(EventStream& stream, bool fix) {
     if (fs::exists(p.binDir)) {
         std::error_code bec;
         auto canonical_bootstrap = fs::weakly_canonical(xlings_bin, bec);
-        for (auto alias : compat::v0_4_8::LEGACY_ALIAS_NAMES) {
+        for (auto alias : compat::xself::v0_4_8::LEGACY_ALIAS_NAMES) {
             auto path = p.binDir / shim_filename(std::string(alias));
-            if (!compat::v0_4_8::is_legacy_alias_symlink_to_bootstrap(path,
+            if (!compat::xself::v0_4_8::is_legacy_alias_symlink_to_bootstrap(path,
                     canonical_bootstrap)) continue;
 
             ++orphans;
