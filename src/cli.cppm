@@ -18,6 +18,7 @@ import xlings.ui;
 import xlings.core.i18n;
 import xlings.platform;
 import xlings.capabilities;
+import xlings.agent;
 import xlings.interface;
 import xlings.core.subos;
 import xlings.core.xself;
@@ -665,6 +666,9 @@ export int run(int argc, char* argv[]) {
             return 0;
         }
 
+        // agent — dispatched early so it handles its own -h as plain text
+        if (cmd == "agent") return agent::run(fargc, fargv.data());
+
         // Intercept subcommand help: xlings <cmd> -h/--help
         bool wantsHelp = false;
         for (int i = 2; i < fargc; ++i) {
@@ -777,7 +781,7 @@ export int run(int argc, char* argv[]) {
             static constexpr std::string_view known_cmds[] = {
                 "install", "remove", "update", "search", "list",
                 "info", "use", "config", "subos", "self", "script",
-                "interface",
+                "interface", "agent",
             };
             bool known = false;
             for (auto& k : known_cmds) {
