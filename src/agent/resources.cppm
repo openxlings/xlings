@@ -11,6 +11,7 @@ import std;
 
 import xlings.agent.skill;
 import xlings.agent.skills.usage;
+import xlings.agent.skills.contributing;
 
 namespace xlings::agent::resources {
 
@@ -56,6 +57,7 @@ Run `xlings agent skills usage` now to learn the full usage guide.)PROMPT";
 export SkillRegistry build_registry() {
     SkillRegistry reg;
     reg.add(std::make_unique<skills::UsageSkill>());
+    reg.add(std::make_unique<skills::ContributingSkill>());
     return reg;
 }
 
