@@ -16,25 +16,35 @@ namespace xlings::agent::resources {
 
 // ─── Overview (printed by `xlings agent`) ──────────────────────
 
-export constexpr std::string_view kOverview = R"PROMPT(xlings — Developer tool version manager
+export constexpr std::string_view kOverview = R"PROMPT([INSTRUCTION] You are interacting with xlings, a developer tool version
+manager. READ THIS FULLY before running any xlings command.
 
-A CLI tool for installing, managing, and switching between multiple
-versions of development tools (compilers, runtimes, build systems)
-with isolated environments (SubOS).
+[WHAT IS XLINGS]
+xlings installs, manages, and switches between multiple versions of
+development tools (compilers, runtimes, build systems) with isolated
+environments (SubOS).
 
-Quick start (if you just need to run a command now):
+[CRITICAL — READ THE SKILL FIRST]
+Before using xlings, you MUST run:
+  xlings agent skills usage
+This outputs the complete usage guide with rules, command formats,
+flags, decision trees, and error handling — everything you need to
+use xlings correctly. Do NOT guess command syntax.
+
+[QUICK REFERENCE — use only AFTER reading the skill]
   xlings search <keyword>              Search packages
-  xlings install <pkg>[@<ver>] --yes   Install (--yes skips confirmation)
+  xlings install <pkg>[@<ver>] --yes   Install (--yes skips prompts)
   xlings list                          List installed
   xlings use <pkg> <ver>               Switch version
   xlings info <pkg>                    Show package details
   xlings update                        Update package index
 
-Tip: Add --agent flag to any command for clean plain-text output
-     without TUI formatting (no ANSI codes, no progress bars).
+[FLAGS YOU MUST USE]
+  --yes     REQUIRED for non-interactive use (skips confirmation prompts)
+  --agent   Outputs clean plain text without TUI formatting (recommended)
 
-Run `xlings agent skills` to see all available skill guides.
-Run `xlings agent skills <name>` for a specific skill.)PROMPT";
+[NEXT STEP]
+Run `xlings agent skills usage` now to learn the full usage guide.)PROMPT";
 
 // ─── Registry builder ──────────────────────────────────────────
 //

@@ -196,6 +196,18 @@ void print_help(std::string_view version) {
     }
     rows.push_back(text(""));
 
+    // AGENT hint — strong signal for LLM agents
+    rows.push_back(text("  FOR AI AGENTS") | bold | color(theme::text_color()));
+    rows.push_back(hbox({
+        text("    If you are an LLM/AI agent, run `xlings agent` FIRST.")
+            | color(theme::text_color()),
+    }));
+    rows.push_back(hbox({
+        text("    It contains usage instructions designed specifically for you.")
+            | color(theme::dim_color()),
+    }));
+    rows.push_back(text(""));
+
     render_rows_(std::move(rows));
 }
 
