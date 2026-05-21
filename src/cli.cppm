@@ -19,6 +19,7 @@ import xlings.core.i18n;
 import xlings.platform;
 import xlings.capabilities;
 import xlings.agent;
+import xlings.agent.text_renderer;
 import xlings.interface;
 import xlings.core.subos;
 import xlings.core.xself;
@@ -619,12 +620,43 @@ export int run(int argc, char* argv[]) {
     // Build Capability Registry (for Agent/MCP use — CLI keeps direct dispatch)
     auto registry = capabilities::build_registry();
 
-    // Scan for global flags (--verbose, -v, --quiet, -q) anywhere in argv
-    // so they work regardless of position (e.g. `xlings --verbose subos new s1`)
+    // Scan for global flags (--verbose, -v, --quiet, -q, --agent) anywhere
+    // in argv so they work regardless of position.
+    bool agent_mode = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
         if (a == "--verbose" || a == "-v") log::set_level(log::Level::Debug);
         else if (a == "--quiet" || a == "-q") log::set_level(log::Level::Error);
+        else if (a == "--agent") agent_mode = true;
+    }
+
+    // --agent: replace TUI listener with plain-text renderer, disable colors.
+    // Unlike interface mode, we do NOT set tui_mode(true) — log output should
+    // still reach the terminal, just without ANSI decoration.
+    if (agent_mode) {
+        stream.set_enabled(tui_listener, false);
+        log::enable_color(false);
+        stream.on_event([&stream](const Event& e) {
+            if (auto* d = std::get_if<DataEvent>(&e)) {
+                agent::render_data_event(*d);
+            }
+            else if (auto* p = std::get_if<PromptEvent>(&e)) {
+                // In agent mode, auto-respond with default (use --yes for confirms)
+                stream.respond(p->id, p->defaultValue);
+            }
+            else if (auto* er = std::get_if<ErrorEvent>(&e)) {
+                std::println(stderr, "Error: {}", er->message);
+                if (!er->hint.empty()) std::println(stderr, "Hint: {}", er->hint);
+            }
+            else if (auto* l = std::get_if<LogEvent>(&e)) {
+                if (l->level == LogLevel::error)
+                    std::println(stderr, "{}", l->message);
+                else if (l->level == LogLevel::warn)
+                    std::println(stderr, "{}", l->message);
+                else
+                    std::println("{}", l->message);
+            }
+        });
     }
 
     // Build filtered argv without global flags for positional-arg handlers
@@ -633,7 +665,8 @@ export int run(int argc, char* argv[]) {
     fargv.push_back(argv[0]);
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
-        if (a == "--verbose" || a == "-v" || a == "--quiet" || a == "-q") continue;
+        if (a == "--verbose" || a == "-v" || a == "--quiet" || a == "-q"
+            || a == "--agent") continue;
         fargv.push_back(argv[i]);
     }
     int fargc = static_cast<int>(fargv.size());
@@ -850,6 +883,7 @@ export int run(int argc, char* argv[]) {
         .option("yes").short_name('y').help("Skip confirmation prompts").global()
         .option("verbose").short_name('v').help("Enable verbose output").global()
         .option("quiet").short_name('q').help("Suppress non-essential output").global()
+        .option("agent").help("Plain-text output without TUI formatting (for LLM agents)").global()
 
         // install
         .subcommand("install")
