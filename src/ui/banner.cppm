@@ -166,6 +166,7 @@ void print_help(std::string_view version) {
         {"subos",    "Manage sub-OS environments"},
         {"self",     "Manage xlings itself (install, update, clean)"},
         {"script",   "Run xlings scripts"},
+        {"agent",    "Built-in skills and plain-text mode for LLM agents"},
     };
     for (auto& cmd : cmds) {
         rows.push_back(hbox({
@@ -184,6 +185,7 @@ void print_help(std::string_view version) {
         {"-y, --yes",       "Skip confirmation prompts"},
         {"-v, --verbose",   "Enable verbose output"},
         {"-q, --quiet",     "Suppress non-essential output"},
+        {"    --agent",     "Plain-text output for LLM agents (no TUI/ANSI)"},
     };
     for (auto& opt : opts) {
         rows.push_back(hbox({
