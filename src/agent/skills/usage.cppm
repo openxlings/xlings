@@ -11,7 +11,7 @@ export class UsageSkill : public Skill {
 public:
     auto name() const -> std::string_view override { return "usage"; }
     auto description() const -> std::string_view override {
-        return "Complete usage guide: install, search, remove, version switching, SubOS, project mode";
+        return "Complete xlings usage guide for agents: commands, flags, SubOS, project mode, troubleshooting";
     }
     auto content() const -> std::string_view override { return kContent; }
 
@@ -83,6 +83,17 @@ Commands:
   xlings subos info [name]                   # show details
   xlings subos remove <name>                 # delete
 
+How it works:
+- Each SubOS has its own workspace (which tools/versions are active)
+- Tool binaries are shared globally — only the version mapping differs
+- Creating a SubOS is instant; "default" always exists and cannot be removed
+
+Example:
+  xlings subos new project-a           # create isolated env
+  xlings subos use project-a           # switch to it
+  xlings install gcc@14 --yes          # gcc 14 only in project-a
+  xlings subos use default             # switch back — gcc 14 not here
+
 ## Project Mode
 
 If the current directory (or a parent) has .xlings.json:
@@ -97,11 +108,12 @@ Run `xlings install` with no arguments to install all declared tools.
   2. Unsure about name? → xlings search <keyword> → pick → install
   3. Need version list? → xlings info <name> → pick version → install
 
-### "Build fails with 'command not found'"
+### "Build fails with 'command not found' or wrong version"
   1. xlings list → is the tool installed?
   2. Not installed → xlings search + install
   3. Installed, wrong version → xlings use <tool> <version>
-  4. Installed, still not found → restart shell (source profile)
+  4. Too old (e.g. gcc 13 for C++23) → xlings install <tool>@<newer> --yes -u
+  5. Installed, still not found → restart shell (source profile)
 
 ### "Project has .xlings.json"
   1. Run xlings install (no args) → installs everything declared

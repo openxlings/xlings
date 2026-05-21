@@ -11,9 +11,6 @@ import std;
 
 import xlings.agent.skill;
 import xlings.agent.skills.usage;
-import xlings.agent.skills.setup;
-import xlings.agent.skills.debug_build;
-import xlings.agent.skills.subos;
 
 namespace xlings::agent::resources {
 
@@ -49,9 +46,6 @@ Run `xlings agent skills <name>` for a specific skill.)PROMPT";
 export SkillRegistry build_registry() {
     SkillRegistry reg;
     reg.add(std::make_unique<skills::UsageSkill>());
-    reg.add(std::make_unique<skills::SetupSkill>());
-    reg.add(std::make_unique<skills::DebugBuildSkill>());
-    reg.add(std::make_unique<skills::SubosSkill>());
     return reg;
 }
 
