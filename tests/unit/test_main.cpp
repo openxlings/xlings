@@ -27,6 +27,7 @@ import xlings.platform;
 import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.profile;
+import xlings.core.subos.gpu;
 import xlings.runtime;
 import xlings.capabilities;
 import xlings.libs.tinyhttps;
@@ -3225,6 +3226,82 @@ TEST(ThemeIcons, InfoPanelEmitsIconBytesToStdout) {
     // layer or stdout capture downconverted UTF-8 to replacement chars.
     EXPECT_EQ(output.find("?????"), std::string::npos)
         << "info_panel output contains run of '?' — possible encoding loss";
+}
+
+// ============================================================
+// subos GPU passthrough (--gpu) tests
+// ============================================================
+
+namespace {
+
+bool contains_triple(const std::vector<std::string>& argv,
+                     std::string_view flag,
+                     std::string_view src,
+                     std::string_view dst)
+{
+    for (size_t i = 0; i + 2 < argv.size(); ++i) {
+        if (argv[i] == flag && argv[i + 1] == src && argv[i + 2] == dst)
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(SubosGpu, EmptyHostStillBindsSys) {
+    auto args = xlings::subos::gpu::passthrough_args(
+        [](const std::string&) { return false; });
+    // No /dev/* bindings, but /sys --ro-bind must always be present.
+    EXPECT_EQ(args.size(), 3u);
+    EXPECT_TRUE(contains_triple(args, "--ro-bind", "/sys", "/sys"));
+}
+
+TEST(SubosGpu, BindsNvidiactlWhenPresent) {
+    auto args = xlings::subos::gpu::passthrough_args(
+        [](const std::string& p) { return p == "/dev/nvidiactl"; });
+    EXPECT_TRUE(contains_triple(args, "--dev-bind",
+                                "/dev/nvidiactl", "/dev/nvidiactl"));
+    EXPECT_TRUE(contains_triple(args, "--ro-bind", "/sys", "/sys"));
+}
+
+TEST(SubosGpu, EnumeratesPerGpuNodesUpTo16) {
+    int probe_count = 0;
+    auto args = xlings::subos::gpu::passthrough_args(
+        [&](const std::string& p) {
+            // Count probes that target /dev/nvidia<digit>
+            if (p.size() > 11 && p.starts_with("/dev/nvidia")
+                && std::isdigit(static_cast<unsigned char>(p[11]))) {
+                ++probe_count;
+                return true;
+            }
+            return false;
+        });
+    EXPECT_EQ(probe_count, 16);
+    // All 16 must appear as --dev-bind triples.
+    for (int i = 0; i < 16; ++i) {
+        auto path = "/dev/nvidia" + std::to_string(i);
+        EXPECT_TRUE(contains_triple(args, "--dev-bind", path, path))
+            << "missing --dev-bind for " << path;
+    }
+}
+
+TEST(SubosGpu, BindsDriWhenPresent) {
+    auto args = xlings::subos::gpu::passthrough_args(
+        [](const std::string& p) { return p == "/dev/dri"; });
+    EXPECT_TRUE(contains_triple(args, "--dev-bind",
+                                "/dev/dri", "/dev/dri"));
+}
+
+TEST(SubosGpu, FullHostBindsAllKnownNodes) {
+    auto args = xlings::subos::gpu::passthrough_args(
+        [](const std::string&) { return true; });
+    for (auto path : {"/dev/nvidiactl", "/dev/nvidia-uvm",
+                      "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
+                      "/dev/dri"}) {
+        EXPECT_TRUE(contains_triple(args, "--dev-bind", path, path))
+            << "missing --dev-bind for " << path;
+    }
+    EXPECT_TRUE(contains_triple(args, "--ro-bind", "/sys", "/sys"));
 }
 
 // ============================================================

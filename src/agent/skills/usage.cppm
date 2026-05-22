@@ -105,6 +105,7 @@ multiple toolchains on one machine.
   xlings subos use <name>                 # switch to it
   xlings subos use <name> --cmd "<cmd>"   # run one command inside
   xlings subos use <name> --sandbox       # filesystem isolation
+  xlings subos use <name> --sandbox --gpu # sandbox + NVIDIA/DRM passthrough
   xlings subos list --agent               # list all
   xlings subos remove <name>              # delete
 
