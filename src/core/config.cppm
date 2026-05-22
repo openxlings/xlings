@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "0.4.38";
+    static constexpr std::string_view VERSION = "0.4.39";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -405,12 +405,31 @@ private:
             auto exeParent = exePath.parent_path();
             auto candidate = exeParent.parent_path();
             auto hasRootConfig = !exePath.empty() && fs::exists(candidate / ".xlings.json");
-#ifdef _WIN32
-            auto hasRootBin = !exePath.empty() && fs::exists(candidate / "bin" / "xlings.exe");
-#else
-            auto hasRootBin = !exePath.empty() && fs::exists(candidate / "bin" / "xlings");
-#endif
-            if (hasRootConfig && hasRootBin) {
+            constexpr auto kBinName = (platform::OS_NAME == "windows")
+                ? "bin/xlings.exe" : "bin/xlings";
+            auto hasRootBin = !exePath.empty() && fs::exists(candidate / kBinName);
+
+            bool isSelfContained = hasRootConfig && hasRootBin;
+            if constexpr (platform::OS_NAME == "windows") {
+                // Windows: shims are hardlinks/copies (not symlinks), so
+                // get_executable_path() returns the shim path inside a subos
+                // dir (e.g. ~/.xlings/subos/current/bin/xlings.exe). That
+                // directory has both .xlings.json and bin/xlings.exe, falsely
+                // matching the selfContained pattern. Disambiguate by checking
+                // json content: real home/selfContained config always has both
+                // "version" and "activeSubos"; subos config only has workspace.
+                if (isSelfContained) {
+                    try {
+                        auto cfg = platform::read_file_to_string(
+                            (candidate / ".xlings.json").string());
+                        auto j = nlohmann::json::parse(cfg, nullptr, false);
+                        isSelfContained = !j.is_discarded()
+                            && j.contains("version")
+                            && j.contains("activeSubos");
+                    } catch (...) { isSelfContained = false; }
+                }
+            }
+            if (isSelfContained) {
                 paths_.homeDir       = candidate;
                 paths_.selfContained = true;
             } else {
