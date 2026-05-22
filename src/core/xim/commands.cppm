@@ -380,7 +380,14 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
         summaryPayload["failed"] = failedCount;
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
     }
-    return 0;
+    // Per-package failures (download / extract / hook) are surfaced via
+    // InstallPhase::Failed callbacks and accumulate in `failedCount`;
+    // installer.execute itself only returns unexpected on cancel or
+    // plan-level errors. Without checking failedCount here, `xlings
+    // install` and `interface install_packages` would report exitCode=0
+    // even when individual packages failed to install — see
+    // .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
+    return failedCount > 0 ? 1 : 0;
 }
 
 // === remove command ===

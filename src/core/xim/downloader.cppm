@@ -22,6 +22,34 @@ bool is_git_url(const std::string& url) {
     return url.ends_with(".git");
 }
 
+// Filename-based archive sniff for the post-download sanity check
+// below. Kept here (not shared with installer.cppm::is_archive_) so this
+// module stays self-contained — the two predicates can diverge if a
+// downloader-specific format ever needs filtering.
+bool looks_like_archive_filename_(const std::filesystem::path& path) {
+    auto name = path.filename().string();
+    return name.ends_with(".tar.gz")
+        || name.ends_with(".tar.xz")
+        || name.ends_with(".tar.bz2")
+        || name.ends_with(".tar.zst")
+        || name.ends_with(".tgz")
+        || name.ends_with(".zip");
+}
+
+// Lower bound for what we accept as a real archive payload when there's
+// no sha256 to cross-check. Any compressed archive's own format header
+// (gzip 10B, xz 12B, zip 22B EOCD, tar 512B block) plus realistic
+// content already pushes past 256B; 1 KiB gives us headroom without
+// risking false rejection of intentionally-tiny xpkg stub archives.
+//
+// The motivating failure: gitcode's file-cdn returns 200 OK + a 9-byte
+// "Not Found" body (with valid Content-Type / ETag / Content-Disposition
+// headers!) for missing release artifacts, and caches that response
+// with TTL=1y. Without this check, libarchive eventually fails the
+// extract phase but cmd_install historically swallowed the failure as
+// exitCode=0. See .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
+constexpr std::uintmax_t kMinPlausibleArchiveBytes_ = 1024;
+
 // ── Sidecar (.meta) helpers for HEAD-based cache freshness ────────────
 //
 // When a package recipe omits sha256 (~8% of pkgindex entries declare a
@@ -345,6 +373,27 @@ DownloadResult download_one(const DownloadTask& task,
         auto dlResult = tinyhttps::download_file(opts);
         if (!dlResult.success) {
             result.error = dlResult.error;
+            return result;
+        }
+    }
+
+    // Size sanity check for archives without sha256. When a recipe
+    // omits sha256 we have no way to cross-check content authenticity,
+    // so a CDN serving 200 OK + a tiny error stub (e.g., gitcode's
+    // 9-byte "Not Found" body for missing release artifacts) would
+    // otherwise propagate to extract and fail there. Reject early so
+    // the error message points at the actual problem instead of a
+    // misleading libarchive "unrecognized format". Skip when sha256
+    // is declared — that's a stronger check than size alone.
+    if (task.sha256.empty() && looks_like_archive_filename_(destFile)) {
+        auto sz = fs::file_size(destFile, ec);
+        if (!ec && sz < kMinPlausibleArchiveBytes_) {
+            result.error = std::format(
+                "{}: downloaded payload is only {} bytes — likely an "
+                "error stub returned as 200 OK (no sha256 declared to "
+                "cross-check). URL: {}",
+                task.name, sz, task.url);
+            fs::remove(destFile, ec);
             return result;
         }
     }

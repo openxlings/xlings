@@ -28,6 +28,7 @@ import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.profile;
 import xlings.core.subos.gpu;
+import xlings.core.xim.downloader;
 import xlings.runtime;
 import xlings.capabilities;
 import xlings.libs.tinyhttps;
@@ -3302,6 +3303,46 @@ TEST(SubosGpu, FullHostBindsAllKnownNodes) {
             << "missing --dev-bind for " << path;
     }
     EXPECT_TRUE(contains_triple(args, "--ro-bind", "/sys", "/sys"));
+}
+
+// ============================================================
+// downloader archive-filename sniff (P1 helper for the cmd-install
+// silent-failure fix — see .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md)
+// ============================================================
+
+TEST(DownloaderArchiveSniff, RecognisesCommonArchiveExtensions) {
+    using xlings::xim::looks_like_archive_filename_;
+    EXPECT_TRUE(looks_like_archive_filename_("foo.tar.gz"));
+    EXPECT_TRUE(looks_like_archive_filename_("foo.tar.xz"));
+    EXPECT_TRUE(looks_like_archive_filename_("foo.tar.bz2"));
+    EXPECT_TRUE(looks_like_archive_filename_("foo.tar.zst"));
+    EXPECT_TRUE(looks_like_archive_filename_("foo.tgz"));
+    EXPECT_TRUE(looks_like_archive_filename_("foo.zip"));
+}
+
+TEST(DownloaderArchiveSniff, RejectsNonArchiveExtensions) {
+    using xlings::xim::looks_like_archive_filename_;
+    EXPECT_FALSE(looks_like_archive_filename_("README.md"));
+    EXPECT_FALSE(looks_like_archive_filename_("install.sh"));
+    EXPECT_FALSE(looks_like_archive_filename_("config.json"));
+    EXPECT_FALSE(looks_like_archive_filename_("binary.exe"));
+    EXPECT_FALSE(looks_like_archive_filename_(""));
+}
+
+TEST(DownloaderArchiveSniff, IsCaseSensitiveSuffixMatch) {
+    using xlings::xim::looks_like_archive_filename_;
+    // Recipes in xim-pkgindex use lower-case; we mirror that to avoid
+    // accepting weird upstream conventions like "Foo.TAR.GZ" silently.
+    EXPECT_FALSE(looks_like_archive_filename_("foo.TAR.GZ"));
+    EXPECT_FALSE(looks_like_archive_filename_("foo.Tar.Gz"));
+}
+
+TEST(DownloaderArchiveSniff, WorksWithFullPaths) {
+    using xlings::xim::looks_like_archive_filename_;
+    // The downloader passes the full destFile path. The function should
+    // look at the basename only, ignoring directory components.
+    EXPECT_TRUE(looks_like_archive_filename_("/var/tmp/runtimedir/llvm-20.1.7-linux-x86_64.tar.gz"));
+    EXPECT_FALSE(looks_like_archive_filename_("/path/to/tar.gz/file.lua"));  // tar.gz only in dir name
 }
 
 // ============================================================

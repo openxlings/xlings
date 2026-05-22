@@ -265,6 +265,10 @@ jobs:
         run: |
           bash tests/e2e/subos_sandbox_gpu_test.sh
 
+      - name: "E2E-27: cmd_install silent failure regression"
+        run: |
+          bash tests/e2e/install_silent_failure_test.sh
+
       - name: Attach artifact
         uses: actions/upload-artifact@v4
         if: success()
