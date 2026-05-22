@@ -130,3 +130,26 @@ Shell 级入口永远不触发挂载操作；非 Shared 存储仅在 `--sandbox`
 | **Windows** | env 切换 (CreateProcess) | 不支持 | 不支持 |
 
 macOS 沙箱入口仅提供 HOME 重定向 (设置 `$HOME` 指向沙箱目录)，不提供文件系统视图隔离。Windows 仅支持 Shell 级环境变量切换。
+
+## GPU 透传 (`--gpu`)
+
+bwrap 后端默认通过 `--dev /dev` 创建全新 tmpfs，只暴露最小设备节点白名单 (`null` / `zero` / `random` / `tty` / ...)，宿主的 `/dev/nvidia*`、`/dev/dri/*` 等字符设备**完全不可见**。这是 "最小宿主暴露" 原则的体现，但同时也阻断了 sandbox 内的 GPU 使用。
+
+需要 GPU 时显式追加 `--gpu`：
+
+```bash
+xlings subos use mygpu --sandbox --gpu
+```
+
+`--gpu` 启用后会：
+
+- 对宿主**存在**的 NVIDIA 节点（`/dev/nvidiactl`、`/dev/nvidia-uvm`、`/dev/nvidia-uvm-tools`、`/dev/nvidia-modeset`、`/dev/nvidia0..15`）以 `--dev-bind` 透传；不存在的节点静默跳过
+- 透传 `/dev/dri` (DRM / Vulkan / 显示)
+- 以只读方式绑定 `/sys`（libcuda / nvml 通过 `/sys/bus/pci/devices/...` 枚举 GPU 所必需）
+
+约束：
+
+- `--gpu` 必须与 `--sandbox` 同时使用，否则解析期报错
+- proot 后端默认即 `--bind /dev` + `--bind /sys` 全透传，`--gpu` 在 proot 模式下静默无视
+
+实现位于 `src/core/subos/gpu.cppm`，独立于 `subos.cppm`，方便后续扩展 AMD ROCm (`/dev/kfd`) 等。设计文档：`.agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md`。

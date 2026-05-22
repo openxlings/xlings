@@ -28,6 +28,7 @@ import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.subos.keeper;
+import xlings.core.subos.gpu;
 
 namespace xlings::subos {
 
@@ -1162,6 +1163,7 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
                   bool interactive_shell,
                   StorageMode storage = StorageMode::Shared,
                   const fs::path& mountpoint = {},
+                  bool gpu = false,
                   const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
@@ -1178,6 +1180,14 @@ build_bwrap_argv_(const fs::path& bwrap_bin,
         } else {
             argv.insert(argv.end(), {"--bind", b.src, b.dst});
         }
+    }
+
+    // GPU passthrough: must come after `--dev /dev` (which creates the
+    // empty tmpfs we'll mount nodes onto). Each --dev-bind is host-path
+    // → sandbox-path; missing nodes are silently skipped by gpu.cppm.
+    if (gpu) {
+        auto extra = xlings::subos::gpu::passthrough_args();
+        argv.insert(argv.end(), extra.begin(), extra.end());
     }
 
     // tmpfs mode: home and tmp are pure memory (exit = gone)
@@ -1272,6 +1282,7 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
 int use_sandbox_mode_(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
+                      bool gpu = false,
                       const std::string& cmd = "") {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
@@ -1552,8 +1563,11 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
     if (backend->type == SandboxBackend::Bwrap) {
         argv = sandbox_detail_::build_bwrap_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell,
-            interactive_shell, storage, image_mountpoint, cmd);
+            interactive_shell, storage, image_mountpoint, gpu, cmd);
     } else {
+        // proot already exposes the full host /dev and /sys via
+        // `--bind=/dev:/dev --bind=/sys:/sys`, so GPU devices are
+        // visible for free. --gpu is a no-op here.
         argv = sandbox_detail_::build_proot_argv_(
             backend->binary, subos_dir, p.homeDir, user, shell, cmd);
         platform::set_env_variable("PROOT_NO_SECCOMP", "1");
@@ -1682,6 +1696,7 @@ int use_sandbox_mode_(const std::string& name, EventStream& stream,
 int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
                     const std::string& sandbox_backend = "",
+                    bool gpu = false,
                     const std::string& cmd = "")
 {
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
@@ -1698,7 +1713,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // M3: `cmd` non-empty switches to non-interactive single-command
     // execution — `shell -c <cmd>` instead of an interactive shell.
     // Useful for scripts and agent workflows.
-    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend, cmd);
+    if (sandbox) return use_sandbox_mode_(name, stream, sandbox_backend, gpu, cmd);
     warn_storage_dormant_on_shell_(name);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
@@ -2058,6 +2073,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
         bool no_keep = false;
         bool keep_forever = false;
         int  ttl_sec = 0;                  // 0 = use default
+        // --gpu: opt-in NVIDIA + DRM device passthrough for bwrap
+        // sandbox. Missing devices are silently skipped. Requires
+        // --sandbox; ignored when the backend resolves to proot (proot
+        // already passes /dev and /sys through wholesale).
+        // Ref: .agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md
+        bool gpu = false;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -2113,6 +2134,9 @@ export int run(int argc, char* argv[], EventStream& stream) {
                     return 1;
                 }
             }
+            else if (a == "--gpu") {
+                gpu = true;
+            }
             else if (!a.empty() && a[0] != '-' && name.empty()) {
                 name = std::move(a);
             }
@@ -2125,6 +2149,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
 
         if (no_keep && keep_forever) {
             usageError("--no-keep and --keep are mutually exclusive");
+            return 1;
+        }
+
+        if (gpu && !sandbox) {
+            usageError("--gpu requires --sandbox "
+                       "(GPU passthrough only applies to bwrap-sandboxed sessions)");
             return 1;
         }
 
@@ -2144,7 +2174,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
             }
             return use_emit_shell(name, shell_kind, stream);
         }
-        return use_spawn_shell(name, stream, sandbox, sandbox_backend, cmd);
+        return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
