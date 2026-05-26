@@ -2,6 +2,7 @@ module;
 
 #include <archive.h>
 #include <archive_entry.h>
+#include <clocale>
 
 export module xlings.core.xim.extract;
 
@@ -75,6 +76,20 @@ check_safe_pathname_(const char* raw) {
     return std::string{sv};
 }
 
+const char* entry_pathname_(archive_entry* entry) {
+    if (auto* path = ::archive_entry_pathname_utf8(entry); path && *path) {
+        return path;
+    }
+    return ::archive_entry_pathname(entry);
+}
+
+const char* entry_hardlink_(archive_entry* entry) {
+    if (auto* path = ::archive_entry_hardlink_utf8(entry); path && *path) {
+        return path;
+    }
+    return ::archive_entry_hardlink(entry);
+}
+
 std::string libarchive_error_(struct archive* a) {
     if (auto* msg = ::archive_error_string(a); msg && *msg) {
         return msg;
@@ -112,12 +127,26 @@ copy_entry_data_(struct archive* src, struct archive* dst) {
     }
 }
 
+void ensure_archive_locale_() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+#ifdef _WIN32
+        if (!std::setlocale(LC_CTYPE, ".UTF-8")) {
+            std::setlocale(LC_CTYPE, "");
+        }
+#else
+        std::setlocale(LC_CTYPE, "");
+#endif
+    });
+}
+
 } // namespace detail_
 
 std::expected<std::filesystem::path, std::string>
 extract_archive(const std::filesystem::path& archive,
                 const std::filesystem::path& destDir) {
     namespace fs = std::filesystem;
+    detail_::ensure_archive_locale_();
 
     std::error_code ec;
     fs::create_directories(destDir, ec);
@@ -163,6 +192,7 @@ extract_archive(const std::filesystem::path& archive,
 
     ::archive_read_support_filter_all(src);
     ::archive_read_support_format_all(src);
+    ::archive_read_set_format_option(src, "zip", "hdrcharset", "UTF-8");
     ::archive_write_disk_set_options(dst, detail_::kWriteFlags);
 
     // Custom user/group lookup that always returns 0 (root). xim-pkgindex
@@ -206,7 +236,7 @@ extract_archive(const std::filesystem::path& archive,
 
         // Reroot the entry under destDir. archive_entry_pathname is a
         // relative path inside the archive; we vet it and prepend destDir.
-        const char* original = ::archive_entry_pathname(entry);
+        const char* original = detail_::entry_pathname_(entry);
         auto safeRel = detail_::check_safe_pathname_(original);
         if (!safeRel) {
             cleanup();
@@ -219,7 +249,7 @@ extract_archive(const std::filesystem::path& archive,
         // entries — same vetting + rebase rule. Symlink *targets* stay
         // relative to the symlink (not vetted here); SECURE_SYMLINKS
         // prevents following them during extraction.
-        if (auto* hl = ::archive_entry_hardlink(entry); hl && *hl) {
+        if (auto* hl = detail_::entry_hardlink_(entry); hl && *hl) {
             auto safeHl = detail_::check_safe_pathname_(hl);
             if (!safeHl) {
                 cleanup();

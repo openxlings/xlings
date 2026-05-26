@@ -2886,6 +2886,29 @@ struct ExtractFixture {
         return out;
     }
 
+    std::filesystem::path make_utf8_zip() const {
+        namespace fs = std::filesystem;
+        std::ofstream(tmp / "make_utf8_zip.py") << R"PY(
+import zipfile
+
+with zipfile.ZipFile("fixture_utf8.zip", "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr(
+        "utf8/.github/ISSUE_TEMPLATE/bug-report---\u95ee\u9898.md",
+        "unicode-path-fixture\n",
+    )
+)PY";
+        auto out = tmp / "fixture_utf8.zip";
+        int rc = run_in_(tmp, [] {
+#ifdef _WIN32
+            return std::system("python make_utf8_zip.py");
+#else
+            return std::system("python3 make_utf8_zip.py || python make_utf8_zip.py");
+#endif
+        });
+        if (rc != 0) throw std::runtime_error("failed to create utf8 zip fixture");
+        return out;
+    }
+
     std::filesystem::path make_tar_xz() const {
         auto out = tmp / "fixture.tar.xz";
         int rc = run_in_(tmp, [] {
@@ -2937,6 +2960,29 @@ TEST(Extract, ZipRoundTrip) {
     auto root = *r;
     EXPECT_TRUE(std::filesystem::exists(root / "src/hello.txt"));
     EXPECT_TRUE(file_has_(root / "src/hello.txt", "hello-from-fixture"));
+}
+
+TEST(Extract, ZipUtf8PathRoundTrip) {
+#ifdef _WIN32
+    if (std::system("python --version >NUL 2>NUL") != 0) {
+        GTEST_SKIP() << "python not available on this host";
+    }
+#else
+    if (std::system("command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1") != 0) {
+        GTEST_SKIP() << "python not available on this host";
+    }
+#endif
+    ExtractFixture fx;
+    auto archive = fx.make_utf8_zip();
+    auto out = fx.tmp / "out_zip_utf8";
+
+    auto r = xlings::xim::extract_archive(archive, out);
+    ASSERT_TRUE(r.has_value()) << "extract failed: " << (r ? "" : r.error());
+
+    auto root = *r;
+    auto expected = root / "utf8/.github/ISSUE_TEMPLATE/bug-report---问题.md";
+    EXPECT_TRUE(std::filesystem::exists(expected));
+    EXPECT_TRUE(file_has_(expected, "unicode-path-fixture"));
 }
 
 TEST(Extract, TarXzRoundTrip) {
