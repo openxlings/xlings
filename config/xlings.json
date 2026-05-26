@@ -1,7 +1,7 @@
 {
   "version": "0.1.0",
   "need_update": false,
-  "mirror": "CN",
+  "mirror": "GLOBAL",
   "XLINGS_RES": {
     "GLOBAL": "https://github.com/xlings-res",
     "CN": "https://gitcode.com/xlings-res"
@@ -17,8 +17,8 @@
         "CN": "https://gitcode.com/xlings-res"
       }
     },
-    "res-server": "https://gitcode.com/xlings-res",
-    "index-repo": "https://gitee.com/sunrisepeak/xim-pkgindex.git"
+    "res-server": "https://github.com/xlings-res",
+    "index-repo": "https://github.com/openxlings/xim-pkgindex.git"
   },
-  "repo": "https://gitee.com/sunrisepeak/xlings.git"
+  "repo": "https://github.com/openxlings/xlings.git"
 }

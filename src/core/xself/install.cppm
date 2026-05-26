@@ -5,6 +5,7 @@ import xlings.core.xself.init;
 
 import xlings.core.config;
 import xlings.libs.json;
+import xlings.libs.tinyhttps;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.utils;
@@ -26,6 +27,99 @@ static std::string read_version_from_json(const fs::path& homeDir) {
         }
     } catch (...) {}
     return "";
+}
+
+static std::optional<std::string> normalize_mirror_(std::string mirror) {
+    mirror = utils::trim_string(mirror);
+    std::ranges::transform(mirror, mirror.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    if (mirror == "GLOBAL" || mirror == "CN") return mirror;
+    return std::nullopt;
+}
+
+static std::string read_mirror_from_json_(const fs::path& configPath) {
+    if (!fs::exists(configPath)) return {};
+    try {
+        auto content = platform::read_file_to_string(configPath.string());
+        auto json = nlohmann::json::parse(content, nullptr, false);
+        if (!json.is_discarded() && json.is_object() &&
+            json.contains("mirror") && json["mirror"].is_string()) {
+            if (auto mirror = normalize_mirror_(json["mirror"].get<std::string>()))
+                return *mirror;
+        }
+    } catch (...) {}
+    return {};
+}
+
+static std::optional<std::string> env_install_mirror_() {
+    for (auto name : {"XLINGS_INSTALL_MIRROR", "XLINGS_MIRROR", "XLINGS_RELEASE_MIRROR"}) {
+        if (auto value = utils::get_env_or_default(name); !value.empty()) {
+            if (auto mirror = normalize_mirror_(value)) return mirror;
+        }
+    }
+    return std::nullopt;
+}
+
+static std::string detect_install_mirror_() {
+    if (auto mirror = env_install_mirror_()) return *mirror;
+
+    constexpr int timeoutMs = 1000;
+    auto globalLatency = tinyhttps::probe_latency("https://github.com", timeoutMs);
+    auto cnLatency = tinyhttps::probe_latency("https://gitee.com", timeoutMs);
+
+    if (std::isfinite(cnLatency) &&
+        (!std::isfinite(globalLatency) || cnLatency + 0.2 < globalLatency)) {
+        return "CN";
+    }
+    return "GLOBAL";
+}
+
+static void set_mirror_fields_(nlohmann::json& json, const std::string& mirror) {
+    json["mirror"] = mirror;
+    json["xim"]["mirrors"]["index-repo"]["GLOBAL"] =
+        "https://github.com/openxlings/xim-pkgindex.git";
+    json["xim"]["mirrors"]["index-repo"]["CN"] =
+        "https://gitee.com/sunrisepeak/xim-pkgindex.git";
+    json["xim"]["mirrors"]["res-server"]["GLOBAL"] =
+        "https://github.com/xlings-res";
+    json["xim"]["mirrors"]["res-server"]["CN"] =
+        "https://gitcode.com/xlings-res";
+
+    if (mirror == "CN") {
+        json["xim"]["res-server"] = "https://gitcode.com/xlings-res";
+        json["xim"]["index-repo"] = "https://gitee.com/sunrisepeak/xim-pkgindex.git";
+        json["repo"] = "https://gitee.com/sunrisepeak/xlings.git";
+    } else {
+        json["xim"]["res-server"] = "https://github.com/xlings-res";
+        json["xim"]["index-repo"] = "https://github.com/openxlings/xim-pkgindex.git";
+        json["repo"] = "https://github.com/openxlings/xlings.git";
+    }
+}
+
+static void configure_install_mirror_(const fs::path& targetHome,
+                                      const std::string& existingMirror,
+                                      bool overwriteDataSubos) {
+    auto envMirror = env_install_mirror_();
+    if (!envMirror && !overwriteDataSubos && !existingMirror.empty()) {
+        return;
+    }
+
+    auto mirror = envMirror ? *envMirror : detect_install_mirror_();
+    auto configPath = targetHome / ".xlings.json";
+
+    nlohmann::json json = nlohmann::json::object();
+    if (fs::exists(configPath)) {
+        try {
+            auto content = platform::read_file_to_string(configPath.string());
+            auto parsed = nlohmann::json::parse(content, nullptr, false);
+            if (!parsed.is_discarded() && parsed.is_object()) json = std::move(parsed);
+        } catch (...) {}
+    }
+
+    set_mirror_fields_(json, mirror);
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+    log::println("[xlings:self] mirror: {}", mirror);
 }
 
 /// True if path is under a temp dir (e.g. /tmp, $TMPDIR, $TEMP, $RUNNER_TEMP). Used to detect
@@ -272,6 +366,7 @@ export int cmd_install() {
             sameDir = false;
         }
     }
+    auto existingMirror = read_mirror_from_json_(targetHome / ".xlings.json");
 
     // Install header: show existing (if any) and install target; paths may differ
     std::println("\n[xlings:self] install");
@@ -376,6 +471,7 @@ export int cmd_install() {
             } catch (...) {}
         }
     }
+    configure_install_mirror_(targetHome, existingMirror, overwriteDataSubos);
 
     // 3. First install: preserve extra trees if the source package still ships them.
     if (!fs::exists(targetHome / "data") && fs::exists(srcDir / "data")) {
