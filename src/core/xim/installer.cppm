@@ -1407,7 +1407,10 @@ public:
             // and skip the extracted-payload fallback (which exists for
             // packages whose hook silently no-ops, e.g. patchelf where
             // the tarball has no top-level dir).
-            if (!payloadInstalled) {
+            if (!payloadInstalled && node.pkgType != 3 /* Config */) {
+                // Config xpkgs are repeatable actions. Their installed state
+                // should come only from files the package author creates, not
+                // from xlings's empty-dir stamp.
                 executor.apply_install_stamp_if_empty(ctx);
             }
 
@@ -1472,15 +1475,20 @@ public:
                 continue;
             }
 
-            if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
-                !snapshot) {
-                log::error("failed to save xpkg snapshot for {}: {}",
-                           node.name, snapshot.error());
-                if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               snapshot.error() });
+            if (node.pkgType != 3 /* Config */) {
+                // Same policy as the install stamp: a config package with no
+                // author-created payload must not become installed solely
+                // because xlings copied its own metadata into install_dir.
+                if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
+                    !snapshot) {
+                    log::error("failed to save xpkg snapshot for {}: {}",
+                               node.name, snapshot.error());
+                    if (onStatus) {
+                        onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                                   snapshot.error() });
+                    }
+                    continue;
                 }
-                continue;
             }
 
             if (catalog_) {
