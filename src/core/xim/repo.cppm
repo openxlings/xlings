@@ -14,6 +14,11 @@ export namespace xlings::xim {
 
 namespace detail_ {
 
+bool git_available_() {
+    auto [rc, _] = platform::run_command_capture("git --version");
+    return rc == 0;
+}
+
 bool ensure_local_repo_link_(const std::filesystem::path& localDir,
                              const std::filesystem::path& sourceDir) {
     namespace fs = std::filesystem;
@@ -165,6 +170,11 @@ bool sync_repo(const std::filesystem::path& localDir,
                bool force = false) {
     namespace fs = std::filesystem;
 
+    if (!detail_::git_available_()) {
+        log::error("git is required to update package index: {}", url);
+        return false;
+    }
+
     if (!fs::exists(localDir / ".git")) {
         // Build mirror fallback list for the index repo URL. Mirror::expand
         // returns just [url] when mirror_fallback=off or url is non-github.
@@ -172,20 +182,37 @@ bool sync_repo(const std::filesystem::path& localDir,
         if (urls.empty()) urls.push_back(url);
 
         std::string lastErr;
+        auto tmpDir = fs::path(localDir.string() + ".tmp." + std::to_string(platform::get_pid()));
+        std::error_code ec;
+        fs::remove_all(tmpDir, ec);
         for (std::size_t i = 0; i < urls.size(); ++i) {
             log::debug("cloning index repo attempt {}/{}: {}",
                        i + 1, urls.size(), urls[i]);
-            auto cmd = std::format("git clone --depth 1 --quiet \"{}\" \"{}\"",
-                                   urls[i], localDir.string());
+            auto cmd = std::format("git clone --depth 1 --quiet {} {}",
+                                   platform::shell_quote(urls[i]),
+                                   platform::shell_quote(tmpDir.string()));
             auto [rc, output] = platform::run_command_capture(cmd);
             if (rc == 0) {
                 if (i > 0)
                     log::info("[mirror] index repo fallback succeeded via {}", urls[i]);
+                fs::remove_all(localDir, ec);
+                if (ec) {
+                    log::error("failed to replace index repo {}: {}",
+                               localDir.string(), ec.message());
+                    fs::remove_all(tmpDir, ec);
+                    return false;
+                }
+                fs::rename(tmpDir, localDir, ec);
+                if (ec) {
+                    log::error("failed to move cloned index repo into place {}: {}",
+                               localDir.string(), ec.message());
+                    fs::remove_all(tmpDir, ec);
+                    return false;
+                }
                 return true;
             }
             lastErr = output;
-            std::error_code ec2;
-            fs::remove_all(localDir, ec2);
+            fs::remove_all(tmpDir, ec);
         }
         log::error("all index repo clone URLs failed: {}", lastErr);
         return false;
@@ -207,12 +234,22 @@ bool sync_repo(const std::filesystem::path& localDir,
     }
 
     log::debug("updating index repo: {}", localDir.filename().string());
-    auto cmd = std::format("git -C \"{}\" pull --ff-only", localDir.string());
+    auto setRemoteCmd = std::format("git -C {} remote set-url origin {}",
+                                    platform::shell_quote(localDir.string()),
+                                    platform::shell_quote(url));
+    auto [setRc, setOutput] = platform::run_command_capture(setRemoteCmd);
+    if (setRc != 0) {
+        log::warn("failed to set index repo origin: {}", setOutput);
+    }
+
+    auto cmd = std::format("git -C {} pull --ff-only",
+                           platform::shell_quote(localDir.string()));
     auto [rc, output] = platform::run_command_capture(cmd);
     if (rc != 0) {
         log::warn("git pull failed, trying reset: {}", output);
-        cmd = std::format("git -C \"{}\" fetch origin && git -C \"{}\" reset --hard origin/HEAD",
-                          localDir.string(), localDir.string());
+        cmd = std::format("git -C {} fetch origin && git -C {} reset --hard origin/HEAD",
+                          platform::shell_quote(localDir.string()),
+                          platform::shell_quote(localDir.string()));
         auto [rc2, out2] = platform::run_command_capture(cmd);
         if (rc2 != 0) {
             log::error("git reset failed: {}", out2);

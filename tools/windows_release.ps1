@@ -3,10 +3,11 @@
 # Directory layout:
 #   xlings-<ver>-windows-x86_64/
 #   ├── .xlings.json
+#   ├── data/xim-pkgindex/        # bundled index snapshot
 #   └── bin/
 #       └── xlings.exe
 #
-# Runtime directories are created lazily by `xlings self init`.
+# Remaining runtime directories are created lazily by `xlings self init`.
 #
 # Output:  build/xlings-<ver>-windows-x86_64.zip
 # Usage:   pwsh ./tools/windows_release.ps1
@@ -55,9 +56,18 @@ foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null 
 
 Copy-Item $BIN_SRC "$OUT_DIR\bin\"
 
-# Default mirror is CN; CI sets XLINGS_RELEASE_MIRROR=GLOBAL so test
-# runs (which need github.com endpoints) don't hit gitee auth.
-$MIRROR = if ($env:XLINGS_RELEASE_MIRROR) { $env:XLINGS_RELEASE_MIRROR } else { "CN" }
+# Release packages default to GLOBAL. Users can switch mirror locally after
+# install, and CI also keeps GLOBAL for github.com endpoints.
+$MIRROR = if ($env:XLINGS_RELEASE_MIRROR) { $env:XLINGS_RELEASE_MIRROR } else { "GLOBAL" }
+if ($MIRROR -eq "CN") {
+  $RES_SERVER_URL = "https://gitcode.com/xlings-res"
+  $INDEX_REPO_URL = "https://gitee.com/sunrisepeak/xim-pkgindex.git"
+  $REPO_URL = "https://gitee.com/sunrisepeak/xlings.git"
+} else {
+  $RES_SERVER_URL = "https://github.com/xlings-res"
+  $INDEX_REPO_URL = "https://github.com/openxlings/xim-pkgindex.git"
+  $REPO_URL = "https://github.com/openxlings/xlings.git"
+}
 
 $configSrc = "$PROJECT_DIR\config\xlings.json"
 if (Test-Path $configSrc) {
@@ -66,12 +76,18 @@ if (Test-Path $configSrc) {
   $base | Add-Member -NotePropertyName "mirror" -NotePropertyValue $MIRROR -Force
   $base | Add-Member -NotePropertyName "activeSubos" -NotePropertyValue "default" -Force
   $base | Add-Member -NotePropertyName "subos" -NotePropertyValue @{default=@{dir=""}} -Force
+  if (-not $base.xim) { $base | Add-Member -NotePropertyName "xim" -NotePropertyValue @{} -Force }
+  $base.xim | Add-Member -NotePropertyName "res-server" -NotePropertyValue $RES_SERVER_URL -Force
+  $base.xim | Add-Member -NotePropertyName "index-repo" -NotePropertyValue $INDEX_REPO_URL -Force
+  $base | Add-Member -NotePropertyName "repo" -NotePropertyValue $REPO_URL -Force
   $base | ConvertTo-Json -Depth 10 -Compress | Set-Content "$OUT_DIR\.xlings.json" -Encoding UTF8
 } else {
   @"
-{"activeSubos":"default","subos":{"default":{"dir":""}},"version":"$VERSION","need_update":false,"mirror":"$MIRROR","xim":{"mirrors":{"index-repo":{"GLOBAL":"https://github.com/openxlings/xim-pkgindex.git","CN":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"res-server":{"GLOBAL":"https://github.com/xlings-res","CN":"https://gitcode.com/xlings-res"}},"res-server":"https://gitcode.com/xlings-res","index-repo":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"repo":"https://gitee.com/sunrisepeak/xlings.git"}
+{"activeSubos":"default","subos":{"default":{"dir":""}},"version":"$VERSION","need_update":false,"mirror":"$MIRROR","xim":{"mirrors":{"index-repo":{"GLOBAL":"https://github.com/openxlings/xim-pkgindex.git","CN":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"res-server":{"GLOBAL":"https://github.com/xlings-res","CN":"https://gitcode.com/xlings-res"}},"res-server":"$RES_SERVER_URL","index-repo":"$INDEX_REPO_URL"},"repo":"$REPO_URL"}
 "@ | Set-Content "$OUT_DIR\.xlings.json" -Encoding UTF8
 }
+
+& "$PROJECT_DIR\tools\package_xim_index.ps1" -OutDir $OUT_DIR
 
 Info "Package assembled: $OUT_DIR"
 
@@ -86,6 +102,10 @@ Info "OK: all binaries present"
 
 if (-not (Test-Path "$OUT_DIR\.xlings.json")) { Fail ".xlings.json missing" }
 Info "OK: .xlings.json present"
+
+if (-not (Test-Path "$OUT_DIR\data\xim-pkgindex\pkgs")) { Fail "bundled xim-pkgindex missing" }
+if (-not (Test-Path "$OUT_DIR\data\xim-pkgindex\pkgs\p\patchelf.lua")) { Fail "bundled xim-pkgindex missing patchelf" }
+Info "OK: bundled xim-pkgindex snapshot present"
 
 $env:XLINGS_HOME = $OUT_DIR
 $env:PATH = "$OUT_DIR\bin;$env:PATH"
@@ -121,7 +141,13 @@ Info "All checks passed. Creating release archive..."
 
 $ARCHIVE = "$PROJECT_DIR\build\$PKG_NAME.zip"
 if (Test-Path $ARCHIVE) { Remove-Item $ARCHIVE }
-Compress-Archive -Path $OUT_DIR -DestinationPath $ARCHIVE
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory(
+  $OUT_DIR,
+  $ARCHIVE,
+  [System.IO.Compression.CompressionLevel]::Optimal,
+  $true
+)
 
 Info ""
 Info "Done."

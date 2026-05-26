@@ -120,6 +120,10 @@ jobs:
         run: |
           bash tests/e2e/release_self_install_test.sh build/release.tar.gz
 
+      - name: "E2E-02a: Release Packaged Index"
+        run: |
+          bash tests/e2e/release_packaged_index_test.sh build/release.tar.gz
+
       - name: "E2E-03: Quick Install Smoke"
         continue-on-error: true  # may fail due to GitHub rate limits
         env:

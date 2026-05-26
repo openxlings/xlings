@@ -118,6 +118,11 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\tests\e2e\release_self_install_test.ps1" "build\release.zip"
 
+      - name: "E2E-02a: Release Packaged Index"
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tests\e2e\release_packaged_index_test.ps1" "build\release.zip"
+
       - name: "E2E-03: Quick Install Smoke"
         shell: pwsh
         continue-on-error: true

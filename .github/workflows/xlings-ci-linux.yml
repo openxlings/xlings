@@ -162,6 +162,10 @@ jobs:
         run: |
           bash tests/e2e/release_self_install_test.sh build/release.tar.gz
 
+      - name: "E2E-02a: Release Packaged Index"
+        run: |
+          bash tests/e2e/release_packaged_index_test.sh build/release.tar.gz
+
       - name: "E2E-02b: Self Uninstall (dry-run / safety / keep-data / full)"
         run: |
           bash tests/e2e/self_uninstall_test.sh build/release.tar.gz

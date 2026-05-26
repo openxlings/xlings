@@ -206,6 +206,33 @@ TEST(UtilsTest, GetEnvOrDefault) {
     EXPECT_EQ(val, "fallback");
 }
 
+TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
+    namespace fs = std::filesystem;
+
+    auto root = fs::temp_directory_path() / "xlings_sync_without_git_test";
+    auto repo = root / "xim-pkgindex";
+    fs::remove_all(root);
+    fs::create_directories(repo / "pkgs" / "p");
+    auto marker = repo / "pkgs" / "p" / "patchelf.lua";
+    {
+        std::ofstream out(marker);
+        out << "package = { name = \"patchelf\" }\n";
+    }
+
+    auto oldPath = std::string(std::getenv("PATH") ? std::getenv("PATH") : "");
+    auto emptyPath = root / "empty-path";
+    fs::create_directories(emptyPath);
+    xlings::platform::set_env_variable("PATH", emptyPath.string());
+
+    auto ok = xlings::xim::sync_repo(repo, "https://github.com/openxlings/xim-pkgindex.git", true);
+
+    xlings::platform::set_env_variable("PATH", oldPath);
+    EXPECT_FALSE(ok);
+    EXPECT_TRUE(fs::exists(marker));
+    EXPECT_TRUE(fs::exists(repo / "pkgs"));
+    fs::remove_all(root);
+}
+
 // ============================================================
 // cmdline tests
 // ============================================================

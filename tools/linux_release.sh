@@ -4,10 +4,11 @@
 # Directory layout:
 #   xlings-<ver>-linux-x86_64/
 #   ├── .xlings.json
+#   ├── data/xim-pkgindex/        # bundled index snapshot
 #   └── bin/
 #       └── xlings
 #
-# Runtime directories are created lazily by `xlings self init`.
+# Remaining runtime directories are created lazily by `xlings self init`.
 #
 # Output:  build/xlings-<ver>-linux-x86_64.tar.gz
 # Usage:   ./tools/linux_release.sh
@@ -77,18 +78,34 @@ mkdir -p "$OUT_DIR/bin"
 cp "$BIN_SRC"         "$OUT_DIR/bin/xlings"
 chmod +x "$OUT_DIR/bin/"*
 
-# .xlings.json — default mirror is CN; CI sets XLINGS_RELEASE_MIRROR=GLOBAL
-# so test runs (which need github.com endpoints) don't hit gitee auth.
-MIRROR="${XLINGS_RELEASE_MIRROR:-CN}"
+# .xlings.json — release packages default to GLOBAL. Users can switch mirror
+# locally after install, and CI also keeps GLOBAL for github.com endpoints.
+MIRROR="${XLINGS_RELEASE_MIRROR:-GLOBAL}"
+if [[ "$MIRROR" == "CN" ]]; then
+  RES_SERVER_URL="https://gitcode.com/xlings-res"
+  INDEX_REPO_URL="https://gitee.com/sunrisepeak/xim-pkgindex.git"
+  REPO_URL="https://gitee.com/sunrisepeak/xlings.git"
+else
+  RES_SERVER_URL="https://github.com/xlings-res"
+  INDEX_REPO_URL="https://github.com/openxlings/xim-pkgindex.git"
+  REPO_URL="https://github.com/openxlings/xlings.git"
+fi
 if command -v jq &>/dev/null && [[ -f config/xlings.json ]]; then
   jq --arg version "$VERSION" --arg mirror "$MIRROR" \
-     '. + {"version":$version,"mirror":$mirror,"activeSubos":"default","subos":{"default":{"dir":""}}}' \
+     --arg res_server "$RES_SERVER_URL" --arg index_repo "$INDEX_REPO_URL" \
+     --arg repo "$REPO_URL" \
+     '. + {"version":$version,"mirror":$mirror,"activeSubos":"default","subos":{"default":{"dir":""}}}
+      | .xim["res-server"] = $res_server
+      | .xim["index-repo"] = $index_repo
+      | .repo = $repo' \
     config/xlings.json > "$OUT_DIR/.xlings.json"
 else
   cat > "$OUT_DIR/.xlings.json" << DOTJSON
-{"activeSubos":"default","subos":{"default":{"dir":""}},"version":"$VERSION","need_update":false,"mirror":"$MIRROR","xim":{"mirrors":{"index-repo":{"GLOBAL":"https://github.com/openxlings/xim-pkgindex.git","CN":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"res-server":{"GLOBAL":"https://github.com/xlings-res","CN":"https://gitcode.com/xlings-res"}},"res-server":"https://gitcode.com/xlings-res","index-repo":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"repo":"https://gitee.com/sunrisepeak/xlings.git"}
+{"activeSubos":"default","subos":{"default":{"dir":""}},"version":"$VERSION","need_update":false,"mirror":"$MIRROR","xim":{"mirrors":{"index-repo":{"GLOBAL":"https://github.com/openxlings/xim-pkgindex.git","CN":"https://gitee.com/sunrisepeak/xim-pkgindex.git"},"res-server":{"GLOBAL":"https://github.com/xlings-res","CN":"https://gitcode.com/xlings-res"}},"res-server":"$RES_SERVER_URL","index-repo":"$INDEX_REPO_URL"},"repo":"$REPO_URL"}
 DOTJSON
 fi
+
+bash "$PROJECT_DIR/tools/package_xim_index.sh" "$OUT_DIR"
 
 info "Package assembled: $OUT_DIR"
 
@@ -108,6 +125,10 @@ if command -v jq &>/dev/null; then
   [[ "$AS" == "default" ]] || fail ".xlings.json activeSubos != 'default' (got '$AS')"
 fi
 info "OK: .xlings.json present and valid"
+
+[[ -d "$OUT_DIR/data/xim-pkgindex/pkgs" ]] || fail "bundled xim-pkgindex missing"
+[[ -f "$OUT_DIR/data/xim-pkgindex/pkgs/p/patchelf.lua" ]] || fail "bundled xim-pkgindex missing patchelf"
+info "OK: bundled xim-pkgindex snapshot present"
 
 # 4c. Functional tests (bootstrap home detection)
 info "Testing bootstrap home execution..."
