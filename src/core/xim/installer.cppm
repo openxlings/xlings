@@ -1407,7 +1407,12 @@ public:
             // and skip the extracted-payload fallback (which exists for
             // packages whose hook silently no-ops, e.g. patchelf where
             // the tarball has no top-level dir).
-            if (!payloadInstalled) {
+            if (!payloadInstalled && node.pkgType != 3 /* Config */) {
+                // TODO(config): formalize config packages as repeatable,
+                // no-install procedures in libxpkg/spec. Keep current hook
+                // semantics for now; just avoid xlings-owned markers that
+                // would make an otherwise empty config directory look
+                // installed.
                 executor.apply_install_stamp_if_empty(ctx);
             }
 
@@ -1472,15 +1477,22 @@ public:
                 continue;
             }
 
-            if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
-                !snapshot) {
-                log::error("failed to save xpkg snapshot for {}: {}",
-                           node.name, snapshot.error());
-                if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               snapshot.error() });
+            if (node.pkgType != 3 /* Config */) {
+                // TODO(config): same soft policy as the install stamp. A
+                // config package with no author-created payload must not
+                // become installed solely because xlings copied metadata into
+                // install_dir. Future libxpkg/spec work should define the
+                // stricter config contract.
+                if (auto snapshot = detail_::save_xpkg_snapshot_(node.pkgFile, ctx.install_dir);
+                    !snapshot) {
+                    log::error("failed to save xpkg snapshot for {}: {}",
+                               node.name, snapshot.error());
+                    if (onStatus) {
+                        onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                                   snapshot.error() });
+                    }
+                    continue;
                 }
-                continue;
             }
 
             if (catalog_) {
