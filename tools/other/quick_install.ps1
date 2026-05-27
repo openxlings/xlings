@@ -91,6 +91,19 @@ function Get-TagCandidates {
     return $uniqueCandidates
 }
 
+function Convert-GitCodeAssetUrl {
+    param([string]$Url)
+
+    # GitCode release metadata currently reports attach browser_download_url on
+    # api.gitcode.com, but direct downloads from that host return 404. The same
+    # /releases/download/... path on gitcode.com redirects to file-cdn.gitcode.com.
+    if ($Url -like "https://api.gitcode.com/*/releases/download/*") {
+        return $Url.Replace("https://api.gitcode.com/", "https://gitcode.com/")
+    }
+
+    return $Url
+}
+
 function Get-ReleaseAsset {
     param(
         [object]$Release,
@@ -99,7 +112,7 @@ function Get-ReleaseAsset {
 
     foreach ($asset in @($Release.assets)) {
         if ($asset.name -eq $AssetName -and $asset.browser_download_url) {
-            return [string]$asset.browser_download_url
+            return Convert-GitCodeAssetUrl ([string]$asset.browser_download_url)
         }
     }
 
