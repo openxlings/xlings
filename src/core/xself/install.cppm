@@ -66,7 +66,10 @@ static std::string detect_install_mirror_() {
 
     constexpr int timeoutMs = 1000;
     auto globalLatency = tinyhttps::probe_latency("https://github.com", timeoutMs);
+    log::println("[xlings:self] https://github.com: {} ms", globalLatency >= 0 ? std::to_string(globalLatency) : "timeout");
+
     auto cnLatency = tinyhttps::probe_latency("https://gitee.com", timeoutMs);
+    log::println("[xlings:self] https://gitee.com: {} ms", cnLatency >= 0 ? std::to_string(cnLatency) : "timeout");
 
     if (std::isfinite(cnLatency) &&
         (!std::isfinite(globalLatency) || cnLatency + 0.2 < globalLatency)) {
