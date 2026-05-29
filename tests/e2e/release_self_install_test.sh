@@ -24,7 +24,7 @@ INSTALLED_HOME="$INSTALL_USER_DIR/.xlings"
 [[ -f "$INSTALLED_HOME/config/shell/xlings-profile.sh" ]] || fail "installed home missing shell profile"
 
 # 0.4.8 collapsed to a single canonical entry point. The xim/xvm/xself/xsubos/
-# xinstall shims were removed (see src/core/xself/compat_0_4_8.cppm).
+# xinstall shims were removed (see src/core/compact/xself.cppm).
 [[ -x "$INSTALLED_HOME/subos/default/bin/xlings" ]] || fail "shim xlings missing after self install"
 for legacy in xim xvm xsubos xself xinstall; do
   [[ ! -e "$INSTALLED_HOME/subos/default/bin/$legacy" ]] || \

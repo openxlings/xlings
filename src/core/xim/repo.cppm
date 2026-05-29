@@ -6,6 +6,7 @@ export module xlings.core.xim.repo;
 import std;
 import xlings.libs.json;
 import xlings.core.log;
+import xlings.core.compact;
 import xlings.platform;
 import xlings.core.config;
 import xlings.core.mirror;
@@ -13,11 +14,6 @@ import xlings.core.mirror;
 export namespace xlings::xim {
 
 namespace detail_ {
-
-bool git_available_() {
-    auto [rc, _] = platform::run_command_capture("git --version");
-    return rc == 0;
-}
 
 bool ensure_local_repo_link_(const std::filesystem::path& localDir,
                              const std::filesystem::path& sourceDir) {
@@ -170,7 +166,7 @@ bool sync_repo(const std::filesystem::path& localDir,
                bool force = false) {
     namespace fs = std::filesystem;
 
-    if (!detail_::git_available_()) {
+    if (!compact::git::ensure_available()) {
         log::error("git is required to update package index: {}", url);
         return false;
     }
@@ -188,11 +184,8 @@ bool sync_repo(const std::filesystem::path& localDir,
         for (std::size_t i = 0; i < urls.size(); ++i) {
             log::debug("cloning index repo attempt {}/{}: {}",
                        i + 1, urls.size(), urls[i]);
-            auto cmd = std::format("git clone --depth 1 --quiet {} {}",
-                                   platform::shell_quote(urls[i]),
-                                   platform::shell_quote(tmpDir.string()));
-            auto [rc, output] = platform::run_command_capture(cmd);
-            if (rc == 0) {
+            auto clone = compact::git::clone_shallow(urls[i], tmpDir, false);
+            if (clone.rc == 0) {
                 if (i > 0)
                     log::info("[mirror] index repo fallback succeeded via {}", urls[i]);
                 fs::remove_all(localDir, ec);
@@ -211,7 +204,7 @@ bool sync_repo(const std::filesystem::path& localDir,
                 }
                 return true;
             }
-            lastErr = output;
+            lastErr = clone.output;
             fs::remove_all(tmpDir, ec);
         }
         log::error("all index repo clone URLs failed: {}", lastErr);
@@ -234,25 +227,17 @@ bool sync_repo(const std::filesystem::path& localDir,
     }
 
     log::debug("updating index repo: {}", localDir.filename().string());
-    auto setRemoteCmd = std::format("git -C {} remote set-url origin {}",
-                                    platform::shell_quote(localDir.string()),
-                                    platform::shell_quote(url));
-    auto [setRc, setOutput] = platform::run_command_capture(setRemoteCmd);
-    if (setRc != 0) {
-        log::warn("failed to set index repo origin: {}", setOutput);
+    auto setOrigin = compact::git::set_origin(localDir, url);
+    if (setOrigin.rc != 0) {
+        log::warn("failed to set index repo origin: {}", setOrigin.output);
     }
 
-    auto cmd = std::format("git -C {} pull --ff-only",
-                           platform::shell_quote(localDir.string()));
-    auto [rc, output] = platform::run_command_capture(cmd);
-    if (rc != 0) {
-        log::warn("git pull failed, trying reset: {}", output);
-        cmd = std::format("git -C {} fetch origin && git -C {} reset --hard origin/HEAD",
-                          platform::shell_quote(localDir.string()),
-                          platform::shell_quote(localDir.string()));
-        auto [rc2, out2] = platform::run_command_capture(cmd);
-        if (rc2 != 0) {
-            log::error("git reset failed: {}", out2);
+    auto pull = compact::git::pull_ff_only(localDir);
+    if (pull.rc != 0) {
+        log::warn("git pull failed, trying reset: {}", pull.output);
+        auto reset = compact::git::fetch_reset_origin_head(localDir);
+        if (reset.rc != 0) {
+            log::error("git reset failed: {}", reset.output);
             return false;
         }
     }

@@ -3,7 +3,7 @@ export module xlings.core.xself.doctor;
 import std;
 import xlings.core.xself.init;   // create_shim, LinkResult
 // Cross-version compat module (legacy alias names + safety predicate
-// live under v0_4_8). See xself/compat.cppm.
+// live under v0_4_8). See compact/xself.cppm.
 import xlings.core.xself.compat;
 
 import xlings.core.config;

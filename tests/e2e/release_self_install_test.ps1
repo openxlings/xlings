@@ -37,7 +37,7 @@ if (-not (Test-Path "$INSTALLED_HOME\bin\xlings.exe")) { Fail "installed home mi
 if (-not (Test-Path "$INSTALLED_HOME\subos\current")) { Fail "installed home missing subos\current link" }
 
 # 0.4.8 collapsed to a single canonical entry point. The xim/xvm/xself/
-# xsubos/xinstall shims were removed (see src/core/xself/compat_0_4_8.cppm).
+# xsubos/xinstall shims were removed (see src/core/compact/xself.cppm).
 if (-not (Test-Path "$INSTALLED_HOME\subos\default\bin\xlings.exe")) {
     Fail "shim xlings.exe missing after self install"
 }

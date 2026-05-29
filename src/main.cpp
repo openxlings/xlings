@@ -5,7 +5,7 @@ import xlings.core.config;
 import xlings.platform;
 import xlings.core.xvm.shim;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
-// See xself/compat.cppm — each compat lives in its own version sub-namespace.
+// See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
 
 #ifdef _WIN32

@@ -7,6 +7,7 @@ export module xlings.core.xim.downloader;
 import std;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.log;
+import xlings.core.compact;
 import xlings.platform;
 import xlings.core.config;
 import xlings.libs.tinyhttps;
@@ -151,9 +152,8 @@ DownloadResult git_clone_one(const DownloadTask& task) {
     // which then goes through the URL-list fallback path below.
     if (fs::exists(destDir / ".git")) {
         log::debug("already cloned {}, pulling latest...", task.name);
-        auto cmd = std::format("git -C \"{}\" pull --ff-only", destDir.string());
-        auto rc = platform::exec(cmd);
-        if (rc == 0) {
+        auto pull = compact::git::pull_ff_only(destDir);
+        if (pull.rc == 0) {
             result.success = true;
             return result;
         }
@@ -166,11 +166,8 @@ DownloadResult git_clone_one(const DownloadTask& task) {
         const auto& url = urls[i];
         log::debug("cloning {} attempt {}/{}: {}",
                    task.name, i + 1, urls.size(), url);
-        auto cmd = std::format(
-            "git clone --depth 1 --recursive --quiet \"{}\" \"{}\"",
-            url, destDir.string());
-        auto rc = platform::exec(cmd);
-        if (rc == 0) {
+        auto clone = compact::git::clone_shallow(url, destDir, true);
+        if (clone.rc == 0) {
             if (i > 0)
                 log::info("[mirror] git clone fallback succeeded via {}", url);
             result.success = true;
@@ -220,10 +217,10 @@ DownloadResult download_one(const DownloadTask& task,
                 const auto& url = urls[i];
                 log::debug("cloning {} (cancellable) attempt {}/{}: {}",
                            task.name, i + 1, urls.size(), url);
-                auto cmd = std::format(
-                    "git clone --depth 1 --recursive --quiet \"{}\" \"{}\"",
-                    url, destDir.string());
-                auto h = platform::spawn_command(cmd);
+                auto h = compact::git::spawn({
+                    "clone", "--depth", "1", "--recursive", "--quiet",
+                    url, destDir.string()
+                });
                 if (h.pid <= 0) { lastError = "failed to spawn git"; continue; }
                 auto [code, output] = platform::wait_or_kill(
                     h, cancel, std::chrono::minutes{10});
