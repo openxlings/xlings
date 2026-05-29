@@ -65,11 +65,21 @@ static std::string detect_install_mirror_() {
     if (auto mirror = env_install_mirror_()) return *mirror;
 
     constexpr int timeoutMs = 1000;
-    auto globalLatency = tinyhttps::probe_latency("https://github.com", timeoutMs);
-    auto cnLatency = tinyhttps::probe_latency("https://gitee.com", timeoutMs);
+    constexpr double preferCnDeltaSec = 0.02;  // 20ms
+    auto to_latency_ms_text = [](double sec) {
+        if (!std::isfinite(sec)) return std::string("timeout");
+        auto ms = static_cast<long long>(std::llround(sec * 1000.0));
+        return std::to_string(ms);
+    };
 
-    if (std::isfinite(cnLatency) &&
-        (!std::isfinite(globalLatency) || cnLatency + 0.2 < globalLatency)) {
+    auto globalLatencySec = tinyhttps::probe_latency("https://github.com", timeoutMs);
+    log::println("[xlings:self] https://github.com: {} ms", to_latency_ms_text(globalLatencySec));
+
+    auto cnLatencySec = tinyhttps::probe_latency("https://gitee.com", timeoutMs);
+    log::println("[xlings:self] https://gitee.com: {} ms", to_latency_ms_text(cnLatencySec));
+
+    if (std::isfinite(cnLatencySec) &&
+        (!std::isfinite(globalLatencySec) || cnLatencySec + preferCnDeltaSec < globalLatencySec)) {
         return "CN";
     }
     return "GLOBAL";
