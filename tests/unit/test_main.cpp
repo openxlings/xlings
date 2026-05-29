@@ -22,6 +22,7 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
+import xlings.core.compact;
 import xlings.core.config;
 import xlings.platform;
 import xlings.libs.json;
@@ -36,6 +37,29 @@ import mcpplibs.xpkg;
 import mcpplibs.cmdline;
 
 namespace {
+
+struct ScopedEnvVar {
+    std::string name;
+    bool had_prev{false};
+    std::string prev_value;
+
+    ScopedEnvVar(std::string_view key, std::string_view value) : name(key) {
+        if (auto* prev = std::getenv(name.c_str())) {
+            had_prev = true;
+            prev_value = prev;
+        }
+        set(value);
+    }
+
+    ~ScopedEnvVar() {
+        if (had_prev) set(prev_value);
+        else set("");
+    }
+
+    void set(std::string_view value) {
+        xlings::platform::set_env_variable(name, std::string(value));
+    }
+};
 
 std::optional<std::filesystem::path> find_pkgindex_repo() {
     namespace fs = std::filesystem;
@@ -206,6 +230,39 @@ TEST(UtilsTest, GetEnvOrDefault) {
     EXPECT_EQ(val, "fallback");
 }
 
+TEST(CompactGitTest, MissingGitWithNeverInstallReturnsFalse) {
+    namespace fs = std::filesystem;
+
+    auto missingGit = fs::temp_directory_path() / "xlings_missing_git_for_compact_test" / "git";
+    fs::remove_all(missingGit.parent_path());
+    fs::create_directories(missingGit.parent_path());
+
+    ScopedEnvVar gitBin("XLINGS_COMPACT_GIT_BIN", missingGit.string());
+    ScopedEnvVar noAuto("XLINGS_NO_AUTO_INSTALL_GIT", "");
+    ScopedEnvVar bootstrap("XLINGS_COMPACT_GIT_BOOTSTRAP", "");
+
+    EXPECT_FALSE(xlings::compact::git::ensure_available(
+        xlings::compact::git::EnsureMode::NeverInstall));
+
+    fs::remove_all(missingGit.parent_path());
+}
+
+TEST(CompactGitTest, MissingGitHonorsNoAutoInstallFlag) {
+    namespace fs = std::filesystem;
+
+    auto missingGit = fs::temp_directory_path() / "xlings_missing_git_no_auto_test" / "git";
+    fs::remove_all(missingGit.parent_path());
+    fs::create_directories(missingGit.parent_path());
+
+    ScopedEnvVar gitBin("XLINGS_COMPACT_GIT_BIN", missingGit.string());
+    ScopedEnvVar noAuto("XLINGS_NO_AUTO_INSTALL_GIT", "1");
+    ScopedEnvVar bootstrap("XLINGS_COMPACT_GIT_BOOTSTRAP", "");
+
+    EXPECT_FALSE(xlings::compact::git::ensure_available());
+
+    fs::remove_all(missingGit.parent_path());
+}
+
 TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
     namespace fs = std::filesystem;
 
@@ -222,6 +279,8 @@ TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
     auto oldPath = std::string(std::getenv("PATH") ? std::getenv("PATH") : "");
     auto emptyPath = root / "empty-path";
     fs::create_directories(emptyPath);
+    ScopedEnvVar gitBin("XLINGS_COMPACT_GIT_BIN", (root / "missing-git").string());
+    ScopedEnvVar noAuto("XLINGS_NO_AUTO_INSTALL_GIT", "1");
     xlings::platform::set_env_variable("PATH", emptyPath.string());
 
     auto ok = xlings::xim::sync_repo(repo, "https://github.com/openxlings/xim-pkgindex.git", true);

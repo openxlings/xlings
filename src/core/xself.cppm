@@ -15,7 +15,7 @@
 //   xself/clean.cppm            — `self clean [--dry-run]`
 //   xself/migrate.cppm          — `self migrate`
 //   xself/doctor.cppm           — `self doctor [--fix]`
-//   xself/compat.cppm           — cross-version compat shims, organized
+//   compact/xself.cppm          — cross-version compat shims, organized
 //                                 into vX_Y_Z sub-namespaces. See its
 //                                 header for the removal procedure when
 //                                 a compat block expires.
@@ -34,7 +34,7 @@ export import xlings.core.xself.migrate;
 export import xlings.core.xself.doctor;
 // Re-exported so external callers (main.cpp, xvm/commands.cppm,
 // xim/installer.cppm) reach `xself::compat::v*::*` through the umbrella
-// module without depending on the partition file directly.
+// module without depending on the compact-managed module file directly.
 export import xlings.core.xself.compat;
 
 import xlings.libs.json;
