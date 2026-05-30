@@ -14,8 +14,8 @@ env:
   # Pinned bootstrap xlings used to install mcpp. Bump together with
   # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
   BOOTSTRAP_XLINGS_VERSION: v0.4.44
-  # Includes mcpp 0.0.33 for all CI/release mcpp builds.
-  XIM_PKGINDEX_REF: ab8e20d496741caadad4627706e5ce2c46a6c4b1
+  # Includes mcpp 0.0.35 for all CI/release mcpp builds.
+  XIM_PKGINDEX_REF: cf3d0fa64e8be120c3c703c8702f294f271026ad
 
 jobs:
   build-and-test:
@@ -71,6 +71,11 @@ jobs:
           xlings install -y
           mcpp --version
           mcpp self version
+
+      - name: Refresh mcpp package index cache
+        run: |
+          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
+          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
 
       - name: Prepare unit fixture index repo
         run: |
