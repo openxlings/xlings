@@ -68,6 +68,11 @@ jobs:
           mcpp --version
           mcpp self version
 
+      - name: Refresh mcpp package index cache
+        run: |
+          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
+          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
+
       - name: Prepare unit fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex

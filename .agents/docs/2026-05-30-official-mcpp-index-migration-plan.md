@@ -79,4 +79,6 @@ target/x86_64-linux-musl/*/bin/xlings --version
 - mcpplibs/mcpp-index PR #17 已合入 main。
 - openxlings/xim-pkgindex PR #259 已合入 main,CI/release 现在 pin 到
   `cf3d0fa64e8be120c3c703c8702f294f271026ad`,包含 `xim:mcpp@0.0.35`。
+- xlings CI/release 在安装 mcpp 后会清理缓存中的默认 `mcpplibs` index checkout,
+  避免 actions/cache 恢复旧 index 后看不到刚合入的 `compat.*` 包。
 - 下一步是重跑 xlings PR #314 CI,验证官方 index 路径和新版 mcpp bootstrap。

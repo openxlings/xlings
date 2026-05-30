@@ -76,6 +76,12 @@ jobs:
           mcpp --version
           mcpp self version
 
+      - name: Refresh mcpp package index cache
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.mcpp\registry\data\mcpplibs" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.mcpp\registry\data\mcpplibs" -ErrorAction SilentlyContinue
+
       - name: Prepare unit fixture index repo
         shell: bash
         run: |
