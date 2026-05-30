@@ -38,6 +38,7 @@ capi.lua = "0.0.3"
 
 - [x] 等 mcpp 0.0.35 发布并本地安装。
 - [x] mcpp-index PR #17 提供 `compat.libarchive` 及其传递依赖。
+- [x] xim-pkgindex PR #259 已合入,`xim:mcpp` bootstrap 版本升到 `0.0.35`。
 - [x] 删除 `mcpp/pkgs/*`。
 - [x] 删除 `mcpp/include/*` 中仅为第三方包服务的配置头。
 - [x] 精简 `mcpp.toml` 的 `build.cflags`，只保留 xlings 自身语义。
@@ -76,4 +77,6 @@ target/x86_64-linux-musl/*/bin/xlings --version
 
 - mcpp PR #88 已合入并发布 `v0.0.35`。
 - mcpplibs/mcpp-index PR #17 已合入 main。
-- 下一步是重跑 xlings PR #314 CI,验证官方 index 路径已经可用。
+- openxlings/xim-pkgindex PR #259 已合入 main,CI/release 现在 pin 到
+  `cf3d0fa64e8be120c3c703c8702f294f271026ad`,包含 `xim:mcpp@0.0.35`。
+- 下一步是重跑 xlings PR #314 CI,验证官方 index 路径和新版 mcpp bootstrap。
