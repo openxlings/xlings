@@ -15,6 +15,7 @@ cflags = [
     "-DHAVE_STDINT_H=1",
     "-DHAVE_INTTYPES_H=1",
     "-DZSTD_DISABLE_ASM=1",
+    "-include xlings_lua_platform_config.h",
     "-include xlings_zlib_config.h",
     "-DLIBARCHIVE_STATIC",
     "-DPLATFORM_CONFIG_H=\\\"xlings_libarchive_config.h\\\"",
