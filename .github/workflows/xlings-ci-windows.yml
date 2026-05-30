@@ -11,12 +11,11 @@ env:
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to read /.xlings.json and install xmake
-  # / cmake / ninja. Windows uses MSVC from the runner image (no compiler
-  # in .xlings.json), so xmake's auto-detection still applies.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.13
-  # See xlings-ci-linux.yml for why this is pinned.
-  XIM_PKGINDEX_REF: 19f4383ba5d65ab86cc6904f6392ceecb0be5d09
+  # Pinned bootstrap xlings used to install mcpp. Bump together with
+  # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
+  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  # Includes mcpp 0.0.33 for all CI/release mcpp builds.
+  XIM_PKGINDEX_REF: ab8e20d496741caadad4627706e5ce2c46a6c4b1
 
 jobs:
   build-and-test:
@@ -47,50 +46,75 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # See xlings-ci-linux.yml for the full rationale. On Windows the
-      # bulk of Configure time is xrepo building libarchive + its
-      # compression backends with MSVC; caching those object trees here
-      # is the same single-step win as on Linux/macOS.
-      #
-      # xmake's global package root differs from POSIX: on Windows it
-      # lives under %LOCALAPPDATA%\.xmake (xmake source: _global_dir()
-      # returns LOCALAPPDATA → APPDATA → USERPROFILE, in that order, with
-      # `.xmake` appended). The cache used to point at `~\.xmake\packages`
-      # which is %USERPROFILE%\.xmake — a directory xmake never writes
-      # to, so every Windows run silently missed the cache and rebuilt
-      # libarchive/zstd/bzip2/lz4/zlib from source (~8 min Configure
-      # phase). After this fix the Windows Configure drops to roughly
-      # the same time as Linux/macOS once the cache warms up.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\.xmake\packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~\.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja)
+      - name: Prepare bootstrap package index
+        shell: pwsh
+        run: |
+          $indexDir = Join-Path $env:USERPROFILE ".xlings\data\xim-pkgindex"
+          Remove-Item -Recurse -Force $indexDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force (Split-Path $indexDir) | Out-Null
+          git clone https://github.com/openxlings/xim-pkgindex.git $indexDir
+          git -C $indexDir checkout --quiet $env:XIM_PKGINDEX_REF
+          if (-not (Test-Path (Join-Path $indexDir "pkgs"))) {
+            throw "bootstrap package index missing pkgs/"
+          }
+
+      - name: Install build dependencies (mcpp)
         shell: pwsh
         run: |
           Set-Location $env:GITHUB_WORKSPACE
           xlings install -y
+          mcpp --version
+          mcpp self version
 
-      - name: Prepare fixture index repo
+      - name: Prepare unit fixture index repo
         shell: bash
         run: |
-          bash tests/e2e/prepare_fixture_index.sh
-
-      - name: Configure xmake
-        shell: pwsh
-        run: xmake f -p windows -m release -y -vv
+          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
       - name: Build and run unit tests
         shell: pwsh
         run: |
-          xmake build -y -vv xlings_tests
-          xmake run xlings_tests
+          mcpp build
+          mcpp test
+          if ($LASTEXITCODE -ne 0) {
+            $status = $LASTEXITCODE
+            Write-Host "::group::mcpp build diagnostics"
+            $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
+            $ninja = if ($ninjaCmd) { $ninjaCmd.Source } else { "" }
+            if (-not $ninja) {
+              $ninjaFile = Get-ChildItem -Path "$env:USERPROFILE\.mcpp", "$env:XLINGS_HOME" -Filter ninja.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($ninjaFile) { $ninja = $ninjaFile.FullName }
+            }
+            if (-not $ninja) {
+              Write-Host "ninja not found"
+            } else {
+              $buildFiles = Get-ChildItem -Path target -Filter build.ninja -Recurse -ErrorAction SilentlyContinue
+              foreach ($buildFile in $buildFiles) {
+                $buildDir = $buildFile.DirectoryName
+                Write-Host "`$ $ninja -C $buildDir -v"
+                & $ninja -C $buildDir -v
+              }
+            }
+            Write-Host "::endgroup::"
+            exit $status
+          }
+
+      - name: Prepare fixture index repo
+        shell: bash
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
 
       # ── Phase 2: Build via Release Script ───────────────────────
 

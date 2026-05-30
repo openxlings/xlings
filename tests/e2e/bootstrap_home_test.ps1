@@ -5,6 +5,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+. "$PSScriptRoot\release_test_lib.ps1"
+
 $ROOT_DIR      = (Resolve-Path "$PSScriptRoot\..\..").Path
 $RUNTIME_DIR   = Join-Path $ROOT_DIR 'tests\e2e\runtime\bootstrap_home'
 $PORTABLE_DIR  = Join-Path $RUNTIME_DIR 'portable'
@@ -12,7 +14,7 @@ $MOVED_DIR     = Join-Path $RUNTIME_DIR 'portable_moved'
 $INSTALL_USER  = Join-Path $RUNTIME_DIR 'install_user'
 $FIXTURE_INDEX = Join-Path $ROOT_DIR 'tests\fixtures\xim-pkgindex'
 
-$BIN_SRC = Join-Path $ROOT_DIR 'build\windows\x64\release\xlings.exe'
+$BIN_SRC = Find-XlingsBinary
 
 function Fail($msg) { Write-Error "FAIL: $msg"; exit 1 }
 

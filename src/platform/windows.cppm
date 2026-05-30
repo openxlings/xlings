@@ -9,10 +9,10 @@ module;
 
 export module xlings.platform:windows;
 
-#if defined(_WIN32)
-
 import std;
 import xlings.runtime.cancellation;
+
+#if defined(_WIN32)
 
 namespace xlings {
 namespace platform_impl {

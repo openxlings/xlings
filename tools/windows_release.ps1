@@ -33,17 +33,22 @@ Set-Location $PROJECT_DIR
 # -- 1. Build C++ ------------------------------------------------
 Info "Version: $VERSION  |  Arch: $ARCH"
 Info "Building C++ binary..."
-xmake clean -q 2>$null
-# `xmake f` is required so xmake resolves+installs xrepo deps (ftxui /
-# cmdline / ...) before the `xmake build` step touches sources. The
-# Linux + macOS release scripts have an equivalent step.
-xmake f -p windows -m release -y
-if ($LASTEXITCODE -ne 0) { Fail "xmake configure failed" }
-xmake build -y xlings
-if ($LASTEXITCODE -ne 0) { Fail "xmake build failed" }
+$MCPP_BIN = if ($env:MCPP_BIN) { $env:MCPP_BIN } else { "mcpp" }
+if (-not (Get-Command $MCPP_BIN -ErrorAction SilentlyContinue)) {
+  Fail "mcpp not found; run xlings install first"
+}
+if (Test-Path "$PROJECT_DIR\target") { Remove-Item -Recurse -Force "$PROJECT_DIR\target" }
+$mcppArgs = @("build", "--print-fingerprint", "--no-cache")
+if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
+& $MCPP_BIN @mcppArgs
+if ($LASTEXITCODE -ne 0) { Fail "mcpp build failed" }
 
-$BIN_SRC = "build\windows\x64\release\xlings.exe"
-if (-not (Test-Path $BIN_SRC)) { Fail "C++ binary not found at $BIN_SRC" }
+$BIN_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "xlings.exe" |
+  Where-Object { $_.FullName -match "[\\/]+bin[\\/]+xlings\.exe$" } |
+  Sort-Object FullName |
+  Select-Object -First 1
+if (-not $BIN_FILE) { Fail "C++ binary not found under target\*\bin\xlings.exe" }
+$BIN_SRC = $BIN_FILE.FullName
 
 # -- 2. Assemble package -----------------------------------------
 Info "Assembling $OUT_DIR ..."

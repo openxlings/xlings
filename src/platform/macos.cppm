@@ -14,10 +14,10 @@ module;
 
 export module xlings.platform:macos;
 
-#if defined(__APPLE__)
-
 import std;
 import xlings.runtime.cancellation;
+
+#if defined(__APPLE__)
 
 namespace xlings {
 namespace platform_impl {

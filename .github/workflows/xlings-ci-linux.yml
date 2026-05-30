@@ -11,26 +11,11 @@ env:
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to read /.xlings.json and install all
-  # build dependencies. Bump together with XIM_PKGINDEX_REF in a single
-  # dedicated PR — the bootstrap xlings's resolver / elfpatch behavior
-  # must match the pkgindex schema (deps form, namespace conventions,
-  # exports). Co-bumping prevents a known-good xlings + in-flight
-  # pkgindex (or vice versa) from breaking CI.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.13
-  # Pinned xim-pkgindex commit for the test fixture clone. Bump in
-  # lockstep with BOOTSTRAP_XLINGS_VERSION when both sides have shipped
-  # the schema features they need from each other:
-  #   - bootstrap xlings v0.4.13 + post-merge config.cppm fix (PR #259)
-  #     handles projectScope:false fall-through correctly, so subprocess
-  #     shims spawned from install hooks (e.g. gcc-specs-config) resolve
-  #     project workspace via XLINGS_PROJECT_DIR env fallback
-  #   - xim-pkgindex 19f4383 = main HEAD with #110/#111 (namespace
-  #     deps), #116 (gcc-runtime as standalone xpkg), #117 (ninja/node/
-  #     mdbook switched to xim:gcc-runtime), #118 (use libdirs not abi
-  #     for lib export). End-to-end exercises the full predicate-driven
-  #     elfpatch + script-as-runtime-dep flow on Linux E2E-05.
-  XIM_PKGINDEX_REF: 19f4383ba5d65ab86cc6904f6392ceecb0be5d09
+  # Pinned bootstrap xlings used to install mcpp. Bump together with
+  # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
+  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  # Includes mcpp 0.0.33 for all CI/release mcpp builds.
+  XIM_PKGINDEX_REF: ab8e20d496741caadad4627706e5ce2c46a6c4b1
 
 jobs:
   build-and-test:
@@ -65,82 +50,69 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # Cache xrepo's compiled C++ deps (cmdline / ftxui / mcpplibs-* /
-      # libarchive + its compression backends / gtest / etc). On a cold
-      # runner the `Configure xmake` step takes ~4min on Linux because
-      # it pulls + compiles every entry from add_requires; with this
-      # cache hot, that drops to ~30s (extract + xmake re-validate).
-      # Keyed on xmake.lua so any add_requires version change cleanly
-      # invalidates; BOOTSTRAP_XLINGS_VERSION is in the key because the
-      # toolchain (musl-gcc etc.) installed by bootstrap xlings can
-      # change ABI between releases — old objects won't link.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~/.xmake/packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~/.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja / musl-gcc)
+      - name: Prepare bootstrap package index
+        run: |
+          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
+          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+
+      - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings install -y
-          # Sanity: musl-gcc registers `gcc`/`g++`/`cc` flavor shims that
-          # resolve to x86_64-linux-musl-gcc with --dynamic-linker / rpath
-          # flags baked in, so xmake auto-picks the toolchain via PATH —
-          # no --sdk / --cross / CC / CXX needed.
-          gcc --version
-          g++ --version
-          xmake --version
-          cmake --version
-          ninja --version
+          mcpp --version
+          mcpp self version
 
-      - name: Prepare fixture index repo
+      - name: Prepare unit fixture index repo
         run: |
-          bash tests/e2e/prepare_fixture_index.sh
-
-      - name: Configure xmake
-        # TODO(2026-): we pass --cc / --cxx as ABSOLUTE PATHS to the
-        # real musl-gcc binaries (not the shim names) to bypass xlings'
-        # shim dispatch. xmake's xrepo install spawns subprocesses with
-        # cwd at <pkg-cache>/.../source.tmp, where the shim's project
-        # search can't find the project workspace; the shim then
-        # falls back to the GLOBAL xvm DB which has no musl-gcc entries
-        # (bootstrap xlings 0.4.8 doesn't recognize `projectScope:
-        # false` yet, so it registered musl-gcc to project scope at
-        # install time). Result: shim returns "no version set" in
-        # subprocess context, xmake misinterprets as "compiler doesn't
-        # support flag X", build fails. Absolute paths sidestep the
-        # whole shim dispatch chain.
-        # When the bootstrap xlings is bumped to a release that knows
-        # `projectScope: false` (or musl-gcc is registered globally),
-        # we can revert to bare `--cc=x86_64-linux-musl-gcc`.
-        run: |
-          MUSL_SDK="$HOME/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0"
-          xmake f -c -p linux -m release \
-            --sdk="$MUSL_SDK" \
-            --cross=x86_64-linux-musl- \
-            --cc="$MUSL_SDK/bin/x86_64-linux-musl-gcc" \
-            --cxx="$MUSL_SDK/bin/x86_64-linux-musl-g++" \
-            -y -vv
+          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
       - name: Build and run unit tests
         run: |
-          xmake build -y -vv xlings_tests
-          xmake run xlings_tests
+          mcpp build
+          mcpp test || {
+            status=$?
+            echo "::group::mcpp build diagnostics"
+            ninja_bin="$(command -v ninja || true)"
+            if [[ -z "$ninja_bin" ]]; then
+              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
+            fi
+            if [[ -z "$ninja_bin" ]]; then
+              echo "ninja not found"
+            else
+              while IFS= read -r build_file; do
+                build_dir="$(dirname "$build_file")"
+                echo "\$ $ninja_bin -C $build_dir -v"
+                "$ninja_bin" -C "$build_dir" -v || true
+              done < <(find target -name build.ninja -type f | sort)
+            fi
+            echo "::endgroup::"
+            exit "$status"
+          }
+
+      - name: Prepare fixture index repo
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
+
+      - name: "E2E-00: mcpp builds xlings from source"
+        run: |
+          bash tests/e2e/mcpp_build_xlings_test.sh
 
       # ── Phase 2: Build via Release Script ───────────────────────
 
       - name: Build (linux_release)
-        # TODO: linux_release.sh's default MUSL_SDK assumes the legacy
-        # `data/xpkgs/musl-gcc/...` layout (no namespace prefix); modern
-        # xlings install puts it under `data/xpkgs/xim-x-musl-gcc/...`.
-        # Drop this export once the script globs both layouts.
         run: |
-          export MUSL_SDK="$HOME/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0"
           chmod +x ./tools/linux_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/linux_release.sh
 

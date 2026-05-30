@@ -126,7 +126,7 @@ static bool windows_self_displace_(const fs::path& xlingsExe) {
     else if (auto* t = std::getenv("TMP")) tempDir = t;
     else tempDir = "C:\\Windows\\Temp";
 
-    auto pid = static_cast<unsigned>(::_getpid());
+    auto pid = static_cast<unsigned>(platform::get_pid());
     auto pending = tempDir / ("xlings-pending-delete-" + std::to_string(pid) + ".exe");
 
     // MoveFileW handles running exe (same volume) via internal trick.

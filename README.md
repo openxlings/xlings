@@ -146,7 +146,7 @@ When you enter a project directory containing `.xlings.json`, xlings **seamlessl
 ```json
 {
   "workspace": {
-    "xmake": "3.0.7",
+    "mcpp": "0.0.33",
     "gcc": { "linux": "16.1.0" },
     "llvm": { "macosx": "20.1.7" }
   }
@@ -156,7 +156,7 @@ When you enter a project directory containing `.xlings.json`, xlings **seamlessl
 ```bash
 cd my-project/           # automatically enters project SubOS
 xlings install           # installs deps into project-local isolation
-xmake build              # everything just works, isolated from host
+mcpp build               # everything just works, isolated from host
 ```
 
 Clone → `cd` → build. Same env across teammates and CI. No manual activation needed.
@@ -310,14 +310,11 @@ cd my-project/           # seamlessly enters project SubOS
 ```bash
 # 1. Install xlings (see Quick Start above)
 # 2. From the repo root — install build deps:
-xlings install           # reads .xlings.json → xmake, cmake, ninja, toolchain
+xlings install           # reads .xlings.json → mcpp
 
-# 3. Switch to the dev toolchain:
-xlings use gcc@16.1.0    # ensures glibc-linked xrepo cache is used
-
-# 4. Build:
-xmake f -y && xmake build xlings
-xmake build xlings_tests && xmake run xlings_tests
+# 3. Build and test:
+mcpp build
+mcpp test
 ```
 
 The same `.xlings.json` drives CI and the release pipeline.

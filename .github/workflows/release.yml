@@ -13,13 +13,11 @@ env:
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to read /.xlings.json and install all
-  # build dependencies (xmake, cmake, ninja, musl-gcc on Linux, llvm on
-  # macOS). Bump this in a dedicated PR after verifying the target
-  # release is healthy.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.13
-  # See xlings-ci-linux.yml for why this is pinned.
-  XIM_PKGINDEX_REF: 19f4383ba5d65ab86cc6904f6392ceecb0be5d09
+  # Pinned bootstrap xlings used to install mcpp. Bump together with
+  # XIM_PKGINDEX_REF so release uses a known-good xlings + package index pair.
+  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  # Includes mcpp 0.0.33 for all release builds.
+  XIM_PKGINDEX_REF: ab8e20d496741caadad4627706e5ce2c46a6c4b1
 
 jobs:
   build-linux:
@@ -51,42 +49,34 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # Cache xrepo's compiled C++ deps so Release builds reuse what
-      # the per-PR CI just built. See xlings-ci-linux.yml for rationale.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~/.xmake/packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~/.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja / musl-gcc)
+      - name: Prepare bootstrap package index
+        run: |
+          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
+          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+
+      - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings install -y
-          gcc --version
-          xmake --version
+          mcpp --version
+          mcpp self version
 
       - name: Prepare fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh
 
       - name: Build (linux_release)
-        # TODO(2026-): two workarounds, both removable once bootstrap
-        # xlings 0.4.9 propagates everywhere:
-        #   1. linux_release.sh's default MUSL_SDK assumes the legacy
-        #      `data/xpkgs/musl-gcc/...` layout; modern xlings install
-        #      uses `data/xpkgs/xim-x-musl-gcc/...`. Override here.
-        #   2. CC / CXX must be ABSOLUTE PATHS to bypass xlings shim
-        #      dispatch (same shim-vs-real-binary issue documented in
-        #      xlings-ci-linux.yml). Without this, xrepo subprocess
-        #      can't resolve the shim and reports "compiler does not
-        #      support c++ module".
         run: |
-          export MUSL_SDK="$HOME/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0"
-          export CC="$MUSL_SDK/bin/x86_64-linux-musl-gcc"
-          export CXX="$MUSL_SDK/bin/x86_64-linux-musl-g++"
           chmod +x ./tools/linux_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/linux_release.sh
 
@@ -120,30 +110,30 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # Cache xrepo's compiled C++ deps so Release builds reuse what
-      # the per-PR CI just built. See xlings-ci-linux.yml for rationale.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~/.xmake/packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~/.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja / llvm)
+      - name: Prepare bootstrap package index
+        run: |
+          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
+          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+
+      - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings install -y
-          clang --version
-          xmake --version
+          mcpp --version
+          mcpp self version
 
       - name: Build (macos_release)
-        # TODO(2026-): same TODO as linux_release — macos_release.sh's
-        # default LLVM_PREFIX assumes legacy `data/xpkgs/llvm/...`
-        # without `xim-x-` prefix. Drop this export once the script
-        # is updated.
         run: |
-          export LLVM_PREFIX="$HOME/.xlings/data/xpkgs/xim-x-llvm/20.1.7"
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
 
@@ -178,26 +168,35 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # Cache xrepo's compiled C++ deps so Release builds reuse what
-      # the per-PR CI just built. See xlings-ci-linux.yml for rationale.
-      # Path note: xmake's global dir on Windows is %LOCALAPPDATA%\.xmake,
-      # NOT %USERPROFILE%\.xmake — see the matching comment in
-      # xlings-ci-windows.yml. Pre-fix this cache silently never
-      # populated, so Release builds rebuilt libarchive/zstd/bzip2/lz4
-      # from source on every release.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\.xmake\packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~\.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja)
+      - name: Prepare bootstrap package index
+        shell: pwsh
+        run: |
+          $indexDir = Join-Path $env:USERPROFILE ".xlings\data\xim-pkgindex"
+          Remove-Item -Recurse -Force $indexDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force (Split-Path $indexDir) | Out-Null
+          git clone https://github.com/openxlings/xim-pkgindex.git $indexDir
+          git -C $indexDir checkout --quiet $env:XIM_PKGINDEX_REF
+          if (-not (Test-Path (Join-Path $indexDir "pkgs"))) {
+            throw "bootstrap package index missing pkgs/"
+          }
+
+      - name: Install build dependencies (mcpp)
         shell: pwsh
         run: |
           Set-Location $env:GITHUB_WORKSPACE
           xlings install -y
+          mcpp --version
+          mcpp self version
 
       - name: Build (windows_release)
         shell: pwsh

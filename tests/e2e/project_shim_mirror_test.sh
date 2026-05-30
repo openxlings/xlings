@@ -5,16 +5,15 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 SCENARIO_DIR="$ROOT_DIR/tests/e2e/scenarios/local_repo"
 HOME_DIR="$(runtime_home_dir shim_mirror_home)"
+PROJECT_INDEX_DIR="$ROOT_DIR/tests/e2e/fixtures/project_index"
 CONFIG_BACKUP="$(prepare_scenario "$SCENARIO_DIR" "$HOME_DIR")"
 cleanup() {
   restore_scenario "$SCENARIO_DIR" "$HOME_DIR" "$CONFIG_BACKUP"
 }
 trap cleanup EXIT
-write_home_config "$HOME_DIR" "GLOBAL"
+write_home_config "$HOME_DIR" "GLOBAL" "$PROJECT_INDEX_DIR"
 
 # --- Clean global subos bin to avoid cache interference ---
 GLOBAL_BIN="$HOME_DIR/subos/default/bin"

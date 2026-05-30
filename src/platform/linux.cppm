@@ -12,10 +12,10 @@ module;
 
 export module xlings.platform:linux;
 
-#if defined(__linux__)
-
 import std;
 import xlings.runtime.cancellation;
+
+#if defined(__linux__)
 
 namespace xlings {
 namespace platform_impl {

@@ -7,17 +7,14 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot\release_test_lib.ps1"
 
-Require-FixtureIndex
-
 $SCENARIO_DIR = Join-Path $ROOT_DIR 'tests\e2e\scenarios\local_repo'
 $HOME_DIR     = Join-Path $RUNTIME_ROOT 'shim_mirror_home'
 $GLOBAL_BIN   = Join-Path $HOME_DIR 'subos\default\bin'
 $PROJECT_BIN  = Join-Path $SCENARIO_DIR '.xlings\subos\_\bin'
+$PROJECT_INDEX_DIR = Join-Path $ROOT_DIR 'tests\e2e\fixtures\project_index'
 
 # --- Find xlings binary ---
-$XLINGS_BIN = Get-ChildItem "$ROOT_DIR\build\*\*\release\xlings.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $XLINGS_BIN) { Fail "xlings.exe binary not found under build\" }
-$XLINGS_BIN = $XLINGS_BIN.FullName
+$XLINGS_BIN = Find-XlingsBinary
 
 # --- Backup scenario config ---
 $BACKUP_FILE = [System.IO.Path]::GetTempFileName()
@@ -48,7 +45,7 @@ Copy-Item $XLINGS_BIN (Join-Path $HOME_DIR 'bin\xlings.exe')
 $homeConfig = @{
     mirror      = 'GLOBAL'
     index_repos = @(
-        @{ name = 'xim'; url = $FIXTURE_INDEX_DIR }
+        @{ name = 'xim'; url = $PROJECT_INDEX_DIR }
     )
 }
 $homeConfig | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $HOME_DIR '.xlings.json') -Encoding UTF8

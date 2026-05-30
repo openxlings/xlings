@@ -23,7 +23,8 @@ Script: `tests/unit/test_main.cpp` (51 gtest tests, 11 suites)
 ### Run
 
 ```bash
-xmake build xlings_tests && xmake run xlings_tests
+mcpp build
+mcpp test
 ```
 
 Note: XimIndex/Resolver/Installer/Commands tests require the `xim-pkgindex` repo at a known path. They will `GTEST_SKIP` if not found.

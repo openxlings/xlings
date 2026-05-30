@@ -30,6 +30,20 @@ function Require-ReleaseArchive($path) {
     return $path
 }
 
+function Find-XlingsBinary {
+    if ($env:XLINGS_BIN -and (Test-Path $env:XLINGS_BIN)) {
+        return (Resolve-Path $env:XLINGS_BIN).Path
+    }
+
+    $targetBin = Get-ChildItem "$ROOT_DIR\target\*\*\bin\xlings.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($targetBin) { return $targetBin.FullName }
+
+    $buildBin = Get-ChildItem "$ROOT_DIR\build\*\*\release\xlings.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($buildBin) { return $buildBin.FullName }
+
+    Fail "xlings.exe binary not found; set XLINGS_BIN"
+}
+
 function Expand-ReleaseArchive($path, $name) {
     $extractRoot = Join-Path $RUNTIME_ROOT $name
     if (Test-Path $extractRoot) { Remove-Item -Recurse -Force $extractRoot }

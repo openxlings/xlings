@@ -40,6 +40,8 @@ luac.out
 **/.xmake
 **/build
 **/target
+.mcpp/
+compile_commands.json
 
 # IDE / OS
 .vscode
