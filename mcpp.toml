@@ -6,60 +6,7 @@ license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
 
 [build]
-include_dirs = ["mcpp/include", "src/libs/json"]
-cflags = [
-    "-D_GNU_SOURCE",
-    "-DSIZEOF_SIZE_T=8",
-    "-DHAVE_STDBOOL_H=1",
-    "-DHAVE__BOOL=1",
-    "-DHAVE_STDINT_H=1",
-    "-DHAVE_INTTYPES_H=1",
-    "-DZSTD_DISABLE_ASM=1",
-    "-include xlings_lua_platform_config.h",
-    "-include xlings_zlib_config.h",
-    "-DLIBARCHIVE_STATIC",
-    "-DPLATFORM_CONFIG_H=\\\"xlings_libarchive_config.h\\\"",
-    "-DHAVE_BZLIB_H=1",
-    "-DHAVE_LIBBZ2=1",
-    "-DHAVE_LZ4_H=1",
-    "-DHAVE_LZ4HC_H=1",
-    "-DHAVE_LIBLZ4=1",
-    "-DHAVE_ZSTD_H=1",
-    "-DHAVE_LIBZSTD=1",
-    "-DHAVE_ZSTD_compressStream=1",
-    "-DHAVE_ZSTD_minCLevel=1",
-    "-DHAVE_LZMA_H=1",
-    "-DHAVE_LIBLZMA=1",
-    "-DTUKLIB_SYMBOL_PREFIX=lzma_",
-    "-DHAVE_CHECK_CRC32=1",
-    "-DHAVE_CHECK_CRC64=1",
-    "-DHAVE_CHECK_SHA256=1",
-    "-DHAVE_ENCODERS=1",
-    "-DHAVE_DECODERS=1",
-    "-DHAVE_ENCODER_LZMA1=1",
-    "-DHAVE_ENCODER_LZMA2=1",
-    "-DHAVE_ENCODER_DELTA=1",
-    "-DHAVE_ENCODER_X86=1",
-    "-DHAVE_ENCODER_POWERPC=1",
-    "-DHAVE_ENCODER_IA64=1",
-    "-DHAVE_ENCODER_ARM=1",
-    "-DHAVE_ENCODER_ARMTHUMB=1",
-    "-DHAVE_ENCODER_ARM64=1",
-    "-DHAVE_ENCODER_SPARC=1",
-    "-DHAVE_ENCODER_RISCV=1",
-    "-DHAVE_DECODER_LZMA1=1",
-    "-DHAVE_DECODER_LZMA2=1",
-    "-DHAVE_DECODER_DELTA=1",
-    "-DHAVE_DECODER_X86=1",
-    "-DHAVE_DECODER_POWERPC=1",
-    "-DHAVE_DECODER_IA64=1",
-    "-DHAVE_DECODER_ARM=1",
-    "-DHAVE_DECODER_ARMTHUMB=1",
-    "-DHAVE_DECODER_ARM64=1",
-    "-DHAVE_DECODER_SPARC=1",
-    "-DHAVE_DECODER_RISCV=1",
-    "-DHAVE_LZIP_DECODER=1",
-]
+include_dirs = ["src/libs/json"]
 cxxflags = ["-DLIBARCHIVE_STATIC", "-DXLINGS_USE_GTEST_MAIN=1", "-DUNICODE", "-D_UNICODE"]
 
 [targets.xlings]
@@ -75,12 +22,11 @@ windows = "llvm@20.1.7"
 toolchain = "gcc@15.1.0-musl"
 linkage = "static"
 
-[indices]
-xlings = { path = "mcpp" }
-
 [dependencies]
 ftxui = "6.1.9"
-"xlings.libarchive" = "3.8.7"
+
+[dependencies.compat]
+libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
 cmdline = "0.0.2"
