@@ -3,19 +3,19 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 SCENARIO_NAME="${SCENARIO_NAME:-xlings_res_cn}"
 EXPECTED_RES_SERVER="${EXPECTED_RES_SERVER:-https://gitcode.com/xlings-res}"
 HOME_NAME="${HOME_NAME:-${SCENARIO_NAME}_home}"
 SCENARIO_DIR="$ROOT_DIR/tests/e2e/scenarios/$SCENARIO_NAME"
+XLINGS_RES_INDEX_DIR="$ROOT_DIR/tests/e2e/fixtures/project_index"
 HOME_DIR="$(runtime_home_dir "$HOME_NAME")"
+[[ -d "$XLINGS_RES_INDEX_DIR/pkgs" ]] || fail "XLINGS_RES fixture index missing: $XLINGS_RES_INDEX_DIR"
 CONFIG_BACKUP="$(prepare_scenario "$SCENARIO_DIR" "$HOME_DIR")"
 cleanup() {
   restore_scenario "$SCENARIO_DIR" "$HOME_DIR" "$CONFIG_BACKUP"
 }
 trap cleanup EXIT
-write_home_config "$HOME_DIR" "CN"
+write_home_config "$HOME_DIR" "CN" "$XLINGS_RES_INDEX_DIR"
 
 (
   cd "$SCENARIO_DIR" &&

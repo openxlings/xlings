@@ -2,7 +2,7 @@
   "index_repos": [
     {
       "name": "projectrepo",
-      "url": "../../../fixtures/xim-pkgindex"
+      "url": "../../fixtures/project_index"
     }
   ],
   "mirror": "CN",
