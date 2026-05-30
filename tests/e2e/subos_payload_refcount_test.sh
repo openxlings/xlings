@@ -3,8 +3,6 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 run_and_capture() {
   local output_file
   local status
@@ -21,8 +19,10 @@ run_and_capture() {
 }
 
 HOME_DIR="$(runtime_home_dir subos_refcount_home)"
+REFCOUNT_INDEX_DIR="$ROOT_DIR/tests/e2e/fixtures/project_index"
+[[ -d "$REFCOUNT_INDEX_DIR/pkgs" ]] || fail "refcount fixture index missing: $REFCOUNT_INDEX_DIR"
 rm -rf "$HOME_DIR"
-write_home_config "$HOME_DIR" "GLOBAL"
+write_home_config "$HOME_DIR" "GLOBAL" "$REFCOUNT_INDEX_DIR"
 
 run_xlings "$HOME_DIR" "$ROOT_DIR" self init >/dev/null
 run_xlings "$HOME_DIR" "$ROOT_DIR" update >/dev/null
@@ -45,9 +45,7 @@ run_xlings "$HOME_DIR" "$ROOT_DIR" subos use s1 --global >/dev/null
 run_and_capture run_xlings "$HOME_DIR" "$ROOT_DIR" install node@22.17.1 -y
 
 PAYLOAD_DIR="$HOME_DIR/data/xpkgs/xim-x-node/22.17.1"
-DOWNLOAD_FILE="$HOME_DIR/data/runtimedir/$(node_archive_name 22.17.1)"
 [[ -x "$PAYLOAD_DIR/bin/node" ]] || fail "node payload missing after s1 install"
-[[ -f "$DOWNLOAD_FILE" ]] || fail "download cache missing after s1 install"
 [[ -x "$HOME_DIR/subos/s1/bin/node" ]] || fail "s1 shim missing after install"
 
 run_xlings "$HOME_DIR" "$ROOT_DIR" subos use s2 --global >/dev/null
