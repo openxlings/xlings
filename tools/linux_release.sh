@@ -41,25 +41,14 @@ cd "$PROJECT_DIR"
 # ── 1. Build C++ ─────────────────────────────────────────────────
 info "Version: $VERSION  |  Arch: $ARCH"
 info "Building C++ binary..."
-# Ensure xmake is configured with a toolchain that supports `import std`.
-MUSL_SDK_DEFAULT="${XLINGS_HOME:-$HOME/.xlings}/data/xpkgs/musl-gcc/15.1.0"
-MUSL_SDK="${MUSL_SDK:-$MUSL_SDK_DEFAULT}"
-if [[ -f "$MUSL_SDK/x86_64-linux-musl/include/c++/15.1.0/bits/std.cc" ]]; then
-  # Keep Linux musl runtime setup in one place so CI/release/local are consistent.
-  bash "$PROJECT_DIR/tools/setup_musl_runtime.sh" "$MUSL_SDK" || fail "musl runtime setup failed"
-  export CC="${CC:-x86_64-linux-musl-gcc}"
-  export CXX="${CXX:-x86_64-linux-musl-g++}"
-  export PATH="$MUSL_SDK/bin:$PATH"
-  # Linux release requires musl static toolchain to guarantee static binary output.
-  unset XLINGS_NOLINKSTATIC
-  xmake f -c -p linux -m release --sdk="$MUSL_SDK" --cross=x86_64-linux-musl- --cc="$CC" --cxx="$CXX" -y     || fail "xmake configure with musl-gcc failed"
-else
-  fail "musl-gcc sdk not found at $MUSL_SDK (Linux release requires musl-gcc@15.1.0 for fully static binary)"
-fi
-xmake clean -q 2>/dev/null || true
-xmake build -y xlings 2>&1 || fail "xmake build failed"
+MCPP_BIN="${MCPP_BIN:-mcpp}"
+MCPP_TARGET="${MCPP_TARGET:-x86_64-linux-musl}"
+command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
-BIN_SRC="build/linux/${ARCH}/release/xlings"
+rm -rf "$PROJECT_DIR/target/$MCPP_TARGET"
+"$MCPP_BIN" build --target "$MCPP_TARGET" --print-fingerprint --no-cache 2>&1 || fail "mcpp build failed"
+
+BIN_SRC="$(find "$PROJECT_DIR/target/$MCPP_TARGET" -path '*/bin/xlings' -type f -perm -111 | sort | tail -1)"
 [[ -f "$BIN_SRC" ]] || fail "C++ binary not found at $BIN_SRC"
 
 if command -v file &>/dev/null; then

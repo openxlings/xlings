@@ -1,16 +1,8 @@
 {
-  "$schema-comment": "Build dependencies for xlings itself. CI / release / contributors run `xlings install` from this directory; xmake then auto-detects the toolchain via PATH (musl-gcc registers `gcc`/`g++`/`cc` flavor shims that resolve to x86_64-linux-musl-gcc with the dynamic-linker / rpath flags baked in, so no --sdk / --cross is needed). Windows uses the GitHub-runner-provided MSVC and declares no compiler here. See docs/plans/2026-05-01-ci-self-host-via-xlings-json.md.",
+  "$schema-comment": "Build dependencies for xlings itself. CI / release / contributors run `xlings install` from this directory; mcpp then resolves project toolchains from mcpp.toml via its own xlings-backed sandbox.",
   "projectScope": false,
   "mirror": "GLOBAL",
   "workspace": {
-    "xmake": "3.0.7",
-    "cmake": "4.0.2",
-    "ninja": "1.12.1",
-    "musl-gcc": {
-      "linux": "15.1.0"
-    },
-    "llvm": {
-      "macosx": "20.1.7"
-    }
+    "mcpp": "0.0.33"
   }
 }

@@ -9,18 +9,8 @@ MOVED_DIR="$RUNTIME_DIR/portable_moved"
 INSTALL_USER_DIR="$RUNTIME_DIR/install_user"
 FIXTURE_INDEX_DIR="$ROOT_DIR/tests/fixtures/xim-pkgindex"
 
-case "$(uname -s)" in
-  Darwin)
-    BIN_SRC="$ROOT_DIR/build/macosx/arm64/release/xlings"
-    ;;
-  Linux)
-    BIN_SRC="$ROOT_DIR/build/linux/x86_64/release/xlings"
-    ;;
-  *)
-    echo "bootstrap_home_test.sh only supports Linux/macOS" >&2
-    exit 1
-    ;;
-esac
+source "$ROOT_DIR/tests/e2e/project_test_lib.sh"
+BIN_SRC="$(find_xlings_bin)"
 
 fail() {
   echo "FAIL: $*" >&2

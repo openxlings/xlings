@@ -1,12 +1,11 @@
 {
-  "mirror": "GLOBAL",
   "index_repos": [
     {
-      "name": "xim",
-      "url": "https://github.com/openxlings/xim-pkgindex.git"
+      "name": "projectrepo",
+      "url": "../../fixtures/project_index"
     }
   ],
   "workspace": {
-    "linux-headers": "5.11.1"
+    "projectrepo:linux-headers": "5.11.1"
   }
 }

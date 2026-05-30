@@ -40,18 +40,17 @@ cd "$PROJECT_DIR"
 # ── 1. Build C++ ─────────────────────────────────────────────────
 info "Version: $VERSION  |  Arch: $ARCH"
 info "Building C++ binary..."
-LLVM_PREFIX_DEFAULT="${LLVM_PREFIX:-}"
-if [[ -n "$LLVM_PREFIX_DEFAULT" && -x "$LLVM_PREFIX_DEFAULT/bin/clang++" ]]; then
-  export LLVM_PREFIX="$LLVM_PREFIX_DEFAULT"
-  export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
-  export PATH="$LLVM_PREFIX/bin:$PATH"
-  xmake f -c -p macosx -m release --toolchain=llvm --sdk="$LLVM_PREFIX" --target_minver=11.0 -y \
-    || fail "xmake configure with llvm failed"
-fi
-xmake clean -q 2>/dev/null || true
-xmake build -y xlings 2>&1 || fail "xmake build failed"
+MCPP_BIN="${MCPP_BIN:-mcpp}"
+command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
-BIN_SRC="build/macosx/${ARCH}/release/xlings"
+rm -rf "$PROJECT_DIR/target"
+MCPP_ARGS=(build --print-fingerprint --no-cache)
+if [[ -n "${MCPP_TARGET:-}" ]]; then
+  MCPP_ARGS+=(--target "$MCPP_TARGET")
+fi
+"$MCPP_BIN" "${MCPP_ARGS[@]}" 2>&1 || fail "mcpp build failed"
+
+BIN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/xlings' -type f -perm -111 | sort | tail -1)"
 [[ -f "$BIN_SRC" ]] || fail "C++ binary not found at $BIN_SRC"
 
 info "Verifying no LLVM toolchain dependency..."

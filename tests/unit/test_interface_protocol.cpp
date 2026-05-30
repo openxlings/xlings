@@ -19,11 +19,9 @@ import xlings.libs.json;
 
 namespace {
 
-// Resolve once on first call and cache the absolute path. Without the
-// fs::absolute, a CWD change by another test in the same binary (e.g.
-// the Extract.* fixture's run_in_ helper) leaves the relative
-// "build/.../xlings" lookup pointing at the wrong place. Linux/macOS
-// happen not to hit this in the current order; Windows CI does.
+// Resolve once on first call and cache the absolute path. mcpp places binaries
+// under target/<triple>/<fingerprint>/bin; keep the legacy xmake build layout as
+// a fallback while the repository still supports older local workflows.
 std::string find_xlings_binary_() {
     namespace fs = std::filesystem;
     static const std::string cached = []() -> std::string {
@@ -32,16 +30,41 @@ std::string find_xlings_binary_() {
 #else
         const char* exe = "xlings";
 #endif
+        auto absolute_or_original = [](const fs::path& path) -> std::string {
+            std::error_code ec;
+            auto abs = fs::absolute(path, ec);
+            if (!ec) return abs.string();
+            return path.string();
+        };
+
+        std::error_code ec;
+        fs::path newest_mcpp_candidate;
+        fs::file_time_type newest_mcpp_time {};
+        if (fs::exists("target", ec)) {
+            for (auto it = fs::recursive_directory_iterator("target", ec);
+                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                if (it->path().filename() != exe) continue;
+                if (it->path().parent_path().filename() != "bin") continue;
+                auto t = fs::last_write_time(it->path(), ec);
+                if (ec) continue;
+                if (newest_mcpp_candidate.empty() || t > newest_mcpp_time) {
+                    newest_mcpp_candidate = it->path();
+                    newest_mcpp_time = t;
+                }
+            }
+        }
+        if (!newest_mcpp_candidate.empty()) {
+            return absolute_or_original(newest_mcpp_candidate);
+        }
+
         static const char* platforms[] = {"linux", "macosx", "windows"};
         static const char* archs[] = {"x86_64", "arm64", "x64"};
         static const char* modes[] = {"release", "debug"};
         for (auto* p : platforms) for (auto* a : archs) for (auto* m : modes) {
             fs::path candidate = fs::path("build") / p / a / m / exe;
-            std::error_code ec;
             if (fs::is_regular_file(candidate, ec)) {
-                auto abs = fs::absolute(candidate, ec);
-                if (!ec) return abs.string();
-                return candidate.string();
+                return absolute_or_original(candidate);
             }
         }
         return std::string{};

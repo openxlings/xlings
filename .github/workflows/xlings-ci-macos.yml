@@ -12,12 +12,11 @@ env:
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to read /.xlings.json and install xmake,
-  # cmake, ninja, and the macOS LLVM toolchain. Bump in a dedicated PR
-  # after verifying the target release is healthy.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.13
-  # See xlings-ci-linux.yml for why this is pinned.
-  XIM_PKGINDEX_REF: 19f4383ba5d65ab86cc6904f6392ceecb0be5d09
+  # Pinned bootstrap xlings used to install mcpp. Bump together with
+  # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
+  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  # Includes mcpp 0.0.33 for all CI/release mcpp builds.
+  XIM_PKGINDEX_REF: ab8e20d496741caadad4627706e5ce2c46a6c4b1
 
 jobs:
   build-and-test:
@@ -47,57 +46,60 @@ jobs:
           restore-keys: |
             xlings-deps-${{ runner.os }}-
 
-      # See xlings-ci-linux.yml for the full rationale. Same step,
-      # macOS-specific Configure xmake savings are smaller (~2m45s →
-      # ~30s) because LLVM compiles the C++ deps faster than the
-      # musl-cross toolchain.
-      - name: Cache xrepo packages
+      - name: Cache mcpp sandbox and project packages
         uses: actions/cache@v4
         with:
-          path: ~/.xmake/packages
-          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          path: |
+            ~/.mcpp
+            .mcpp
+          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            xmake-pkgs-${{ runner.os }}-
+            mcpp-${{ runner.os }}-
 
-      - name: Install build dependencies (xmake / cmake / ninja / llvm)
+      - name: Prepare bootstrap package index
+        run: |
+          rm -rf "$XLINGS_HOME/data/xim-pkgindex"
+          bash tests/e2e/prepare_fixture_index.sh "$XLINGS_HOME/data/xim-pkgindex"
+
+      - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings install -y
-          # Sanity: llvm payload's clang/clang++ shims are now on PATH via
-          # the subos current/bin. No --sdk needed — xmake's `--toolchain=llvm`
-          # detects the LLVM clang on PATH and uses its bundled lib/include.
-          xmake --version
-          cmake --version
-          ninja --version
-          clang --version
-          clang++ --version
+          mcpp --version
+          mcpp self version
 
-      - name: Prepare fixture index repo
+      - name: Prepare unit fixture index repo
         run: |
-          bash tests/e2e/prepare_fixture_index.sh
-
-      - name: Configure xmake
-        # TODO(2026-): same shim-bypass workaround as Linux — see the
-        # comment in xlings-ci-linux.yml. xrepo subprocesses lose
-        # project context, so we pass absolute paths to the real
-        # clang/clang++ inside the LLVM payload to bypass the xlings
-        # shim dispatch chain entirely.
-        run: |
-          LLVM_PREFIX="$HOME/.xlings/data/xpkgs/xim-x-llvm/20.1.7"
-          xmake f -c -p macosx -m release \
-            --toolchain=llvm \
-            --sdk="$LLVM_PREFIX" \
-            --cc="$LLVM_PREFIX/bin/clang" \
-            --cxx="$LLVM_PREFIX/bin/clang++" \
-            --target_minver=11.0 \
-            -y -vv
+          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
       - name: Build and run unit tests
         run: |
-          xmake build -y -vv xlings_tests
-          xmake run xlings_tests
+          mcpp build
+          mcpp test || {
+            status=$?
+            echo "::group::mcpp build diagnostics"
+            ninja_bin="$(command -v ninja || true)"
+            if [[ -z "$ninja_bin" ]]; then
+              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
+            fi
+            if [[ -z "$ninja_bin" ]]; then
+              echo "ninja not found"
+            else
+              while IFS= read -r build_file; do
+                build_dir="$(dirname "$build_file")"
+                echo "\$ $ninja_bin -C $build_dir -v"
+                "$ninja_bin" -C "$build_dir" -v || true
+              done < <(find target -name build.ninja -type f | sort)
+            fi
+            echo "::endgroup::"
+            exit "$status"
+          }
+
+      - name: Prepare fixture index repo
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
 
       # ── Phase 2: Build via Release Script ───────────────────────
 

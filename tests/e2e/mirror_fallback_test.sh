@@ -21,11 +21,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/mirror_fallback"
 LOG="$RUNTIME_DIR/run.log"
 
-case "$(uname -s)" in
-  Darwin) BIN_SRC="$ROOT_DIR/build/macosx/arm64/release/xlings" ;;
-  Linux)  BIN_SRC="$ROOT_DIR/build/linux/x86_64/release/xlings" ;;
-  *) echo "mirror_fallback_test.sh only supports Linux/macOS" >&2; exit 1 ;;
-esac
+source "$ROOT_DIR/tests/e2e/project_test_lib.sh"
+BIN_SRC="$(find_xlings_bin)"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 log()  { echo "[mirror-e2e] $*"; }

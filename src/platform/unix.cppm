@@ -12,9 +12,9 @@ module;
 
 export module xlings.platform:unix;
 
-#if defined(__linux__) || defined(__APPLE__)
-
 import std;
+
+#if defined(__linux__) || defined(__APPLE__)
 
 namespace xlings {
 namespace platform_impl {

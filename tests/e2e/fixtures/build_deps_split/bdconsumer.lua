@@ -62,15 +62,33 @@ function install()
     f:write("RTTOOL_ENV=" .. rt_env .. "\n")
     f:close()
 
-    -- 2. Try to invoke `bdtool` via PATH. The installer should have
-    --    prepended the build dep's bin/ directory to PATH for the
-    --    duration of this hook, so the bare-name call must resolve.
-    local h = io.popen("bdtool 2>&1")
-    if h then
-        local out = h:read("*a") or ""
-        h:close()
-        local f2 = io.open(path.join(dir, "bdtool_output.txt"), "w")
-        if f2 then f2:write(out); f2:close() end
+    -- 2. Verify that `bdtool` is reachable via PATH. The mcpp-embedded Lua
+    --    runtime intentionally does not expose io.popen, so keep this fixture
+    --    self-contained and check command resolution directly.
+    local found = false
+    local path_env = os.getenv("PATH") or ""
+    local sep = string.find(path_env, ";", 1, true) and ";" or ":"
+    for entry in string.gmatch(path_env .. sep, "([^" .. sep .. "]*)" .. sep) do
+        if entry ~= "" then
+            local candidates = {
+                path.join(entry, "bdtool"),
+                path.join(entry, "bdtool.exe"),
+            }
+            for _, candidate in ipairs(candidates) do
+                local probe = io.open(candidate, "r")
+                if probe then
+                    probe:close()
+                    found = true
+                    break
+                end
+            end
+        end
+        if found then break end
+    end
+    local f2 = io.open(path.join(dir, "bdtool_output.txt"), "w")
+    if f2 then
+        f2:write(found and "bdtool-1.0.0\n" or "not-found\n")
+        f2:close()
     end
 
     -- 3. Use pkginfo.build_dep() — the high-level Lua API for build deps

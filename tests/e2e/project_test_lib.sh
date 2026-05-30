@@ -19,6 +19,12 @@ find_xlings_bin() {
     return 0
   fi
 
+  candidate="$(find "$ROOT_DIR/target" -path '*/bin/xlings' -type f 2>/dev/null | head -1)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
   candidate="$(find "$BUILD_DIR" -path '*/release/xlings' -type f | head -1)"
   [[ -n "$candidate" && -x "$candidate" ]] || fail "xlings binary not found; set XLINGS_BIN"
   printf '%s\n' "$candidate"
@@ -57,6 +63,7 @@ restore_scenario() {
 write_home_config() {
   local home_dir="$1"
   local mirror="${2:-GLOBAL}"
+  local index_dir="${3:-$FIXTURE_INDEX_DIR}"
   mkdir -p "$home_dir"
   mkdir -p "$home_dir/subos/default/bin"
   cp "$(find_xlings_bin)" "$home_dir/xlings"
@@ -66,7 +73,7 @@ write_home_config() {
   "index_repos": [
     {
       "name": "xim",
-      "url": "$FIXTURE_INDEX_DIR"
+      "url": "$index_dir"
     }
   ]
 }
@@ -121,11 +128,11 @@ node_archive_name() {
   esac
 }
 
-mdbook_archive_name() {
+ninja_archive_name() {
   case "$(platform_name)" in
-    macosx) printf 'mdbook-%s-macosx-arm64.tar.gz\n' "$1" ;;
-    linux) printf 'mdbook-%s-linux-x86_64.tar.gz\n' "$1" ;;
-    *) fail "unsupported platform for mdbook archive" ;;
+    macosx) printf 'ninja-%s-macosx-arm64.tar.gz\n' "$1" ;;
+    linux) printf 'ninja-%s-linux-x86_64.tar.gz\n' "$1" ;;
+    *) fail "unsupported platform for ninja archive" ;;
   esac
 }
 

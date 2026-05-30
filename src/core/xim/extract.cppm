@@ -76,18 +76,33 @@ check_safe_pathname_(const char* raw) {
     return std::string{sv};
 }
 
-const char* entry_pathname_(archive_entry* entry) {
-    if (auto* path = ::archive_entry_pathname_utf8(entry); path && *path) {
-        return path;
+std::string path_from_wide_(const wchar_t* raw) {
+    if (!raw || !*raw) return {};
+    try {
+        return std::filesystem::path(std::wstring(raw)).generic_string();
+    } catch (...) {
+        return {};
     }
-    return ::archive_entry_pathname(entry);
 }
 
-const char* entry_hardlink_(archive_entry* entry) {
-    if (auto* path = ::archive_entry_hardlink_utf8(entry); path && *path) {
-        return path;
+std::string entry_pathname_(archive_entry* entry) {
+    if (auto* path = ::archive_entry_pathname_utf8(entry); path && *path) {
+        return std::string(path);
     }
-    return ::archive_entry_hardlink(entry);
+    if (auto* path = ::archive_entry_pathname(entry); path && *path) {
+        return std::string(path);
+    }
+    return path_from_wide_(::archive_entry_pathname_w(entry));
+}
+
+std::string entry_hardlink_(archive_entry* entry) {
+    if (auto* path = ::archive_entry_hardlink_utf8(entry); path && *path) {
+        return std::string(path);
+    }
+    if (auto* path = ::archive_entry_hardlink(entry); path && *path) {
+        return std::string(path);
+    }
+    return path_from_wide_(::archive_entry_hardlink_w(entry));
 }
 
 std::string libarchive_error_(struct archive* a) {
@@ -135,7 +150,10 @@ void ensure_archive_locale_() {
             std::setlocale(LC_CTYPE, "");
         }
 #else
-        std::setlocale(LC_CTYPE, "");
+        if (!std::setlocale(LC_CTYPE, "C.UTF-8")
+            && !std::setlocale(LC_CTYPE, "en_US.UTF-8")) {
+            std::setlocale(LC_CTYPE, "");
+        }
 #endif
     });
 }
@@ -236,8 +254,8 @@ extract_archive(const std::filesystem::path& archive,
 
         // Reroot the entry under destDir. archive_entry_pathname is a
         // relative path inside the archive; we vet it and prepend destDir.
-        const char* original = detail_::entry_pathname_(entry);
-        auto safeRel = detail_::check_safe_pathname_(original);
+        auto original = detail_::entry_pathname_(entry);
+        auto safeRel = detail_::check_safe_pathname_(original.c_str());
         if (!safeRel) {
             cleanup();
             return std::unexpected(std::move(safeRel).error());
@@ -249,8 +267,9 @@ extract_archive(const std::filesystem::path& archive,
         // entries — same vetting + rebase rule. Symlink *targets* stay
         // relative to the symlink (not vetted here); SECURE_SYMLINKS
         // prevents following them during extraction.
-        if (auto* hl = detail_::entry_hardlink_(entry); hl && *hl) {
-            auto safeHl = detail_::check_safe_pathname_(hl);
+        auto hardlink = detail_::entry_hardlink_(entry);
+        if (!hardlink.empty()) {
+            auto safeHl = detail_::check_safe_pathname_(hardlink.c_str());
             if (!safeHl) {
                 cleanup();
                 return std::unexpected(std::move(safeHl).error());

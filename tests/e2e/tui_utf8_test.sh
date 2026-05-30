@@ -19,12 +19,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-case "$(uname -s)" in
-  Darwin) BIN="$ROOT_DIR/build/macosx/arm64/release/xlings" ;;
-  Linux)  BIN="$ROOT_DIR/build/linux/x86_64/release/xlings" ;;
-  *) echo "tui_utf8_test.sh only supports Linux/macOS" >&2; exit 1 ;;
-esac
+source "$ROOT_DIR/tests/e2e/project_test_lib.sh"
+BIN="$(find_xlings_bin)"
 
 [[ -x "$BIN" ]] || { echo "[tui-utf8] FAIL: built xlings not found at $BIN" >&2; exit 1; }
 

@@ -904,7 +904,7 @@ TEST(XimCommandsTest, InfoKnownPackage) {
     // gcc fixture only has linux entries; skip on other platforms
     if (platform != "linux") GTEST_SKIP() << "gcc fixture not available on " << platform;
     xlings::EventStream stream;
-    auto rc = xlings::xim::cmd_info("gcc", stream);
+    auto rc = xlings::xim::cmd_info("xim:gcc", stream);
     EXPECT_EQ(rc, 0);
 }
 
@@ -3479,7 +3479,9 @@ TEST(DownloaderArchiveSniff, WorksWithFullPaths) {
 
 // ============================================================
 
+#ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+#endif

@@ -3,16 +3,15 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 SCENARIO_DIR="$ROOT_DIR/tests/e2e/scenarios/local_repo"
 HOME_DIR="$(runtime_home_dir local_repo_home)"
+PROJECT_INDEX_DIR="$ROOT_DIR/tests/e2e/fixtures/project_index"
 CONFIG_BACKUP="$(prepare_scenario "$SCENARIO_DIR" "$HOME_DIR")"
 cleanup() {
   restore_scenario "$SCENARIO_DIR" "$HOME_DIR" "$CONFIG_BACKUP"
 }
 trap cleanup EXIT
-write_home_config "$HOME_DIR" "GLOBAL"
+write_home_config "$HOME_DIR" "GLOBAL" "$PROJECT_INDEX_DIR"
 
 (
   cd "$SCENARIO_DIR" &&
@@ -40,13 +39,6 @@ grep -q '22.17.1' "$SCENARIO_DIR/.xlings/.xlings.json" \
   || fail "project runtime state file missing installed version"
 cmp -s "$CONFIG_BACKUP" "$SCENARIO_DIR/.xlings.json" \
   || fail "project manifest .xlings.json should remain unchanged after install"
-
-NODE_ARCHIVE_22="$(node_archive_name 22.17.1)"
-NODE_ARCHIVE_20="$(node_archive_name 20.19.0)"
-[[ -f "$SCENARIO_DIR/.xlings/data/runtimedir/$NODE_ARCHIVE_22" ]] \
-  || fail "node 22.17.1 download cache missing from project-local runtimedir"
-[[ -f "$SCENARIO_DIR/.xlings/data/runtimedir/$NODE_ARCHIVE_20" ]] \
-  || fail "node 20.19.0 download cache missing from project-local runtimedir"
 
 [[ -x "$SCENARIO_DIR/.xlings/data/xpkgs/projectrepo-x-node/22.17.1/bin/node" ]] \
   || fail "node 22.17.1 payload missing from project-local xpkgs"

@@ -2,7 +2,7 @@
   "index_repos": [
     {
       "name": "projectrepo",
-      "url": "../../../fixtures/xim-pkgindex"
+      "url": "../../fixtures/project_index"
     }
   ],
   "mirror": "CN",
@@ -13,6 +13,6 @@
     ]
   },
   "workspace": {
-    "projectrepo:mdbook": "0.4.43"
+    "projectrepo:ninja": "1.12.1"
   }
 }
