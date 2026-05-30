@@ -38,7 +38,7 @@ if (-not (Get-Command $MCPP_BIN -ErrorAction SilentlyContinue)) {
   Fail "mcpp not found; run xlings install first"
 }
 if (Test-Path "$PROJECT_DIR\target") { Remove-Item -Recurse -Force "$PROJECT_DIR\target" }
-$mcppArgs = @("build", "--print-fingerprint", "--no-cache")
+$mcppArgs = @("build", "--print-fingerprint")
 if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
 & $MCPP_BIN @mcppArgs
 if ($LASTEXITCODE -ne 0) { Fail "mcpp build failed" }
