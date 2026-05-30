@@ -36,7 +36,7 @@ capi.lua = "0.0.3"
 
 ## xlings 侧待办
 
-- [ ] 等 mcpp 0.0.35 发布并本地安装。
+- [x] 等 mcpp 0.0.35 发布并本地安装。
 - [x] mcpp-index PR #17 提供 `compat.libarchive` 及其传递依赖。
 - [x] 删除 `mcpp/pkgs/*`。
 - [x] 删除 `mcpp/include/*` 中仅为第三方包服务的配置头。
@@ -60,7 +60,7 @@ target/x86_64-linux-musl/*/bin/xlings --version
 ## Checkpoints
 
 - [x] 文档 checkpoint commit。
-- [ ] mcpp 0.0.35 本地联调通过。
+- [x] mcpp 0.0.35 本地联调通过。
 - [x] 官方 mcpp-index 联调通过。
 - [x] xlings PR draft 创建: https://github.com/openxlings/xlings/pull/314
 - [ ] CI 每 120s 检查一次直到完成。
@@ -68,8 +68,12 @@ target/x86_64-linux-musl/*/bin/xlings --version
 
 ## 当前 CI 状态
 
-PR #314 的三平台 CI 当前预期失败在 `mcpp build` 的
-`compat.libarchive@3.8.7` 下载阶段。根因是 GitHub runner 使用官方
-mcpp-index `main`，而 `compat.libarchive` 还在 mcpplibs/mcpp-index#17 中。
-不要为了让 draft PR 暂时变绿而把本地 path index 加回 `mcpp.toml`；正确顺序
-是先合入并发布 mcpp 0.0.35，再合入 mcpp-index#17，然后重跑 xlings CI。
+旧 run 的三平台 CI 失败在 `mcpp build` 的 `compat.libarchive@3.8.7`
+下载阶段。根因是 GitHub runner 当时使用的官方 mcpp-index `main` 尚未包含
+`compat.libarchive`。
+
+截至 2026-05-30:
+
+- mcpp PR #88 已合入并发布 `v0.0.35`。
+- mcpplibs/mcpp-index PR #17 已合入 main。
+- 下一步是重跑 xlings PR #314 CI,验证官方 index 路径已经可用。
