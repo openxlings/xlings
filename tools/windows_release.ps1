@@ -37,10 +37,10 @@ $MCPP_BIN = if ($env:MCPP_BIN) { $env:MCPP_BIN } else { "mcpp" }
 if (-not (Get-Command $MCPP_BIN -ErrorAction SilentlyContinue)) {
   Fail "mcpp not found; run xlings install first"
 }
-# Keep the existing mcpp target on Windows. CI has just built it, and mcpp can
-# update it incrementally; deleting it here currently makes the Windows rebuild
-# fail before producing diagnostics.
-$mcppArgs = @("build", "--print-fingerprint")
+# Keep the Windows release build aligned with the CI unit build. The optional
+# fingerprint mode currently exits non-zero on windows-latest before diagnostics
+# are emitted, while the normal incremental build path is the supported path.
+$mcppArgs = @("build")
 if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
 & $MCPP_BIN @mcppArgs
 if ($LASTEXITCODE -ne 0) { Fail "mcpp build failed" }
