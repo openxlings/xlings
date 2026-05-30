@@ -65,3 +65,11 @@ target/x86_64-linux-musl/*/bin/xlings --version
 - [x] xlings PR draft 创建: https://github.com/openxlings/xlings/pull/314
 - [ ] CI 每 120s 检查一次直到完成。
 - [ ] 合入后发布 xlings 新版本。
+
+## 当前 CI 状态
+
+PR #314 的三平台 CI 当前预期失败在 `mcpp build` 的
+`compat.libarchive@3.8.7` 下载阶段。根因是 GitHub runner 使用官方
+mcpp-index `main`，而 `compat.libarchive` 还在 mcpplibs/mcpp-index#17 中。
+不要为了让 draft PR 暂时变绿而把本地 path index 加回 `mcpp.toml`；正确顺序
+是先合入并发布 mcpp 0.0.35，再合入 mcpp-index#17，然后重跑 xlings CI。
