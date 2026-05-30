@@ -7,6 +7,6 @@
   ],
   "mirror": "CN",
   "workspace": {
-    "projectrepo:mdbook": "0.4.43"
+    "projectrepo:ninja": "1.12.1"
   }
 }

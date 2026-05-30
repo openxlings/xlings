@@ -48,6 +48,36 @@ typedef unsigned short mode_t;
 #ifndef CALG_SHA_512
 #define CALG_SHA_512 0x0000800e
 #endif
+// Match the project-private xmake libarchive build: all bundled
+// compression backends are dependencies of the mcpp package.
+#undef HAVE_BZLIB_H
+#define HAVE_BZLIB_H 1
+#undef HAVE_LIBBZ2
+#define HAVE_LIBBZ2 1
+#undef HAVE_LIBLZ4
+#define HAVE_LIBLZ4 1
+#undef HAVE_LIBLZMA
+#define HAVE_LIBLZMA 1
+#undef HAVE_LIBZ
+#define HAVE_LIBZ 1
+#undef HAVE_LIBZSTD
+#define HAVE_LIBZSTD 1
+#undef HAVE_LZ4_H
+#define HAVE_LZ4_H 1
+#undef HAVE_LZ4HC_H
+#define HAVE_LZ4HC_H 1
+#undef HAVE_LZMA_H
+#define HAVE_LZMA_H 1
+#undef HAVE_LZMA_STREAM_ENCODER_MT
+#define HAVE_LZMA_STREAM_ENCODER_MT 1
+#undef HAVE_ZLIB_H
+#define HAVE_ZLIB_H 1
+#undef HAVE_ZSTD_H
+#define HAVE_ZSTD_H 1
+#undef HAVE_ZSTD_compressStream
+#define HAVE_ZSTD_compressStream 1
+#undef HAVE_ZSTD_minCLevel
+#define HAVE_ZSTD_minCLevel 1
 #endif
 
 #undef HAVE_LOCALCHARSET_H

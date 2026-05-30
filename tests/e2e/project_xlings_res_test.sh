@@ -24,31 +24,30 @@ write_home_config "$HOME_DIR" "CN"
 
 (
   cd "$SCENARIO_DIR" &&
-  run_xlings "$HOME_DIR" "$SCENARIO_DIR" -y install projectrepo:mdbook@0.4.43 2>&1
+  run_xlings "$HOME_DIR" "$SCENARIO_DIR" -y install projectrepo:ninja@1.12.1 2>&1
 )
 
-MDBOOK_ARCHIVE="$(mdbook_archive_name 0.4.43)"
-XPKG_DIR="$SCENARIO_DIR/.xlings/data/xpkgs/projectrepo-x-mdbook/0.4.43"
+NINJA_ARCHIVE="$(ninja_archive_name 1.12.1)"
+XPKG_DIR="$SCENARIO_DIR/.xlings/data/xpkgs/projectrepo-x-ninja/1.12.1"
 RUNTIME_DIR="$SCENARIO_DIR/.xlings/data/runtimedir"
-[[ -f "$RUNTIME_DIR/$MDBOOK_ARCHIVE" ]] \
-  || fail "mdbook XLINGS_RES archive missing from project-local runtimedir"
+[[ -f "$RUNTIME_DIR/$NINJA_ARCHIVE" ]] \
+  || fail "ninja XLINGS_RES archive missing from project-local runtimedir"
 
-[[ -x "$XPKG_DIR/mdbook" ]] \
-  || fail "mdbook payload missing from project-local xpkgs"
+[[ -x "$XPKG_DIR/ninja" ]] \
+  || fail "ninja payload missing from project-local xpkgs"
 
-# Verify mdbook is installed by checking payload binary
-[[ -x "$XPKG_DIR/mdbook" ]] \
-  || fail "mdbook payload binary missing after install"
+[[ -x "$XPKG_DIR/ninja" ]] \
+  || fail "ninja payload binary missing after install"
 
 (
   cd "$SCENARIO_DIR" &&
-  run_xlings "$HOME_DIR" "$SCENARIO_DIR" use mdbook 0.4.43 >/dev/null
+  run_xlings "$HOME_DIR" "$SCENARIO_DIR" use ninja 1.12.1 >/dev/null
 )
-MDBOOK_VER="$(
+NINJA_VER="$(
   cd "$SCENARIO_DIR" &&
-  env XLINGS_HOME="$HOME_DIR" "$SCENARIO_DIR/.xlings/subos/_/bin/mdbook" --version
+  env XLINGS_HOME="$HOME_DIR" "$SCENARIO_DIR/.xlings/subos/_/bin/ninja" --version
 )"
-assert_contains "$MDBOOK_VER" "mdbook v0.4.43" \
-  "mdbook shim did not execute the installed XLINGS_RES payload"
+assert_contains "$NINJA_VER" "1.12.1" \
+  "ninja shim did not execute the installed XLINGS_RES payload"
 
 log "PASS: $SCENARIO_NAME scenario"

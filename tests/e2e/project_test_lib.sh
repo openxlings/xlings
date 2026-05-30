@@ -128,11 +128,11 @@ node_archive_name() {
   esac
 }
 
-mdbook_archive_name() {
+ninja_archive_name() {
   case "$(platform_name)" in
-    macosx) printf 'mdbook-%s-macosx-arm64.tar.gz\n' "$1" ;;
-    linux) printf 'mdbook-%s-linux-x86_64.tar.gz\n' "$1" ;;
-    *) fail "unsupported platform for mdbook archive" ;;
+    macosx) printf 'ninja-%s-macosx-arm64.tar.gz\n' "$1" ;;
+    linux) printf 'ninja-%s-linux-x86_64.tar.gz\n' "$1" ;;
+    *) fail "unsupported platform for ninja archive" ;;
   esac
 }
 
