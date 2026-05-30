@@ -2,6 +2,7 @@
 
 > 状态: in progress
 > 分支: `codex/use-official-mcpp-index`
+> PR: https://github.com/openxlings/xlings/pull/314
 > 目标: xlings 不再维护项目本地 mcpp 索引，直接使用默认官方 mcpp-index，并保持 `mcpp.toml` 简洁可维护。
 
 ## 当前问题
@@ -43,7 +44,8 @@ capi.lua = "0.0.3"
 - [x] 更新 `mcpp.lock`。
 - [x] 本地验证 glibc target。
 - [x] 本地验证 musl static target。
-- [ ] 创建 xlings PR，CI 通过后合入并发布新版本。
+- [x] 创建 xlings PR draft。
+- [ ] CI 通过后合入并发布新版本。
 
 ## 验证命令
 
@@ -60,6 +62,6 @@ target/x86_64-linux-musl/*/bin/xlings --version
 - [x] 文档 checkpoint commit。
 - [ ] mcpp 0.0.35 本地联调通过。
 - [x] 官方 mcpp-index 联调通过。
-- [ ] xlings PR draft 创建。
+- [x] xlings PR draft 创建: https://github.com/openxlings/xlings/pull/314
 - [ ] CI 每 120s 检查一次直到完成。
 - [ ] 合入后发布 xlings 新版本。
