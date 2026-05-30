@@ -5,10 +5,11 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 SCENARIO_DIR="$ROOT_DIR/tests/e2e/scenarios/linux_headers"
 HOME_DIR="$(runtime_home_dir linux_headers_home)"
+LINUX_HEADERS_INDEX_DIR="$ROOT_DIR/tests/e2e/fixtures/project_index"
+[[ -d "$LINUX_HEADERS_INDEX_DIR/pkgs" ]] \
+  || fail "linux-headers fixture index missing: $LINUX_HEADERS_INDEX_DIR"
 
 CONFIG_BACKUP="$(prepare_scenario "$SCENARIO_DIR" "$HOME_DIR")"
 cleanup() {
@@ -16,8 +17,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ── 1. Set up home and sync index (scode sub-index discovered automatically) ──
-write_home_config "$HOME_DIR" "GLOBAL"
+# ── 1. Set up home and sync the offline fixture index ──
+write_home_config "$HOME_DIR" "GLOBAL" "$LINUX_HEADERS_INDEX_DIR"
 
 (cd "$SCENARIO_DIR" && run_xlings "$HOME_DIR" "$SCENARIO_DIR" install -y)
 
