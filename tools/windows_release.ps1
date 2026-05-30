@@ -37,7 +37,9 @@ $MCPP_BIN = if ($env:MCPP_BIN) { $env:MCPP_BIN } else { "mcpp" }
 if (-not (Get-Command $MCPP_BIN -ErrorAction SilentlyContinue)) {
   Fail "mcpp not found; run xlings install first"
 }
-if (Test-Path "$PROJECT_DIR\target") { Remove-Item -Recurse -Force "$PROJECT_DIR\target" }
+# Keep the existing mcpp target on Windows. CI has just built it, and mcpp can
+# update it incrementally; deleting it here currently makes the Windows rebuild
+# fail before producing diagnostics.
 $mcppArgs = @("build", "--print-fingerprint")
 if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
 & $MCPP_BIN @mcppArgs
