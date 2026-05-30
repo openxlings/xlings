@@ -68,9 +68,8 @@ typedef unsigned short mode_t;
 #define HAVE_LZ4HC_H 1
 #undef HAVE_LZMA_H
 #define HAVE_LZMA_H 1
+// Keep this undefined: libarchive checks this macro with #ifdef.
 #undef HAVE_LZMA_STREAM_ENCODER_MT
-// The bundled xz source set used by mcpp does not provide the MT encoder API.
-#define HAVE_LZMA_STREAM_ENCODER_MT 0
 #undef HAVE_ZLIB_H
 #define HAVE_ZLIB_H 1
 #undef HAVE_ZSTD_H
