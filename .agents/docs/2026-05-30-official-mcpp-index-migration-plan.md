@@ -1,6 +1,6 @@
 # xlings: Official mcpp-index Migration Plan
 
-> 状态: in progress
+> 状态: complete
 > 分支: `codex/use-official-mcpp-index`
 > PR: https://github.com/openxlings/xlings/pull/314
 > 目标: xlings 不再维护项目本地 mcpp 索引，直接使用默认官方 mcpp-index，并保持 `mcpp.toml` 简洁可维护。
@@ -46,7 +46,7 @@ capi.lua = "0.0.3"
 - [x] 本地验证 glibc target。
 - [x] 本地验证 musl static target。
 - [x] 创建 xlings PR draft。
-- [ ] CI 通过后合入并发布新版本。
+- [x] CI 通过后合入并发布新版本。
 
 ## 验证命令
 
@@ -64,8 +64,8 @@ target/x86_64-linux-musl/*/bin/xlings --version
 - [x] mcpp 0.0.35 本地联调通过。
 - [x] 官方 mcpp-index 联调通过。
 - [x] xlings PR draft 创建: https://github.com/openxlings/xlings/pull/314
-- [ ] CI 每 120s 检查一次直到完成。
-- [ ] 合入后发布 xlings 新版本。
+- [x] CI 每 120s 检查一次直到完成。
+- [x] 合入后发布 xlings 新版本。
 
 ## 当前 CI 状态
 
@@ -81,4 +81,33 @@ target/x86_64-linux-musl/*/bin/xlings --version
   `cf3d0fa64e8be120c3c703c8702f294f271026ad`,包含 `xim:mcpp@0.0.35`。
 - xlings CI/release 在安装 mcpp 后会清理缓存中的默认 `mcpplibs` index checkout,
   避免 actions/cache 恢复旧 index 后看不到刚合入的 `compat.*` 包。
-- 下一步是重跑 xlings PR #314 CI,验证官方 index 路径和新版 mcpp bootstrap。
+
+## Final Outcome
+
+- PR: https://github.com/openxlings/xlings/pull/314
+- Merge commit: `1c301aa37cb752334ecccd59efc6a7c842140cbf`
+- Release: https://github.com/openxlings/xlings/releases/tag/v0.4.46
+- Release run: https://github.com/openxlings/xlings/actions/runs/26690474975
+- CI evidence:
+  - `xlings-ci-linux`: success.
+  - `xlings-ci-macos`: success.
+  - `xlings-ci-windows`: success.
+  - Linux `E2E-00: mcpp builds xlings from source`: passed using `mcpp 0.0.35` and official `compat.libarchive`.
+- Follow-up index/mirror:
+  - `xlings-res/xlings` mirror `0.4.46` published.
+  - `openxlings/xim-pkgindex` PR #260 updated `xlings latest` to `0.4.46`.
+
+## Follow-up: mcpp 0.0.36 Bootstrap
+
+Final local verification exposed a mixed-cache edge case in mcpp 0.0.35: an
+existing `~/.mcpp/registry/data` with other xlings index clones but without
+`mcpplibs` could be treated as fresh, so `compat.libarchive` was not found until
+the user ran `mcpp index update` manually.
+
+- mcpp PR #89 fixed default `mcpplibs` freshness and released `v0.0.36`.
+- openxlings/xim-pkgindex PR #261 updated `xim:mcpp` latest to `0.0.36`.
+- xlings now pins CI/release bootstrap index ref
+  `fba1ce953589df609c862d0a895fc9d6ff5eb6de` and requires `mcpp 0.0.36` in
+  `.xlings.json`.
+- xlings version is bumped to `0.4.47` for this bootstrap/runtime hardening
+  release.
