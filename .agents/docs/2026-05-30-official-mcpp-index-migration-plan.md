@@ -111,3 +111,9 @@ the user ran `mcpp index update` manually.
   `.xlings.json`.
 - xlings version is bumped to `0.4.47` for this bootstrap/runtime hardening
   release.
+- xlings PR: https://github.com/openxlings/xlings/pull/315
+- Commit: `075215d chore(release): bootstrap mcpp 0.0.36`
+- Local verification:
+  - `mcpp --version` -> `mcpp 0.0.36 -`
+  - `mcpp build` -> `Finished release [optimized]`
+  - `target/x86_64-linux-gnu/d14fbbf7aeceb894/bin/xlings --version` -> `xlings 0.4.47`
