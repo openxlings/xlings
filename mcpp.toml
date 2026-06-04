@@ -7,6 +7,10 @@ repo = "https://github.com/openxlings/xlings"
 
 [build]
 include_dirs = ["src/libs/json"]
+# Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
+# this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
+# second line of assurance and covers older bootstrap mcpp versions).
+macos_deployment_target = "11.0"
 cxxflags = ["-DLIBARCHIVE_STATIC", "-DXLINGS_USE_GTEST_MAIN=1", "-DUNICODE", "-D_UNICODE"]
 
 [targets.xlings]

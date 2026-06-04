@@ -102,6 +102,25 @@ jobs:
             exit "$status"
           }
 
+      - name: "Assert macOS min-version support (minos + static libc++)"
+        run: |
+          BIN=$(find target -type f -path '*/bin/xlings' | head -1)
+          test -n "$BIN" || { echo "xlings binary not found"; exit 1; }
+          echo "=== LC_BUILD_VERSION ==="
+          otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | head -6
+          otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | grep -q "minos ${MACOSX_DEPLOYMENT_TARGET}" \
+            || { echo "FAIL: expected minos ${MACOSX_DEPLOYMENT_TARGET}"; exit 1; }
+          echo "=== dylib deps ==="
+          otool -L "$BIN"
+          # Static libc++ requires mcpp >= 0.0.50 as the build tool; warn
+          # (not fail) until the bootstrap index ships it, then flip to a
+          # hard assertion.
+          if otool -L "$BIN" | grep -q "libc++"; then
+            echo "WARN: still linked against system libc++ (build tool < mcpp 0.0.50?)"
+          else
+            echo "OK: static libc++"
+          fi
+
       - name: Prepare fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh
