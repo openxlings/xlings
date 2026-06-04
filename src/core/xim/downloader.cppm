@@ -353,6 +353,14 @@ DownloadResult download_one(const DownloadTask& task,
             urls.push_back(std::move(u));
     }
 
+    // Adaptive ordering (0.4.49): probe candidate hosts' connect latency
+    // (memoized per process) and order accordingly. With a declared sha256
+    // the bytes are pinned, so faster mirrors may be tried before the
+    // original URL; without one the author-declared URL stays first unless
+    // its host is unreachable/penalized. See
+    // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md.
+    urls = mirror::adaptive::reorder(std::move(urls), !task.sha256.empty());
+
     // Use in-process tinyhttps for all downloads (streaming progress).
     // When a CancellationToken is available, wire isCancelled so ESC aborts.
     {
@@ -366,6 +374,11 @@ DownloadResult download_one(const DownloadTask& task,
         if (cancel) {
             opts.isCancelled = [cancel] { return cancel->is_paused() || cancel->is_cancelled(); };
         }
+        // A stalled host is throttled for us right now — demote it for the
+        // rest of the session so later downloads skip straight past it.
+        opts.onUrlAttemptFailed = [](const std::string& u, const std::string& err) {
+            if (err.rfind("stalled:", 0) == 0) mirror::adaptive::penalize_host(u);
+        };
 
         auto dlResult = tinyhttps::download_file(opts);
         if (!dlResult.success) {
