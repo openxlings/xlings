@@ -52,9 +52,9 @@ jobs:
           path: |
             ~/.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-${{ runner.os }}-dt110-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-${{ runner.os }}-dt110-
 
       - name: Prepare bootstrap package index
         run: |
