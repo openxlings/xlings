@@ -14,8 +14,64 @@ struct DownloadOptions {
     int retryCount        { 3 };
     int connectTimeoutSec { 30 };
     int maxTimeSec        { 600 };
+    // Stall watchdog (0.4.49; see
+    // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md):
+    // abort an attempt whose windowed average speed stays below
+    // lowSpeedLimitBytes for lowSpeedTimeSec, and move to the next
+    // candidate URL. 0 in either field disables. Env override:
+    // XLINGS_DOWNLOAD_LOW_SPEED=off | <bytes>:<secs>.
+    int lowSpeedLimitBytes { 10 * 1024 };
+    int lowSpeedTimeSec    { 15 };
     std::function<void(double total, double now)> onProgress;
     std::function<bool()> isCancelled;      // returns true to abort download
+    // Per-URL attempt failure hook: called once per failed attempt with the
+    // attempted URL and its error string ("stalled: ..." for watchdog
+    // aborts). Used by the downloader to penalize degraded hosts.
+    std::function<void(const std::string& url, const std::string& error)>
+        onUrlAttemptFailed;
+};
+
+// Windowed-average stall detector (curl --speed-limit/--speed-time style).
+// Pure logic, fed cumulative (elapsedSec, downloadedBytes) samples from the
+// progress callback. Exported for unit tests.
+class StallDetector {
+public:
+    StallDetector(int limitBytes, int windowSec)
+        : limit_(limitBytes), window_(windowSec) {}
+
+    bool enabled() const { return limit_ > 0 && window_ > 0; }
+
+    // Feed one sample. Returns true when the windowed average speed over a
+    // full window fell below the limit (= stalled).
+    bool update(double elapsedSec, double downloadedBytes) {
+        if (!enabled()) return false;
+        if (!started_) {
+            started_ = true;
+            winT_ = elapsedSec;
+            winB_ = downloadedBytes;
+            return false;
+        }
+        if (downloadedBytes < winB_) {
+            // Counter went backwards (redirect restart) — restart the window.
+            winT_ = elapsedSec;
+            winB_ = downloadedBytes;
+            return false;
+        }
+        if (elapsedSec - winT_ < static_cast<double>(window_)) return false;
+        double avg = (downloadedBytes - winB_) / (elapsedSec - winT_);
+        if (avg < static_cast<double>(limit_)) return true;
+        // Healthy window — slide forward.
+        winT_ = elapsedSec;
+        winB_ = downloadedBytes;
+        return false;
+    }
+
+private:
+    int    limit_;
+    int    window_;
+    bool   started_ { false };
+    double winT_ { 0 };
+    double winB_ { 0 };
 };
 
 struct DownloadFileResult {
@@ -141,32 +197,89 @@ auto make_client(int connectTimeoutSec, int readTimeoutSec, std::string_view url
     return mcpplibs::tinyhttps::HttpClient(std::move(cfg));
 }
 
+// Resolve the effective stall-watchdog parameters: env override > options.
+//   XLINGS_DOWNLOAD_LOW_SPEED=off|0      → disabled
+//   XLINGS_DOWNLOAD_LOW_SPEED=<b>:<s>    → custom limit bytes / window secs
+std::pair<int, int> effective_low_speed_(int limitBytes, int windowSec) {
+    const char* env = std::getenv("XLINGS_DOWNLOAD_LOW_SPEED");
+    if (!env || !*env) return {limitBytes, windowSec};
+    std::string v = env;
+    if (v == "off" || v == "0") return {0, 0};
+    auto colon = v.find(':');
+    if (colon != std::string::npos) {
+        try {
+            int b = std::stoi(v.substr(0, colon));
+            int s = std::stoi(v.substr(colon + 1));
+            if (b >= 0 && s >= 0) return {b, s};
+        } catch (...) {}
+    }
+    return {limitBytes, windowSec};
+}
+
 // Single download attempt: stream GET url → dest file with progress + cancel
+// + optional stall watchdog.
 DownloadFileResult download_once(
     const std::string& url,
     const std::filesystem::path& dest,
     int connectSec,
     int maxSec,
+    int lowSpeedLimitBytes,
+    int lowSpeedTimeSec,
     std::function<void(double, double)> onProgress,
     std::function<bool()> isCancelled = nullptr
 ) {
-    auto client = make_client(connectSec, maxSec, url);
+    StallDetector detector(lowSpeedLimitBytes, lowSpeedTimeSec);
+
+    // With the watchdog enabled, lower the per-read socket timeout so a
+    // connection that sends NOTHING (progress never fires) also fails
+    // quickly instead of sitting on the full maxTime budget.
+    int readSec = maxSec;
+    if (detector.enabled()) {
+        readSec = std::min(maxSec, std::max(30, 2 * lowSpeedTimeSec));
+    }
+    auto client = make_client(connectSec, readSec, url);
+
+    bool stalled = false;
+    auto t0 = std::chrono::steady_clock::now();
 
     mcpplibs::tinyhttps::DownloadProgressFn progress;
-    if (onProgress) {
+    if (onProgress || detector.enabled()) {
         progress = [&](std::int64_t total, std::int64_t downloaded) {
-            onProgress(static_cast<double>(total), static_cast<double>(downloaded));
+            if (onProgress) {
+                onProgress(static_cast<double>(total),
+                           static_cast<double>(downloaded));
+            }
+            if (!stalled && detector.enabled()) {
+                auto elapsed = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - t0).count();
+                if (detector.update(elapsed, static_cast<double>(downloaded))) {
+                    stalled = true;
+                }
+            }
         };
     }
 
-    auto result = client.download_to_file(url, dest, progress, isCancelled);
-
-    if (!result.ok()) {
-        return {false, result.error.empty()
-            ? "HTTP " + std::to_string(result.statusCode) : result.error};
+    std::function<bool()> cancel;
+    if (isCancelled || detector.enabled()) {
+        cancel = [&]() -> bool {
+            if (stalled) return true;
+            return isCancelled && isCancelled();
+        };
     }
 
-    return {true, {}};
+    auto result = client.download_to_file(url, dest, progress, cancel);
+
+    if (result.ok() && !stalled) {
+        return {true, {}};
+    }
+    if (stalled) {
+        return {false, std::format(
+            "stalled: average speed below {} B/s over {} s "
+            "(set XLINGS_DOWNLOAD_LOW_SPEED=off to disable the watchdog)",
+            lowSpeedLimitBytes, lowSpeedTimeSec)};
+    }
+    return {false, result.error.empty()
+        ? "HTTP " + std::to_string(result.statusCode) : result.error};
 }
 
 } // namespace detail_
@@ -190,6 +303,9 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
     std::error_code ec;
     std::filesystem::create_directories(opts.destFile.parent_path(), ec);
 
+    auto [lowSpeedBytes, lowSpeedSecs] = detail_::effective_low_speed_(
+        opts.lowSpeedLimitBytes, opts.lowSpeedTimeSec);
+
     std::string lastErr;
     for (auto& url : opts.urls) {
         if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
@@ -197,10 +313,16 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
             if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
             auto r = detail_::download_once(url, opts.destFile,
                 opts.connectTimeoutSec, opts.maxTimeSec,
+                lowSpeedBytes, lowSpeedSecs,
                 opts.onProgress, opts.isCancelled);
             if (r.success) return r;
             lastErr = r.error;
+            if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, r.error);
             std::filesystem::remove(opts.destFile, ec);
+            // A stalled attempt means this host is throttled for us right
+            // now — retrying the same URL would burn another full window.
+            // Move straight to the next candidate.
+            if (r.error.rfind("stalled:", 0) == 0) break;
             if (att < opts.retryCount) {
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(500 * (att + 1)));
