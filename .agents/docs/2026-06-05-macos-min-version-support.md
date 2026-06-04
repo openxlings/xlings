@@ -126,28 +126,62 @@ Results: (updated as runs complete)
   lowering minos alone is NOT viable. Control check also confirmed the
   released 0.0.49 (minos 15) is refused by dyld with the same missing
   symbol + "built for macOS 15.0 which is newer than running OS".
-- Run B: _pending_
+- **Run B (iterations B2–B5) — the shipping route works end-to-end.**
+  Findings along the way, each now part of the mcpp 0.0.50 change set:
+  - `[build] ldflags` injection CANNOT produce the static link: mcpp's
+    macOS link path hardcodes ` -lc++` BEFORE user ldflags
+    (`flags.cppm`, `needs_explicit_libcxx` branch), and that resolves to
+    the system dylib regardless of `-nostdlib++`/staged `-L` dirs in the
+    user flags (B2/B3). → product fix: implement `staticStdlib` natively
+    in that branch; release self-build uses a TWO-STAGE self-host
+    (stage 1 bootstrap-built dynamic → stage 2 rebuilds itself static).
+  - mcpp's BMI fingerprint did not include the deployment target: a
+    cached `std.pcm` built for `arm64-apple-macosx14` poisons a
+    `macosx15` build with a module config-mismatch error (B initial).
+    → product fix: fold `MACOSX_DEPLOYMENT_TARGET` into the canonical
+    fingerprint flags + mirror it onto compile/link command lines.
+  - With static libc++ + minos 11.0 in place (B4), the macos-14 e2e
+    still failed: Xcode 15.4's system `ld` (invoked by LLVM clang for
+    the user project's link) aborted at launch with its libc++
+    resolution diverted to the LLVM payload's `libc++.1.0.dylib`
+    (missing `__ZdaPv`). The job env carries no DYLD vars (B5
+    forensics), so the diversion arises somewhere inside the
+    build-chain; → product fix that sidesteps the entire class: macOS
+    links via `-fuse-ld=lld` (same as the Linux clang path) — the
+    linker now ships with the exact toolchain doing the compile and the
+    host-Xcode dependency disappears.
+  - **B5: all green.** macos-15 two-stage self-host: mcpp + xlings both
+    `minos 11.0`, no `libc++` in `LC_LOAD_DYLIB`, `--version` clean (no
+    static-dtor abort; the `_Exit` guards hold). macos-14: released
+    minos-15 binary refused (control), minos-11 binaries start, xlings
+    home assembles, and `mcpp new/build/run` works end-to-end —
+    including installing the `xim:llvm`/`xim:ninja` payloads on
+    macOS 14 and linking the user binary with lld (built natively:
+    minos 14.0 = host SDK default, expected for user projects).
 
-## 3. Rollout plan (xlings first)
+## 3. Rollout plan (updated after run B: tool-dependency order)
 
-1. **xlings 0.4.50** — release workflow macOS job sets
-   `MACOSX_DEPLOYMENT_TARGET=11.0` and injects the static-libc++ ldflags
-   (manifest/workflow level; works with bootstrap mcpp 0.0.49 today).
-   xlings macOS binary: minos 11.0, static libc++. If the static-dtor
-   abort appears for xlings it is already guarded (`_Exit`).
-2. **mcpp flags.cppm change** — implement clang/macOS `staticStdlib`
-   (§1.3) so every mcpp-built project (xlings included) gets the static
-   link automatically; add the `__APPLE__` exit guard to mcpp `main.cpp`
-   if run B shows the abort. Ship as **mcpp 0.0.50** with the release
-   workflow also setting `MACOSX_DEPLOYMENT_TARGET=11.0` (the self-build
-   by bootstrap 0.0.49 uses the workflow-level ldflags injection; from
-   0.0.51 onward the flags.cppm path covers it natively).
-3. Bump xlings release workflow's bootstrap mcpp pin to 0.0.50; future
-   xlings releases need no workflow-level ldflags hack.
-4. Sync as usual: xlings-res (github + gitcode), xim-pkgindex
-   latest refs, byte-verified.
-5. Verify: the temp PR #115 CI re-run against the released artifacts; a
-   macos-14 user-flow equivalent of the Windows PR #114 repro.
+The original plan injected ldflags so xlings could release first; runs
+B2/B3 proved injection cannot beat the bootstrap's hardcoded `-lc++`, so
+the static link can only come from the mcpp **doing the build**. That
+forces the tool order (mcpp-as-tool first), while still delivering the
+xlings binary support in the same wave:
+
+1. **mcpp 0.0.50** — flags.cppm staticStdlib (clang/macOS) + lld link +
+   deployment-target explicit flags + fingerprint coverage + `_Exit`
+   guard; release workflow macOS job: `MACOSX_DEPLOYMENT_TARGET=11.0` +
+   two-stage self-host with minos/no-dylib assertions. Sync mirrors +
+   index (latest → 0.0.50).
+2. **xlings 0.4.50** — release workflow macOS job only needs
+   `MACOSX_DEPLOYMENT_TARGET=11.0`: `xlings install -y` picks mcpp
+   0.0.50 from the index, whose flags produce the static minos-11 binary
+   natively. (xlings's `_Exit` guard already exists.) Sync mirrors +
+   index.
+3. Verify: temp PR #115 workflow re-pointed at the released artifacts —
+   macos-14 control + e2e — then close the temp PR.
+4. Follow-ups: macos-14 CI lane in both repos' regular CI (optional);
+   investigate the build-chain DYLD diversion seen in B4 (mitigated by
+   lld, not root-caused).
 
 ## 4. Open questions
 
