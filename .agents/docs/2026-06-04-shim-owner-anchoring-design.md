@@ -1,7 +1,7 @@
 # Shim Owner-Anchoring Design (shims bind to their owning home)
 
 > Date: 2026-06-04
-> Status: design proposal for review
+> Status: implemented (0.4.48, Phase 1 — owner → env → default); Phase 2 (strict) pending soak
 > Related: `2026-05-29-compact-git-bootstrap-plan.md`, `2026-05-22-selfcontained-detection-windows-bug.md`
 > Evidence: mcpp-community/mcpp PR #114 (temp Windows CI repro, branch `test/windows-no-git-user-flow`)
 
@@ -178,11 +178,13 @@ Platform notes:
 - **Windows**: shims are hardlinks/copies; `GetModuleFileNameW` returns the
   invoked shim path (e.g. `<home>/subos/current/bin/git.exe`) → walk-up
   finds `<home>`. The `subos/current` dir itself can never false-match: it
-  has no `subos/` subdirectory. This **replaces and deletes** the fragile
-  JSON-content disambiguation hack in the `Config` ctor (the
-  `version`+`activeSubos` key check documented in
-  `2026-05-22-selfcontained-detection-windows-bug.md`) with a structural
-  test.
+  has no `subos/` subdirectory. The fragile JSON-content disambiguation
+  hack in the `Config` ctor (the `version`+`activeSubos` key check
+  documented in `2026-05-22-selfcontained-detection-windows-bug.md`) is
+  superseded by this structural test for shim dispatch; its removal from
+  the CLI self-contained path is deferred to a follow-up cleanup once
+  anchoring has soaked (the ctor path still serves the CLI, which this
+  change deliberately leaves untouched).
 - **Linux/macOS**: shims are (relative) symlinks to `<home>/bin/xlings`;
   prefer absolutized `argv[0]` (the shim's own path), fall back to
   `/proc/self/exe` / `_NSGetExecutablePath` — both land inside the owning
@@ -282,29 +284,29 @@ everything downstream is reused verbatim:
 Net: every currently-working scenario keeps its result; the only behavior
 change is #5, which replaces an accident with a contract.
 
-## 5. Implementation plan
+## 5. Implementation (as landed in 0.4.48)
 
-1. `xvm::resolve_owner_home(exe_path) -> optional<fs::path>` — pure
-   function + structural signature (new, ~30 lines; unit-testable with a
-   tmpdir home layout).
-2. `Config::override_home(const fs::path&)` — static pre-init hook on the
-   lazy singleton; assert it is called before first `instance_()` use.
-3. `main.cpp` multicall: when `program_name` is not `xlings`, run the §3
-   lookup chain and inject the chosen home before `shim_dispatch`. Factor
-   `has_program(home, name)` so each hop is a cheap DB probe (reuse the
-   tri-state diagnostic); `Config` must support constructing the probe
-   against a non-final home (lightweight read-only workspace load, or
-   defer singleton finalization until the home is chosen).
-4. `shim_dispatch` miss-path error text: name the owner home and list the
-   other consulted homes (see §3); warn on hop-2 use and 5b ambiguity.
-5. Delete the Windows JSON-content disambiguation in the `Config` ctor;
-   replace the self-contained check with `is_home_root` (shared helper).
-6. `xlings doctor`: new check — every shim under `<home>/subos/*/bin`
-   anchors back to `<home>`; orphans flagged (extends the existing
-   orphan-shim check in `xself/doctor.cppm`).
-7. Docs + CHANGELOG: state the contract explicitly
-   ("shims are bound to their owning home; `XLINGS_HOME` only selects the
-   management target of the xlings CLI").
+| Change | Where |
+| --- | --- |
+| `is_home_root` / `resolve_owner_home` / `home_knows_program` / `resolve_dispatch_home` (the §3 chain, incl. legacy mode + warnings) | `src/core/xvm/shim.cppm` |
+| `Config::override_home()` pre-init hook + ctor honors it ahead of env/self-contained | `src/core/config.cppm` |
+| Multicall runs the chain for shim invocations BEFORE the first Config use; CLI path untouched | `src/main.cpp` |
+| Doctor check 2.6 "shim anchor": every program shim under this home's binDir anchors back to this home (warning-only; scoped to binDirs physically inside the home so project-subos binDirs don't false-positive) | `src/core/xself/doctor.cppm` |
+| Unit tests: home-root signature (real home / subos dir / project state dir), owner walk (subos bin, nested innermost, orphan), DB probe (key / filename-stem / empty / missing), chain ordering (owner-wins, env-fallback, total-miss owner-bound, legacy) | `tests/unit/test_shim_anchor.cpp` |
+| E2E: owner-wins + ambiguity warning; deprecated borrowing + warning; legacy mode env-first; redirected-env regression (the mcpp case) | `tests/e2e/shim_owner_anchoring_test.sh` (registered in linux + macos CI) |
+| Version bump | `src/core/config.cppm` `VERSION = "0.4.48"`, `mcpp.toml` |
+
+Deliberately NOT in this change (follow-ups):
+
+1. Removing the Windows JSON-content disambiguation from the `Config`
+   ctor's self-contained detection — the ctor path still serves the CLI;
+   clean up once anchoring has soaked (§3.1).
+2. `home_knows_program` reads the home-global versions DB only (project
+   overlays apply after the home is chosen, as before) — by design, not a
+   simplification to revisit.
+3. CHANGELOG/release-notes wording: "shims are bound to their owning
+   home; `XLINGS_HOME` only selects the management target of the xlings
+   CLI" — goes in the 0.4.48 release notes.
 
 ### Testing
 

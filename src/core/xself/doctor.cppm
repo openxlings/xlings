@@ -193,6 +193,51 @@ export int cmd_doctor(EventStream& stream, bool fix) {
         }
     }
 
+    // Check 2.6: shim ownership anchoring (0.4.48). Every program-typed
+    // shim under this home's binDir must anchor back to THIS home — a shim
+    // that anchors elsewhere (or nowhere) would dispatch against a foreign
+    // home's versions DB. Warning-only: the usual cause is a hand-copied
+    // shim file or a damaged home layout, and the right fix depends on
+    // which it is. Scoped to bin dirs physically inside the home: a project
+    // subos binDir lives in the project tree, where shims intentionally
+    // anchor to the global home via their symlink target (and on Windows,
+    // where hardlinks don't carry the target path, via the dispatch-time
+    // fallback chain) — not a defect.
+    // See .agents/docs/2026-06-04-shim-owner-anchoring-design.md.
+    std::error_code relEc;
+    auto binRel = fs::relative(p.binDir, p.homeDir, relEc);
+    bool binDirInsideHome = !relEc && !binRel.empty()
+        && binRel.string().rfind("..", 0) != 0;
+    if (binDirInsideHome && fs::exists(p.binDir)) {
+        std::error_code hec;
+        auto home_canon = fs::weakly_canonical(p.homeDir, hec);
+        for (auto& entry : platform::dir_entries(p.binDir)) {
+            std::error_code ec;
+            if (!entry.is_regular_file(ec) && !entry.is_symlink(ec)) continue;
+            auto fname = entry.path().filename().string();
+            std::string base = fname;
+            if (!shim_ext.empty() && base.ends_with(shim_ext)) {
+                base = base.substr(0, base.size() - shim_ext.size());
+            }
+            if (xvm::is_xlings_binary(base)) continue;
+            auto* vi = xvm::get_vinfo(db, base);
+            if (!vi || vi->type != "program") continue;
+
+            auto owner = xvm::resolve_owner_home(entry.path());
+            std::error_code oec;
+            bool anchored = owner
+                && fs::weakly_canonical(*owner, oec) == home_canon;
+            if (anchored) continue;
+
+            ++warnings;
+            add_field("⚠ shim anchor", std::format(
+                "{} anchors to {} (expected this home); it will dispatch "
+                "against that home's versions DB",
+                entry.path().string(),
+                owner ? owner->string() : "no home (orphan)"));
+        }
+    }
+
     // Check 3: payload existence + executability for every (name, version)
     // in the versions DB. Reuses the same `resolve_executable` helper that
     // shim_dispatch uses at runtime so doctor's verdict matches what the
