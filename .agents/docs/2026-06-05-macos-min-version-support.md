@@ -112,7 +112,20 @@ macOS 14.
 
 Results: (updated as runs complete)
 
-- Run A: _pending_
+- **Run A — CONFIRMED the dynamic-libc++ ceiling.** Build job passed
+  (availability gating did NOT reject target 14 at compile time;
+  minos=14.0 asserted; smoke on macos-15 OK). But on macos-14 (14.8.7)
+  both binaries die at launch:
+  ```
+  dyld: Symbol not found: __ZNSt3__119__is_posix_terminalEP7__sFILE
+    Expected in: /usr/lib/libc++.1.dylib        → Abort trap: 6
+  ```
+  `__is_posix_terminal` is the `std::print` support symbol added in
+  LLVM 18-era libc++ — macOS 14's system libc++ predates it. So the
+  availability annotations under-report (compile passes, launch dies):
+  lowering minos alone is NOT viable. Control check also confirmed the
+  released 0.0.49 (minos 15) is refused by dyld with the same missing
+  symbol + "built for macOS 15.0 which is newer than running OS".
 - Run B: _pending_
 
 ## 3. Rollout plan (xlings first)
