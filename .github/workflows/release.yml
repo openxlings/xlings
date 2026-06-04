@@ -143,6 +143,12 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
 
       - name: Build (macos_release)
+        env:
+          # macOS min-version support: floor 11.0 (first arm64 macOS).
+          # The mcpp from the bootstrap index (0.0.50+) links static LLVM
+          # libc++ via lld natively; macos_release.sh asserts minos +
+          # no system libc++ dylib when this env is set.
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
