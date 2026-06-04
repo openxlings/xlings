@@ -1,7 +1,8 @@
 # macOS Minimum-Version Support for xlings + mcpp Releases
 
 > Date: 2026-06-05
-> Status: research done; CI experiments in progress (mcpp-community/mcpp PR #115)
+> Status: shipping via mcpp PR #116 (floor 14.0, declared-floor-implies-static);
+> deferred work tracked in §5
 > Goal: macosx-arm64 release binaries should run on as many macOS versions
 > as possible — floor target **macOS 11.0** (first Apple Silicon release),
 > which covers macOS 14 along the way. Rollout order: **xlings first**
@@ -195,3 +196,70 @@ xlings binary support in the same wave:
   target unless the user sets `MACOSX_DEPLOYMENT_TARGET` — document
   this; consider a `[build] macos_deployment_target` manifest field as a
   follow-up.
+
+
+## 4. Implementation evolution (what the CI iterations taught us)
+
+The in-PR iterations after run B5 reshaped the design; each lesson is
+recorded here because the failure modes are non-obvious:
+
+1. **lld + `-Wl,-hidden-l` is a trap.** ld64's `-hidden-l` links the
+   archive with hidden visibility — but lld resolves it like a plain
+   `-l` and picks the SIBLING DYLIB in the same directory. Binaries
+   carried `@rpath/libc++.1.dylib` with no rpath and died at load
+   (`dyld: Library not loaded` → abort). Diagnosed with a 3-mode
+   forensics matrix (dylib / direct-archive / hidden-l probe built with
+   bare clang++, run + `otool -L` + exit code each). **Link archives by
+   path** (the `LLVM_STATIC_LINK_CXX_STDLIB` form) — verified clean.
+2. **The official LLVM darwin archives set the real floor: 14.0.**
+   `ld64.lld: libc++.a(...) has version 14.0.0, newer than target
+   minimum of 11.0.0`. Claiming 11.0 with these archives would be
+   false advertising; the floor is now 14.0 everywhere (still fully
+   covering the original macOS 14 goal).
+3. **Per-unit stdlib linkage.** Statically linked test binaries
+   (gtest's main has no `_Exit` guard) and the global-static experiment
+   broke `mcpp test`; the link strategy is now per link-unit:
+   distributable targets (Binary/SharedLibrary) static, TestBinary
+   dynamic `-lc++` (tests only run on the build host — same stance as
+   cargo test).
+4. **Declared-floor-implies-static (the shipping semantic).** Static
+   libc++ engages only when a deployment floor is explicitly declared
+   (env var or `[build] macos_deployment_target`): the declaration is
+   what static linking exists to honor. No declaration = dynamic system
+   libc++, byte-for-byte the 0.0.49 behavior (zero regression), which
+   also sidesteps deferred issue #1 below. Release pipelines declare
+   14.0, so shipped mcpp/xlings binaries are static + portable.
+5. **Forensics methodology.** Three rounds of log-level guessing were
+   beaten by one minimal-probe matrix step in CI. When a macOS-only
+   failure has no local repro, ship a bare-toolchain probe that
+   enumerates the hypothesis space in a single round.
+
+## 5. Deferred work (tracked TODOs)
+
+| # | Item | Status | Unblocks |
+| --- | --- | --- | --- |
+| 1 | **Mixed C/C++ static binaries SIGSEGV** — `answer.c` +
+`std::cout` main.cpp linked with static libc++ dies at runtime
+(exit 139, e2e `36_llvm_toolchain.sh`); pure-C++ binaries are fine.
+Root cause not isolated (suspect: `.c` objects' compile/link flags vs
+the static C++ runtime init). Needs a dedicated forensics round
+(crash report + link-command diff). | open | default-static flip |
+| 2 | **std-module staging vs fingerprint boundary** — injecting a
+built-in default floor into the canonical fingerprint flags alone
+left the test build's std.pcm unstaged (`import std` failed
+wholesale). Fix: centralize deployment-target resolution in one
+helper consumed by flags.cppm, the fingerprint rule AND the stdmod
+prebuild/staging path; then re-land the rustc-style built-in default
+floor. | direction clear | default-static flip + built-in floor |
+| 3 | **Custom libc++ build for floor 11.0–13.0** — build LLVM
+runtimes at `-mmacosx-version-min=11.0`, publish via xlings-res
+(scode:gcc precedent), swap the archive source (data-only change in
+mcpp). Deferred on demand: Apple has EOL'd 11/12, arm64 userbase is
+overwhelmingly 14+. | no technical blocker | floor 11.0 |
+| 4 | macos-14 lane in both repos' regular CI (today: macos-15 build +
+release-time assertions; the PR #115 experiment covered 14 manually). | optional | continuous 14-floor verification |
+
+End state when #1 + #2 land: static libc++ and a built-in 14.0 floor
+become the unconditional macOS defaults (cargo-style "portable by
+default"), with the declared-floor gate kept only as the opt-out
+boundary (`static_stdlib = false`).
