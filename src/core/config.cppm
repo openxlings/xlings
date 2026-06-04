@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "0.4.47";
+    static constexpr std::string_view VERSION = "0.4.48";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -42,7 +42,21 @@ public:
         bool                  selfContained = false;
     };
 
+    // Owner-anchored shim dispatch (0.4.48; see
+    // .agents/docs/2026-06-04-shim-owner-anchoring-design.md): inject the
+    // dispatch home BEFORE first Config use. main.cpp calls this for shim
+    // invocations only — the xlings CLI keeps the env-first resolution.
+    // Has no effect once the singleton is constructed.
+    static void override_home(const std::filesystem::path& home) {
+        home_override_() = home;
+    }
+
 private:
+    static std::optional<std::filesystem::path>& home_override_() {
+        static std::optional<std::filesystem::path> v;
+        return v;
+    }
+
     PathInfo paths_;
     std::string mirror_;
     std::string lang_;
@@ -398,7 +412,11 @@ private:
         namespace fs = std::filesystem;
 
         auto envHome = utils::get_env_or_default("XLINGS_HOME");
-        if (!envHome.empty()) {
+        if (auto& anchored = home_override_(); anchored && !anchored->empty()) {
+            // Owner-anchored shim dispatch: the dispatch home was chosen
+            // before Config construction (main.cpp → resolve_dispatch_home).
+            paths_.homeDir = *anchored;
+        } else if (!envHome.empty()) {
             paths_.homeDir = envHome;
         } else {
             auto exePath   = platform::get_executable_path();

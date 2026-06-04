@@ -32,9 +32,6 @@ int main(int argc, char* argv[]) {
 
     xlings::platform::init_console_output();
 
-    auto& p = xlings::Config::paths();
-    xlings::platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
-
     // Multicall: check argv[0] to determine mode.
     auto program_name = xlings::xvm::extract_program_name(argv[0]);
 
@@ -48,6 +45,21 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
+    // Owner-anchored shim dispatch (0.4.48): a shim resolves against the
+    // home that owns the shim file (owner → env → default), not against
+    // ambient XLINGS_HOME. Must run BEFORE the first Config use below.
+    // The xlings CLI itself keeps the env-first home resolution.
+    // See .agents/docs/2026-06-04-shim-owner-anchoring-design.md.
+    const bool is_cli = xlings::xvm::is_xlings_binary(program_name);
+    if (!is_cli) {
+        if (auto home = xlings::xvm::resolve_dispatch_home(program_name, argv[0])) {
+            xlings::Config::override_home(*home);
+        }
+    }
+
+    auto& p = xlings::Config::paths();
+    xlings::platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
+
     // COMPAT(0.4.17 → permanent self-heal): if the user updated xlings via
     // `xlings update xlings` (which only flips the xvm pointer; it doesn't
     // call ensure_home_layout), the on-disk shell profiles will be stale.
@@ -56,7 +68,7 @@ int main(int argc, char* argv[]) {
     xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
 
     int rc;
-    if (xlings::xvm::is_xlings_binary(program_name)) {
+    if (is_cli) {
         rc = xlings::cli::run(argc, argv);
     } else {
         rc = xlings::xvm::shim_dispatch(program_name, argc, argv);

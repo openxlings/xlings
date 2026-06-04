@@ -170,6 +170,10 @@ jobs:
         run: |
           bash tests/e2e/build_deps_split_test.sh
 
+      - name: "E2E-12: shim owner anchoring (owner -> env -> default)"
+        run: |
+          bash tests/e2e/shim_owner_anchoring_test.sh
+
       - name: Attach artifact
         uses: actions/upload-artifact@v4
         if: success()

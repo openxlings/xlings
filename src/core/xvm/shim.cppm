@@ -1,5 +1,7 @@
 module;
 
+#include <cstdlib>
+
 #if defined(__linux__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
@@ -8,6 +10,7 @@ export module xlings.core.xvm.shim;
 
 import std;
 
+import xlings.libs.json;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.platform;
@@ -30,6 +33,197 @@ bool is_xlings_binary(std::string_view name) {
 std::string extract_program_name(const char* argv0) {
     auto p = std::filesystem::path(argv0);
     return p.stem().string();
+}
+
+// ─── Owner-anchored dispatch home (0.4.48) ──────────────────────────
+//
+// Design: .agents/docs/2026-06-04-shim-owner-anchoring-design.md
+//
+// A shim is an artifact of exactly one home; dispatch resolves against
+// that home FIRST ("which shim file PATH hits" is the selector, ambient
+// env is not). env XLINGS_HOME stays as a deprecated lower-priority
+// fallback ("borrowing") for one transition window; ~/.xlings covers
+// orphan shims copied out of a home. `XLINGS_SHIM_ANCHOR=legacy` (or
+// `0`/`off`) restores the pre-0.4.48 env-first behavior as release
+// insurance.
+
+// Structural home-root signature. Deliberately structural (no JSON
+// content sniffing): a real home has all three of `.xlings.json`,
+// `bin/xlings[.exe]`, and a `subos/` directory. A subos dir
+// (`<home>/subos/current`) has no `subos/` inside it, and a project
+// state dir (`<project>/.xlings`) has no `bin/xlings` — so neither can
+// false-match. Project shims must anchor to the GLOBAL home (their
+// payloads live there); the project state dir is excluded by design.
+bool is_home_root(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_regular_file(dir / ".xlings.json", ec)) return false;
+    constexpr std::string_view bin_name =
+        (platform::OS_NAME == "windows") ? "xlings.exe" : "xlings";
+    if (!fs::exists(dir / "bin" / bin_name, ec)) return false;
+    if (!fs::is_directory(dir / "subos", ec)) return false;
+    return true;
+}
+
+// Find the home that owns the invoked shim by walking parents upward.
+// Tries the shim file as invoked first (only when argv[0] carries a
+// path — a bare name came from PATH search and is not a location),
+// then the running executable path (Windows: the hardlinked shim path;
+// Unix: the symlink-resolved real binary inside its home — both land
+// inside the owning home). The walk meets the INNERMOST home root
+// first, so nested homes resolve to the nearest owner.
+std::optional<std::filesystem::path>
+resolve_owner_home(const std::filesystem::path& invoked) {
+    namespace fs = std::filesystem;
+
+    auto walk_up = [](fs::path p) -> std::optional<fs::path> {
+        std::error_code ec;
+        auto canon = fs::weakly_canonical(p, ec);
+        if (!ec && !canon.empty()) p = canon;
+        for (auto dir = p.parent_path(); !dir.empty();) {
+            if (is_home_root(dir)) return dir;
+            auto parent = dir.parent_path();
+            if (parent == dir) break;
+            dir = parent;
+        }
+        return std::nullopt;
+    };
+
+    if (invoked.has_parent_path() && !invoked.parent_path().empty()) {
+        std::error_code ec;
+        auto abs = fs::absolute(invoked, ec);
+        if (!ec) {
+            if (auto h = walk_up(abs)) return h;
+        }
+    }
+
+    auto exe = platform::get_executable_path();
+    if (!exe.empty()) {
+        if (auto h = walk_up(exe)) return h;
+    }
+    return std::nullopt;
+}
+
+// Lightweight probe: does <home>'s version DB register `program` (with
+// at least one version)? Reads <home>/.xlings.json directly — no Config
+// singleton involvement, so candidate homes can be probed before the
+// dispatch home is chosen. A registered-but-broken entry counts as a
+// hit: the error is then reported against that home instead of silently
+// jumping homes (genuine breakage must not be masked).
+bool home_knows_program(const std::filesystem::path& home,
+                        const std::string& program) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto cfg = home / ".xlings.json";
+    if (!fs::is_regular_file(cfg, ec)) return false;
+    try {
+        auto content = platform::read_file_to_string(cfg.string());
+        auto j = nlohmann::json::parse(content, nullptr, false);
+        if (j.is_discarded() || !j.is_object()) return false;
+        if (!j.contains("versions") || !j["versions"].is_object()) return false;
+        const auto& versions = j["versions"];
+
+        auto has_versions = [](const nlohmann::json& e) {
+            return e.is_object() && e.contains("versions")
+                && e["versions"].is_object() && !e["versions"].empty();
+        };
+
+        if (versions.contains(program) && has_versions(versions[program]))
+            return true;
+
+        // The shim file name may differ from the DB key (VInfo::filename).
+        for (auto it = versions.begin(); it != versions.end(); ++it) {
+            const auto& e = it.value();
+            if (!e.is_object()) continue;
+            if (!e.contains("filename") || !e["filename"].is_string()) continue;
+            auto fn = e["filename"].get<std::string>();
+            if (!fn.empty() && fs::path(fn).stem().string() == program
+                && has_versions(e)) {
+                return true;
+            }
+        }
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+// Choose the dispatch home for a shim invocation: owner → env →
+// default (§3 of the design doc). Returns the home to inject via
+// Config::override_home(), or nullopt to leave Config's legacy
+// resolution untouched (legacy mode, or no candidate knows better).
+std::optional<std::filesystem::path>
+resolve_dispatch_home(const std::string& program, const char* argv0) {
+    namespace fs = std::filesystem;
+
+    auto env_or_empty = [](const char* key) -> std::string {
+        const char* v = std::getenv(key);
+        return v ? std::string(v) : std::string();
+    };
+
+    auto mode = env_or_empty("XLINGS_SHIM_ANCHOR");
+    if (mode == "0" || mode == "legacy" || mode == "off") {
+        log::debug("shim home: anchoring disabled (XLINGS_SHIM_ANCHOR={})", mode);
+        return std::nullopt;
+    }
+
+    auto owner = resolve_owner_home(fs::path(argv0 ? argv0 : ""));
+    auto envHomeStr = env_or_empty("XLINGS_HOME");
+    fs::path envHome = envHomeStr.empty() ? fs::path{} : fs::path(envHomeStr);
+
+    auto same = [](const fs::path& a, const fs::path& b) {
+        if (a.empty() || b.empty()) return false;
+        std::error_code ec;
+        auto ca = fs::weakly_canonical(a, ec);
+        std::error_code ec2;
+        auto cb = fs::weakly_canonical(b, ec2);
+        return (ec || ec2) ? (a == b) : (ca == cb);
+    };
+
+    // hop 1: owner home (the shim's own home) — the contract.
+    if (owner && home_knows_program(*owner, program)) {
+        if (!envHome.empty() && !same(*owner, envHome)
+            && home_knows_program(envHome, program)) {
+            log::warn("shim '{}' owned by {} is also resolvable in XLINGS_HOME={}; "
+                      "using the owner home (env-based shim switching is deprecated "
+                      "— put that home's subos bin on PATH instead)",
+                      program, owner->string(), envHome.string());
+        }
+        log::debug("shim home: owner={} (hop 1)", owner->string());
+        return owner;
+    }
+
+    // hop 2: env XLINGS_HOME — DEPRECATED compat fallback ("borrowing").
+    if (!envHome.empty() && !same(owner.value_or(fs::path{}), envHome)
+        && home_knows_program(envHome, program)) {
+        log::warn("shim '{}' is not installed in its owning home{}; falling back "
+                  "to XLINGS_HOME={} (deprecated, will be removed in a future "
+                  "release)",
+                  program,
+                  owner ? (" " + owner->string()) : std::string(""),
+                  envHome.string());
+        log::debug("shim home: env={} (hop 2)", envHome.string());
+        return envHome;
+    }
+
+    // hop 3: default ~/.xlings — covers orphan shims copied out of a home.
+    fs::path defaultHome = fs::path(platform::get_home_dir()) / ".xlings";
+    if (!same(owner.value_or(fs::path{}), defaultHome)
+        && !same(envHome, defaultHome)
+        && home_knows_program(defaultHome, program)) {
+        log::debug("shim home: default={} (hop 3)", defaultHome.string());
+        return defaultHome;
+    }
+
+    // No candidate knows the program: bind to the owner so the error is
+    // reported against the home this shim belongs to; otherwise leave
+    // Config's legacy resolution (env/default) in place.
+    if (owner) {
+        log::debug("shim home: owner={} (no candidate knows '{}')",
+                   owner->string(), program);
+        return owner;
+    }
+    return std::nullopt;
 }
 
 // Resolve the real executable path for a shim target
