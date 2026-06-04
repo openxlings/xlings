@@ -8,7 +8,7 @@ on:
 
 env:
   GIT_TERMINAL_PROMPT: 0
-  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
