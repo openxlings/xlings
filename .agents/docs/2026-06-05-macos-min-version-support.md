@@ -1,7 +1,9 @@
 # macOS Minimum-Version Support for xlings + mcpp Releases
 
 > Date: 2026-06-05
-> Status: shipping via mcpp PR #116 (floor 14.0, declared-floor-implies-static);
+> Status: **SHIPPED & VERIFIED** — mcpp v0.0.50 + xlings v0.4.50 released
+> (floor 14.0, declared-floor-implies-static), final verification green on
+> macos-14 and macos-15 against the real release artifacts (§6);
 > deferred work tracked in §5
 > Goal: macosx-arm64 release binaries should run on as many macOS versions
 > as possible — floor target **macOS 11.0** (first Apple Silicon release),
@@ -234,6 +236,30 @@ recorded here because the failure modes are non-obvious:
    failure has no local repro, ship a bare-toolchain probe that
    enumerates the hypothesis space in a single round.
 
+Landing the xlings side (PR #319, four CI rounds) added three more:
+
+6. **Version pins live in three layers; bump ALL of them.** Each
+   workflow carries its own `XIM_PKGINDEX_REF` + `BOOTSTRAP_XLINGS_VERSION`
+   (release.yml was bumped first; ci-macos kept its stale pin → R1),
+   and `.xlings.json` pins the *workspace* mcpp version independently
+   of the index (a hidden third pin, found in R2 still at 0.0.36).
+   Grep every workflow + every `*.json` manifest for the old version
+   before declaring a bump complete.
+7. **mcpp ≥0.0.47 injects a runtime lib path into test child
+   processes**, which poisons host tools spawned by tests (`tar`,
+   `zip`, `python`): they resolve the toolchain's libs instead of the
+   system's and fail in non-obvious ways (`Extract.*` failures on
+   linux, R2). Fixtures that shell out to host tools must scrub the
+   injected env (`env -u LD_LIBRARY_PATH`) — done via a single
+   `host_sys_()` wrapper in the unit-test helpers.
+8. **Release assertions must select the NEWEST binary.** The two-stage
+   self-host build leaves the stage-1 binary in an older fingerprint
+   directory; `find | head -1` happily asserts against the stale one
+   (this failed the first v0.0.50 release run). Use mtime ordering
+   (`ls -t`). The assertions themselves are the regression net: R3's
+   "failure" was quote typos in diagnostic echos while the substantive
+   checks (minos 14.0, `libSystem`-only) had already passed.
+
 ## 5. Deferred work (tracked TODOs)
 
 **Status updates (same-day forensics sprint):**
@@ -259,9 +285,12 @@ recorded here because the failure modes are non-obvious:
 - **#2 IMPLEMENTED on a branch** — single resolver
   (`platform::macos::deployment_target`) consumed by flags, the
   fingerprint rule and the std-module prebuild (stdmod previously had
-  no deployment-target concept at all). PR follows the v0.0.50 release.
+  no deployment-target concept at all). Open as mcpp PR #119
+  (recreated on post-squash main as `feat/macos-dt-resolver-v2`);
+  intended as the first 0.0.51 change and the prerequisite for
+  re-landing the built-in default floor.
 
-| # | Item | Status | Unblocks || # | Item | Status | Unblocks |
+| # | Item | Status | Unblocks |
 | --- | --- | --- | --- |
 | 1 | **Mixed C/C++ static binaries SIGSEGV** — `answer.c` +
 `std::cout` main.cpp linked with static libc++ dies at runtime
@@ -288,3 +317,30 @@ End state when #1 + #2 land: static libc++ and a built-in 14.0 floor
 become the unconditional macOS defaults (cargo-style "portable by
 default"), with the declared-floor gate kept only as the opt-out
 boundary (`static_stdlib = false`).
+
+## 6. Shipped outcome (final verification against release artifacts)
+
+Verification matrix (mcpp PR #115's temp workflow, final revision):
+runners `macos-15` + `macos-14`, both green —
+https://github.com/mcpp-community/mcpp/actions/runs/27007616498
+
+| Check | macos-14 | macos-15 |
+| --- | --- | --- |
+| Control: released 0.0.49 (`minos=15.0`, dynamic libc++) | refused — `dyld: Symbol not found: __ZNSt3__119__is_posix_terminalEP7__sFILE` (the documented root cause) | runs |
+| xlings v0.4.50 tarball self-install | OK | OK |
+| mcpp v0.0.50 tarball | OK | OK |
+| `mcpp new hello` → build → run (xlings-provisioned LLVM) | OK | OK |
+| Split-brain probe: `cout << int`, declared floor → static libc++ | `int says 42`, no libc++ dylib | same |
+
+Artifact facts (asserted offline on the released tarball as well):
+`bin/xlings` carries `LC_BUILD_VERSION minos=14.0.0` and links only
+`/usr/lib/libSystem.B.dylib`.
+
+Distribution sync completed for both releases:
+- mcpp v0.0.50: GitHub release + GitCode mirror + xim-pkgindex
+  `latest → 0.0.50` (PR #279).
+- xlings v0.4.50: GitHub release + xlings-res mirrors (GitHub + GitCode,
+  sha256-verified) + xim-pkgindex `latest → 0.4.50` (PR #280).
+
+Net effect: macOS floor moved 15.0 → **14.0** for both tools' release
+binaries; lower floors (11.0–13.0) remain a data-only swap away (§5 #3).
