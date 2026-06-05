@@ -13,6 +13,7 @@ import xlings.core.config;
 import xlings.libs.tinyhttps;
 import xlings.runtime.cancellation;
 import xlings.core.mirror;
+import xlings.libs.sha256;
 // Re-export extract_archive so existing importers (installer) keep working.
 export import xlings.core.xim.extract;
 
@@ -50,6 +51,15 @@ bool looks_like_archive_filename_(const std::filesystem::path& path) {
 // extract phase but cmd_install historically swallowed the failure as
 // exitCode=0. See .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
 constexpr std::uintmax_t kMinPlausibleArchiveBytes_ = 1024;
+
+// Lowercase a declared sha256 so it compares against our hex digests
+// regardless of the recipe author's casing.
+std::string lower_hex_(std::string_view s) {
+    std::string out(s);
+    for (auto& c : out)
+        if (c >= 'A' && c <= 'F') c = static_cast<char>(c - 'A' + 'a');
+    return out;
+}
 
 // ── Sidecar (.meta) helpers for HEAD-based cache freshness ────────────
 //
@@ -268,9 +278,11 @@ DownloadResult download_one(const DownloadTask& task,
     // If the recipe declares a sha256 and the on-disk file matches, we're
     // byte-identical to upstream — skip download outright.
     if (fs::exists(destFile) && !task.sha256.empty()) {
-        auto cmd = std::format("sha256sum \"{}\"", destFile.string());
-        auto [rc, output] = platform::run_command_capture(cmd);
-        if (rc == 0 && output.find(task.sha256) != std::string::npos) {
+        // In-process hash — `sha256sum` is a coreutils tool absent on
+        // stock macOS, where shelling out made every pinned download
+        // "mismatch" (see xlings.libs.sha256 header).
+        auto digest = sha256::hex_file(destFile);
+        if (digest && *digest == lower_hex_(task.sha256)) {
             log::debug("already downloaded (sha256): {}", destFile.string());
             result.success = true;
             return result;
@@ -374,11 +386,30 @@ DownloadResult download_one(const DownloadTask& task,
         if (cancel) {
             opts.isCancelled = [cancel] { return cancel->is_paused() || cancel->is_cancelled(); };
         }
-        // A stalled host is throttled for us right now — demote it for the
-        // rest of the session so later downloads skip straight past it.
+        // A stalled host is throttled for us right now, and a host that
+        // served bytes failing the integrity check is worse — demote both
+        // for the rest of the session so later downloads skip them.
         opts.onUrlAttemptFailed = [](const std::string& u, const std::string& err) {
-            if (err.rfind("stalled:", 0) == 0) mirror::adaptive::penalize_host(u);
+            if (err.rfind("stalled:", 0) == 0
+                || err.rfind("sha256 mismatch", 0) == 0)
+                mirror::adaptive::penalize_host(u);
         };
+        // Per-candidate integrity acceptance: verify INSIDE the URL loop
+        // so a mirror that wins the latency race but serves corrupted
+        // bytes is rejected and the next candidate (ultimately the
+        // author URL) is tried — previously a single mismatch failed the
+        // whole download with the remaining candidates untried.
+        if (!task.sha256.empty()) {
+            auto want = lower_hex_(task.sha256);
+            opts.onVerify = [destFile, want, &task](const std::string& u)
+                -> std::string {
+                auto digest = sha256::hex_file(destFile);
+                if (digest && *digest == want) return {};
+                return std::format(
+                    "sha256 mismatch for {} (source {}): got {}, want {}",
+                    task.name, u, digest ? *digest : "<unreadable>", want);
+            };
+        }
 
         auto dlResult = tinyhttps::download_file(opts);
         if (!dlResult.success) {
@@ -408,11 +439,12 @@ DownloadResult download_one(const DownloadTask& task,
         }
     }
 
-    // Verify SHA256 if provided
+    // Final SHA256 re-check (defense in depth — the per-candidate
+    // onVerify above already gated acceptance; in-process hash, no
+    // dependency on a host `sha256sum` binary, which stock macOS lacks).
     if (!task.sha256.empty()) {
-        auto shaCmd = std::format("sha256sum \"{}\"", destFile.string());
-        auto [shaRc, shaOut] = platform::run_command_capture(shaCmd);
-        if (shaRc != 0 || shaOut.find(task.sha256) == std::string::npos) {
+        auto digest = sha256::hex_file(destFile);
+        if (!digest || *digest != lower_hex_(task.sha256)) {
             result.error = std::format("SHA256 mismatch for {}", task.name);
             fs::remove(destFile, ec);
             return result;
