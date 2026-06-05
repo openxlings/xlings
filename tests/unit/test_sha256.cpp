@@ -96,9 +96,12 @@ TEST(DownloadVerify, RejectedCandidateFallsThroughToNext) {
     EXPECT_TRUE(r.success);
     ASSERT_EQ(failures.size(), 1u);
     EXPECT_TRUE(failures[0].starts_with("https://bad.mirror"));
-    std::ifstream f(dest, std::ios::binary);
-    std::string s((std::istreambuf_iterator<char>(f)), {});
-    EXPECT_EQ(s, "payload");
+    {
+        // Scoped: Windows can't remove a file with an open handle.
+        std::ifstream f(dest, std::ios::binary);
+        std::string s((std::istreambuf_iterator<char>(f)), {});
+        EXPECT_EQ(s, "payload");
+    }
     std::filesystem::remove(dest);
 }
 
