@@ -8,6 +8,11 @@ export namespace xlings::tinyhttps {
 
 // ── Public types ─────────────────────────────────────────────────────
 
+struct DownloadFileResult {
+    bool success { false };
+    std::string error;
+};
+
 struct DownloadOptions {
     std::filesystem::path destFile;
     std::vector<std::string> urls;          // primary + fallbacks, tried in order
@@ -29,6 +34,20 @@ struct DownloadOptions {
     // aborts). Used by the downloader to penalize degraded hosts.
     std::function<void(const std::string& url, const std::string& error)>
         onUrlAttemptFailed;
+    // Per-URL acceptance hook: called after a successful transfer with the
+    // source URL. Return empty to accept; return an error message to
+    // REJECT the candidate — the file is removed, onUrlAttemptFailed
+    // fires, and the next candidate URL is tried (no same-URL retry: the
+    // payload is deterministic, so re-fetching the same source cannot
+    // change the verdict). Used for sha256 integrity: a mirror may win
+    // the latency race yet serve corrupted bytes.
+    std::function<std::string(const std::string& url)> onVerify;
+    // TEST SEAM: when set, replaces the network transfer for one URL
+    // attempt (must write destFile on success). Lets unit tests exercise
+    // the candidate loop / verify fallback without sockets.
+    std::function<DownloadFileResult(const std::string& url,
+                                     const std::filesystem::path& destFile)>
+        transferOverride;
 };
 
 // Windowed-average stall detector (curl --speed-limit/--speed-time style).
@@ -72,11 +91,6 @@ private:
     bool   started_ { false };
     double winT_ { 0 };
     double winB_ { 0 };
-};
-
-struct DownloadFileResult {
-    bool success { false };
-    std::string error;
 };
 
 // Result of a HEAD probe used by the cache to decide whether a previously
@@ -311,11 +325,24 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
         if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
         for (int att = 0; att <= opts.retryCount; ++att) {
             if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
-            auto r = detail_::download_once(url, opts.destFile,
-                opts.connectTimeoutSec, opts.maxTimeSec,
-                lowSpeedBytes, lowSpeedSecs,
-                opts.onProgress, opts.isCancelled);
-            if (r.success) return r;
+            auto r = opts.transferOverride
+                ? opts.transferOverride(url, opts.destFile)
+                : detail_::download_once(url, opts.destFile,
+                      opts.connectTimeoutSec, opts.maxTimeSec,
+                      lowSpeedBytes, lowSpeedSecs,
+                      opts.onProgress, opts.isCancelled);
+            if (r.success) {
+                // Candidate acceptance: integrity failures are a property
+                // of the SOURCE, not the transfer — reject and move to
+                // the next URL rather than failing the whole download.
+                std::string verdict =
+                    opts.onVerify ? opts.onVerify(url) : std::string{};
+                if (verdict.empty()) return r;
+                lastErr = verdict;
+                if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, verdict);
+                std::filesystem::remove(opts.destFile, ec);
+                break;  // same bytes would fail again — next candidate
+            }
             lastErr = r.error;
             if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, r.error);
             std::filesystem::remove(opts.destFile, ec);
