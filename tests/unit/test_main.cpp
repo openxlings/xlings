@@ -2918,6 +2918,22 @@ struct ExtractFixture {
     // All archive tools below are invoked with relative inputs from inside
     // tmp/, producing the output as a relative filename, then we resolve
     // back to the absolute path.
+    //
+    // host_sys_: run a HOST tool (tar/zip/python) via std::system with the
+    // build tool's injected runtime library path scrubbed. mcpp 0.0.47+
+    // exports the target toolchain's runtime dirs (sandbox glibc) into
+    // LD_LIBRARY_PATH for test processes; host tools crash when loaded
+    // against that glibc. Scope: POSIX only (the var is harmless on
+    // Windows, and `env` isn't available there).
+    static int host_sys_(const char* cmd) {
+#if defined(_WIN32)
+        return std::system(cmd);
+#else
+        std::string wrapped = std::string("env -u LD_LIBRARY_PATH ") + cmd;
+        return std::system(wrapped.c_str());
+#endif
+    }
+
     template <class F>
     static int run_in_(const std::filesystem::path& dir, F&& fn) {
         auto saved = std::filesystem::current_path();
@@ -2930,7 +2946,7 @@ struct ExtractFixture {
     std::filesystem::path make_tar_gz() const {
         auto out = tmp / "fixture.tar.gz";
         int rc = run_in_(tmp, [] {
-            return std::system("tar czf fixture.tar.gz src");
+            return host_sys_("tar czf fixture.tar.gz src");
         });
         if (rc != 0) throw std::runtime_error("failed to create tar.gz fixture");
         return out;
@@ -2939,7 +2955,7 @@ struct ExtractFixture {
     std::filesystem::path make_zip() const {
         auto out = tmp / "fixture.zip";
         int rc = run_in_(tmp, [] {
-            return std::system("zip -qr fixture.zip src");
+            return host_sys_("zip -qr fixture.zip src");
         });
         if (rc != 0) throw std::runtime_error("failed to create zip fixture");
         return out;
@@ -2959,9 +2975,9 @@ with zipfile.ZipFile("fixture_utf8.zip", "w", zipfile.ZIP_DEFLATED) as z:
         auto out = tmp / "fixture_utf8.zip";
         int rc = run_in_(tmp, [] {
 #ifdef _WIN32
-            return std::system("python make_utf8_zip.py");
+            return host_sys_("python make_utf8_zip.py");
 #else
-            return std::system("python3 make_utf8_zip.py || python make_utf8_zip.py");
+            return host_sys_("python3 make_utf8_zip.py || python make_utf8_zip.py");
 #endif
         });
         if (rc != 0) throw std::runtime_error("failed to create utf8 zip fixture");
@@ -2971,7 +2987,7 @@ with zipfile.ZipFile("fixture_utf8.zip", "w", zipfile.ZIP_DEFLATED) as z:
     std::filesystem::path make_tar_xz() const {
         auto out = tmp / "fixture.tar.xz";
         int rc = run_in_(tmp, [] {
-            return std::system("tar cJf fixture.tar.xz src");
+            return host_sys_("tar cJf fixture.tar.xz src");
         });
         if (rc != 0) throw std::runtime_error("failed to create tar.xz fixture");
         return out;
@@ -3086,6 +3102,9 @@ TEST(Extract, RejectsPathTraversal) {
     auto archive = fx.tmp / "ptraversal.tar.gz";
     std::string cmd = std::format("cd {} && tar czf {} -C {} .",
         fx.tmp.string(), archive.string(), stage.string());
+#if !defined(_WIN32)
+    cmd = "env -u LD_LIBRARY_PATH sh -c " + std::string("'") + cmd + "'";
+#endif
     ASSERT_EQ(std::system(cmd.c_str()), 0);
 
     auto out = fx.tmp / "out_ptrav";

@@ -104,8 +104,12 @@ jobs:
 
       - name: "Assert macOS min-version support (minos + static libc++)"
         run: |
-          BIN=$(find target -type f -path '*/bin/xlings' | head -1)
+          # Multiple fingerprint dirs can exist (build + test fingerprints
+          # differ); pick the newest binary, same as the release stage-2 fix.
+          BIN=$(ls -t $(find target -type f -path '*/bin/xlings') 2>/dev/null | head -1)
           test -n "$BIN" || { echo "xlings binary not found"; exit 1; }
+          echo "all candidates:"; find target -type f -path '*/bin/xlings' | head -5
+          echo "selected: $BIN"
           echo "=== LC_BUILD_VERSION ==="
           otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | head -6
           otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | grep -q "minos ${MACOSX_DEPLOYMENT_TARGET}" \
