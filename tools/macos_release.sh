@@ -61,6 +61,25 @@ else
     info "OK: binary has no LLVM runtime dependency"
 fi
 
+# macOS min-version support (0.4.50+): when MACOSX_DEPLOYMENT_TARGET is
+# set (release CI pins 11.0), assert the binary actually carries that
+# floor and is statically linked against LLVM libc++ (no system libc++
+# dylib dependency — older macOS lacks LLVM-20-era C++23 symbols).
+# See .agents/docs/2026-06-05-macos-min-version-support.md.
+if [[ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
+    info "Verifying LC_BUILD_VERSION minos ${MACOSX_DEPLOYMENT_TARGET} ..."
+    if ! otool -l "$BIN_SRC" | grep -A4 LC_BUILD_VERSION | grep -q "minos ${MACOSX_DEPLOYMENT_TARGET}"; then
+        otool -l "$BIN_SRC" | grep -A4 LC_BUILD_VERSION
+        fail "binary minos does not match MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}"
+    fi
+    info "Verifying no system libc++ dylib dependency ..."
+    if otool -L "$BIN_SRC" | grep -q "libc++"; then
+        otool -L "$BIN_SRC"
+        fail "binary still links the system libc++ dylib (static libc++ expected)"
+    fi
+    info "OK: minos ${MACOSX_DEPLOYMENT_TARGET}, static libc++"
+fi
+
 # ── 2. Assemble package ─────────────────────────────────────────
 info "Assembling $OUT_DIR ..."
 rm -rf "$OUT_DIR"

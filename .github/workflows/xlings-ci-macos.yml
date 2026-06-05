@@ -8,15 +8,15 @@ on:
 
 env:
   GIT_TERMINAL_PROMPT: 0
-  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
   # Pinned bootstrap xlings used to install mcpp. Bump together with
   # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  BOOTSTRAP_XLINGS_VERSION: v0.4.49
   # Includes mcpp 0.0.36 for all CI/release mcpp builds.
-  XIM_PKGINDEX_REF: fba1ce953589df609c862d0a895fc9d6ff5eb6de
+  XIM_PKGINDEX_REF: 34e32a0fe234d0677b6200e824bad7dcd24dd78c
 
 jobs:
   build-and-test:
@@ -101,6 +101,27 @@ jobs:
             echo "::endgroup::"
             exit "$status"
           }
+
+      - name: "Assert macOS min-version support (minos + static libc++)"
+        run: |
+          # Multiple fingerprint dirs can exist (build + test fingerprints
+          # differ); pick the newest binary, same as the release stage-2 fix.
+          BIN=$(ls -t $(find target -type f -path '*/bin/xlings') 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "xlings binary not found"; exit 1; }
+          echo "all candidates:"; find target -type f -path '*/bin/xlings' | head -5
+          echo "selected: $BIN"
+          echo "=== LC_BUILD_VERSION ==="
+          otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | head -6
+          otool -l "$BIN" | grep -A4 LC_BUILD_VERSION | grep -q "minos ${MACOSX_DEPLOYMENT_TARGET}" \
+            || { echo "FAIL: expected minos ${MACOSX_DEPLOYMENT_TARGET}"; exit 1; }
+          echo "=== dylib deps ==="
+          otool -L "$BIN"
+          # mcpp 0.0.50 (static libc++ via -Wl,-load_hidden) is the index
+          # latest — hard assertion.
+          if otool -L "$BIN" | grep -q "libc++"; then
+            echo "FAIL: still linked against system libc++"; exit 1
+          fi
+          echo "OK: static libc++"
 
       - name: Prepare fixture index repo
         run: |

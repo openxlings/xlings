@@ -15,9 +15,9 @@ env:
   XLINGS_RELEASE_MIRROR: GLOBAL
   # Pinned bootstrap xlings used to install mcpp. Bump together with
   # XIM_PKGINDEX_REF so release uses a known-good xlings + package index pair.
-  BOOTSTRAP_XLINGS_VERSION: v0.4.44
+  BOOTSTRAP_XLINGS_VERSION: v0.4.49
   # Includes mcpp 0.0.36 for all release builds.
-  XIM_PKGINDEX_REF: fba1ce953589df609c862d0a895fc9d6ff5eb6de
+  XIM_PKGINDEX_REF: 34e32a0fe234d0677b6200e824bad7dcd24dd78c
 
 jobs:
   build-linux:
@@ -143,6 +143,14 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
 
       - name: Build (macos_release)
+        env:
+          # macOS min-version support: floor 14.0 (the official LLVM
+          # static libc++ archives are built for macOS 14; lower needs a
+          # custom libc++ build). The mcpp from the bootstrap index
+          # (0.0.50+) links static LLVM libc++ via lld natively;
+          # macos_release.sh asserts minos + no system libc++ dylib when
+          # this env is set.
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
         run: |
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
