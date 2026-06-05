@@ -236,7 +236,32 @@ recorded here because the failure modes are non-obvious:
 
 ## 5. Deferred work (tracked TODOs)
 
-| # | Item | Status | Unblocks |
+**Status updates (same-day forensics sprint):**
+
+- **#1 RESOLVED — root cause + fix landed on main.** Crash-report
+  forensics (mcpp PR #117, m1–m7 matrix): plain by-path archive linking
+  leaves default-visibility libc++ symbols that dyld unifies with the
+  system libc++ from the shared cache — a split-brain where
+  `ostream << int` crosses from the static copy into the system copy's
+  locale machinery (`collate`/`num_put`) and SIGSEGVs. Trigger surface =
+  the locale-based formatting path (which is why `std::println`-only
+  binaries like mcpp/xlings never crashed). Fix:
+  `-Wl,-load_hidden,<archive>` — forces the archive AND hides its
+  symbols; mixed-C/C++ and pure-C++ int-output probes both run clean.
+  (`-hidden-l` stays unusable under lld: it resolves like plain `-l`
+  and picks the sibling dylib.) Shipped inside v0.0.50.
+- **#3 FEASIBLE — pipeline proven** (mcpp PR #118): LLVM 20.1.7
+  runtimes built at `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`
+  (static libc++/libc++abi, `LIBCXXABI_USE_LLVM_UNWINDER=OFF`); archive
+  members carry `minos 11.0`, a `std::cout` probe linked at floor 11.0
+  runs clean with no libc++ dylib dep. Productization = publish via
+  xlings-res + swap the archive source (data-only).
+- **#2 IMPLEMENTED on a branch** — single resolver
+  (`platform::macos::deployment_target`) consumed by flags, the
+  fingerprint rule and the std-module prebuild (stdmod previously had
+  no deployment-target concept at all). PR follows the v0.0.50 release.
+
+| # | Item | Status | Unblocks || # | Item | Status | Unblocks |
 | --- | --- | --- | --- |
 | 1 | **Mixed C/C++ static binaries SIGSEGV** — `answer.c` +
 `std::cout` main.cpp linked with static libc++ dies at runtime
