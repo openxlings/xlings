@@ -112,14 +112,12 @@ jobs:
             || { echo "FAIL: expected minos ${MACOSX_DEPLOYMENT_TARGET}"; exit 1; }
           echo "=== dylib deps ==="
           otool -L "$BIN"
-          # Static libc++ requires mcpp >= 0.0.50 as the build tool; warn
-          # (not fail) until the bootstrap index ships it, then flip to a
-          # hard assertion.
+          # mcpp 0.0.50 (static libc++ via -Wl,-load_hidden) is the index
+          # latest — hard assertion.
           if otool -L "$BIN" | grep -q "libc++"; then
-            echo "WARN: still linked against system libc++ (build tool < mcpp 0.0.50?)"
-          else
-            echo "OK: static libc++"
+            echo "FAIL: still linked against system libc++"; exit 1
           fi
+          echo "OK: static libc++
 
       - name: Prepare fixture index repo
         run: |
