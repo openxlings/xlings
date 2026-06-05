@@ -121,7 +121,7 @@ jobs:
           if otool -L "$BIN" | grep -q "libc++"; then
             echo "FAIL: still linked against system libc++"; exit 1
           fi
-          echo "OK: static libc++
+          echo "OK: static libc++"
 
       - name: Prepare fixture index repo
         run: |
