@@ -327,7 +327,161 @@ The same `.xlings.json` drives CI and the release pipeline.
 - **QQ Groups**: 167535744 / 1006282943
 - **Issues**: [github.com/openxlings/xlings/issues](https://github.com/openxlings/xlings/issues)
 
-### Contributing
+#
+## ❓ FAQ (Frequently Asked Questions)
+
+### What is xlings?
+
+xlings is a **universal package infrastructure** with OS-like SubOS isolation. Key features:
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-version coexistence** | N versions side-by-side without conflicts |
+| **Rootless operation** | No sudo needed for shell/FS-level isolation |
+| **3-level SubOS** | shell / FS sandbox / image isolation |
+| **Decentralized index** | Official + 3rd-party + self-hosted packages |
+| **Agent interface** | JSON protocol for AI agents and automation |
+
+Used by [MCPP](https://github.com/mcpp-community/mcpp) and upcoming **Luban Linux**.
+
+### How does xlings compare to other tools?
+
+| Tool | Multi-version | Rootless | No daemon | Isolation | Agent-ready |
+|------|---------------|----------|-----------|-----------|-------------|
+| **apt/brew** | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **nix** | ✅ | ⚠️ | ✅ | ✅ | ❌ |
+| **docker** | ✅ | ⚠️ | ❌ | ✅+ | ⚠️ |
+| **xlings** | ✅ | ✅ | ✅ | 🔒 3 levels | ✅ |
+
+**xlings unique advantages:**
+- ⚡ **Instant startup** (no daemon, no image pull)
+- 🔄 **Storage reuse** (N envs ≈ 1× storage via version-view)
+- 🤖 **Native agent interface** (NDJSON protocol)
+
+### What are the 3 SubOS isolation levels?
+
+| Level | Technology | Permissions | Use Case |
+|-------|------------|-------------|----------|
+| **Shell-level** | Env switch | 🔓 Host access | Quick version switching |
+| **FS-level** | bwrap/proot | 🔓 Host access | Project isolation (rootless) |
+| **Image-level** | ext4 sparse | 🔒 Root needed | Full isolation (strongest) |
+
+**FS-level sandbox is recommended** for most use cases: lightweight, rootless, host untouched.
+
+### How do I install xlings?
+
+**Linux/macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex
+```
+
+**Via AI agent:**
+Copy this prompt to your AI assistant:
+```
+Install xlings package manager:
+- Linux/macOS: curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+- Windows: irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex
+Project: https://github.com/openxlings/xlings
+```
+
+### How do I use multi-version packages?
+
+```bash
+# Install multiple versions
+xlings install gcc@16 gcc@11 node@24 cmake
+
+# Switch versions instantly
+xlings use gcc@16        # → gcc 16.x active
+xlings use gcc@11        # → gcc 11.x active, no conflict
+
+# Check active versions
+xlings list
+```
+
+All versions coexist in `xpkgs/` with **version-view + reference counting** for efficient storage.
+
+### How does project-level SubOS work?
+
+When you enter a project directory with `.xlings.json`:
+
+```json
+{
+  "workspace": {
+    "mcpp": "0.0.33",
+    "gcc": { "linux": "16.1.0" }
+  }
+}
+```
+
+```bash
+cd my-project/           # Automatically enters project SubOS
+xlings install           # Installs into project-local isolation
+mcpp build               # Everything works, isolated from host
+```
+
+**Team benefits:** Same env across teammates + CI. Clone → `cd` → build. No manual activation needed.
+
+### Can AI agents use xlings?
+
+**Yes!** xlings has a native **JSON interface** for AI agents:
+
+```bash
+# NDJSON protocol for programmatic control
+xlings interface
+
+# Run agents inside SubOS
+xlings subos new claude-workspace --from subos:dev-env@latest
+xlings subos use claude-workspace --sandbox
+# → Agent runs inside isolated world with full permissions
+# → Host remains completely safe
+```
+
+**Why this matters for agents:**
+- 🔓 Agent has full permissions inside SubOS
+- 🔁 Multiple agent instances on one host (each in own SubOS)
+- ⚡ Lightweight — not a VM or container
+
+### What package types are supported?
+
+| Type | Description |
+|------|-------------|
+| **binary** | Pre-built executables |
+| **script** | Shell/Python scripts |
+| **config** | Configuration packages |
+| **subos** | Complete environment images |
+| **tutorial** | Learning packages |
+
+Decentralized index: **official** (openxlings/xim-pkgindex) + **3rd-party** + **self-hosted**.
+
+### Is xlings free to use?
+
+**Yes!** xlings is **completely free** and open-source.
+
+- **License:** MIT
+- **No registration required**
+- **No API keys needed**
+- **No hidden costs**
+
+Community-driven development with support from [MCPP](https://github.com/mcpp-community/mcpp) and [d2learn](https://forum.d2learn.org/).
+
+### Where can I get help?
+
+| Resource | Link |
+|----------|------|
+| **Website** | [openxlings.github.io](https://openxlings.github.io/) |
+| **Docs** | [docs/](docs/) |
+| **Package Index** | [xim-pkgindex](https://openxlings.github.io/xim-pkgindex) |
+| **Forum** | [forum.d2learn.org](https://forum.d2learn.org/category/9/xlings) |
+| **GitHub Issues** | [Report issues](https://github.com/openxlings/xlings/issues) |
+
+---
+
+## Contributing
 
 - [Issue handling & bug fixing](https://xlings.d2learn.org/en/documents/community/contribute/issues.html)
 - [Adding new packages](https://xlings.d2learn.org/en/documents/community/contribute/add-xpkg.html)
