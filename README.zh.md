@@ -20,25 +20,19 @@
   <em>使用者: <a href="https://github.com/mcpp-community/mcpp">MCPP</a> · 即将推出的 <b>Luban</b> Linux</em>
 </p>
 
----
-
 ## 为什么选 xlings?
 
 一个工具,安装任意版本的任意软件,无需 root 运行,并提供 OS 级的环境隔离 —— 在 Linux / macOS / Windows 上统一。
 
-| | apt / brew | nix | docker | **xlings** |
-|---|:---:|:---:|:---:|:---:|
-| 多版本共存 | ❌ | ✅ | ✅ | ✅ |
-| 无需 Root | ❌ | ⚠️ | ⚠️ | ✅(image 模式除外)|
-| 无 daemon | ✅ | ✅ | ❌ | ✅ |
-| 跨平台统一命令 | ❌ | ⚠️ | ✅ | ✅ Linux / macOS / Windows |
-| 隔离粒度 | ❌ | FS | FS+ | 🔒 shell / FS / image 三级 |
-| 存储复用 | — | ✅ store | ❌ 镜像膨胀 | ✅ 版本视图 + 引用计数 |
-| 去中心化索引 | ❌ | ❌ | ❌ | ✅ 官方 + 第三方 + 自建 |
-| Agent / JSON 接口 | ❌ | ❌ | ⚠️ API | ✅ `xlings interface`(NDJSON)|
-| 可作 OS 级包管理器 | apt 本身是 | NixOS | ❌ | ✅(Luban Linux,即将推出)|
+→ [xlings 与 apt / nix / docker 对比](docs/comparison.md)
 
----
+## 核心能力
+
+1. 📦 **通用包管理基础设施** —— binary / script / config / subos / tutorial 统统是 xpkg
+2. 🔀 **多版本共存** —— 同一工具 N 个版本并存;版本视图 + 引用计数(N 个环境 ≈ 1 份存储)
+3. 🏗️ **三级 SubOS 隔离** —— shell(env 切换)/ FS(bwrap/proot,无需 root)/ image(ext4,需 root)
+4. 🌐 **去中心化包索引** —— 官方 + 第三方 + 自建仓库;资源服务器做二进制镜像分发
+5. 🤖 **JSON 事件接口** —— `xlings interface`(NDJSON 协议)面向 AI Agent、CI 和第三方工具
 
 ## 快速开始
 
@@ -78,8 +72,6 @@ xlings 内置了面向 agent 的使用指南 —— 安装后,任意 agent 都�
 xlings agent           # 概览 + skill 列表
 xlings agent usage     # 为 LLM agent 编写的完整使用指南
 ```
-
----
 
 ## 使用场景
 
@@ -127,52 +119,24 @@ xlings subos use agent-ws --sandbox --cmd "python run.py" # 或一次性执行
 
 → [SubOS 与 Agent](docs/quick-start/subos-and-agent.md)
 
----
-
-## 核心能力
-
-1. 📦 **通用包管理基础设施** —— binary / script / config / subos / tutorial 统统是 xpkg
-2. 🔀 **多版本共存** —— 同一工具 N 个版本并存;版本视图 + 引用计数(N 个环境 ≈ 1 份存储)
-3. 🏗️ **三级 SubOS 隔离** —— shell(env 切换)/ FS(bwrap/proot,无需 root)/ image(ext4,需 root)
-4. 🌐 **去中心化包索引** —— 官方 + 第三方 + 自建仓库;资源服务器做二进制镜像分发
-5. 🤖 **JSON 事件接口** —— `xlings interface`(NDJSON 协议)面向 AI Agent、CI 和第三方工具
-
----
-
 ## 文档
 
 详细的使用指南、设计文档与规范都在 [`docs/`](docs/)。
 
 | 分类 | 文档 |
 |------|------|
-| **快速上手** | [多版本管理](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) |
+| **快速上手** | [多版本管理](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [从源码构建](docs/build-from-source.md) |
 | **架构** | [系统架构概览](docs/architecture/overview.md) |
 | **设计** | [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm 版本管理](docs/design/xvm-version-management.md) · [SubOS 隔离机制](docs/design/subos-isolation.md) · [包索引生态](docs/design/package-index-ecosystem.md) · [Interface 协议](docs/design/interface-protocol.md) |
 | **规范** | [xpkg 包描述格式 v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json 字段](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) |
 
----
-
-## 从源码构建
-
-```bash
-xlings install           # 读取 .xlings.json → 安装 mcpp 构建工具链
-mcpp build
-mcpp test
-```
-
-`.xlings.json` 同时驱动 CI 和 release 流水线。
-
----
-
 ## 生态
 
-| 项目 | 角色 | 链接 |
-|------|------|------|
-| **MCPP** | 现代 C++ 构建工具生态 —— 通过 xlings 分发 | [github.com/mcpp-community/mcpp](https://github.com/mcpp-community/mcpp) |
-| **Luban Linux** | 即将推出的 Linux 发行版,采用 xlings 作为系统级包管理器 | *(发布时更新链接)* |
-| **xim-pkgindex** | 官方包索引 —— 60+ 个包持续增长 | [openxlings/xim-pkgindex](https://github.com/openxlings/xim-pkgindex) |
-
----
+| 项目 | 角色 |
+|------|------|
+| [MCPP](https://github.com/mcpp-community/mcpp) | 现代 C++ 构建工具生态 —— 通过 xlings 分发 |
+| **Luban Linux** | 即将推出的 Linux 发行版,采用 xlings 作为系统级包管理器 *(发布时更新链接)* |
+| [xim-pkgindex](https://github.com/openxlings/xim-pkgindex) | 官方包索引 —— 60+ 个包持续增长 |
 
 ## 社区
 
@@ -185,8 +149,6 @@ mcpp test
 - [Issue 处理与 Bug 修复](https://xlings.d2learn.org/documents/community/contribute/issues.html)
 - [添加新包](https://xlings.d2learn.org/documents/community/contribute/add-xpkg.html)
 - [文档编写](https://xlings.d2learn.org/documents/community/contribute/documentation.html)
-
----
 
 **贡献者**
 
