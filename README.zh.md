@@ -83,41 +83,41 @@ xlings agent usage     # 为 LLM agent 编写的完整使用指南
 
 ## 使用场景
 
-### 🛠 多版本工具链,免 sudo
+### 🛠 多版本工具链,一套命令跨平台
 
-多个版本并存,即时切换 —— 互不冲突,无需 root。
+安装任意版本的任意软件,多个版本并存、即时切换 —— 互不冲突,无需 root。同一套命令在 Linux / macOS / Windows 上通用。
 
 ```bash
-xlings install gcc@16 gcc@11
-xlings use gcc@11        # 随时切回 —— 共存,不影响宿主机
+xlings install gcc@16 gcc@11 node@24 cmake
+xlings use gcc@11        # 随时切回 —— 两个版本都还在
 ```
 
 → [多版本管理](docs/quick-start/multi-version.md)
 
-### 📦 可复现的项目环境
+### 📦 可复现的项目环境,跨系统一致
 
-提交一份 `.xlings.json`,团队和 CI 拿到的就是同一套隔离环境。
+提交一份按平台声明版本的 `.xlings.json`。每个项目拥有**独立的 SubOS**,团队和 CI 不论在哪个发行版/系统上,进入项目目录即得到完全一致的环境,不影响宿主机和其他项目。
 
 ```json
 {
   "workspace": {
-    "mcpp": "0.0.33",
-    "gcc": { "linux": "16.1.0" },
-    "llvm": { "macosx": "20.1.7" }
+    "xmake": "3.0.7",
+    "gcc":  { "linux":  "16.1.0" },
+    "llvm": { "macosx": "20.1.7", "windows": "19.1.0" }
   }
 }
 ```
 
 ```bash
 cd my-project/           # 进入目录即激活项目级 SubOS
-xlings install           # 依赖装进项目级隔离环境
+xlings install           # 按声明的版本装进项目级隔离环境
 ```
 
 → [项目环境](docs/quick-start/project-env.md)
 
 ### 🤖 在隔离 SubOS 中运行 Agent / 不受信代码
 
-把 claude / codex / opencode —— 或任意不受信代码 —— 跑在**隔离的 SubOS 内部**:内部拥有完全权限,宿主机不受影响。一台机器可跑多个隔离实例。
+把 claude / codex / opencode —— 或任意不受信代码 —— 跑在**隔离的 SubOS 内部**:内部拥有完全权限,宿主机不受影响。从 base 环境秒级 fork,一台机器可跑多个隔离实例。
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest

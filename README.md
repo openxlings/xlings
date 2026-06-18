@@ -83,41 +83,41 @@ xlings agent usage     # complete usage guide written for LLM agents
 
 ## Usage scenarios
 
-### 🛠 Multi-version toolchains, no sudo
+### 🛠 Multi-version toolchains, one command everywhere
 
-Install many versions side by side and switch instantly — nothing conflicts, no root.
+Install any version of anything and keep several side by side — switch instantly, no conflicts, no sudo. The same commands work on Linux, macOS, and Windows.
 
 ```bash
-xlings install gcc@16 gcc@11
-xlings use gcc@11        # switch back anytime — coexists, host untouched
+xlings install gcc@16 gcc@11 node@24 cmake
+xlings use gcc@11        # switch back anytime — both stay installed
 ```
 
 → [Multi-version guide](docs/quick-start/multi-version.md)
 
-### 📦 Reproducible project environments
+### 📦 Reproducible project environments, consistent across OSes
 
-Commit a `.xlings.json`; teammates and CI get the identical, isolated environment.
+Commit a `.xlings.json` that declares per-platform versions. Each project gets its **own isolated SubOS**, so teammates and CI — on any distro or OS — land in the exact same environment, without touching the host or other projects.
 
 ```json
 {
   "workspace": {
-    "mcpp": "0.0.33",
-    "gcc": { "linux": "16.1.0" },
-    "llvm": { "macosx": "20.1.7" }
+    "xmake": "3.0.7",
+    "gcc":  { "linux":  "16.1.0" },
+    "llvm": { "macosx": "20.1.7", "windows": "19.1.0" }
   }
 }
 ```
 
 ```bash
 cd my-project/           # entering the dir activates the project SubOS
-xlings install           # deps land in project-local isolation
+xlings install           # installs the declared versions, project-local
 ```
 
 → [Project env guide](docs/quick-start/project-env.md)
 
 ### 🤖 Agents & untrusted code in an isolated SubOS
 
-Run claude / codex / opencode — or any untrusted code — **inside** a rootless SubOS: full permissions within, host untouched. Multiple isolated instances on one machine.
+Run claude / codex / opencode — or any untrusted code — **inside** a rootless SubOS: full permissions within, host untouched. Fork from a base env in seconds and run several isolated instances on one machine.
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest
