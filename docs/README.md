@@ -84,7 +84,8 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 | [项目环境](quick-start/project-env.md) | .xlings.json 配置、一键安装、项目级 SubOS |
 | [SubOS 与 Agent](quick-start/subos-and-agent.md) | 创建隔离环境、运行 Agent、多实例 |
 | [自定义包索引](quick-start/custom-index.md) | 搭建私有仓库、添加第三方索引 |
-| 从源码构建 | 构建 xlings 本身 *(见 README)* |
+| [从源码构建](build-from-source.md) | 用 mcpp 构建 xlings 本身 |
+| [与其他工具对比](comparison.md) | xlings vs apt / nix / docker |
 
 ---
 
