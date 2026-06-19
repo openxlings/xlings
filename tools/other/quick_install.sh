@@ -145,7 +145,13 @@ fi
 log_info "Extracting..."
 tar -xzf "${WORK_DIR}/${TARBALL}" -C "$WORK_DIR"
 
-EXTRACT_DIR=$(find "$WORK_DIR" -mindepth 1 -maxdepth 1 -type d -name "xlings-*" | head -1)
+# Locate the extracted xlings-* dir with a shell glob instead of `find`:
+# minimal images (e.g. opensuse/tumbleweed) ship without findutils, so a
+# `find` call here dies at exit 127 right after a successful extract.
+EXTRACT_DIR=""
+for _d in "$WORK_DIR"/xlings-*/; do
+    [[ -d "$_d" ]] && { EXTRACT_DIR="${_d%/}"; break; }
+done
 if [[ -z "$EXTRACT_DIR" ]] || [[ ! -x "$EXTRACT_DIR/bin/xlings" && ! -f "$EXTRACT_DIR/bin/xlings" ]]; then
     log_error "Extracted package is invalid (missing bin/xlings)."
     exit 1
