@@ -63,9 +63,8 @@ jobs:
             .mcpp
           # idxfmt2 salt: abandon pre-2026-06-08 caches whose materialized
           # compat xpkgs predate the mcpp-index GLOBAL/CN url schema (#41).
-          # The "Refresh mcpp package index cache" step re-fetches the index
-          # but not the materialized xpkgs, so a stale cache here resurfaces
-          # the old format and fails compat.zlib resolution.
+          # The unit-test build re-provisions mcpplibs from a pinned raw
+          # clone, so the cached index copy is not relied upon for it.
           key: mcpp-${{ runner.os }}-idxfmt2-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-${{ runner.os }}-idxfmt2-
@@ -82,31 +81,6 @@ jobs:
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index (pinned raw clone)
-        run: |
-          # mcpp resolves compat.* / mcpplibs.* from mcpp-community/mcpp-index.
-          # A fresh CI runner has no copy, so `mcpp build` would fetch it
-          # lazily — and that fetch drops compat.zlib's multiline
-          # `generated_files` mcpp block, failing with "index entry has no
-          # mcpp field" (only zlib has that field; bzip2/lz4/xz are fine).
-          # Provision it deterministically as a raw clone at MCPP_INDEX_REF,
-          # which preserves the block (matches a working local checkout).
-          for root in "$HOME/.mcpp" "$GITHUB_WORKSPACE/.mcpp"; do
-            mcpplibs="$root/registry/data/mcpplibs"
-            [[ -d "$root" ]] || continue
-            rm -rf "$mcpplibs"
-            mkdir -p "$(dirname "$mcpplibs")"
-            git clone --quiet "$MCPP_INDEX_URL" "$mcpplibs"
-            git -C "$mcpplibs" checkout --quiet "$MCPP_INDEX_REF"
-            printf 'ok\n' > "$mcpplibs/.mcpp-index-updated"
-          done
-          # Fail fast (with the offending file) if the entry lacks its block.
-          zlib_entry="$HOME/.mcpp/registry/data/mcpplibs/pkgs/c/compat.zlib.lua"
-          if ! grep -q 'mcpp = {' "$zlib_entry"; then
-            echo "::error::compat.zlib index entry missing mcpp block: $zlib_entry"
-            exit 1
-          fi
-
       - name: Prepare unit fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
@@ -115,6 +89,28 @@ jobs:
 
       - name: Build and run unit tests
         run: |
+          # First pass initializes the mcpp sandbox and materializes the
+          # toolchain. It also lazily fetches mcpp-index, which corrupts
+          # compat.zlib (its multiline `generated_files` mcpp block is
+          # dropped → "index entry has no mcpp field"); that makes this
+          # pass fail, which is expected — we repair the index next.
+          mcpp build || true
+          # Repair: replace mcpplibs with a raw clone of mcpp-index pinned
+          # to MCPP_INDEX_REF. A raw clone preserves compat.zlib's mcpp
+          # block (matches a working local checkout); the marker file stops
+          # mcpp from re-fetching it on the next build.
+          mcpplibs="$HOME/.mcpp/registry/data/mcpplibs"
+          rm -rf "$mcpplibs"
+          mkdir -p "$(dirname "$mcpplibs")"
+          git clone --quiet "$MCPP_INDEX_URL" "$mcpplibs"
+          git -C "$mcpplibs" checkout --quiet "$MCPP_INDEX_REF"
+          printf 'ok\n' > "$mcpplibs/.mcpp-index-updated"
+          zlib_entry="$mcpplibs/pkgs/c/compat.zlib.lua"
+          if ! grep -q 'mcpp = {' "$zlib_entry"; then
+            echo "::error::compat.zlib index entry missing mcpp block: $zlib_entry"
+            exit 1
+          fi
+          # Real build + tests against the repaired index.
           mcpp build
           mcpp test || {
             status=$?
