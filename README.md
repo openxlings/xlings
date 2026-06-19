@@ -32,7 +32,7 @@ One tool to install any version of anything, run it rootless, and isolate it OS-
 2. **Multi-version coexistence** — N versions side-by-side; version-view + ref-counting (N envs ≈ 1× storage)
 3. **3-level SubOS isolation** — shell (env switch) / FS (bwrap/proot, rootless) / image (ext4, root)
 4. **Decentralized package index** — official + 3rd-party + self-hosted; resource servers for binary mirrors
-5. 🤖 **JSON event interface** — `xlings interface` (NDJSON) for AI agents, CI, and 3rd-party tooling
+5. **JSON event interface** — `xlings interface` (NDJSON) for AI agents, CI, and 3rd-party tooling
 
 ## Quick Start
 
