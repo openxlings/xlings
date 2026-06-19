@@ -28,11 +28,11 @@
 
 ## 核心能力
 
-1. 📦 **通用包管理基础设施** —— binary / script / config / subos / tutorial 统统是 xpkg
-2. 🔀 **多版本共存** —— 同一工具 N 个版本并存;版本视图 + 引用计数(N 个环境 ≈ 1 份存储)
-3. 🏗️ **三级 SubOS 隔离** —— shell(env 切换)/ FS(bwrap/proot,无需 root)/ image(ext4,需 root)
-4. 🌐 **去中心化包索引** —— 官方 + 第三方 + 自建仓库;资源服务器做二进制镜像分发
-5. 🤖 **JSON 事件接口** —— `xlings interface`(NDJSON 协议)面向 AI Agent、CI 和第三方工具
+1. **通用包管理基础设施** —— binary / script / config / subos / tutorial 统统是 xpkg
+2. **多版本共存** —— 同一工具 N 个版本并存;版本视图 + 引用计数(N 个环境 ≈ 1 份存储)
+3. **三级 SubOS 隔离** —— shell(env 切换)/ FS(bwrap/proot,无需 root)/ image(ext4,需 root)
+4. **去中心化包索引** —— 官方 + 第三方 + 自建仓库;资源服务器做二进制镜像分发
+5. **JSON 事件接口** —— `xlings interface`(NDJSON 协议)面向 AI Agent、CI 和第三方工具
 
 ## 快速开始
 
