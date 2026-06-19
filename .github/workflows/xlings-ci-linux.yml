@@ -81,6 +81,24 @@ jobs:
         run: |
           rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
           rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
+          # Rebuild the index explicitly. Deleting mcpplibs and letting
+          # `mcpp build` repopulate it lazily yields a compat.zlib entry
+          # whose multiline `generated_files` mcpp block is dropped (post
+          # mcpp-index #41 GLOBAL/CN reformat) → "index entry has no mcpp
+          # field". `xlings update` rebuilds the index correctly.
+          xlings update
+
+      - name: "Diagnose: compat.zlib index entries"
+        run: |
+          echo "::group::all compat.zlib*.lua under ~/.mcpp (mcpp-block status)"
+          while IFS= read -r f; do
+            if grep -q 'mcpp = {' "$f"; then s="HAS mcpp block"; else s="MISSING mcpp block"; fi
+            echo "[$s] $f"
+          done < <(find "$HOME/.mcpp" -name 'compat.zlib*.lua' 2>/dev/null | sort)
+          echo "::endgroup::"
+          echo "::group::index entry content (mcpplibs)"
+          cat "$HOME/.mcpp/registry/data/mcpplibs/pkgs/c/compat.zlib.lua" 2>/dev/null || echo "(no mcpplibs compat.zlib.lua)"
+          echo "::endgroup::"
 
       - name: Prepare unit fixture index repo
         run: |
