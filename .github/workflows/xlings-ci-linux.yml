@@ -56,9 +56,14 @@ jobs:
           path: |
             ~/.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # idxfmt2 salt: abandon pre-2026-06-08 caches whose materialized
+          # compat xpkgs predate the mcpp-index GLOBAL/CN url schema (#41).
+          # The "Refresh mcpp package index cache" step re-fetches the index
+          # but not the materialized xpkgs, so a stale cache here resurfaces
+          # the old format and fails compat.zlib resolution.
+          key: mcpp-${{ runner.os }}-idxfmt2-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-${{ runner.os }}-idxfmt2-
 
       - name: Prepare bootstrap package index
         run: |
