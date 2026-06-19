@@ -85,24 +85,6 @@ jobs:
 
       - name: Build and run unit tests
         run: |
-          # WORKAROUND (mcpp read_xpkg_lua cross-index ambiguity):
-          # mcpp resolves (ns=compat, name=compat.zlib) by scanning
-          # ~/.mcpp/registry/data/* via directory_iterator (unspecified
-          # order) with candidates [compat.zlib.lua, zlib.lua]. The bare
-          # `zlib.lua` fallback collides with xim-pkgindex/pkgs/z/zlib.lua
-          # (upstream xim:zlib, no mcpp block). On ubuntu-24.04 runners
-          # xim-pkgindex is scanned before mcpplibs, so the wrong file wins
-          # → "compat.zlib: index entry has no mcpp field". (Only zlib
-          # collides; bzip2/lz4/xz have no bare-name pkg in a direct child
-          # index.) Drop the colliding bare zlib.lua so the namespaced
-          # compat.zlib.lua in mcpplibs is selected deterministically.
-          # TODO: remove once mcpp read_xpkg_lua prefers the exact
-          # namespaced match over the bare-name fallback.
-          mcpp build || true   # first pass materializes ~/.mcpp data indexes
-          for root in "$HOME/.mcpp" "$GITHUB_WORKSPACE/.mcpp"; do
-            find "$root/registry/data" -mindepth 1 -maxdepth 1 -type d \
-              ! -name mcpplibs -exec rm -f {}/pkgs/z/zlib.lua \; 2>/dev/null || true
-          done
           mcpp build
           mcpp test || {
             status=$?
