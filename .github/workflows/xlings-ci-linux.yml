@@ -83,30 +83,6 @@ jobs:
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
-      - name: "DIAG: compat.zlib actual source file (temporary)"
-        run: |
-          # Trigger index materialization (fails at compat.zlib; expected).
-          mcpp build || true
-          cache="$HOME/.mcpp/registry/data/mcpplibs/.xlings-index-cache.json"
-          echo "::group::cache 'path' field for compat.zlib"
-          grep -oE '"path":"[^"]*compat\.zlib\.lua"' "$cache" 2>/dev/null || echo "(cache or compat.zlib entry missing: $cache)"
-          echo "::endgroup::"
-          echo "::group::every compat.zlib.lua under .mcpp roots — block / generated_files / [[ long-bracket"
-          while IFS= read -r f; do
-            echo "=== $f ($(wc -l < "$f" 2>/dev/null) lines) ==="
-            grep -nE 'mcpp = \{|generated_files|\[\[' "$f" 2>/dev/null || echo "  (no mcpp/generated_files/[[ markers)"
-          done < <(find "$HOME/.mcpp" "$GITHUB_WORKSPACE/.mcpp" -name 'compat.zlib.lua' 2>/dev/null | sort -u)
-          echo "::endgroup::"
-          echo "::group::mcpp-region dump + hash of the path-field file"
-          pf=$(grep -oE '"path":"[^"]*compat\.zlib\.lua"' "$cache" 2>/dev/null | head -1 | sed -E 's/.*"path":"//; s/"$//')
-          if [[ -n "$pf" && -f "$pf" ]]; then
-            echo "size=$(wc -c < "$pf")  lines=$(wc -l < "$pf")"
-            echo "sha256=$(sha256sum "$pf" | awk '{print $1}')"
-            echo "EXPECTED upstream HEAD sha256=cfb31c61785e6f8e95093bc8253b811b50c0d653a81411cafacd183e81d1c889"
-            sed -n '38,72p' "$pf"
-          else echo "(path-field file not found: '$pf')"; fi
-          echo "::endgroup::"
-
       - name: Build and run unit tests
         run: |
           mcpp build
