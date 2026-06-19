@@ -16,6 +16,11 @@ env:
   BOOTSTRAP_XLINGS_VERSION: v0.4.49
   # Must contain the mcpp version pinned in .xlings.json (0.0.56).
   XIM_PKGINDEX_REF: e692575099151d1f2c12c288d17aaa50f97e4e5d
+  # mcpp's own lib index (compat.*, mcpplibs.*). Pinned and cloned raw so
+  # the unit-test build doesn't depend on mcpp's lazy index fetch, which
+  # drops compat.zlib's multiline `generated_files` mcpp block.
+  MCPP_INDEX_URL: https://github.com/mcpp-community/mcpp-index.git
+  MCPP_INDEX_REF: d7191f431210731e025319a1a8ea91c24ac7d4ee
 
 jobs:
   build-and-test:
@@ -77,28 +82,30 @@ jobs:
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index cache
+      - name: Refresh mcpp package index (pinned raw clone)
         run: |
-          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
-          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
-          # Rebuild the index explicitly. Deleting mcpplibs and letting
-          # `mcpp build` repopulate it lazily yields a compat.zlib entry
-          # whose multiline `generated_files` mcpp block is dropped (post
-          # mcpp-index #41 GLOBAL/CN reformat) → "index entry has no mcpp
-          # field". `xlings update` rebuilds the index correctly.
-          xlings update
-
-      - name: "Diagnose: compat.zlib index entries"
-        run: |
-          echo "::group::all compat.zlib*.lua under ~/.mcpp (mcpp-block status)"
-          while IFS= read -r f; do
-            if grep -q 'mcpp = {' "$f"; then s="HAS mcpp block"; else s="MISSING mcpp block"; fi
-            echo "[$s] $f"
-          done < <(find "$HOME/.mcpp" -name 'compat.zlib*.lua' 2>/dev/null | sort)
-          echo "::endgroup::"
-          echo "::group::index entry content (mcpplibs)"
-          cat "$HOME/.mcpp/registry/data/mcpplibs/pkgs/c/compat.zlib.lua" 2>/dev/null || echo "(no mcpplibs compat.zlib.lua)"
-          echo "::endgroup::"
+          # mcpp resolves compat.* / mcpplibs.* from mcpp-community/mcpp-index.
+          # A fresh CI runner has no copy, so `mcpp build` would fetch it
+          # lazily — and that fetch drops compat.zlib's multiline
+          # `generated_files` mcpp block, failing with "index entry has no
+          # mcpp field" (only zlib has that field; bzip2/lz4/xz are fine).
+          # Provision it deterministically as a raw clone at MCPP_INDEX_REF,
+          # which preserves the block (matches a working local checkout).
+          for root in "$HOME/.mcpp" "$GITHUB_WORKSPACE/.mcpp"; do
+            mcpplibs="$root/registry/data/mcpplibs"
+            [[ -d "$root" ]] || continue
+            rm -rf "$mcpplibs"
+            mkdir -p "$(dirname "$mcpplibs")"
+            git clone --quiet "$MCPP_INDEX_URL" "$mcpplibs"
+            git -C "$mcpplibs" checkout --quiet "$MCPP_INDEX_REF"
+            printf 'ok\n' > "$mcpplibs/.mcpp-index-updated"
+          done
+          # Fail fast (with the offending file) if the entry lacks its block.
+          zlib_entry="$HOME/.mcpp/registry/data/mcpplibs/pkgs/c/compat.zlib.lua"
+          if ! grep -q 'mcpp = {' "$zlib_entry"; then
+            echo "::error::compat.zlib index entry missing mcpp block: $zlib_entry"
+            exit 1
+          fi
 
       - name: Prepare unit fixture index repo
         run: |
