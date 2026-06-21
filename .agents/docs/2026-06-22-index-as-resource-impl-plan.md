@@ -72,8 +72,15 @@ P3 阶段接入,主索引先行。
 | CN 鲁棒性修复(404 穿透 + GLOBAL 兜底) | ✅ `95018d8`(实测 mirror=CN update 成功,112 包) |
 | PR 开启 | ✅ #327 |
 | release.yml 自动发布工件 job | ✅ `c56beff`(guarded,缺 secret 则跳过) |
-| 三平台 CI 全绿 | ⏳ 运行中(HEAD c56beff) |
+| 三平台 CI 全绿 | ✅ HEAD `49efb58`:linux / linux-root / macos / windows 全 pass(`gh pr checks 327`) |
 | 子索引工件化(awesome/scode/d2x) | ⏳ Phase 3(暂 git 同步,已验证可用) |
+
+### CI 修复记录(测试驱动)
+首轮 CI 暴露 linux `E2E-06`(sub_index_search)、macos `E2E-07`(remove_multi_version)失败:
+二者都把 `index_repos` 指到**本地 fixture 路径**,但旧的 auto gate 仍抓取官方工件、覆盖了本地索引。
+修复(`49efb58`):auto 模式仅当主索引是**官方远端 xim-pkgindex** 时才抓工件;本地/自定义源
+(file://、绝对路径、fork URL)一律走原 git/local。本地验证两测试通过、默认配置仍走工件(112 包)。
+最终 CI(reopen 触发的 `49efb58` 全新一轮)四平台全绿。
 
 ### 发现并修复的两个 CN 关键 bug(测试驱动)
 1. `tinyhttps::download_file` 把 HTTP 404 当致命错误、不穿透到下一候选 → GitCode 资产 404
