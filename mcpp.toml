@@ -1,6 +1,6 @@
 [package]
 name = "xlings"
-version = "0.4.51"
+version = "0.4.52"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
