@@ -5,8 +5,6 @@
 // invariant: on the existing (non-root) path every helper returns exactly
 // the historical behavior, so Linux-non-root / macOS / Windows are
 // unaffected. The sudo-gated behavior is covered by the e2e test.
-module;
-
 #include <gtest/gtest.h>
 #include <cstdlib>
 
@@ -15,23 +13,32 @@ import xlings.platform;
 
 namespace {
 
+// Portable env set/unset — POSIX setenv/unsetenv don't exist on Windows.
+#if defined(_WIN32)
+inline int set_env_(const char* k, const char* v) { return _putenv_s(k, v); }
+inline int unset_env_(const char* k) { return _putenv_s(k, ""); }  // "" removes it
+#else
+inline int set_env_(const char* k, const char* v) { return ::setenv(k, v, 1); }
+inline int unset_env_(const char* k) { return ::unsetenv(k); }
+#endif
+
 // RAII helper: set/restore a set of environment variables around a test.
 struct EnvGuard {
     std::vector<std::pair<std::string, std::optional<std::string>>> saved;
     void set(const char* k, const char* v) {
         const char* cur = std::getenv(k);
         saved.emplace_back(k, cur ? std::optional<std::string>(cur) : std::nullopt);
-        ::setenv(k, v, 1);
+        set_env_(k, v);
     }
     void unset(const char* k) {
         const char* cur = std::getenv(k);
         saved.emplace_back(k, cur ? std::optional<std::string>(cur) : std::nullopt);
-        ::unsetenv(k);
+        unset_env_(k);
     }
     ~EnvGuard() {
         for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
-            if (it->second) ::setenv(it->first.c_str(), it->second->c_str(), 1);
-            else            ::unsetenv(it->first.c_str());
+            if (it->second) set_env_(it->first.c_str(), it->second->c_str());
+            else            unset_env_(it->first.c_str());
         }
     }
 };

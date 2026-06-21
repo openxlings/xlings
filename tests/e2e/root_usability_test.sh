@@ -93,8 +93,9 @@ got_uid="$(owner_uid "$B_INSTALLED/bin/xlings")"
   fail "sudo-sim install not chowned back (bin/xlings uid=$got_uid, want $INVOKER_UID)"
 
 # A nested file (deeper than the top level) must be chowned too — proves
-# the recursive walk, not just a top-level chown.
-nested="$(find "$B_INSTALLED" -type f | head -1)"
+# the recursive walk, not just a top-level chown. `-print -quit` (not
+# `| head`) avoids SIGPIPE killing find under `set -o pipefail`.
+nested="$(find "$B_INSTALLED" -type f -print -quit)"
 [[ -n "$nested" ]] || fail "no files found under installed home"
 [[ "$(owner_uid "$nested")" == "$INVOKER_UID" ]] || \
   fail "nested file not chowned to invoker: $nested"
