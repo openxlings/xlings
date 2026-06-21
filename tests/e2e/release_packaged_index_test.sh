@@ -11,21 +11,10 @@ INDEX_DIR="$PKG_DIR/data/xim-pkgindex"
 
 [[ -d "$INDEX_DIR/pkgs" ]] || fail "release package missing bundled xim-pkgindex/pkgs"
 [[ -f "$INDEX_DIR/pkgs/p/patchelf.lua" ]] || fail "bundled xim-pkgindex missing patchelf package"
-[[ -d "$INDEX_DIR/.git" ]] || fail "bundled xim-pkgindex should remain a git repo for xlings update"
-
-mirror="${XLINGS_RELEASE_MIRROR:-}"
-if [[ -z "$mirror" ]] && command -v jq >/dev/null 2>&1; then
-  mirror="$(jq -r '.mirror // "GLOBAL"' "$PKG_DIR/.xlings.json")"
-fi
-[[ -z "$mirror" || "$mirror" == "null" ]] && mirror="GLOBAL"
-
-expected_origin="https://gitee.com/sunrisepeak/xim-pkgindex.git"
-if [[ "$mirror" == "GLOBAL" ]]; then
-  expected_origin="https://github.com/openxlings/xim-pkgindex.git"
-fi
-actual_origin="$(git -C "$INDEX_DIR" remote get-url origin)"
-[[ "$actual_origin" == "$expected_origin" ]] || \
-  fail "bundled xim-pkgindex origin mismatch: expected $expected_origin, got $actual_origin"
+# Y-asset: the bundled index is artifact-managed (no .git); the runtime refreshes
+# it via `xlings update` from xlings-res/xim-index, not git pull.
+[[ ! -d "$INDEX_DIR/.git" ]] || fail "bundled xim-pkgindex should be artifact-managed (no .git)"
+[[ -f "$INDEX_DIR/.xlings-index-version" ]] || fail "bundled xim-pkgindex missing .xlings-index-version marker"
 
 if [[ "$(uname -s)" == "Linux" ]]; then
   INSTALL_USER_DIR="$RUNTIME_ROOT/release_packaged_index_no_git_user"

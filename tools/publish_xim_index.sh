@@ -35,7 +35,11 @@ run()  { if [[ "$DRY" == 1 ]]; then echo "[dry-run] $*"; else "$@"; fi; }
 if [[ -z "$NAME" ]]; then BASE="xim-index-${VERSION}"; LATEST="xim-index-latest.json";
 else BASE="xim-index-${NAME}-${VERSION}"; LATEST="xim-index-${NAME}-latest.json"; fi
 
-TAG="v${VERSION}"
+# The client reads the rolling "latest" tag by default (see indexfetch.cppm
+# index_tag_()). We also archive each version under v<ver> for reproducibility
+# (room for the future X-full/lockfile pinning).
+ROLLING_TAG="latest"
+ARCHIVE_TAG="v${VERSION}"
 ART="$DIR/${BASE}.tar.gz"
 MAN="$DIR/${BASE}.manifest.json"
 [[ -f "$ART" ]] || { echo "missing artifact: $ART" >&2; exit 1; }
@@ -45,32 +49,38 @@ MAN="$DIR/${BASE}.manifest.json"
 LATEST_PATH="$DIR/$LATEST"
 cp "$MAN" "$LATEST_PATH"
 
-# ── GitHub via gh ────────────────────────────────────────────────
-if [[ "$SKIP_GH" == 0 ]]; then
-  info "GitHub: $GH_REPO  tag=$TAG"
+publish_gh() {  # <tag> <file...>
+  local tag="$1"; shift
   if [[ "$DRY" == 1 ]]; then
-    echo "[dry-run] gh release view $TAG -R $GH_REPO || gh release create $TAG -R $GH_REPO"
-    echo "[dry-run] gh release upload $TAG $ART $MAN $LATEST_PATH -R $GH_REPO --clobber"
-  else
-    gh release view "$TAG" -R "$GH_REPO" >/dev/null 2>&1 \
-      || gh release create "$TAG" -R "$GH_REPO" --title "$VERSION" --notes "xim package index artifact $VERSION"
-    gh release upload "$TAG" "$ART" "$MAN" "$LATEST_PATH" -R "$GH_REPO" --clobber
+    echo "[dry-run] gh release create/view $tag -R $GH_REPO; gh release upload $tag $* -R $GH_REPO --clobber"
+    return
   fi
-fi
+  gh release view "$tag" -R "$GH_REPO" >/dev/null 2>&1 \
+    || gh release create "$tag" -R "$GH_REPO" --title "$tag" --notes "xim package index ($VERSION)"
+  gh release upload "$tag" "$@" -R "$GH_REPO" --clobber
+}
+publish_gtc() {  # <tag> <file...>
+  local tag="$1"; shift
+  if [[ "$DRY" == 1 ]]; then
+    echo "[dry-run] gtc release create $GTC_REPO --tag $tag; gtc release upload $GTC_REPO $* --tag $tag"
+    return
+  fi
+  gtc release create "$GTC_REPO" --tag "$tag" --name "$tag" 2>/dev/null || true
+  gtc release upload "$GTC_REPO" "$@" --tag "$tag"
+}
 
-# ── GitCode via gtc ──────────────────────────────────────────────
+if [[ "$SKIP_GH" == 0 ]]; then
+  info "GitHub $GH_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
+  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_PATH"   # client entry point
+  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"           # immutable archive
+fi
 if [[ "$SKIP_GTC" == 0 ]]; then
-  info "GitCode: $GTC_REPO  tag=$TAG"
-  if [[ "$DRY" == 1 ]]; then
-    echo "[dry-run] gtc release create $GTC_REPO --tag $TAG --name $VERSION"
-    echo "[dry-run] gtc release upload $GTC_REPO $ART $MAN $LATEST_PATH --tag $TAG"
-  else
-    gtc release create "$GTC_REPO" --tag "$TAG" --name "$VERSION" 2>/dev/null || true
-    gtc release upload "$GTC_REPO" "$ART" "$MAN" "$LATEST_PATH" --tag "$TAG"
-  fi
+  info "GitCode $GTC_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
+  publish_gtc "$ROLLING_TAG" "$ART" "$LATEST_PATH"
+  publish_gtc "$ARCHIVE_TAG" "$ART" "$MAN"
 fi
 
 DESTS=""
 [[ "$SKIP_GH"  == 0 ]] && DESTS="$GH_REPO(gh)"
 [[ "$SKIP_GTC" == 0 ]] && DESTS="${DESTS:+$DESTS, }$GTC_REPO(gtc)"
-info "Published $BASE (+ $LATEST pointer) to: ${DESTS:-<none>}"
+info "Published $BASE (+ $LATEST pointer; tags: $ROLLING_TAG, $ARCHIVE_TAG) to: ${DESTS:-<none>}"

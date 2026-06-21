@@ -361,7 +361,15 @@ bool sync_all_repos(bool force = false) {
     if (auto* e = std::getenv("XLINGS_INDEX_SOURCE"); e && *e) indexSource = e;
 
     bool mainArtifactManaged = fs::exists(mainDir / ".xlings-index-version");
-    if (indexSource != "git" && (force || !fs::exists(mainDir / "pkgs"))) {
+    bool mainHasIndex = fs::exists(mainDir / "pkgs");
+    // auto (default): fetch the artifact only when the index is fresh (missing)
+    // or already artifact-managed. An existing *git* index (e.g. a test fixture
+    // or a legacy checkout) keeps using git, so git-based e2e tests are
+    // unaffected. XLINGS_INDEX_SOURCE=artifact forces the artifact path;
+    // =git disables it entirely.
+    bool attemptArtifact = (indexSource == "artifact")
+        || (indexSource != "git" && (mainArtifactManaged || !mainHasIndex));
+    if (attemptArtifact) {
         std::string ferr;
         if (fetch_index_artifact(mainDir, ferr)) {
             mainArtifactManaged = true;
