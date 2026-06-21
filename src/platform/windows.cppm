@@ -238,6 +238,19 @@ namespace platform_impl {
         return std::nullopt;
     }
 
+    // ── Execution identity primitives (no POSIX uid/sudo model) ─────
+    // Windows has no euid/sudo concept; these stubs keep the
+    // cross-platform identity API in platform.cppm compiling and inert.
+    export bool is_root() {
+        return false;
+    }
+    export void lchown_path_(const std::filesystem::path&,
+                             unsigned int, unsigned int) {
+    }
+    export std::string home_for_user_(const std::string&) {
+        return {};
+    }
+
     export struct Icon {
         static constexpr auto pending    = "o";
         static constexpr auto running    = "*";

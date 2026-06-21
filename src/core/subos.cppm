@@ -175,12 +175,28 @@ namespace sandbox_detail_ {
 // is also included so anything that does getpwuid(0) (scripts that
 // assume "root must exist") doesn't bail.
 std::string make_etc_passwd_(const std::string& user, uid_t uid, gid_t gid) {
+    auto home = "/home/" + user;
+    // When running as root (uid 0), emit a SINGLE uid-0 entry whose home is
+    // the sandbox home (/home/<user>), so getpwuid(0)->pw_dir agrees with
+    // $HOME and the bind-mounted home. The historical extra
+    // "root:x:0:0:root:/root" line would otherwise create a second,
+    // conflicting uid-0 record that getpwuid(0) resolves to /root — an
+    // empty, unbound path — breaking `cd ~`, ~/.config, and profile sourcing
+    // for the root user inside the sandbox.
+    if (uid == 0) {
+        return std::format("{}:x:0:0:{}:{}:/bin/sh\n", user, user, home);
+    }
     return std::format(
         "root:x:0:0:root:/root:/bin/sh\n"
-        "{}:x:{}:{}:{}:/home/{}:/bin/sh\n",
-        user, uid, gid, user, user);
+        "{}:x:{}:{}:{}:{}:/bin/sh\n",
+        user, uid, gid, user, home);
 }
 std::string make_etc_group_(const std::string& user, gid_t gid) {
+    // Mirror passwd: a single gid-0 entry when running as root avoids a
+    // duplicate group-0 record (root + <user> both gid 0).
+    if (gid == 0) {
+        return std::format("{}:x:0:\n", user);
+    }
     return std::format(
         "root:x:0:\n"
         "{}:x:{}:\n",
@@ -315,8 +331,10 @@ int mount_image_(const fs::path& img, const fs::path& mountpoint,
     fs::create_directories(mountpoint);
     if (is_mounted_(mountpoint)) return 0;  // already mounted
 
-    // sudo mount (universally available)
-    auto cmd = "sudo mount -o loop " + img.string() + " "
+    // mount (privileged). priv_prefix() is "" when already root — sudo is
+    // redundant and frequently absent in minimal root containers, where the
+    // old hardcoded "sudo mount" died with "sudo: command not found".
+    auto cmd = platform::priv_prefix() + "mount -o loop " + img.string() + " "
                + mountpoint.string();
     auto rc = std::system(cmd.c_str());
     if (rc != 0) return rc;
@@ -324,8 +342,8 @@ int mount_image_(const fs::path& img, const fs::path& mountpoint,
     // ext4 root dir is owned by root after mkfs; chown to real user
     // so sandbox init can create dirs without sudo.
     if (!user.empty()) {
-        auto chown_cmd = "sudo chown " + user + ":" + user + " "
-                         + mountpoint.string();
+        auto chown_cmd = platform::priv_prefix() + "chown " + user + ":" + user
+                         + " " + mountpoint.string();
         std::system(chown_cmd.c_str());
     }
     return 0;
@@ -334,7 +352,8 @@ int mount_image_(const fs::path& img, const fs::path& mountpoint,
 // Unmount an image file.
 int unmount_image_(const fs::path& mountpoint) {
     if (!is_mounted_(mountpoint)) return 0;
-    auto cmd = "sudo umount " + mountpoint.string() + " 2>/dev/null";
+    auto cmd = platform::priv_prefix() + "umount " + mountpoint.string()
+               + " 2>/dev/null";
     return std::system(cmd.c_str());
 }
 

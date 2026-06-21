@@ -278,6 +278,21 @@ extract_archive(const std::filesystem::path& archive,
             ::archive_entry_set_hardlink(entry, rebasedHl.c_str());
         }
 
+        // Harden permissions: strip setuid / setgid / world-writable bits
+        // from every entry before it hits disk. Package payloads have no
+        // business shipping setuid binaries — the few that legitimately need
+        // it (e.g. bwrap) get it from an explicit install hook, not tarball
+        // mode bits — and a setuid entry extracted under root/sudo would
+        // silently become setuid-root. Remaining mode bits are still honored
+        // (ARCHIVE_EXTRACT_PERM), so executables stay executable.
+        {
+            constexpr unsigned kStrip = 04000u | 02000u | 0002u;  // suid|sgid|o+w
+            auto perm = static_cast<unsigned>(::archive_entry_perm(entry));
+            // libarchive's set_perm takes its own mode type; the masked
+            // unsigned converts implicitly (no platform/libarchive macro).
+            ::archive_entry_set_perm(entry, perm & ~kStrip);
+        }
+
         r = ::archive_write_header(dst, entry);
         if (r < ARCHIVE_OK) {
             // Write may complain on platform mismatch (e.g., trying to
