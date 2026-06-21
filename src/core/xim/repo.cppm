@@ -362,13 +362,27 @@ bool sync_all_repos(bool force = false) {
 
     bool mainArtifactManaged = fs::exists(mainDir / ".xlings-index-version");
     bool mainHasIndex = fs::exists(mainDir / "pkgs");
-    // auto (default): fetch the artifact only when the index is fresh (missing)
-    // or already artifact-managed. An existing *git* index (e.g. a test fixture
-    // or a legacy checkout) keeps using git, so git-based e2e tests are
-    // unaffected. XLINGS_INDEX_SOURCE=artifact forces the artifact path;
-    // =git disables it entirely.
-    bool attemptArtifact = (indexSource == "artifact")
-        || (indexSource != "git" && (mainArtifactManaged || !mainHasIndex));
+
+    // The artifact is the OFFICIAL xim index. In auto mode it applies ONLY when
+    // the configured main index is the official index from a *remote* source —
+    // never when the user points index_repos at a local path (file://, abs
+    // path: test fixtures, project-local indexes) or a custom fork URL, which
+    // must be managed by their own source (git/local).
+    auto globalRepos = Config::global_index_repos();
+    bool mainIsOfficialRemote =
+        !globalRepos.empty()
+        && !Config::is_local_repo_source(globalRepos.front(), false)
+        && (globalRepos.front().url.find("openxlings/xim-pkgindex") != std::string::npos
+            || globalRepos.front().url.find("sunrisepeak/xim-pkgindex") != std::string::npos);
+
+    // auto: official-remote + (fresh or already artifact-managed). An existing
+    // git index keeps using git, so git-based e2e fixtures are unaffected.
+    // XLINGS_INDEX_SOURCE=artifact forces it (power user / tests); =git disables.
+    bool attemptArtifact;
+    if (indexSource == "artifact")   attemptArtifact = true;
+    else if (indexSource == "git")   attemptArtifact = false;
+    else attemptArtifact = mainIsOfficialRemote && (mainArtifactManaged || !mainHasIndex);
+
     if (attemptArtifact) {
         std::string ferr;
         if (fetch_index_artifact(mainDir, ferr)) {
