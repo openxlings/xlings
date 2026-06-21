@@ -278,3 +278,51 @@ jobs:
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build + publish the xim package index as a versioned resource artifact
+  # (Y-asset) to xlings-res/xim-index on GitHub (+ GitCode). Best-effort: each
+  # target is skipped when its token secret is absent, and the job never blocks
+  # the release. See .agents/docs/2026-06-22-index-as-resource-impl-plan.md.
+  publish-index:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    # secrets aren't available in step if: — surface them as env, gate on env.
+    env:
+      XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            VER=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)
+            echo "version=$VER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build index artifact
+        run: |
+          mkdir -p build/index
+          XLINGS_RELEASE_MIRROR=GLOBAL bash tools/build_xim_index_artifact.sh \
+            --version "${{ steps.version.outputs.version }}" --out build/index
+
+      - name: Publish to GitHub (xlings-res/xim-index)
+        if: ${{ env.XLINGS_RES_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+        run: |
+          bash tools/publish_xim_index.sh --version "${{ steps.version.outputs.version }}" \
+            --dir build/index --skip-gitcode
+
+      # GitCode publish needs the `gtc` CLI (not bundled in CI); skipped unless
+      # present. The CN artifact can be published manually with tools/publish_xim_index.sh.
+      - name: Publish to GitCode (xlings-res/xim-index)
+        if: ${{ env.GITCODE_TOKEN != '' }}
+        run: |
+          command -v gtc >/dev/null 2>&1 || { echo "gtc unavailable in CI; skipping gitcode publish"; exit 0; }
+          bash tools/publish_xim_index.sh --version "${{ steps.version.outputs.version }}" \
+            --dir build/index --skip-github || echo "gitcode publish failed (non-blocking)"
