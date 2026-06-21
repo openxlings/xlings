@@ -82,9 +82,13 @@ std::string lower_hex_(std::string s) {
     return s;
 }
 
-// Download the first working candidate URL into destFile. When wantSha256 is
-// non-empty, each candidate is accepted only if its bytes hash to it (the next
-// candidate is tried otherwise). Returns empty string on success, else error.
+// Download the first working candidate URL into destFile, trying each candidate
+// explicitly and continuing past ANY failure — including HTTP 404. This differs
+// from tinyhttps::download_file's internal candidate loop, which treats 404 as a
+// definitive not-found and stops (correct for a single authoritative asset, but
+// wrong for index mirrors: one server 404ing must fall through to the next, e.g.
+// gitcode 404 -> github). When wantSha256 is set, a candidate is accepted only
+// if its bytes match. Returns empty string on success, else the last error.
 std::string download_candidates_(std::vector<std::string> urls,
                                  const std::filesystem::path& destFile,
                                  std::string_view wantSha256) {
@@ -93,25 +97,31 @@ std::string download_candidates_(std::vector<std::string> urls,
     // without one (the manifest pointer), keep the authoritative server first.
     urls = mirror::adaptive::reorder(std::move(urls), !wantSha256.empty());
 
-    tinyhttps::DownloadOptions opts;
-    opts.destFile = destFile;
-    opts.urls = std::move(urls);
-    opts.onUrlAttemptFailed = [](const std::string& u, const std::string& e) {
-        if (e.rfind("stalled:", 0) == 0 || e.rfind("sha256 mismatch", 0) == 0)
-            mirror::adaptive::penalize_host(u);
-    };
-    if (!wantSha256.empty()) {
-        auto want = lower_hex_(std::string(wantSha256));
-        opts.onVerify = [destFile, want](const std::string& u) -> std::string {
-            auto digest = sha256::hex_file(destFile);
-            if (digest && *digest == want) return {};
-            return std::format("sha256 mismatch (source {}): got {}, want {}",
-                               u, digest ? *digest : "<unreadable>", want);
+    std::string want = wantSha256.empty() ? std::string{} : lower_hex_(std::string(wantSha256));
+    std::string lastErr;
+    for (const auto& u : urls) {
+        tinyhttps::DownloadOptions opts;
+        opts.destFile = destFile;
+        opts.urls = { u };          // one URL per call: we own the fallthrough
+        opts.retryCount = 1;        // breadth over depth; don't hammer a 404
+        opts.onUrlAttemptFailed = [](const std::string& url, const std::string& e) {
+            if (e.rfind("stalled:", 0) == 0 || e.rfind("sha256 mismatch", 0) == 0)
+                mirror::adaptive::penalize_host(url);
         };
+        if (!want.empty()) {
+            opts.onVerify = [destFile, want](const std::string& url) -> std::string {
+                auto digest = sha256::hex_file(destFile);
+                if (digest && *digest == want) return {};
+                return std::format("sha256 mismatch (source {}): got {}, want {}",
+                                   url, digest ? *digest : "<unreadable>", want);
+            };
+        }
+        auto r = tinyhttps::download_file(opts);
+        if (r.success) return {};
+        lastErr = r.error.empty() ? ("failed: " + u) : r.error;
+        log::debug("[index] candidate failed ({}): {}", u, lastErr);
     }
-    auto r = tinyhttps::download_file(opts);
-    if (r.success) return {};
-    return r.error.empty() ? "download failed" : r.error;
+    return lastErr.empty() ? "all candidates failed" : lastErr;
 }
 
 } // namespace detail_
@@ -157,6 +167,12 @@ std::vector<std::string> index_asset_urls(std::string_view filename,
     };
     if (!selected.empty()) add(buildFor(selected));
     for (auto& server : Config::resource_servers(mirror)) add(buildFor(server));
+    // Always include GLOBAL (github) servers as fallback for the index — even
+    // under CN. Unlike package binaries (where the regional mirror is
+    // authoritative), the index must stay reachable if the regional mirror
+    // lacks the asset; combined with 404-fallthrough this gives CN: gitcode ->
+    // github -> github proxies.
+    for (auto& server : Config::resource_servers("GLOBAL")) add(buildFor(server));
 
     // GitHub proxy variants (ghfast/ghproxy/...) for the github-hosted URLs.
     std::vector<std::string> expanded;
