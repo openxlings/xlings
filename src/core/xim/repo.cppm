@@ -10,6 +10,7 @@ import xlings.core.compact;
 import xlings.platform;
 import xlings.core.config;
 import xlings.core.mirror;
+import xlings.core.xim.indexfetch;
 
 export namespace xlings::xim {
 
@@ -347,12 +348,40 @@ bool sync_all_repos(bool force = false) {
     namespace fs = std::filesystem;
     auto mirror = Config::mirror();
 
+    auto mainDir = main_repo_dir();
+
+    // ── Index-as-Resource (Y-asset) ─────────────────────────────────
+    // Fetch the main index as a versioned artifact over the resource-server
+    // HTTP path (gains adaptive mirror reorder + stall watchdog; closes G2).
+    // git clone is the fallback. XLINGS_INDEX_SOURCE=git|artifact|auto (auto).
+    // An artifact-managed index has no .git, so once installed via artifact we
+    // must NOT let the git path try to clone it again — the .xlings-index-version
+    // marker records that state.
+    std::string indexSource = "auto";
+    if (auto* e = std::getenv("XLINGS_INDEX_SOURCE"); e && *e) indexSource = e;
+
+    bool mainArtifactManaged = fs::exists(mainDir / ".xlings-index-version");
+    if (indexSource != "git" && (force || !fs::exists(mainDir / "pkgs"))) {
+        std::string ferr;
+        if (fetch_index_artifact(mainDir, ferr)) {
+            mainArtifactManaged = true;
+        } else if (indexSource == "artifact") {
+            log::error("[index] artifact fetch failed and git fallback disabled "
+                       "(XLINGS_INDEX_SOURCE=artifact): {}", ferr);
+            return false;
+        } else {
+            log::warn("[index] artifact fetch failed ({}); falling back to git", ferr);
+        }
+    }
+
     auto syncRepos = [&](const std::vector<IndexRepo>& repos, bool projectScope) {
         auto rootDir = projectScope ? Config::project_data_dir() : Config::global_data_dir();
         if (rootDir.empty()) return true;
         fs::create_directories(rootDir);
         for (auto& repo : repos) {
             auto repoDir = Config::repo_dir_for(repo, projectScope);
+            // The main index is artifact-managed (no .git); never git-sync it.
+            if (!projectScope && mainArtifactManaged && repoDir == mainDir) continue;
             if (Config::is_local_repo_source(repo, projectScope)) {
                 auto sourceDir = Config::resolve_repo_source(repo, projectScope);
                 if (!detail_::ensure_local_repo_link_(repoDir, sourceDir)) {
@@ -372,7 +401,6 @@ bool sync_all_repos(bool force = false) {
     if (!syncRepos(Config::global_index_repos(), false)) return false;
 
     // Discover and sync sub-index repos from the main repo's xim-indexrepos.lua
-    auto mainDir = main_repo_dir();
     auto luaSubRepos = detail_::discover_sub_repos_(mainDir, mirror.empty() ? "GLOBAL" : mirror);
     auto jsonSubRepos = load_sub_repos_json(sub_repos_json_path());
 
