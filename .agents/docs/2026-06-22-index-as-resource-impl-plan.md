@@ -56,6 +56,27 @@ P3 阶段接入,主索引先行。
 
 ---
 
+## 实施进度 (live)
+
+> 更新于 2026-06-22。PR: https://github.com/openxlings/xlings/pull/327 (v0.4.52)
+
+| 项 | 状态 |
+| --- | --- |
+| P0 版本 bump 0.4.52 + 文档 | ✅ `f5bb919` |
+| P1 build/publish 脚本 + e2e | ✅ `dd61189`(本地全绿) |
+| P2 运行时 indexfetch + sync 接入 + 单测/e2e | ✅ `6a29167`(本地 e2e 绿) |
+| 安全 auto gate + 工件化 bundle + 跨平台测试更新 | ✅ `b3d6507` |
+| xlings-res/xim-index 仓库(gh + gtc)创建 | ✅ 两端已建 |
+| 发布 v0.4.52 工件(gh latest+v0.4.52) | ✅ URL 200,实测 `xlings update` 走工件成功(112 包) |
+| 发布 v0.4.52 工件(gtc) | ⚠️ 资产已上传;GitCode 资产下载 URL 平台 quirk → CN 暂经 GitHub+代理回退(鲁棒) |
+| PR 开启 | ✅ #327 |
+| 三平台 CI 全绿 | ⏳ 运行中 |
+| 子索引工件化(awesome/scode/d2x) | ⏳ Phase 3(暂 git 同步) |
+| release.yml 自动发布工件 | ⏳ Phase 3(当前手动已发) |
+
+已验证:全新隔离 HOME `xlings update`(`XLINGS_INDEX_SOURCE=artifact`)从**线上 GitHub 工件**
+拉取主索引,无 `.git`,版本标记 `0.4.52`,112 个包;篡改工件 → sha256 拒绝且保留旧索引。
+
 ## 阶段与任务
 
 ### Phase 0 — 版本与文档基线
