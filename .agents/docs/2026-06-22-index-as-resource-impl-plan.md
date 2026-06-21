@@ -68,11 +68,19 @@ P3 阶段接入,主索引先行。
 | 安全 auto gate + 工件化 bundle + 跨平台测试更新 | ✅ `b3d6507` |
 | xlings-res/xim-index 仓库(gh + gtc)创建 | ✅ 两端已建 |
 | 发布 v0.4.52 工件(gh latest+v0.4.52) | ✅ URL 200,实测 `xlings update` 走工件成功(112 包) |
-| 发布 v0.4.52 工件(gtc) | ⚠️ 资产已上传;GitCode 资产下载 URL 平台 quirk → CN 暂经 GitHub+代理回退(鲁棒) |
+| 发布 v0.4.52 工件(gtc) | ⚠️ 资产已上传;GitCode 资产下载 URL 平台 quirk → CN 经 GitHub+代理回退(已实测鲁棒) |
+| CN 鲁棒性修复(404 穿透 + GLOBAL 兜底) | ✅ `95018d8`(实测 mirror=CN update 成功,112 包) |
 | PR 开启 | ✅ #327 |
-| 三平台 CI 全绿 | ⏳ 运行中 |
-| 子索引工件化(awesome/scode/d2x) | ⏳ Phase 3(暂 git 同步) |
-| release.yml 自动发布工件 | ⏳ Phase 3(当前手动已发) |
+| release.yml 自动发布工件 job | ✅ `c56beff`(guarded,缺 secret 则跳过) |
+| 三平台 CI 全绿 | ⏳ 运行中(HEAD c56beff) |
+| 子索引工件化(awesome/scode/d2x) | ⏳ Phase 3(暂 git 同步,已验证可用) |
+
+### 发现并修复的两个 CN 关键 bug(测试驱动)
+1. `tinyhttps::download_file` 把 HTTP 404 当致命错误、不穿透到下一候选 → GitCode 资产 404
+   导致 CN 直接失败、从不尝试 GitHub。修复:`indexfetch` 显式逐候选循环,任何失败(含 404)都穿透。
+2. `Config::resource_servers("CN")` 只返回 GitCode(对二进制包是对的)→ 索引候选里没有 GitHub。
+   修复:`index_asset_urls` 对索引始终追加 GLOBAL/GitHub(+代理)兜底。
+   结果:CN = gitcode(404)→ github(200)→ github 代理。
 
 已验证:全新隔离 HOME `xlings update`(`XLINGS_INDEX_SOURCE=artifact`)从**线上 GitHub 工件**
 拉取主索引,无 `.git`,版本标记 `0.4.52`,112 个包;篡改工件 → sha256 拒绝且保留旧索引。
