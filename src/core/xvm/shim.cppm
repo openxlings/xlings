@@ -116,6 +116,18 @@ bool home_knows_program(const std::filesystem::path& home,
     std::error_code ec;
     auto cfg = home / ".xlings.json";
     if (!fs::is_regular_file(cfg, ec)) return false;
+
+    // Distinguish "unreadable due to ownership" from "genuinely not
+    // registered". A sudo-installed home is root-owned; a later non-root
+    // invocation can't read its .xlings.json and would otherwise get a
+    // misleading "<program>: not installed" instead of a permissions hint.
+    if (std::ifstream probe(cfg, std::ios::binary); !probe.is_open()) {
+        log::warn("[xlings] cannot read {} (permission denied)", cfg.string());
+        log::warn("  this home may be owned by another user — avoid mixing "
+                  "sudo and non-sudo xlings on the same home");
+        return false;
+    }
+
     try {
         auto content = platform::read_file_to_string(cfg.string());
         auto j = nlohmann::json::parse(content, nullptr, false);

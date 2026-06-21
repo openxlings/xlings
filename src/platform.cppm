@@ -1,6 +1,7 @@
 module;
 
 #include <cstdio>
+#include <cstdlib>
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #endif
@@ -39,6 +40,98 @@ namespace platform {
     export using platform_impl::wait_or_kill;
     export using platform_impl::Icon;
     export using platform_impl::atomic_replace_executable;
+
+    // ── Execution identity (root / sudo awareness) ──────────────────
+    // Single source of truth for "who am I / who should own the files I
+    // create". Replaces ad-hoc geteuid()/SUDO_* reads and hardcoded
+    // "sudo " strings scattered across the codebase.
+    //
+    // Safety invariant: on the existing (non-root) path every helper
+    // returns exactly what the old hardcoded behavior produced, so
+    // Linux-non-root / macOS / Windows are byte-for-byte unaffected. The
+    // new behavior (chown-back, sudo-aware home, warnings) is gated
+    // strictly on the root+SUDO_* path that no current user reaches.
+    // Design: .agents/docs/2026-06-21-root-privilege-identity-design.md
+
+    export using platform_impl::is_root;
+
+    // The real user behind a `sudo xlings ...` launch.
+    export struct SudoInvoker {
+        unsigned int uid;
+        unsigned int gid;
+        std::string  user;   // SUDO_USER (may be empty)
+    };
+
+    // Pure parse of SUDO_UID / SUDO_GID / SUDO_USER. Does NOT check euid,
+    // so it is directly unit-testable on every platform. Returns nullopt
+    // unless both numeric ids are present and well-formed.
+    export [[nodiscard]] std::optional<SudoInvoker> parse_sudo_env() {
+        const char* su = std::getenv("SUDO_UID");
+        const char* sg = std::getenv("SUDO_GID");
+        if (!su || !sg || *su == '\0' || *sg == '\0') return std::nullopt;
+        char* end = nullptr;
+        unsigned long uid = std::strtoul(su, &end, 10);
+        if (end == su || *end != '\0') return std::nullopt;
+        end = nullptr;
+        unsigned long gid = std::strtoul(sg, &end, 10);
+        if (end == sg || *end != '\0') return std::nullopt;
+        const char* user = std::getenv("SUDO_USER");
+        return SudoInvoker{ static_cast<unsigned int>(uid),
+                            static_cast<unsigned int>(gid),
+                            user ? std::string{user} : std::string{} };
+    }
+
+    // Shell-command prefix for privileged ops (mount/umount/chown):
+    // "" when already root (sudo is redundant and often absent in minimal
+    // root containers), "sudo " otherwise — identical to the historical
+    // hardcoded string for the non-root case.
+    export [[nodiscard]] std::string priv_prefix() {
+        return platform_impl::is_root() ? std::string{} : std::string{"sudo "};
+    }
+
+    // The invoking user iff launched via sudo (root EUID + SUDO_* set).
+    // nullopt for pure root (no demotion target) and unprivileged runs.
+    export [[nodiscard]] std::optional<SudoInvoker> sudo_invoker() {
+        if (!platform_impl::is_root()) return std::nullopt;
+        return parse_sudo_env();
+    }
+
+    // Home directory that user-facing files (rc lines, ~/.xlings) should
+    // belong to. Under sudo this is the invoking user's home (from the
+    // passwd db, falling back to /home/<user>), NOT root's $HOME — which
+    // fixes the "real user never gets PATH" split-brain. Otherwise it's
+    // the ordinary $HOME, unchanged.
+    export [[nodiscard]] std::string target_home() {
+        if (auto inv = sudo_invoker()) {
+            if (auto h = platform_impl::home_for_user_(inv->user); !h.empty())
+                return h;
+            if (!inv->user.empty()) return "/home/" + inv->user;
+        }
+        return platform_impl::get_home_dir();
+    }
+
+    // Restore ownership of files created while running under sudo back to
+    // the invoking user, so a later non-sudo run isn't locked out of its
+    // own ~/.xlings. No-op unless launched via sudo (pure root / non-root
+    // → returns immediately, zero filesystem traversal).
+    export void chown_to_invoker(const std::filesystem::path& path,
+                                 bool recursive = true) {
+        auto inv = sudo_invoker();
+        if (!inv) return;
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec)) return;
+        platform_impl::lchown_path_(path, inv->uid, inv->gid);
+        if (recursive && std::filesystem::is_directory(path, ec)) {
+            auto end = std::filesystem::recursive_directory_iterator{};
+            for (auto it = std::filesystem::recursive_directory_iterator(
+                     path,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     ec);
+                 !ec && it != end; it.increment(ec)) {
+                platform_impl::lchown_path_(it->path(), inv->uid, inv->gid);
+            }
+        }
+    }
 
     export [[nodiscard]] std::string get_rundir() {
         return gRundir;

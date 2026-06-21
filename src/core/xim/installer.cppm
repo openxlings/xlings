@@ -1227,6 +1227,13 @@ public:
             {
                 std::error_code ec;
                 std::filesystem::create_directories(ctx.install_dir, ec);
+                // A genuine failure here (commonly EACCES on a root-owned
+                // dir left by a prior `sudo` install) used to be swallowed,
+                // surfacing later as a confusing hook failure. Surface it.
+                if (ec && !std::filesystem::is_directory(ctx.install_dir)) {
+                    log::warn("create install dir {} failed: {}",
+                              ctx.install_dir.string(), ec.message());
+                }
             }
 
             bool payloadInstalled = node.alreadyInstalled;

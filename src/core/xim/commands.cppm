@@ -379,6 +379,13 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
         summaryPayload["success"] = successCount;
         summaryPayload["failed"] = failedCount;
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
+
+        // If this install ran via `sudo`, the downloaded payloads, version DB
+        // and shims were written root-owned into the user's home. Hand the
+        // home back to the invoking user so a later non-sudo `xlings install`
+        // isn't locked out by EACCES. No-op for pure root / non-root installs
+        // (lchown is metadata-only, so even large payload trees are cheap).
+        platform::chown_to_invoker(Config::paths().homeDir);
     }
     // Per-package failures (download / extract / hook) are surfaced via
     // InstallPhase::Failed callbacks and accumulate in `failedCount`;

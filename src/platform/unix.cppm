@@ -8,6 +8,7 @@ module;
 #include <termios.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <pwd.h>
 #endif
 
 export module xlings.platform:unix;
@@ -144,6 +145,31 @@ namespace platform_impl {
         std::error_code rmec;
         fs::remove(tmp, rmec);
         return false;
+    }
+
+    // ── Execution identity primitives (root / sudo awareness) ───────
+    // Only the OS primitives live here; all policy (sudo parsing, priv
+    // prefix, chown-back) is cross-platform in platform.cppm. See
+    // .agents/docs/2026-06-21-root-privilege-identity-design.md.
+
+    export bool is_root() {
+        return ::geteuid() == 0;
+    }
+
+    // Single-path lchown (don't follow symlinks). Best-effort: ownership
+    // restoration must never abort an otherwise-successful operation, so
+    // the return value is intentionally ignored.
+    export void lchown_path_(const std::filesystem::path& p,
+                             unsigned int uid, unsigned int gid) {
+        ::lchown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid));
+    }
+
+    // Resolve a user's home dir from the passwd db. Empty on lookup miss.
+    export std::string home_for_user_(const std::string& name) {
+        if (name.empty()) return {};
+        if (struct passwd* pw = ::getpwnam(name.c_str()); pw && pw->pw_dir)
+            return std::string{pw->pw_dir};
+        return {};
     }
 
 } // namespace platform_impl

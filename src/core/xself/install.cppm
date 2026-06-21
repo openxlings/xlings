@@ -253,18 +253,24 @@ static void setup_shell_profiles(const fs::path& homeDir) {
 
     auto sourceLine = "test -f \"" + profileSh.string() + "\" && source \"" + profileSh.string() + "\"";
 
+    // rc files belong to the INVOKING user. Under `sudo` this is the real
+    // user's home (not root's $HOME), so the person who ran the install
+    // actually gets xlings on their PATH. Identical to get_home_dir() when
+    // not running via sudo, so non-sudo behavior is unchanged.
+    fs::path rcHome(platform::target_home());
+
     std::vector<fs::path> profiles;
 #if defined(__APPLE__)
     profiles = {
-        fs::path(platform::get_home_dir()) / ".zshrc",
-        fs::path(platform::get_home_dir()) / ".bashrc",
-        fs::path(platform::get_home_dir()) / ".zprofile",
+        rcHome / ".zshrc",
+        rcHome / ".bashrc",
+        rcHome / ".zprofile",
     };
 #else
     profiles = {
-        fs::path(platform::get_home_dir()) / ".bashrc",
-        fs::path(platform::get_home_dir()) / ".zshrc",
-        fs::path(platform::get_home_dir()) / ".profile",
+        rcHome / ".bashrc",
+        rcHome / ".zshrc",
+        rcHome / ".profile",
     };
 #endif
 
@@ -279,12 +285,14 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         }
         std::string appendStr = "\n# xlings\n" + sourceLine + "\n";
         platform::write_string_to_file(prof.string(), content + appendStr);
+        // If we ran via sudo, hand the rc file back to its real owner.
+        platform::chown_to_invoker(prof, /*recursive=*/false);
         log::println("[xlings:self] added profile ({})", prof.filename().string());
         added = true;
         break;
     }
 
-    auto fishConfig = fs::path(platform::get_home_dir()) / ".config" / "fish" / "config.fish";
+    auto fishConfig = rcHome / ".config" / "fish" / "config.fish";
     auto fishSourceLine = "test -f \"" + profileFish.string() + "\"; and source \"" + profileFish.string() + "\"";
     if (fs::exists(fishConfig) ||
         platform::run_command_capture("command -v fish 2>/dev/null").first == 0) {
@@ -299,6 +307,8 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         } else {
             log::debug("[xlings:self] profile ok (fish)");
         }
+        // Restore ownership of the fish config tree we may have created.
+        platform::chown_to_invoker(rcHome / ".config" / "fish");
         added = true;
     }
 
@@ -339,7 +349,28 @@ static void setup_shell_profiles(const fs::path& homeDir) {
 #endif
 }
 
+// Advise when running as root, distinguishing the two failure-prone cases:
+// pure root (files land in /root/.xlings, invisible to normal users) vs sudo
+// (we redirect rc files + chown ~/.xlings back to the real user). No-op for
+// the ordinary non-root install, so existing behavior is untouched.
+static void warn_root_context_() {
+    // Cross-platform by construction: is_root() is false on Windows (and for
+    // any non-root POSIX run), so this returns immediately and adds no
+    // behavior off the root path — no platform macro needed.
+    if (!platform::is_root()) return;
+    if (auto inv = platform::sudo_invoker()) {
+        log::warn("[xlings:self] running via sudo (user '{}')", inv->user);
+        log::warn("  rc files target {}'s home; ~/.xlings is chowned back to it",
+                  inv->user.empty() ? "the invoking user" : inv->user.c_str());
+        log::warn("  tip: xlings is user-space — running without sudo also works");
+    } else {
+        log::warn("[xlings:self] running as root — installing to root's home");
+        log::warn("  this install is only on root's PATH; normal users won't see it");
+    }
+}
+
 export int cmd_install() {
+    warn_root_context_();
     auto srcDir = detect_source_dir();
     if (srcDir.empty()) {
         log::error("[xlings:self] cannot detect source package directory.");
@@ -393,6 +424,7 @@ export int cmd_install() {
             return 1;
         }
         setup_shell_profiles(targetHome);
+        platform::chown_to_invoker(targetHome);
         log::println("[xlings:self] {} ({}) - ok\n", targetHome.string(), pkgVersion);
         return 0;
     }
@@ -533,6 +565,11 @@ export int cmd_install() {
         }
     }
 #endif
+
+    // Hand the freshly-written ~/.xlings back to the invoking user when we
+    // ran via sudo, so a later non-sudo `xlings install` isn't locked out by
+    // root-owned files. No-op for pure root / non-root installs.
+    platform::chown_to_invoker(targetHome);
 
     std::println("\n[xlings:self] install: {} ({}) - ok", targetHome.string(), pkgVersion);
     std::println("");
