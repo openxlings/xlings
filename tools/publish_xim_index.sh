@@ -45,19 +45,13 @@ MAN="$DIR/${BASE}.manifest.json"
 [[ -f "$ART" ]] || { echo "missing artifact: $ART" >&2; exit 1; }
 [[ -f "$MAN" ]] || { echo "missing manifest: $MAN" >&2; exit 1; }
 
-# Stable "latest" pointer, in two forms:
-#  - .json  : copy of the manifest. GitHub only (GitCode 404s .json). Kept for
-#             backward compat with 0.4.53 clients that fetch *-latest.json.
-#  - .tar.gz: a tarball containing manifest.json. 0.4.54+ clients fetch this;
-#             GitCode serves .tar.gz natively, so CN never falls through to
-#             github proxies for the pointer.
-LATEST_JSON="$DIR/$LATEST"                 # xim-index[-name]-latest.json
-LATEST_TGZ="$DIR/${LATEST%.json}.tar.gz"   # xim-index[-name]-latest.tar.gz
+# The "latest" pointer is NOT a release asset (gitcode can't overwrite/delete
+# those). It is a repo FILE pushed via git (overwriteable) and served raw — see
+# tools/push_index_pointers.sh. Here we just emit the pointer JSON into DIR for
+# that step to collect. The artifact tarball IS a release asset: its name is
+# version-unique (xim-index-<ver>.tar.gz), so it's always a fresh upload.
+LATEST_JSON="$DIR/$LATEST"   # xim-index[-name]-latest.json (collected by pointer push)
 cp "$MAN" "$LATEST_JSON"
-_PTMP="$(mktemp -d)"; cp "$MAN" "$_PTMP/manifest.json"
-tar --sort=name --owner=0 --group=0 -czf "$LATEST_TGZ" -C "$_PTMP" manifest.json 2>/dev/null \
-  || tar -czf "$LATEST_TGZ" -C "$_PTMP" manifest.json
-rm -rf "$_PTMP"
 
 publish_gh() {  # <tag> <file...>
   local tag="$1"; shift
@@ -80,18 +74,16 @@ publish_gtc() {  # <tag> <file...>
 }
 
 if [[ "$SKIP_GH" == 0 ]]; then
-  info "GitHub $GH_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
-  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_TGZ" "$LATEST_JSON"  # .tar.gz (0.4.54+) + .json (0.4.53)
-  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"                        # immutable archive
+  info "GitHub $GH_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
+  publish_gh "$ROLLING_TAG" "$ART"          # version-unique name -> fresh upload
+  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"   # immutable archive
 fi
 if [[ "$SKIP_GTC" == 0 ]]; then
-  # GitCode serves .tar.gz release assets (200) but NOT .json (404). Upload the
-  # artifact AND the .tar.gz pointer (both gitcode-native); skip the .json
-  # pointer (clients on GitCode use the .tar.gz one).
-  info "GitCode $GTC_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG' (.tar.gz only)"
-  publish_gtc "$ROLLING_TAG" "$ART" "$LATEST_TGZ"
+  info "GitCode $GTC_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
+  publish_gtc "$ROLLING_TAG" "$ART"
   publish_gtc "$ARCHIVE_TAG" "$ART"
 fi
+echo "[publish] pointer JSON emitted: $LATEST_JSON (push via tools/push_index_pointers.sh)"
 
 DESTS=""
 [[ "$SKIP_GH"  == 0 ]] && DESTS="$GH_REPO(gh)"
