@@ -122,7 +122,14 @@ bool is_archive_(const std::filesystem::path& path) {
 
 std::string detect_arch_() {
 #if defined(__aarch64__) || defined(_M_ARM64)
+    // Per-OS arch token, matching LLVM's release naming: Linux/Windows use the
+    // GNU/uname-m spelling `aarch64` (consistent with the aarch64-linux-*
+    // toolchain triples), while Apple uses its own `arm64`.
+  #if defined(__APPLE__)
     return "arm64";
+  #else
+    return "aarch64";
+  #endif
 #elif defined(__x86_64__) || defined(_M_X64)
     return "x86_64";
 #elif defined(__i386__) || defined(_M_IX86)
