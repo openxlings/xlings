@@ -158,16 +158,22 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         return 1;
     }
 
-    // "latest" means pick the highest available version
+    // "latest" means pick the highest available version.
     std::string resolved;
     if (version == "latest") {
-        auto all = get_all_versions(db, target);
-        if (all.empty()) {
+        // Scope-aware: pick_highest_version strips the "<scope>:" prefix (e.g.
+        // the bootstrap "local:0.4.47") before comparing by numeric semver, so
+        // a higher real release (e.g. 0.4.52) wins. semver::sort_desc alone
+        // cannot parse "local:..." and falls back to lexicographic order, where
+        // "local:0.4.47" wrongly beats "0.4.52" — the bug that made
+        // `xlings self update` install the new version yet stay on the old
+        // local one (xlings -> local:0.4.47).
+        auto it = db.find(target);
+        if (it == db.end() || it->second.versions.empty()) {
             log::error("no versions installed for '{}'", target);
             return 1;
         }
-        semver::sort_desc(all);
-        resolved = all[0];
+        resolved = pick_highest_version(it->second.versions);
     } else {
         // Fuzzy match version
         resolved = match_version(db, target, version);
