@@ -435,17 +435,45 @@ bool sync_all_repos(bool force = false) {
     std::vector<IndexRepo> syncedSubRepos;
     for (auto& [name, repo] : merged) allSubRepos.push_back(repo);
 
+    // Default sub-indexes — those provided by the main index's
+    // xim-indexrepos.lua, not overridden by the user's xim-indexrepos.json, and
+    // from a remote source — are fetched as artifacts, same model as the main
+    // index. User-added (json) or local/overridden sub-indexes keep git. This
+    // "in the lua defaults, not in the user json" signal means no hardcoded
+    // allowlist and leaves user-added sub-indexes on the unchanged git path.
+    std::unordered_set<std::string> luaNames, jsonNames;
+    for (auto& r : luaSubRepos)  luaNames.insert(r.name);
+    for (auto& r : jsonSubRepos) jsonNames.insert(r.name);
+
     auto subReposRoot = sub_repos_dir();
     fs::create_directories(subReposRoot);
 
     for (auto& repo : allSubRepos) {
         auto repoDir = sub_repo_dir_for(repo);
-        // URLs are already mirror-selected from xim-indexrepos.lua, no further replacement needed
-        if (sync_repo(repoDir, repo.url, force)) {
-            syncedSubRepos.push_back(repo);
-        } else {
-            log::warn("failed to sync sub-index repo: {} ({})", repo.name, repo.url);
+        bool subDefaultOfficial =
+            luaNames.contains(repo.name) && !jsonNames.contains(repo.name)
+            && !Config::is_local_repo_source(repo, false);
+        bool subManaged = fs::exists(repoDir / ".xlings-index-version");
+        bool subAttemptArtifact;
+        if (indexSource == "artifact")  subAttemptArtifact = subDefaultOfficial;
+        else if (indexSource == "git")  subAttemptArtifact = false;
+        else subAttemptArtifact = subDefaultOfficial
+                 && (subManaged || !fs::exists(repoDir / "pkgs"));
+
+        bool ok = false;
+        if (subAttemptArtifact) {
+            std::string ferr;
+            ok = fetch_index_artifact(repoDir, ferr, repo.name);
+            if (!ok)
+                log::warn("[index] sub-index '{}' artifact fetch failed: {}", repo.name, ferr);
         }
+        // git fallback (and the path for user-added / local sub-indexes), unless
+        // an official sub was explicitly pinned to the artifact source.
+        if (!ok && !(indexSource == "artifact" && subDefaultOfficial)) {
+            ok = sync_repo(repoDir, repo.url, force);
+        }
+        if (ok) syncedSubRepos.push_back(repo);
+        else log::warn("failed to sync sub-index repo: {} ({})", repo.name, repo.url);
     }
 
     save_sub_repos_json(sub_repos_json_path(), syncedSubRepos);
