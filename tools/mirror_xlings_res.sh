@@ -43,10 +43,15 @@ fi
 if [[ -n "${GITCODE_TOKEN:-}" ]] && command -v gtc >/dev/null 2>&1; then
   info "GitCode $GTC_DST tag $VER"
   gtc release create "$GTC_DST" --tag "$VER" --name "$VER" 2>/dev/null || true
+  # Upload then verify the actual DOWNLOAD is 200 (gtc can report success yet
+  # leave a phantom/missing asset — obs_callback flakiness), retry up to 5.
   for a in "${ASSETS[@]}"; do
-    for try in 1 2 3; do
-      if gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" 2>&1 | tail -1 | grep -q uploaded; then break; fi
-      echo "[mirror] gtc upload $a try $try failed, retrying..."; sleep 3
+    for try in 1 2 3 4 5; do
+      gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || true
+      if [[ "$(curl -fsSL -o /dev/null -w '%{http_code}' -L "https://gitcode.com/${GTC_DST}/releases/download/${VER}/${a}" 2>/dev/null)" == 200 ]]; then
+        break
+      fi
+      echo "[mirror] gtc $a not 200 after try $try, retrying..."; sleep 4
     done
   done
 else
