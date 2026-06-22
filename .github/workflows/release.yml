@@ -353,3 +353,34 @@ jobs:
           XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
         run: bash tools/push_index_pointers.sh build/index
+
+  # Mirror the xlings binaries to xlings-res/xlings on GitHub + GitCode so
+  # XLINGS_RES downloads resolve for all platforms (CN binary path is
+  # GitCode-only). Per-file retry: a multi-file gtc upload can 502 and drop
+  # later files (e.g. windows/macos missing). Best-effort, non-blocking.
+  mirror-binaries:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    env:
+      XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mirror binaries to xlings-res/xlings (gh + gtc)
+        if: ${{ env.XLINGS_RES_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+        run: |
+          chmod +x tools/gtc tools/mirror_xlings_res.sh
+          export PATH="$PWD/tools:$PATH"
+          bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}" \
+            || echo "binary mirror reported issues (non-blocking)"

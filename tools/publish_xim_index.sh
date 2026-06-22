@@ -70,13 +70,27 @@ publish_gtc() {  # <tag> <file...>
     return
   fi
   gtc release create "$GTC_REPO" --tag "$tag" --name "$tag" 2>/dev/null || true
-  gtc release upload "$GTC_REPO" "$@" --tag "$tag"
+  # Upload ONE file at a time with retry: a multi-file gtc upload can 502
+  # mid-way and silently drop the remaining files (obs_callback flakiness),
+  # leaving e.g. only the linux asset. Per-file + retry makes it reliable.
+  local f try
+  for f in "$@"; do
+    for try in 1 2 3; do
+      if gtc release upload "$GTC_REPO" "$f" --tag "$tag" 2>&1 | tail -1 | grep -q uploaded; then break; fi
+      echo "[publish] gtc upload $(basename "$f") try $try failed, retrying..."; sleep 3
+    done
+  done
 }
 
 if [[ "$SKIP_GH" == 0 ]]; then
   info "GitHub $GH_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
-  publish_gh "$ROLLING_TAG" "$ART"          # version-unique name -> fresh upload
-  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"   # immutable archive
+  # Artifact (version-unique -> fresh) + the legacy release-asset .json pointer
+  # for backward compat: pre-0.4.54 clients read xim-index[-sub]-latest.json from
+  # the release (gh --clobber can overwrite it). 0.4.54+ clients read the combined
+  # repo-file pointer (tools/push_index_pointers.sh). GitCode can't overwrite a
+  # release asset, so the legacy pointer is github-only; old CN clients fall to it.
+  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_JSON"
+  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"
 fi
 if [[ "$SKIP_GTC" == 0 ]]; then
   info "GitCode $GTC_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"

@@ -117,6 +117,11 @@ GitCode 平台约束(均实测):release 资产**只能新建**(gtc 不能覆盖�
   `xim-index-pointers.json` + `xim-index[-sub]-<ver>.tar.gz` 静态文件即可。
 
 实测(CN,无 VPN-绕过配置):`xlings update` 主+3 子索引全走工件、12s、无卡顿、无回退 git。
+
+**向后兼容(pre-0.4.54 客户端):** 0.4.53 及更早读的是 **release 资产** `xim-index[-sub]-latest.json`
+(不是仓库文件合并指针)。0.4.54 起发布脚本仍用 `gh --clobber` 把该 release-asset 指针更新到最新
+(仅 github;gitcode 不能覆盖,老 CN 客户端回退 github 读它),这样存量 0.4.53 用户 `xlings self update`
+才能看到新版并升级。升级到 0.4.54+ 后即改读合并仓库文件指针。
 - `Config::resource_servers("CN")` 只含 GitCode(对二进制包是对的);**索引获取始终追加 GLOBAL/GitHub 兜底**,
   CN 解析链:gitcode(原生)→ github → github 代理(ghfast/ghproxy)。
 - sha256 由 github 指针锁定 → 即便某镜像 tarball 滞后(如发布顺序导致的旧内容)也会被拒绝并回退正确源,
