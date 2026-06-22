@@ -436,22 +436,27 @@ bool sync_all_repos(bool force = false) {
     for (auto& [name, repo] : merged) allSubRepos.push_back(repo);
 
     // Default sub-indexes — those provided by the main index's
-    // xim-indexrepos.lua, not overridden by the user's xim-indexrepos.json, and
-    // from a remote source — are fetched as artifacts, same model as the main
-    // index. User-added (json) or local/overridden sub-indexes keep git. This
-    // "in the lua defaults, not in the user json" signal means no hardcoded
-    // allowlist and leaves user-added sub-indexes on the unchanged git path.
-    std::unordered_set<std::string> luaNames, jsonNames;
-    for (auto& r : luaSubRepos)  luaNames.insert(r.name);
-    for (auto& r : jsonSubRepos) jsonNames.insert(r.name);
+    // xim-indexrepos.lua at their declared (non-overridden) URL and from a
+    // remote source — are fetched as artifacts, same model as the main index.
+    // User-added sub-indexes (in xim-indexrepos.json but NOT a lua default),
+    // URL-overridden ones, and local (file://) sources keep git.
+    //
+    // The signal is "name is a lua default AND its URL still matches the lua
+    // default" — NOT "absent from the json". save_sub_repos_json() writes the
+    // synced defaults back into xim-indexrepos.json after every sync, so an
+    // "absent from json" test would wrongly drop every default after the first
+    // sync (the bug that left CN users git-pulling sub-indexes from github).
+    std::unordered_map<std::string, std::string> luaUrl;
+    for (auto& r : luaSubRepos) luaUrl[r.name] = r.url;
 
     auto subReposRoot = sub_repos_dir();
     fs::create_directories(subReposRoot);
 
     for (auto& repo : allSubRepos) {
         auto repoDir = sub_repo_dir_for(repo);
+        auto luaIt = luaUrl.find(repo.name);
         bool subDefaultOfficial =
-            luaNames.contains(repo.name) && !jsonNames.contains(repo.name)
+            luaIt != luaUrl.end() && luaIt->second == repo.url
             && !Config::is_local_repo_source(repo, false);
         bool subManaged = fs::exists(repoDir / ".xlings-index-version");
         bool subAttemptArtifact;

@@ -195,6 +195,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
         : std::format("xim-index-{}", subName);
     std::string pointerName = base + "-latest.json";
 
+    // User-facing progress: index sync used to run silently (esp. when a CN
+    // mirror was slow), looking like a hang. Announce what we're fetching.
+    std::string label = subName.empty()
+        ? std::string("package index")
+        : std::format("sub-index '{}'", subName);
+    log::info("[index] fetching {} (mirror={})...",
+              label, mirrorKey.empty() ? "GLOBAL" : mirrorKey);
+
     std::error_code ec;
     auto tmpRoot = fs::path(destIndexDir.string() + ".artifact." +
                             std::to_string(platform::get_pid()));

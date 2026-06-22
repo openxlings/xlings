@@ -106,14 +106,21 @@ flowchart LR
 
 ## 同步机制
 
-`sync_repo` 实现 clone / fetch 逻辑：
+> 0.4.52+ 起,官方索引(主 + 默认子索引)默认改为**作为版本化资源工件下载**(Y-asset),
+> 不再运行时 git clone;下方的 git 路径保留为兜底,以及用户自定义/本地索引的通用路径。
+> 完整的演进、对比与 CN 要点见 **[index-distribution.md](./index-distribution.md)**。
+
+`sync_repo`(git 兜底 / 自定义源路径)：
 
 1. **首次**: `git clone --depth 1`，支持镜像 fallback（`mirror::expand` 生成候选 URL 列表）。
 2. **更新**: `git pull --ff-only`；失败时 `fetch + reset --hard origin/HEAD`。
 3. **节流**: 写入 `.xlings-sync-stamp` 文件，7 天内跳过非强制同步。
 4. **本地索引**: `file://` 或相对路径以符号链接映射，不执行 git 操作。
 
-`sync_all_repos` 按顺序同步全局索引 → 发现子索引 → 同步子索引 → 项目索引。
+工件路径(`indexfetch.cppm`):取 `*-latest.json` 指针 → sha256 校验 → 原子解压换入,
+经 resource-server(延迟重排 + 卡顿看门狗)。`XLINGS_INDEX_SOURCE=git|artifact|auto` 控制。
+
+`sync_all_repos` 按顺序:主索引(工件优先,git 兜底)→ 发现子索引 → 同步子索引(默认子索引工件优先)→ 项目索引。
 
 ## 官方索引常驻保证
 
