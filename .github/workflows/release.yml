@@ -343,3 +343,13 @@ jobs:
             bash tools/publish_xim_index.sh --version "$VER" --name "$n" --dir build/index --skip-github \
               || echo "gitcode $n publish failed (non-blocking)"
           done
+
+      # Push the rolling pointers as repo files (overwriteable, served raw) to
+      # both GitHub and GitCode. This is what clients read to find the latest
+      # artifact; repo files (unlike gitcode release assets) can be updated.
+      - name: Push index pointers (raw repo files, gh + gtc)
+        if: ${{ env.XLINGS_RES_TOKEN != '' || env.GITCODE_TOKEN != '' }}
+        env:
+          XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: bash tools/push_index_pointers.sh build/index

@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "0.4.53";
+    static constexpr std::string_view VERSION = "0.4.54";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -59,6 +59,7 @@ private:
 
     PathInfo paths_;
     std::string mirror_;
+    std::string indexBase_;   // xim.index-base override (region-resolved); empty = default xlings-res
     std::string lang_;
     std::string globalActiveSubos_ = "default";
     xvm::VersionDB globalVersions_;
@@ -100,6 +101,23 @@ private:
             { "GLOBAL", { "https://github.com/xlings-res" } },
             { "CN", { "https://gitcode.com/xlings-res" } },
         };
+    }
+
+    // Resolve xim.index-base from a config json. Accepts a flat string or a
+    // region object {"GLOBAL":"...","CN":"..."}. Lets a deployment point the
+    // index pointer+artifact at a self-hosted server without code changes.
+    static std::string resolve_index_base_(const nlohmann::json& json, const std::string& mirror) {
+        if (!json.contains("xim") || !json["xim"].is_object()) return {};
+        auto& xim = json["xim"];
+        if (!xim.contains("index-base")) return {};
+        auto& ib = xim["index-base"];
+        if (ib.is_string()) return ib.get<std::string>();
+        if (ib.is_object()) {
+            std::string key = mirror.empty() ? "GLOBAL" : mirror;
+            if (ib.contains(key) && ib[key].is_string()) return ib[key].get<std::string>();
+            if (ib.contains("GLOBAL") && ib["GLOBAL"].is_string()) return ib["GLOBAL"].get<std::string>();
+        }
+        return {};
     }
 
     static void load_index_repos_from_json_(const nlohmann::json& json,
@@ -474,6 +492,7 @@ private:
                         globalVersions_ = xvm::versions_from_json(json["versions"]);
                     load_index_repos_from_json_(json, globalIndexRepos_);
                     load_resource_servers_from_json_(json, globalResourceServers_);
+                    if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;
                 }
             } catch (...) {}
         }
@@ -581,6 +600,7 @@ private:
                 }
                 load_index_repos_from_json_(json, projectIndexRepos_);
                 load_resource_servers_from_json_(json, projectResourceServers_);
+                if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;  // project overrides global
                 projectSubosName_ = load_project_subos_name_(json);
 
                 auto projectStatePath = project_state_path_();
@@ -763,6 +783,9 @@ public:
     [[nodiscard]] static std::string resource_server(std::string_view mirror = {}) {
         return instance_().selected_resource_server_for_(mirror);
     }
+    // xim.index-base override (env XLINGS_INDEX_BASE_URL takes precedence in the
+    // caller). Empty => default xlings-res raw-pointer + release-artifact path.
+    [[nodiscard]] static std::string index_base() { return instance_().indexBase_; }
 
     [[nodiscard]] static xvm::VersionDB versions() {
         auto& self = instance_();

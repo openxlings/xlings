@@ -29,8 +29,13 @@ echo '{"site":{"title":"t"}}'      > "$SRC/.xpkgindex.json"
 
 SERVE="$WORK/serve"; mkdir -p "$SERVE"
 bash "$PROJECT_DIR/tools/build_xim_index_artifact.sh" --version 9.9.9 --out "$SERVE" --src "$SRC"
-cp "$SERVE/xim-index-9.9.9.manifest.json" "$SERVE/xim-index-latest.json"   # pointer
-pass "fixture artifact + pointer built"
+# Combined pointer file the client fetches: {"format_version":1,"indexes":{"xim":<manifest>}}
+python3 - "$SERVE/xim-index-9.9.9.manifest.json" "$SERVE/xim-index-pointers.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+json.dump({"format_version": 1, "indexes": {"xim": m}}, open(sys.argv[2], "w"))
+PY
+pass "fixture artifact + combined pointer built"
 
 # ── 2. Isolated home + self init ──────────────────────────────────
 export XLINGS_HOME="$WORK/home"

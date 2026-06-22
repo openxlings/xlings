@@ -95,11 +95,28 @@ release 包内的 `data/xim-pkgindex` 改为**工件托管**(剥 `.git` + 写 `.
 
 ---
 
-## 4. CN(国内)实测要点
+## 4. CN(国内)设计与实测要点(0.4.54 定稿)
 
-- **GitCode 服务 `.tar.gz` 资产(200),但不服务 `.json`(404,content-type 限制)** → 大头(索引 tarball)
-  走 gitcode 原生,几百字节的 `*-latest.json` 指针经 GitHub 兜底(很小,可接受)。故发布脚本对 gitcode
-  **只传 `.tar.gz`**。
+GitCode 平台约束(均实测):release 资产**只能新建**(gtc 不能覆盖、API 删除 405,且大文件上传偶发
+`obs_callback EOF` 变成"列出但 404 的幽灵资产");raw 仓库文件**可 git push 覆盖**但 `.json` 需用
+`raw.gitcode.com/<o>/<r>/raw/main/<f>` 形式(`/main/` 形式返回 HTML),且**短时间多次请求会被限流**。
+
+由此定稿设计:
+
+- **指针 = 合并的单文件 `xim-index-pointers.json`(仓库文件,git push 覆盖)**,内含所有索引
+  `{"format_version":1,"indexes":{"xim":{...},"awesome":{...},"scode":{...},"d2x":{...}}}`。
+  - 一次 raw 取回**全部**索引指针 → 避免 gitcode raw 限流(之前一版一取会触发 403)。
+  - 仓库文件可 git push 覆盖 → 绕开 gitcode release 不能覆盖/删除的限制。
+- **工件 = 版本号唯一的 release 资产**(只新建,从不覆盖)。
+- **索引候选不挂 github 代理**(ghfast/ghproxy/kkgithub):它们 TCP 连得上但常不服务该资源,
+  延迟低被排前 → 每个 ~30s 超时,正是 CN "fetching package index" 卡死主因。索引只用
+  **gitcode + github 直连**(分区排序);gitcode 未命中即快速回退 github。
+- 防御:对**超时/无响应**主机 session 内 penalize(404 不罚)。
+- **可配置(为自建服务器留口)**:`XLINGS_INDEX_BASE_URL`(env)或 `.xlings.json` 的 `xim.index-base`
+  (字符串或 `{GLOBAL,CN}`)指定指针+工件的基地址;自建服务器只需在该 base 下提供
+  `xim-index-pointers.json` + `xim-index[-sub]-<ver>.tar.gz` 静态文件即可。
+
+实测(CN,无 VPN-绕过配置):`xlings update` 主+3 子索引全走工件、12s、无卡顿、无回退 git。
 - `Config::resource_servers("CN")` 只含 GitCode(对二进制包是对的);**索引获取始终追加 GLOBAL/GitHub 兜底**,
   CN 解析链:gitcode(原生)→ github → github 代理(ghfast/ghproxy)。
 - sha256 由 github 指针锁定 → 即便某镜像 tarball 滞后(如发布顺序导致的旧内容)也会被拒绝并回退正确源,

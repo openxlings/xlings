@@ -105,7 +105,11 @@ std::string download_candidates_(std::vector<std::string> urls,
         opts.urls = { u };          // one URL per call: we own the fallthrough
         opts.retryCount = 1;        // breadth over depth; don't hammer a 404
         opts.onUrlAttemptFailed = [](const std::string& url, const std::string& e) {
-            if (e.rfind("stalled:", 0) == 0 || e.rfind("sha256 mismatch", 0) == 0)
+            // Demote a host that stalled / served bad bytes / timed out / gave no
+            // response so later fetches this session skip it. Do NOT penalize on
+            // plain 404/401: the asset is just absent on that mirror (e.g. gitcode
+            // 404s .json) — the host is fine for other assets.
+            if (e.find("404") == std::string::npos && e.find("401") == std::string::npos)
                 mirror::adaptive::penalize_host(url);
         };
         if (!want.empty()) {
@@ -122,6 +126,52 @@ std::string download_candidates_(std::vector<std::string> urls,
         log::debug("[index] candidate failed ({}): {}", u, lastErr);
     }
     return lastErr.empty() ? "all candidates failed" : lastErr;
+}
+
+// Index source base override (env now; config key folded in by the caller via
+// Config). When set to a local dir / file:// it's copied; a remote base means
+// "<base>/<filename>". Empty => use the passed remoteUrls (xlings-res default).
+struct BaseOverride {
+    std::string base;                      // remote base, or empty
+    std::optional<std::filesystem::path> local;  // local dir, if base is local
+};
+BaseOverride resolve_base_() {
+    BaseOverride b;
+    std::string v;
+    if (auto* e = std::getenv("XLINGS_INDEX_BASE_URL"); e && *e) v = e;
+    else v = Config::index_base();   // .xlings.json xim.index-base (region-aware), else ""
+    if (v.empty()) return b;
+    while (!v.empty() && v.back() == '/') v.pop_back();
+    b.base = v;
+    if (v.starts_with("file://")) b.local = std::filesystem::path(v.substr(7));
+    else if (v.find("://") == std::string::npos) b.local = std::filesystem::path(v);
+    return b;
+}
+
+// Obtain `filename` into `dest`: local-dir copy, or remote (base override, else
+// the given remoteUrls). Verifies sha256 when wantSha is non-empty.
+std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
+                        const std::filesystem::path& dest, std::string_view wantSha) {
+    namespace fs = std::filesystem;
+    auto b = resolve_base_();
+    if (b.local) {
+        std::error_code ec;
+        auto src = *b.local / filename;
+        if (!fs::exists(src, ec)) return std::format("local file not found: {}", src.string());
+        fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::format("copy {} failed: {}", src.string(), ec.message());
+        if (!wantSha.empty()) {
+            auto digest = sha256::hex_file(dest);
+            auto want = lower_hex_(std::string(wantSha));
+            if (!digest || *digest != want)
+                return std::format("sha256 mismatch (local {}): got {}, want {}",
+                                   src.string(), digest ? *digest : "<unreadable>", want);
+        }
+        return {};
+    }
+    auto urls = b.base.empty() ? std::move(remoteUrls)
+                               : std::vector<std::string>{ b.base + "/" + filename };
+    return download_candidates_(std::move(urls), dest, wantSha);
 }
 
 } // namespace detail_
@@ -174,14 +224,77 @@ std::vector<std::string> index_asset_urls(std::string_view filename,
     // github -> github proxies.
     for (auto& server : Config::resource_servers("GLOBAL")) add(buildFor(server));
 
-    // GitHub proxy variants (ghfast/ghproxy/...) for the github-hosted URLs.
-    std::vector<std::string> expanded;
-    for (auto& u : urls) {
-        for (auto& m : mirror::expand(u, {.type = mirror::ResourceType::Release}))
-            expanded.push_back(std::move(m));
-    }
-    for (auto& u : expanded) add(u);
+    // NB: deliberately NO github-proxy expansion (ghfast/ghproxy/kkgithub) for
+    // the index. Those proxies are often TCP-reachable but don't actually serve
+    // the asset, so a fast-latency-but-dead proxy ranked ahead of github causes
+    // a ~30s timeout per dead host (the CN "fetching package index" hang). The
+    // index is small; gitcode + github-direct (region-ordered) is enough, and a
+    // gitcode 404/miss falls through to github fast.
     return urls;
+}
+
+// Raw-file URLs for the rolling pointer (a file committed to the index repo,
+// updated by git push, served raw). github.com/<org> ->
+// raw.githubusercontent.com/<org>/<repo>/main/<f>; gitcode.com/<org> ->
+// raw.gitcode.com/<org>/<repo>/raw/main/<f>. Region-ordered + GLOBAL fallback.
+std::vector<std::string> index_pointer_urls(std::string_view filename,
+                                            std::string_view mirror) {
+    auto repo = detail_::index_repo_name_();
+    std::vector<std::string> urls;
+    auto add = [&](const std::string& u){
+        if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
+    };
+    auto rawFor = [&](const std::string& server) -> std::string {
+        auto pos = server.find("://");
+        std::string rest = pos == std::string::npos ? server : server.substr(pos + 3);
+        auto slash = rest.find('/');
+        if (slash == std::string::npos) return {};
+        std::string host = rest.substr(0, slash);
+        std::string org  = rest.substr(slash + 1);
+        while (!org.empty() && org.back() == '/') org.pop_back();
+        if (host.find("github.com") != std::string::npos)
+            return std::format("https://raw.githubusercontent.com/{}/{}/main/{}", org, repo, filename);
+        if (host.find("gitcode.com") != std::string::npos)
+            // Correct raw form is .../<o>/<r>/raw/main/<f> — it serves the RAW
+            // bytes (incl .json). The .../main/<f> form (no /raw/) returns the
+            // HTML web page. (403s seen while probing were request rate-limiting.)
+            return std::format("https://raw.gitcode.com/{}/{}/raw/main/{}", org, repo, filename);
+        return {};
+    };
+    auto selected = Config::resource_server(mirror);
+    if (!selected.empty()) add(rawFor(selected));
+    for (auto& s : Config::resource_servers(mirror))   add(rawFor(s));
+    for (auto& s : Config::resource_servers("GLOBAL")) add(rawFor(s));
+    return urls;
+}
+
+// Cached fetch of the COMBINED pointer file (xim-index-pointers.json): ONE raw
+// fetch per process covering ALL indexes (main + subs). One fetch (vs one per
+// index) avoids gitcode raw rate-limiting, and is the single file a self-hosted
+// index server must serve. Format:
+//   {"format_version":1,"indexes":{"xim":{<manifest>},"awesome":{<manifest>},...}}
+const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view mirror) {
+    static std::map<std::string, IndexManifest> cache;
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        namespace fs = std::filesystem;
+        auto tmp = fs::temp_directory_path() /
+                   std::format("xim-index-pointers.{}.json", platform::get_pid());
+        std::error_code ec; fs::remove(tmp, ec);
+        auto err = detail_::obtain_file("xim-index-pointers.json",
+                       index_pointer_urls("xim-index-pointers.json", mirror), tmp, {});
+        if (!err.empty()) { log::warn("[index] pointer fetch failed: {}", err); return; }
+        std::string text;
+        { std::ifstream in(tmp, std::ios::binary); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
+        fs::remove(tmp, ec);
+        try {
+            auto j = nlohmann::json::parse(text);
+            if (j.contains("indexes") && j["indexes"].is_object())
+                for (auto it = j["indexes"].begin(); it != j["indexes"].end(); ++it)
+                    if (auto m = parse_index_manifest(it.value().dump())) cache[it.key()] = *m;
+        } catch (...) { log::warn("[index] pointer parse failed"); }
+    });
+    return cache;
 }
 
 bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
@@ -189,19 +302,22 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string_view subName) {
     namespace fs = std::filesystem;
     auto mirrorKey = Config::mirror();
+    std::string key = subName.empty() ? std::string("xim") : std::string(subName);
 
-    std::string base = subName.empty()
-        ? "xim-index"
-        : std::format("xim-index-{}", subName);
-    std::string pointerName = base + "-latest.json";
-
-    // User-facing progress: index sync used to run silently (esp. when a CN
-    // mirror was slow), looking like a hang. Announce what we're fetching.
     std::string label = subName.empty()
         ? std::string("package index")
         : std::format("sub-index '{}'", subName);
     log::info("[index] fetching {} (mirror={})...",
               label, mirrorKey.empty() ? "GLOBAL" : mirrorKey);
+
+    auto& pointers = load_index_pointers(mirrorKey);
+    auto pit = pointers.find(key);
+    if (pit == pointers.end()) { err = std::format("no pointer entry for '{}'", key); return false; }
+    const IndexManifest& manifest = pit->second;
+    if (manifest.format_version != 1) {
+        err = std::format("unsupported index manifest format_version {}", manifest.format_version);
+        return false;
+    }
 
     std::error_code ec;
     auto tmpRoot = fs::path(destIndexDir.string() + ".artifact." +
@@ -211,64 +327,11 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     if (ec) { err = std::format("create temp dir failed: {}", ec.message()); return false; }
     struct Cleanup { fs::path p; ~Cleanup(){ std::error_code e; fs::remove_all(p,e);} } cleanup{tmpRoot};
 
-    // Optional base override (testing / private mirror / offline bundle): a
-    // local directory (plain path or file://) is copied directly — this is also
-    // the offline/bundled-release path — while a remote base goes over HTTP.
-    // No override => the resource-server release URLs (index_asset_urls).
-    std::string baseOverride;
-    std::optional<fs::path> localBase;
-    if (auto* ov = std::getenv("XLINGS_INDEX_BASE_URL"); ov && *ov) {
-        baseOverride = ov;
-        while (!baseOverride.empty() && baseOverride.back() == '/') baseOverride.pop_back();
-        std::string p = baseOverride;
-        if (p.starts_with("file://")) localBase = fs::path(p.substr(7));
-        else if (p.find("://") == std::string::npos) localBase = fs::path(p);
-    }
-    auto obtain = [&](const std::string& filename, const fs::path& dest,
-                      std::string_view wantSha) -> std::string {
-        if (localBase) {
-            std::error_code ec2;
-            auto src = *localBase / filename;
-            if (!fs::exists(src, ec2)) return std::format("local file not found: {}", src.string());
-            fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec2);
-            if (ec2) return std::format("copy {} failed: {}", src.string(), ec2.message());
-            if (!wantSha.empty()) {
-                auto digest = sha256::hex_file(dest);
-                auto want = detail_::lower_hex_(std::string(wantSha));
-                if (!digest || *digest != want)
-                    return std::format("sha256 mismatch (local {}): got {}, want {}",
-                                       src.string(), digest ? *digest : "<unreadable>", want);
-            }
-            return {};
-        }
-        auto urls = baseOverride.empty()
-            ? index_asset_urls(filename, mirrorKey)
-            : std::vector<std::string>{ baseOverride + "/" + filename };
-        return detail_::download_candidates_(std::move(urls), dest, wantSha);
-    };
-
-    // 1. Manifest pointer.
-    auto manifestFile = tmpRoot / pointerName;
-    if (auto e = obtain(pointerName, manifestFile, {}); !e.empty()) {
-        err = std::format("fetch index manifest failed: {}", e);
-        return false;
-    }
-
-    std::string manifestText;
-    {
-        std::ifstream in(manifestFile, std::ios::binary);
-        std::stringstream ss; ss << in.rdbuf(); manifestText = ss.str();
-    }
-    auto manifest = parse_index_manifest(manifestText);
-    if (!manifest) { err = "index manifest parse failed"; return false; }
-    if (manifest->format_version != 1) {
-        err = std::format("unsupported index manifest format_version {}", manifest->format_version);
-        return false;
-    }
-
-    // 2. Artifact (sha256-pinned by the manifest).
-    auto artifactFile = tmpRoot / manifest->artifact_name;
-    if (auto e = obtain(manifest->artifact_name, artifactFile, manifest->artifact_sha256); !e.empty()) {
+    // Artifact (sha256-pinned by the manifest); release asset, versioned name.
+    auto artifactFile = tmpRoot / manifest.artifact_name;
+    if (auto e = detail_::obtain_file(manifest.artifact_name,
+                    index_asset_urls(manifest.artifact_name, mirrorKey),
+                    artifactFile, manifest.artifact_sha256); !e.empty()) {
         err = std::format("fetch index artifact failed: {}", e);
         return false;
     }
@@ -285,7 +348,7 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     // Record the installed version for diagnostics / future ETag-style checks.
     {
         std::ofstream v(stage / ".xlings-index-version", std::ios::binary);
-        v << manifest->index_version;
+        v << manifest.index_version;
     }
 
     auto backup = fs::path(destIndexDir.string() + ".old." +
@@ -306,8 +369,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     fs::remove_all(backup, ec);
 
     log::info("[index] updated from artifact {} ({})",
-              manifest->artifact_name,
-              manifest->index_version.empty() ? "?" : manifest->index_version);
+              manifest.artifact_name,
+              manifest.index_version.empty() ? "?" : manifest.index_version);
     return true;
 }
 
