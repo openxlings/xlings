@@ -73,7 +73,8 @@ P3 阶段接入,主索引先行。
 | PR 开启 | ✅ #327 |
 | release.yml 自动发布工件 job | ✅ `c56beff`(guarded,缺 secret 则跳过) |
 | 三平台 CI 全绿 | ✅ HEAD `49efb58`:linux / linux-root / macos / windows 全 pass(`gh pr checks 327`) |
-| 子索引工件化(awesome/scode/d2x) | ⏳ Phase 3(暂 git 同步,已验证可用) |
+| 子索引工件化(awesome/scode/d2x) | ✅ 默认子索引走工件(已发布 gh+gtc;实测 update 全工件);用户额外添加的仍走 git |
+| GitCode CI 发布(gtc + GITCODE_TOKEN) | ✅ 已 vendored `tools/gtc`;release.yml 用 GITCODE_TOKEN 自动发布 |
 
 ### CI 修复记录(测试驱动)
 首轮 CI 暴露 linux `E2E-06`(sub_index_search)、macos `E2E-07`(remove_multi_version)失败:

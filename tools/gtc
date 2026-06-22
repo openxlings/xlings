@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""gtc — gitcode tool
+
+Subcommands:
+  repo create <owner>/<name> [--description STR] [--private]
+  repo push   <owner>/<name> <local_dir> [--branch BRANCH]
+  release create  <owner>/<repo> --tag TAG [--name NAME] [--body-file FILE] [--target main] [--prerelease]
+  release upload  <owner>/<repo> --tag TAG <file...>
+  release publish <owner>/<repo> --tag TAG [--name NAME] [--body-file FILE] [--target main] [--prerelease] [--asset FILE]...
+  pr create   <owner>/<repo> --title T --head BRANCH --base BRANCH [--body-file FILE]
+
+Token / config:
+  ~/.config/gitcode-tool/config.json  →  {"token": "...", "api_base": "https://api.gitcode.com/api/v5"}
+  override:  --token TOKEN  or  GITCODE_TOKEN env var
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+CONFIG_PATH = Path.home() / ".config" / "gitcode-tool" / "config.json"
+
+
+def load_config():
+    cfg = {"api_base": "https://api.gitcode.com/api/v5"}
+    if CONFIG_PATH.is_file():
+        cfg.update(json.loads(CONFIG_PATH.read_text()))
+    cfg["token"] = os.environ.get("GITCODE_TOKEN") or cfg.get("token") or ""
+    return cfg
+
+
+def http(method, url, *, token, headers=None, json_body=None, data=None, expect=(200, 201)):
+    h = {"PRIVATE-TOKEN": token, "Accept": "application/json"}
+    if json_body is not None:
+        h["Content-Type"] = "application/json"
+        body = json.dumps(json_body).encode()
+    elif data is not None:
+        body = data
+    else:
+        body = None
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=body, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            raw = r.read()
+            return r.status, raw
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        if e.code in expect:
+            return e.code, raw
+        # gitcode often returns HTTP 400 with a different error_code in the body
+        try:
+            j = json.loads(raw)
+            body_code = j.get("error_code")
+            msg = (j.get("error_message") or "").lower()
+            if 422 in expect and ("already exists" in msg or body_code == 422):
+                return 422, raw
+            # gitcode may wrap 404 inside HTTP 400
+            if 404 in expect and (body_code == 404 or "not found" in msg):
+                return 404, raw
+        except Exception:
+            pass
+        sys.stderr.write(f"HTTP {e.code} {url}\n{raw.decode(errors='replace')[:500]}\n")
+        sys.exit(2)
+
+
+def api_json(cfg, method, path, **kwargs):
+    url = cfg["api_base"] + path
+    status, raw = http(method, url, token=cfg["token"], **kwargs)
+    if not raw:
+        return status, None
+    try:
+        return status, json.loads(raw)
+    except json.JSONDecodeError:
+        return status, raw.decode(errors="replace")
+
+
+# ─────────────── repo ───────────────
+
+def cmd_repo_create(args, cfg):
+    owner, name = args.repo.split("/", 1)
+    payload = {"name": name, "path": name, "description": args.description or "", "private": args.private}
+    # personal user repos: POST /user/repos ; org repos: POST /orgs/:org/repos
+    me_status, me = api_json(cfg, "GET", "/user")
+    if me_status == 200 and isinstance(me, dict) and me.get("login") == owner:
+        path = "/user/repos"
+    else:
+        path = f"/orgs/{owner}/repos"
+    status, body = api_json(cfg, "POST", path, json_body=payload, expect=(200, 201, 422))
+    if status == 422:
+        print(f"warn: repo {owner}/{name} may already exist")
+        return
+    print(f"created {body.get('full_name', owner+'/'+name)} → {body.get('html_url') or body.get('url')}")
+
+
+def cmd_repo_push(args, cfg):
+    owner, name = args.repo.split("/", 1)
+    local = Path(args.local_dir).resolve()
+    if not local.is_dir():
+        sys.exit(f"local_dir not found: {local}")
+    branch = args.branch or "main"
+    user = api_json(cfg, "GET", "/user")[1]
+    login = user.get("login") if isinstance(user, dict) else owner
+    remote_url = f"https://{login}:{cfg['token']}@gitcode.com/{owner}/{name}.git"
+
+    def run(*cmd):
+        subprocess.run(cmd, cwd=local, check=True)
+
+    if not (local / ".git").is_dir():
+        run("git", "init", "-b", branch)
+    # ensure remote
+    r = subprocess.run(["git", "-C", str(local), "remote"], capture_output=True, text=True)
+    remotes = r.stdout.split()
+    if "gitcode" in remotes:
+        run("git", "remote", "set-url", "gitcode", remote_url)
+    else:
+        run("git", "remote", "add", "gitcode", remote_url)
+    # commit any pending
+    subprocess.run(["git", "-C", str(local), "add", "-A"], check=True)
+    diff = subprocess.run(["git", "-C", str(local), "diff", "--cached", "--quiet"]).returncode
+    if diff != 0:
+        run("git", "commit", "-m", args.message or "init")
+    run("git", "push", "-u", "gitcode", branch)
+    print(f"pushed → https://gitcode.com/{owner}/{name}")
+
+
+# ─────────────── release ───────────────
+
+def _release_payload(args):
+    if args.body_file:
+        body = Path(args.body_file).read_text().strip()
+    else:
+        body = ""
+    if not body:
+        body = args.name or args.tag
+    return {
+        "tag_name": args.tag,
+        "name": args.name or args.tag,
+        "body": body,
+        "target_commitish": args.target or "main",
+        "prerelease": bool(args.prerelease),
+    }
+
+
+def cmd_release_create(args, cfg):
+    payload = _release_payload(args)
+    # check existing first to make this idempotent
+    s, _ = api_json(cfg, "GET", f"/repos/{args.repo}/releases/tags/{args.tag}", expect=(200, 404))
+    if s == 200:
+        print(f"release {args.repo}@{args.tag} already exists, skipping")
+        return
+    status, body = api_json(cfg, "POST", f"/repos/{args.repo}/releases", json_body=payload,
+                            expect=(200, 201, 422))
+    if status == 422:
+        print(f"warn: release {args.tag} may already exist on {args.repo}")
+        return
+    print(f"release created: {args.repo}@{args.tag}")
+
+
+def _upload_one(cfg, repo, tag, file_path):
+    fname = Path(file_path).name
+    url = f"{cfg['api_base']}/repos/{repo}/releases/{tag}/upload_url?file_name={urllib.parse.quote(fname)}"
+    status, info = http("GET", url, token=cfg["token"])
+    info = json.loads(info)
+    put_url = info["url"]
+    h = info["headers"]
+    with open(file_path, "rb") as f:
+        data = f.read()
+    req = urllib.request.Request(put_url, data=data, headers=h, method="PUT")
+    with urllib.request.urlopen(req, timeout=600) as r:
+        ok = r.status == 200
+        body = r.read().decode(errors="replace")[:200]
+    if not ok:
+        sys.exit(f"upload {fname} failed: {body}")
+    print(f"  uploaded: {fname} ({len(data)} bytes)")
+
+
+def cmd_release_upload(args, cfg):
+    for f in args.files:
+        _upload_one(cfg, args.repo, args.tag, f)
+
+
+def cmd_release_publish(args, cfg):
+    cmd_release_create(args, cfg)
+    if args.asset:
+        for f in args.asset:
+            _upload_one(cfg, args.repo, args.tag, f)
+
+
+# ─────────────── pull request ───────────────
+
+def cmd_pr_create(args, cfg):
+    body = ""
+    if args.body_file:
+        body = Path(args.body_file).read_text()
+    payload = {"title": args.title, "head": args.head, "base": args.base, "body": body}
+    status, resp = api_json(cfg, "POST", f"/repos/{args.repo}/pulls", json_body=payload)
+    print(f"PR created: {resp.get('html_url') or resp}")
+
+
+# ─────────────── argparse ───────────────
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="gtc")
+    p.add_argument("--token", help="override token")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    rp = sub.add_parser("repo").add_subparsers(dest="op", required=True)
+    rc = rp.add_parser("create"); rc.add_argument("repo"); rc.add_argument("--description"); rc.add_argument("--private", action="store_true"); rc.set_defaults(_fn=cmd_repo_create)
+    rs = rp.add_parser("push"); rs.add_argument("repo"); rs.add_argument("local_dir"); rs.add_argument("--branch"); rs.add_argument("-m","--message"); rs.set_defaults(_fn=cmd_repo_push)
+
+    re = sub.add_parser("release").add_subparsers(dest="op", required=True)
+    for name, fn in (("create", cmd_release_create), ("publish", cmd_release_publish)):
+        x = re.add_parser(name); x.add_argument("repo"); x.add_argument("--tag", required=True); x.add_argument("--name"); x.add_argument("--body-file"); x.add_argument("--target"); x.add_argument("--prerelease", action="store_true")
+        if name == "publish":
+            x.add_argument("--asset", action="append", default=[])
+        x.set_defaults(_fn=fn)
+    ru = re.add_parser("upload"); ru.add_argument("repo"); ru.add_argument("--tag", required=True); ru.add_argument("files", nargs="+"); ru.set_defaults(_fn=cmd_release_upload)
+
+    pr = sub.add_parser("pr").add_subparsers(dest="op", required=True)
+    pc = pr.add_parser("create"); pc.add_argument("repo"); pc.add_argument("--title", required=True); pc.add_argument("--head", required=True); pc.add_argument("--base", required=True); pc.add_argument("--body-file"); pc.set_defaults(_fn=cmd_pr_create)
+
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+    cfg = load_config()
+    if args.token:
+        cfg["token"] = args.token
+    if not cfg["token"]:
+        sys.exit("no token: set GITCODE_TOKEN env or write to ~/.config/gitcode-tool/config.json")
+    args._fn(args, cfg)
+
+
+if __name__ == "__main__":
+    main()
