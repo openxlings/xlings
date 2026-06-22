@@ -26,6 +26,11 @@ windows = "llvm@20.1.7"
 toolchain = "gcc@15.1.0-musl"
 linkage = "static"
 
+# aarch64 (ARM64) static target — host-aware (native musl-gcc on ARM,
+# cross aarch64-linux-musl-gcc on x86). linkage=static implied by -musl.
+[target.aarch64-linux-musl]
+linkage = "static"
+
 [dependencies]
 ftxui = "6.1.9"
 
