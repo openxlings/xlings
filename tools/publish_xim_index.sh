@@ -70,7 +70,16 @@ publish_gtc() {  # <tag> <file...>
     return
   fi
   gtc release create "$GTC_REPO" --tag "$tag" --name "$tag" 2>/dev/null || true
-  gtc release upload "$GTC_REPO" "$@" --tag "$tag"
+  # Upload ONE file at a time with retry: a multi-file gtc upload can 502
+  # mid-way and silently drop the remaining files (obs_callback flakiness),
+  # leaving e.g. only the linux asset. Per-file + retry makes it reliable.
+  local f try
+  for f in "$@"; do
+    for try in 1 2 3; do
+      if gtc release upload "$GTC_REPO" "$f" --tag "$tag" 2>&1 | tail -1 | grep -q uploaded; then break; fi
+      echo "[publish] gtc upload $(basename "$f") try $try failed, retrying..."; sleep 3
+    done
+  done
 }
 
 if [[ "$SKIP_GH" == 0 ]]; then
