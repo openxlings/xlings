@@ -75,8 +75,13 @@ publish_gtc() {  # <tag> <file...>
 
 if [[ "$SKIP_GH" == 0 ]]; then
   info "GitHub $GH_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
-  publish_gh "$ROLLING_TAG" "$ART"          # version-unique name -> fresh upload
-  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"   # immutable archive
+  # Artifact (version-unique -> fresh) + the legacy release-asset .json pointer
+  # for backward compat: pre-0.4.54 clients read xim-index[-sub]-latest.json from
+  # the release (gh --clobber can overwrite it). 0.4.54+ clients read the combined
+  # repo-file pointer (tools/push_index_pointers.sh). GitCode can't overwrite a
+  # release asset, so the legacy pointer is github-only; old CN clients fall to it.
+  publish_gh "$ROLLING_TAG" "$ART" "$LATEST_JSON"
+  publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"
 fi
 if [[ "$SKIP_GTC" == 0 ]]; then
   info "GitCode $GTC_REPO: artifact -> rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
