@@ -105,7 +105,11 @@ std::string download_candidates_(std::vector<std::string> urls,
         opts.urls = { u };          // one URL per call: we own the fallthrough
         opts.retryCount = 1;        // breadth over depth; don't hammer a 404
         opts.onUrlAttemptFailed = [](const std::string& url, const std::string& e) {
-            if (e.rfind("stalled:", 0) == 0 || e.rfind("sha256 mismatch", 0) == 0)
+            // Demote a host that stalled / served bad bytes / timed out / gave no
+            // response so later fetches this session skip it. Do NOT penalize on
+            // plain 404/401: the asset is just absent on that mirror (e.g. gitcode
+            // 404s .json) — the host is fine for other assets.
+            if (e.find("404") == std::string::npos && e.find("401") == std::string::npos)
                 mirror::adaptive::penalize_host(url);
         };
         if (!want.empty()) {
@@ -193,7 +197,11 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     std::string base = subName.empty()
         ? "xim-index"
         : std::format("xim-index-{}", subName);
-    std::string pointerName = base + "-latest.json";
+    // Pointer is a .tar.gz (containing manifest.json), NOT a .json: GitCode
+    // serves .tar.gz release assets (200) but 404s .json, so a .json pointer
+    // forced CN clients to fall through to dead github proxies (multi-minute
+    // hang). A .tar.gz pointer is fetched from the regional mirror natively.
+    std::string pointerName = base + "-latest.tar.gz";
 
     // User-facing progress: index sync used to run silently (esp. when a CN
     // mirror was slow), looking like a hang. Announce what we're fetching.
@@ -247,16 +255,18 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
         return detail_::download_candidates_(std::move(urls), dest, wantSha);
     };
 
-    // 1. Manifest pointer.
-    auto manifestFile = tmpRoot / pointerName;
-    if (auto e = obtain(pointerName, manifestFile, {}); !e.empty()) {
+    // 1. Manifest pointer (a .tar.gz containing manifest.json).
+    auto pointerFile = tmpRoot / pointerName;
+    if (auto e = obtain(pointerName, pointerFile, {}); !e.empty()) {
         err = std::format("fetch index manifest failed: {}", e);
         return false;
     }
-
+    auto ptrDir = tmpRoot / "ptr";
+    auto ptrEx = extract_archive(pointerFile, ptrDir);
+    if (!ptrEx) { err = std::format("extract index pointer failed: {}", ptrEx.error()); return false; }
     std::string manifestText;
     {
-        std::ifstream in(manifestFile, std::ios::binary);
+        std::ifstream in(ptrDir / "manifest.json", std::ios::binary);
         std::stringstream ss; ss << in.rdbuf(); manifestText = ss.str();
     }
     auto manifest = parse_index_manifest(manifestText);

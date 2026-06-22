@@ -29,7 +29,9 @@ echo '{"site":{"title":"t"}}'      > "$SRC/.xpkgindex.json"
 
 SERVE="$WORK/serve"; mkdir -p "$SERVE"
 bash "$PROJECT_DIR/tools/build_xim_index_artifact.sh" --version 9.9.9 --out "$SERVE" --src "$SRC"
-cp "$SERVE/xim-index-9.9.9.manifest.json" "$SERVE/xim-index-latest.json"   # pointer
+# Pointer is a .tar.gz containing manifest.json (gitcode-native; see indexfetch).
+_pt="$(mktemp -d)"; cp "$SERVE/xim-index-9.9.9.manifest.json" "$_pt/manifest.json"
+tar -czf "$SERVE/xim-index-latest.tar.gz" -C "$_pt" manifest.json; rm -rf "$_pt"
 pass "fixture artifact + pointer built"
 
 # ── 2. Isolated home + self init ──────────────────────────────────

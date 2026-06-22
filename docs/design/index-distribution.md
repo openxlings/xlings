@@ -97,9 +97,13 @@ release 包内的 `data/xim-pkgindex` 改为**工件托管**(剥 `.git` + 写 `.
 
 ## 4. CN(国内)实测要点
 
-- **GitCode 服务 `.tar.gz` 资产(200),但不服务 `.json`(404,content-type 限制)** → 大头(索引 tarball)
-  走 gitcode 原生,几百字节的 `*-latest.json` 指针经 GitHub 兜底(很小,可接受)。故发布脚本对 gitcode
-  **只传 `.tar.gz`**。
+- **GitCode 服务 `.tar.gz` 资产(200),但不服务 `.json`(404,content-type 限制)。**
+  - 因此 **0.4.54 起指针改为 `.tar.gz`**:`xim-index[-sub]-latest.tar.gz`(内含 `manifest.json`),
+    GitCode 原生可下 → CN 客户端**指针也走 gitcode**,不再回退 github 代理。
+  - 教训(0.4.53):`.json` 指针在 gitcode 404 → 回退到 TCP 延迟低但**不服务该资源**的 github 代理
+    (kkgithub/ghfast),每个吃满 ~30s 读超时 → `xlings update` 卡数分钟。`.tar.gz` 指针根治。
+  - 防御:候选下载对**超时/无响应**的主机做 session 内 penalize(但 404 不罚,因为只是该 mirror 缺此资源)。
+  - 兼容:`*-latest.json` 仍发到 GitHub(供 0.4.53 客户端);GitCode 只发 `.tar.gz`。
 - `Config::resource_servers("CN")` 只含 GitCode(对二进制包是对的);**索引获取始终追加 GLOBAL/GitHub 兜底**,
   CN 解析链:gitcode(原生)→ github → github 代理(ghfast/ghproxy)。
 - sha256 由 github 指针锁定 → 即便某镜像 tarball 滞后(如发布顺序导致的旧内容)也会被拒绝并回退正确源,
