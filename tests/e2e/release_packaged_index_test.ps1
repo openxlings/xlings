@@ -12,21 +12,9 @@ $INDEX_DIR = Join-Path $PKG_DIR 'data\xim-pkgindex'
 
 if (-not (Test-Path "$INDEX_DIR\pkgs")) { Fail "release package missing bundled xim-pkgindex/pkgs" }
 if (-not (Test-Path "$INDEX_DIR\pkgs\p\patchelf.lua")) { Fail "bundled xim-pkgindex missing patchelf package" }
-if (-not (Test-Path "$INDEX_DIR\.git")) { Fail "bundled xim-pkgindex should remain a git repo for xlings update" }
-
-$mirror = if ($env:XLINGS_RELEASE_MIRROR) { $env:XLINGS_RELEASE_MIRROR } else { $null }
-if (-not $mirror) {
-    $config = Get-Content (Join-Path $PKG_DIR '.xlings.json') -Raw | ConvertFrom-Json
-    $mirror = if ($config.mirror) { $config.mirror } else { 'GLOBAL' }
-}
-
-$expectedOrigin = 'https://gitee.com/sunrisepeak/xim-pkgindex.git'
-if ($mirror -eq 'GLOBAL') {
-    $expectedOrigin = 'https://github.com/openxlings/xim-pkgindex.git'
-}
-$actualOrigin = (& git -C $INDEX_DIR remote get-url origin).Trim()
-if ($actualOrigin -ne $expectedOrigin) {
-    Fail "bundled xim-pkgindex origin mismatch: expected $expectedOrigin, got $actualOrigin"
-}
+# Y-asset: the bundled index is artifact-managed (no .git); refreshed via
+# `xlings update` from xlings-res/xim-index, not git pull.
+if (Test-Path "$INDEX_DIR\.git") { Fail "bundled xim-pkgindex should be artifact-managed (no .git)" }
+if (-not (Test-Path "$INDEX_DIR\.xlings-index-version")) { Fail "bundled xim-pkgindex missing .xlings-index-version marker" }
 
 Log "PASS: release package includes usable xim-pkgindex snapshot"

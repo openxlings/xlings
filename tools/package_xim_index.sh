@@ -34,3 +34,13 @@ test -d "$OUT_DIR/data/xim-pkgindex/pkgs" || {
   echo "[release] FAIL: bundled xim-pkgindex missing pkgs/" >&2
   exit 1
 }
+
+# Make the bundled index artifact-managed (Y-asset): strip .git and drop a
+# version marker. The runtime then treats it as a resource artifact (never
+# git-clones it) and refreshes it via `xlings update` from xlings-res/xim-index.
+# See src/core/xim/indexfetch.cppm + .agents/docs/2026-06-22-index-as-resource-impl-plan.md
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VER="$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' "$SCRIPT_DIR/../src/core/config.cppm" | head -1)"
+rm -rf "$OUT_DIR/data/xim-pkgindex/.git"
+printf '%s' "${VER:-bundled}" > "$OUT_DIR/data/xim-pkgindex/.xlings-index-version"
+echo "[release] bundled index is artifact-managed (version ${VER:-bundled}, .git stripped)"

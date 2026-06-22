@@ -43,6 +43,19 @@ try {
     if (-not (Test-Path "$dest\pkgs")) {
         throw "bundled xim-pkgindex missing pkgs/"
     }
+
+    # Y-asset: make the bundled index artifact-managed (strip .git + version
+    # marker). The runtime then refreshes it via `xlings update` from
+    # xlings-res/xim-index instead of git pull. See src/core/xim/indexfetch.cppm.
+    $configPath = Join-Path $PSScriptRoot '..\src\core\config.cppm'
+    $ver = 'bundled'
+    if (Test-Path $configPath) {
+        $m = Select-String -Path $configPath -Pattern 'VERSION = "([^"]*)"' | Select-Object -First 1
+        if ($m) { $ver = $m.Matches[0].Groups[1].Value }
+    }
+    Remove-Item -Recurse -Force (Join-Path $dest '.git') -ErrorAction SilentlyContinue
+    Set-Content -NoNewline -Path (Join-Path $dest '.xlings-index-version') -Value $ver
+    Write-Host "[release] bundled index is artifact-managed (version $ver, .git stripped)"
 } finally {
     Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
 }
