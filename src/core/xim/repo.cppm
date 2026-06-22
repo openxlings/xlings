@@ -520,7 +520,24 @@ bool sync_all_repos(bool force = false) {
 std::string get_repo_head_hash(const std::filesystem::path& repoDir) {
     namespace fs = std::filesystem;
     auto headFile = repoDir / ".git" / "HEAD";
-    if (!fs::exists(headFile)) return {};
+    if (!fs::exists(headFile)) {
+        // Artifact-managed index (no .git): key the parsed-index cache
+        // (.xlings-index-cache.json) on the .xlings-index-version marker.
+        // Artifacts are version-unique, so the marker is a stable cache key
+        // that changes only on re-install. Without this the hash is empty and
+        // load_or_rebuild disables caching -> a full index rebuild (the noisy
+        // "[1/7] awesome::..." scan) on EVERY xlings install/search.
+        auto verFile = repoDir / ".xlings-index-version";
+        if (fs::exists(verFile)) {
+            try {
+                auto v = platform::read_file_to_string(verFile.string());
+                while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' '))
+                    v.pop_back();
+                if (!v.empty()) return "artifact:" + v;
+            } catch (...) {}
+        }
+        return {};
+    }
 
     try {
         auto content = platform::read_file_to_string(headFile.string());
