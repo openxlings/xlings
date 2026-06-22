@@ -75,9 +75,13 @@ if [[ "$SKIP_GH" == 0 ]]; then
   publish_gh "$ARCHIVE_TAG" "$ART" "$MAN"           # immutable archive
 fi
 if [[ "$SKIP_GTC" == 0 ]]; then
-  info "GitCode $GTC_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG'"
-  publish_gtc "$ROLLING_TAG" "$ART" "$LATEST_PATH"
-  publish_gtc "$ARCHIVE_TAG" "$ART" "$MAN"
+  # GitCode serves .tar.gz release assets (200) but NOT .json (404, content-type
+  # restriction). So upload only the artifact tarball to GitCode; the client
+  # reads the *-latest.json pointer from GitHub (tiny) and the big artifact from
+  # GitCode natively. This also avoids gtc's no-overwrite error on the pointer.
+  info "GitCode $GTC_REPO: rolling '$ROLLING_TAG' + archive '$ARCHIVE_TAG' (.tar.gz only)"
+  publish_gtc "$ROLLING_TAG" "$ART"
+  publish_gtc "$ARCHIVE_TAG" "$ART"
 fi
 
 DESTS=""
