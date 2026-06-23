@@ -23,6 +23,19 @@ GITCODE_REPO="xlings-res/xlings"
 GITCODE_API="https://api.gitcode.com/api/v5"
 GITHUB_MIRROR="${XLINGS_GITHUB_MIRROR:-}"
 
+# Network hardening for flaky / DPI-throttled links (e.g. mainland-China mobile
+# / Termux, where `ping github.com` succeeds via ICMP but the HTTPS response is
+# silently dropped). Without a cap, a probe `curl` can hang for minutes on the
+# GitHub source before failing over to GitCode. Force IPv4 (the IPv6 path often
+# black-holes on mobile), fail fast on the metadata probes, and retry transient
+# resets. Tunable via XLINGS_CURL_CONNECT_TIMEOUT / XLINGS_CURL_MAX_TIME.
+_CT="${XLINGS_CURL_CONNECT_TIMEOUT:-8}"
+_MT="${XLINGS_CURL_MAX_TIME:-25}"
+CURL_NET_OPTS="-4 --connect-timeout ${_CT} --max-time ${_MT} --retry 1 --retry-delay 1"
+# Download can be large (toolchains run to hundreds of MB), so cap the connect
+# phase but not the total transfer.
+CURL_DL_OPTS="-4 --connect-timeout ${_CT} --retry 2 --retry-delay 1"
+
 # Specify version: curl ... | bash -s -- v0.5.0
 # Or env var:      XLINGS_VERSION=v0.5.0 curl ... | bash
 XLINGS_VERSION="${1:-${XLINGS_VERSION:-}}"
@@ -132,10 +145,10 @@ resolve_github() {
         version_num="${XLINGS_VERSION#v}"
         tag="v${version_num}"
         # HEAD the tag page to confirm existence and measure latency.
-        probe=$(curl -fsSIL -o /dev/null -w '%{time_total}' \
+        probe=$(curl $CURL_NET_OPTS -fsSIL -o /dev/null -w '%{time_total}' \
             "${web_base}/${GITHUB_REPO}/releases/tag/${tag}") || return 1
     else
-        effective=$(curl -fsSIL -o /dev/null -w '%{time_total} %{url_effective}' \
+        effective=$(curl $CURL_NET_OPTS -fsSIL -o /dev/null -w '%{time_total} %{url_effective}' \
             "${web_base}/${GITHUB_REPO}/releases/latest") || return 1
         probe="${effective%% *}"
         tag="${effective##*/}"
@@ -160,14 +173,14 @@ resolve_gitcode() {
         # GitCode tags carry no leading "v"; try the bare number first, then "v".
         local resolved=1 t
         for t in "${version_num}" "v${version_num}"; do
-            if probe=$(curl -fsS -o "$meta_file" -w '%{time_total}' \
+            if probe=$(curl $CURL_NET_OPTS -fsS -o "$meta_file" -w '%{time_total}' \
                 "${GITCODE_API}/repos/${GITCODE_REPO}/releases/tags/${t}"); then
                 resolved=0; break
             fi
         done
         [[ $resolved -eq 0 ]] || return 1
     else
-        probe=$(curl -fsS -o "$meta_file" -w '%{time_total}' \
+        probe=$(curl $CURL_NET_OPTS -fsS -o "$meta_file" -w '%{time_total}' \
             "${GITCODE_API}/repos/${GITCODE_REPO}/releases/latest") || return 1
         tag=$(grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$meta_file" \
             | head -1 | grep -oE '"[^"]*"$' | tr -d '"')
@@ -256,7 +269,7 @@ for i in $SORTED_IDX; do
     log_info "Download URL: ${CYAN}${url}${RESET}"
     log_info "Downloading..."
 
-    if curl -fSL --progress-bar -o "${WORK_DIR}/${TARBALL}" "$url" && is_gzip "${WORK_DIR}/${TARBALL}"; then
+    if curl $CURL_DL_OPTS -fSL --progress-bar -o "${WORK_DIR}/${TARBALL}" "$url" && is_gzip "${WORK_DIR}/${TARBALL}"; then
         download_ok=1
         SELECTED_SRC="$src"
         break
