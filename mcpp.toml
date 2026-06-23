@@ -40,7 +40,7 @@ libarchive = "3.8.7"
 [dependencies.mcpplibs]
 cmdline = "0.0.2"
 xpkg = "0.0.41"
-tinyhttps = "0.2.7"
+tinyhttps = "0.2.8"
 capi.lua = "0.0.3"
 
 [dev-dependencies]

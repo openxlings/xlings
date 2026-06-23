@@ -32,6 +32,15 @@ namespace platform_impl {
     // POSIX terminal API. windows.cppm provides its own stub. Putting it
     // here means linux.cppm and macos.cppm carry no copy of this code.
     export std::optional<bool> query_terminal_is_light() {
+        // If our own stdout AND stderr are not terminals, we're a child whose
+        // output is captured by a parent (e.g. mcpp driving `xlings interface`
+        // over a pipe). Do NOT poke /dev/tty then: the OSC-11 query races with
+        // the parent's rendering and the raw reply (\e]11;rgb:...) leaks into
+        // the visible terminal and desyncs its input on some terminals (Termux),
+        // which is what makes the user have to press Enter. Fall back to
+        // env/default detection in that case.
+        if (!::isatty(STDOUT_FILENO) && !::isatty(STDERR_FILENO)) return std::nullopt;
+
         int fd = ::open("/dev/tty", O_RDWR | O_NOCTTY);
         if (fd < 0) return std::nullopt;
         struct CloseGuard { int fd; ~CloseGuard() { ::close(fd); } } _g{fd};
