@@ -35,6 +35,7 @@ OUT_DIR="$PROJECT_DIR/build/$PKG_NAME"
 TEST_DATA=""
 cleanup() {
   [[ -n "$TEST_DATA" && -d "$TEST_DATA" ]] && rm -rf "$TEST_DATA"
+  return 0  # never fail the script (TEST_DATA is empty on SKIP_RUN_VERIFY cross builds)
 }
 trap cleanup EXIT
 
