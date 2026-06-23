@@ -98,6 +98,16 @@ termux-android-adaptation §3):
 
 ---
 
+## 4.5 进度 + 关键修复:指针**合并**而非覆盖(2026-06-24)
+
+- **✅ 落地**:`xim-pkgindex`、`mcpp-community/mcpp-index` 两仓均已加 `publish-artifact.yml`
+  + vendored `tools/`(含 `gtc`),push `pkgs/**` 即发 artifact(内容哈希命名)+ 移指针到
+  `xlings-res/{xim-index,mcpp-index}`(GitHub + GitCode)。实测 CI 成功、两端 artifact 字节一致。
+- **🐛→✅ 指针合并修复**:`push_index_pointers.sh` 原先 `cp` **覆盖**组合指针 —— 单个索引仓的
+  per-repo CI 单独发布时会把**兄弟 key(awesome/scode/d2x)冲掉**。改为把本仓(重)建的 key
+  `update` **合并**进既有指针(每仓只更新自己的 key)。先在 xim-pkgindex 的 vendored 副本修正,
+  再同步回 xlings 源 `tools/push_index_pointers.sh`(本 PR;两份现已一致)。
+
 ## 5. 一句话
 
 **把 artifact 发布脚本(本就 standalone)搬进 xim-pkgindex 仓的 push/手动/定时 CI,artifact

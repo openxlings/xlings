@@ -48,7 +48,22 @@ push_one() {  # <clone-url> <label>
   fi
   # Clean legacy per-index pointers + any probe files; keep only the combined one.
   rm -f "$tmp"/xim-index-*latest.json "$tmp"/ptest.* "$tmp"/ptestnoext "$tmp"/pov.json 2>/dev/null || true
-  cp "$COMBINED" "$tmp"/xim-index-pointers.json
+  # MERGE our (re)built keys INTO the existing combined pointer, preserving
+  # sibling indexes' keys. Each index repo (xim, awesome, scode, d2x) publishes
+  # independently and must update ONLY its own key — a plain overwrite would drop
+  # the others (regression seen when xim-pkgindex's per-repo CI published alone).
+  python3 - "$tmp/xim-index-pointers.json" "$COMBINED" <<'PYMERGE'
+import sys, json, os
+dst, src = sys.argv[1], sys.argv[2]
+base = {"format_version": 1, "indexes": {}}
+if os.path.exists(dst):
+    try: base = json.load(open(dst, encoding="utf-8"))
+    except Exception: base = {"format_version": 1, "indexes": {}}
+base.setdefault("indexes", {})
+base["indexes"].update(json.load(open(src, encoding="utf-8")).get("indexes", {}))
+base["format_version"] = 1
+json.dump(base, open(dst, "w", encoding="utf-8"), indent=2)
+PYMERGE
   git -C "$tmp" add -A
   if git -C "$tmp" diff --cached --quiet; then
     echo "[pointers] $label: no change"; rm -rf "$tmp"; return 0
