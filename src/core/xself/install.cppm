@@ -72,12 +72,22 @@ static std::string detect_install_mirror_() {
         return std::to_string(ms);
     };
 
+    // Probe the actual RESOURCE host of each mirror — that's what package
+    // downloads (the bulk of install traffic) hit. GLOBAL serves from
+    // github.com, CN from gitcode.com. (Earlier this probed gitee.com — the CN
+    // *index* host — which on some China-mobile / Termux links is throttled even
+    // though gitcode.com is fine, so GLOBAL was wrongly kept and every xim
+    // download then stalled on the unreachable github.)
     auto globalLatencySec = tinyhttps::probe_latency("https://github.com", timeoutMs);
     log::println("[xlings:self] https://github.com: {} ms", to_latency_ms_text(globalLatencySec));
 
-    auto cnLatencySec = tinyhttps::probe_latency("https://gitee.com", timeoutMs);
-    log::println("[xlings:self] https://gitee.com: {} ms", to_latency_ms_text(cnLatencySec));
+    auto cnLatencySec = tinyhttps::probe_latency("https://gitcode.com", timeoutMs);
+    log::println("[xlings:self] https://gitcode.com: {} ms", to_latency_ms_text(cnLatencySec));
 
+    // Pick CN when its resource host is reachable AND GitHub is either
+    // unreachable or meaningfully slower. This makes a github-blocked link
+    // (gitcode reachable) auto-select CN instead of falling back to a dead
+    // GLOBAL.
     if (std::isfinite(cnLatencySec) &&
         (!std::isfinite(globalLatencySec) || cnLatencySec + preferCnDeltaSec < globalLatencySec)) {
         return "CN";
