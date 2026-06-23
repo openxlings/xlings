@@ -10,6 +10,14 @@
 
 ---
 
+## 已就绪的基础设施(2026-06-24)
+- **资源仓**:`xlings-res/xim-index`(github + gitcode 两端均有)—— 放 xim 索引 artifact + 指针。
+- **secrets**:`openxlings/xim-pkgindex` 仓已配 `XLINGS_RES_TOKEN` + `GITCODE_TOKEN`(+ `GITEE_TOKEN`)。
+- **Actions**:xim-pkgindex 仓已启用。
+- **本仓自文档**:发布机制的逐仓说明见 `openxlings/xim-pkgindex` 仓
+  `.agents/docs/2026-06-24-artifact-publish-mechanism.md`。
+- 剩待办:在 xim-pkgindex 仓加 `publish-artifact.yml`(本文档 §2)。
+
 ## 0. 现状机制(双路径)
 
 | 路径 | 载体 | 谁发布 | 客户端 |
