@@ -328,14 +328,32 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         // manual step (which breaks the zero-config promise: the very next
         // command `xlings` would be "command not found"), create the default rc
         // ourselves so xlings lands on PATH on first login.
+        //
+        // Best-effort: only when the home dir actually exists and the write
+        // succeeds. A throwing write (e.g. simulated-sudo to a non-existent
+        // home) must NOT abort `self install` — fall back to the manual hint.
+        bool created = false;
         auto prof = rcHome / ".bashrc";
-        std::string content;
-        if (fs::exists(prof)) content = platform::read_file_to_string(prof.string());
-        platform::write_string_to_file(prof.string(),
-                                       content + "\n# xlings\n" + sourceLine + "\n");
-        platform::chown_to_invoker(prof, /*recursive=*/false);
-        log::println("[xlings:self] created profile ({})", prof.filename().string());
-        log::println("[xlings:self] open a new shell or: source \"{}\"", profileSh.string());
+        std::error_code ec;
+        if (fs::exists(rcHome, ec) && !ec) {
+            try {
+                std::string content;
+                if (fs::exists(prof)) content = platform::read_file_to_string(prof.string());
+                platform::write_string_to_file(prof.string(),
+                                               content + "\n# xlings\n" + sourceLine + "\n");
+                platform::chown_to_invoker(prof, /*recursive=*/false);
+                created = true;
+            } catch (const std::exception& e) {
+                log::debug("[xlings:self] could not create {}: {}", prof.string(), e.what());
+            }
+        }
+        if (created) {
+            log::println("[xlings:self] created profile ({})", prof.filename().string());
+            log::println("[xlings:self] open a new shell or: source \"{}\"", profileSh.string());
+        } else {
+            std::println("[xlings:self] no shell profile found, add manually:");
+            std::println("  {}", sourceLine);
+        }
     }
 #elif defined(_WIN32)
     auto xlingsBin = homeDir / "subos" / "current" / "bin";
