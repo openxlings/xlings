@@ -23,7 +23,12 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' "$PROJECT_DIR/src/core/config.cppm" | head -1)
 [[ -z "$VERSION" ]] && VERSION="0.2.0"
 
-ARCH="x86_64"
+# Cross-build aware: derive the package arch from the mcpp target triple, so the
+# same script emits xlings-<ver>-linux-{x86_64,aarch64}.tar.gz. The aarch64
+# release job sets MCPP_TARGET=aarch64-linux-musl + SKIP_RUN_VERIFY=1 (the cross
+# ELF can't execute on the x86_64 builder).
+MCPP_TARGET="${MCPP_TARGET:-x86_64-linux-musl}"
+ARCH="${MCPP_TARGET%%-*}"   # x86_64 / aarch64
 PKG_NAME="xlings-${VERSION}-linux-${ARCH}"
 OUT_DIR="$PROJECT_DIR/build/$PKG_NAME"
 
@@ -119,7 +124,12 @@ info "OK: .xlings.json present and valid"
 [[ -f "$OUT_DIR/data/xim-pkgindex/pkgs/p/patchelf.lua" ]] || fail "bundled xim-pkgindex missing patchelf"
 info "OK: bundled xim-pkgindex snapshot present"
 
-# 4c. Functional tests (bootstrap home detection)
+# 4c. Functional tests (bootstrap home detection). Skipped on cross builds —
+# the aarch64 ELF can't execute on the x86_64 builder; the user's device runs
+# self-init via `xlings self install` (from quick_install.sh) on first use.
+if [[ -n "${SKIP_RUN_VERIFY:-}" ]]; then
+  info "Skip: functional run tests (SKIP_RUN_VERIFY set — cross build)"
+else
 info "Testing bootstrap home execution..."
 TEST_DATA="$PROJECT_DIR/build/.release_verify_$$"
 mkdir -p "$TEST_DATA"
@@ -152,6 +162,7 @@ done
 [[ "$(readlink "$OUT_DIR/subos/current")" == "$OUT_DIR/subos/default" || "$(readlink "$OUT_DIR/subos/current")" == "default" ]] || fail "subos/current does not point to default after self init"
 [[ -x "$OUT_DIR/subos/default/bin/xlings" ]] || fail "subos/default/bin/xlings missing after self init"
 info "OK: self init materialized bootstrap home"
+fi  # end SKIP_RUN_VERIFY gate
 
 export XLINGS_DATA="$OUT_DIR/data"
 export XLINGS_SUBOS="$OUT_DIR/subos/current"

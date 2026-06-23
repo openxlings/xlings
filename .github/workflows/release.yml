@@ -91,6 +91,73 @@ jobs:
           name: xlings-linux-x86_64
           path: build/xlings-*-linux-x86_64.tar.gz
 
+  # Cross-build the aarch64-linux-musl release artefact on an x86_64 runner via
+  # mcpp's cross toolchain (xim:aarch64-linux-musl-gcc). Uses the latest mcpp
+  # (built from main) and a freshly-updated package index, so the produced
+  # binary tracks the current ecosystem. The ELF can't execute here, so the
+  # functional/network verify steps are skipped (SKIP_RUN_VERIFY/SKIP_NETWORK_VERIFY)
+  # — self-init runs on the user's aarch64 device via `xlings self install`.
+  build-linux-aarch64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl git build-essential jq
+
+      - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
+        env:
+          XLINGS_NON_INTERACTIVE: 1
+          XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+          echo "XLINGS_HOME=$HOME/.xlings"           >> "$GITHUB_ENV"
+          echo "$HOME/.xlings/subos/current/bin"     >> "$GITHUB_PATH"
+          echo "$HOME/.xlings/bin"                   >> "$GITHUB_PATH"
+
+      - name: Cache xlings package payloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.xlings/data/xpkgs
+          key: xlings-deps-aarch64-${{ runner.os }}-${{ hashFiles('.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          restore-keys: |
+            xlings-deps-aarch64-${{ runner.os }}-
+
+      - name: Bootstrap mcpp + refresh index (latest, GLOBAL)
+        run: |
+          xlings config --mirror GLOBAL 2>/dev/null || true
+          xlings update -y 2>/dev/null || xlings update 2>/dev/null || true
+          xlings install mcpp -y
+          mcpp --version
+
+      - name: Build cross-capable mcpp from source (latest main)
+        run: |
+          git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
+          cd /tmp/mcpp-src
+          mcpp self config --mirror GLOBAL 2>/dev/null || true
+          mcpp build
+          MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
+          test -x "$MCPP"
+          "$MCPP" self config --mirror GLOBAL
+          echo "MCPP=$MCPP" >> "$GITHUB_ENV"
+
+      - name: Build (linux_release — aarch64 cross)
+        run: |
+          chmod +x ./tools/linux_release.sh
+          MCPP_BIN="$MCPP" MCPP_TARGET=aarch64-linux-musl \
+            SKIP_RUN_VERIFY=1 SKIP_NETWORK_VERIFY=1 \
+            ./tools/linux_release.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlings-linux-aarch64
+          path: build/xlings-*-linux-aarch64.tar.gz
+
   build-macos:
     runs-on: macos-15
     steps:
@@ -234,7 +301,7 @@ jobs:
           path: build/xlings-*-windows-x86_64.zip
 
   create-release:
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-linux-aarch64, build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -274,6 +341,7 @@ jobs:
           prerelease: false
           files: |
             artifacts/xlings-linux-x86_64/xlings-*-linux-x86_64.tar.gz
+            artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
         env:
