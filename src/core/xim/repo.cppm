@@ -11,6 +11,7 @@ import xlings.platform;
 import xlings.core.config;
 import xlings.core.mirror;
 import xlings.core.xim.indexfetch;
+import xlings.libs.tinyhttps;
 
 export namespace xlings::xim {
 
@@ -185,6 +186,18 @@ bool sync_repo(const std::filesystem::path& localDir,
         for (std::size_t i = 0; i < urls.size(); ++i) {
             log::debug("cloning index repo attempt {}/{}: {}",
                        i + 1, urls.size(), urls[i]);
+            // git has no connect timeout, so a firewalled host (e.g. github
+            // from a network that blocks it — common in CN / on Termux) stalls
+            // the clone on the OS TCP timeout (~127s) per URL. Probe reachability
+            // first with a short TCP connect; skip unreachable URLs so a
+            // github-only sub-index can't freeze `xlings update` for minutes.
+            constexpr int kReachMs = 3000;
+            if (!std::isfinite(tinyhttps::probe_latency(urls[i], kReachMs))) {
+                log::debug("index repo host unreachable within {}ms, skipping: {}",
+                           kReachMs, urls[i]);
+                lastErr = "host unreachable: " + urls[i];
+                continue;
+            }
             auto clone = compact::git::clone_shallow(urls[i], tmpDir, false);
             if (clone.rc == 0) {
                 if (i > 0)
@@ -228,6 +241,13 @@ bool sync_repo(const std::filesystem::path& localDir,
     }
 
     log::debug("updating index repo: {}", localDir.filename().string());
+    // Same fast-fail as the clone path: skip the refresh if the origin is
+    // unreachable (firewalled github) rather than stalling git pull ~127s. The
+    // existing local copy stays valid, so this is non-fatal.
+    if (!std::isfinite(tinyhttps::probe_latency(url, 3000))) {
+        log::debug("index repo origin unreachable, keeping existing copy: {}", url);
+        return true;
+    }
     auto setOrigin = compact::git::set_origin(localDir, url);
     if (setOrigin.rc != 0) {
         log::warn("failed to set index repo origin: {}", setOrigin.output);
