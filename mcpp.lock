@@ -27,9 +27,9 @@ hash    = "fnv1a:8ee8a8e51ac69885"
 
 [package."mcpplibs.tinyhttps"]
 namespace = "mcpplibs"
-version = "0.2.3"
-source  = "index+mcpplibs@0.2.3"
-hash    = "fnv1a:dcefd9d20be9c419"
+version = "0.2.5"
+source  = "index+mcpplibs@0.2.5"
+hash    = "fnv1a:20d3b5760c8ff2ff"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
