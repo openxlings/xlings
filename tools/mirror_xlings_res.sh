@@ -20,7 +20,7 @@ GTC_DST="${GTC_DST:-xlings-res/xlings}"
 info() { echo "[mirror] $*"; }
 
 DL="$(mktemp -d)"; trap 'rm -rf "$DL"' EXIT
-ASSETS=( "xlings-${VER}-linux-x86_64.tar.gz" "xlings-${VER}-macosx-arm64.tar.gz" "xlings-${VER}-windows-x86_64.zip" )
+ASSETS=( "xlings-${VER}-linux-x86_64.tar.gz" "xlings-${VER}-linux-aarch64.tar.gz" "xlings-${VER}-macosx-arm64.tar.gz" "xlings-${VER}-windows-x86_64.zip" )
 
 info "downloading $SRC_REPO v$VER assets"
 for a in "${ASSETS[@]}"; do
