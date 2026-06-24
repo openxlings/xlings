@@ -161,6 +161,53 @@ std::string sync_repo_url(const std::string& url, const std::string& mirror) {
     return detail_::sync_repo_url_(url, mirror);
 }
 
+// Merge the main index's lua-declared default sub-indexes with the
+// persisted / locally-added json list.
+//
+// Lua defaults are AUTHORITATIVE for their own names: if the official index
+// moves a default to a new org/URL, the lua URL wins over a stale json entry
+// (which save_sub_repos_json wrote from a previous sync), and the json is
+// healed on the next save. The json contributes ONLY names that are NOT lua
+// defaults — i.e. user-added sub-indexes (a private fork, or a once-default
+// repo that has since been dropped from the lua, like `fromsource`).
+//
+// This is what lets an org-drifted default (json pinned to the old org) keep
+// classifying as default-official so it can migrate to the artifact path; a
+// json-overrides-lua merge would leave it stuck on git forever.
+std::vector<IndexRepo> merge_sub_repos(const std::vector<IndexRepo>& luaDefaults,
+                                       const std::vector<IndexRepo>& jsonRepos) {
+    std::unordered_map<std::string, IndexRepo> seen;
+    std::vector<IndexRepo> out;
+    out.reserve(luaDefaults.size() + jsonRepos.size());
+    for (auto& r : luaDefaults) {
+        if (seen.emplace(r.name, r).second) out.push_back(r);
+    }
+    for (auto& r : jsonRepos) {
+        if (seen.emplace(r.name, r).second) out.push_back(r);
+    }
+    return out;
+}
+
+// Decide whether a sub-index should be fetched as a versioned artifact (vs git
+// clone/pull). Mirrors the main index's gating:
+//   - indexSource "artifact": force artifact for default-official subs.
+//   - indexSource "git":      always git.
+//   - indexSource "auto":     artifact for a default-official sub that is fresh
+//     (no pkgs), already artifact-managed, OR — once the MAIN index is
+//     artifact-managed — to MIGRATE an existing git checkout (the whole index
+//     is one unit; this is the C1 migration gate so existing installs don't
+//     stay split: main on artifact, subs on git).
+// Non-default / URL-overridden / local sub-indexes are never artifact-fetched.
+bool sub_should_attempt_artifact(bool isDefaultOfficial,
+                                 const std::string& indexSource,
+                                 bool subManaged, bool subHasPkgs,
+                                 bool mainArtifactManaged) {
+    if (indexSource == "artifact") return isDefaultOfficial;
+    if (indexSource == "git")      return false;
+    return isDefaultOfficial
+        && (subManaged || !subHasPkgs || mainArtifactManaged);
+}
+
 // A local repo source (file:// URL or a filesystem path) has no network host,
 // so the TCP reachability probe below always reports it "unreachable" and would
 // wrongly skip it. Local sources are always reachable — let git clone/pull
@@ -460,26 +507,24 @@ bool sync_all_repos(bool force = false) {
     auto luaSubRepos = detail_::discover_sub_repos_(mainDir, mirror.empty() ? "GLOBAL" : mirror);
     auto jsonSubRepos = load_sub_repos_json(sub_repos_json_path());
 
-    // Merge: Lua-discovered repos + locally-added JSON repos (JSON overrides)
-    std::unordered_map<std::string, IndexRepo> merged;
-    for (auto& repo : luaSubRepos) merged[repo.name] = repo;
-    for (auto& repo : jsonSubRepos) merged[repo.name] = repo;
-
-    std::vector<IndexRepo> allSubRepos;
+    // Merge: lua defaults are authoritative for their own names; json adds only
+    // user-added sub-indexes (names absent from the lua defaults). See
+    // merge_sub_repos for why json must NOT override lua defaults (an
+    // org-drifted default would otherwise stay pinned to a stale json URL and
+    // never migrate to the artifact path).
+    auto allSubRepos = merge_sub_repos(luaSubRepos, jsonSubRepos);
     std::vector<IndexRepo> syncedSubRepos;
-    for (auto& [name, repo] : merged) allSubRepos.push_back(repo);
 
     // Default sub-indexes — those provided by the main index's
-    // xim-indexrepos.lua at their declared (non-overridden) URL and from a
+    // xim-indexrepos.lua at their declared (now-authoritative) URL and from a
     // remote source — are fetched as artifacts, same model as the main index.
     // User-added sub-indexes (in xim-indexrepos.json but NOT a lua default),
     // URL-overridden ones, and local (file://) sources keep git.
     //
-    // The signal is "name is a lua default AND its URL still matches the lua
-    // default" — NOT "absent from the json". save_sub_repos_json() writes the
-    // synced defaults back into xim-indexrepos.json after every sync, so an
-    // "absent from json" test would wrongly drop every default after the first
-    // sync (the bug that left CN users git-pulling sub-indexes from github).
+    // The signal is "name is a lua default AND its URL matches the lua default".
+    // Because merge_sub_repos makes lua authoritative, repo.url == luaUrl for
+    // every lua default, so this also recognises a default whose official org
+    // moved (the stale json copy no longer overrides it).
     std::unordered_map<std::string, std::string> luaUrl;
     for (auto& r : luaSubRepos) luaUrl[r.name] = r.url;
 
@@ -493,11 +538,9 @@ bool sync_all_repos(bool force = false) {
             luaIt != luaUrl.end() && luaIt->second == repo.url
             && !Config::is_local_repo_source(repo, false);
         bool subManaged = fs::exists(repoDir / ".xlings-index-version");
-        bool subAttemptArtifact;
-        if (indexSource == "artifact")  subAttemptArtifact = subDefaultOfficial;
-        else if (indexSource == "git")  subAttemptArtifact = false;
-        else subAttemptArtifact = subDefaultOfficial
-                 && (subManaged || !fs::exists(repoDir / "pkgs"));
+        bool subAttemptArtifact = sub_should_attempt_artifact(
+            subDefaultOfficial, indexSource, subManaged,
+            fs::exists(repoDir / "pkgs"), mainArtifactManaged);
 
         bool ok = false;
         if (subAttemptArtifact) {

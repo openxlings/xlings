@@ -1734,6 +1734,87 @@ TEST(XimSubReposTest, SyncRepoUrlKeepsGithubOnCNMirror) {
     EXPECT_EQ(url, "https://github.com/openxlings/xim-pkgindex-awesome.git");
 }
 
+// ── merge_sub_repos: lua defaults are authoritative for their own names ──
+// (C4) The official index may move a default to a new org/URL; the lua URL must
+// win over a stale json entry so the sub still classifies as default-official.
+// json contributes ONLY names absent from lua (user-added sub-indexes).
+TEST(XimSubReposTest, MergeSubReposLuaDefaultWinsOverStaleJson) {
+    std::vector<xlings::IndexRepo> lua = {
+        {"awesome", "https://github.com/openxlings/xim-pkgindex-awesome.git"},
+        {"scode",   "https://github.com/openxlings/xim-pkgindex-scode.git"},
+    };
+    // json: stale org for awesome (old d2learn) + a user-added fork.
+    std::vector<xlings::IndexRepo> json = {
+        {"awesome",    "https://github.com/d2learn/xim-pkgindex-awesome.git"},
+        {"fromsource", "https://github.com/d2learn/xim-pkgindex-fromsource.git"},
+    };
+
+    auto merged = xlings::xim::merge_sub_repos(lua, json);
+    ASSERT_EQ(merged.size(), 3u);
+    std::unordered_map<std::string, std::string> byName;
+    for (auto& r : merged) byName[r.name] = r.url;
+    // lua wins for the default that drifted org
+    EXPECT_EQ(byName["awesome"], "https://github.com/openxlings/xim-pkgindex-awesome.git");
+    EXPECT_EQ(byName["scode"],   "https://github.com/openxlings/xim-pkgindex-scode.git");
+    // user-added json-only repo preserved
+    EXPECT_EQ(byName["fromsource"], "https://github.com/d2learn/xim-pkgindex-fromsource.git");
+}
+
+TEST(XimSubReposTest, MergeSubReposJsonOnlyPreserved) {
+    std::vector<xlings::IndexRepo> lua = {};
+    std::vector<xlings::IndexRepo> json = {
+        {"fromsource", "https://github.com/d2learn/xim-pkgindex-fromsource.git"},
+    };
+    auto merged = xlings::xim::merge_sub_repos(lua, json);
+    ASSERT_EQ(merged.size(), 1u);
+    EXPECT_EQ(merged[0].name, "fromsource");
+}
+
+// ── sub_should_attempt_artifact: the C1 migration gate ──
+TEST(XimSubReposTest, SubArtifactAutoFreshDefault) {
+    // auto + default + fresh (no pkgs) → artifact
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        /*isDefaultOfficial=*/true, "auto",
+        /*subManaged=*/false, /*subHasPkgs=*/false, /*mainArtifactManaged=*/false));
+}
+
+TEST(XimSubReposTest, SubArtifactAutoExistingGitNoMainMigration) {
+    // auto + default + existing git checkout (has pkgs, not managed) +
+    // main NOT artifact-managed → stay git (no migration)
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        true, "auto", /*subManaged=*/false, /*subHasPkgs=*/true,
+        /*mainArtifactManaged=*/false));
+}
+
+TEST(XimSubReposTest, SubArtifactAutoMigratesWhenMainArtifactManaged) {
+    // auto + default + existing git checkout + MAIN is artifact-managed
+    // → migrate the sub to artifact too (the whole index is one unit). [C1]
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        true, "auto", /*subManaged=*/false, /*subHasPkgs=*/true,
+        /*mainArtifactManaged=*/true));
+}
+
+TEST(XimSubReposTest, SubArtifactAutoAlreadyManaged) {
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        true, "auto", /*subManaged=*/true, /*subHasPkgs=*/true, false));
+}
+
+TEST(XimSubReposTest, SubArtifactNonDefaultNeverArtifact) {
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        /*isDefaultOfficial=*/false, "auto", false, false, true));
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        /*isDefaultOfficial=*/false, "artifact", false, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactSourceOverrides) {
+    // git mode disables artifact even for a fresh default
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        true, "git", false, false, true));
+    // artifact mode forces it for a default regardless of fs state
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        true, "artifact", false, true, false));
+}
+
 // ============================================================
 // xim add-xpkg / local repo tests
 // ============================================================
