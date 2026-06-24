@@ -57,14 +57,46 @@ mkdir -p "$MCPP_HOME_DIR" "$XLINGS_HOME_DIR"
 MCPP_BIN="$(resolve_mcpp_bin "$MCPP_BIN")"
 
 log "Testing mcpp can build xlings with isolated homes..."
-rm -rf "$ROOT_DIR/target/$MCPP_TARGET"
-(
-  cd "$ROOT_DIR"
-  env -u XLINGS_PROJECT_DIR \
-    MCPP_HOME="$MCPP_HOME_DIR" \
-    XLINGS_HOME="$XLINGS_HOME_DIR" \
-    "$MCPP_BIN" build --target "$MCPP_TARGET" --print-fingerprint --no-cache
-)
+
+# mcpp's first-time sandbox bootstrap downloads patchelf + ninja from the
+# network. On a fresh CI runner (cold cache) that fetch occasionally flakes
+# (transient 5xx/404 / connection reset), leaving the sandbox half-initialized
+# ("failed to bootstrap patchelf ... ; patchelf missing") and failing the whole
+# E2E suite. Retry the build a few times, wiping the isolated mcpp sandbox
+# between attempts so the bootstrap re-runs from a clean slate. We retry ONLY
+# transient bootstrap failures; real build/compile errors are surfaced
+# immediately instead of being masked (and paid for 3x).
+MCPP_BUILD_ATTEMPTS="${MCPP_BUILD_ATTEMPTS:-3}"
+BUILD_LOG="$RUNTIME_DIR/mcpp_build.out"
+
+run_mcpp_build() {
+  rm -rf "$ROOT_DIR/target/$MCPP_TARGET" "$MCPP_HOME_DIR"
+  mkdir -p "$MCPP_HOME_DIR"
+  (
+    cd "$ROOT_DIR"
+    env -u XLINGS_PROJECT_DIR \
+      MCPP_HOME="$MCPP_HOME_DIR" \
+      XLINGS_HOME="$XLINGS_HOME_DIR" \
+      "$MCPP_BIN" build --target "$MCPP_TARGET" --print-fingerprint --no-cache
+  )
+}
+
+attempt=1
+while true; do
+  status=0
+  run_mcpp_build 2>&1 | tee "$BUILD_LOG" || status="${PIPESTATUS[0]}"
+  [[ "$status" -eq 0 ]] && break
+
+  if ! grep -qE 'failed to bootstrap (patchelf|ninja)|patchelf missing|ninja missing' "$BUILD_LOG"; then
+    fail "mcpp build failed (exit $status) — not a transient sandbox-bootstrap flake"
+  fi
+  if [[ "$attempt" -ge "$MCPP_BUILD_ATTEMPTS" ]]; then
+    fail "mcpp sandbox bootstrap kept failing after $MCPP_BUILD_ATTEMPTS attempts"
+  fi
+  log "mcpp build attempt $attempt hit a transient sandbox-bootstrap flake; resetting sandbox and retrying ($((attempt + 1))/$MCPP_BUILD_ATTEMPTS)..."
+  attempt=$((attempt + 1))
+  sleep 5
+done
 
 XLINGS_MCPP_BIN="$(find "$ROOT_DIR/target/$MCPP_TARGET" -path '*/bin/xlings' -type f -executable | head -1)"
 [[ -n "$XLINGS_MCPP_BIN" ]] || fail "mcpp build did not produce a target/*/bin/xlings binary"
