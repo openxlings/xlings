@@ -1,4 +1,14 @@
-name: xlings-ci-linux
+name: xlings-ci-linux-e2e
+
+# The Linux E2E suite, split out of xlings-ci-linux.yml so it runs in PARALLEL
+# with the build + unit-test job instead of after it. Shares the same cache
+# lineage, so it restores a warm sandbox; the only added wall-clock vs. the
+# inline version is one extra release build. The E2E-02..E2E-28 block runs via
+# tests/e2e/run_all.sh, which times each test and prints a slowest-first
+# summary (mirrors mcpp's runner). E2E-00 / E2E-01 stay discrete steps here
+# because they're interleaved with the release build.
+#
+# Paired: xlings-ci-linux.yml (build + unit tests + release artifact).
 
 on:
   push:
@@ -8,25 +18,19 @@ on:
 
 env:
   GIT_TERMINAL_PROMPT: 0
-  # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
-  # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to install mcpp. Bump together with
-  # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
   BOOTSTRAP_XLINGS_VERSION: v0.4.49
-  # Must contain the mcpp version pinned in .xlings.json (0.0.57).
   XIM_PKGINDEX_REF: fbcad0320fbf84271b710650402ac7ed1a8fa64f
 
 jobs:
-  build-and-test:
+  e2e:
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Phase 1: Configure Environment via xlings ─────────────────
-
+      # ── Phase 1: environment (same as xlings-ci-linux.yml) ─────────
       - name: Install system deps
         run: |
           sudo apt-get update -qq
@@ -77,44 +81,28 @@ jobs:
           rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
           rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
 
-      - name: Prepare unit fixture index repo
+      - name: Prepare fixture index repo
         run: |
-          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
+          bash tests/e2e/prepare_fixture_index.sh
 
-      # ── Phase 1.5: Unit Tests ────────────────────────────────────
-
-      - name: Build and run unit tests
+      # ── E2E-00 (pre-release: mcpp builds xlings from source) ───────
+      - name: "E2E-00: mcpp builds xlings from source"
         run: |
-          mcpp build
-          mcpp test || {
-            status=$?
-            echo "::group::mcpp build diagnostics"
-            ninja_bin="$(command -v ninja || true)"
-            if [[ -z "$ninja_bin" ]]; then
-              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
-            fi
-            if [[ -z "$ninja_bin" ]]; then
-              echo "ninja not found"
-            else
-              while IFS= read -r build_file; do
-                build_dir="$(dirname "$build_file")"
-                echo "\$ $ninja_bin -C $build_dir -v"
-                "$ninja_bin" -C "$build_dir" -v || true
-              done < <(find target -name build.ninja -type f | sort)
-            fi
-            echo "::endgroup::"
-            exit "$status"
-          }
+          bash tests/e2e/mcpp_build_xlings_test.sh
 
-      # ── Phase 2: Build via Release Script ───────────────────────
-      # NOTE: the E2E suite (E2E-00..E2E-28) moved to xlings-ci-linux-e2e.yml
-      # so it runs in parallel with this build+unit job. This job keeps the
-      # release build + artifact upload.
-
+      # ── Phase 2: build the release artifact ────────────────────────
       - name: Build (linux_release)
         run: |
           chmod +x ./tools/linux_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/linux_release.sh
+
+      - name: "E2E-01: Bootstrap Home (portable + installed)"
+        run: |
+          bash tests/e2e/bootstrap_home_test.sh
+
+      - name: Uninstall old Xlings
+        run: |
+          xlings self uninstall -y || rm -rf "$HOME/.xlings"
 
       - name: Prepare release artifact
         run: |
@@ -122,9 +110,7 @@ jobs:
           [[ -z "$tarball" ]] && { echo "No release tarball found"; exit 1; }
           cp "$tarball" build/release.tar.gz
 
-      - name: Attach artifact
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: xlings-linux-x86_64
-          path: build/release.tar.gz
+      # ── E2E-02..E2E-28 via the timed runner (slowest-first summary) ─
+      - name: "E2E suite (E2E-02..E2E-28, timed)"
+        run: |
+          bash tests/e2e/run_all.sh build/release.tar.gz
