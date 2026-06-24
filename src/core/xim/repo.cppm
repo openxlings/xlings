@@ -161,6 +161,18 @@ std::string sync_repo_url(const std::string& url, const std::string& mirror) {
     return detail_::sync_repo_url_(url, mirror);
 }
 
+// A local repo source (file:// URL or a filesystem path) has no network host,
+// so the TCP reachability probe below always reports it "unreachable" and would
+// wrongly skip it. Local sources are always reachable — let git clone/pull
+// validate the path instead. (Fixes e2e sub-index file:// fixtures being
+// "host unreachable within 3000ms" and never synced.)
+bool is_local_repo_url(std::string_view u) {
+    return u.starts_with("file://")
+        || u.starts_with("/")
+        || u.starts_with("./")
+        || u.starts_with("../");
+}
+
 // Sync a single git repository (clone or pull)
 // Returns true on success
 bool sync_repo(const std::filesystem::path& localDir,
@@ -192,7 +204,8 @@ bool sync_repo(const std::filesystem::path& localDir,
             // first with a short TCP connect; skip unreachable URLs so a
             // github-only sub-index can't freeze `xlings update` for minutes.
             constexpr int kReachMs = 3000;
-            if (!std::isfinite(tinyhttps::probe_latency(urls[i], kReachMs))) {
+            if (!is_local_repo_url(urls[i])
+                && !std::isfinite(tinyhttps::probe_latency(urls[i], kReachMs))) {
                 log::debug("index repo host unreachable within {}ms, skipping: {}",
                            kReachMs, urls[i]);
                 lastErr = "host unreachable: " + urls[i];
@@ -244,7 +257,8 @@ bool sync_repo(const std::filesystem::path& localDir,
     // Same fast-fail as the clone path: skip the refresh if the origin is
     // unreachable (firewalled github) rather than stalling git pull ~127s. The
     // existing local copy stays valid, so this is non-fatal.
-    if (!std::isfinite(tinyhttps::probe_latency(url, 3000))) {
+    if (!is_local_repo_url(url)
+        && !std::isfinite(tinyhttps::probe_latency(url, 3000))) {
         log::debug("index repo origin unreachable, keeping existing copy: {}", url);
         return true;
     }
