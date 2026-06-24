@@ -50,3 +50,22 @@ TEST(IndexAssetUrls, BuildsReleaseDownloadUrlForGlobal) {
     }
     EXPECT_TRUE(found) << "no release-download URL for the pointer asset";
 }
+
+TEST(IndexAssetUrls, PrefersVersionedTagWhenVersionGiven) {
+    // GitCode only serves assets via the versioned tag (`v<version>`), not the
+    // rolling `latest` (404 on releases/download/latest/...). When the version
+    // is known, the versioned-tag URL must be present and ordered before the
+    // `latest` URL on the same server.
+    auto urls = index_asset_urls("xim-index-scode-0.4.58.tar.gz", "GLOBAL", "0.4.58");
+    ASSERT_FALSE(urls.empty());
+    auto firstVersioned = std::string::npos, firstLatest = std::string::npos;
+    for (std::size_t i = 0; i < urls.size(); ++i) {
+        if (urls[i].find("/releases/download/v0.4.58/") != std::string::npos
+            && firstVersioned == std::string::npos) firstVersioned = i;
+        if (urls[i].find("/releases/download/latest/") != std::string::npos
+            && firstLatest == std::string::npos) firstLatest = i;
+    }
+    EXPECT_NE(firstVersioned, std::string::npos) << "no v0.4.58 versioned-tag URL";
+    if (firstLatest != std::string::npos)
+        EXPECT_LT(firstVersioned, firstLatest) << "versioned tag must precede latest";
+}
