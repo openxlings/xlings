@@ -50,8 +50,12 @@ std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText);
 // Build candidate download URLs for an asset filename under the xim-index repo
 // on every configured resource server (selected/latency-probed server first),
 // then GitHub proxy variants. `mirror` selects region (empty => Config default).
+// `version` (e.g. "0.4.58" / "72b00a4") selects the release tag: when given,
+// the versioned tag `v<version>` is tried first (GitCode only serves assets via
+// the versioned tag, not the rolling `latest`), with `latest` kept as fallback.
 std::vector<std::string> index_asset_urls(std::string_view filename,
-                                          std::string_view mirror = {});
+                                          std::string_view mirror = {},
+                                          std::string_view version = {});
 
 // Fetch the latest index artifact for `subName` ("" = main index) and atomically
 // install it into destIndexDir. Returns true on success; on failure `err` is set
@@ -201,28 +205,41 @@ std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText) {
 }
 
 std::vector<std::string> index_asset_urls(std::string_view filename,
-                                          std::string_view mirror) {
+                                          std::string_view mirror,
+                                          std::string_view version) {
     std::vector<std::string> urls;
     auto add = [&](const std::string& u) {
         if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
     };
 
     auto repo = detail_::index_repo_name_();
-    auto tag  = detail_::index_tag_();
+
+    // Release tag(s) to try, in order. GitCode only serves release assets via
+    // the VERSIONED tag (`v<version>`); its rolling `latest` tag 404s on the
+    // `releases/download/latest/<asset>` path (GitHub serves both). So when we
+    // know the version, try `v<version>` first and keep `latest` as a fallback.
+    std::vector<std::string> tags;
+    if (!version.empty()) tags.push_back("v" + std::string(version));
+    if (auto def = detail_::index_tag_(); std::ranges::find(tags, def) == tags.end())
+        tags.push_back(def);
 
     // Selected (latency-probed) server first, then all other candidates.
     auto selected = Config::resource_server(mirror);
-    auto buildFor = [&](const std::string& server) {
+    auto buildFor = [&](const std::string& server, const std::string& tag) {
         return std::format("{}/{}/releases/download/{}/{}", server, repo, tag, filename);
     };
-    if (!selected.empty()) add(buildFor(selected));
-    for (auto& server : Config::resource_servers(mirror)) add(buildFor(server));
+    auto addServer = [&](const std::string& server) {
+        if (server.empty()) return;
+        for (auto& tag : tags) add(buildFor(server, tag));
+    };
+    addServer(selected);
+    for (auto& server : Config::resource_servers(mirror)) addServer(server);
     // Always include GLOBAL (github) servers as fallback for the index — even
     // under CN. Unlike package binaries (where the regional mirror is
     // authoritative), the index must stay reachable if the regional mirror
     // lacks the asset; combined with 404-fallthrough this gives CN: gitcode ->
     // github -> github proxies.
-    for (auto& server : Config::resource_servers("GLOBAL")) add(buildFor(server));
+    for (auto& server : Config::resource_servers("GLOBAL")) addServer(server);
 
     // NB: deliberately NO github-proxy expansion (ghfast/ghproxy/kkgithub) for
     // the index. Those proxies are often TCP-reachable but don't actually serve
@@ -330,7 +347,7 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     // Artifact (sha256-pinned by the manifest); release asset, versioned name.
     auto artifactFile = tmpRoot / manifest.artifact_name;
     if (auto e = detail_::obtain_file(manifest.artifact_name,
-                    index_asset_urls(manifest.artifact_name, mirrorKey),
+                    index_asset_urls(manifest.artifact_name, mirrorKey, manifest.index_version),
                     artifactFile, manifest.artifact_sha256); !e.empty()) {
         err = std::format("fetch index artifact failed: {}", e);
         return false;
