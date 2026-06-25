@@ -49,7 +49,16 @@ sha256)。**默认子索引的客户端消费、发版打包、多 key 组合指
   (各写出 `.xlings-index-version`、删除 `.git`),`fromsource` 正确保持 git;
   `xim-indexrepos.json` 的 org 漂移(awesome/scode 旧 `d2learn`)被 lua 权威**自愈**为 `openxlings`。
 
-**待办**:C2 手动发布工作流(`xim-pkgindex` 仓);C5 指针双发对账(P2);签名(后续阶段)。
+**已完成(发布闭环,跨仓)**:
+- **C2 手动发布工作流**已合入 `xim-pkgindex`(`publish-sub-indexes.yml`,#311),实测发布成功。
+- **发版 0.4.60**:版本 bump(#343)+ `release.yml` 发布 4 平台二进制 + 主/子索引 artifact 到
+  `xlings-res`(GitHub + GitCode)。
+- **`xlings` recipe bump 到 0.4.60**(#313),并**根治自动升级**:给 `version-check.py` 加
+  `res_versioned` 支持(#314),让 XLINGS_RES 风格的包(含 xlings 自身)也能被 version-bump 机器人自动升级
+  (此前 `latest` 卡在 0.4.55 达 5 个版本)。
+- **全链路实测**:真实安装的 0.4.55 → `self update` → **0.4.60** → `xlings update` 子索引迁移 artifact。
+
+**待办**:C5 指针双发对账(P2);端到端签名 minisign(后续阶段)。
 
 ---
 
