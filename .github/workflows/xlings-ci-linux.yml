@@ -85,7 +85,15 @@ jobs:
 
       - name: Build and run unit tests
         run: |
-          mcpp build
+          # `mcpp build` can transiently fail with "dependency '...': index
+          # entry not found in local clone" when the cached package index is
+          # stale: mcpp triggers an index auto-refresh ON that failure, so the
+          # first attempt resolves against the stale clone and dies, but a
+          # second attempt (post-refresh) succeeds. Retry once to absorb the race.
+          mcpp build || {
+            echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
+            mcpp build
+          }
           mcpp test || {
             status=$?
             echo "::group::mcpp build diagnostics"
