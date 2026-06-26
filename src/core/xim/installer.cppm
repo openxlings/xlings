@@ -1114,11 +1114,14 @@ public:
             }
 
             // Fail-closed arch gate: refuse a package whose declared `archs`
-            // don't include the host arch. Legacy recipes with an empty
-            // `archs` list are exempt (long-tail compatibility). This catches
-            // the silent mis-install bug where an x86_64-only recipe would
-            // otherwise be attempted on an aarch64 host.
-            if (!pkg->archs.empty()) {
+            // don't include the host arch. Gated on spec >= "2": in V1 the
+            // `archs` field was never enforced and is frequently
+            // under-declared (e.g. an x86_64-only list on a recipe that
+            // actually resolves an aarch64 asset via XLINGS_RES), so enforcing
+            // it would break installs that worked before. V2 authors opt into
+            // correct per-arch declarations and want this enforced. Empty
+            // `archs` is always exempt.
+            if (pkg->spec == "2" && !pkg->archs.empty()) {
                 const std::string hostArchCheck =
                     mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
                 bool supported = false;
