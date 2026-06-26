@@ -167,6 +167,36 @@ std::string build_xlings_res_url_(std::string_view pkgName,
     return build_xlings_res_url_with_server_(default_res_server_(), pkgName, version, platform);
 }
 
+// Expand a V2 URL template. Supported placeholders:
+//   ${name} ${version} ${os} ${arch} ${arch_alias} ${ext}
+// `arch` is the canonical host arch (x86_64/aarch64); `arch_alias` maps it
+// to an upstream token (falls back to the canonical arch when unmapped).
+// `ext` mirrors the XLINGS_RES convention: zip on windows, tar.gz elsewhere.
+std::string expand_url_template_(std::string tmpl,
+                                 std::string_view name,
+                                 std::string_view version,
+                                 std::string_view platform,
+                                 std::string_view arch,
+                                 const std::unordered_map<std::string, std::string>& arch_alias) {
+    std::string alias{arch};
+    if (auto it = arch_alias.find(std::string(arch)); it != arch_alias.end())
+        alias = it->second;
+    std::string ext = (std::string(platform) == "windows") ? "zip" : "tar.gz";
+    auto sub = [&](std::string_view key, std::string_view val) {
+        std::string needle = std::string("${") + std::string(key) + "}";
+        for (auto pos = tmpl.find(needle); pos != std::string::npos;
+                pos = tmpl.find(needle, pos + val.size()))
+            tmpl.replace(pos, needle.size(), val);
+    };
+    sub("name", name);
+    sub("version", version);
+    sub("os", platform);
+    sub("arch", arch);
+    sub("arch_alias", alias);
+    sub("ext", ext);
+    return tmpl;
+}
+
 // Build fallback URLs from all candidate resource servers (excluding the selected one)
 std::vector<std::string> build_xlings_res_fallback_urls_(std::string_view pkgName,
                                                          std::string_view version,
@@ -907,6 +937,80 @@ load_platform_entries_(const std::filesystem::path& pkgFile, const std::string& 
                 }
                 res.sha256 = read_field("sha256");
                 res.ref = read_field("ref");
+
+                // ---- V2 multi-arch shapes (mirrors libxpkg xpkg-loader) ----
+                int resIdx = lua::gettop(L);  // resource table (absolute index)
+
+                auto read_str_map = [&](const char* key,
+                                        std::unordered_map<std::string, std::string>& out,
+                                        bool canon_keys) {
+                    lua::getfield(L, resIdx, key);
+                    if (lua::type(L, -1) == lua::TTABLE) {
+                        lua::pushnil(L);
+                        while (lua::next(L, -2)) {
+                            if (lua::type(L, -2) == lua::TSTRING && lua::type(L, -1) == lua::TSTRING) {
+                                std::string k = lua::tostring(L, -2);
+                                out[canon_keys ? mcpplibs::xpkg::normalize_arch(k) : k] =
+                                    lua::tostring(L, -1);
+                            }
+                            lua::pop(L, 1);
+                        }
+                    }
+                    lua::pop(L, 1);
+                };
+
+                // Scheme C / res: `sha256` is a per-arch TABLE (string read above
+                // returned ""). arch_alias is the optional ${arch_alias} mapping.
+                read_str_map("sha256", res.sha256_by_arch, true);
+                read_str_map("arch_alias", res.arch_alias, true);
+
+                lua::getfield(L, resIdx, "res");
+                res.is_res = lua::toboolean(L, -1);
+                lua::pop(L, 1);
+
+                // Scheme B: per-arch resource map. Detected when no single-arch
+                // url/ref/sha256 and no template/res markers are present.
+                if (res.url.empty() && res.ref.empty() && res.sha256.empty()
+                        && res.sha256_by_arch.empty() && !res.is_res) {
+                    lua::pushnil(L);
+                    while (lua::next(L, resIdx)) {
+                        if (lua::type(L, -2) == lua::TSTRING && lua::type(L, -1) == lua::TTABLE) {
+                            std::string canon =
+                                mcpplibs::xpkg::normalize_arch(lua::tostring(L, -2));
+                            if (canon == "x86_64" || canon == "aarch64" || canon == "x86") {
+                                int archIdx = lua::gettop(L);
+                                mcpplibs::xpkg::ArchResource ar;
+                                lua::getfield(L, archIdx, "url");
+                                if (lua::type(L, -1) == lua::TSTRING) ar.url = lua::tostring(L, -1);
+                                lua::pop(L, 1);
+                                if (ar.url.empty()) {
+                                    lua::getfield(L, archIdx, "url");
+                                    if (lua::type(L, -1) == lua::TTABLE) {
+                                        lua::pushnil(L);
+                                        while (lua::next(L, -2)) {
+                                            if (lua::type(L, -2) == lua::TSTRING
+                                                    && lua::type(L, -1) == lua::TSTRING)
+                                                ar.mirrors[lua::tostring(L, -2)] =
+                                                    lua::tostring(L, -1);
+                                            lua::pop(L, 1);
+                                        }
+                                        if (auto it = ar.mirrors.find("GLOBAL");
+                                                it != ar.mirrors.end())
+                                            ar.url = it->second;
+                                        else if (!ar.mirrors.empty())
+                                            ar.url = ar.mirrors.begin()->second;
+                                    }
+                                    lua::pop(L, 1);
+                                }
+                                lua::getfield(L, archIdx, "sha256");
+                                if (lua::type(L, -1) == lua::TSTRING) ar.sha256 = lua::tostring(L, -1);
+                                lua::pop(L, 1);
+                                res.archs[canon] = std::move(ar);
+                            }
+                        }
+                        lua::pop(L, 1);
+                    }
+                }
             } else if (lua::type(L, -1) == lua::TSTRING) {
                 res.url = lua::tostring(L, -1);
             }
@@ -1009,6 +1113,29 @@ public:
                 continue;
             }
 
+            // Fail-closed arch gate: refuse a package whose declared `archs`
+            // don't include the host arch. Gated on spec >= "2": in V1 the
+            // `archs` field was never enforced and is frequently
+            // under-declared (e.g. an x86_64-only list on a recipe that
+            // actually resolves an aarch64 asset via XLINGS_RES), so enforcing
+            // it would break installs that worked before. V2 authors opt into
+            // correct per-arch declarations and want this enforced. Empty
+            // `archs` is always exempt.
+            if (pkg->spec == "2" && !pkg->archs.empty()) {
+                const std::string hostArchCheck =
+                    mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
+                bool supported = false;
+                for (auto& a : pkg->archs)
+                    if (mcpplibs::xpkg::arch_matches(a, hostArchCheck)) { supported = true; break; }
+                if (!supported) {
+                    std::string have;
+                    for (auto& a : pkg->archs) { if (!have.empty()) have += ", "; have += a; }
+                    log::error("{}: unsupported architecture '{}' (supported: {})",
+                               node.name, hostArchCheck, have);
+                    continue;
+                }
+            }
+
             auto platformEntries = detail_::load_platform_entries_(node.pkgFile, platform);
             if (platformEntries.empty()) {
                 auto platformIt = pkg->xpm.entries.find(platform);
@@ -1029,10 +1156,53 @@ public:
             if (verIt == platformEntries.end()) continue;
 
             auto& res = verIt->second;
+
+            // ---- V2 install-time arch resolution ----
+            // Resolve the host arch (canonical x86_64/aarch64). When all V2
+            // fields are empty the legacy single-arch path below is untouched.
+            const std::string hostArch =
+                mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
+            bool resGenerated = false;
+            if (!res.archs.empty()) {
+                // Scheme B: per-arch resource map (fail-closed on miss).
+                auto ait = res.archs.find(hostArch);
+                if (ait == res.archs.end()) {
+                    log::warn("skipping {}: no resource for arch '{}' in version {}",
+                              node.name, hostArch, version);
+                    continue;
+                }
+                res.url = ait->second.url;
+                res.sha256 = ait->second.sha256;
+                res.mirrors = ait->second.mirrors;
+            } else if (res.is_res) {
+                // res shape: XLINGS_RES auto-URL + per-arch checksum.
+                auto sit = res.sha256_by_arch.find(hostArch);
+                if (sit == res.sha256_by_arch.end()) {
+                    log::warn("skipping {}: no checksum for arch '{}' in version {}",
+                              node.name, hostArch, version);
+                    continue;
+                }
+                res.url = detail_::build_xlings_res_url_(node.name, version, platform);
+                res.sha256 = sit->second;
+                resGenerated = true;
+            } else if (!res.sha256_by_arch.empty()) {
+                // Scheme C: URL template + per-arch checksum.
+                auto sit = res.sha256_by_arch.find(hostArch);
+                if (sit == res.sha256_by_arch.end()) {
+                    log::warn("skipping {}: no checksum for arch '{}' in version {}",
+                              node.name, hostArch, version);
+                    continue;
+                }
+                res.url = detail_::expand_url_template_(
+                    res.url, node.name, version, platform, hostArch, res.arch_alias);
+                res.sha256 = sit->second;
+            }
+
             bool isXlingsRes = (res.url == "XLINGS_RES");
             if (isXlingsRes) {
                 res.url = detail_::build_xlings_res_url_(node.name, version, platform);
             }
+            bool useResFallbacks = isXlingsRes || resGenerated;
 
             // Mirror selection: prefer dlConfig.preferredMirror, fallback others
             if (!res.mirrors.empty()) {
@@ -1050,7 +1220,7 @@ public:
             task.sha256 = res.sha256;
             task.destDir = detail_::runtime_dir_(node, dataDir);
 
-            if (isXlingsRes) {
+            if (useResFallbacks) {
                 task.fallbackUrls = detail_::build_xlings_res_fallback_urls_(
                     node.name, version, platform);
             }
