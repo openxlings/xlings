@@ -301,6 +301,22 @@ TEST(LoaderTest, V2_PerArchMap_ParsesBothArches) {
 
 ---
 
+## Implementation Status (2026-06-26)
+
+**Done + verified locally:**
+- ✅ **libxpkg V2** (PR [openxlings/libxpkg#25](https://github.com/openxlings/libxpkg/pull/25), branch `feat/xpm-v2-multiarch-main` off `main`): `normalize_arch`/`ArchResource` + `PlatformResource.{archs,sha256_by_arch,arch_alias,is_res}`; loader parses 3 shapes; `exports`-leak fix. **17/17 GoogleTest pass.** Bumped to `0.0.42`.
+- ✅ **xlings V2** (draft PR [openxlings/xlings#346](https://github.com/openxlings/xlings/pull/346), branch `feat/xpm-v2-multiarch` off `main`): sandbox loader parses 3 shapes; install-time host-arch resolution + `expand_url_template_`; fail-closed `package.archs` validation; dep bump `mcpplibs.xpkg 0.0.42`; mcpp pin `0.0.67`; release bump `0.4.61` (+ synced drifted `mcpp.toml`). **Builds green via mcpp against libxpkg 0.0.42 (from source); `xlings --version` runs.**
+- ✅ **xim-pkgindex V2** (branch `feat/xpkg-v2-multiarch`, **commit ready, not pushed — Gitee creds needed**): spec V2 + template + CHANGELOG; `github-gh` and `node` arch-bug fixes (per-arch maps + arch-aware hooks).
+
+**Verification method note:** xlings can't link against an unreleased libxpkg via raw xmake here (the `gcc@16.1.0` toolchain only resolves inside mcpp's sandbox). Closed the loop locally by `mcpp publish`-ing libxpkg `0.0.42` and seeding mcpp's content-addressed cache (`~/.mcpp/.../mcpplibs.xpkg/0.0.42`), so `mcpp build` compiled xlings against the real V2 source — exit 0.
+
+**Remaining — human-gated (need push creds / secrets / maintainer judgment):**
+1. Merge libxpkg #25 → `git tag v0.0.42 && git push --tags` → GitHub Release upload (`target/dist/xpkg-0.0.42.tar.gz`) → PR to `mcpp-community/mcpp-index` (`pkgs/x/xpkg.lua`). [`mcpp publish` printed the exact steps.]
+2. In xlings: `mcpp update xpkg` (refresh `mcpp.lock` hash from the real index) → un-draft #346 → CI green → squash-merge.
+3. Run xlings `Release` `workflow_dispatch` → tags `v0.4.61`, builds 4 platforms, `publish-index` job republishes index artifacts to `xlings-res/xim-index` (needs `XLINGS_RES_TOKEN`/`GITCODE_TOKEN`).
+4. Push xim-pkgindex `feat/xpkg-v2-multiarch` to Gitee → open PR → merge → publish index artifact (`publish-sub-indexes.yml` / `tools/publish_xim_index.sh`).
+5. **Closure:** on a client with xlings 0.4.61, `xlings update` then `xlings install github-gh` on x86_64 AND aarch64 hosts → each fetches the correct binary.
+
 ## Self-Review
 
 **Spec coverage** (against the goal directive): 方案细节→doc ✓ (design doc + this plan); 跨仓库并行标明 ✓ (Cross-Repo Map, ⇄/→); 拆分实施步骤 ✓ (Phases A–E, TDD steps); 开发 ✓ (A,B,D); 测试 ✓ (GoogleTest A, unit+e2e B); 动态更新文档 ✓ (D1/D4/E5); PR ✓ (E1/E2); CI ✓ (E2 gate); 发布新版本带版本号 ✓ (libxpkg 0.0.42, xlings 0.4.61, spec V2); 更新 xim-pkgindex ✓ (D); 更新 index 生态闭环 ✓ (E4 closure verification); 记录版本变化 ✓ (D4/E5).
