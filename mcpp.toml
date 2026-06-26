@@ -11,7 +11,7 @@ include_dirs = ["src/libs/json"]
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
 macos_deployment_target = "14.0"
-cxxflags = ["-DLIBARCHIVE_STATIC", "-DXLINGS_USE_GTEST_MAIN=1", "-DUNICODE", "-D_UNICODE"]
+cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 
 [targets.xlings]
 kind = "bin"
