@@ -141,7 +141,7 @@ else attemptArtifact = mainIsOfficialRemote;
 
 > 这才是 C1 迁移闸的完整形态——plan 里只给子索引加了 `|| mainArtifactManaged`，遗漏了主索引本身。
 
-> **契约**：`auto` 下官方远端索引收敛到 artifact；**要固定 git 检出必须显式声明 `XLINGS_INDEX_SOURCE=git`**。CI 用 `XIM_PKGINDEX_REF` 钉死索引做可复现测试，因此所有钉索引的 workflow 在 env 里声明 `XLINGS_INDEX_SOURCE=git`，既命中钉定 fixture、又使 CI 保持 hermetic（不走网络拉 artifact）。artifact 路径的 e2e 在脚本内自行 `export`/`unset` 覆盖，不受影响。
+> **契约**：`auto` 下官方远端索引收敛到 artifact；**要固定 git 检出可显式声明 `XLINGS_INDEX_SOURCE=git`**。CI 不需要额外声明——实测 e2e 在 `auto` 下照常通过:钉定的 git fixture 在 artifact 不可达时被 P0-2 守卫无损保留(`.git` 在则走 git pull,非破坏),不会被替换。曾尝试给所有 workflow env 加 `XLINGS_INDEX_SOURCE=git`,反而干扰了 mcpp 自身的索引解析(`index entry not found in local clone`)导致 e2e 失败,已回退——env 变量会泄漏进 mcpp 构建环境,不应全局设置。
 
 ### P0-2：official 索引的 git 回退非破坏性（修缺陷 B）
 

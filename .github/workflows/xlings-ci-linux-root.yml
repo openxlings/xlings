@@ -19,9 +19,6 @@ env:
   # Keep in sync with xlings-ci-linux.yml.
   BOOTSTRAP_XLINGS_VERSION: v0.4.49
   XIM_PKGINDEX_REF: dee7848233c8453a15ffd76b548442011c54a6f1
-  # Honor the pinned git fixture; since 0.4.62 auto converges official-remote
-  # indexes to artifact. Hermetic CI declares git. Keep in sync across workflows.
-  XLINGS_INDEX_SOURCE: git
 
 jobs:
   # ── Build the latest xlings from source via mcpp ──────────────────

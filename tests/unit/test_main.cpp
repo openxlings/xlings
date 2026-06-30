@@ -305,6 +305,10 @@ TEST(XimRepoTest, SyncPreservesArtifactManagedIndexNotDestroyed) {
     { std::ofstream(repo / ".xlings-index-version") << "0.4.99"; }
     // No .git → without the guard this would clone + fs::remove_all(repo).
     ScopedEnvVar src("XLINGS_INDEX_SOURCE", "auto");
+    // Don't let a git-unavailable test env trigger an auto-install of xim:git
+    // (which re-execs the test binary and recurses); we only assert the
+    // non-destruction invariant, which holds whether git is present or not.
+    ScopedEnvVar noAuto("XLINGS_NO_AUTO_INSTALL_GIT", "1");
 
     // Whether or not git is available/reachable, the artifact marker MUST survive.
     xlings::xim::sync_repo(repo, "https://github.com/openxlings/xim-pkgindex.git", true);

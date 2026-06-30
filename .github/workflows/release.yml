@@ -18,10 +18,6 @@ env:
   BOOTSTRAP_XLINGS_VERSION: v0.4.49
   # Must contain the mcpp version pinned in .xlings.json (0.0.67).
   XIM_PKGINDEX_REF: dee7848233c8453a15ffd76b548442011c54a6f1
-  # Build/validation jobs honor the pinned git fixture (since 0.4.62 auto
-  # converges official-remote indexes to artifact). The publish-index job uses
-  # tools/ scripts independent of XLINGS_INDEX_SOURCE, so it's unaffected.
-  XLINGS_INDEX_SOURCE: git
 
 jobs:
   build-linux:

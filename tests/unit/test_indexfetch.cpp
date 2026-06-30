@@ -129,9 +129,11 @@ TEST(ReconcileIndexTemps, KeepsHealthyBaseDropsStaleBackup) {
     reconcile_index_temps(data);
 
     EXPECT_TRUE(fs::exists(base / ".xlings-index-version"));
-    // The healthy current index must remain untouched (still 0.4.61).
-    std::ifstream in(base / ".xlings-index-version");
-    std::string v; std::getline(in, v);
+    // The healthy current index must remain untouched (still 0.4.61). Scope the
+    // stream so the handle is closed before remove_all (Windows can't delete a
+    // file that's still open).
+    std::string v;
+    { std::ifstream in(base / ".xlings-index-version"); std::getline(in, v); }
     EXPECT_EQ(v, "0.4.61");
     EXPECT_FALSE(fs::exists(stale)) << "spent backup should be reclaimed";
 

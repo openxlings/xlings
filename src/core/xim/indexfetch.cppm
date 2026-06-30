@@ -434,9 +434,16 @@ void reconcile_index_temps(const std::filesystem::path& dataDir) {
 
     struct Temp { fs::path path; fs::path base; std::string kind; int pid; };
     std::vector<Temp> temps;
-    for (auto& entry : fs::directory_iterator(dataDir, ec)) {
+    // Compare against std::default_sentinel (not a second directory_iterator):
+    // clang/libc++ only provides operator==(default_sentinel_t), so a two-iterator
+    // range-for fails to compile there. Increment with the error_code overload so
+    // a bad entry never throws out of this best-effort reconciler.
+    for (auto it = fs::directory_iterator(dataDir, ec);
+         it != std::default_sentinel; it.increment(ec)) {
         if (ec) break;
-        if (!entry.is_directory(ec)) continue;
+        const auto& entry = *it;
+        std::error_code dec;
+        if (!entry.is_directory(dec)) continue;
         auto name = entry.path().filename().string();
         for (std::string_view kind : {".artifact.", ".old.", ".tmp."}) {
             auto pos = name.rfind(kind);
