@@ -64,6 +64,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName = {});
 
+// Reconcile leftover index temp dirs from crashed / SIGKILL'd runs: restore an
+// index dir orphaned by an interrupted swap (`<base>.old.<deadpid>` holding
+// pkgs/) and sweep leaked `.artifact.*` / `.tmp.*` / spent `.old.*` staging from
+// dead processes. Dirs owned by a live process are left untouched. Idempotent;
+// call before any git-vs-artifact gating so a transient gap can't trigger a
+// destructive git clone. See 2026-06-30 regression analysis.
+void reconcile_index_temps(const std::filesystem::path& dataDir);
+
 } // namespace xlings::xim
 
 
@@ -372,6 +380,23 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                            std::to_string(platform::get_pid()));
     fs::remove_all(backup, ec);
     if (fs::exists(destIndexDir, ec)) {
+        // Preferred path: a single atomic exchange of the live dir and the staged
+        // dir. There is no instant where destIndexDir is missing, so a crash /
+        // SIGKILL mid-swap cannot strand the index (which previously degraded the
+        // official index to a destructive git clone on the next run — see
+        // .agents/docs/2026-06-30-index-artifact-git-regression-analysis.md).
+        if (platform::atomic_swap_paths(destIndexDir, stage)) {
+            // After the exchange, `stage` now holds the OLD tree — drop it.
+            fs::remove_all(stage, ec);
+            log::info("[index] updated from artifact {} ({})",
+                      manifest.artifact_name,
+                      manifest.index_version.empty() ? "?" : manifest.index_version);
+            return true;
+        }
+        // Fallback (non-Linux / kernel without renameat2): manual move-aside.
+        // Narrow the kill-window by keeping the backup recoverable — a leftover
+        // `.old.<pid>` that still holds pkgs/ is restored on the next run by
+        // reconcile_index_temps() before any git fallback can fire.
         fs::rename(destIndexDir, backup, ec);
         if (ec) { err = std::format("swap (move old) failed: {}", ec.message()); return false; }
     }
@@ -389,6 +414,71 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
               manifest.artifact_name,
               manifest.index_version.empty() ? "?" : manifest.index_version);
     return true;
+}
+
+// Reconcile leftover index temp dirs from crashed / SIGKILL'd runs. Two jobs:
+//   1) RECOVER: if a live index dir is missing or empty but a sibling
+//      `<base>.old.<pid>` (from an interrupted artifact swap) still holds pkgs/,
+//      move it back into place — BEFORE any caller mistakes the gap for "no
+//      index" and triggers a destructive git clone (the regression root cause).
+//   2) SWEEP: delete `<base>.artifact.<pid>` / `.tmp.<pid>` / spent `.old.<pid>`
+//      staging dirs whose owning process is dead. The RAII cleanup in
+//      fetch_index_artifact / sync_repo never runs on SIGKILL, so these
+//      otherwise accumulate without bound (10+ observed in the wild).
+// Dirs still owned by a live process are left untouched (concurrency-safe).
+// See .agents/docs/2026-06-30-index-artifact-git-regression-analysis.md.
+void reconcile_index_temps(const std::filesystem::path& dataDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_directory(dataDir, ec)) return;
+
+    struct Temp { fs::path path; fs::path base; std::string kind; int pid; };
+    std::vector<Temp> temps;
+    // Compare against std::default_sentinel (not a second directory_iterator):
+    // clang/libc++ only provides operator==(default_sentinel_t), so a two-iterator
+    // range-for fails to compile there. Increment with the error_code overload so
+    // a bad entry never throws out of this best-effort reconciler.
+    for (auto it = fs::directory_iterator(dataDir, ec);
+         it != std::default_sentinel; it.increment(ec)) {
+        if (ec) break;
+        const auto& entry = *it;
+        std::error_code dec;
+        if (!entry.is_directory(dec)) continue;
+        auto name = entry.path().filename().string();
+        for (std::string_view kind : {".artifact.", ".old.", ".tmp."}) {
+            auto pos = name.rfind(kind);
+            if (pos == std::string::npos) continue;
+            auto pidStr = name.substr(pos + kind.size());
+            int pid = 0;
+            auto* begin = pidStr.data();
+            auto* end = begin + pidStr.size();
+            auto [ptr, errc] = std::from_chars(begin, end, pid);
+            if (errc != std::errc{} || ptr != end) break;  // suffix isn't a bare pid
+            temps.push_back({entry.path(), dataDir / name.substr(0, pos),
+                             std::string(kind), pid});
+            break;
+        }
+    }
+
+    for (auto& t : temps) {
+        // Never touch staging owned by an in-flight xlings process.
+        if (t.pid > 0 && platform::is_process_alive(t.pid)) continue;
+
+        bool baseUsable   = fs::exists(t.base / "pkgs", ec);
+        bool orphanUsable = fs::exists(t.path / "pkgs", ec);
+
+        if (t.kind == ".old." && orphanUsable && !baseUsable) {
+            // Interrupted swap: this orphan is the only surviving index copy.
+            fs::remove_all(t.base, ec);          // clear an empty / partial base
+            fs::rename(t.path, t.base, ec);
+            if (!ec)
+                log::warn("[index] recovered interrupted index swap: restored {} from {}",
+                          t.base.filename().string(), t.path.filename().string());
+            continue;
+        }
+        // Spent staging / leaked temp from a dead process — reclaim the space.
+        fs::remove_all(t.path, ec);
+    }
 }
 
 } // namespace xlings::xim

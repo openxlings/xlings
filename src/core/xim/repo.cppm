@@ -188,6 +188,30 @@ std::vector<IndexRepo> merge_sub_repos(const std::vector<IndexRepo>& luaDefaults
     return out;
 }
 
+// Decide whether the MAIN index should be fetched as a versioned artifact (vs
+// git clone/pull). The OFFICIAL remote index always converges to artifact in
+// auto mode — git is only ever a fallback, never a terminal state:
+//   - indexSource "artifact": force artifact (only for the official remote).
+//   - indexSource "git":      always git.
+//   - indexSource "auto":     artifact whenever the configured main index is the
+//     official index from a remote source. This is the symmetric counterpart of
+//     the sub-index C1 migration gate: a stranded git main (pkgs/ present, marker
+//     lost — e.g. after an interrupted swap or a destructive git fallback) heals
+//     itself on the next update instead of being frozen on git forever. Local
+//     (file://)/fork/custom-URL mains are excluded by isOfficialRemote, so git
+//     fixtures and private indexes are unaffected.
+// `hasMarker`/`hasPkgs` are kept in the signature for symmetry/diagnostics and
+// future ETag-style gating; auto no longer needs them because an official remote
+// always attempts artifact (a redundant attempt on an already-current index is a
+// cheap pointer fetch + sha match).
+bool main_should_attempt_artifact(bool isOfficialRemote,
+                                  const std::string& indexSource,
+                                  bool /*hasMarker*/, bool /*hasPkgs*/) {
+    if (indexSource == "artifact") return isOfficialRemote;
+    if (indexSource == "git")      return false;
+    return isOfficialRemote;
+}
+
 // Decide whether a sub-index should be fetched as a versioned artifact (vs git
 // clone/pull). Mirrors the main index's gating:
 //   - indexSource "artifact": force artifact for default-official subs.
@@ -233,6 +257,27 @@ bool sync_repo(const std::filesystem::path& localDir,
     }
 
     if (!fs::exists(localDir / ".git")) {
+        // ── Non-destructive guard (regression fix, see
+        // .agents/docs/2026-06-30-index-artifact-git-regression-analysis.md) ──
+        // A directory with pkgs/ but no .git is an artifact-managed index (or an
+        // extracted snapshot). The git-clone path below does fs::remove_all(localDir)
+        // before swapping the clone in — that wipes .xlings-index-version and strands
+        // the index on git PERMANENTLY. Never let a fallback clone destroy a usable
+        // artifact index: keep it (the caller's next artifact attempt migrates it
+        // atomically). An explicit XLINGS_INDEX_SOURCE=git opts out of this guard.
+        {
+            std::error_code gec;
+            bool indexSourceGit = false;
+            if (auto* e = std::getenv("XLINGS_INDEX_SOURCE"); e && *e)
+                indexSourceGit = std::string_view(e) == "git";
+            if (!indexSourceGit && fs::exists(localDir / "pkgs", gec)) {
+                log::warn("[index] keeping existing artifact-managed index at {} "
+                          "(refusing destructive git clone); will retry artifact next update",
+                          localDir.string());
+                return true;
+            }
+        }
+
         // Build mirror fallback list for the index repo URL. Mirror::expand
         // returns just [url] when mirror_fallback=off or url is non-github.
         auto urls = mirror::expand(url, {.type = mirror::ResourceType::Git});
@@ -431,6 +476,14 @@ bool sync_all_repos(bool force = false) {
 
     auto mainDir = main_repo_dir();
 
+    // Heal leftovers from any crashed/killed run BEFORE deciding git-vs-artifact:
+    // restores an index dir orphaned by an interrupted swap and reclaims leaked
+    // staging dirs, so the gating below never sees a spurious "no index" gap.
+    if (auto dataDir = Config::global_data_dir(); !dataDir.empty()) {
+        reconcile_index_temps(dataDir);
+        reconcile_index_temps(sub_repos_dir());
+    }
+
     // ── Index-as-Resource (Y-asset) ─────────────────────────────────
     // Fetch the main index as a versioned artifact over the resource-server
     // HTTP path (gains adaptive mirror reorder + stall watchdog; closes G2).
@@ -456,13 +509,12 @@ bool sync_all_repos(bool force = false) {
         && (globalRepos.front().url.find("openxlings/xim-pkgindex") != std::string::npos
             || globalRepos.front().url.find("sunrisepeak/xim-pkgindex") != std::string::npos);
 
-    // auto: official-remote + (fresh or already artifact-managed). An existing
-    // git index keeps using git, so git-based e2e fixtures are unaffected.
-    // XLINGS_INDEX_SOURCE=artifact forces it (power user / tests); =git disables.
-    bool attemptArtifact;
-    if (indexSource == "artifact")   attemptArtifact = true;
-    else if (indexSource == "git")   attemptArtifact = false;
-    else attemptArtifact = mainIsOfficialRemote && (mainArtifactManaged || !mainHasIndex);
+    // auto: the official remote main index always converges to artifact (a
+    // stranded git main self-heals; see main_should_attempt_artifact). git stays
+    // the fallback. XLINGS_INDEX_SOURCE=artifact forces it (power user / tests);
+    // =git disables. Non-official/local/fork mains are excluded upstream.
+    bool attemptArtifact = main_should_attempt_artifact(
+        mainIsOfficialRemote, indexSource, mainArtifactManaged, mainHasIndex);
 
     if (attemptArtifact) {
         std::string ferr;

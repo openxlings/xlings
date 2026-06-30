@@ -340,6 +340,15 @@ namespace platform_impl {
         return true;
     }
 
+    // Windows has no single-call directory swap; report unsupported so the
+    // caller uses its portable manual-swap fallback. (Symmetry with the POSIX
+    // atomic_swap_paths used by the index-artifact installer.)
+    export bool atomic_swap_paths(const std::filesystem::path& a,
+                                  const std::filesystem::path& b) {
+        (void)a; (void)b;
+        return false;
+    }
+
 } // namespace platform_impl
 }
 
