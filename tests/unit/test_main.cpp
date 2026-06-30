@@ -292,6 +292,57 @@ TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
     fs::remove_all(root);
 }
 
+// Regression guard (2026-06-30 analysis): a fallback git clone must NEVER
+// destroy an artifact-managed index (pkgs/ + .xlings-index-version, no .git).
+// Wiping the version marker strands the official index on git permanently.
+TEST(XimRepoTest, SyncPreservesArtifactManagedIndexNotDestroyed) {
+    namespace fs = std::filesystem;
+    auto root = fs::temp_directory_path() / "xlings_sync_preserve_artifact_test";
+    auto repo = root / "xim-pkgindex";
+    fs::remove_all(root);
+    fs::create_directories(repo / "pkgs" / "p");
+    { std::ofstream(repo / "pkgs" / "p" / "x.lua") << "package = { name = \"x\" }\n"; }
+    { std::ofstream(repo / ".xlings-index-version") << "0.4.99"; }
+    // No .git → without the guard this would clone + fs::remove_all(repo).
+    ScopedEnvVar src("XLINGS_INDEX_SOURCE", "auto");
+
+    // Whether or not git is available/reachable, the artifact marker MUST survive.
+    xlings::xim::sync_repo(repo, "https://github.com/openxlings/xim-pkgindex.git", true);
+
+    EXPECT_TRUE(fs::exists(repo / ".xlings-index-version"))
+        << "artifact version marker was destroyed by git fallback";
+    EXPECT_TRUE(fs::exists(repo / "pkgs"));
+    fs::remove_all(root);
+}
+
+// Pure decision-table for the main-index artifact gate (P0-1 symmetry fix).
+TEST(XimRepoTest, GateMainOfficialRemoteAlwaysAttemptsArtifactInAuto) {
+    using xlings::xim::main_should_attempt_artifact;
+    // auto: official remote always converges to artifact — even a stranded git
+    // checkout (hasMarker=false, hasPkgs=true) self-heals.
+    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     false, true));
+    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     true,  true));
+    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     false, false));
+    // non-official / local / fork mains never artifact-fetch.
+    EXPECT_FALSE(main_should_attempt_artifact(false, "auto",     false, true));
+    // explicit overrides.
+    EXPECT_TRUE (main_should_attempt_artifact(true,  "artifact", false, true));
+    EXPECT_FALSE(main_should_attempt_artifact(true,  "git",      true,  false));
+    EXPECT_FALSE(main_should_attempt_artifact(false, "artifact", false, false));
+}
+
+TEST(XimRepoTest, GateSubDefaultMigratesOnceMainArtifactManaged) {
+    using xlings::xim::sub_should_attempt_artifact;
+    // auto: a stranded git sub (managed=false, pkgs=true) only migrates once the
+    // MAIN index is artifact-managed (the C1 gate).
+    EXPECT_FALSE(sub_should_attempt_artifact(true,  "auto", false, true,  false));
+    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", false, true,  true));
+    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", false, false, false)); // fresh
+    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", true,  true,  false)); // already managed
+    EXPECT_FALSE(sub_should_attempt_artifact(false, "auto", false, false, true));  // non-default
+    EXPECT_FALSE(sub_should_attempt_artifact(true,  "git",  false, false, true));
+}
+
 // ============================================================
 // cmdline tests
 // ============================================================

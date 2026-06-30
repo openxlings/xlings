@@ -63,4 +63,35 @@ grep -qi "sha256\|artifact failed\|mismatch" "$WORK/update2.log" \
 [[ -f "$INDEX_DIR/pkgs/p/patchelf.lua" ]] || fail "tamper destroyed the good index"
 pass "tamper path: sha256 rejected, good index preserved"
 
+# Repair the artifact for the self-heal scenarios below.
+bash "$PROJECT_DIR/tools/build_xim_index_artifact.sh" --version 9.9.9 --out "$SERVE" --src "$SRC"
+python3 - "$SERVE/xim-index-9.9.9.manifest.json" "$SERVE/xim-index-pointers.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+json.dump({"format_version": 1, "indexes": {"xim": m}}, open(sys.argv[2], "w"))
+PY
+
+# ── 5. Self-heal: a stranded git main (pkgs/, NO marker, fake .git) must
+#       migrate back to artifact on the next AUTO update (P0-1 symmetry fix) ──
+rm -f "$INDEX_DIR/.xlings-index-version"
+mkdir -p "$INDEX_DIR/.git"; echo "ref: refs/heads/main" > "$INDEX_DIR/.git/HEAD"
+unset XLINGS_INDEX_SOURCE   # auto: official remote must converge to artifact
+if ! "$XLINGS_BIN" update >"$WORK/update3.log" 2>&1; then
+  cat "$WORK/update3.log" >&2; fail "auto self-heal update failed"
+fi
+[[ -f "$INDEX_DIR/.xlings-index-version" ]] || { cat "$WORK/update3.log" >&2; fail "stranded git main did not self-heal to artifact"; }
+[[ -d "$INDEX_DIR/.git" ]] && fail "artifact swap left a .git behind (not artifact-managed)"
+pass "self-heal: stranded git main migrated back to artifact in auto mode"
+
+# ── 6. Non-destructive fallback: with the marker gone again and artifact
+#       UNREACHABLE in auto mode, the existing index must be preserved, never
+#       wiped by a git-clone fallback (P0-2). ──
+rm -f "$INDEX_DIR/.xlings-index-version"   # orphan state: pkgs/, no .git, no marker
+export XLINGS_INDEX_BASE_URL="$WORK/nonexistent-base"   # artifact fetch will fail
+export XLINGS_NO_AUTO_INSTALL_GIT=1
+"$XLINGS_BIN" update >"$WORK/update4.log" 2>&1 || true   # may report failure; must not destroy
+[[ -f "$INDEX_DIR/pkgs/p/patchelf.lua" ]] \
+  || { cat "$WORK/update4.log" >&2; fail "non-destructive guard failed: index wiped by git fallback"; }
+pass "non-destructive: unreachable artifact in auto mode preserved the index"
+
 echo "[test] ALL PASSED"

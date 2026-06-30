@@ -40,6 +40,7 @@ namespace platform {
     export using platform_impl::wait_or_kill;
     export using platform_impl::Icon;
     export using platform_impl::atomic_replace_executable;
+    export using platform_impl::atomic_swap_paths;
 
     // ── Execution identity (root / sudo awareness) ──────────────────
     // Single source of truth for "who am I / who should own the files I

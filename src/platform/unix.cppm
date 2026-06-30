@@ -10,6 +10,12 @@ module;
 #include <sys/time.h>
 #include <pwd.h>
 #endif
+#if defined(__linux__)
+#include <sys/syscall.h>
+#ifndef RENAME_EXCHANGE
+#define RENAME_EXCHANGE (1u << 1)   // <linux/fs.h>; defined here to avoid header clashes
+#endif
+#endif
 
 export module xlings.platform:unix;
 
@@ -154,6 +160,32 @@ namespace platform_impl {
         std::error_code rmec;
         fs::remove(tmp, rmec);
         return false;
+    }
+
+    // Atomically swap two existing paths in a single, uninterruptible step.
+    // Both paths must already exist. Returns true on a real atomic exchange
+    // (there is never a moment where either path is missing — so a crash/SIGKILL
+    // mid-swap cannot strand the live directory), false if the kernel lacks the
+    // primitive (the caller must then fall back to a manual rename sequence).
+    //
+    // The index-artifact installer uses this to close the kill-window in its
+    // dir swap (old → backup → new): without it, a kill between the two renames
+    // leaves the live index dir missing, which on the next run degrades the
+    // official index to a destructive git clone. See
+    // .agents/docs/2026-06-30-index-artifact-git-regression-analysis.md.
+    export bool atomic_swap_paths(const std::filesystem::path& a,
+                                  const std::filesystem::path& b) {
+#if defined(__linux__)
+        long rc = ::syscall(SYS_renameat2, AT_FDCWD, a.c_str(),
+                            AT_FDCWD, b.c_str(),
+                            static_cast<unsigned int>(RENAME_EXCHANGE));
+        return rc == 0;
+#else
+        // macOS has renamex_np(.., RENAME_SWAP) but it is not wired up yet;
+        // returning false keeps the portable manual-swap fallback in charge.
+        (void)a; (void)b;
+        return false;
+#endif
     }
 
     // ── Execution identity primitives (root / sudo awareness) ───────
