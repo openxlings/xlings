@@ -141,6 +141,8 @@ else attemptArtifact = mainIsOfficialRemote;
 
 > 这才是 C1 迁移闸的完整形态——plan 里只给子索引加了 `|| mainArtifactManaged`，遗漏了主索引本身。
 
+> **契约**：`auto` 下官方远端索引收敛到 artifact；**要固定 git 检出必须显式声明 `XLINGS_INDEX_SOURCE=git`**。CI 用 `XIM_PKGINDEX_REF` 钉死索引做可复现测试，因此所有钉索引的 workflow 在 env 里声明 `XLINGS_INDEX_SOURCE=git`，既命中钉定 fixture、又使 CI 保持 hermetic（不走网络拉 artifact）。artifact 路径的 e2e 在脚本内自行 `export`/`unset` 覆盖，不受影响。
+
 ### P0-2：official 索引的 git 回退非破坏性（修缺陷 B）
 
 当 `attemptArtifact` 为真但 artifact fetch 失败、且本地已有可用 `pkgs/` 时，**不要**用 git clone 去 `remove_all` 覆盖它——保留现有副本，下次再试 artifact。

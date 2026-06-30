@@ -21,6 +21,9 @@ env:
   XLINGS_RELEASE_MIRROR: GLOBAL
   BOOTSTRAP_XLINGS_VERSION: v0.4.49
   XIM_PKGINDEX_REF: dee7848233c8453a15ffd76b548442011c54a6f1
+  # Honor the pinned git fixture; since 0.4.62 auto converges official-remote
+  # indexes to artifact. Hermetic CI declares git (artifact e2e overrides it).
+  XLINGS_INDEX_SOURCE: git
 
 jobs:
   e2e:
