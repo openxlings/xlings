@@ -154,8 +154,15 @@ release 各平台 build 完、`create GitHub Release` 后,新增 `publish-ecosys
 - name: bump index source (open PR, 人工合)
   run: bash .github/tools/bump_index.sh mcpp "$VER"
 ```
-mcpp release 已 bootstrap xlings,可直接 raw 拉取或 vendored `tools/gtc` + 脚本。
-mcpp 是 `url_template` 包,`bump_index.sh` 走下载算 sha256 路径,**替代手工 index#335 流程**。
+脚本 vendored 到 mcpp `.github/tools/`(`mirror_res.sh`/`bump_index.sh`/`gtc`)。
+
+> ⚠️ **mcpp bump 格式坑(实测发现)**:`pkgs/m/mcpp.lua` 标了 `url_template`,而现网条目却是
+> `["<ver>"] = "XLINGS_RES"` 哨兵(mcpp 已镜像到 xlings-res/mcpp,保留 CN 回退)。
+> `version-check.py --apply` 见 `url_template` 就走**下载算 sha256**、写 `url+sha256` 块
+> (指向 `github.com/mcpp-community`),与现有 XLINGS_RES 约定**不一致**(对 CN 用户回退更差)。
+> bump 只是 PR、人工 review,不会静默上线;但要让 mcpp 自动 bump 产出 XLINGS_RES 一致条目,
+> 应把 `mcpp.lua` 三平台改成 **`res_versioned = true` 并去掉 `url_template`**(mcpp 的 url_template
+> 只被 bot 消费)。这是索引仓的合约改动,留给维护者拍板(见 §9)。
 > 注:mcpp 的索引 artifact 目前由 xlings release 的 `publish-index` 覆盖(主索引整体打包);
 > mcpp 侧本轮只需 ①源 bump + ②res 镜像。artifact 刷新沿用索引仓解耦发布
 > (见 `2026-06-24` 文档 §2 的 `publish-artifact.yml`)。
@@ -222,6 +229,15 @@ merge bump PR ─▶ pkgindex main 含 0.4.63
 
 ## 9. 未决 / 后续
 - [x] token 已就位:`XIM_PKGINDEX_TOKEN`(openxlings/xim-pkgindex,Contents+PR 写)已建并配到 xlings + mcpp 仓;`XLINGS_RES_TOKEN` 已 regenerate 并同步三仓。
+- [ ] **mcpp bump 格式(需拍板)**:把 `pkgs/m/mcpp.lua` 改成 `res_versioned=true`(去 `url_template`)
+      让自动 bump 产出 `XLINGS_RES`,还是接受 `url+sha256`?见 §4.2。索引仓 PR,维护者决定。
 - [ ] mcpp 索引 artifact 是否需要独立于 xlings 主索引发布(当前主索引整体打包已覆盖 mcpp 条目)。
 - [ ] 两仓 vendored 脚本的同步策略:定期 diff 告警 vs 用 git subtree/submodule。
-- [ ] `version-check.py --apply` 对 mcpp 多平台 sha256 的 CI 网络稳定性(下载失败重试)。
+
+## 10. 实现状态(2026-07-01)
+- **xlings PR openxlings/xlings#349**:`tools/mirror_res.sh`(泛化)、`tools/mirror_xlings_res.sh`(shim)、
+  `tools/bump_index.sh`、`release.yml` 加并列 `bump-index` job。bash/yaml 校验通过;xlings bump 路径已由
+  openxlings/xim-pkgindex#336 证明可用。
+- **mcpp PR mcpp-community/mcpp#194**:vendored `.github/tools/{mirror_res,bump_index,gtc}`;
+  `release.yml` 加 `publish-ecosystem` job(needs 4 平台 build)。yaml 校验通过。
+- **待办**:两 PR review/合并;mcpp bump 格式拍板(§9);合并后下次发版端到端实测。
