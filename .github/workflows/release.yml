@@ -452,3 +452,34 @@ jobs:
           export PATH="$PWD/tools:$PATH"
           bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}" \
             || echo "binary mirror reported issues (non-blocking)"
+
+  # Bump the xlings entry in the official index (openxlings/xim-pkgindex) and
+  # open a PR — a maintainer merges it. Independent of publish-index /
+  # mirror-binaries: the index git source is NOT on the release critical path
+  # (availability is guaranteed by the res mirror + index artifact above). On
+  # merge, the index repo republishes its artifact and gitee-sync mirrors it.
+  bump-index:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    env:
+      XIM_PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open index bump PR (xim-pkgindex)
+        if: ${{ env.XIM_PKGINDEX_TOKEN != '' }}
+        env:
+          PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x tools/bump_index.sh
+          bash tools/bump_index.sh xlings "${{ steps.version.outputs.version }}" \
+            || echo "index bump reported issues (non-blocking)"
