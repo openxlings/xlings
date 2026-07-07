@@ -1600,28 +1600,6 @@ public:
                 executor.apply_install_stamp_if_empty(ctx);
             }
 
-            // Persist declared exports next to the payload
-            // (<install_dir>/.xpkg-exports.json) so downstream consumers
-            // (e.g. mcpp's toolchain link model) read the DECLARED runtime
-            // metadata (loader/abi/libdirs) instead of re-deriving it by
-            // convention. Paths are written in their declared RELATIVE form —
-            // consumers join against the payload root, so the file stays
-            // valid across copies and symlink inheritance. Idempotent; also
-            // written for already-installed payloads so existing installs
-            // gain the file on their next resolve.
-            if (!node.exports.loader.empty() || !node.exports.abi.empty()
-                || !node.exports.libdirs.empty()) {
-                nlohmann::json rt;
-                if (!node.exports.loader.empty())  rt["loader"]  = node.exports.loader;
-                if (!node.exports.abi.empty())     rt["abi"]     = node.exports.abi;
-                if (!node.exports.libdirs.empty()) rt["libdirs"] = node.exports.libdirs;
-                nlohmann::json j;
-                j["runtime"] = std::move(rt);
-                std::ofstream exportsOs(ctx.install_dir / ".xpkg-exports.json");
-                if (exportsOs) exportsOs << j.dump(2) << "\n";
-                else log::debug("{}: could not write .xpkg-exports.json", node.name);
-            }
-
             // Apply elfpatch auto-patching if the install hook enabled it
             if (!payloadInstalled) {
                 // Ensure binDir is in PATH so elfpatch can find patchelf
