@@ -35,8 +35,19 @@ PackageCatalog& get_catalog() {
     if (!initialized) {
         auto result = mgr.rebuild();
         if (!result) {
-            log::error("failed to build catalog: {}", result.error());
-            log::info("try running: xlings update");
+            // Self-heal: a broken/absent index tree (interrupted fetch on an
+            // older xlings, wiped cache) is repairable — resync the repos and
+            // rebuild once before surfacing an error the user would have to
+            // fix by running `xlings update` themselves.
+            log::warn("catalog build failed ({}); resyncing indexes...",
+                      result.error());
+            if (sync_all_repos(true)) {
+                result = mgr.rebuild(true);
+            }
+            if (!result) {
+                log::error("failed to build catalog: {}", result.error());
+                log::info("try running: xlings update");
+            }
         }
         initialized = true;
     }

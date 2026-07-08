@@ -136,9 +136,40 @@ std::vector<std::string> git_candidate_urls_(const DownloadTask& task) {
     return urls;
 }
 
+// Atomically replace `live` with `staging`: live -> live.old,
+// staging -> live, drop live.old. Any failure restores/keeps the previous
+// live tree — a consumer never observes an absent or half-written dir.
+// (Root fix for "pkgs/ directory not found in <index>": the old flow
+// removed the live clone BEFORE acquiring its replacement, so a failed or
+// interrupted re-clone left nothing behind and the error surfaced much
+// later at catalog build.)
+bool atomic_swap_dir_(const std::filesystem::path& staging,
+                      const std::filesystem::path& live) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto old = live.parent_path() / (live.filename().string() + ".old");
+    fs::remove_all(old, ec);          // crashed-run leftovers
+    ec.clear();
+    if (fs::exists(live)) {
+        fs::rename(live, old, ec);
+        if (ec) return false;
+    }
+    fs::rename(staging, live, ec);
+    if (ec) {
+        std::error_code ec2;
+        fs::rename(old, live, ec2);   // best-effort restore
+        return false;
+    }
+    fs::remove_all(old, ec);
+    return true;
+}
+
 // Clone a git repository, trying the primary URL then mirror fallbacks.
-// Each attempt that fails has its partial clone directory removed before
-// the next URL is tried.
+// Acquisition is STAGED: clones land in a sibling .staging dir and are
+// atomically swapped into place only once complete — the live tree is
+// never removed first. When a previous copy exists and every URL fails,
+// the previous copy is kept (stale-but-consistent beats absent) with a
+// loud warning at fetch time.
 DownloadResult git_clone_one(const DownloadTask& task) {
     namespace fs = std::filesystem;
 
@@ -158,36 +189,50 @@ DownloadResult git_clone_one(const DownloadTask& task) {
     result.localFile = destDir;
 
     // If already cloned, pull latest. Pull is single-URL by design — we
-    // don't switch remotes here. Pull failure removes and re-clones,
-    // which then goes through the URL-list fallback path below.
-    if (fs::exists(destDir / ".git")) {
+    // don't switch remotes here. Pull failure falls through to a STAGED
+    // re-clone; the live tree stays untouched until a replacement is ready.
+    const bool hadLive = fs::exists(destDir / ".git");
+    if (hadLive) {
         log::debug("already cloned {}, pulling latest...", task.name);
         auto pull = compact::git::pull_ff_only(destDir);
         if (pull.rc == 0) {
             result.success = true;
             return result;
         }
-        log::warn("pull failed for {}, re-cloning...", task.name);
-        fs::remove_all(destDir, ec);
+        log::warn("pull failed for {}, re-cloning into staging...", task.name);
     }
+
+    auto staging = task.destDir / (".staging-" + repoName);
+    ec.clear();
+    fs::remove_all(staging, ec);      // crashed-run leftovers
 
     auto urls = git_candidate_urls_(task);
     for (std::size_t i = 0; i < urls.size(); ++i) {
         const auto& url = urls[i];
         log::debug("cloning {} attempt {}/{}: {}",
                    task.name, i + 1, urls.size(), url);
-        auto clone = compact::git::clone_shallow(url, destDir, true);
-        if (clone.rc == 0) {
+        auto clone = compact::git::clone_shallow(url, staging, true);
+        if (clone.rc == 0 && fs::exists(staging / ".git")) {
             if (i > 0)
                 log::info("[mirror] git clone fallback succeeded via {}", url);
-            result.success = true;
-            return result;
+            if (atomic_swap_dir_(staging, destDir)) {
+                result.success = true;
+                return result;
+            }
+            log::warn("atomic swap failed for {}", task.name);
         }
-        // Clean partial clone before next attempt.
+        // Clean partial staging clone before next attempt.
         ec.clear();
-        fs::remove_all(destDir, ec);
+        fs::remove_all(staging, ec);
     }
 
+    if (hadLive) {
+        // Every URL failed but a previous copy exists: keep serving it.
+        log::warn("{}: refresh failed on all URLs; keeping the previous copy",
+                  task.name);
+        result.success = true;
+        return result;
+    }
     result.error = std::format("all git clone URLs failed for {}", task.name);
     return result;
 }
@@ -221,6 +266,14 @@ DownloadResult download_one(const DownloadTask& task,
             auto destDir = task.destDir / repoName;
             result.localFile = destDir;
 
+            // Staged acquisition, mirroring git_clone_one: clone into a
+            // sibling .staging dir, atomic-swap on success, and keep any
+            // previous live copy when every URL fails (or on cancel).
+            const bool hadLive = fs::exists(destDir / ".git");
+            auto staging = task.destDir / (".staging-" + repoName);
+            std::error_code ecs;
+            fs::remove_all(staging, ecs);
+
             auto urls = git_candidate_urls_(task);
             std::string lastError;
             for (std::size_t i = 0; i < urls.size(); ++i) {
@@ -229,24 +282,31 @@ DownloadResult download_one(const DownloadTask& task,
                            task.name, i + 1, urls.size(), url);
                 auto h = compact::git::spawn({
                     "clone", "--depth", "1", "--recursive", "--quiet",
-                    url, destDir.string()
+                    url, staging.string()
                 });
                 if (h.pid <= 0) { lastError = "failed to spawn git"; continue; }
                 auto [code, output] = platform::wait_or_kill(
                     h, cancel, std::chrono::minutes{10});
                 if (cancel->is_paused() || cancel->is_cancelled()) {
+                    fs::remove_all(staging, ecs);
                     result.error = "cancelled";
                     return result;
                 }
-                if (code == 0) {
+                if (code == 0 && fs::exists(staging / ".git")
+                    && atomic_swap_dir_(staging, destDir)) {
                     if (i > 0)
                         log::info("[mirror] git clone fallback succeeded via {}", url);
                     result.success = true;
                     return result;
                 }
                 lastError = output;
-                std::error_code ec2;
-                fs::remove_all(destDir, ec2);
+                fs::remove_all(staging, ecs);
+            }
+            if (hadLive) {
+                log::warn("{}: refresh failed on all URLs; keeping the previous copy",
+                          task.name);
+                result.success = true;
+                return result;
             }
             result.error = lastError.empty()
                 ? std::format("all git clone URLs failed for {}", task.name)
