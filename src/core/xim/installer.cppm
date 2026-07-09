@@ -1035,10 +1035,48 @@ public:
     explicit Installer(IndexManager& index) : index_(&index) {}
     explicit Installer(PackageCatalog& catalog) : catalog_(&catalog) {}
 
+    // Single authoritative "effective install_dir": the store where a
+    // node's payload is ACTUALLY materialized, following additive
+    // (project-over-global) order. Both elfpatch (loader/rpath) and
+    // build-dep PATH resolution consume this, so a project-scoped consumer
+    // reusing a globally-materialized loader-provider (e.g. xim:glibc) gets
+    // an interpreter/rpath pointing at the store where the payload really
+    // lives — not its own (project) store where it was never materialized.
+    //
+    // Judge "materialized" by the SCOPED version-DB record (projectVersions_
+    // first, then globalVersions_), NOT "directory non-empty": the
+    // `.xpkg.lua` that gets written into install_dir would fool an
+    // is_empty() probe. When neither scope has a record yet (node is the
+    // about-to-install target), fall back to the node's own nominal store.
+    static std::filesystem::path
+    effective_install_dir_(const PlanNode& node,
+                           const std::filesystem::path& dataDir) {
+        auto storeName = detail_::effective_store_name_(node);
+        auto in_store = [&](const std::filesystem::path& base) {
+            return base / "xpkgs" / storeName / node.version;
+        };
+        auto recorded = [&](const xvm::VersionDB& db) {
+            auto resolved = xvm::match_version(db, node.name, node.version);
+            return !resolved.empty()
+                && xvm::get_vdata(db, node.name, resolved) != nullptr;
+        };
+        // additive order: project store first, then global store.
+        if (recorded(Config::project_versions()))
+            return in_store(Config::project_data_dir());
+        if (recorded(Config::global_versions()))
+            return in_store(Config::global_data_dir());
+        auto nominalRoot = node.storeRoot.empty() ? (dataDir / "xpkgs")
+                                                  : node.storeRoot;
+        return nominalRoot / storeName / node.version;
+    }
+
     // Resolve a build_deps entry (e.g. "gcc", "ns:gcc@15") to its
     // payload directory inside xpkgs/<store>/<version>. Plan is in topo
     // order, so by the time a Runtime node runs its install hook all of
     // its build_deps already have their payloads laid down on disk.
+    // Uses effective_install_dir_ so the build-dep PATH sees the store
+    // where the dep's payload is really materialized (unifies the
+    // resolution convention with elfpatch's provider resolution).
     static std::filesystem::path
     locate_dep_install_dir_(const InstallPlan& plan,
                             const std::filesystem::path& dataDir,
@@ -1059,8 +1097,7 @@ public:
                        || (n.rawName == depRef);
             if (!ns.empty()) match = match && (n.namespaceName == ns);
             if (!match) continue;
-            auto root = n.storeRoot.empty() ? (dataDir / "xpkgs") : n.storeRoot;
-            return root / detail_::effective_store_name_(n) / n.version;
+            return effective_install_dir_(n, dataDir);
         }
         return {};
     }
@@ -1342,11 +1379,13 @@ public:
                         // through to convention later).
                         break;
                     }
-                    auto depRoot = depNode.storeRoot.empty()
-                        ? (dataDir / "xpkgs") : depNode.storeRoot;
-                    auto depInstallDir = depRoot
-                        / detail_::effective_store_name_(depNode) / depNode.version;
+                    // Use the EFFECTIVE materialized store (additive-aware),
+                    // not depNode.storeRoot (nominal scope). This is what
+                    // makes a project-scoped consumer's interpreter/rpath
+                    // point at a globally-reused loader-provider's real store.
+                    auto depInstallDir = effective_install_dir_(depNode, dataDir);
                     mcpplibs::xpkg::DepExport e;
+                    e.install_dir = depInstallDir.string();
                     if (!depNode.exports.loader.empty()) {
                         e.loader = (depInstallDir / depNode.exports.loader).string();
                     }
