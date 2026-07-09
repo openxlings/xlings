@@ -1484,6 +1484,22 @@ public:
                 std::string oldPath = std::getenv("PATH") ? std::getenv("PATH") : "";
                 std::vector<std::string> setEnvKeys;
                 std::string newPath = oldPath;
+                // Also assemble a host-free toolchain BUILD env from the same
+                // build-deps: their lib/ (+ lib64/) feed LIBRARY_PATH (crt1.o,
+                // crti.o, libm, ...) and their include/ feeds CPATH (stdlib.h,
+                // kernel uapi headers). gcc's specs wire xim:glibc only for the
+                // RUNTIME (rpath/dynamic-linker), not the build-time startfile/
+                // library/header search — without this, install() source builds
+                // fail to find crt/headers on a host-free runner (or silently
+                // fall back to the host's /usr, breaking host-free).
+                std::string oldLibPath = std::getenv("LIBRARY_PATH") ? std::getenv("LIBRARY_PATH") : "";
+                std::string oldCPath   = std::getenv("CPATH") ? std::getenv("CPATH") : "";
+                std::string newLibPath = oldLibPath;
+                std::string newCPath   = oldCPath;
+                auto prependEnv_ = [](std::string& acc, const std::string& dir) {
+                    acc = acc.empty() ? dir
+                        : dir + std::string(1, platform::PATH_SEPARATOR) + acc;
+                };
                 for (auto& bd : node.build_deps) {
                     auto bdDir = locate_dep_install_dir_(plan, dataDir, bd);
                     if (bdDir.empty()) {
@@ -1510,12 +1526,22 @@ public:
                     if (std::filesystem::exists(bdDir / "bin")) {
                         newPath = bdBin + std::string(1, platform::PATH_SEPARATOR) + newPath;
                     }
+                    for (const char* sub : {"lib", "lib64"}) {
+                        if (std::filesystem::exists(bdDir / sub))
+                            prependEnv_(newLibPath, (bdDir / sub).string());
+                    }
+                    if (std::filesystem::exists(bdDir / "include"))
+                        prependEnv_(newCPath, (bdDir / "include").string());
                     log::debug("[{}] build_dep {} -> {} (env {})",
                                node.name, bd, bdDir.string(), envKey);
                 }
                 if (!setEnvKeys.empty()) {
                     platform::set_env_variable("PATH", newPath);
                 }
+                if (newLibPath != oldLibPath)
+                    platform::set_env_variable("LIBRARY_PATH", newLibPath);
+                if (newCPath != oldCPath)
+                    platform::set_env_variable("CPATH", newCPath);
 
                 auto hookResult = executor.run_hook(
                     mcpplibs::xpkg::HookType::Install, ctx);
@@ -1527,6 +1553,10 @@ public:
                         platform::set_env_variable(k, "");
                     }
                 }
+                if (newLibPath != oldLibPath)
+                    platform::set_env_variable("LIBRARY_PATH", oldLibPath);
+                if (newCPath != oldCPath)
+                    platform::set_env_variable("CPATH", oldCPath);
 
                 if (!hookResult.success) {
                     log::error("install hook failed for {}: {}",
