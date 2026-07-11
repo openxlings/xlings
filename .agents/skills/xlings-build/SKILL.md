@@ -95,7 +95,7 @@ If using the packaged release tree, prefer `./bin/xlings -h` inside the assemble
 
 ## macOS Build
 
-The checked-in CI uses Homebrew `llvm@20` plus `xmake`. If the user insists on an xlings-first workflow, install xlings first for consistency, but the canonical repo reference is still the CI setup.
+The checked-in CI uses the toolchain declared by `mcpp.toml` and builds the C++ project with `mcpp`. Installing xlings first only provides the project-declared development tools; xlings does not implicitly install xmake.
 
 ### 1) Install xlings
 
@@ -197,7 +197,7 @@ If network access is not available, say that the smoke test was skipped rather t
 
 - On Linux, `musl-gcc@15.1.0` is required for `import std` in the C++23 build.
 - `mcpp.toml` is the only C++ project definition.
-- Prefer release scripts for packaging because they also assemble `xim`, `xvm`, config files, bundled `xmake`, and post-build verification.
+- Prefer release scripts for packaging because they also assemble the xlings binary, `xvm`, config files, package-index data, and post-build verification. The release does not bundle xmake as an internal runtime dependency.
 - When the user asks for exact CI parity, read the workflow file first and mirror it exactly rather than relying on memory.
 
 ## References
