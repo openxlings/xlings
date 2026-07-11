@@ -272,9 +272,9 @@ etag: <http-etag>
 | X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
 | X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 已完成（本地） | POSIX/Windows 实现、真实双进程竞争及恢复测试通过；待 PR 三平台 CI |
 | X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
-| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | PR CI 已通过，待发布 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9)；Linux mcpp build/test 通过；待合并并发布 0.2.9 |
-| L1 | `mcpplibs/libxpkg` | `xpm.source` 解析、兼容、资源归一化 | PR 待 CI/发布 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)；loader/compat 26/26 通过；待 CI、合并并发布 0.0.43 |
-| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 待开始 | xpkg 解析只剩一个入口；旧索引安装回归通过 |
+| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 已完成 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9) 已合并；[0.2.9 release](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9)；索引 [mcpp-index#68](https://github.com/mcpplibs/mcpp-index/pull/68) 待最终 CI/合并 |
+| L1 | `mcpplibs/libxpkg` | `xpm.source`、平台兼容、资源归一化 | 已完成 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)、[#27](https://github.com/openxlings/libxpkg/pull/27) 已合并；[0.0.44 release](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44) |
+| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（本地） | 重复 parser/sandbox/template 展开器已删除；统一 compat 测试与完整 `mcpp test` 10/10 通过；待正式索引依赖和三平台 CI |
 | I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 待开始 | GLOBAL/CN hash 一致；索引 CI 通过 |
 | I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 待开始 | 旧客户端读取保留条目，新客户端读取推荐条目 |
 | R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 待开始 | PR 合并、release 资产、索引 PR、端到端安装记录 |
@@ -372,7 +372,9 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 
 - [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9) 已实现严格 chunk-size/CRLF/trailer EOF 判定，并公开 `bytesWritten`、可选 `expectedBytes`、`finalUrl`、`etag` 和 `lastModified`。
 - `mcpp test` 的本地 HTTPS 与协议回归测试通过；PR 的 Linux mcpp CI 已通过。
-- `mcpp.toml` 已升至 0.2.9；尚未合并、打 tag 和发布，因此 T1 不能标记完成。
+- `mcpp.toml` 已升至 0.2.9；PR 已合并并发布 [0.2.9](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9)。
+- xlings wrapper 已消费实际/期望字节、最终 URL、ETag 和 Last-Modified；长度不一致在提交缓存前拒绝，GET 元数据进入 sidecar。
+- mcpp 默认索引 PR [#68](https://github.com/mcpplibs/mcpp-index/pull/68) 已建立，GLOBAL/CN 同字节 SHA256 已验证，待完整 CI 和 artifact 发布。
 
 ### 9.7 L1/L2：唯一 xpkg 入口
 
@@ -384,7 +386,11 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 - loader 将根级/平台级 `source` 解析为元数据并明确跳过版本迭代；原 platform/version 模型保持不变。
 - 契约测试覆盖显式 URL 优先级、根级/平台级 source、`${name/version/os/arch/arch_alias/ext}`、mirror 展开、ref/cycle、旧 `XLINGS_RES`、`res=true`、per-arch map 和 per-arch SHA256；loader/compat 26/26 通过。
 - `mcpp build` 通过。完整 `mcpp test` 的 4 个 elfpatch executor 失败已在干净 `main@9e934be` 原样复现，确认不是 L1 回归。
-- `mcpp.toml` 已升至 0.0.43；尚待 PR CI、合并和发布，随后才能开始 L2 的依赖升级与重复解析器删除。
+- 兼容审计发现 0.0.43 loader 缺少目标平台 sandbox 上下文，不能安全替换 xlings 的旧 parser；因此没有把 0.0.43 推入默认索引。
+- [libxpkg#27](https://github.com/openxlings/libxpkg/pull/27) 增加 `LoaderContext { platform, arch }`，统一支持 `is_host/is_plat/is_arch`、`os.host/os.arch` 和 `_RUNTIME`，并把 per-arch 缺失收敛为 compat fail-closed。
+- #26/#27 CI 均通过并已合并，最终发布 [libxpkg 0.0.44](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44)。
+- xlings 已删除 `load_platform_entries_()`、本地 Lua sandbox 和本地 template 展开器；平台上下文加载和资源归一化全部调用 libxpkg。
+- xlings 侧 source/ref/template/mirror/legacy/per-arch 契约测试与完整 `mcpp test` 10/10 通过；尚待 0.0.44 默认索引 PR 合并后切换正式依赖并跑三平台 CI。
 
 ### 9.8 I1/I2：索引迁移与老客户端保护
 

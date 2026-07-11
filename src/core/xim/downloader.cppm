@@ -688,6 +688,7 @@ DownloadResult download_one(const DownloadTask& task,
     urls = mirror::adaptive::reorder(std::move(urls), !task.sha256.empty());
 
     auto stagingFile = unique_sibling_path_(destFile, "part");
+    tinyhttps::DownloadFileResult transferResult;
 
     // Use in-process tinyhttps for all downloads (streaming progress).
     // When a CancellationToken is available, wire isCancelled so ESC aborts.
@@ -728,12 +729,22 @@ DownloadResult download_one(const DownloadTask& task,
             };
         }
 
-        auto dlResult = tinyhttps::download_file(opts);
-        if (!dlResult.success) {
+        transferResult = tinyhttps::download_file(opts);
+        if (!transferResult.success) {
             fs::remove(stagingFile, ec);
-            result.error = dlResult.error;
+            result.error = transferResult.error;
             return result;
         }
+    }
+
+    if (transferResult.expectedBytes
+            && transferResult.bytesWritten != *transferResult.expectedBytes) {
+        result.error = std::format(
+            "incomplete transfer for {}: wrote {} of {} bytes",
+            task.name, transferResult.bytesWritten,
+            *transferResult.expectedBytes);
+        fs::remove(stagingFile, ec);
+        return result;
     }
 
     // Size sanity check for archives without sha256. When a recipe
@@ -780,16 +791,29 @@ DownloadResult download_one(const DownloadTask& task,
         // No sha256 declared: persist server-reported Last-Modified / ETag
         // alongside the payload so the next install can use a HEAD probe
         // to decide cache freshness instead of re-downloading.
-        if (!probedMetaValid) {
+        tinyhttps::RemoteFileMeta committedMeta {
+            .ok = transferResult.success,
+            .contentLength = transferResult.expectedBytes.value_or(-1),
+            .lastModified = transferResult.lastModified,
+            .etag = transferResult.etag,
+        };
+        if (committedMeta.lastModified.empty() && committedMeta.etag.empty()
+                && !transferResult.expectedBytes && !probedMetaValid) {
             probedMeta = query_remote_meta_(task.url, testHooks);
             probedMetaValid = true;
+        }
+        if (committedMeta.lastModified.empty() && committedMeta.etag.empty()
+                && !transferResult.expectedBytes && probedMetaValid) {
+            committedMeta = probedMeta;
         }
         std::error_code sizeEc;
         auto committedSize = static_cast<std::int64_t>(fs::file_size(destFile, sizeEc));
         if (!sizeEc && !task.cacheIdentity.empty()) {
             write_meta_sidecar_(
-                sidecarPath, probedMeta, committedSize,
-                task.cacheIdentity, task.url);
+                sidecarPath, committedMeta, committedSize,
+                task.cacheIdentity,
+                transferResult.finalUrl.empty()
+                    ? task.url : transferResult.finalUrl);
         }
     }
 
