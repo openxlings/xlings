@@ -31,7 +31,7 @@ ABSOLUTE RULES — NEVER violate these
 2. NEVER trigger a release without CI passing on the PR first.
 3. NEVER amend or force-push commits that others may have pulled.
 4. ALWAYS create a feature branch from the latest main.
-5. ALWAYS run `xmake build xlings` and verify before pushing.
+5. ALWAYS run `mcpp build` and `mcpp test` before pushing.
 6. ALWAYS use `xlings install` for tools, never apt/brew/curl.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -54,8 +54,9 @@ STEP 2: Implement the change
   - Do NOT add comments/docstrings/refactors beyond what's asked
 
 STEP 3: Build and verify locally
-  xmake build xlings
-  xmake run xlings <relevant-command>    # manual smoke test
+  mcpp build
+  mcpp test
+  <path-to-built-xlings> <relevant-command>    # manual smoke test
 
 STEP 4: Commit
   git add <specific-files>
@@ -121,14 +122,14 @@ BUILD ENVIRONMENT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Setup (from repo root):
-  xlings install              # installs xmake, cmake, ninja, toolchain
+  xlings install              # installs mcpp
   xlings use gcc@16.1.0       # dev build toolchain (Linux)
 
 Build:
-  xmake build xlings           # dev binary
+  mcpp build                   # dev binary
 
 Test:
-  xmake build xlings_tests && xmake run xlings_tests   # unit tests
+  mcpp test                    # unit tests
 
 Release scripts (CI uses these):
   Linux:   tools/linux_release.sh    (musl-gcc static binary)

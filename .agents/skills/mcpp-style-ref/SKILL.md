@@ -145,15 +145,15 @@ xlings install gcc@15 -y
 
 参考本仓库 `src/` 目录结构：
 
-- `xmake.lua`：配置 `set_languages("c++23")`、`set_policy("build.c++.modules", true)`
+- `mcpp.toml`：声明 C++23 模块目标、工具链和依赖
 - `add_files("main.cpp")`、`add_files("**.cppm")` 添加源文件
 - 可执行目标与静态库目标分离（如 `mcpp-style-ref` 主程序、`error` 静态库）
 
 构建：
 
 ```bash
-xmake build
-xmake run
+mcpp build
+mcpp test
 ```
 
 ## 适用场景

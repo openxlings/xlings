@@ -18,7 +18,7 @@ This skill defines the standard contribution flow for AI agents working on the x
 curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
 
 # From repo root — install build dependencies
-xlings install           # reads .xlings.json → xmake, cmake, ninja, toolchain
+xlings install           # reads .xlings.json → installs mcpp
 
 # Switch to the correct dev toolchain
 xlings use gcc@16.1.0   # Linux dev build (avoids musl/glibc link conflicts)
@@ -27,8 +27,8 @@ xlings use gcc@16.1.0   # Linux dev build (avoids musl/glibc link conflicts)
 ### 2. Verify build works
 
 ```bash
-xmake f --local_libxpkg=/path/to/libxpkg -y   # only if modifying upstream libxpkg
-xmake build xlings                              # ~15s on warm cache
+mcpp build
+mcpp test
 ```
 
 ### 3. Repository structure awareness
@@ -54,7 +54,7 @@ tests/
 ├── e2e/                        # End-to-end shell tests
 │   ├── project_test_lib.sh     # Shared test helpers
 │   └── fixtures/               # Test fixture packages
-└── (unit tests via xmake build xlings_tests)
+└── (unit tests via `mcpp test`)
 ```
 
 ## Standard Contribution Flow
@@ -130,11 +130,12 @@ Key helpers from `project_test_lib.sh`:
 ### Step 5: Build + test locally
 
 ```bash
-# Build
-xmake build xlings
+# Build and unit tests
+mcpp build
+mcpp test
 
 # Run your test
-XLINGS_BIN=$(find build -path '*/release/xlings' -type f | head -1) \
+XLINGS_BIN=$(find target -path '*/bin/xlings' -type f | head -1) \
   bash tests/e2e/<feature>_test.sh
 
 # Run existing tests to check for regressions

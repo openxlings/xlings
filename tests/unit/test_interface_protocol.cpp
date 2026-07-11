@@ -20,8 +20,7 @@ import xlings.libs.json;
 namespace {
 
 // Resolve once on first call and cache the absolute path. mcpp places binaries
-// under target/<triple>/<fingerprint>/bin; keep the legacy xmake build layout as
-// a fallback while the repository still supports older local workflows.
+// under target/<triple>/<fingerprint>/bin.
 std::string find_xlings_binary_() {
     namespace fs = std::filesystem;
     static const std::string cached = []() -> std::string {
@@ -58,15 +57,6 @@ std::string find_xlings_binary_() {
             return absolute_or_original(newest_mcpp_candidate);
         }
 
-        static const char* platforms[] = {"linux", "macosx", "windows"};
-        static const char* archs[] = {"x86_64", "arm64", "x64"};
-        static const char* modes[] = {"release", "debug"};
-        for (auto* p : platforms) for (auto* a : archs) for (auto* m : modes) {
-            fs::path candidate = fs::path("build") / p / a / m / exe;
-            if (fs::is_regular_file(candidate, ec)) {
-                return absolute_or_original(candidate);
-            }
-        }
         return std::string{};
     }();
     return cached;

@@ -9,7 +9,7 @@ import xlings.platform;
 // Cross-version compat (currently: legacy alias cleanup, profile upgrade).
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
-// Generated at build time from config/shell/*.{sh,fish,ps1}; see xmake.lua.
+// Generated at build time from config/shell/*.{sh,fish,ps1}; see mcpp.toml.
 import xlings.core.xself.profile_resources;
 
 namespace xlings::xself {
