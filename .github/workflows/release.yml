@@ -140,6 +140,9 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
           cd /tmp/mcpp-src
+          # Avoid recursively resolving mcpp's development pin while the
+          # already-installed mcpp bootstraps the source tree.
+          mv .xlings.json .xlings.json.bootstrap
           mcpp self config --mirror GLOBAL
           mcpp build
           MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
