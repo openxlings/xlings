@@ -1092,6 +1092,50 @@ TEST(XimDownloaderTest, FileLockWaitsForOwnerAndHonorsCancellation) {
     fs::remove_all(tmp);
 }
 
+TEST(XimDownloaderTest, FileLockSerializesIndependentProcesses) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path()
+        / std::format("xim_download_process_lock_{}", xlings::platform::get_pid());
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto lock_path = tmp / "payload.lock";
+    auto ready_path = tmp / "child.ready";
+    auto executable = xlings::platform::get_executable_path();
+    ASSERT_FALSE(executable.empty());
+
+    auto command = std::format(
+        "\"{}\" --file-lock-child \"{}\" \"{}\"",
+        executable.string(), lock_path.string(), ready_path.string());
+    auto child = xlings::platform::spawn_command(command);
+    ASSERT_GT(child.pid, 0);
+
+    auto ready_deadline = std::chrono::steady_clock::now()
+        + std::chrono::seconds{3};
+    while (!fs::exists(ready_path)
+           && std::chrono::steady_clock::now() < ready_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+
+    xlings::platform::FileLock waiter;
+    std::string error;
+    auto start = std::chrono::steady_clock::now();
+    bool acquired = false;
+    if (fs::exists(ready_path)) {
+        acquired = waiter.acquire(
+            lock_path, std::chrono::seconds{2}, {}, error);
+    }
+    auto waited = std::chrono::steady_clock::now() - start;
+    auto [child_status, child_output] = xlings::platform::wait_or_kill(
+        child, nullptr, std::chrono::seconds{3});
+
+    EXPECT_TRUE(fs::exists(ready_path)) << child_output;
+    EXPECT_TRUE(acquired) << error << "\n" << child_output;
+    EXPECT_GE(waited, std::chrono::milliseconds{150});
+    EXPECT_EQ(child_status, 0) << child_output;
+    waiter.release();
+    fs::remove_all(tmp);
+}
+
 TEST(XimDownloaderTest, RecoveryRestoresBackupWhenLiveIsMissing) {
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() / "xim_download_recover_backup";
@@ -3933,6 +3977,17 @@ TEST(DownloaderArchiveSniff, WorksWithFullPaths) {
 
 #ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {
+    if (argc == 4 && std::string_view(argv[1]) == "--file-lock-child") {
+        xlings::platform::FileLock lock;
+        std::string error;
+        if (!lock.acquire(argv[2], std::chrono::seconds{2}, {}, error)) {
+            std::cerr << error << '\n';
+            return 2;
+        }
+        std::ofstream(argv[3]) << "ready";
+        std::this_thread::sleep_for(std::chrono::milliseconds{400});
+        return 0;
+    }
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

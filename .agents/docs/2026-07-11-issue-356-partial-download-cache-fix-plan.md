@@ -270,7 +270,7 @@ etag: <http-etag>
 |---|---|---|---|---|
 | X1 | `openxlings/xlings` | 缓存决策纯函数与 sidecar v2 | 已完成（本地） | `mcpp test`：legacy/v2/size/identity 回归通过；全套 10/10 测试二进制通过 |
 | X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
-| X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 进行中 | POSIX/Windows 实现及本地测试通过；待双进程测试与三平台 CI |
+| X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 已完成（本地） | POSIX/Windows 实现、真实双进程竞争及恢复测试通过；待 PR 三平台 CI |
 | X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
 | T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | PR CI 已通过，待发布 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9)；Linux mcpp build/test 通过；待合并并发布 0.2.9 |
 | L1 | `mcpplibs/libxpkg` | `xpm.source` 解析、兼容、资源归一化 | PR 待 CI/发布 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)；loader/compat 26/26 通过；待 CI、合并并发布 0.0.43 |
@@ -345,7 +345,8 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 - 锁已覆盖文件缓存判定、传输、提交和 sidecar 写入。
 - 持锁后的恢复状态机已覆盖“仅 backup 时恢复 live”“live + backup 时保留 live”“清理同目标遗留 staging”。
 - 同进程双句柄竞争、取消等待、延迟释放、两种崩溃恢复测试通过；完整 `mcpp test` 10/10 通过。
-- 尚缺真实双进程竞争测试以及 macOS/Windows CI 证据，因此本项仍为“进行中”。
+- 新增真实子进程持锁测试：父进程在子进程写入 ready 标记后竞争同一锁，必须等待子进程释放，再完成提交；Linux 定向测试通过。
+- 实现与本地测试已完成；在 PR 的 Linux、macOS、Windows CI 全绿前，本项只标记“已完成（本地）”。
 
 ### 9.5 X4：解压失败自愈
 
