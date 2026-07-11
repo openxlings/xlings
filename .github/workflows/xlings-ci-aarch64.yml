@@ -71,6 +71,10 @@ jobs:
           git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
           cd /tmp/mcpp-src
           mcpp self config --mirror GLOBAL 2>/dev/null || true
+          # We are bootstrapping mcpp itself with the already-installed mcpp.
+          # Do not let the cloned project's .xlings.json recursively request
+          # an older mcpp version that may have left the rolling package index.
+          mv .xlings.json .xlings.json.bootstrap
           mcpp build
           MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
           test -x "$MCPP"
