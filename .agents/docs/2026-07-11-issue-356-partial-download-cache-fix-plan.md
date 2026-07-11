@@ -272,8 +272,8 @@ etag: <http-etag>
 | X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
 | X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 进行中 | POSIX/Windows 实现及本地测试通过；待双进程测试与三平台 CI |
 | X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
-| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 待开始 | 协议测试全部通过并发布新版本 |
-| L1 | `mcpplibs/libxpkg` | `xpm.source` 解析、兼容、资源归一化 | 待开始 | 旧写法及新 xlings-res/URL template 契约测试 |
+| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | PR CI 已通过，待发布 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9)；Linux mcpp build/test 通过；待合并并发布 0.2.9 |
+| L1 | `mcpplibs/libxpkg` | `xpm.source` 解析、兼容、资源归一化 | PR 待 CI/发布 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)；loader/compat 26/26 通过；待 CI、合并并发布 0.0.43 |
 | L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 待开始 | xpkg 解析只剩一个入口；旧索引安装回归通过 |
 | I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 待开始 | GLOBAL/CN hash 一致；索引 CI 通过 |
 | I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 待开始 | 旧客户端读取保留条目，新客户端读取推荐条目 |
@@ -367,9 +367,23 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 
 在独立仓库和独立 PR 中补协议级本地 HTTP server 测试，再修 chunk parser。成功结果公开 `bytesWritten`、可选 `expectedBytes`、`finalUrl`；xlings 在升级依赖后使用这些字段写 sidecar和日志。connection-close 响应的 `expectedBytes` 必须为空，不能被描述为长度已验证。
 
+**2026-07-12 实施记录**：
+
+- [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9) 已实现严格 chunk-size/CRLF/trailer EOF 判定，并公开 `bytesWritten`、可选 `expectedBytes`、`finalUrl`、`etag` 和 `lastModified`。
+- `mcpp test` 的本地 HTTPS 与协议回归测试通过；PR 的 Linux mcpp CI 已通过。
+- `mcpp.toml` 已升至 0.2.9；尚未合并、打 tag 和发布，因此 T1 不能标记完成。
+
 ### 9.7 L1/L2：唯一 xpkg 入口
 
 `libxpkg` 接受并归一化原有版本资源项以及 `xpm.source = "xlings-res" | <URL template>`，输出平台、架构、最终 URL、SHA256 和 fallback 的统一资源对象。兼容逻辑只位于 libxpkg 的 compat 模块。xlings 升级依赖并删除 `load_platform_entries_()`；删除前必须用同一组 fixture 对旧字符串 URL、`XLINGS_RES`、mirror table、`ref`、单 hash 和多架构 hash 做前后结果对比。
+
+**2026-07-12 L1 实施记录**：
+
+- [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26) 新增 `mcpplibs.xpkg.compat`，`resolve_resource()` 成为旧资源写法、`xlings-res` 与 URL template 的统一归一化入口。
+- loader 将根级/平台级 `source` 解析为元数据并明确跳过版本迭代；原 platform/version 模型保持不变。
+- 契约测试覆盖显式 URL 优先级、根级/平台级 source、`${name/version/os/arch/arch_alias/ext}`、mirror 展开、ref/cycle、旧 `XLINGS_RES`、`res=true`、per-arch map 和 per-arch SHA256；loader/compat 26/26 通过。
+- `mcpp build` 通过。完整 `mcpp test` 的 4 个 elfpatch executor 失败已在干净 `main@9e934be` 原样复现，确认不是 L1 回归。
+- `mcpp.toml` 已升至 0.0.43；尚待 PR CI、合并和发布，随后才能开始 L2 的依赖升级与重复解析器删除。
 
 ### 9.8 I1/I2：索引迁移与老客户端保护
 
