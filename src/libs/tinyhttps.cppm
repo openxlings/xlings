@@ -11,6 +11,11 @@ export namespace xlings::tinyhttps {
 struct DownloadFileResult {
     bool success { false };
     std::string error;
+    std::int64_t bytesWritten { 0 };
+    std::optional<std::int64_t> expectedBytes;
+    std::string finalUrl;
+    std::string etag;
+    std::string lastModified;
 };
 
 struct DownloadOptions {
@@ -284,7 +289,14 @@ DownloadFileResult download_once(
     auto result = client.download_to_file(url, dest, progress, cancel);
 
     if (result.ok() && !stalled) {
-        return {true, {}};
+        return {
+            .success = true,
+            .bytesWritten = result.bytesWritten,
+            .expectedBytes = result.expectedBytes,
+            .finalUrl = result.finalUrl,
+            .etag = result.etag,
+            .lastModified = result.lastModified,
+        };
     }
     if (stalled) {
         return {false, std::format(
@@ -292,8 +304,16 @@ DownloadFileResult download_once(
             "(set XLINGS_DOWNLOAD_LOW_SPEED=off to disable the watchdog)",
             lowSpeedLimitBytes, lowSpeedTimeSec)};
     }
-    return {false, result.error.empty()
-        ? "HTTP " + std::to_string(result.statusCode) : result.error};
+    return {
+        .success = false,
+        .error = result.error.empty()
+            ? "HTTP " + std::to_string(result.statusCode) : result.error,
+        .bytesWritten = result.bytesWritten,
+        .expectedBytes = result.expectedBytes,
+        .finalUrl = result.finalUrl,
+        .etag = result.etag,
+        .lastModified = result.lastModified,
+    };
 }
 
 } // namespace detail_

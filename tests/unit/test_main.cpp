@@ -1001,6 +1001,70 @@ TEST(XimDownloaderTest, HashRejectedCandidateCommitsFallbackFromStaging) {
     fs::remove_all(tmp);
 }
 
+TEST(TinyhttpsWrapperTest, ReturnsAcceptedCandidateTransferMetadata) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "tinyhttps_transfer_metadata";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    xlings::tinyhttps::DownloadOptions options;
+    options.destFile = tmp / "payload.bin";
+    options.urls = {"https://origin.test/payload.bin"};
+    options.retryCount = 0;
+    options.transferOverride = [](const std::string&, const fs::path& path) {
+        std::ofstream(path) << "payload";
+        return xlings::tinyhttps::DownloadFileResult {
+            .success = true,
+            .bytesWritten = 7,
+            .expectedBytes = 7,
+            .finalUrl = "https://cdn.test/final.bin",
+            .etag = "etag-1",
+            .lastModified = "Sat, 12 Jul 2026 00:00:00 GMT",
+        };
+    };
+
+    auto result = xlings::tinyhttps::download_file(options);
+    ASSERT_TRUE(result.success) << result.error;
+    EXPECT_EQ(result.bytesWritten, 7);
+    ASSERT_TRUE(result.expectedBytes.has_value());
+    EXPECT_EQ(*result.expectedBytes, 7);
+    EXPECT_EQ(result.finalUrl, "https://cdn.test/final.bin");
+    EXPECT_EQ(result.etag, "etag-1");
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, RejectsIncompleteReportedTransferBeforeCommit) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_incomplete_metadata";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.bin";
+    std::ofstream(destination) << "previous-good-payload";
+
+    xlings::xim::DownloadTask task {
+        .name = "incomplete-test",
+        .url = "https://origin.test/payload.bin",
+        .cacheIdentity = "incomplete-test/1/linux/x86_64/url",
+        .destDir = tmp,
+    };
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.transferOverride = [](const std::string&, const fs::path& path) {
+        std::ofstream(path) << "bad";
+        return xlings::tinyhttps::DownloadFileResult {
+            .success = true,
+            .bytesWritten = 3,
+            .expectedBytes = 100,
+        };
+    };
+
+    auto result = xlings::xim::download_one(task, nullptr, nullptr, &hooks);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error.find("wrote 3 of 100 bytes"), std::string::npos);
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "previous-good-payload");
+    fs::remove_all(tmp);
+}
+
 TEST(XimDownloaderTest, CancelledDownloadPreservesCommittedDestination) {
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() / "xim_download_transaction_cancel";
@@ -1134,6 +1198,56 @@ TEST(XimDownloaderTest, FileLockSerializesIndependentProcesses) {
     EXPECT_EQ(child_status, 0) << child_output;
     waiter.release();
     fs::remove_all(tmp);
+}
+
+TEST(XimInstallerResourceTest, ResolvesXlingsResSourceAndFinalRefVersion) {
+    mcpplibs::xpkg::PlatformMatrix matrix;
+    matrix.source = "xlings-res";
+    matrix.entries["linux"]["latest"].ref = "1.0.0";
+    matrix.entries["linux"]["1.0.0"].sha256_by_arch["x86_64"] = "hash-x86";
+
+    auto resolved = xlings::xim::detail_::resolve_download_resource_(
+        matrix, "tool", "latest", "linux", "amd64", "GLOBAL");
+    ASSERT_TRUE(resolved.has_value()) << resolved.error();
+    EXPECT_EQ(resolved->version, "1.0.0");
+    EXPECT_EQ(resolved->sha256, "hash-x86");
+    EXPECT_TRUE(resolved->useResFallbacks);
+    EXPECT_NE(resolved->url.find("/tool/releases/download/1.0.0/"),
+              std::string::npos);
+}
+
+TEST(XimInstallerResourceTest, ResolvesTemplateAliasAndPreferredMirror) {
+    mcpplibs::xpkg::PlatformMatrix matrix;
+    matrix.source = "https://origin.test/${version}/tool-${arch_alias}.${ext}";
+    auto& resource = matrix.entries["linux"]["2.0.0"];
+    resource.sha256_by_arch["x86_64"] = "hash-x86";
+    resource.arch_alias["x86_64"] = "amd64";
+    resource.mirrors["CN"] = "https://cn.test/${version}/tool-${arch_alias}.tar.gz";
+
+    auto resolved = xlings::xim::detail_::resolve_download_resource_(
+        matrix, "tool", "2.0.0", "linux", "x86_64", "CN");
+    ASSERT_TRUE(resolved.has_value()) << resolved.error();
+    EXPECT_EQ(resolved->url, "https://cn.test/2.0.0/tool-amd64.tar.gz");
+    EXPECT_EQ(resolved->sha256, "hash-x86");
+    EXPECT_FALSE(resolved->useResFallbacks);
+}
+
+TEST(XimInstallerResourceTest, PreservesLegacyXlingsResAndFailsClosedOnArchMiss) {
+    mcpplibs::xpkg::PlatformMatrix legacy;
+    legacy.entries["linux"]["1.0.0"].url = "XLINGS_RES";
+    auto resolved = xlings::xim::detail_::resolve_download_resource_(
+        legacy, "legacy", "1.0.0", "linux", "x86_64", "GLOBAL");
+    ASSERT_TRUE(resolved.has_value()) << resolved.error();
+    EXPECT_TRUE(resolved->useResFallbacks);
+
+    mcpplibs::xpkg::PlatformMatrix per_arch;
+    per_arch.entries["linux"]["1.0.0"].archs["x86_64"] = {
+        .url = "https://example.test/x86.tar.gz",
+        .sha256 = "hash-x86",
+    };
+    auto missing = xlings::xim::detail_::resolve_download_resource_(
+        per_arch, "tool", "1.0.0", "linux", "aarch64", "GLOBAL");
+    EXPECT_FALSE(missing.has_value());
 }
 
 TEST(XimDownloaderTest, RecoveryRestoresBackupWhenLiveIsMissing) {
