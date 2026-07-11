@@ -61,7 +61,7 @@ jobs:
 
       - name: Bootstrap mcpp + GLOBAL mirror
         run: |
-          xlings config --mirror GLOBAL 2>/dev/null || true
+          xlings config --mirror GLOBAL
           xlings update -y 2>/dev/null || xlings update 2>/dev/null || true
           xlings install mcpp -y
           mcpp --version
@@ -70,7 +70,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
           cd /tmp/mcpp-src
-          mcpp self config --mirror GLOBAL 2>/dev/null || true
+          mcpp self config --mirror GLOBAL
           # We are bootstrapping mcpp itself with the already-installed mcpp.
           # Do not let the cloned project's .xlings.json recursively request
           # an older mcpp version that may have left the rolling package index.

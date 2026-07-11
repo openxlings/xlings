@@ -67,14 +67,16 @@ jobs:
       - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
+          xlings config --mirror GLOBAL
           xlings install -y
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index cache
+      - name: Reinitialize mcpp registry (GLOBAL)
         run: |
-          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
-          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
+          rm -rf "$HOME/.mcpp/registry"
+          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry"
+          mcpp self config --mirror GLOBAL
 
       - name: Prepare fixture index repo
         run: |
@@ -129,7 +131,7 @@ jobs:
 
       - name: Bootstrap mcpp + refresh index (latest, GLOBAL)
         run: |
-          xlings config --mirror GLOBAL 2>/dev/null || true
+          xlings config --mirror GLOBAL
           xlings update -y 2>/dev/null || xlings update 2>/dev/null || true
           xlings install mcpp -y
           mcpp --version
@@ -138,7 +140,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
           cd /tmp/mcpp-src
-          mcpp self config --mirror GLOBAL 2>/dev/null || true
+          mcpp self config --mirror GLOBAL
           mcpp build
           MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
           test -x "$MCPP"
@@ -200,14 +202,16 @@ jobs:
       - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
+          xlings config --mirror GLOBAL
           xlings install -y
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index cache
+      - name: Reinitialize mcpp registry (GLOBAL)
         run: |
-          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
-          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
+          rm -rf "$HOME/.mcpp/registry"
+          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry"
+          mcpp self config --mirror GLOBAL
 
       - name: Build (macos_release)
         env:
@@ -279,15 +283,17 @@ jobs:
         shell: pwsh
         run: |
           Set-Location $env:GITHUB_WORKSPACE
+          xlings config --mirror GLOBAL
           xlings install -y
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index cache
+      - name: Reinitialize mcpp registry (GLOBAL)
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force "$env:USERPROFILE\.mcpp\registry\data\mcpplibs" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.mcpp\registry\data\mcpplibs" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.mcpp\registry" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.mcpp\registry" -ErrorAction SilentlyContinue
+          mcpp self config --mirror GLOBAL
 
       - name: Build (windows_release)
         shell: pwsh

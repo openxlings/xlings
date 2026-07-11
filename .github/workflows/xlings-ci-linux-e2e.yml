@@ -72,14 +72,16 @@ jobs:
       - name: Install build dependencies (mcpp)
         run: |
           cd "$GITHUB_WORKSPACE"
+          xlings config --mirror GLOBAL
           xlings install -y
           mcpp --version
           mcpp self version
 
-      - name: Refresh mcpp package index cache
+      - name: Reinitialize mcpp registry (GLOBAL)
         run: |
-          rm -rf "$HOME/.mcpp/registry/data/mcpplibs"
-          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs"
+          rm -rf "$HOME/.mcpp/registry"
+          rm -rf "$GITHUB_WORKSPACE/.mcpp/registry"
+          mcpp self config --mirror GLOBAL
 
       - name: Prepare fixture index repo
         run: |
