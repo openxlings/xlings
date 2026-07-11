@@ -48,7 +48,7 @@ tests/
 │   ├── project_test_lib.sh          # Shared helpers (find_xlings_bin, run_xlings)
 │   ├── fixtures/                    # Test fixture packages
 │   └── subos_xpkg_*.sh             # SubOS-as-xpkg e2e tests
-└── (unit tests via xmake build xlings_tests)
+└── (unit tests via `mcpp test`)
 
 .agents/
 ├── docs/                            # Agent working docs (see .agents/docs/README.md)
@@ -59,19 +59,19 @@ tests/
 
 ## Build System
 
-Single build tool: **xmake** (C++23 modules).
+Single build tool: **mcpp** (C++23 modules).
 
 ```bash
 # Setup (from repo root):
-xlings install              # installs xmake, cmake, ninja, toolchain from .xlings.json
+xlings install              # installs mcpp from .xlings.json
 xlings use gcc@16.1.0       # switch to glibc-linked dev toolchain
 
 # Build:
-xmake build xlings           # dev binary → build/linux/x86_64/release/xlings
+mcpp build                   # dev binary → target/<triple>/<fingerprint>/bin/xlings
 
 # Test:
-xmake build xlings_tests && xmake run xlings_tests   # unit tests
-XLINGS_BIN=$(find build -path '*/release/xlings' -type f | head -1) \
+mcpp test                    # unit tests
+XLINGS_BIN=$(find target -path '*/bin/xlings' -type f | head -1) \
   bash tests/e2e/<test>.sh                             # e2e tests
 ```
 
@@ -110,11 +110,12 @@ Use `project_test_lib.sh` helpers. Key functions:
 
 ### Upstream dependency
 
-`mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via xmake dep:
-```lua
-add_requires("mcpplibs-xpkg 0.0.41")
+`mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via `mcpp.toml`:
+```toml
+[dependencies.mcpplibs]
+xpkg = "0.0.42"
 ```
-For joint development: `xmake f --local_libxpkg=/path/to/libxpkg`
+For joint development, use mcpp's local dependency override/workspace mechanism.
 
 ## Agent Skills
 
