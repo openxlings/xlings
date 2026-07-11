@@ -1218,6 +1218,10 @@ public:
             task.name = detail_::plan_key_(node);
             task.url = res.url;
             task.sha256 = res.sha256;
+            task.cacheIdentity = std::format(
+                "{}/{}/{}/{}/{}",
+                node.name, version, platform, hostArch,
+                useResFallbacks ? "xlings-res" : res.url);
             task.destDir = detail_::runtime_dir_(node, dataDir);
 
             if (useResFallbacks) {

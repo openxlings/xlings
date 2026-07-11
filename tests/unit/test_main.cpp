@@ -33,6 +33,7 @@ import xlings.core.xim.downloader;
 import xlings.runtime;
 import xlings.capabilities;
 import xlings.libs.tinyhttps;
+import xlings.libs.sha256;
 import mcpplibs.xpkg;
 import mcpplibs.cmdline;
 
@@ -844,9 +845,16 @@ TEST(XimDownloaderTest, MetaSidecarRoundTrip) {
     meta.lastModified = "Wed, 21 Oct 2015 07:28:00 GMT";
     meta.etag = "\"abc123\"";
 
-    xlings::xim::write_meta_sidecar_(path, meta);
+    ASSERT_TRUE(xlings::xim::write_meta_sidecar_(
+        path, meta, 1234,
+        "test/1.0.0/linux/x86_64/url",
+        "https://example.test/payload.tar.gz"));
     auto roundtrip = xlings::xim::read_meta_sidecar_(path);
     ASSERT_TRUE(roundtrip.has_value());
+    EXPECT_EQ(roundtrip->format, 2);
+    EXPECT_TRUE(roundtrip->complete);
+    EXPECT_EQ(roundtrip->size, 1234);
+    EXPECT_EQ(roundtrip->cacheIdentity, "test/1.0.0/linux/x86_64/url");
     EXPECT_EQ(roundtrip->lastModified, meta.lastModified);
     EXPECT_EQ(roundtrip->etag, meta.etag);
 
@@ -866,6 +874,261 @@ TEST(XimDownloaderTest, MetaSidecarRoundTrip) {
     EXPECT_EQ(m2->lastModified, "Mon, 01 Jan 2024 00:00:00 GMT");
     EXPECT_TRUE(m2->etag.empty());
 
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, HeadFailureRejectsLegacyNonEmptyCache) {
+    xlings::xim::CacheAdmissionInput_ input {
+        .localSize = 114 * 1024,
+        .headSucceeded = false,
+        .sidecar = xlings::xim::MetaSidecar_ {
+            .lastModified = "Wed, 21 Oct 2015 07:28:00 GMT",
+        },
+        .expectedCacheIdentity = "mcpp/0.0.81/linux/x86_64/xlings-res",
+    };
+
+    EXPECT_EQ(
+        xlings::xim::decide_cache_admission_(input),
+        xlings::xim::CacheAdmission_::Redownload);
+}
+
+TEST(XimDownloaderTest, HeadFailureAcceptsMatchingCommittedV2Cache) {
+    xlings::xim::CacheAdmissionInput_ input {
+        .localSize = 12628937,
+        .headSucceeded = false,
+        .sidecar = xlings::xim::MetaSidecar_ {
+            .format = 2,
+            .complete = true,
+            .size = 12628937,
+            .cacheIdentity = "mcpp/0.0.81/linux/x86_64/xlings-res",
+        },
+        .expectedCacheIdentity = "mcpp/0.0.81/linux/x86_64/xlings-res",
+    };
+
+    EXPECT_EQ(
+        xlings::xim::decide_cache_admission_(input),
+        xlings::xim::CacheAdmission_::OfflineUnverifiedHit);
+}
+
+TEST(XimDownloaderTest, HeadFailureRejectsV2CacheWithWrongSizeOrIdentity) {
+    xlings::xim::CacheAdmissionInput_ input {
+        .localSize = 114 * 1024,
+        .headSucceeded = false,
+        .sidecar = xlings::xim::MetaSidecar_ {
+            .format = 2,
+            .complete = true,
+            .size = 12628937,
+            .cacheIdentity = "other/0.0.81/linux/x86_64/xlings-res",
+        },
+        .expectedCacheIdentity = "mcpp/0.0.81/linux/x86_64/xlings-res",
+    };
+
+    EXPECT_EQ(
+        xlings::xim::decide_cache_admission_(input),
+        xlings::xim::CacheAdmission_::Redownload);
+}
+
+TEST(XimDownloaderTest, FailedTransferPreservesCommittedDestination) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_transaction_failure";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.tar.gz";
+    {
+        std::ofstream out(destination);
+        out << "previous-good-payload";
+    }
+
+    xlings::xim::DownloadTask task {
+        .name = "transaction-test",
+        .url = "https://example.test/payload.tar.gz",
+        .cacheIdentity = "transaction-test/1/linux/x86_64/url",
+        .destDir = tmp,
+    };
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.queryRemoteMeta = [](const std::string&) {
+        return xlings::tinyhttps::RemoteFileMeta{
+            .ok = true,
+            .contentLength = 999,
+        };
+    };
+    hooks.transferOverride = [](const std::string&, const fs::path& path) {
+        std::ofstream(path) << "partial";
+        return xlings::tinyhttps::DownloadFileResult{false, "connection reset"};
+    };
+
+    auto result = xlings::xim::download_one(task, nullptr, nullptr, &hooks);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "previous-good-payload");
+    for (const auto& entry : fs::directory_iterator(tmp)) {
+        EXPECT_FALSE(entry.path().filename().string().contains(".part."));
+    }
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, HashRejectedCandidateCommitsFallbackFromStaging) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_transaction_fallback";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    const std::string goodPayload = "fallback-good-payload";
+    auto expectedHash = xlings::sha256::hex(goodPayload);
+    xlings::xim::DownloadTask task {
+        .name = "fallback-test",
+        .url = "https://mirror.test/payload.bin",
+        .sha256 = expectedHash,
+        .cacheIdentity = "fallback-test/1/linux/x86_64/url",
+        .destDir = tmp,
+        .fallbackUrls = {"https://origin.test/payload.bin"},
+    };
+    int attempts = 0;
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.transferOverride = [&](const std::string&, const fs::path& path) {
+        std::ofstream(path) << (++attempts == 1 ? "bad" : goodPayload);
+        return xlings::tinyhttps::DownloadFileResult{true, {}};
+    };
+
+    auto result = xlings::xim::download_one(task, nullptr, nullptr, &hooks);
+    ASSERT_TRUE(result.success) << result.error;
+    EXPECT_EQ(attempts, 2);
+    EXPECT_EQ(xlings::platform::read_file_to_string(result.localFile.string()),
+              goodPayload);
+    for (const auto& entry : fs::directory_iterator(tmp)) {
+        EXPECT_FALSE(entry.path().filename().string().contains(".part."));
+    }
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, CancelledDownloadPreservesCommittedDestination) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_transaction_cancel";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.bin";
+    std::ofstream(destination) << "previous-good-payload";
+
+    xlings::xim::DownloadTask task {
+        .name = "cancel-test",
+        .url = "https://example.test/payload.bin",
+        .cacheIdentity = "cancel-test/1/linux/x86_64/url",
+        .destDir = tmp,
+    };
+    int transfers = 0;
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.queryRemoteMeta = [](const std::string&) {
+        return xlings::tinyhttps::RemoteFileMeta{
+            .ok = true,
+            .contentLength = 999,
+        };
+    };
+    hooks.transferOverride = [&](const std::string&, const fs::path&) {
+        ++transfers;
+        return xlings::tinyhttps::DownloadFileResult{true, {}};
+    };
+    xlings::CancellationToken cancellation;
+    cancellation.cancel();
+
+    auto result = xlings::xim::download_one(
+        task, nullptr, &cancellation, &hooks);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.error, "cancelled");
+    EXPECT_EQ(transfers, 0);
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "previous-good-payload");
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, CommitFailureAfterBackupRestoresPreviousFile) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_commit_restore";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.bin";
+    auto staging = tmp / "payload.bin.part.test";
+    std::ofstream(destination) << "previous-good-payload";
+    std::ofstream(staging) << "replacement-payload";
+
+    std::string error;
+    EXPECT_FALSE(xlings::xim::commit_staging_file_(
+        staging, destination, error, true));
+    EXPECT_EQ(error, "injected commit failure after backup");
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "previous-good-payload");
+    EXPECT_TRUE(fs::exists(staging));
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, FileLockWaitsForOwnerAndHonorsCancellation) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_file_lock";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto path = tmp / "payload.lock";
+
+    xlings::platform::FileLock owner;
+    std::string error;
+    ASSERT_TRUE(owner.acquire(
+        path, std::chrono::seconds{1}, {}, error)) << error;
+
+    xlings::platform::FileLock cancelledWaiter;
+    EXPECT_FALSE(cancelledWaiter.acquire(
+        path, std::chrono::seconds{1}, [] { return true; }, error));
+    EXPECT_EQ(error, "cancelled while waiting for cache lock");
+
+    std::jthread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        owner.release();
+    });
+    xlings::platform::FileLock waiter;
+    error.clear();
+    auto start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(waiter.acquire(
+        path, std::chrono::seconds{1}, {}, error)) << error;
+    EXPECT_GE(
+        std::chrono::steady_clock::now() - start,
+        std::chrono::milliseconds{50});
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, RecoveryRestoresBackupWhenLiveIsMissing) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_recover_backup";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.bin";
+    auto backup = tmp / "payload.bin.old.100.1";
+    auto staging = tmp / "payload.bin.part.100.1";
+    std::ofstream(backup) << "previous-good-payload";
+    std::ofstream(staging) << "partial";
+
+    std::string error;
+    ASSERT_TRUE(xlings::xim::recover_download_transaction_(
+        destination, error)) << error;
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "previous-good-payload");
+    EXPECT_FALSE(fs::exists(backup));
+    EXPECT_FALSE(fs::exists(staging));
+    fs::remove_all(tmp);
+}
+
+TEST(XimDownloaderTest, RecoveryKeepsLiveAndRemovesStaleBackup) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_recover_live";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto destination = tmp / "payload.bin";
+    auto backup = tmp / "payload.bin.old.100.1";
+    std::ofstream(destination) << "committed-payload";
+    std::ofstream(backup) << "previous-payload";
+
+    std::string error;
+    ASSERT_TRUE(xlings::xim::recover_download_transaction_(
+        destination, error)) << error;
+    EXPECT_EQ(xlings::platform::read_file_to_string(destination.string()),
+              "committed-payload");
+    EXPECT_FALSE(fs::exists(backup));
     fs::remove_all(tmp);
 }
 
