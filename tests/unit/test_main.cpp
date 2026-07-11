@@ -3484,6 +3484,40 @@ TEST(Extract, MissingArchiveReturnsError) {
     EXPECT_FALSE(r.has_value());
 }
 
+TEST(Extract, InvalidArchiveIsClassifiedAndEvictedWithSidecar) {
+    ExtractFixture fx;
+    auto archive = fx.tmp / "truncated.tar.gz";
+    auto sidecar = std::filesystem::path(archive.string() + ".meta");
+    std::ofstream(archive) << "not-a-complete-archive";
+    std::ofstream(sidecar) << "format: 2\n";
+
+    auto result = xlings::xim::extract_archive_detailed(
+        archive, fx.tmp / "invalid-out");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind,
+              xlings::xim::ExtractErrorKind::InvalidInputArchive);
+    EXPECT_TRUE(xlings::xim::evict_invalid_archive_cache_(
+        archive, result.error()));
+    EXPECT_FALSE(std::filesystem::exists(archive));
+    EXPECT_FALSE(std::filesystem::exists(sidecar));
+}
+
+TEST(Extract, LocalWriteFailureDoesNotEvictValidInput) {
+    ExtractFixture fx;
+    auto archive = fx.make_tar_gz();
+    auto invalidDestination = fx.tmp / "destination-is-a-file";
+    std::ofstream(invalidDestination) << "not-a-directory";
+
+    auto result = xlings::xim::extract_archive_detailed(
+        archive, invalidDestination);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind,
+              xlings::xim::ExtractErrorKind::LocalWriteFailure);
+    EXPECT_FALSE(xlings::xim::evict_invalid_archive_cache_(
+        archive, result.error()));
+    EXPECT_TRUE(std::filesystem::exists(archive));
+}
+
 TEST(Extract, RejectsPathTraversal) {
     // Build a tarball containing an entry with "../escape.txt". libarchive
     // with ARCHIVE_EXTRACT_SECURE_NODOTDOT must refuse to extract the

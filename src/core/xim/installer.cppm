@@ -25,6 +25,19 @@ import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
 
+bool evict_invalid_archive_cache_(
+        const std::filesystem::path& archive,
+        const ExtractError& error) {
+    if (error.kind != ExtractErrorKind::InvalidInputArchive) return false;
+    std::error_code ec;
+    bool removed = std::filesystem::remove(archive, ec);
+    auto sidecar = archive;
+    sidecar += ".meta";
+    ec.clear();
+    std::filesystem::remove(sidecar, ec);
+    return removed;
+}
+
 namespace detail_ {
 
 namespace lua = mcpplibs::capi::lua;
@@ -1387,11 +1400,22 @@ public:
                     }
                     // Extract into the same runtime dir as the download
                     auto runtimeDir = dlIt->second.localFile.parent_path();
-                    auto extracted = extract_archive(dlIt->second.localFile, runtimeDir);
+                    auto extracted = extract_archive_detailed(
+                        dlIt->second.localFile, runtimeDir);
                     if (!extracted) {
-                        log::error("extract failed for {}: {}", node.name, extracted.error());
+                        auto error = std::move(extracted).error();
+                        if (evict_invalid_archive_cache_(
+                                dlIt->second.localFile, error)) {
+                            log::warn(
+                                "evicted invalid archive cache for {}: {}",
+                                node.name, dlIt->second.localFile.string());
+                        }
+                        log::error("extract failed for {}: {}",
+                                   node.name, error.message);
                         if (onStatus) {
-                            onStatus({ node.name, InstallPhase::Failed, 0.0f, extracted.error() });
+                            onStatus({
+                                node.name, InstallPhase::Failed, 0.0f,
+                                error.message});
                         }
                         continue;
                     }

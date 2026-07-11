@@ -271,7 +271,7 @@ etag: <http-etag>
 | X1 | `openxlings/xlings` | 缓存决策纯函数与 sidecar v2 | 已完成（本地） | `mcpp test`：legacy/v2/size/identity 回归通过；全套 10/10 测试二进制通过 |
 | X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
 | X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 进行中 | POSIX/Windows 实现及本地测试通过；待双进程测试与三平台 CI |
-| X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 待开始 | 截断错误驱逐、权限/写入错误保留缓存 |
+| X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
 | T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 待开始 | 协议测试全部通过并发布新版本 |
 | L1 | `mcpplibs/libxpkg` | `xpm.source` 解析、兼容、资源归一化 | 待开始 | 旧写法及新 xlings-res/URL template 契约测试 |
 | L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 待开始 | xpkg 解析只剩一个入口；旧索引安装回归通过 |
@@ -354,6 +354,14 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 1. 解压结果区分 `InvalidInputArchive` 与 `LocalWriteFailure`。
 2. 前者删除下载缓存及 sidecar，后者保留缓存并返回环境错误。
 3. 不增加下载后的完整归档预扫描；测试直接构造截断归档和不可写目标。
+
+**2026-07-12 实施记录**：
+
+- 新增兼容 API `extract_archive_detailed()`，返回 `InvalidInputArchive`、`LocalWriteFailure` 或 `Internal`；原 `extract_archive()` 字符串接口保留。
+- open/next-header/read-data/不安全归档路径归为输入错误；创建目录、write-header/write-data/finish-entry 归为本地写错误。
+- installer 只在 `InvalidInputArchive` 时删除归档和 `.meta`；本地写错误保留缓存。
+- 非法归档驱逐及“目标是普通文件”本地写失败保留缓存测试通过；未增加归档预扫描。
+- 完整 `mcpp test`：10 passed，0 failed。
 
 ### 9.6 T1：tinyhttps 协议完整性
 

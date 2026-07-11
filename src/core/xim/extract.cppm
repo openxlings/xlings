@@ -10,6 +10,21 @@ import std;
 
 export namespace xlings::xim {
 
+enum class ExtractErrorKind {
+    InvalidInputArchive,
+    LocalWriteFailure,
+    Internal,
+};
+
+struct ExtractError {
+    ExtractErrorKind kind { ExtractErrorKind::Internal };
+    std::string message;
+};
+
+std::expected<std::filesystem::path, ExtractError>
+extract_archive_detailed(const std::filesystem::path& archive,
+                         const std::filesystem::path& destDir);
+
 // In-process archive extraction backed by libarchive.
 //
 // Replaces the previous popen("tar xf …") path that suffered from a
@@ -124,7 +139,7 @@ la_int64_t const_root_lookup_uid_(void*, const char*, la_int64_t) { return 0; }
 la_int64_t const_root_lookup_gid_(void*, const char*, la_int64_t) { return 0; }
 
 // Read each block of an entry's payload from `src` and write to `dst`.
-std::expected<void, std::string>
+std::expected<void, ExtractError>
 copy_entry_data_(struct archive* src, struct archive* dst) {
     const void* buff = nullptr;
     std::size_t size = 0;
@@ -133,11 +148,15 @@ copy_entry_data_(struct archive* src, struct archive* dst) {
         int r = ::archive_read_data_block(src, &buff, &size, &offset);
         if (r == ARCHIVE_EOF) return {};
         if (r < ARCHIVE_OK) {
-            return std::unexpected("read_data_block: " + libarchive_error_(src));
+            return std::unexpected(ExtractError{
+                ExtractErrorKind::InvalidInputArchive,
+                "read_data_block: " + libarchive_error_(src)});
         }
         r = ::archive_write_data_block(dst, buff, size, offset);
         if (r < ARCHIVE_OK) {
-            return std::unexpected("write_data_block: " + libarchive_error_(dst));
+            return std::unexpected(ExtractError{
+                ExtractErrorKind::LocalWriteFailure,
+                "write_data_block: " + libarchive_error_(dst)});
         }
     }
 }
@@ -160,23 +179,25 @@ void ensure_archive_locale_() {
 
 } // namespace detail_
 
-std::expected<std::filesystem::path, std::string>
-extract_archive(const std::filesystem::path& archive,
-                const std::filesystem::path& destDir) {
+std::expected<std::filesystem::path, ExtractError>
+extract_archive_detailed(const std::filesystem::path& archive,
+                         const std::filesystem::path& destDir) {
     namespace fs = std::filesystem;
     detail_::ensure_archive_locale_();
 
     std::error_code ec;
     fs::create_directories(destDir, ec);
     if (ec) {
-        return std::unexpected(std::format(
-            "create_directories({}) failed: {}",
-            destDir.string(), ec.message()));
+        return std::unexpected(ExtractError{
+            ExtractErrorKind::LocalWriteFailure,
+            std::format("create_directories({}) failed: {}",
+                        destDir.string(), ec.message())});
     }
 
     if (!fs::exists(archive)) {
-        return std::unexpected(std::format(
-            "archive does not exist: {}", archive.string()));
+        return std::unexpected(ExtractError{
+            ExtractErrorKind::InvalidInputArchive,
+            std::format("archive does not exist: {}", archive.string())});
     }
 
     // Resolve symlinks in the destination root before handing paths to
@@ -205,7 +226,9 @@ extract_archive(const std::filesystem::path& archive,
 
     if (!src || !dst) {
         cleanup();
-        return std::unexpected("libarchive: failed to allocate handles");
+        return std::unexpected(ExtractError{
+            ExtractErrorKind::Internal,
+            "libarchive: failed to allocate handles"});
     }
 
     ::archive_read_support_filter_all(src);
@@ -239,7 +262,8 @@ extract_archive(const std::filesystem::path& archive,
         std::string err = std::format("open {}: {}",
             archive.string(), detail_::libarchive_error_(src));
         cleanup();
-        return std::unexpected(std::move(err));
+        return std::unexpected(ExtractError{
+            ExtractErrorKind::InvalidInputArchive, std::move(err)});
     }
 
     for (;;) {
@@ -249,7 +273,8 @@ extract_archive(const std::filesystem::path& archive,
         if (r < ARCHIVE_WARN) {
             std::string err = "next_header: " + detail_::libarchive_error_(src);
             cleanup();
-            return std::unexpected(std::move(err));
+            return std::unexpected(ExtractError{
+                ExtractErrorKind::InvalidInputArchive, std::move(err)});
         }
 
         // Reroot the entry under destDir. archive_entry_pathname is a
@@ -258,7 +283,9 @@ extract_archive(const std::filesystem::path& archive,
         auto safeRel = detail_::check_safe_pathname_(original.c_str());
         if (!safeRel) {
             cleanup();
-            return std::unexpected(std::move(safeRel).error());
+            return std::unexpected(ExtractError{
+                ExtractErrorKind::InvalidInputArchive,
+                std::move(safeRel).error()});
         }
         auto rebased = (canonicalDest / *safeRel).lexically_normal().string();
         ::archive_entry_set_pathname(entry, rebased.c_str());
@@ -272,7 +299,9 @@ extract_archive(const std::filesystem::path& archive,
             auto safeHl = detail_::check_safe_pathname_(hardlink.c_str());
             if (!safeHl) {
                 cleanup();
-                return std::unexpected(std::move(safeHl).error());
+                return std::unexpected(ExtractError{
+                    ExtractErrorKind::InvalidInputArchive,
+                    std::move(safeHl).error()});
             }
             auto rebasedHl = (canonicalDest / *safeHl).lexically_normal().string();
             ::archive_entry_set_hardlink(entry, rebasedHl.c_str());
@@ -303,7 +332,8 @@ extract_archive(const std::filesystem::path& archive,
                     "write_header({}): {}",
                     rebased, detail_::libarchive_error_(dst));
                 cleanup();
-                return std::unexpected(std::move(err));
+                return std::unexpected(ExtractError{
+                    ExtractErrorKind::LocalWriteFailure, std::move(err)});
             }
         }
 
@@ -319,12 +349,21 @@ extract_archive(const std::filesystem::path& archive,
                 "finish_entry({}): {}",
                 rebased, detail_::libarchive_error_(dst));
             cleanup();
-            return std::unexpected(std::move(err));
+            return std::unexpected(ExtractError{
+                ExtractErrorKind::LocalWriteFailure, std::move(err)});
         }
     }
 
     cleanup();
     return canonicalDest;
+}
+
+std::expected<std::filesystem::path, std::string>
+extract_archive(const std::filesystem::path& archive,
+                const std::filesystem::path& destDir) {
+    auto result = extract_archive_detailed(archive, destDir);
+    if (!result) return std::unexpected(std::move(result).error().message);
+    return *result;
 }
 
 } // namespace xlings::xim
