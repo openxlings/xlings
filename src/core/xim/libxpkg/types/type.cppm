@@ -146,6 +146,7 @@ struct DownloadTask {
     std::string name;
     std::string url;
     std::string sha256;
+    std::string cacheIdentity;
     std::filesystem::path destDir;
     std::vector<std::string> fallbackUrls;  // tried in order when url fails
 };
