@@ -1,7 +1,7 @@
 # Issue #356：无 SHA256 下载残片进入缓存的根因与修复方案
 
 > 日期：2026-07-11  
-> 状态：实施中（动态更新）  
+> 状态：核心修复与正式发布已完成；发布自动化补强待合并（动态更新）
 > 关联 Issue：[openxlings/xlings#356](https://github.com/openxlings/xlings/issues/356)  
 > 分析基线：`openxlings/xlings@37fedb7`、`openxlings/xim-pkgindex@b894897`
 
@@ -277,8 +277,8 @@ etag: <http-etag>
 | L1 | `mcpplibs/libxpkg` | `xpm.source`、平台兼容、资源归一化 | 已完成 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)、[#27](https://github.com/openxlings/libxpkg/pull/27) 已合并；[0.0.44 release](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44) |
 | L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（PR） | 重复 parser/sandbox/template 展开器已删除；正式依赖下本地 10/10 与 [xlings#359](https://github.com/openxlings/xlings/pull/359) 七项 CI 全绿 |
 | I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 已完成（PR） | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：24/24 GLOBAL/CN 完整制品、476/476 static、当前 HEAD CI 全绿 |
-| I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 已完成（PR） | 0.4.49/0.4.62/修复版 × 3 个版本安装 9/9；114 KiB 坏缓存自愈；待 xlings release 后最终复验和合并 |
-| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 进行中 | xlings 0.4.63 与依赖锁已提交，[xlings#359](https://github.com/openxlings/xlings/pull/359) 七项 CI 全绿；待合并、release、索引发布和最终 E2E |
+| I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 已完成 | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352) 与 [#353](https://github.com/openxlings/xim-pkgindex/pull/353) 已合并；正式索引发布链全部成功；0.4.49/0.4.62/0.4.63 正式客户端均完成安装复验 |
+| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 核心链路已完成；自动化补强待合并 | [xlings#359](https://github.com/openxlings/xlings/pull/359) 已合并；[v0.4.63](https://github.com/openxlings/xlings/releases/tag/v0.4.63) 四平台资产、资源镜像和正式索引已发布；[xlings#360](https://github.com/openxlings/xlings/pull/360) 修复未来 release sidecar/index bump 自动化 |
 
 ### 9.1 PR 边界与依赖关系
 
@@ -405,6 +405,13 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 
 当前迁移 PR 为 [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：只迁移已取得权威 hash 的 mcpp 0.0.67、0.0.81、0.0.87。三版本、四资产、GLOBAL/CN 共 24 次完整 GET 均与权威 SHA256 一致且镜像逐字节相同；0.4.49、0.4.62 和本地修复版在隔离 home 中完成 9/9 安装。生成器会验证平台/架构集合、binary、sidecar 和流式 SHA256，任何缺失或不一致均整次 fail closed 且不改配方。
 
+**2026-07-12 正式发布复验**：
+
+- [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352) 已合并并成功发布索引产物；[#353](https://github.com/openxlings/xim-pkgindex/pull/353) 已把 xlings `latest` 更新为 0.4.63，并写入 Linux x86_64/aarch64、macOS arm64、Windows x86_64 的 SHA256。
+- #353 合并后的 `Publish Index Artifact`（run `29180661019`）、Gitee 同步、站点部署、xpkg test 与 pkgindex test 全部成功。
+- 从 GitHub release 重新下载并独立解包 0.4.49、0.4.62、0.4.63 Linux x86_64 正式客户端；三个客户端均在全新隔离 `XLINGS_HOME` 更新正式索引并完整安装 `mcpp@0.0.81`，证明新增字段和带 hash 的双兼容版本项没有破坏旧客户端。
+- 在 0.4.63 home 中将已下载缓存覆盖为 116,736 字节后重新安装：缓存被驱逐并重下为 12,628,937 字节，SHA256 为 `47c41529a00930ad701a76bb53e0847220c0764eb1f8e6cf6d515c45fea8cfcc`，随后 `mcpp --version` 成功输出 0.0.81。
+
 ### 9.9 发布门禁与最终验收
 
 1. 每个仓库从干净的 `main` 建独立分支/worktree，不覆盖当前工作区已有改动。
@@ -413,6 +420,15 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 4. release 自动或人工生成索引 PR；核对 GLOBAL、CN 资源 hash 与 manifest 一致后合并。
 5. 用隔离 `XLINGS_HOME` 验证：旧稳定客户端仍能安装未迁移条目；新客户端能安装新旧条目；预置 114 KiB 错误缓存后安装 mcpp 会驱逐、重下并成功解压；离线 v2 完整缓存可复用。
 6. 只有 Issue #356 关闭、所有跨仓 PR/release/index 证据链接回填本节后，`R1` 才能标记完成。
+
+### 9.10 xmake 移除边界
+
+“统一使用 mcpp 构建”只约束 xlings 仓库自身的开发与发布工程：仓库中的 xmake 构建文件和对应 CI 路径已由 [xlings#357](https://github.com/openxlings/xlings/pull/357) 移除。它不改变产品能力：
+
+- `xlings install` 原本就不会隐式安装 xmake，因此不存在需要删除的内置 xmake 安装依赖。
+- 用户显式执行 `xlings install xmake` 仍是正常的包管理行为，官方索引中的 xmake 包继续保留。
+- 已有 `xmake xim` 等面向用户的兼容入口不属于仓库构建系统，继续保留。
+- 不删除 xmake 包、不屏蔽用户安装，也不把 mcpp 构建迁移解释为产品层面的 xmake 禁用。
 
 ## 10. 最终建议
 
