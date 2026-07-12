@@ -261,6 +261,7 @@ etag: <http-etag>
 - 不把 ETag 当内容 hash；弱 ETag、镜像间 ETag 不一致都很常见。
 - 不要求本次一次性回填 336 个历史裸条目。先修复生成流程和活跃版本，再按可获得的权威校验数据迁移历史版本。
 - 不在没有 SHA256 时激进地优先第三方镜像；现有 mirror 完整性门禁保持不变。
+- “只使用 mcpp 构建”仅指删除 xlings 仓库自身的 xmake 工程文件，并把开发、CI 和 release 构建统一到 mcpp。xlings 产品本来就不会隐式安装 xmake；用户显式安装 `xmake` 包以及既有 `xmake xim` 兼容入口不在移除范围内。
 
 ## 9. 实施拆分与动态状态
 
@@ -272,11 +273,11 @@ etag: <http-etag>
 | X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
 | X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 已完成（本地） | POSIX/Windows 实现、真实双进程竞争及恢复测试通过；待 PR 三平台 CI |
 | X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
-| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 已完成 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9) 已合并；[0.2.9 release](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9)；索引 [mcpp-index#68](https://github.com/mcpplibs/mcpp-index/pull/68) 待最终 CI/合并 |
+| T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 已完成 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9)、索引 [mcpp-index#68](https://github.com/mcpplibs/mcpp-index/pull/68) 已合并；[0.2.9 release](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9) 和正式 index artifact 已发布 |
 | L1 | `mcpplibs/libxpkg` | `xpm.source`、平台兼容、资源归一化 | 已完成 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)、[#27](https://github.com/openxlings/libxpkg/pull/27) 已合并；[0.0.44 release](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44) |
-| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（本地） | 重复 parser/sandbox/template 展开器已删除；统一 compat 测试与完整 `mcpp test` 10/10 通过；待正式索引依赖和三平台 CI |
-| I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 待开始 | GLOBAL/CN hash 一致；索引 CI 通过 |
-| I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 待开始 | 旧客户端读取保留条目，新客户端读取推荐条目 |
+| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（本地） | 重复 parser/sandbox/template 展开器已删除；正式索引依赖 0.0.44 下 `mcpp build && mcpp test` 10/10 通过；待 PR 三平台 CI |
+| I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 已完成（PR） | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：24/24 GLOBAL/CN 完整制品、476/476 static、当前 HEAD CI 全绿 |
+| I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 已完成（PR） | 0.4.49/0.4.62/修复版 × 3 个版本安装 9/9；114 KiB 坏缓存自愈；待 xlings release 后最终复验和合并 |
 | R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 待开始 | PR 合并、release 资产、索引 PR、端到端安装记录 |
 
 ### 9.1 PR 边界与依赖关系
@@ -374,7 +375,7 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 - `mcpp test` 的本地 HTTPS 与协议回归测试通过；PR 的 Linux mcpp CI 已通过。
 - `mcpp.toml` 已升至 0.2.9；PR 已合并并发布 [0.2.9](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9)。
 - xlings wrapper 已消费实际/期望字节、最终 URL、ETag 和 Last-Modified；长度不一致在提交缓存前拒绝，GET 元数据进入 sidecar。
-- mcpp 默认索引 PR [#68](https://github.com/mcpplibs/mcpp-index/pull/68) 已建立，GLOBAL/CN 同字节 SHA256 已验证，待完整 CI 和 artifact 发布。
+- mcpp 默认索引 PR [#68](https://github.com/mcpplibs/mcpp-index/pull/68) 六项 CI 全绿后已合并（`8c75ace`）；GLOBAL/CN 同字节 SHA256 已验证，正式 index artifact workflow `29178149741` 发布成功。
 
 ### 9.7 L1/L2：唯一 xpkg 入口
 
@@ -390,17 +391,19 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 - [libxpkg#27](https://github.com/openxlings/libxpkg/pull/27) 增加 `LoaderContext { platform, arch }`，统一支持 `is_host/is_plat/is_arch`、`os.host/os.arch` 和 `_RUNTIME`，并把 per-arch 缺失收敛为 compat fail-closed。
 - #26/#27 CI 均通过并已合并，最终发布 [libxpkg 0.0.44](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44)。
 - xlings 已删除 `load_platform_entries_()`、本地 Lua sandbox 和本地 template 展开器；平台上下文加载和资源归一化全部调用 libxpkg。
-- xlings 侧 source/ref/template/mirror/legacy/per-arch 契约测试与完整 `mcpp test` 10/10 通过；尚待 0.0.44 默认索引 PR 合并后切换正式依赖并跑三平台 CI。
+- libxpkg 0.0.44 默认索引及 artifact 已发布；xlings 已切换正式依赖 0.0.44，并与 tinyhttps 0.2.9 一起从重置后的 GLOBAL 索引解析。`mcpp build && mcpp test` 10/10 通过，其中 `test_main` 214 项无失败（197 通过、17 项因本地无 xim-pkgindex fixture 跳过）；尚待 PR 三平台 CI。
 
 ### 9.8 I1/I2：索引迁移与老客户端保护
 
 新增 `xpm.source` 是可选字段，不会改变旧的 `xpm[platform][version]` 条目；因此迁移采用“双轨兼容”，而不是立即重写所有历史条目：
 
 - 旧 `"XLINGS_RES"` 条目继续保留并可被旧客户端读取。
-- 新版本推荐使用 `xpm.source = "xlings-res"`，版本项保留原平台/版本位置并补 SHA256。
+- 新版本推荐使用 `xpm.source = "xlings-res"`；迁移期的版本项仍写 `{ url = "XLINGS_RES", sha256 = { ... } }`，让 V1/V2/修复版都能取到 URL。
 - 在确认目标老版本客户端会把 `source` 当保留元数据而不是版本键之前，不对官方索引批量加入该字段；兼容测试必须实际运行至少当前稳定版和修复版解析同一 fixture。
-- 如果旧客户端会误把 `source` 当平台或版本，官方索引只先落地旧语法的 `res = true + sha256-by-arch` 或显式资源表，待兼容版本覆盖后再迁移 `source`。
-- 索引指针/制品发布机制可继续让旧用户固定读取旧 artifact，但这只能作为发布回滚手段，不能替代解析兼容测试。
+- 如果旧客户端会误把 `source` 当平台或版本，官方索引只先落地 `{ url = "XLINGS_RES", sha256 = { ... } }`；不能只用 `res=true` 或 `{}`，因为 V1 客户端会失去 URL。
+- 2026-07-12 实测确认 pointer 是滚动当前快照，0.4.52+ 默认读取当前 pointer，更老客户端仍拉取索引 `main`；版本化 artifact 只支持人工复现/回滚，不会自动把旧客户端固定在旧索引。因此迁移前客户端矩阵是硬门禁。
+
+当前迁移 PR 为 [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：只迁移已取得权威 hash 的 mcpp 0.0.67、0.0.81、0.0.87。三版本、四资产、GLOBAL/CN 共 24 次完整 GET 均与权威 SHA256 一致且镜像逐字节相同；0.4.49、0.4.62 和本地修复版在隔离 home 中完成 9/9 安装。生成器会验证平台/架构集合、binary、sidecar 和流式 SHA256，任何缺失或不一致均整次 fail closed 且不改配方。
 
 ### 9.9 发布门禁与最终验收
 

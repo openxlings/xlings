@@ -1,6 +1,6 @@
 [package]
 name = "xlings"
-version = "0.4.61"
+version = "0.4.63"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -39,8 +39,8 @@ libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
 cmdline = "0.0.2"
-xpkg = "0.0.42"
-tinyhttps = "0.2.8"
+xpkg = "0.0.44"
+tinyhttps = "0.2.9"
 capi.lua = "0.0.3"
 
 [dev-dependencies]
