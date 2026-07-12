@@ -38,7 +38,7 @@ git config user.name  "xlings-ci"
 git checkout -q -B "$BRANCH"
 
 info "version-check.py --apply --only $PROJ"
-python3 .github/scripts/version-check.py --apply --only "$PROJ" > "$WORK/report.json" || {
+python3 .github/scripts/version-check.py --workspace "$PWD" --apply --only "$PROJ" > "$WORK/report.json" || {
   echo "[bump] version-check failed:" >&2; cat "$WORK/report.json" >&2 2>/dev/null || true; exit 1;
 }
 
