@@ -1232,6 +1232,31 @@ TEST(XimInstallerResourceTest, ResolvesTemplateAliasAndPreferredMirror) {
     EXPECT_FALSE(resolved->useResFallbacks);
 }
 
+TEST(XimInstallerResourceTest, ResolvesGlobalCnSourceMapAndPreferredRegion) {
+    mcpplibs::xpkg::PlatformMatrix matrix;
+    matrix.source = "https://github.com/neovim/neovim/releases/download/v${version}/nvim-${arch_alias}.tar.gz";
+    matrix.source_mirrors = {
+        {"GLOBAL", matrix.source},
+        {"CN", "https://gitcode.com/xlings-res/nvim/releases/download/${version}/nvim-${arch_alias}.tar.gz"},
+    };
+    auto& resource = matrix.entries["linux"]["0.12.4"];
+    resource.sha256_by_arch["x86_64"] = "nvim-hash";
+    resource.arch_alias["x86_64"] = "x86_64";
+
+    auto global = xlings::xim::detail_::resolve_download_resource_(
+        matrix, "nvim", "0.12.4", "linux", "x86_64", "GLOBAL");
+    ASSERT_TRUE(global.has_value()) << global.error();
+    EXPECT_EQ(global->url,
+              "https://github.com/neovim/neovim/releases/download/v0.12.4/nvim-x86_64.tar.gz");
+    EXPECT_EQ(global->mirrors.at("CN"),
+              "https://gitcode.com/xlings-res/nvim/releases/download/0.12.4/nvim-x86_64.tar.gz");
+
+    auto cn = xlings::xim::detail_::resolve_download_resource_(
+        matrix, "nvim", "0.12.4", "linux", "x86_64", "CN");
+    ASSERT_TRUE(cn.has_value()) << cn.error();
+    EXPECT_EQ(cn->url, global->mirrors.at("CN"));
+}
+
 TEST(XimInstallerResourceTest, PreservesLegacyXlingsResAndFailsClosedOnArchMiss) {
     mcpplibs::xpkg::PlatformMatrix legacy;
     legacy.entries["linux"]["1.0.0"].url = "XLINGS_RES";
