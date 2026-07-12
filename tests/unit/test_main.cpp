@@ -1191,6 +1191,8 @@ TEST(XimDownloaderTest, FileLockWaitsForOwnerAndHonorsCancellation) {
     EXPECT_GE(
         std::chrono::steady_clock::now() - start,
         std::chrono::milliseconds{50});
+    waiter.release();
+    releaser.join();
     fs::remove_all(tmp);
 }
 
@@ -1208,6 +1210,12 @@ TEST(XimDownloaderTest, FileLockSerializesIndependentProcesses) {
     auto command = std::format(
         "\"{}\" --file-lock-child \"{}\" \"{}\"",
         executable.string(), lock_path.string(), ready_path.string());
+#ifdef _WIN32
+    // spawn_command invokes cmd.exe /c. Its parser removes one outer quote
+    // pair, so preserve the quotes around the executable and arguments by
+    // wrapping the complete command once more.
+    command = "\"" + command + "\"";
+#endif
     auto child = xlings::platform::spawn_command(command);
     ASSERT_GT(child.pid, 0);
 
