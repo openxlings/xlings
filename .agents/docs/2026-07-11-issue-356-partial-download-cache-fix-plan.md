@@ -269,16 +269,16 @@ etag: <http-etag>
 
 | ID | 仓库 | 工作包 | 状态 | 完成证据 |
 |---|---|---|---|---|
-| X1 | `openxlings/xlings` | 缓存决策纯函数与 sidecar v2 | 已完成（本地） | `mcpp test`：legacy/v2/size/identity 回归通过；全套 10/10 测试二进制通过 |
-| X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（本地） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；全套 `mcpp test` 通过 |
-| X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 已完成（本地） | POSIX/Windows 实现、真实双进程竞争及恢复测试通过；待 PR 三平台 CI |
-| X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（本地） | 非法/截断输入驱逐；本地目标写错误保留；全套 `mcpp test` 通过 |
+| X1 | `openxlings/xlings` | 缓存决策纯函数与 sidecar v2 | 已完成（PR） | [xlings#359](https://github.com/openxlings/xlings/pull/359)：legacy/v2/size/identity 回归及七项 CI 全绿 |
+| X2 | `openxlings/xlings` | 唯一 staging 文件、验收后可恢复提交 | 已完成（PR） | 失败/取消保留旧目标；hash fallback；backup 后失败恢复；七项 CI 全绿 |
+| X3 | `openxlings/xlings` | 同目标并发锁与崩溃恢复 | 已完成（PR） | POSIX/Windows 实现、真实双进程竞争及恢复测试通过；Windows 与三平台 CI 全绿 |
+| X4 | `openxlings/xlings` | 归档输入错误驱逐缓存 | 已完成（PR） | 非法/截断输入驱逐；本地目标写错误保留；七项 CI 全绿 |
 | T1 | `mcpplibs/tinyhttps` | chunked EOF 严格判定与传输元数据 | 已完成 | [tinyhttps#9](https://github.com/mcpplibs/tinyhttps/pull/9)、索引 [mcpp-index#68](https://github.com/mcpplibs/mcpp-index/pull/68) 已合并；[0.2.9 release](https://github.com/mcpplibs/tinyhttps/releases/tag/0.2.9) 和正式 index artifact 已发布 |
 | L1 | `mcpplibs/libxpkg` | `xpm.source`、平台兼容、资源归一化 | 已完成 | [libxpkg#26](https://github.com/openxlings/libxpkg/pull/26)、[#27](https://github.com/openxlings/libxpkg/pull/27) 已合并；[0.0.44 release](https://github.com/openxlings/libxpkg/releases/tag/v0.0.44) |
-| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（本地） | 重复 parser/sandbox/template 展开器已删除；正式索引依赖 0.0.44 下 `mcpp build && mcpp test` 10/10 通过；待 PR 三平台 CI |
+| L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（PR） | 重复 parser/sandbox/template 展开器已删除；正式依赖下本地 10/10 与 [xlings#359](https://github.com/openxlings/xlings/pull/359) 七项 CI 全绿 |
 | I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 已完成（PR） | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：24/24 GLOBAL/CN 完整制品、476/476 static、当前 HEAD CI 全绿 |
 | I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 已完成（PR） | 0.4.49/0.4.62/修复版 × 3 个版本安装 9/9；114 KiB 坏缓存自愈；待 xlings release 后最终复验和合并 |
-| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 待开始 | PR 合并、release 资产、索引 PR、端到端安装记录 |
+| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 进行中 | xlings 0.4.63 与依赖锁已提交，[xlings#359](https://github.com/openxlings/xlings/pull/359) 七项 CI 全绿；待合并、release、索引发布和最终 E2E |
 
 ### 9.1 PR 边界与依赖关系
 
@@ -347,7 +347,7 @@ I2 依赖 L1/L2 的兼容矩阵通过，但不阻塞 I1 的 mcpp 止血
 - 持锁后的恢复状态机已覆盖“仅 backup 时恢复 live”“live + backup 时保留 live”“清理同目标遗留 staging”。
 - 同进程双句柄竞争、取消等待、延迟释放、两种崩溃恢复测试通过；完整 `mcpp test` 10/10 通过。
 - 新增真实子进程持锁测试：父进程在子进程写入 ready 标记后竞争同一锁，必须等待子进程释放，再完成提交；Linux 定向测试通过。
-- 实现与本地测试已完成；在 PR 的 Linux、macOS、Windows CI 全绿前，本项只标记“已完成（本地）”。
+- [xlings#359](https://github.com/openxlings/xlings/pull/359) 最终实现 HEAD 的 Linux、macOS、Windows、aarch64/QEMU、Linux E2E、root 静态构建和 root 身份验证七项检查均通过；Windows CI 同时验证了句柄释放生命周期和真实子进程命令行。
 
 ### 9.5 X4：解压失败自愈
 
