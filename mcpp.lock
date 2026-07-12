@@ -27,13 +27,13 @@ hash    = "fnv1a:8ee8a8e51ac69885"
 
 [package."mcpplibs.tinyhttps"]
 namespace = "mcpplibs"
-version = "0.2.8"
-source  = "index+mcpplibs@0.2.8"
-hash    = "fnv1a:bc63967ab318ede6"
+version = "0.2.9"
+source  = "index+mcpplibs@0.2.9"
+hash    = "fnv1a:3465dd0bd5d7aa20"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
-version = "0.0.42"
-source  = "index+mcpplibs@0.0.42"
-hash    = "fnv1a:841e4283e2553732"
+version = "0.0.44"
+source  = "index+mcpplibs@0.0.44"
+hash    = "fnv1a:750b1f1ed374ad3d"
 

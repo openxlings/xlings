@@ -2,8 +2,9 @@ export module xlings.core.xim.installer;
 
 import std;
 import mcpplibs.xpkg;
+import mcpplibs.xpkg.loader;
+import mcpplibs.xpkg.compat;
 import mcpplibs.xpkg.executor;
-import mcpplibs.capi.lua;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
@@ -25,9 +26,20 @@ import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
 
-namespace detail_ {
+bool evict_invalid_archive_cache_(
+        const std::filesystem::path& archive,
+        const ExtractError& error) {
+    if (error.kind != ExtractErrorKind::InvalidInputArchive) return false;
+    std::error_code ec;
+    bool removed = std::filesystem::remove(archive, ec);
+    auto sidecar = archive;
+    sidecar += ".meta";
+    ec.clear();
+    std::filesystem::remove(sidecar, ec);
+    return removed;
+}
 
-namespace lua = mcpplibs::capi::lua;
+namespace detail_ {
 
 std::string effective_store_name_(std::string_view namespaceName, std::string_view name) {
     return package_store_name(namespaceName, name);
@@ -167,36 +179,6 @@ std::string build_xlings_res_url_(std::string_view pkgName,
     return build_xlings_res_url_with_server_(default_res_server_(), pkgName, version, platform);
 }
 
-// Expand a V2 URL template. Supported placeholders:
-//   ${name} ${version} ${os} ${arch} ${arch_alias} ${ext}
-// `arch` is the canonical host arch (x86_64/aarch64); `arch_alias` maps it
-// to an upstream token (falls back to the canonical arch when unmapped).
-// `ext` mirrors the XLINGS_RES convention: zip on windows, tar.gz elsewhere.
-std::string expand_url_template_(std::string tmpl,
-                                 std::string_view name,
-                                 std::string_view version,
-                                 std::string_view platform,
-                                 std::string_view arch,
-                                 const std::unordered_map<std::string, std::string>& arch_alias) {
-    std::string alias{arch};
-    if (auto it = arch_alias.find(std::string(arch)); it != arch_alias.end())
-        alias = it->second;
-    std::string ext = (std::string(platform) == "windows") ? "zip" : "tar.gz";
-    auto sub = [&](std::string_view key, std::string_view val) {
-        std::string needle = std::string("${") + std::string(key) + "}";
-        for (auto pos = tmpl.find(needle); pos != std::string::npos;
-                pos = tmpl.find(needle, pos + val.size()))
-            tmpl.replace(pos, needle.size(), val);
-    };
-    sub("name", name);
-    sub("version", version);
-    sub("os", platform);
-    sub("arch", arch);
-    sub("arch_alias", alias);
-    sub("ext", ext);
-    return tmpl;
-}
-
 // Build fallback URLs from all candidate resource servers (excluding the selected one)
 std::vector<std::string> build_xlings_res_fallback_urls_(std::string_view pkgName,
                                                          std::string_view version,
@@ -213,10 +195,57 @@ std::vector<std::string> build_xlings_res_fallback_urls_(std::string_view pkgNam
     return fallbacks;
 }
 
+struct DownloadResource_ {
+    std::string version;
+    std::string url;
+    std::string sha256;
+    std::unordered_map<std::string, std::string> mirrors;
+    bool useResFallbacks { false };
+};
+
+std::expected<DownloadResource_, std::string> resolve_download_resource_(
+        const mcpplibs::xpkg::PlatformMatrix& matrix,
+        std::string_view name,
+        std::string_view requestedVersion,
+        std::string_view platform,
+        std::string_view arch,
+        std::string_view preferredMirror) {
+    auto resolved = mcpplibs::xpkg::resolve_resource(matrix, {
+        .name = std::string(name),
+        .version = std::string(requestedVersion),
+        .platform = std::string(platform),
+        .arch = std::string(arch),
+    });
+    if (!resolved) return std::unexpected(resolved.error());
+
+    DownloadResource_ result {
+        .version = resolved->version,
+        .url = resolved->url,
+        .sha256 = resolved->sha256,
+        .mirrors = resolved->mirrors,
+        .useResFallbacks = resolved->kind
+            == mcpplibs::xpkg::SourceKind::XlingsRes,
+    };
+    if (result.useResFallbacks) {
+        result.url = build_xlings_res_url_(name, result.version, platform);
+    }
+
+    auto preferred = preferredMirror.empty()
+        ? std::string_view{"GLOBAL"}
+        : preferredMirror;
+    if (auto it = result.mirrors.find(std::string(preferred));
+            it != result.mirrors.end()) {
+        result.url = it->second;
+    }
+    if (result.url.empty())
+        return std::unexpected("resolved resource URL is empty");
+    return result;
+}
+
 bool has_directory_entries_(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) return false;
-    return std::filesystem::directory_iterator(dir, ec) != std::filesystem::directory_iterator{};
+    return std::filesystem::directory_iterator(dir, ec) != std::default_sentinel;
 }
 
 bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
@@ -226,7 +255,8 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
     if (!fs::exists(extractRoot, ec) || !fs::is_directory(extractRoot, ec)) return false;
 
     std::vector<fs::path> entries;
-    for (fs::directory_iterator it(extractRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (fs::directory_iterator it(extractRoot, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         entries.push_back(it->path());
     }
     if (ec || entries.empty()) return false;
@@ -280,7 +310,8 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
     }
 
     std::vector<fs::path> payloadEntries;
-    for (fs::directory_iterator it(payloadRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (fs::directory_iterator it(payloadRoot, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         payloadEntries.push_back(it->path());
     }
     if (ec) return false;
@@ -805,224 +836,6 @@ bool run_config_hook_(const PlanNode& node,
     return true;
 }
 
-bool register_platform_loader_sandbox_(lua::State* L, const std::string& platform) {
-    auto quoted = "'" + platform + "'";
-    auto script =
-        "import = function(...) return setmetatable({}, { __index = function() return function() end end }) end\n"
-        "function is_host(name) return name == " + quoted + " end\n"
-        "format = string.format\n"
-        "_RUNTIME = { platform = " + quoted + " }\n"
-        "os.host = function() return " + quoted + " end\n"
-        "os.arch = os.arch or function() return 'arm64' end\n"
-        "os.isfile = os.isfile or function() return false end\n"
-        "os.isdir = os.isdir or function() return false end\n"
-        "os.scriptdir = os.scriptdir or function() return '.' end\n"
-        "os.dirs = os.dirs or function() return {} end\n"
-        "os.files = os.files or function() return {} end\n"
-        "os.exists = os.exists or function() return false end\n"
-        "os.tryrm = os.tryrm or function() end\n"
-        "os.trymv = os.trymv or function() end\n"
-        "os.mv = os.mv or function() return true end\n"
-        "os.cp = os.cp or function() return true end\n"
-        "os.iorun = os.iorun or function() return nil end\n"
-        "os.cd = os.cd or function() end\n"
-        "os.mkdir = os.mkdir or function() end\n"
-        "os.sleep = os.sleep or function() end\n"
-        "path = path or {}\n"
-        "path.join = path.join or function(...) "
-        "  local parts = {} "
-        "  for i = 1, select('#', ...) do "
-        "    local v = select(i, ...) "
-        "    if v ~= nil then parts[#parts+1] = tostring(v) end "
-        "  end "
-        "  return table.concat(parts, '/') "
-        "end\n"
-        "path.filename = path.filename or function(p) return type(p)=='string' and (p:match('[^/\\\\]+$') or p) or '' end\n"
-        "path.directory = path.directory or function(p) return type(p)=='string' and (p:match('(.*)[/\\\\]') or '.') or '.' end\n"
-        "path.basename = path.basename or function(p) return type(p)=='string' and (p:match('[^/\\\\]+$') or p) or '' end\n"
-        "io.readfile = io.readfile or function() return '' end\n"
-        "io.writefile = io.writefile or function() end\n"
-        "try = try or function(block) pcall(block[1]) end\n"
-        "cprint = cprint or print\n"
-        "string.replace = string.replace or function(s, old, new) return s:gsub(old, new) end\n"
-        "string.split = string.split or function(s, sep) "
-        "  local r = {} "
-        "  for m in (s .. sep):gmatch('(.-)' .. sep) do r[#r+1] = m end "
-        "  return r "
-        "end\n"
-        "raise = raise or function() end\n"
-        "runtime = setmetatable({}, { __index = function() return function() return '' end end })\n"
-        "system = setmetatable({}, { __index = function() return function() return '' end end })\n"
-        "libxpkg = setmetatable({}, { __index = function() return setmetatable({}, { __index = function() return function() return '' end end }) end })\n";
-
-    return lua::L_dostring(L, script.c_str()) == lua::OK;
-}
-
-std::unordered_map<std::string, mcpplibs::xpkg::PlatformResource>
-load_platform_entries_(const std::filesystem::path& pkgFile, const std::string& platform) {
-    std::unordered_map<std::string, mcpplibs::xpkg::PlatformResource> entries;
-
-    auto* L = lua::L_newstate();
-    if (!L) return entries;
-    lua::L_openlibs(L);
-
-    auto closeLua = [&]() {
-        if (L) {
-            lua::close(L);
-            L = nullptr;
-        }
-    };
-
-    if (!register_platform_loader_sandbox_(L, platform)) {
-        closeLua();
-        return entries;
-    }
-    if (lua::L_dofile(L, pkgFile.string().c_str()) != lua::OK) {
-        closeLua();
-        return entries;
-    }
-
-    lua::getglobal(L, "package");
-    if (lua::type(L, -1) != lua::TTABLE) {
-        closeLua();
-        return entries;
-    }
-
-    auto packageIdx = lua::gettop(L);
-    lua::getfield(L, packageIdx, "xpm");
-    if (lua::type(L, -1) != lua::TTABLE) {
-        closeLua();
-        return entries;
-    }
-
-    auto xpmIdx = lua::gettop(L);
-    lua::getfield(L, xpmIdx, platform.c_str());
-    if (lua::type(L, -1) != lua::TTABLE) {
-        closeLua();
-        return entries;
-    }
-
-    auto platformIdx = lua::gettop(L);
-    lua::pushnil(L);
-    while (lua::next(L, platformIdx)) {
-        std::string version;
-        if (lua::type(L, -2) == lua::TSTRING) version = lua::tostring(L, -2);
-        if (!version.empty() && version != "deps" && version != "inherits") {
-            mcpplibs::xpkg::PlatformResource res;
-            if (lua::type(L, -1) == lua::TTABLE) {
-                auto read_field = [&](const char* key) -> std::string {
-                    lua::getfield(L, -1, key);
-                    std::string val;
-                    if (lua::type(L, -1) == lua::TSTRING) val = lua::tostring(L, -1);
-                    lua::pop(L, 1);
-                    return val;
-                };
-                res.url = read_field("url");
-                // Handle url table: { GLOBAL = "...", CN = "..." }
-                if (res.url.empty()) {
-                    lua::getfield(L, -1, "url");
-                    if (lua::type(L, -1) == lua::TTABLE) {
-                        lua::pushnil(L);
-                        while (lua::next(L, -2)) {
-                            if (lua::type(L, -2) == lua::TSTRING && lua::type(L, -1) == lua::TSTRING)
-                                res.mirrors[lua::tostring(L, -2)] = lua::tostring(L, -1);
-                            lua::pop(L, 1);
-                        }
-                        if (auto it = res.mirrors.find("GLOBAL"); it != res.mirrors.end())
-                            res.url = it->second;
-                        else if (!res.mirrors.empty())
-                            res.url = res.mirrors.begin()->second;
-                    }
-                    lua::pop(L, 1);
-                }
-                res.sha256 = read_field("sha256");
-                res.ref = read_field("ref");
-
-                // ---- V2 multi-arch shapes (mirrors libxpkg xpkg-loader) ----
-                int resIdx = lua::gettop(L);  // resource table (absolute index)
-
-                auto read_str_map = [&](const char* key,
-                                        std::unordered_map<std::string, std::string>& out,
-                                        bool canon_keys) {
-                    lua::getfield(L, resIdx, key);
-                    if (lua::type(L, -1) == lua::TTABLE) {
-                        lua::pushnil(L);
-                        while (lua::next(L, -2)) {
-                            if (lua::type(L, -2) == lua::TSTRING && lua::type(L, -1) == lua::TSTRING) {
-                                std::string k = lua::tostring(L, -2);
-                                out[canon_keys ? mcpplibs::xpkg::normalize_arch(k) : k] =
-                                    lua::tostring(L, -1);
-                            }
-                            lua::pop(L, 1);
-                        }
-                    }
-                    lua::pop(L, 1);
-                };
-
-                // Scheme C / res: `sha256` is a per-arch TABLE (string read above
-                // returned ""). arch_alias is the optional ${arch_alias} mapping.
-                read_str_map("sha256", res.sha256_by_arch, true);
-                read_str_map("arch_alias", res.arch_alias, true);
-
-                lua::getfield(L, resIdx, "res");
-                res.is_res = lua::toboolean(L, -1);
-                lua::pop(L, 1);
-
-                // Scheme B: per-arch resource map. Detected when no single-arch
-                // url/ref/sha256 and no template/res markers are present.
-                if (res.url.empty() && res.ref.empty() && res.sha256.empty()
-                        && res.sha256_by_arch.empty() && !res.is_res) {
-                    lua::pushnil(L);
-                    while (lua::next(L, resIdx)) {
-                        if (lua::type(L, -2) == lua::TSTRING && lua::type(L, -1) == lua::TTABLE) {
-                            std::string canon =
-                                mcpplibs::xpkg::normalize_arch(lua::tostring(L, -2));
-                            if (canon == "x86_64" || canon == "aarch64" || canon == "x86") {
-                                int archIdx = lua::gettop(L);
-                                mcpplibs::xpkg::ArchResource ar;
-                                lua::getfield(L, archIdx, "url");
-                                if (lua::type(L, -1) == lua::TSTRING) ar.url = lua::tostring(L, -1);
-                                lua::pop(L, 1);
-                                if (ar.url.empty()) {
-                                    lua::getfield(L, archIdx, "url");
-                                    if (lua::type(L, -1) == lua::TTABLE) {
-                                        lua::pushnil(L);
-                                        while (lua::next(L, -2)) {
-                                            if (lua::type(L, -2) == lua::TSTRING
-                                                    && lua::type(L, -1) == lua::TSTRING)
-                                                ar.mirrors[lua::tostring(L, -2)] =
-                                                    lua::tostring(L, -1);
-                                            lua::pop(L, 1);
-                                        }
-                                        if (auto it = ar.mirrors.find("GLOBAL");
-                                                it != ar.mirrors.end())
-                                            ar.url = it->second;
-                                        else if (!ar.mirrors.empty())
-                                            ar.url = ar.mirrors.begin()->second;
-                                    }
-                                    lua::pop(L, 1);
-                                }
-                                lua::getfield(L, archIdx, "sha256");
-                                if (lua::type(L, -1) == lua::TSTRING) ar.sha256 = lua::tostring(L, -1);
-                                lua::pop(L, 1);
-                                res.archs[canon] = std::move(ar);
-                            }
-                        }
-                        lua::pop(L, 1);
-                    }
-                }
-            } else if (lua::type(L, -1) == lua::TSTRING) {
-                res.url = lua::tostring(L, -1);
-            }
-            entries[version] = std::move(res);
-        }
-        lua::pop(L, 1);
-    }
-
-    closeLua();
-    return entries;
-}
-
 }  // namespace detail_
 
 using InstallRequestHandler = std::function<void(const std::vector<mcpplibs::xpkg::InstallRequest>&)>;
@@ -1093,21 +906,12 @@ public:
         for (auto& node : plan.nodes) {
             if (node.alreadyInstalled) continue;
 
-            std::expected<mcpplibs::xpkg::Package, std::string> pkg =
-                catalog_
-                    ? catalog_->load_package(PackageMatch{
-                        .rawName = node.rawName,
-                        .name = node.name,
-                        .version = node.version,
-                        .namespaceName = node.namespaceName,
-                        .canonicalName = node.canonicalName,
-                        .repoName = node.repoName,
-                        .pkgFile = node.pkgFile,
-                        .storeRoot = node.storeRoot,
-                        .scope = node.scope,
-                        .installed = node.alreadyInstalled,
-                    })
-                    : index_->load_package(node.name);
+            const std::string hostArch =
+                mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
+            auto pkg = mcpplibs::xpkg::load_package(node.pkgFile, {
+                .platform = platform,
+                .arch = hostArch,
+            });
             if (!pkg) {
                 log::warn("skipping {}: {}", node.name, pkg.error());
                 continue;
@@ -1136,99 +940,33 @@ public:
                 }
             }
 
-            auto platformEntries = detail_::load_platform_entries_(node.pkgFile, platform);
-            if (platformEntries.empty()) {
-                auto platformIt = pkg->xpm.entries.find(platform);
-                if (platformIt != pkg->xpm.entries.end()) {
-                    platformEntries = platformIt->second;
-                }
+            auto resource = detail_::resolve_download_resource_(
+                pkg->xpm, node.name, node.version, platform, hostArch,
+                dlConfig.preferredMirror);
+            if (!resource) {
+                log::warn("skipping {}: {}", node.name, resource.error());
+                continue;
             }
-            if (platformEntries.empty()) continue;
-
-            std::string version = node.version;
-            // Follow ref chain
-            auto verIt = platformEntries.find(version);
-            if (verIt != platformEntries.end() && !verIt->second.ref.empty()) {
-                version = verIt->second.ref;
-                verIt = platformEntries.find(version);
-            }
-
-            if (verIt == platformEntries.end()) continue;
-
-            auto& res = verIt->second;
-
-            // ---- V2 install-time arch resolution ----
-            // Resolve the host arch (canonical x86_64/aarch64). When all V2
-            // fields are empty the legacy single-arch path below is untouched.
-            const std::string hostArch =
-                mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
-            bool resGenerated = false;
-            if (!res.archs.empty()) {
-                // Scheme B: per-arch resource map (fail-closed on miss).
-                auto ait = res.archs.find(hostArch);
-                if (ait == res.archs.end()) {
-                    log::warn("skipping {}: no resource for arch '{}' in version {}",
-                              node.name, hostArch, version);
-                    continue;
-                }
-                res.url = ait->second.url;
-                res.sha256 = ait->second.sha256;
-                res.mirrors = ait->second.mirrors;
-            } else if (res.is_res) {
-                // res shape: XLINGS_RES auto-URL + per-arch checksum.
-                auto sit = res.sha256_by_arch.find(hostArch);
-                if (sit == res.sha256_by_arch.end()) {
-                    log::warn("skipping {}: no checksum for arch '{}' in version {}",
-                              node.name, hostArch, version);
-                    continue;
-                }
-                res.url = detail_::build_xlings_res_url_(node.name, version, platform);
-                res.sha256 = sit->second;
-                resGenerated = true;
-            } else if (!res.sha256_by_arch.empty()) {
-                // Scheme C: URL template + per-arch checksum.
-                auto sit = res.sha256_by_arch.find(hostArch);
-                if (sit == res.sha256_by_arch.end()) {
-                    log::warn("skipping {}: no checksum for arch '{}' in version {}",
-                              node.name, hostArch, version);
-                    continue;
-                }
-                res.url = detail_::expand_url_template_(
-                    res.url, node.name, version, platform, hostArch, res.arch_alias);
-                res.sha256 = sit->second;
-            }
-
-            bool isXlingsRes = (res.url == "XLINGS_RES");
-            if (isXlingsRes) {
-                res.url = detail_::build_xlings_res_url_(node.name, version, platform);
-            }
-            bool useResFallbacks = isXlingsRes || resGenerated;
-
-            // Mirror selection: prefer dlConfig.preferredMirror, fallback others
-            if (!res.mirrors.empty()) {
-                auto preferred = dlConfig.preferredMirror.empty() ? "GLOBAL" : dlConfig.preferredMirror;
-                if (auto it = res.mirrors.find(preferred); it != res.mirrors.end()) {
-                    res.url = it->second;
-                }
-            }
-
-            if (res.url.empty()) continue;
 
             DownloadTask task;
             task.name = detail_::plan_key_(node);
-            task.url = res.url;
-            task.sha256 = res.sha256;
+            task.url = resource->url;
+            task.sha256 = resource->sha256;
+            task.cacheIdentity = std::format(
+                "{}/{}/{}/{}/{}",
+                node.name, resource->version, platform, hostArch,
+                resource->useResFallbacks ? "xlings-res" : resource->url);
             task.destDir = detail_::runtime_dir_(node, dataDir);
 
-            if (useResFallbacks) {
+            if (resource->useResFallbacks) {
                 task.fallbackUrls = detail_::build_xlings_res_fallback_urls_(
-                    node.name, version, platform);
+                    node.name, resource->version, platform);
             }
 
             // Add remaining mirrors as fallbacks
-            if (!res.mirrors.empty()) {
-                for (auto& [key, mirrorUrl] : res.mirrors) {
-                    if (mirrorUrl != res.url) {
+            if (!resource->mirrors.empty()) {
+                for (auto& [key, mirrorUrl] : resource->mirrors) {
+                    if (mirrorUrl != resource->url) {
                         task.fallbackUrls.push_back(mirrorUrl);
                     }
                 }
@@ -1383,11 +1121,22 @@ public:
                     }
                     // Extract into the same runtime dir as the download
                     auto runtimeDir = dlIt->second.localFile.parent_path();
-                    auto extracted = extract_archive(dlIt->second.localFile, runtimeDir);
+                    auto extracted = extract_archive_detailed(
+                        dlIt->second.localFile, runtimeDir);
                     if (!extracted) {
-                        log::error("extract failed for {}: {}", node.name, extracted.error());
+                        auto error = std::move(extracted).error();
+                        if (evict_invalid_archive_cache_(
+                                dlIt->second.localFile, error)) {
+                            log::warn(
+                                "evicted invalid archive cache for {}: {}",
+                                node.name, dlIt->second.localFile.string());
+                        }
+                        log::error("extract failed for {}: {}",
+                                   node.name, error.message);
                         if (onStatus) {
-                            onStatus({ node.name, InstallPhase::Failed, 0.0f, extracted.error() });
+                            onStatus({
+                                node.name, InstallPhase::Failed, 0.0f,
+                                error.message});
                         }
                         continue;
                     }
@@ -2038,7 +1787,7 @@ public:
         auto parent = installDir.parent_path();
         std::error_code listEc;
         auto first = std::filesystem::directory_iterator(parent, listEc);
-        if (!listEc && first == std::filesystem::directory_iterator{}) {
+        if (!listEc && first == std::default_sentinel) {
             std::error_code rmEc;
             if (std::filesystem::remove(parent, rmEc)) {
                 log::debug("swept empty package dir: {}", parent.string());

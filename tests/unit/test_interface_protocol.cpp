@@ -41,7 +41,7 @@ std::string find_xlings_binary_() {
         fs::file_time_type newest_mcpp_time {};
         if (fs::exists("target", ec)) {
             for (auto it = fs::recursive_directory_iterator("target", ec);
-                 !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                 !ec && it != std::default_sentinel; it.increment(ec)) {
                 if (!it->is_regular_file(ec)) continue;
                 if (it->path().filename() != exe) continue;
                 if (it->path().parent_path().filename() != "bin") continue;

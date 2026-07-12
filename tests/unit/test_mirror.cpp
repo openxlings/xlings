@@ -15,6 +15,32 @@ namespace fs = std::filesystem;
 
 namespace {
 
+class MirrorTestEnvironment final : public testing::Environment {
+public:
+    void SetUp() override {
+        home_ = fs::temp_directory_path()
+            / std::format("xlings-mirror-test-{}",
+                std::chrono::steady_clock::now().time_since_epoch().count());
+        fs::create_directories(home_);
+#ifdef _WIN32
+        _putenv_s("XLINGS_HOME", home_.string().c_str());
+#else
+        ::setenv("XLINGS_HOME", home_.string().c_str(), 1);
+#endif
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        fs::remove_all(home_, ec);
+    }
+
+private:
+    fs::path home_;
+};
+
+[[maybe_unused]] auto* mirror_test_environment_ =
+    testing::AddGlobalTestEnvironment(new MirrorTestEnvironment);
+
 // Helper: any item in the list whose URL starts with the given prefix.
 bool any_starts_with(const std::vector<std::string>& urls, std::string_view prefix) {
     return std::ranges::any_of(urls, [&](const auto& u) {

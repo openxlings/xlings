@@ -41,6 +41,7 @@ namespace platform {
     export using platform_impl::Icon;
     export using platform_impl::atomic_replace_executable;
     export using platform_impl::atomic_swap_paths;
+    export using platform_impl::FileLock;
 
     // ── Execution identity (root / sudo awareness) ──────────────────
     // Single source of truth for "who am I / who should own the files I
@@ -123,12 +124,11 @@ namespace platform {
         if (!std::filesystem::exists(path, ec)) return;
         platform_impl::lchown_path_(path, inv->uid, inv->gid);
         if (recursive && std::filesystem::is_directory(path, ec)) {
-            auto end = std::filesystem::recursive_directory_iterator{};
             for (auto it = std::filesystem::recursive_directory_iterator(
                      path,
                      std::filesystem::directory_options::skip_permission_denied,
                      ec);
-                 !ec && it != end; it.increment(ec)) {
+                 !ec && it != std::default_sentinel; it.increment(ec)) {
                 platform_impl::lchown_path_(it->path(), inv->uid, inv->gid);
             }
         }

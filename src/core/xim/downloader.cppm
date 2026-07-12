@@ -72,9 +72,135 @@ std::string lower_hex_(std::string_view s) {
 // Format: one "key: value" per line, only `last-modified` and `etag`
 // recognized. Anything else is ignored. Missing sidecar = no metadata.
 struct MetaSidecar_ {
+    int format { 1 };
+    bool complete { false };
+    std::int64_t size { -1 };
+    std::string sourceUrl;
+    std::string cacheIdentity;
     std::string lastModified;
     std::string etag;
 };
+
+std::filesystem::path unique_sibling_path_(
+        const std::filesystem::path& base,
+        std::string_view marker) {
+    static std::atomic_uint64_t sequence { 0 };
+    auto path = base;
+    path += std::format(
+        ".{}.{}.{}", marker,
+        std::chrono::steady_clock::now().time_since_epoch().count(),
+        sequence.fetch_add(1));
+    return path;
+}
+
+bool commit_staging_file_(const std::filesystem::path& staging,
+                          const std::filesystem::path& destination,
+                          std::string& error,
+                          bool failAfterBackupForTest = false) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto backup = unique_sibling_path_(destination, "old");
+    const bool hadDestination = fs::exists(destination, ec);
+    if (ec) {
+        error = std::format("failed to inspect {}: {}",
+                            destination.string(), ec.message());
+        return false;
+    }
+    if (hadDestination) {
+        fs::rename(destination, backup, ec);
+        if (ec) {
+            error = std::format("failed to preserve {}: {}",
+                                destination.string(), ec.message());
+            return false;
+        }
+    }
+    if (failAfterBackupForTest) {
+        if (hadDestination) {
+            fs::rename(backup, destination, ec);
+        }
+        error = "injected commit failure after backup";
+        return false;
+    }
+    fs::rename(staging, destination, ec);
+    if (ec) {
+        auto commitError = ec.message();
+        if (hadDestination) {
+            std::error_code restoreEc;
+            fs::rename(backup, destination, restoreEc);
+            if (restoreEc) {
+                error = std::format(
+                    "failed to commit {} ({}) and restore previous file ({})",
+                    destination.string(), commitError, restoreEc.message());
+                return false;
+            }
+        }
+        error = std::format("failed to commit {}: {}",
+                            destination.string(), commitError);
+        return false;
+    }
+    if (hadDestination) {
+        fs::remove(backup, ec);
+    }
+    return true;
+}
+
+bool recover_download_transaction_(
+        const std::filesystem::path& destination,
+        std::string& error) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::vector<fs::path> backups;
+    std::vector<fs::path> stagingFiles;
+    const auto backupPrefix = destination.filename().string() + ".old.";
+    const auto stagingPrefix = destination.filename().string() + ".part.";
+    auto parent = destination.parent_path();
+    for (auto it = fs::directory_iterator(parent, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
+        auto name = it->path().filename().string();
+        if (name.starts_with(backupPrefix)) backups.push_back(it->path());
+        else if (name.starts_with(stagingPrefix)) stagingFiles.push_back(it->path());
+    }
+    if (ec) {
+        error = std::format("failed to inspect download transaction for {}: {}",
+                            destination.string(), ec.message());
+        return false;
+    }
+
+    std::ranges::sort(backups);
+    const bool liveExists = fs::exists(destination, ec);
+    if (ec) {
+        error = std::format("failed to inspect {}: {}",
+                            destination.string(), ec.message());
+        return false;
+    }
+    if (!liveExists && !backups.empty()) {
+        auto restore = backups.back();
+        backups.pop_back();
+        fs::rename(restore, destination, ec);
+        if (ec) {
+            error = std::format("failed to restore interrupted download {}: {}",
+                                destination.string(), ec.message());
+            return false;
+        }
+    }
+    for (const auto& path : backups) {
+        fs::remove(path, ec);
+        if (ec) {
+            error = std::format("failed to remove stale backup {}: {}",
+                                path.string(), ec.message());
+            return false;
+        }
+    }
+    for (const auto& path : stagingFiles) {
+        fs::remove(path, ec);
+        if (ec) {
+            error = std::format("failed to remove stale staging file {}: {}",
+                                path.string(), ec.message());
+            return false;
+        }
+    }
+    return true;
+}
 
 std::optional<MetaSidecar_> read_meta_sidecar_(const std::filesystem::path& p) {
     std::ifstream in(p);
@@ -93,18 +219,133 @@ std::optional<MetaSidecar_> read_meta_sidecar_(const std::filesystem::path& p) {
         };
         trim(key); trim(val);
         for (auto& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (key == "last-modified") m.lastModified = std::move(val);
-        else if (key == "etag")     m.etag = std::move(val);
+        if (key == "format") {
+            int parsed {};
+            auto [ptr, err] = std::from_chars(val.data(), val.data() + val.size(), parsed);
+            if (err != std::errc{} || ptr != val.data() + val.size()) return std::nullopt;
+            m.format = parsed;
+        } else if (key == "complete") {
+            if (val == "true") m.complete = true;
+            else if (val == "false") m.complete = false;
+            else return std::nullopt;
+        } else if (key == "size") {
+            std::int64_t parsed {};
+            auto [ptr, err] = std::from_chars(val.data(), val.data() + val.size(), parsed);
+            if (err != std::errc{} || ptr != val.data() + val.size() || parsed < 0) {
+                return std::nullopt;
+            }
+            m.size = parsed;
+        } else if (key == "source-url") {
+            m.sourceUrl = std::move(val);
+        } else if (key == "cache-identity") {
+            m.cacheIdentity = std::move(val);
+        } else if (key == "last-modified") {
+            m.lastModified = std::move(val);
+        } else if (key == "etag") {
+            m.etag = std::move(val);
+        }
+    }
+    if (m.format != 1 && m.format != 2) return std::nullopt;
+    if (m.format == 2
+        && (!m.complete || m.size < 0 || m.cacheIdentity.empty())) {
+        return std::nullopt;
     }
     return m;
 }
 
-void write_meta_sidecar_(const std::filesystem::path& p,
-                         const tinyhttps::RemoteFileMeta& meta) {
-    std::ofstream out(p, std::ios::trunc);
-    if (!out) return;
-    if (!meta.lastModified.empty()) out << "last-modified: " << meta.lastModified << "\n";
-    if (!meta.etag.empty())         out << "etag: "          << meta.etag         << "\n";
+bool write_meta_sidecar_(const std::filesystem::path& p,
+                         const tinyhttps::RemoteFileMeta& meta,
+                         std::int64_t size,
+                         std::string_view cacheIdentity,
+                         std::string_view sourceUrl) {
+    auto staging = unique_sibling_path_(p, "tmp");
+    {
+        std::ofstream out(staging, std::ios::trunc);
+        if (!out) return false;
+        out << "format: 2\n";
+        out << "complete: true\n";
+        out << "size: " << size << "\n";
+        out << "source-url: " << sourceUrl << "\n";
+        out << "cache-identity: " << cacheIdentity << "\n";
+        if (!meta.lastModified.empty()) out << "last-modified: " << meta.lastModified << "\n";
+        if (!meta.etag.empty())         out << "etag: "          << meta.etag         << "\n";
+        out.flush();
+        if (!out) {
+            std::error_code ec;
+            std::filesystem::remove(staging, ec);
+            return false;
+        }
+    }
+    std::string error;
+    if (!commit_staging_file_(staging, p, error)) {
+        std::error_code ec;
+        std::filesystem::remove(staging, ec);
+        return false;
+    }
+    return true;
+}
+
+enum class CacheAdmission_ {
+    Hit,
+    OfflineUnverifiedHit,
+    Redownload,
+};
+
+struct CacheAdmissionInput_ {
+    std::int64_t localSize { -1 };
+    bool headSucceeded { false };
+    std::int64_t remoteSize { -1 };
+    std::string remoteLastModified;
+    std::string remoteEtag;
+    std::optional<MetaSidecar_> sidecar;
+    std::string expectedCacheIdentity;
+};
+
+CacheAdmission_ decide_cache_admission_(const CacheAdmissionInput_& input) {
+    if (input.localSize <= 0) return CacheAdmission_::Redownload;
+
+    if (!input.headSucceeded) {
+        if (!input.sidecar) return CacheAdmission_::Redownload;
+        const auto& stored = *input.sidecar;
+        const bool committedV2 =
+            stored.format == 2
+            && stored.complete
+            && stored.size == input.localSize
+            && !input.expectedCacheIdentity.empty()
+            && stored.cacheIdentity == input.expectedCacheIdentity;
+        return committedV2
+            ? CacheAdmission_::OfflineUnverifiedHit
+            : CacheAdmission_::Redownload;
+    }
+
+    const bool sizeMatch =
+        input.remoteSize > 0 && input.remoteSize == input.localSize;
+    if (!sizeMatch) return CacheAdmission_::Redownload;
+
+    if (!input.sidecar) return CacheAdmission_::Hit;
+    const auto& stored = *input.sidecar;
+    const bool freshMatch =
+        (!input.remoteLastModified.empty()
+            && input.remoteLastModified == stored.lastModified)
+        || (!input.remoteEtag.empty() && input.remoteEtag == stored.etag);
+    const bool noFreshnessEvidence =
+        stored.lastModified.empty() && stored.etag.empty();
+    return (freshMatch || noFreshnessEvidence)
+        ? CacheAdmission_::Hit
+        : CacheAdmission_::Redownload;
+}
+
+struct DownloadTestHooks_ {
+    std::function<tinyhttps::DownloadFileResult(
+        const std::string&, const std::filesystem::path&)> transferOverride;
+    std::function<tinyhttps::RemoteFileMeta(const std::string&)> queryRemoteMeta;
+};
+
+tinyhttps::RemoteFileMeta query_remote_meta_(
+        const std::string& url,
+        const DownloadTestHooks_* hooks) {
+    if (hooks && hooks->queryRemoteMeta) return hooks->queryRemoteMeta(url);
+    return tinyhttps::query_remote_meta(url);
 }
 
 // Derive the destination directory name from a git URL, e.g.
@@ -240,7 +481,8 @@ DownloadResult git_clone_one(const DownloadTask& task) {
 // Download a single file using libcurl with real-time progress callback.
 DownloadResult download_one(const DownloadTask& task,
                             std::function<void(double total, double now)> onProgress = nullptr,
-                            CancellationToken* cancel = nullptr) {
+                            CancellationToken* cancel = nullptr,
+                            const DownloadTestHooks_* testHooks = nullptr) {
     namespace fs = std::filesystem;
 
     DownloadResult result;
@@ -334,6 +576,23 @@ DownloadResult download_one(const DownloadTask& task,
     sidecarPath += ".meta";
     result.localFile = destFile;
 
+    auto lockPath = destFile;
+    lockPath += ".lock";
+    platform::FileLock cacheLock;
+    std::string lockError;
+    auto cancelled = [cancel] {
+        return cancel && (cancel->is_paused() || cancel->is_cancelled());
+    };
+    if (!cacheLock.acquire(
+            lockPath, std::chrono::minutes{10}, cancelled, lockError)) {
+        result.error = std::move(lockError);
+        return result;
+    }
+    if (!recover_download_transaction_(destFile, lockError)) {
+        result.error = std::move(lockError);
+        return result;
+    }
+
     // ── Cache hit path 1: sha256 verified (cheapest, most reliable) ──
     // If the recipe declares a sha256 and the on-disk file matches, we're
     // byte-identical to upstream — skip download outright.
@@ -350,7 +609,7 @@ DownloadResult download_one(const DownloadTask& task,
         // sha mismatch: stale/corrupt cache. Remove before falling through
         // so the next download_to_file starts from a clean slate (defends
         // against a future tinyhttps that might enable Range/resume).
-        fs::remove(destFile, ec);
+        // Keep the previous file until a verified replacement is ready.
     }
 
     // ── Cache hit path 2: HEAD-based freshness (when sha256 is unset) ──
@@ -360,46 +619,41 @@ DownloadResult download_one(const DownloadTask& task,
     tinyhttps::RemoteFileMeta probedMeta;
     bool probedMetaValid = false;
     if (fs::exists(destFile) && task.sha256.empty()) {
-        probedMeta = tinyhttps::query_remote_meta(task.url);
+        probedMeta = query_remote_meta_(task.url, testHooks);
         probedMetaValid = true;
 
         if (probedMeta.ok) {
             std::error_code sec;
             auto localSize = static_cast<std::int64_t>(fs::file_size(destFile, sec));
-            std::string storedLM, storedETag;
-            if (auto stored = read_meta_sidecar_(sidecarPath)) {
-                storedLM   = std::move(stored->lastModified);
-                storedETag = std::move(stored->etag);
-            }
-            bool sizeMatch = (probedMeta.contentLength > 0)
-                          && (localSize == probedMeta.contentLength);
-            // Strong freshness signal: server's Last-Modified or ETag
-            // matches what we recorded the last time we downloaded.
-            bool freshMatch =
-                (!probedMeta.lastModified.empty() && probedMeta.lastModified == storedLM)
-             || (!probedMeta.etag.empty()         && probedMeta.etag         == storedETag);
-            // Weak signal: no sidecar (legacy file from before this code),
-            // but the size matches what the server reports right now.
-            bool weakMatch = sizeMatch && storedLM.empty() && storedETag.empty();
-
-            if (sizeMatch && (freshMatch || weakMatch)) {
+            auto admission = decide_cache_admission_({
+                .localSize = sec ? -1 : localSize,
+                .headSucceeded = true,
+                .remoteSize = probedMeta.contentLength,
+                .remoteLastModified = probedMeta.lastModified,
+                .remoteEtag = probedMeta.etag,
+                .sidecar = read_meta_sidecar_(sidecarPath),
+                .expectedCacheIdentity = task.cacheIdentity,
+            });
+            if (admission == CacheAdmission_::Hit) {
                 log::debug("already downloaded (HEAD cache hit, size={}): {}",
                            localSize, destFile.string());
                 result.success = true;
                 return result;
             }
-            // Stale: drop both file and sidecar before re-downloading.
-            fs::remove(destFile, ec);
-            fs::remove(sidecarPath, ec);
+            // Stale: retain the previous committed pair until the replacement
+            // has transferred and passed all acceptance checks.
         } else {
-            // HEAD failed (offline, server blocks HEAD, 4xx, etc.). If we
-            // already have a non-empty cached file, prefer it over failing
-            // — being airline-friendly is worth the small risk of serving
-            // a stale payload when sha256 is unset.
             std::error_code sec;
-            auto localSize = fs::file_size(destFile, sec);
-            if (!sec && localSize > 0) {
-                log::warn("HEAD probe failed for {} ({}); using cached file: {}",
+            auto localSize = static_cast<std::int64_t>(fs::file_size(destFile, sec));
+            auto admission = decide_cache_admission_({
+                .localSize = sec ? -1 : localSize,
+                .headSucceeded = false,
+                .sidecar = read_meta_sidecar_(sidecarPath),
+                .expectedCacheIdentity = task.cacheIdentity,
+            });
+            if (admission == CacheAdmission_::OfflineUnverifiedHit) {
+                log::warn("HEAD probe failed for {} ({}); using transaction-committed "
+                          "cache without cryptographic verification: {}",
                           task.url,
                           probedMeta.error.empty() ? "unknown" : probedMeta.error,
                           destFile.string());
@@ -433,16 +687,20 @@ DownloadResult download_one(const DownloadTask& task,
     // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md.
     urls = mirror::adaptive::reorder(std::move(urls), !task.sha256.empty());
 
+    auto stagingFile = unique_sibling_path_(destFile, "part");
+    tinyhttps::DownloadFileResult transferResult;
+
     // Use in-process tinyhttps for all downloads (streaming progress).
     // When a CancellationToken is available, wire isCancelled so ESC aborts.
     {
         tinyhttps::DownloadOptions opts;
-        opts.destFile = destFile;
+        opts.destFile = stagingFile;
         opts.urls = std::move(urls);
         opts.retryCount = 3;
         opts.connectTimeoutSec = 30;
         opts.maxTimeSec = 600;
         opts.onProgress = onProgress;
+        if (testHooks) opts.transferOverride = testHooks->transferOverride;
         if (cancel) {
             opts.isCancelled = [cancel] { return cancel->is_paused() || cancel->is_cancelled(); };
         }
@@ -461,9 +719,9 @@ DownloadResult download_one(const DownloadTask& task,
         // whole download with the remaining candidates untried.
         if (!task.sha256.empty()) {
             auto want = lower_hex_(task.sha256);
-            opts.onVerify = [destFile, want, &task](const std::string& u)
+            opts.onVerify = [stagingFile, want, &task](const std::string& u)
                 -> std::string {
-                auto digest = sha256::hex_file(destFile);
+                auto digest = sha256::hex_file(stagingFile);
                 if (digest && *digest == want) return {};
                 return std::format(
                     "sha256 mismatch for {} (source {}): got {}, want {}",
@@ -471,11 +729,22 @@ DownloadResult download_one(const DownloadTask& task,
             };
         }
 
-        auto dlResult = tinyhttps::download_file(opts);
-        if (!dlResult.success) {
-            result.error = dlResult.error;
+        transferResult = tinyhttps::download_file(opts);
+        if (!transferResult.success) {
+            fs::remove(stagingFile, ec);
+            result.error = transferResult.error;
             return result;
         }
+    }
+
+    if (transferResult.expectedBytes
+            && transferResult.bytesWritten != *transferResult.expectedBytes) {
+        result.error = std::format(
+            "incomplete transfer for {}: wrote {} of {} bytes",
+            task.name, transferResult.bytesWritten,
+            *transferResult.expectedBytes);
+        fs::remove(stagingFile, ec);
+        return result;
     }
 
     // Size sanity check for archives without sha256. When a recipe
@@ -487,14 +756,14 @@ DownloadResult download_one(const DownloadTask& task,
     // misleading libarchive "unrecognized format". Skip when sha256
     // is declared — that's a stronger check than size alone.
     if (task.sha256.empty() && looks_like_archive_filename_(destFile)) {
-        auto sz = fs::file_size(destFile, ec);
+        auto sz = fs::file_size(stagingFile, ec);
         if (!ec && sz < kMinPlausibleArchiveBytes_) {
             result.error = std::format(
                 "{}: downloaded payload is only {} bytes — likely an "
                 "error stub returned as 200 OK (no sha256 declared to "
                 "cross-check). URL: {}",
                 task.name, sz, task.url);
-            fs::remove(destFile, ec);
+            fs::remove(stagingFile, ec);
             return result;
         }
     }
@@ -503,22 +772,48 @@ DownloadResult download_one(const DownloadTask& task,
     // onVerify above already gated acceptance; in-process hash, no
     // dependency on a host `sha256sum` binary, which stock macOS lacks).
     if (!task.sha256.empty()) {
-        auto digest = sha256::hex_file(destFile);
+        auto digest = sha256::hex_file(stagingFile);
         if (!digest || *digest != lower_hex_(task.sha256)) {
             result.error = std::format("SHA256 mismatch for {}", task.name);
-            fs::remove(destFile, ec);
+            fs::remove(stagingFile, ec);
             return result;
         }
-    } else {
+    }
+
+    std::string commitError;
+    if (!commit_staging_file_(stagingFile, destFile, commitError)) {
+        fs::remove(stagingFile, ec);
+        result.error = std::move(commitError);
+        return result;
+    }
+
+    if (task.sha256.empty()) {
         // No sha256 declared: persist server-reported Last-Modified / ETag
         // alongside the payload so the next install can use a HEAD probe
         // to decide cache freshness instead of re-downloading.
-        if (!probedMetaValid) {
-            probedMeta = tinyhttps::query_remote_meta(task.url);
+        tinyhttps::RemoteFileMeta committedMeta {
+            .ok = transferResult.success,
+            .contentLength = transferResult.expectedBytes.value_or(-1),
+            .lastModified = transferResult.lastModified,
+            .etag = transferResult.etag,
+        };
+        if (committedMeta.lastModified.empty() && committedMeta.etag.empty()
+                && !transferResult.expectedBytes && !probedMetaValid) {
+            probedMeta = query_remote_meta_(task.url, testHooks);
             probedMetaValid = true;
         }
-        if (probedMeta.ok && (!probedMeta.lastModified.empty() || !probedMeta.etag.empty())) {
-            write_meta_sidecar_(sidecarPath, probedMeta);
+        if (committedMeta.lastModified.empty() && committedMeta.etag.empty()
+                && !transferResult.expectedBytes && probedMetaValid) {
+            committedMeta = probedMeta;
+        }
+        std::error_code sizeEc;
+        auto committedSize = static_cast<std::int64_t>(fs::file_size(destFile, sizeEc));
+        if (!sizeEc && !task.cacheIdentity.empty()) {
+            write_meta_sidecar_(
+                sidecarPath, committedMeta, committedSize,
+                task.cacheIdentity,
+                transferResult.finalUrl.empty()
+                    ? task.url : transferResult.finalUrl);
         }
     }
 
