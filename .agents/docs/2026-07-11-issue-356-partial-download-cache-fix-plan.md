@@ -1,7 +1,7 @@
 # Issue #356：无 SHA256 下载残片进入缓存的根因与修复方案
 
 > 日期：2026-07-11  
-> 状态：核心修复与正式发布已完成；发布自动化补强待合并（动态更新）
+> 状态：已完成
 > 关联 Issue：[openxlings/xlings#356](https://github.com/openxlings/xlings/issues/356)  
 > 分析基线：`openxlings/xlings@37fedb7`、`openxlings/xim-pkgindex@b894897`
 
@@ -278,7 +278,7 @@ etag: <http-etag>
 | L2 | `openxlings/xlings` | 删除 `load_platform_entries_()` 重复解析并接入 libxpkg | 已完成（PR） | 重复 parser/sandbox/template 展开器已删除；正式依赖下本地 10/10 与 [xlings#359](https://github.com/openxlings/xlings/pull/359) 七项 CI 全绿 |
 | I1 | `openxlings/xim-pkgindex` | mcpp 活跃版本补 hash，生成器禁止新裸条目 | 已完成（PR） | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352)：24/24 GLOBAL/CN 完整制品、476/476 static、当前 HEAD CI 全绿 |
 | I2 | `openxlings/xim-pkgindex` | 官方资源分批迁移与新旧客户端兼容测试 | 已完成 | [xim-pkgindex#352](https://github.com/openxlings/xim-pkgindex/pull/352) 与 [#353](https://github.com/openxlings/xim-pkgindex/pull/353) 已合并；正式索引发布链全部成功；0.4.49/0.4.62/0.4.63 正式客户端均完成安装复验 |
-| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 核心链路已完成；自动化补强待合并 | [xlings#359](https://github.com/openxlings/xlings/pull/359) 已合并；[v0.4.63](https://github.com/openxlings/xlings/releases/tag/v0.4.63) 四平台资产、资源镜像和正式索引已发布；[xlings#360](https://github.com/openxlings/xlings/pull/360) 修复未来 release sidecar/index bump 自动化 |
+| R1 | 全生态 | PR、三平台 CI、版本升级、release、索引更新 | 已完成 | [xlings#359](https://github.com/openxlings/xlings/pull/359) 与 [#360](https://github.com/openxlings/xlings/pull/360) 已合并；[v0.4.63](https://github.com/openxlings/xlings/releases/tag/v0.4.63) 四平台资产、资源镜像和正式索引已发布；最终发布、兼容和坏缓存 E2E 全部通过 |
 
 ### 9.1 PR 边界与依赖关系
 
