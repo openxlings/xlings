@@ -84,6 +84,17 @@ flowchart LR
 
 查找顺序：项目配置 → 全局配置 → 内置默认值 → GLOBAL 兜底。
 
+### xpkg 资源声明契约（0.4.63）
+
+包配方保持 `xpm.<platform>.<version>` 原模型，并可用根级或平台级
+`xpm.source = "xlings-res" | <URL template>` 消除重复 URL。版本项显式 `url` 覆盖
+默认 source；多架构资源使用 per-arch SHA256。官方二进制的每个受支持架构都必须有
+权威 hash，索引生成器缺少资产、sidecar 或 hash 时 fail closed。
+
+旧的裸 `"XLINGS_RES"`、`res = true`、单 URL、mirror、`ref` 和单 hash 继续解析，
+但新配方推荐 `source` 形式。详细字段、模板占位符和兼容优先级见
+[xpkg 资源解析设计](xpkg-resource-resolution.md)。
+
 ## 配置方式
 
 在 `.xlings.json`（全局或项目级）中声明：

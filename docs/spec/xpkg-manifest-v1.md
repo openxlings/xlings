@@ -1,6 +1,6 @@
 # xpkg 包描述文件规范 (spec v1)
 
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 编写日期: 2026-07-12 | 版本: 0.4.63
 
 ## 1. 概述
 
@@ -77,6 +77,71 @@ xpkg 包描述文件是一个 Lua 脚本（`.lua`），用于声明软件包的�
 - `deps` — 依赖声明，见第 7 节
 - `inherits` — 字符串，继承另一平台的配置
 - `exports` — 导出声明（高级，用于 ELF patch）
+
+### 5.3 资源来源扩展（xlings 0.4.63 / libxpkg 0.0.44）
+
+`xpm.source` 是保持原有 `platform -> version` 模型不变的可选默认来源。它不是新的
+版本 DSL，版本项、`ref`、mirror 和显式 `url` 仍按本节原有规则解析。
+
+```lua
+xpm = {
+    source = "xlings-res", -- 官方资源服务器
+    linux = {
+        ["latest"] = { ref = "1.2.0" },
+        ["1.2.0"] = {
+            sha256 = {
+                x86_64 = "<linux-x86_64-sha256>",
+                aarch64 = "<linux-aarch64-sha256>",
+            },
+        },
+    },
+}
+```
+
+`source` 支持两种字符串：
+
+- `"xlings-res"`：由 xlings 按用户资源服务器配置生成 URL；官方二进制推荐使用此形式并为每个受支持架构提供 SHA256。
+- URL 模板：普通 HTTP(S) 模板，可使用 `${name}`、`${version}`、`${os}`、`${arch}`、`${arch_alias}` 和 `${ext}`。
+
+来源可以放在 `xpm` 根级，也可以放在某个平台表中；平台级值覆盖根级值。版本项的显式
+`url` 始终覆盖默认 `source`。模板 URL 示例：
+
+```lua
+xpm = {
+    source = "https://github.com/acme/foo/releases/download/${version}/foo-${os}-${arch_alias}.${ext}",
+    linux = {
+        ["1.0.0"] = {
+            arch_alias = { x86_64 = "amd64", aarch64 = "arm64" },
+            sha256 = { x86_64 = "<amd64-sha256>", aarch64 = "<arm64-sha256>" },
+        },
+    },
+}
+```
+
+多架构资源仍使用原版本项模型，支持两种表达：
+
+```lua
+-- URL 模板 + 每架构 hash
+["1.0.0"] = {
+    url = "https://example.test/foo-${version}-${arch}.tar.gz",
+    sha256 = { x86_64 = "<x86-hash>", aarch64 = "<arm-hash>" },
+}
+
+-- 上游 URL 不规则时，为每架构分别声明资源
+["2.0.0"] = {
+    x86_64 = { url = "https://example.test/foo-amd64.tar.gz", sha256 = "<x86-hash>" },
+    aarch64 = { url = "https://example.test/foo-arm64.tar.gz", sha256 = "<arm-hash>" },
+}
+```
+
+旧写法 `"XLINGS_RES"`、`res = true`、单 URL、mirror table 和旧单 hash 继续兼容。
+其中 `res = true + sha256` 是历史输入，新包应使用 `xpm.source = "xlings-res"`。
+架构 hash 缺失时新 libxpkg 对多架构项 fail closed；完全没有 hash 仍可为兼容旧包而下载，
+但不表示资源经过密码学完整性验证。
+
+所有资源表达首先由 libxpkg compat 统一归一化为最终平台、架构、URL、mirror 和 SHA256；
+xlings 安装器不再维护第二套 Lua 解析器。包作者只需验证目标客户端版本和索引 CI，不应在
+hook 中自行解析 `source` 或拼接资源服务器地址。
 
 ## 6. 生命周期钩子函数
 

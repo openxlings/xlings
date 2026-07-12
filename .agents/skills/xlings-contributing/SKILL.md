@@ -142,6 +142,17 @@ XLINGS_BIN=$(find target -path '*/bin/xlings' -type f | head -1) \
 for t in tests/e2e/subos_xpkg_*.sh; do
   XLINGS_BIN=$XLINGS_BIN bash "$t" | tail -1
 done
+
+### Step 5.1: xpkg / resource changes
+
+涉及 `xpm`、官方资源或 `xim-pkgindex` 的改动必须遵守以下契约：
+
+- `libxpkg` 是解析、compat 和资源归一化的唯一入口；不要在 xlings 中新增第二套 Lua 解析器或 URL 模板展开器。
+- 默认来源使用 `xpm.source = "xlings-res"` 或 URL template；版本项仍保持原有 `platform -> version` 模型。
+- 官方二进制资源为每个受支持平台/架构提供 SHA256。多架构 hash 缺失时索引生成器应 fail closed。
+- 保留并测试旧的 `"XLINGS_RES"`、`res = true`、显式 URL、mirror、`ref` 和旧单 hash 写法。
+- 资源表达测试至少覆盖 x86_64/aarch64、根级/平台级 source、显式 URL 覆盖、mirror 和旧客户端兼容 fixture。
+- 修改资源缓存、下载或发布链时，除 `mcpp build && mcpp test` 外，使用隔离 `XLINGS_HOME` 验证坏缓存自愈、SHA256 校验和实际 release 资产。
 ```
 
 ### Step 6: Commit
