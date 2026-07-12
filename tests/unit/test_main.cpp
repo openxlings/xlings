@@ -1065,6 +1065,44 @@ TEST(XimDownloaderTest, RejectsIncompleteReportedTransferBeforeCommit) {
     fs::remove_all(tmp);
 }
 
+TEST(XimDownloaderTest, PersistsAcceptedGetMetadataInCommittedSidecar) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_get_metadata";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    xlings::xim::DownloadTask task {
+        .name = "metadata-test",
+        .url = "https://origin.test/payload.bin",
+        .cacheIdentity = "metadata-test/1/linux/x86_64/url",
+        .destDir = tmp,
+    };
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.transferOverride = [](const std::string&, const fs::path& path) {
+        std::ofstream(path) << "payload";
+        return xlings::tinyhttps::DownloadFileResult {
+            .success = true,
+            .bytesWritten = 7,
+            .expectedBytes = 7,
+            .finalUrl = "https://cdn.test/final.bin",
+            .etag = "etag-get",
+            .lastModified = "Sat, 12 Jul 2026 00:00:00 GMT",
+        };
+    };
+
+    auto result = xlings::xim::download_one(task, nullptr, nullptr, &hooks);
+    ASSERT_TRUE(result.success) << result.error;
+    auto sidecar = xlings::xim::read_meta_sidecar_(result.localFile.string() + ".meta");
+    ASSERT_TRUE(sidecar.has_value());
+    EXPECT_EQ(sidecar->format, 2);
+    EXPECT_TRUE(sidecar->complete);
+    EXPECT_EQ(sidecar->size, 7);
+    EXPECT_EQ(sidecar->etag, "etag-get");
+    EXPECT_EQ(sidecar->sourceUrl, "https://cdn.test/final.bin");
+    EXPECT_EQ(sidecar->cacheIdentity, task.cacheIdentity);
+    fs::remove_all(tmp);
+}
+
 TEST(XimDownloaderTest, CancelledDownloadPreservesCommittedDestination) {
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() / "xim_download_transaction_cancel";
