@@ -155,7 +155,7 @@ bool recover_download_transaction_(
     const auto stagingPrefix = destination.filename().string() + ".part.";
     auto parent = destination.parent_path();
     for (auto it = fs::directory_iterator(parent, ec);
-         !ec && it != fs::directory_iterator{}; it.increment(ec)) {
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         auto name = it->path().filename().string();
         if (name.starts_with(backupPrefix)) backups.push_back(it->path());
         else if (name.starts_with(stagingPrefix)) stagingFiles.push_back(it->path());
