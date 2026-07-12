@@ -2,7 +2,7 @@
 
 > 日期：2026-07-11
 > 修订：2026-07-12
-> 状态：已实现，待随 xlings 发布
+> 状态：已实现并随 xlings 0.4.63、libxpkg 0.0.44 发布
 > 适用版本：libxpkg 0.0.44+
 > 范围：libxpkg 解析/compat、xlings 安装器、官方 xim-pkgindex
 

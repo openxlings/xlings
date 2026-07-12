@@ -104,6 +104,7 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 | 文档 | 内容 |
 |------|------|
 | [SubOS-as-XPKG](design/subos-as-xpkg.md) | type="subos" 包格式、fork 机制、非交互执行 |
+| [xpkg 资源解析](design/xpkg-resource-resolution.md) | `xpm.source`、多架构 SHA256、libxpkg compat 与索引发布契约 |
 | [xvm 版本管理](design/xvm-version-management.md) | 版本视图 + 引用计数实现多版本共存 |
 | [SubOS 隔离机制](design/subos-isolation.md) | 三级隔离(shell / FS / image)的实现细节 |
 | [包索引生态](design/package-index-ecosystem.md) | 去中心化索引设计 |
@@ -113,6 +114,6 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 
 | 文档 | 内容 |
 |------|------|
-| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook 约定 |
+| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook、`xpm.source` 与多架构资源约定 |
 | [.xlings.json 字段](spec/xlings-json-schema.md) | 配置文件各字段语义 |
 | [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求/响应/事件协议 |
