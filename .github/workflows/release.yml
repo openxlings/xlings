@@ -341,6 +341,14 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
+      - name: Generate SHA256 sidecars
+        run: |
+          while IFS= read -r file; do
+            dir=$(dirname "$file")
+            name=$(basename "$file")
+            (cd "$dir" && sha256sum "$name" > "$name.sha256")
+          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -353,6 +361,7 @@ jobs:
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
+            artifacts/**/*.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

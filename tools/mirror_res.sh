@@ -22,12 +22,13 @@ VER="${2:?usage: mirror_res.sh <project> <version>}"
 case "$PROJ" in
   xlings)
     : "${SRC_REPO:=openxlings/xlings}"
-    DEFAULT_ASSETS="xlings-${VER}-linux-x86_64.tar.gz xlings-${VER}-linux-aarch64.tar.gz xlings-${VER}-macosx-arm64.tar.gz xlings-${VER}-windows-x86_64.zip"
+    p="xlings-${VER}"
+    DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
   mcpp)
     : "${SRC_REPO:=mcpp-community/mcpp}"
-    # mcpp ships a .sha256 sidecar next to each archive; mirror both so the
-    # xlings-res/mcpp release stays byte-for-byte equivalent to upstream.
+    # Mirror each archive and its authoritative checksum sidecar so resource
+    # index generation can verify every platform before publishing a recipe.
     p="mcpp-${VER}"
     DEFAULT_ASSETS="${p}-linux-x86_64.tar.gz ${p}-linux-x86_64.tar.gz.sha256 ${p}-linux-aarch64.tar.gz ${p}-linux-aarch64.tar.gz.sha256 ${p}-macosx-arm64.tar.gz ${p}-macosx-arm64.tar.gz.sha256 ${p}-windows-x86_64.zip ${p}-windows-x86_64.zip.sha256"
     ;;
