@@ -124,12 +124,11 @@ namespace platform {
         if (!std::filesystem::exists(path, ec)) return;
         platform_impl::lchown_path_(path, inv->uid, inv->gid);
         if (recursive && std::filesystem::is_directory(path, ec)) {
-            auto end = std::filesystem::recursive_directory_iterator{};
             for (auto it = std::filesystem::recursive_directory_iterator(
                      path,
                      std::filesystem::directory_options::skip_permission_denied,
                      ec);
-                 !ec && it != end; it.increment(ec)) {
+                 !ec && it != std::default_sentinel; it.increment(ec)) {
                 platform_impl::lchown_path_(it->path(), inv->uid, inv->gid);
             }
         }

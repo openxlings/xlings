@@ -245,7 +245,7 @@ std::expected<DownloadResource_, std::string> resolve_download_resource_(
 bool has_directory_entries_(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) return false;
-    return std::filesystem::directory_iterator(dir, ec) != std::filesystem::directory_iterator{};
+    return std::filesystem::directory_iterator(dir, ec) != std::default_sentinel;
 }
 
 bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
@@ -255,7 +255,8 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
     if (!fs::exists(extractRoot, ec) || !fs::is_directory(extractRoot, ec)) return false;
 
     std::vector<fs::path> entries;
-    for (fs::directory_iterator it(extractRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (fs::directory_iterator it(extractRoot, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         entries.push_back(it->path());
     }
     if (ec || entries.empty()) return false;
@@ -309,7 +310,8 @@ bool stage_extracted_payload_(const std::filesystem::path& extractRoot,
     }
 
     std::vector<fs::path> payloadEntries;
-    for (fs::directory_iterator it(payloadRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (fs::directory_iterator it(payloadRoot, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         payloadEntries.push_back(it->path());
     }
     if (ec) return false;
@@ -1785,7 +1787,7 @@ public:
         auto parent = installDir.parent_path();
         std::error_code listEc;
         auto first = std::filesystem::directory_iterator(parent, listEc);
-        if (!listEc && first == std::filesystem::directory_iterator{}) {
+        if (!listEc && first == std::default_sentinel) {
             std::error_code rmEc;
             if (std::filesystem::remove(parent, rmEc)) {
                 log::debug("swept empty package dir: {}", parent.string());
