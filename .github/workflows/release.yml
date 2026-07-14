@@ -447,6 +447,10 @@ jobs:
   mirror-binaries:
     needs: [create-release]
     runs-on: ubuntu-latest
+    # Hard backstop: normal runtime is 2-5 min. Without this, a stalled
+    # GitCode upload/verify pinned the job for 40+ min (v0.4.65). The script
+    # itself bounds every network call; this catches anything it can't.
+    timeout-minutes: 15
     env:
       XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
       GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}

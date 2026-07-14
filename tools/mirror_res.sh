@@ -51,30 +51,60 @@ for a in "${ASSETS[@]}"; do
 done
 
 # ── GitHub (gh --clobber, reliable) ───────────────────────────────
+# probe <url> -> "code size", hard wall-clock capped. Every network check in
+# this script MUST go through this (or an equivalent bounded call): a stalled
+# CDN connection with no --max-time hung the v0.4.65 mirror job for 40+ min
+# (3 fast failures, then a timeout-less upload/verify stall).
+probe() {
+  curl -sL --connect-timeout 10 --max-time 90 -o /dev/null \
+       -w '%{http_code} %{size_download}' "$1" 2>/dev/null || echo "ERR 0"
+}
+asset_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
+
 if [[ -n "${XLINGS_RES_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
   info "GitHub $GH_DST tag $VER"
   GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "$VER" -R "$GH_DST" >/dev/null 2>&1 \
     || GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release create "$VER" -R "$GH_DST" --title "$VER" --notes "$PROJ $VER (mirror of $SRC_REPO)"
+  # One asset-list call so idempotent re-runs (release re-run after a cancel,
+  # manual top-up) skip what is already fully mirrored. Size must match the
+  # local file — a partial upload from an interrupted run is re-clobbered.
+  existing="$(GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "$VER" -R "$GH_DST" \
+                --json assets --jq '.assets[] | "\(.name) \(.size)"' 2>/dev/null || true)"
   for a in "${ASSETS[@]}"; do
+    if grep -qx "$a $(asset_size "$DL/$a")" <<< "$existing"; then
+      info "gh $a already mirrored, skip"
+      continue
+    fi
     GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release upload "$VER" "$DL/$a" -R "$GH_DST" --clobber
   done
 else
   info "no github auth; skipping github mirror"
 fi
 
-# ── GitCode (gtc, per-file retry — multi-file upload can 502 and drop files) ──
+# ── GitCode (gtc, per-file — multi-file upload can 502 and drop files) ──────
 if [[ -n "${GITCODE_TOKEN:-}" ]] && command -v gtc >/dev/null 2>&1; then
   info "GitCode $GTC_DST tag $VER"
   gtc release create "$GTC_DST" --tag "$VER" --name "$VER" 2>/dev/null || true
-  # Upload then verify the actual DOWNLOAD is 200 (gtc can report success yet
-  # leave a phantom/missing asset — obs_callback flakiness), retry up to 5.
   for a in "${ASSETS[@]}"; do
-    for try in 1 2 3 4 5; do
-      gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || true
-      if [[ "$(curl -fsSL -o /dev/null -w '%{http_code}' -L "https://gitcode.com/${GTC_DST}/releases/download/${VER}/${a}" 2>/dev/null)" == 200 ]]; then
-        break
-      fi
-      echo "[mirror] gtc $a not 200 after try $try, retrying..."; sleep 4
+    url="https://gitcode.com/${GTC_DST}/releases/download/${VER}/${a}"
+    want="$(asset_size "$DL/$a")"
+    # Skip if already fully mirrored (same download-verify the retry loop
+    # uses), so re-runs only touch the assets that are actually missing.
+    read -r code size <<< "$(probe "$url")"
+    if [[ "$code" == 200 && "$size" == "$want" ]]; then
+      info "gtc $a already mirrored, skip"
+      continue
+    fi
+    # Upload, then verify the actual DOWNLOAD is 200 with the right size (gtc
+    # can report success yet leave a phantom/missing asset — obs_callback
+    # flakiness). Each attempt is bounded: 180s upload cap + 90s probe cap,
+    # so a fully-degraded GitCode fails this asset in <15 min instead of
+    # hanging the job (release.yml also has a job-level timeout backstop).
+    for try in 1 2 3; do
+      timeout -k 10 180 gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || true
+      read -r code size <<< "$(probe "$url")"
+      [[ "$code" == 200 && "$size" == "$want" ]] && break
+      echo "[mirror] gtc $a not OK after try $try (code=$code size=$size/want=$want), retrying..."; sleep 5
     done
   done
 else
@@ -86,7 +116,7 @@ info "verify:"
 rc=0
 for host in "github.com/$GH_DST" "gitcode.com/$GTC_DST"; do
   for a in "${ASSETS[@]}"; do
-    code=$(curl -fsSL -o /dev/null -w '%{http_code}' -L "https://${host}/releases/download/${VER}/${a}" 2>/dev/null || echo ERR)
+    read -r code _ <<< "$(probe "https://${host}/releases/download/${VER}/${a}")"
     echo "  $code  https://${host}/releases/download/${VER}/${a}"
     [[ "$code" == 200 ]] || rc=1
   done
