@@ -198,7 +198,7 @@ except Exception:
       timeout -k 10 90 gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || rc=$?
       if probe_ok "$url" "$want"; then ok=1; break; fi
       if [[ "$rc" == 124 || "$rc" == 137 ]]; then
-        echo "[mirror] gtc $a upload STALLED (killed at 90s) — systemic on GitCode's side, not retrying" >&2
+        echo "[mirror] gtc $a upload STALLED (killed at 90s) — cross-border runner->OBS wall (see probe PR #371); from a GitHub runner this cannot succeed. Finish the GitCode mirror by running tools/mirror-latest.sh from a CN environment." >&2
         break
       fi
       [[ "$try" == 1 ]] && echo "[mirror] gtc $a not OK (rc=$rc), one retry..."
@@ -207,6 +207,7 @@ except Exception:
   done
   if [[ ${#gtc_failed[@]} -gt 0 ]]; then
     echo "[mirror] gitcode incomplete (${#gtc_failed[@]} asset(s)): ${gtc_failed[*]}" >&2
+    echo "[mirror] hint: if this ran on a GitHub runner, big assets are expected to fail here — run tools/mirror-latest.sh from a CN environment to finish (runbook: .agents/docs/2026-07-15-gitcode-large-asset-mirror-runbook.md)" >&2
   fi
 else
   info "no GITCODE_TOKEN/gtc; skipping gitcode mirror"

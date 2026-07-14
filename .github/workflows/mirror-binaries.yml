@@ -6,6 +6,13 @@
 # The script is idempotent: assets that already verify (200 + size match) are
 # skipped, so a re-run only uploads what is actually missing.
 #
+# NOTE — GitCode big assets (>~8 MiB) still CANNOT be uploaded from here: this
+# runs on a GitHub-hosted runner, which hits the same cross-border upload wall
+# as release.yml (probe PR #371). For those, run `tools/mirror-latest.sh` from
+# a CN environment instead. This workflow is still useful for re-mirroring the
+# GitHub side and the small GitCode assets. Runbook:
+# .agents/docs/2026-07-15-gitcode-large-asset-mirror-runbook.md
+#
 # Counterpart of xim-pkgindex's publish-sub-indexes.yml (same on-demand
 # top-up pattern for index artifacts).
 name: Mirror Binaries (manual)
