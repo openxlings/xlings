@@ -173,7 +173,10 @@ def _upload_one(cfg, repo, tag, file_path):
     with open(file_path, "rb") as f:
         data = f.read()
     req = urllib.request.Request(put_url, data=data, headers=h, method="PUT")
-    with urllib.request.urlopen(req, timeout=600) as r:
+    # 120s socket-inactivity cap (was 600): assets are <10 MB, a healthy OBS
+    # PUT finishes in seconds, and callers retry — a stalled connection must
+    # fail fast instead of pinning a CI job (v0.4.65 mirror hung 40+ min).
+    with urllib.request.urlopen(req, timeout=120) as r:
         ok = r.status == 200
         body = r.read().decode(errors="replace")[:200]
     if not ok:
