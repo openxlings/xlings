@@ -84,6 +84,17 @@ retries", it is a broken/phantom attachment: GitCode has **no** asset/release
 delete via API (v5 returns 405, exposes no release id), so delete it in the
 GitCode release **web UI**, then re-run the command.
 
+## Validation
+
+The tooling was verified end-to-end from a CN host before adoption:
+
+- **Steady state** (nothing missing, v0.4.65): 16 assets skipped, 0 downloads,
+  all 16 URLs (8 assets × 2 hosts) `OK`, ~40 s.
+- **Gap-fill** (a real GitHub-only gap constructed on a throwaway tag): the
+  script detected the gap, downloaded from the public GitHub URL, uploaded to
+  GitCode, and verified — the GitCode copy was `sha256`-identical to the
+  source, and a second run was a clean idempotent skip.
+
 ## Related
 
 - Probe: openxlings/xlings#371 (throwaway; closed).
