@@ -56,8 +56,10 @@ done
 # CDN connection with no --max-time hung the v0.4.65 mirror job for 40+ min
 # (3 fast failures, then a timeout-less upload/verify stall).
 probe() {
-  curl -sL --connect-timeout 10 --max-time 90 -o /dev/null \
-       -w '%{http_code} %{size_download}' "$1" 2>/dev/null || echo "ERR 0"
+  local out
+  out="$(curl -sL --connect-timeout 10 --max-time 90 -o /dev/null \
+           -w '%{http_code} %{size_download}' "$1" 2>/dev/null)" \
+    && echo "$out" || echo "ERR 0"
 }
 asset_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
@@ -85,28 +87,60 @@ fi
 if [[ -n "${GITCODE_TOKEN:-}" ]] && command -v gtc >/dev/null 2>&1; then
   info "GitCode $GTC_DST tag $VER"
   gtc release create "$GTC_DST" --tag "$VER" --name "$VER" 2>/dev/null || true
+  # One public-API call: which asset NAMES are registered on the release.
+  # Distinguishes "missing" (never uploaded — upload can fix it) from
+  # "registered but not downloadable" (broken/phantom attachment — a
+  # same-name upload CANNOT replace it; it must be deleted in the GitCode
+  # release UI first, so report and move on instead of retrying).
+  registered="$(curl -s --connect-timeout 10 --max-time 30 \
+      "https://api.gitcode.com/api/v5/repos/${GTC_DST}/releases/tags/${VER}" \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+    print("\n".join(a["name"] for a in d.get("assets", []) if a.get("type") == "attach"))
+except Exception:
+    pass' || true)"
+
+  gtc_failed=()
   for a in "${ASSETS[@]}"; do
     url="https://gitcode.com/${GTC_DST}/releases/download/${VER}/${a}"
     want="$(asset_size "$DL/$a")"
-    # Skip if already fully mirrored (same download-verify the retry loop
-    # uses), so re-runs only touch the assets that are actually missing.
+    # Skip if already fully mirrored, so re-runs only touch actual gaps.
     read -r code size <<< "$(probe "$url")"
     if [[ "$code" == 200 && "$size" == "$want" ]]; then
       info "gtc $a already mirrored, skip"
       continue
     fi
-    # Upload, then verify the actual DOWNLOAD is 200 with the right size (gtc
-    # can report success yet leave a phantom/missing asset — obs_callback
-    # flakiness). Each attempt is bounded: 180s upload cap + 90s probe cap,
-    # so a fully-degraded GitCode fails this asset in <15 min instead of
-    # hanging the job (release.yml also has a job-level timeout backstop).
-    for try in 1 2 3; do
-      timeout -k 10 180 gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || true
+    if grep -qxF "$a" <<< "$registered"; then
+      echo "[mirror] WARN: gtc $a registered on the release but not downloadable (code=$code size=$size/want=$want) — broken attachment; delete it in the GitCode release UI, then re-run mirror-binaries.yml" >&2
+      gtc_failed+=("$a")
+      continue
+    fi
+    # Upload, then verify the actual DOWNLOAD is 200 with the right size
+    # (gtc can report success yet register nothing — obs_callback
+    # flakiness). Budget per asset: at most ONE retry, and only for FAST
+    # failures. A healthy upload finishes in seconds; an attempt killed by
+    # the 90s cap (rc=124) means GitCode's ingest is stalling on this file
+    # (observed 2026-07-14: every asset >8 MiB stalled while <8 MiB ones
+    # sailed through, across two separate runs) — that is systemic, a
+    # retry just burns the budget. Whole gitcode section stays <5 min.
+    ok=""
+    for try in 1 2; do
+      rc=0
+      timeout -k 10 90 gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || rc=$?
       read -r code size <<< "$(probe "$url")"
-      [[ "$code" == 200 && "$size" == "$want" ]] && break
-      echo "[mirror] gtc $a not OK after try $try (code=$code size=$size/want=$want), retrying..."; sleep 5
+      if [[ "$code" == 200 && "$size" == "$want" ]]; then ok=1; break; fi
+      if [[ "$rc" == 124 || "$rc" == 137 ]]; then
+        echo "[mirror] gtc $a upload STALLED (killed at 90s) — systemic on GitCode's side, not retrying" >&2
+        break
+      fi
+      [[ "$try" == 1 ]] && echo "[mirror] gtc $a not OK (rc=$rc code=$code size=$size/want=$want), one retry..."
     done
+    [[ -n "$ok" ]] || gtc_failed+=("$a")
   done
+  if [[ ${#gtc_failed[@]} -gt 0 ]]; then
+    echo "[mirror] gitcode incomplete (${#gtc_failed[@]} asset(s)): ${gtc_failed[*]}" >&2
+  fi
 else
   info "no GITCODE_TOKEN/gtc; skipping gitcode mirror"
 fi
