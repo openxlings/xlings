@@ -51,31 +51,56 @@ DL="$(mktemp -d)"; trap 'rm -rf "$DL"' EXIT
 # (3 fast failures, then a timeout-less upload/verify stall).
 probe() {
   local out
-  out="$(curl -sL --connect-timeout 10 --max-time 90 -o /dev/null \
+  out="$(curl -sL --connect-timeout 10 --max-time 60 -o /dev/null \
            -w '%{http_code} %{size_download}' "$1" 2>/dev/null)" \
     && echo "$out" || echo "ERR 0"
 }
+# probe with retries. Cross-border GETs (esp. from a CN host) flake
+# intermittently even for present assets — a single transient failure must NOT
+# be read as "missing/broken". Returns 0 on the first 200 (size-matched when a
+# want is given), so a healthy asset resolves on attempt 1 with no delay.
+probe_ok() {
+  local url="$1" want="${2:-}" code size
+  for _ in 1 2 3; do
+    read -r code size <<< "$(probe "$url")"
+    if [[ "$code" == 200 ]] && { [[ -z "$want" ]] || [[ "$size" == "$want" ]]; }; then
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
 asset_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
-# Expected asset sizes from the SOURCE release — ONE API call, no body
-# download. Lets the skip-if-already-mirrored checks below run without first
-# pulling ~48 MB every time (steady-state re-runs, e.g. a daily CN top-up
-# cron, then move no bytes). Empty entries just fall back to a real download.
+# Expected asset sizes from the SOURCE release — ONE call, no body download.
+# Lets the skip-if-already-mirrored checks below run without first pulling
+# ~48 MB every time (steady-state re-runs, e.g. a daily CN top-up cron, then
+# move no bytes). Uses the PUBLIC GitHub API (no auth) so a headless timer with
+# a locked gh keyring still works; empty entries just fall back to a download.
 declare -A WANT=()
 while IFS=$'\t' read -r _n _s; do [[ -n "$_n" ]] && WANT["$_n"]="$_s"; done < <(
-  GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "v$VER" -R "$SRC_REPO" \
-    --json assets --jq '.assets[] | "\(.name)\t\(.size)"' 2>/dev/null || true)
+  curl -s --connect-timeout 10 --max-time 30 \
+       "https://api.github.com/repos/$SRC_REPO/releases/tags/v$VER" \
+  | python3 -c 'import json,sys
+try:
+    for a in json.load(sys.stdin).get("assets", []):
+        print(a["name"] + "\t" + str(a["size"]))
+except Exception:
+    pass' 2>/dev/null || true)
 
 # Download a single source asset into $DL on demand (only when an upload
-# actually needs the bytes). Retries because CN->GitHub can be slow/flaky
-# (~100 KB/s; a 9 MB asset ~100 s) and a single give-up must not abort the run.
+# actually needs the bytes), via the PUBLIC release URL — no gh/auth, so it
+# runs headless. Retries because CN->GitHub can be slow/flaky (~100 KB/s; a
+# 27 MB asset ~4-5 min) and a single give-up must not abort the whole run.
 ensure_local() {
   local a="$1" try
   [[ -f "$DL/$a" ]] && return 0
   for try in 1 2 3; do
-    if gh release download "v$VER" -R "$SRC_REPO" -D "$DL" -p "$a" --clobber 2>/dev/null; then
+    if curl -fsSL --connect-timeout 15 --max-time 600 -o "$DL/$a" \
+         "https://github.com/$SRC_REPO/releases/download/v$VER/$a"; then
       return 0
     fi
+    rm -f "$DL/$a"
     echo "[mirror] download $a attempt $try failed, retrying..." >&2; sleep 5
   done
   echo "[mirror] FAIL: cannot download $a from $SRC_REPO v$VER after 3 tries" >&2
@@ -137,13 +162,17 @@ except Exception:
     want="${WANT[$a]:-}"
     # Skip if already fully mirrored (using the source size when known), so
     # re-runs only touch actual gaps — no download for assets already present.
-    read -r code size <<< "$(probe "$url")"
-    if [[ -n "$want" && "$code" == 200 && "$size" == "$want" ]]; then
+    # probe_ok retries, so a flaky cross-border GET doesn't force a needless
+    # re-upload or a false "broken attachment" verdict below. When the source
+    # size is unknown (WANT lookup missed) it falls back to a 200-only check —
+    # a GitCode asset only registers after the full OBS callback, so "present"
+    # already implies "complete".
+    if probe_ok "$url" "$want"; then
       info "gtc $a already mirrored, skip"
       continue
     fi
     if grep -qxF "$a" <<< "$registered"; then
-      echo "[mirror] WARN: gtc $a registered on the release but not downloadable (code=$code size=$size/want=$want) — broken attachment; delete it in the GitCode release UI, then re-run mirror-binaries.yml" >&2
+      echo "[mirror] WARN: gtc $a registered on the release but not downloadable after retries — likely a broken/phantom attachment; delete it in the GitCode release UI, then re-run mirror-binaries.yml (or mirror-latest.sh)" >&2
       gtc_failed+=("$a")
       continue
     fi
@@ -151,7 +180,7 @@ except Exception:
     # size (covers the empty-WANT fallback and re-checks the skip condition).
     ensure_local "$a" || { gtc_failed+=("$a"); continue; }
     want="$(asset_size "$DL/$a")"
-    if [[ "$code" == 200 && "$size" == "$want" ]]; then
+    if probe_ok "$url" "$want"; then
       info "gtc $a already mirrored, skip"
       continue
     fi
@@ -167,13 +196,12 @@ except Exception:
     for try in 1 2; do
       rc=0
       timeout -k 10 90 gtc release upload "$GTC_DST" "$DL/$a" --tag "$VER" >/dev/null 2>&1 || rc=$?
-      read -r code size <<< "$(probe "$url")"
-      if [[ "$code" == 200 && "$size" == "$want" ]]; then ok=1; break; fi
+      if probe_ok "$url" "$want"; then ok=1; break; fi
       if [[ "$rc" == 124 || "$rc" == 137 ]]; then
         echo "[mirror] gtc $a upload STALLED (killed at 90s) — systemic on GitCode's side, not retrying" >&2
         break
       fi
-      [[ "$try" == 1 ]] && echo "[mirror] gtc $a not OK (rc=$rc code=$code size=$size/want=$want), one retry..."
+      [[ "$try" == 1 ]] && echo "[mirror] gtc $a not OK (rc=$rc), one retry..."
     done
     [[ -n "$ok" ]] || gtc_failed+=("$a")
   done
@@ -189,9 +217,9 @@ info "verify:"
 rc=0
 for host in "github.com/$GH_DST" "gitcode.com/$GTC_DST"; do
   for a in "${ASSETS[@]}"; do
-    read -r code _ <<< "$(probe "https://${host}/releases/download/${VER}/${a}")"
-    echo "  $code  https://${host}/releases/download/${VER}/${a}"
-    [[ "$code" == 200 ]] || rc=1
+    url="https://${host}/releases/download/${VER}/${a}"
+    # probe_ok retries so a flaky cross-border GET isn't reported as a gap.
+    if probe_ok "$url"; then echo "  OK    $url"; else echo "  MISS  $url"; rc=1; fi
   done
 done
 [[ $rc == 0 ]] && info "all platforms mirrored OK" || { echo "[mirror] WARN: some assets not 200" >&2; }
