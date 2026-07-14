@@ -55,6 +55,8 @@ TESTS=(
     "E2E-05 |project_e2e_test.sh||"
     "E2E-06 |sub_index_search_test.sh||"
     "E2E-07 |sub_index_install_test.sh||"
+    "E2E-07a|install_subindex_first_run_test.sh||"
+    "E2E-07b|install_refresh_on_missing_test.sh||"
     "E2E-08 |index_cache_test.sh||"
     "E2E-09 |legacy_config_test.sh||"
     "E2E-10 |pkginfo_install_dir_test.sh||"

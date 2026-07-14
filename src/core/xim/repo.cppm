@@ -459,6 +459,16 @@ std::vector<IndexRepo> discovered_project_sub_repos() {
     return load_sub_repos_json(path);
 }
 
+// #366: true once the default/global sub-indexes have been synced at least
+// once (the persisted xim-indexrepos.json marker exists). On a fresh machine
+// this is false even though the main index rebuilds fine, which is exactly why
+// get_catalog() must force a first-run sync — otherwise sub-index packages
+// (scode/awesome/d2x) never resolve until the user runs `xlings update`.
+bool sub_indexes_initialized() {
+    auto p = sub_repos_json_path(false);
+    return !p.empty() && std::filesystem::exists(p);
+}
+
 // Get the main index repo directory path (always global)
 std::filesystem::path main_repo_dir() {
     auto& repos = Config::global_index_repos();
