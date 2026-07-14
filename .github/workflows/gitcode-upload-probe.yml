@@ -1,0 +1,59 @@
+# THROWAWAY diagnostic workflow — do NOT merge.
+# Determines whether a GitHub-hosted runner can upload a large (>8 MiB) release
+# asset to GitCode, and via which method. All other workflows are removed on
+# this branch so this is the only check that runs on the probe PR.
+name: gitcode-upload-probe
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — GITCODE_TOKEN must be present
+        run: |
+          if [ -z "${GITCODE_TOKEN}" ]; then
+            echo "::error::GITCODE_TOKEN secret is empty on this runner" >&2
+            exit 1
+          fi
+
+      - name: Fetch a representative 27 MiB asset from GitHub (fast on runner)
+        run: |
+          curl -sL --connect-timeout 10 --max-time 120 -o /tmp/big.tar.gz \
+            https://github.com/xlings-res/xlings/releases/download/0.4.65/xlings-0.4.65-linux-aarch64.tar.gz
+          ls -l /tmp/big.tar.gz
+
+      - name: Probe GitCode upload strategies
+        run: |
+          chmod +x tools/gtc tools/_ci_gitcode_probe.sh
+          export PATH="$PWD/tools:$PATH"
+          bash tools/_ci_gitcode_probe.sh /tmp/big.tar.gz
+
+      - name: Best-effort cleanup — delete the throwaway probe release
+        if: always()
+        run: |
+          set +e
+          TAG="ci-upload-probe"; REPO="xlings-res/xlings"
+          API="https://api.gitcode.com/api/v5"
+          # Look up the release id for the tag, then attempt DELETE (assets
+          # themselves may be undeletable; a whole-release delete may still work).
+          RID=$(curl -s -H "PRIVATE-TOKEN: $GITCODE_TOKEN" \
+                 "$API/repos/$REPO/releases/tags/$TAG" \
+               | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+          echo "probe release id = ${RID:-<none>}"
+          if [ -n "$RID" ]; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                    -H "PRIVATE-TOKEN: $GITCODE_TOKEN" \
+                    "$API/repos/$REPO/releases/$RID")
+            echo "release delete HTTP $code (non-200 => leftover must be cleaned manually)"
+          fi
