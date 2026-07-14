@@ -45,12 +45,6 @@ info() { echo "[mirror] $*"; }
 
 DL="$(mktemp -d)"; trap 'rm -rf "$DL"' EXIT
 
-info "downloading $SRC_REPO v$VER assets ($PROJ)"
-for a in "${ASSETS[@]}"; do
-  gh release download "v$VER" -R "$SRC_REPO" -D "$DL" -p "$a" 2>/dev/null || { echo "[mirror] FAIL: missing $a in $SRC_REPO v$VER" >&2; exit 1; }
-done
-
-# ── GitHub (gh --clobber, reliable) ───────────────────────────────
 # probe <url> -> "code size", hard wall-clock capped. Every network check in
 # this script MUST go through this (or an equivalent bounded call): a stalled
 # CDN connection with no --max-time hung the v0.4.65 mirror job for 40+ min
@@ -63,6 +57,32 @@ probe() {
 }
 asset_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
+# Expected asset sizes from the SOURCE release — ONE API call, no body
+# download. Lets the skip-if-already-mirrored checks below run without first
+# pulling ~48 MB every time (steady-state re-runs, e.g. a daily CN top-up
+# cron, then move no bytes). Empty entries just fall back to a real download.
+declare -A WANT=()
+while IFS=$'\t' read -r _n _s; do [[ -n "$_n" ]] && WANT["$_n"]="$_s"; done < <(
+  GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "v$VER" -R "$SRC_REPO" \
+    --json assets --jq '.assets[] | "\(.name)\t\(.size)"' 2>/dev/null || true)
+
+# Download a single source asset into $DL on demand (only when an upload
+# actually needs the bytes). Retries because CN->GitHub can be slow/flaky
+# (~100 KB/s; a 9 MB asset ~100 s) and a single give-up must not abort the run.
+ensure_local() {
+  local a="$1" try
+  [[ -f "$DL/$a" ]] && return 0
+  for try in 1 2 3; do
+    if gh release download "v$VER" -R "$SRC_REPO" -D "$DL" -p "$a" --clobber 2>/dev/null; then
+      return 0
+    fi
+    echo "[mirror] download $a attempt $try failed, retrying..." >&2; sleep 5
+  done
+  echo "[mirror] FAIL: cannot download $a from $SRC_REPO v$VER after 3 tries" >&2
+  return 1
+}
+
+gh_failed=()
 if [[ -n "${XLINGS_RES_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
   info "GitHub $GH_DST tag $VER"
   GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "$VER" -R "$GH_DST" >/dev/null 2>&1 \
@@ -73,6 +93,13 @@ if [[ -n "${XLINGS_RES_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
   existing="$(GH_TOKEN="${XLINGS_RES_TOKEN:-}" gh release view "$VER" -R "$GH_DST" \
                 --json assets --jq '.assets[] | "\(.name) \(.size)"' 2>/dev/null || true)"
   for a in "${ASSETS[@]}"; do
+    want="${WANT[$a]:-}"
+    if [[ -n "$want" ]] && grep -qx "$a $want" <<< "$existing"; then
+      info "gh $a already mirrored, skip"
+      continue
+    fi
+    ensure_local "$a" || { gh_failed+=("$a"); continue; }
+    # Re-check with the true local size (covers the empty-WANT fallback).
     if grep -qx "$a $(asset_size "$DL/$a")" <<< "$existing"; then
       info "gh $a already mirrored, skip"
       continue
@@ -81,6 +108,9 @@ if [[ -n "${XLINGS_RES_TOKEN:-}" ]] || gh auth status >/dev/null 2>&1; then
   done
 else
   info "no github auth; skipping github mirror"
+fi
+if [[ ${#gh_failed[@]} -gt 0 ]]; then
+  echo "[mirror] github incomplete (${#gh_failed[@]} asset(s)): ${gh_failed[*]}" >&2
 fi
 
 # ── GitCode (gtc, per-file — multi-file upload can 502 and drop files) ──────
@@ -104,16 +134,25 @@ except Exception:
   gtc_failed=()
   for a in "${ASSETS[@]}"; do
     url="https://gitcode.com/${GTC_DST}/releases/download/${VER}/${a}"
-    want="$(asset_size "$DL/$a")"
-    # Skip if already fully mirrored, so re-runs only touch actual gaps.
+    want="${WANT[$a]:-}"
+    # Skip if already fully mirrored (using the source size when known), so
+    # re-runs only touch actual gaps — no download for assets already present.
     read -r code size <<< "$(probe "$url")"
-    if [[ "$code" == 200 && "$size" == "$want" ]]; then
+    if [[ -n "$want" && "$code" == 200 && "$size" == "$want" ]]; then
       info "gtc $a already mirrored, skip"
       continue
     fi
     if grep -qxF "$a" <<< "$registered"; then
       echo "[mirror] WARN: gtc $a registered on the release but not downloadable (code=$code size=$size/want=$want) — broken attachment; delete it in the GitCode release UI, then re-run mirror-binaries.yml" >&2
       gtc_failed+=("$a")
+      continue
+    fi
+    # Need the bytes to (re)upload — fetch on demand, then settle the true
+    # size (covers the empty-WANT fallback and re-checks the skip condition).
+    ensure_local "$a" || { gtc_failed+=("$a"); continue; }
+    want="$(asset_size "$DL/$a")"
+    if [[ "$code" == 200 && "$size" == "$want" ]]; then
+      info "gtc $a already mirrored, skip"
       continue
     fi
     # Upload, then verify the actual DOWNLOAD is 200 with the right size
