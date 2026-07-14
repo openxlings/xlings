@@ -450,6 +450,16 @@ jobs:
     # Hard backstop: normal runtime is 2-5 min. Without this, a stalled
     # GitCode upload/verify pinned the job for 40+ min (v0.4.65). The script
     # itself bounds every network call; this catches anything it can't.
+    #
+    # KNOWN LIMITATION — GitCode big assets: a GitHub-hosted runner CANNOT
+    # upload assets larger than ~8 MiB to GitCode (cross-border runner->OBS
+    # sustains only ~15-30 KB/s and times out; proven in probe PR #371). This
+    # job therefore mirrors everything to GitHub + the small GitCode assets,
+    # and is fail-fast (non-blocking) on the big GitCode ones. A maintainer
+    # finishes the GitCode mirror AFTER release by running, from any CN
+    # environment: `tools/mirror-latest.sh xlings`. Correctness does not depend
+    # on it — CN clients fall back to the GitHub asset URLs. Runbook:
+    # .agents/docs/2026-07-15-gitcode-large-asset-mirror-runbook.md
     timeout-minutes: 15
     env:
       XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
