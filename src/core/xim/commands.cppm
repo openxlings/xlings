@@ -34,13 +34,25 @@ PackageCatalog& get_catalog() {
     static bool initialized = false;
     if (!initialized) {
         auto result = mgr.rebuild();
-        if (!result) {
-            // Self-heal: a broken/absent index tree (interrupted fetch on an
-            // older xlings, wiped cache) is repairable — resync the repos and
-            // rebuild once before surfacing an error the user would have to
-            // fix by running `xlings update` themselves.
-            log::warn("catalog build failed ({}); resyncing indexes...",
-                      result.error());
+        // #366: on a fresh machine the main index rebuilds fine, but the
+        // default sub-indexes were never synced — their pkgs/ dirs don't
+        // exist, so repo_specs_() skips them and rebuild() still SUCCEEDS.
+        // The old code only synced in the failure branch, so scode/awesome/d2x
+        // stayed absent and `install scode:...` failed with "not found" until
+        // the user ran `xlings update`. Force a one-time sync when the
+        // sub-index marker JSON is missing (cheap: skipped on every later run).
+        bool subIndexesNeverSynced = !sub_indexes_initialized();
+        if (!result || subIndexesNeverSynced) {
+            if (!result) {
+                // Self-heal: a broken/absent index tree (interrupted fetch on
+                // an older xlings, wiped cache) is repairable — resync and
+                // rebuild once before surfacing an error the user would have
+                // to fix by running `xlings update` themselves.
+                log::warn("catalog build failed ({}); resyncing indexes...",
+                          result.error());
+            } else {
+                log::info("initializing package sub-indexes (first run)...");
+            }
             if (sync_all_repos(true)) {
                 result = mgr.rebuild(true);
             }
@@ -68,6 +80,21 @@ std::string detect_platform() {
 
 // Forward declaration for deferred install request processing
 int cmd_remove(const std::string& target, bool yes, EventStream& stream);
+
+// Debounce on-demand index refreshes triggered by install misses (C2 / #366
+// UX): returns true at most once per cooldown window so a tight loop of
+// `install <genuinely-absent-pkg>` can't spin repeated full resyncs. Combined
+// with a per-invocation guard, a single `install` refreshes at most once.
+bool index_refresh_cooldown_elapsed() {
+    using namespace std::chrono;
+    static steady_clock::time_point last{};
+    static bool primed = false;
+    auto now = steady_clock::now();
+    if (primed && now - last < seconds(60)) return false;
+    last = now;
+    primed = true;
+    return true;
+}
 
 // === install command ===
 //
@@ -98,6 +125,8 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     auto platform = detect_platform();
     std::vector<std::string> targetVec(targets.begin(), targets.end());
     std::vector<PackageMatch> requestedMatches;
+    // C2 (#366 UX): allow at most one on-demand index refresh per install call.
+    bool refreshedForMissing = false;
 
     // Idempotency: `install` is NOT supposed to be a silent upgrader.
     // If the package already has a version active in the current sub-OS
@@ -128,6 +157,25 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
             // since install) — fall back to the original target so the user
             // still gets a useful resolve / error / fuzzy-match path.
             match = catalog.resolve_target(target, platform);
+        }
+        // C2 (#366 UX): a target absent from the current catalog may simply be
+        // newer than the local index (package/version just published). Refresh
+        // the index once and retry before giving up, so `install <fresh-pkg>`
+        // — including explicit-namespace targets like `scode:linux-headers` —
+        // works without a manual `xlings update`. Debounced by a per-call guard
+        // + a process-wide cooldown; ambiguous errors are not "missing".
+        if (!match && !refreshedForMissing
+                && !match.error().contains("ambiguous")
+                && index_refresh_cooldown_elapsed()) {
+            refreshedForMissing = true;
+            log::info("'{}' not in current index; refreshing index...", target);
+            if (sync_all_repos(true)) {
+                catalog.rebuild(true);
+                match = catalog.resolve_target(pinned, platform);
+                if (!match && pinned != target) {
+                    match = catalog.resolve_target(target, platform);
+                }
+            }
         }
         if (!match) {
             // Ambiguous matches: show error directly, don't fall through to fuzzy
