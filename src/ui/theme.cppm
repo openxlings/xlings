@@ -27,8 +27,10 @@ using ftxui::Decorator;
 //      c. Fall back to Dark — the safe default for most modern terms.
 //
 // Detection runs at most once per process (cached). Cost is one
-// 50-ms terminal round-trip on first color access; the result is
-// reused for the lifetime of the program.
+// terminal round-trip on first color access, bounded by a monotonic
+// deadline (default 500 ms, XLINGS_TERM_QUERY_TIMEOUT_MS) but normally
+// returning in a few ms via a DSR/CPR fence; the result is reused for
+// the lifetime of the program.
 
 enum class Background { Dark, Light };
 

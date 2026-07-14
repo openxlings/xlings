@@ -89,17 +89,106 @@ namespace platform_impl {
         int fd_ { -1 };
     };
 
+    // Parse an accumulated terminal reply buffer for an OSC-11 background
+    // color and classify it as light (true) or dark (false). Returns
+    // std::nullopt when no well-formed `rgb:RRRR/GGGG/BBBB` reply is present.
+    //
+    // Pure and side-effect free so the classification logic is unit-testable
+    // without a controlling tty (see tests/unit/test_terminal_query.cpp).
+    // The buffer may contain unrelated leading bytes (e.g. a CPR fence) and
+    // may be terminated by either ST (\e\\) or BEL (\a) — parsing keys off
+    // the `rgb:` marker, not the terminator.
+    export std::optional<bool> parse_terminal_bg_is_light(std::string_view s) {
+        auto p = s.find("rgb:");
+        if (p == std::string_view::npos || p + 4 + 14 > s.size()) return std::nullopt;
+        auto hex4 = [&](std::size_t off) -> int {
+            int v = 0;
+            for (int i = 0; i < 4 && off + i < s.size(); ++i) {
+                char c = s[off + i];
+                int d = (c >= '0' && c <= '9') ? c - '0'
+                      : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                      : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+                if (d < 0) return -1;
+                v = v * 16 + d;
+            }
+            return v;  // 16-bit channel, 0..65535
+        };
+        int r = hex4(p + 4), g = hex4(p + 9), b = hex4(p + 14);
+        if (r < 0 || g < 0 || b < 0) return std::nullopt;
+        // Rec. 601 luma; threshold at half-bright.
+        return (0.299 * r + 0.587 * g + 0.114 * b) > 32768.0;
+    }
+
+    // Read a terminal query reply from `fd` as a framed byte stream: loop
+    // select()+read() against ONE monotonic deadline, accumulating fragments
+    // into a bounded buffer, and stop as soon as the DSR reply's terminator
+    // 'R' (a CPR: ESC[<row>;<col>R) is seen. The caller writes an OSC-11
+    // query IMMEDIATELY followed by a DSR (ESC[6n); because terminals process
+    // input in order, the CPR necessarily arrives after the OSC-11 reply (if
+    // any). Seeing it is a deterministic "terminal is done" fence — no valid
+    // OSC-11 reply body contains 'R', so the first 'R' uniquely marks it.
+    //
+    // This fixes #368: the old single-50ms-select + single-read gave up on a
+    // slow (Tabby/Electron/xterm.js) or fragmented reply, restored ECHO, and
+    // let the reply leak into the parent shell. Reading through the CPR
+    // consumes the whole reply while ECHO is still disabled, so nothing leaks.
+    export std::string read_terminal_query_reply(int fd,
+                                                 std::chrono::milliseconds timeout) {
+        std::string acc;
+        acc.reserve(64);
+        constexpr std::size_t kCap = 512;   // bounded buffer
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) break;
+            auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          deadline - now).count();
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(fd, &rfds);
+            struct timeval tv{
+                static_cast<time_t>(us / 1000000),
+                static_cast<suseconds_t>(us % 1000000)
+            };
+            int rv = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
+            if (rv < 0) { if (errno == EINTR) continue; break; }
+            if (rv == 0) break;                     // deadline reached
+            char buf[256];
+            auto n = ::read(fd, buf, sizeof(buf));
+            if (n < 0) { if (errno == EINTR) continue; break; }
+            if (n == 0) break;                      // EOF
+            acc.append(buf, static_cast<std::size_t>(n));
+            if (acc.find('R') != std::string::npos) break;   // CPR fence
+            if (acc.size() >= kCap) break;
+        }
+        return acc;
+    }
+
+    // Overall deadline for the terminal background query. Default 500 ms,
+    // overridable via XLINGS_TERM_QUERY_TIMEOUT_MS (clamped to [50, 5000]).
+    // Responsive terminals hit the CPR fence in a few ms and return early;
+    // the deadline only bites on a tty that answers neither OSC-11 nor DSR.
+    static std::chrono::milliseconds term_query_timeout_() {
+        long ms = 500;
+        if (const char* v = std::getenv("XLINGS_TERM_QUERY_TIMEOUT_MS")) {
+            char* end = nullptr;
+            long parsed = std::strtol(v, &end, 10);
+            if (end != v && parsed > 0) ms = parsed;
+        }
+        if (ms < 50)   ms = 50;
+        if (ms > 5000) ms = 5000;
+        return std::chrono::milliseconds{ms};
+    }
+
     // Query the controlling terminal for its background color via the
     // OSC-11 sequence (xterm spec, supported by xterm / iTerm2 / Alacritty
     // / Kitty / WezTerm / modern Windows Terminal). Returns std::nullopt
     // if there's no controlling tty, the terminal doesn't respond within
-    // ~50 ms, or the reply is malformed.
+    // the query deadline, or the reply is malformed.
     //
     // Lives in the shared `unix` partition because the implementation
-    // (open /dev/tty + termios raw mode + select-with-timeout + parse the
-    // hex reply) is identical across Linux and macOS — both inherit the
-    // POSIX terminal API. windows.cppm provides its own stub. Putting it
-    // here means linux.cppm and macos.cppm carry no copy of this code.
+    // (open /dev/tty + termios raw mode + framed read + parse the hex reply)
+    // is identical across Linux and macOS — both inherit the POSIX terminal
+    // API. windows.cppm provides its own stub. Putting it here means
+    // linux.cppm and macos.cppm carry no copy of this code.
     export std::optional<bool> query_terminal_is_light() {
         // If our own stdout AND stderr are not terminals, we're a child whose
         // output is captured by a parent (e.g. mcpp driving `xlings interface`
@@ -126,37 +215,16 @@ namespace platform_impl {
             ~RestoreGuard() { ::tcsetattr(fd, TCSANOW, &s); }
         } _r{fd, saved};
 
-        static constexpr char query[] = "\033]11;?\033\\";
+        // OSC-11 background query, immediately followed by a DSR cursor
+        // position request. The CPR reply to the DSR is our fence (see
+        // read_terminal_query_reply): once it arrives we know the OSC-11
+        // reply, if any, has fully arrived and been consumed — so ECHO is
+        // never restored with terminal bytes still pending in the input.
+        static constexpr char query[] = "\033]11;?\033\\\033[6n";
         if (::write(fd, query, sizeof(query) - 1) < 0) return std::nullopt;
 
-        fd_set rfds; FD_ZERO(&rfds); FD_SET(fd, &rfds);
-        struct timeval tv{0, 50 * 1000};  // 50 ms
-        if (::select(fd + 1, &rfds, nullptr, nullptr, &tv) <= 0) return std::nullopt;
-
-        char buf[64]{};
-        auto n = ::read(fd, buf, sizeof(buf) - 1);
-        if (n <= 0) return std::nullopt;
-
-        // Reply: \e]11;rgb:RRRR/GGGG/BBBB\e\\ (or \a terminator).
-        std::string_view s{buf, static_cast<std::size_t>(n)};
-        auto p = s.find("rgb:");
-        if (p == std::string_view::npos || p + 4 + 14 > s.size()) return std::nullopt;
-        auto hex4 = [&](std::size_t off) -> int {
-            int v = 0;
-            for (int i = 0; i < 4 && off + i < s.size(); ++i) {
-                char c = s[off + i];
-                int d = (c >= '0' && c <= '9') ? c - '0'
-                      : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-                      : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-                if (d < 0) return -1;
-                v = v * 16 + d;
-            }
-            return v;  // 16-bit channel, 0..65535
-        };
-        int r = hex4(p + 4), g = hex4(p + 9), b = hex4(p + 14);
-        if (r < 0 || g < 0 || b < 0) return std::nullopt;
-        // Rec. 601 luma; threshold at half-bright.
-        return (0.299 * r + 0.587 * g + 0.114 * b) > 32768.0;
+        std::string reply = read_terminal_query_reply(fd, term_query_timeout_());
+        return parse_terminal_bg_is_light(reply);
     }
 
     // Atomically replace `dst` with the contents of `src`, even when `dst`
