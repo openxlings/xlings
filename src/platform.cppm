@@ -35,6 +35,13 @@ namespace platform {
     export using platform_impl::get_pid;
     export using platform_impl::is_process_alive;
     export using platform_impl::query_terminal_is_light;
+#if !defined(_WIN32)
+    // POSIX-only building blocks of query_terminal_is_light(), exposed for
+    // unit testing without a controlling tty (see #368). No Windows stub —
+    // read_terminal_query_reply() operates on a POSIX fd.
+    export using platform_impl::parse_terminal_bg_is_light;
+    export using platform_impl::read_terminal_query_reply;
+#endif
     export using platform_impl::ProcessHandle;
     export using platform_impl::spawn_command;
     export using platform_impl::wait_or_kill;
