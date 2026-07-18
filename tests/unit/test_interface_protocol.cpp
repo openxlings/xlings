@@ -548,18 +548,32 @@ TEST(InterfaceProtocol, RemoveRepoNonexistentEmitsNotFound) {
 
 // ─── plan_install (dry-run) ────────────────────────────────
 
-TEST(InterfaceProtocol, PlanInstallEmitsInstallPlanWithoutSideEffects) {
+TEST(InterfaceProtocol, PlanInstallMissingPackageEmitsStructuredError) {
     auto home = make_sandbox_home_();
 
-    // plan_install for a nonexistent package should still emit a result;
-    // the catalog won't be loaded in a fresh sandbox so resolution exits 1
-    // — that is itself a useful preflight signal for clients. Just verify
-    // the capability is dispatched and produces NDJSON.
+    // #374: plan_install for a resolution that fails (catalog not loadable in
+    // a fresh sandbox, or the explicit-namespace package genuinely absent)
+    // must exit non-zero AND carry a structured error on the wire — never a
+    // bare {"exitCode":1,"kind":"result"} with an empty stream. Both failure
+    // paths map to E_NOT_FOUND. This is the core regression guarantee for the
+    // multi-repo silent-exit bug (mcpp consumed the empty envelope as an
+    // opaque failure).
     auto [out, _rc] = run_xlings_({"interface", "plan_install", "--args",
         R"({"targets":["xim:nonexistent_pkg_xyz"]})"}, home);
     auto events = parse_ndjson_(out);
     ASSERT_FALSE(events.empty()) << out;
     EXPECT_EQ(events.back().value("kind", ""), "result");
+    EXPECT_NE(events.back().value("exitCode", 0), 0) << out;
+
+    bool saw_err = false;
+    for (auto& e : events) {
+        if (e.value("kind", "") == "error") {
+            EXPECT_EQ(e.value("code", std::string{}), "E_NOT_FOUND") << out;
+            saw_err = true;
+        }
+    }
+    EXPECT_TRUE(saw_err)
+        << "non-zero plan_install exit produced no error event (issue #374): " << out;
 
     std::filesystem::remove_all(home);
 }

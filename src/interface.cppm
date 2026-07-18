@@ -270,16 +270,27 @@ export int run(const mcpplibs::cmdline::ParsedArgs& args,
     try {
         result = cap->execute(cap_args, stream, &token);
     } catch (const CancelledException&) {
+        // #374: a client-initiated cancel is a normal, expected control-plane
+        // action — emit the dedicated E_CANCELLED (recoverable) so it reaches
+        // the wire with the CORRECT code. Emitting it also marks saw_error(),
+        // so the generic non-zero-exit backstop below does not fire and
+        // mislabel the cancellation as an internal xlings bug.
+        session.emit_event(Event{ErrorEvent{
+            .code = ErrorCode::Cancelled,
+            .message = "operation cancelled",
+            .recoverable = true,
+        }});
         result = nlohmann::json({{"exitCode", 130}}).dump();
         exit_code = 130;
     } catch (const std::exception& e) {
-        nlohmann::json err = {
-            {"kind", "error"},
-            {"code", std::string(to_wire_string(ErrorCode::Internal))},
-            {"message", std::string("internal: ") + e.what()},
-            {"recoverable", false}
-        };
-        std::cout << err.dump() << "\n";
+        // #374: route through the session (marks saw_error()) instead of a
+        // raw std::cout write — otherwise the backstop below would fire and
+        // emit a SECOND, generic error line on top of this specific one.
+        session.emit_event(Event{ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = std::string("internal: ") + e.what(),
+            .recoverable = false,
+        }});
         result = nlohmann::json({{"exitCode", 1}}).dump();
         exit_code = 1;
     }
