@@ -6,16 +6,16 @@
 #
 # Two independent architectural defects combine to produce the bug:
 #
-#   Root defect 1 (observability): the xim command layer reports failures
+#   Root defect 1 (observability): the xim command layer reported failures
 #   via the global log::error(), which is fully suppressed in interface
 #   mode (platform::set_tui_mode(true)). The NDJSON stream carries a
-#   first-class ErrorEvent kind, but cmd_install never emits it — so a
-#   non-zero exit produces {"exitCode":1,"kind":"result"} with an empty
-#   event stream. The consumer (mcpp) cannot tell what failed.
+#   first-class ErrorEvent kind, but cmd_install never emitted it — so a
+#   non-zero exit produced {"exitCode":1,"kind":"result"} with an empty
+#   event stream. The consumer (mcpp) could not tell what failed.
 #
 #   Root defect 2 (multi-repo robustness): PackageCatalog::rebuild() and
 #   sync_all_repos() fail-fast on the first bad repo, so one degenerate
-#   index_repo collapses the whole catalog — even the healthy repos.
+#   index_repo collapsed the whole catalog — even the healthy repos.
 #
 # Assertions (design doc §6):
 #   A1 (P1 best-effort skip): 2 project repos, 2nd has no pkgs/, target
@@ -25,6 +25,9 @@
 #      everywhere → NON-ZERO exit AND at least one {"kind":"error"} event
 #      on the wire (never a bare result envelope).
 #
+# Fully self-contained/offline: builds its own local global + project
+# indexes under the runtime dir; never mutates tests/fixtures.
+#
 # Refs: .agents/docs/2026-07-19-issue374-multi-repo-silent-exit-design.md
 
 set -euo pipefail
@@ -32,11 +35,10 @@ set -euo pipefail
 # shellcheck source=./project_test_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-require_fixture_index
-
 RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/interface_multi_repo_error_visibility"
 HOME_DIR="$RUNTIME_DIR/home"
 APP_DIR="$RUNTIME_DIR/app"          # the "project" dir (has .xlings.json, NOT an xlings home)
+GLOBAL_DIR="$RUNTIME_DIR/global_index"  # local global (xim) index — offline, no sub-repos
 GOOD_DIR="$RUNTIME_DIR/proj_good"   # a valid project index (has pkgs/)
 BAD_DIR="$RUNTIME_DIR/proj_bad"     # degenerate: dir exists but no pkgs/
 
@@ -46,15 +48,17 @@ cleanup
 
 XLINGS_BIN="$(find_xlings_bin)"
 
-mkdir -p "$HOME_DIR/subos/default/bin" "$APP_DIR" "$GOOD_DIR/pkgs/t" "$BAD_DIR"
+mkdir -p "$HOME_DIR/subos/default/bin" "$APP_DIR" \
+         "$GLOBAL_DIR/pkgs/g" "$GOOD_DIR/pkgs/t" "$BAD_DIR"
 
-# ── a VALID project index with one package "toolx" (script type, no
-#    download — plan_install only resolves, never installs) ───────────
-cat > "$GOOD_DIR/pkgs/t/toolx.lua" <<'LUA'
+# A script-type package with no download — plan_install only resolves,
+# never installs, so an empty version resource is fine.
+emit_pkg() { # $1=dir $2=name
+  cat > "$1" <<LUA
 package = {
     spec = "1",
-    name = "toolx",
-    description = "Test fixture: healthy project-repo package (issue #374 coverage)",
+    name = "$2",
+    description = "Test fixture package (issue #374 coverage)",
     type = "package",
     archs = {"x86_64", "aarch64"},
     status = "stable",
@@ -66,20 +70,26 @@ package = {
 }
 function install() return true end
 LUA
+}
 
-# ── the DEGENERATE project index: exists, but NO pkgs/ (models a
-#    default-namespace redirect / empty local-dev repo) ───────────────
+emit_pkg "$GLOBAL_DIR/pkgs/g/globaltool.lua" "globaltool"   # in the global (xim) index
+emit_pkg "$GOOD_DIR/pkgs/t/toolx.lua"        "toolx"        # in the healthy project repo
+# neutralise sub-index discovery for both local indexes (stay offline)
+printf 'xim_indexrepos = {}\n' > "$GLOBAL_DIR/xim-indexrepos.lua"
+printf 'xim_indexrepos = {}\n' > "$GOOD_DIR/xim-indexrepos.lua"
+
+# the DEGENERATE project index: exists, but NO pkgs/ (models a
+# default-namespace redirect / empty local-dev repo)
 printf 'placeholder — deliberately no pkgs/ subdir\n' > "$BAD_DIR/README.md"
 
-# ── global home: xim namespace -> local fixture (offline), sub-indexes
-#    neutralised so nothing reaches the network ────────────────────────
+# global home: xim -> local offline index; sub-indexes neutralised
 cat > "$HOME_DIR/.xlings.json" <<JSON
 {
   "activeSubos": "default",
   "mirror": "GLOBAL",
   "subos": {"default": {"dir": ""}},
   "index_repos": [
-    {"name": "xim", "url": "$FIXTURE_INDEX_DIR"}
+    {"name": "xim", "url": "$GLOBAL_DIR"}
   ]
 }
 JSON
@@ -98,7 +108,6 @@ RUN_PROJ() {
 RUN_HOME self init >/dev/null 2>&1 || fail "self init failed"
 mkdir -p "$HOME_DIR/data/xim-index-repos"
 printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
-printf 'xim_indexrepos = {}\n' > "$FIXTURE_INDEX_DIR/xim-indexrepos.lua" 2>/dev/null || true
 
 # project manifest: TWO index_repos, the 2nd (projbad) is degenerate
 cat > "$APP_DIR/.xlings.json" <<JSON
