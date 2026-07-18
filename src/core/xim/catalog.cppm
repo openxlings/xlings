@@ -37,6 +37,17 @@ struct PackageMatch {
     bool installed { false };
 };
 
+// #374: a single index repo that could not be loaded during rebuild
+// (no pkgs/, unsynced, empty redirect target). Recorded instead of
+// aborting the whole catalog; the command layer surfaces these on the
+// wire so a skipped repo is never silent.
+struct RepoLoadWarning {
+    std::string name;
+    PackageScope scope { PackageScope::Global };
+    std::filesystem::path dir;
+    std::string error;
+};
+
 std::string canonical_package_name(std::string_view namespaceName, std::string_view name) {
     if (namespaceName.empty()) return std::string(name);
     return std::string(namespaceName) + ":" + std::string(name);
@@ -168,6 +179,7 @@ class PackageCatalog {
 
     std::vector<RepoState> projectRepos_;
     std::vector<RepoState> globalRepos_;
+    std::vector<RepoLoadWarning> loadWarnings_;
     bool loaded_ { false };
 
     static std::vector<RepoIndexSpec> repo_specs_() {
@@ -351,6 +363,7 @@ public:
     std::expected<void, std::string> rebuild(bool forceRebuild = false) {
         projectRepos_.clear();
         globalRepos_.clear();
+        loadWarnings_.clear();
 
         auto specs = repo_specs_();
         log::debug("catalog rebuild: {} repo(s), force={}", specs.size(), forceRebuild);
@@ -361,7 +374,18 @@ public:
             auto hash = get_repo_head_hash(spec.dir);
             auto result = state.index.load_or_rebuild(hash, forceRebuild);
             if (!result) {
-                return std::unexpected(result.error());
+                // #374: best-effort. A single degenerate/unsynced repo (no
+                // pkgs/, unreachable URL, empty default-namespace redirect
+                // target) must NOT collapse the whole catalog — that is the
+                // exact ">=2 index_repos -> silent exit 1" trigger. Record
+                // the skip and keep loading the rest; the command layer
+                // emits these as wire warnings so the skip is never silent.
+                // Mirrors the best-effort handling sub-index repos already
+                // get in sync_all_repos. loaded_ below still hard-fails only
+                // when NOTHING could be loaded.
+                loadWarnings_.push_back({spec.name, spec.scope, spec.dir, result.error()});
+                log::debug("catalog: skipping repo '{}': {}", spec.name, result.error());
+                continue;
             }
             if (spec.scope == PackageScope::Project) {
                 projectRepos_.push_back(std::move(state));
@@ -370,11 +394,22 @@ public:
             }
         }
 
-        loaded_ = true;
+        loaded_ = !projectRepos_.empty() || !globalRepos_.empty();
+        if (!loaded_) {
+            return std::unexpected(loadWarnings_.empty()
+                ? std::string("no index repositories configured")
+                : loadWarnings_.front().error);
+        }
         return {};
     }
 
     bool is_loaded() const { return loaded_; }
+
+    // #374: repos skipped during the last rebuild (best-effort). The
+    // command layer emits these on the EventStream so a degraded
+    // multi-repo config is visible to interface consumers (mcpp), not
+    // silently swallowed.
+    const std::vector<RepoLoadWarning>& load_warnings() const { return loadWarnings_; }
 
     // When project and global have the same package, keep only project-scoped match
     static std::vector<PackageMatch> prefer_project_scope_(std::vector<PackageMatch> matches) {
