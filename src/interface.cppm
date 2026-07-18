@@ -82,9 +82,14 @@ public:
     InterfaceSession& operator=(const InterfaceSession&) = delete;
 
     void emit_event(const Event& e) {
+        // #374: track whether any structured error reached the wire so run()
+        // can guarantee "non-zero exit ⇒ at least one error event".
+        if (std::get_if<ErrorEvent>(&e)) saw_error_.store(true, std::memory_order_relaxed);
         auto line = event_to_ndjson_line_(e);
         if (!line.empty()) emit_raw_line_(line);
     }
+
+    bool saw_error() const { return saw_error_.load(std::memory_order_relaxed); }
 
     void emit_result(int exitCode, std::string_view raw_content) {
         nlohmann::json line;
@@ -166,6 +171,7 @@ private:
     EventStream& stream_;
     CancellationToken& token_;
     std::mutex io_mtx_;
+    std::atomic<bool> saw_error_ { false };
     std::atomic<std::chrono::steady_clock::time_point> last_emit_;
     std::jthread heartbeat_thread_;
     std::jthread stdin_thread_;
@@ -286,6 +292,24 @@ export int run(const mcpplibs::cmdline::ParsedArgs& args,
                 ? parsed["exitCode"].get<int>() : 0;
         }
     }
+
+    // #374: guarantee the interface invariant "non-zero exit ⇒ at least one
+    // error event on the wire". Any capability that exits non-zero without
+    // having emitted an ErrorEvent (e.g. a cmd_* path still routing failures
+    // through log::error, which interface mode suppresses) would otherwise
+    // produce a bare {"exitCode":N,"kind":"result"} with no diagnostics —
+    // exactly the issue #374 silent failure. Synthesize a generic error as a
+    // backstop so consumers always get a reason.
+    if (exit_code != 0 && !session.saw_error()) {
+        session.emit_event(Event{ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = cap_name + " failed (exit " + std::to_string(exit_code)
+                + ") with no error detail on the stream",
+            .recoverable = false,
+            .hint = "re-run with the xlings CLI (non-interface) for full diagnostics",
+        }});
+    }
+
     session.emit_result(exit_code, result);
     return exit_code;
 }

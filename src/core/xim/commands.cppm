@@ -117,9 +117,30 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
         sync_all_repos(true);
         auto rebuildResult = catalog.rebuild();
         if (!rebuildResult || !catalog.is_loaded()) {
-            log::error("package index not available");
+            // #374: emit a structured error on the EventStream instead of a
+            // bare log::error (which interface mode's tui_mode suppresses) so
+            // programmatic consumers see WHY the exit is non-zero rather than
+            // a silent {"exitCode":1,"kind":"result"} with an empty stream.
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = std::string("package index not available")
+                    + (rebuildResult ? std::string{} : ": " + rebuildResult.error()),
+                .recoverable = true,
+                .hint = "run `xlings update`, or check index_repos in .xlings.json",
+            });
             return 1;
         }
+    }
+
+    // #374: surface any index repos skipped during the best-effort catalog
+    // build so a degraded multi-repo config is visible to interface consumers
+    // (mcpp) instead of silently ignored. Non-fatal — healthy repos still
+    // resolve; this only makes the skip observable on the wire.
+    for (auto& w : catalog.load_warnings()) {
+        stream.emit(LogEvent{LogLevel::warn,
+            "index repo '" + w.name + "' skipped ("
+            + (w.scope == PackageScope::Project ? "project" : "global")
+            + " scope): " + w.error});
     }
 
     auto platform = detect_platform();
@@ -127,6 +148,17 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     std::vector<PackageMatch> requestedMatches;
     // C2 (#366 UX): allow at most one on-demand index refresh per install call.
     bool refreshedForMissing = false;
+
+    // #374: for structured not-found errors, name the repos we searched so
+    // interface consumers can see the resolution scope (the issue asks to
+    // identify "which repositories were searched").
+    auto searched_repos_ = [&]() {
+        std::string s;
+        auto add = [&](const std::string& n) { if (!s.empty()) s += ", "; s += n; };
+        for (auto& r : Config::project_index_repos()) add(r.name);
+        for (auto& r : Config::global_index_repos()) add(r.name);
+        return s;
+    };
 
     // Idempotency: `install` is NOT supposed to be a silent upgrader.
     // If the package already has a version active in the current sub-OS
@@ -180,19 +212,39 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
         if (!match) {
             // Ambiguous matches: show error directly, don't fall through to fuzzy
             if (match.error().contains("ambiguous")) {
-                log::error("{}", match.error());
+                // #374: structured error on the wire (was a swallowed log::error)
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = match.error(),
+                    .recoverable = true,
+                    .hint = "install a specific candidate with its full namespace:name@version",
+                });
                 return 1;
             }
             // Explicit namespace (e.g. scode:linux-headers) -- don't fuzzy-match
             // across other namespaces, which can cause infinite recursion
             if (target.find(':') != std::string::npos) {
-                log::error("{}", match.error());
+                // #374: structured error on the wire (was a swallowed log::error)
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = match.error(),
+                    .recoverable = true,
+                    .hint = "searched repos: [" + searched_repos_()
+                        + "]; run `xlings update` if the package was just published",
+                });
                 return 1;
             }
             // Try fuzzy search for suggestions
             auto fuzzy = catalog.search(target, platform);
             if (fuzzy.empty()) {
-                log::error("{}", match.error());
+                // #374: structured error on the wire (was a swallowed log::error)
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = match.error(),
+                    .recoverable = true,
+                    .hint = "searched repos: [" + searched_repos_()
+                        + "]; run `xlings update` if the package was just published",
+                });
                 return 1;
             }
             if (fuzzy.size() > 5) fuzzy.resize(5);
@@ -247,14 +299,24 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     // Resolve dependencies
     auto planResult = resolve(catalog, targetVec, platform);
     if (!planResult) {
-        log::error("dependency resolution failed: {}", planResult.error());
+        // #374: structured error on the wire (was a swallowed log::error)
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "dependency resolution failed: " + planResult.error(),
+            .recoverable = true,
+        });
         return 1;
     }
 
     auto& plan = *planResult;
     if (plan.has_errors()) {
+        // #374: structured errors on the wire (were swallowed log::error)
         for (auto& err : plan.errors) {
-            log::error("{}", err);
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = err,
+                .recoverable = true,
+            });
         }
         return 1;
     }
@@ -402,7 +464,14 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                     ++successCount;
                     break;
                 case InstallPhase::Failed:
-                    log::error("[{}] failed: {}", status.name, status.message);
+                    // #374: structured per-package failure on the wire so
+                    // interface consumers see WHICH package failed (was a
+                    // swallowed log::error). failedCount still drives exitCode.
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::Internal,
+                        .message = "[" + status.name + "] failed: " + status.message,
+                        .recoverable = true,
+                    });
                     ++failedCount;
                     break;
                 default:
@@ -428,7 +497,12 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
         dlRenderer, cancel, useAfterInstall);
 
     if (!result) {
-        log::error("install failed: {}", result.error());
+        // #374: structured error on the wire (was a swallowed log::error)
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "install failed: " + result.error(),
+            .recoverable = false,
+        });
         return 1;
     }
 

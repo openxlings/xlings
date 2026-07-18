@@ -23,7 +23,10 @@ bool ensure_local_repo_link_(const std::filesystem::path& localDir,
 
     std::error_code ec;
     if (!fs::exists(sourceDir, ec) || !fs::exists(sourceDir / "pkgs", ec)) {
-        log::error("local index repo missing pkgs/: {}", sourceDir.string());
+        // #374: caller (syncRepos) now treats this as a best-effort skip and
+        // emits the user-facing warning naming the repo; keep this at debug
+        // so a tolerated missing-pkgs source is not reported as a hard error.
+        log::debug("local index repo missing pkgs/: {}", sourceDir.string());
         return false;
     }
 
@@ -539,28 +542,43 @@ bool sync_all_repos(bool force = false) {
         }
     }
 
+    // #374: best-effort. A single degenerate/unreachable index repo (no
+    // pkgs/, empty default-namespace redirect target, dead URL) must NOT
+    // abort the whole sync and collapse the catalog — that is the exact
+    // ">=2 index_repos -> silent exit 1" trigger. Skip the bad repo with a
+    // warning and keep syncing the rest, mirroring the best-effort handling
+    // the sub-index loop below already has. Returns false only when NOTHING
+    // in a non-empty list could be synced; the catalog rebuild's load-gate
+    // is the real "nothing usable" safety net.
     auto syncRepos = [&](const std::vector<IndexRepo>& repos, bool projectScope) {
         auto rootDir = projectScope ? Config::project_data_dir() : Config::global_data_dir();
         if (rootDir.empty()) return true;
         fs::create_directories(rootDir);
+        int total = 0, ok = 0;
         for (auto& repo : repos) {
+            ++total;
             auto repoDir = Config::repo_dir_for(repo, projectScope);
             // The main index is artifact-managed (no .git); never git-sync it.
-            if (!projectScope && mainArtifactManaged && repoDir == mainDir) continue;
+            if (!projectScope && mainArtifactManaged && repoDir == mainDir) { ++ok; continue; }
             if (Config::is_local_repo_source(repo, projectScope)) {
                 auto sourceDir = Config::resolve_repo_source(repo, projectScope);
                 if (!detail_::ensure_local_repo_link_(repoDir, sourceDir)) {
-                    return false;
+                    log::warn("index repo '{}' skipped: local source has no pkgs/ ({})",
+                              repo.name, sourceDir.string());
+                    continue;
                 }
+                ++ok;
                 continue;
             }
 
             auto url = detail_::sync_repo_url_(repo.url, mirror);
             if (!sync_repo(repoDir, url, force)) {
-                return false;
+                log::warn("index repo '{}' skipped: sync failed ({})", repo.name, url);
+                continue;
             }
+            ++ok;
         }
-        return true;
+        return total == 0 || ok > 0;
     };
 
     if (!syncRepos(Config::global_index_repos(), false)) return false;
