@@ -267,6 +267,29 @@ std::filesystem::path resolve_executable(const std::string& program_name,
     return {};
 }
 
+// Merge a shim-injected env value into the existing one. PATH-style vars
+// prepend (new first), but a value already present — as the whole value or as
+// one separator-delimited component — must NOT be appended again: the blind
+// re-append corrupted single-value vars (GIT_SSL_CAINFO="x" became "x:x",
+// which curl reads as one nonexistent filename and every HTTPS git transport
+// dies; hit when both compact::git's CA pin (#378) and the xim git.lua envs
+// (xim-pkgindex#406) resolve the same bundle path). Returns the value to set,
+// or nullopt for "leave the env untouched".
+std::optional<std::string> merge_shim_env_value(const std::string& expanded,
+                                                const std::string& existing) {
+    if (existing.empty()) return expanded;
+    std::size_t start = 0;
+    while (start <= existing.size()) {
+        auto end = existing.find(platform::PATH_SEPARATOR, start);
+        auto part = existing.substr(start, end == std::string::npos
+                                           ? std::string::npos : end - start);
+        if (part == expanded) return std::nullopt;  // already present
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return expanded + platform::PATH_SEPARATOR + existing;
+}
+
 // Set environment variables for a program before exec
 void setup_envs(const VData& vdata,
                 const std::string& resolved_path,
@@ -274,12 +297,9 @@ void setup_envs(const VData& vdata,
     // Set envs from VData
     for (auto& [key, value] : vdata.envs) {
         auto expanded = expand_path(value, xlings_home);
-        // Append to existing env if it exists (PATH-style)
         auto existing = std::string(std::getenv(key.c_str()) ? std::getenv(key.c_str()) : "");
-        if (!existing.empty()) {
-            expanded = expanded + platform::PATH_SEPARATOR + existing;
-        }
-        platform::set_env_variable(key, expanded);
+        if (auto merged = merge_shim_env_value(expanded, existing))
+            platform::set_env_variable(key, *merged);
     }
 
     // Prepend resolved program's directory to PATH
