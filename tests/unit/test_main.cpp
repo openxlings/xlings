@@ -636,6 +636,48 @@ TEST(ConfigTest, ResolveRepoSourceRemoteUrlReturnsEmpty) {
     EXPECT_FALSE(xlings::Config::is_local_repo_source(repo, false));
 }
 
+// ── #377: index_repos parsing with artifact/source fields ──
+TEST(ConfigIndexReposTest, PlainEntryHasNoArtifact) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a","url":"https://x/a.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "a");
+    EXPECT_EQ(repos[0].url, "https://x/a.git");
+    EXPECT_TRUE(repos[0].artifactBase.empty());
+    EXPECT_TRUE(repos[0].source.empty());
+}
+
+TEST(ConfigIndexReposTest, ArtifactStringTrimsTrailingSlash) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":"https://github.com/xlings-res/mcpp-index/","source":"auto"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].artifactBase, "https://github.com/xlings-res/mcpp-index");
+    EXPECT_EQ(repos[0].source, "auto");
+}
+
+TEST(ConfigIndexReposTest, ArtifactRegionObjectResolvesMirror) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":{"GLOBAL":"https://github.com/o/r","CN":"https://gitcode.com/o/r"}}]})");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "CN")[0].artifactBase,
+              "https://gitcode.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "")[0].artifactBase,
+              "https://github.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "XX")[0].artifactBase,
+              "https://github.com/o/r");  // unknown mirror -> GLOBAL fallback
+}
+
+TEST(ConfigIndexReposTest, MalformedEntriesSkipped) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a"},{"url":"u"},{"name":"b","url":"https://x/b.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "b");
+}
+
 // ============================================================
 // xim index tests (requires xim-pkgindex repo)
 // ============================================================
