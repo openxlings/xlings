@@ -433,11 +433,21 @@ std::vector<IndexRepo> load_sub_repos_json(const std::filesystem::path& jsonFile
 
         std::vector<IndexRepo> repos;
         for (auto it = json.begin(); it != json.end(); ++it) {
-            if (!it.value().is_string()) continue;
-            auto url = it.value().get<std::string>();
-            if (!url.empty()) {
-                repos.push_back({it.key(), url});
+            IndexRepo repo;
+            repo.name = it.key();
+            if (it.value().is_string()) {
+                repo.url = it.value().get<std::string>();
+            } else if (it.value().is_object()) {
+                // #377: object form carries the artifact declaration.
+                auto& v = it.value();
+                if (v.contains("url") && v["url"].is_string())
+                    repo.url = v["url"].get<std::string>();
+                if (v.contains("artifact") && v["artifact"].is_string())
+                    repo.artifactBase = v["artifact"].get<std::string>();
+                if (v.contains("source") && v["source"].is_string())
+                    repo.source = v["source"].get<std::string>();
             }
+            if (!repo.url.empty()) repos.push_back(std::move(repo));
         }
         return repos;
     } catch (...) {
@@ -450,7 +460,16 @@ void save_sub_repos_json(const std::filesystem::path& jsonFile,
                          const std::vector<IndexRepo>& repos) {
     nlohmann::json json = nlohmann::json::object();
     for (auto& repo : repos) {
-        json[repo.name] = repo.url;
+        if (repo.artifactBase.empty() && repo.source.empty()) {
+            json[repo.name] = repo.url;       // legacy string form
+        } else {
+            // #377: object form; old xlings skips non-string values gracefully.
+            nlohmann::json v;
+            v["url"] = repo.url;
+            if (!repo.artifactBase.empty()) v["artifact"] = repo.artifactBase;
+            if (!repo.source.empty())       v["source"]   = repo.source;
+            json[repo.name] = v;
+        }
     }
     try {
         std::filesystem::create_directories(jsonFile.parent_path());

@@ -2410,6 +2410,35 @@ TEST(XimSubReposTest, SubArtifactAutoMigratesWhenMainArtifactManaged) {
         /*mainArtifactManaged=*/true));
 }
 
+TEST(XimSubReposTest, SubReposJsonObjectFormatRoundTrip) {
+    namespace fs = std::filesystem;
+    auto dir = fs::temp_directory_path() / "xlings-test-subrepos-json";
+    fs::create_directories(dir);
+    auto file = dir / "xim-indexrepos.json";
+
+    std::vector<xlings::IndexRepo> repos;
+    repos.push_back({"plain", "https://x/plain.git", "", ""});
+    repos.push_back({"custom", "https://x/custom.git",
+                     "https://github.com/o/custom-index", "auto"});
+    xlings::xim::save_sub_repos_json(file, repos);
+
+    auto loaded = xlings::xim::load_sub_repos_json(file);
+    ASSERT_EQ(loaded.size(), 2u);
+    EXPECT_EQ(loaded[0].name, "custom");   // nlohmann object keys sort alphabetically
+    EXPECT_EQ(loaded[0].url, "https://x/custom.git");
+    EXPECT_EQ(loaded[0].artifactBase, "https://github.com/o/custom-index");
+    EXPECT_EQ(loaded[0].source, "auto");
+    EXPECT_EQ(loaded[1].name, "plain");
+    EXPECT_TRUE(loaded[1].artifactBase.empty());
+
+    // plain entries must persist as plain strings (old-xlings tolerant)
+    auto text = xlings::platform::read_file_to_string(file.string());
+    auto j = nlohmann::json::parse(text);
+    EXPECT_TRUE(j["plain"].is_string());
+    EXPECT_TRUE(j["custom"].is_object());
+    fs::remove_all(dir);
+}
+
 // ── #377: custom repos with a declared artifact source ──
 TEST(XimSubReposTest, SubArtifactCustomAutoAlwaysAttempts) {
     // custom + artifact declared: attempts even for an existing git checkout
