@@ -1883,6 +1883,32 @@ TEST(XvmJsonTest, FullConfigJsonRoundTrip) {
 // xvm shim tests
 // ============================================================
 
+// ── shim env merge: scalar vars must not be blindly PATH-appended (#378) ──
+TEST(XvmShimEnvTest, EmptyExistingUsesExpanded) {
+    auto v = xlings::xvm::merge_shim_env_value("/etc/ssl/certs/ca.crt", "");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, "/etc/ssl/certs/ca.crt");
+}
+
+TEST(XvmShimEnvTest, IdenticalExistingIsNoop) {
+    // Both the caller (compact::git CA pin) and the shim's lua envs resolve
+    // the same path; re-appending would corrupt it into "x:x".
+    auto v = xlings::xvm::merge_shim_env_value("/etc/ssl/certs/ca.crt",
+                                               "/etc/ssl/certs/ca.crt");
+    EXPECT_FALSE(v.has_value());
+}
+
+TEST(XvmShimEnvTest, ComponentAlreadyPresentIsNoop) {
+    std::string existing = std::string("/a/lib") + xlings::platform::PATH_SEPARATOR + "/b/lib";
+    EXPECT_FALSE(xlings::xvm::merge_shim_env_value("/b/lib", existing).has_value());
+}
+
+TEST(XvmShimEnvTest, NewComponentPrepends) {
+    auto v = xlings::xvm::merge_shim_env_value("/new/lib", "/old/lib");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, std::string("/new/lib") + xlings::platform::PATH_SEPARATOR + "/old/lib");
+}
+
 TEST(XvmShimTest, ExtractProgramName) {
     EXPECT_EQ(xlings::xvm::extract_program_name("/usr/bin/gcc"), "gcc");
     EXPECT_EQ(xlings::xvm::extract_program_name("./gcc"), "gcc");
