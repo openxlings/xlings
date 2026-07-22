@@ -31,11 +31,26 @@
 
 ```json
 "index_repos": [
-  { "name": "ros2", "url": "https://github.com/example/ros2-index" }
+  { "name": "ros2", "url": "https://github.com/example/ros2-index" },
+  {
+    "name": "mcpplibs",
+    "url": "https://github.com/mcpp-community/mcpp-index.git",
+    "artifact": "https://github.com/xlings-res/mcpp-index",
+    "source": "auto"
+  }
 ]
 ```
 
 默认索引仓库始终保留；用户定义的仓库为追加关系。
+
+每项字段(0.4.68+ 支持 `artifact` / `source`,均可选):
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | `string` | 索引命名空间(必填) |
+| `url` | `string` | Git 远程地址或本地路径(必填;artifact 模式下作为回退) |
+| `artifact` | `string \| object` | artifact 来源 base:GitHub/GitCode 仓库 URL、静态 HTTP 目录、本地目录/`file://`;或区域对象 `{"GLOBAL":..,"CN":..}` |
+| `source` | `string` | `auto`(默认,artifact 优先、git 回退)\| `artifact`(只走 artifact)\| `git`(强制 git) |
 
 ### XLINGS_RES 格式
 
