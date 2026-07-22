@@ -13,14 +13,51 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "0.4.67";
+    static constexpr std::string_view VERSION = "0.4.68";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
 export struct IndexRepo {
     std::string name;
     std::string url;
+    std::string artifactBase;  // #377: resolved artifact base URL ("" = git-only)
+    std::string source;        // #377: per-repo override: "" | "auto" | "artifact" | "git"
 };
+
+// #377: parse index_repos entries. `artifact` is a flat string or a region
+// object {"GLOBAL":..,"CN":..} (same shape as xim.index-base), resolved
+// against `mirror` with GLOBAL fallback. `source` optionally overrides the
+// global index source for this repo only.
+export std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
+                                                     const std::string& mirror) {
+    std::vector<IndexRepo> out;
+    if (!json.contains("index_repos") || !json["index_repos"].is_array()) return out;
+    for (auto it = json["index_repos"].begin(); it != json["index_repos"].end(); ++it) {
+        if (!it->is_object() || !it->contains("name") || !it->contains("url")) continue;
+        IndexRepo repo;
+        repo.name = (*it)["name"].get<std::string>();
+        repo.url  = (*it)["url"].get<std::string>();
+        if (repo.name.empty() || repo.url.empty()) continue;
+        if (it->contains("artifact")) {
+            auto& a = (*it)["artifact"];
+            std::string base;
+            if (a.is_string()) base = a.get<std::string>();
+            else if (a.is_object()) {
+                std::string key = mirror.empty() ? "GLOBAL" : mirror;
+                if (a.contains(key) && a[key].is_string()) base = a[key].get<std::string>();
+                else if (a.contains("GLOBAL") && a["GLOBAL"].is_string())
+                    base = a["GLOBAL"].get<std::string>();
+            }
+            base = utils::trim_string(base);
+            while (base.size() > 1 && base.ends_with('/')) base.pop_back();
+            repo.artifactBase = base;
+        }
+        if (it->contains("source") && (*it)["source"].is_string())
+            repo.source = (*it)["source"].get<std::string>();
+        out.push_back(std::move(repo));
+    }
+    return out;
+}
 
 using MirrorServerMap = std::unordered_map<std::string, std::vector<std::string>>;
 
@@ -118,19 +155,6 @@ private:
             if (ib.contains("GLOBAL") && ib["GLOBAL"].is_string()) return ib["GLOBAL"].get<std::string>();
         }
         return {};
-    }
-
-    static void load_index_repos_from_json_(const nlohmann::json& json,
-                                            std::vector<IndexRepo>& out) {
-        out.clear();
-        if (!json.contains("index_repos") || !json["index_repos"].is_array()) return;
-        for (auto it = json["index_repos"].begin(); it != json["index_repos"].end(); ++it) {
-            if (!it->is_object() || !it->contains("name") || !it->contains("url")) continue;
-            IndexRepo repo;
-            repo.name = (*it)["name"].get<std::string>();
-            repo.url  = (*it)["url"].get<std::string>();
-            if (!repo.name.empty() && !repo.url.empty()) out.push_back(std::move(repo));
-        }
     }
 
     static std::vector<std::string> parse_server_list_(const nlohmann::json& value) {
@@ -490,7 +514,7 @@ private:
                     // Load global versions
                     if (json.contains("versions") && json["versions"].is_object())
                         globalVersions_ = xvm::versions_from_json(json["versions"]);
-                    load_index_repos_from_json_(json, globalIndexRepos_);
+                    globalIndexRepos_ = parse_index_repos_json(json, mirror_);
                     load_resource_servers_from_json_(json, globalResourceServers_);
                     if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;
                 }
@@ -598,7 +622,7 @@ private:
                 if (json.contains("workspace") && json["workspace"].is_object()) {
                     projectWorkspace_ = xvm::workspace_from_json(json["workspace"]);
                 }
-                load_index_repos_from_json_(json, projectIndexRepos_);
+                projectIndexRepos_ = parse_index_repos_json(json, mirror_);
                 load_resource_servers_from_json_(json, projectResourceServers_);
                 if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;  // project overrides global
                 projectSubosName_ = load_project_subos_name_(json);

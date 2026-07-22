@@ -47,22 +47,64 @@ struct IndexManifest {
 // Parse a manifest JSON. Returns nullopt if required fields are missing/invalid.
 std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText);
 
+// #377: a per-repo artifact source derived from IndexRepo.artifactBase.
+// Forge bases (github/gitcode host) use raw-file pointer + releases/download
+// assets; any other base (plain http(s), file://, local path) is a flat
+// directory serving <base>/<filename>. The pointer file is
+// `<repoName>-pointers.json` (repoName = last path segment of the base).
+struct ArtifactSource {
+    std::string base;      // no trailing slash
+    std::string server;    // forge only: scheme://host/org ("" => flat/local)
+    std::string repoName;  // last path segment of base — pointer file prefix
+    std::string key;       // manifest lookup key (config repo name)
+    std::optional<std::filesystem::path> localDir;  // set when base is local
+    bool forge() const { return !server.empty(); }
+};
+
+// Build an ArtifactSource for a repo, or nullopt when it declares none.
+std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo);
+
+// Select the manifest for `key`: exact match; else, for CUSTOM sources only
+// (soleEntryFallback), the sole entry — a single-index pointer need not repeat
+// the consumer's configured repo name (mcpp publishes key "mcpp", consumers
+// configure "mcpplibs"). NEVER sole-fallback for the official combined pointer:
+// a missing sub entry there must fail, not silently serve the main index.
+const IndexManifest* select_manifest(const std::map<std::string, IndexManifest>& pointers,
+                                     std::string_view key, bool soleEntryFallback);
+
 // Build candidate download URLs for an asset filename under the xim-index repo
 // on every configured resource server (selected/latency-probed server first),
 // then GitHub proxy variants. `mirror` selects region (empty => Config default).
 // `version` (e.g. "0.4.58" / "72b00a4") selects the release tag: when given,
 // the versioned tag `v<version>` is tried first (GitCode only serves assets via
 // the versioned tag, not the rolling `latest`), with `latest` kept as fallback.
+// #377: `custom` overrides the official server+repo with a per-repo source.
 std::vector<std::string> index_asset_urls(std::string_view filename,
                                           std::string_view mirror = {},
-                                          std::string_view version = {});
+                                          std::string_view version = {},
+                                          const ArtifactSource* custom = nullptr);
+
+// Raw-file URLs for the rolling pointer (see definition). #377: `custom`
+// targets a per-repo source instead of the official xim-index repo.
+std::vector<std::string> index_pointer_urls(std::string_view filename,
+                                            std::string_view mirror,
+                                            const ArtifactSource* custom = nullptr);
+
+// Cached fetch of a combined pointer file: one raw fetch per process PER BASE
+// ("" = the official xim-index-pointers.json; a custom source's base fetches
+// `<repoName>-pointers.json` from that base).
+const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view mirror,
+                                            const ArtifactSource* custom = nullptr);
 
 // Fetch the latest index artifact for `subName` ("" = main index) and atomically
 // install it into destIndexDir. Returns true on success; on failure `err` is set
 // and destIndexDir is left untouched (caller may fall back to git).
+// #377: `custom` fetches from a per-repo artifact source (pointer key =
+// custom->key with sole-entry fallback) instead of the official pointer.
 bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
-                          std::string_view subName = {});
+                          std::string_view subName = {},
+                          const ArtifactSource* custom = nullptr);
 
 // Reconcile leftover index temp dirs from crashed / SIGKILL'd runs: restore an
 // index dir orphaned by an interrupted swap (`<base>.old.<deadpid>` holding
@@ -162,10 +204,14 @@ BaseOverride resolve_base_() {
 
 // Obtain `filename` into `dest`: local-dir copy, or remote (base override, else
 // the given remoteUrls). Verifies sha256 when wantSha is non-empty.
+// #377: `forced` replaces the global env/config base override entirely — a
+// custom source must never be redirected by XLINGS_INDEX_BASE_URL; a forge
+// custom source passes an EMPTY override ("use the URL list as-is").
 std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
-                        const std::filesystem::path& dest, std::string_view wantSha) {
+                        const std::filesystem::path& dest, std::string_view wantSha,
+                        const BaseOverride* forced = nullptr) {
     namespace fs = std::filesystem;
-    auto b = resolve_base_();
+    auto b = forced ? *forced : resolve_base_();
     if (b.local) {
         std::error_code ec;
         auto src = *b.local / filename;
@@ -184,6 +230,16 @@ std::string obtain_file(const std::string& filename, std::vector<std::string> re
     auto urls = b.base.empty() ? std::move(remoteUrls)
                                : std::vector<std::string>{ b.base + "/" + filename };
     return download_candidates_(std::move(urls), dest, wantSha);
+}
+
+// #377: forced base for a custom source: local-dir copy, flat-remote base, or
+// (for forge bases) an EMPTY override meaning "use the passed URL list, but do
+// NOT apply the global index-base override".
+BaseOverride base_override_for_(const ArtifactSource& src) {
+    BaseOverride b;
+    if (src.localDir) { b.local = src.localDir; b.base = src.base; }
+    else if (!src.forge()) b.base = src.base;
+    return b;
 }
 
 } // namespace detail_
@@ -212,9 +268,67 @@ std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText) {
     }
 }
 
+std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
+    std::string base = repo.artifactBase;
+    if (base.empty()) return std::nullopt;
+    while (base.size() > 1 && base.ends_with('/')) base.pop_back();
+
+    ArtifactSource src;
+    src.base = base;
+    src.key  = repo.name;
+
+    std::string pathPart = base;
+    if (base.starts_with("file://")) {
+        src.localDir = std::filesystem::path(base.substr(7)).lexically_normal();
+        pathPart = src.localDir->generic_string();
+    } else if (base.find("://") == std::string::npos) {
+        src.localDir = std::filesystem::path(base).lexically_normal();
+        pathPart = src.localDir->generic_string();
+    }
+
+    auto slash = pathPart.find_last_of("/\\");
+    src.repoName = slash == std::string::npos ? pathPart : pathPart.substr(slash + 1);
+    if (src.repoName.empty()) return std::nullopt;
+
+    if (!src.localDir) {
+        auto rest = base.substr(base.find("://") + 3);
+        auto firstSlash = rest.find('/');
+        auto host = firstSlash == std::string::npos ? rest : rest.substr(0, firstSlash);
+        if (host.find("github.com") != std::string::npos ||
+            host.find("gitcode.com") != std::string::npos) {
+            src.server = base.substr(0, base.find_last_of('/'));  // scheme://host/org
+        }
+    }
+    return src;
+}
+
+const IndexManifest* select_manifest(const std::map<std::string, IndexManifest>& pointers,
+                                     std::string_view key, bool soleEntryFallback) {
+    if (auto it = pointers.find(std::string(key)); it != pointers.end()) return &it->second;
+    if (soleEntryFallback && pointers.size() == 1) return &pointers.begin()->second;
+    return nullptr;
+}
+
 std::vector<std::string> index_asset_urls(std::string_view filename,
                                           std::string_view mirror,
-                                          std::string_view version) {
+                                          std::string_view version,
+                                          const ArtifactSource* custom) {
+    // #377: a per-repo source replaces the official server set entirely.
+    if (custom) {
+        if (custom->forge()) {
+            std::vector<std::string> tags;
+            if (!version.empty()) tags.push_back("v" + std::string(version));
+            tags.push_back("latest");   // GitHub rolling fallback; a 404 falls through
+            std::vector<std::string> urls;
+            for (auto& tag : tags)
+                urls.push_back(std::format("{}/{}/releases/download/{}/{}",
+                                           custom->server, custom->repoName, tag, filename));
+            return urls;
+        }
+        if (!custom->localDir) return { custom->base + "/" + std::string(filename) };
+        return {};  // local dir: obtain_file consumes a forced BaseOverride instead
+    }
+
     std::vector<std::string> urls;
     auto add = [&](const std::string& u) {
         if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
@@ -263,13 +377,9 @@ std::vector<std::string> index_asset_urls(std::string_view filename,
 // raw.githubusercontent.com/<org>/<repo>/main/<f>; gitcode.com/<org> ->
 // raw.gitcode.com/<org>/<repo>/raw/main/<f>. Region-ordered + GLOBAL fallback.
 std::vector<std::string> index_pointer_urls(std::string_view filename,
-                                            std::string_view mirror) {
-    auto repo = detail_::index_repo_name_();
-    std::vector<std::string> urls;
-    auto add = [&](const std::string& u){
-        if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
-    };
-    auto rawFor = [&](const std::string& server) -> std::string {
+                                            std::string_view mirror,
+                                            const ArtifactSource* custom) {
+    auto rawFor = [&](const std::string& server, const std::string& repo) -> std::string {
         auto pos = server.find("://");
         std::string rest = pos == std::string::npos ? server : server.substr(pos + 3);
         auto slash = rest.find('/');
@@ -286,10 +396,26 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
             return std::format("https://raw.gitcode.com/{}/{}/raw/main/{}", org, repo, filename);
         return {};
     };
+
+    // #377: per-repo source — one authoritative location, no official mirrors.
+    if (custom) {
+        if (custom->forge()) {
+            if (auto u = rawFor(custom->server, custom->repoName); !u.empty()) return {u};
+            return {};
+        }
+        if (!custom->localDir) return { custom->base + "/" + std::string(filename) };
+        return {};  // local dir: obtain_file consumes a forced BaseOverride instead
+    }
+
+    auto repo = detail_::index_repo_name_();
+    std::vector<std::string> urls;
+    auto add = [&](const std::string& u){
+        if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
+    };
     auto selected = Config::resource_server(mirror);
-    if (!selected.empty()) add(rawFor(selected));
-    for (auto& s : Config::resource_servers(mirror))   add(rawFor(s));
-    for (auto& s : Config::resource_servers("GLOBAL")) add(rawFor(s));
+    if (!selected.empty()) add(rawFor(selected, repo));
+    for (auto& s : Config::resource_servers(mirror))   add(rawFor(s, repo));
+    for (auto& s : Config::resource_servers("GLOBAL")) add(rawFor(s, repo));
     return urls;
 }
 
@@ -298,36 +424,51 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
 // index) avoids gitcode raw rate-limiting, and is the single file a self-hosted
 // index server must serve. Format:
 //   {"format_version":1,"indexes":{"xim":{<manifest>},"awesome":{<manifest>},...}}
-const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view mirror) {
-    static std::map<std::string, IndexManifest> cache;
-    static std::once_flag once;
-    std::call_once(once, [&] {
-        namespace fs = std::filesystem;
-        auto tmp = fs::temp_directory_path() /
-                   std::format("xim-index-pointers.{}.json", platform::get_pid());
-        std::error_code ec; fs::remove(tmp, ec);
-        auto err = detail_::obtain_file("xim-index-pointers.json",
-                       index_pointer_urls("xim-index-pointers.json", mirror), tmp, {});
-        if (!err.empty()) { log::warn("[index] pointer fetch failed: {}", err); return; }
-        std::string text;
-        { std::ifstream in(tmp, std::ios::binary); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
-        fs::remove(tmp, ec);
-        try {
-            auto j = nlohmann::json::parse(text);
-            if (j.contains("indexes") && j["indexes"].is_object())
-                for (auto it = j["indexes"].begin(); it != j["indexes"].end(); ++it)
-                    if (auto m = parse_index_manifest(it.value().dump())) cache[it.key()] = *m;
-        } catch (...) { log::warn("[index] pointer parse failed"); }
-    });
+const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view mirror,
+                                                                const ArtifactSource* custom) {
+    // #377: keyed per base (official = ""), same fetch-once-per-process
+    // semantics the old once_flag gave the official pointer.
+    static std::mutex mu;
+    static std::map<std::string, std::map<std::string, IndexManifest>> cacheByBase;
+    static std::set<std::string> fetched;
+    std::string cacheKey = custom ? custom->base : std::string{};
+    std::scoped_lock lk(mu);
+    auto& cache = cacheByBase[cacheKey];
+    if (fetched.contains(cacheKey)) return cache;
+    fetched.insert(cacheKey);
+
+    std::string filename = custom ? custom->repoName + "-pointers.json"
+                                  : std::string("xim-index-pointers.json");
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() /
+               std::format("xim-index-pointers.{}.{}.json", platform::get_pid(), fetched.size());
+    std::error_code ec; fs::remove(tmp, ec);
+    detail_::BaseOverride forcedStorage;
+    const detail_::BaseOverride* forced = nullptr;
+    if (custom) { forcedStorage = detail_::base_override_for_(*custom); forced = &forcedStorage; }
+    auto err = detail_::obtain_file(filename, index_pointer_urls(filename, mirror, custom),
+                                    tmp, {}, forced);
+    if (!err.empty()) { log::warn("[index] pointer fetch failed: {}", err); return cache; }
+    std::string text;
+    { std::ifstream in(tmp, std::ios::binary); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
+    fs::remove(tmp, ec);
+    try {
+        auto j = nlohmann::json::parse(text);
+        if (j.contains("indexes") && j["indexes"].is_object())
+            for (auto it = j["indexes"].begin(); it != j["indexes"].end(); ++it)
+                if (auto m = parse_index_manifest(it.value().dump())) cache[it.key()] = *m;
+    } catch (...) { log::warn("[index] pointer parse failed"); }
     return cache;
 }
 
 bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
-                          std::string_view subName) {
+                          std::string_view subName,
+                          const ArtifactSource* custom) {
     namespace fs = std::filesystem;
     auto mirrorKey = Config::mirror();
-    std::string key = subName.empty() ? std::string("xim") : std::string(subName);
+    std::string key = custom ? custom->key
+                             : (subName.empty() ? std::string("xim") : std::string(subName));
 
     std::string label = subName.empty()
         ? std::string("package index")
@@ -335,10 +476,13 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     log::info("[index] fetching {} (mirror={})...",
               label, mirrorKey.empty() ? "GLOBAL" : mirrorKey);
 
-    auto& pointers = load_index_pointers(mirrorKey);
-    auto pit = pointers.find(key);
-    if (pit == pointers.end()) { err = std::format("no pointer entry for '{}'", key); return false; }
-    const IndexManifest& manifest = pit->second;
+    auto& pointers = load_index_pointers(mirrorKey, custom);
+    const IndexManifest* pm = select_manifest(pointers, key, custom != nullptr);
+    if (!pm) {
+        err = std::format("no pointer entry for '{}' ({} entries)", key, pointers.size());
+        return false;
+    }
+    const IndexManifest& manifest = *pm;
     if (manifest.format_version != 1) {
         err = std::format("unsupported index manifest format_version {}", manifest.format_version);
         return false;
@@ -354,9 +498,13 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
 
     // Artifact (sha256-pinned by the manifest); release asset, versioned name.
     auto artifactFile = tmpRoot / manifest.artifact_name;
+    detail_::BaseOverride forcedStorage;
+    const detail_::BaseOverride* forced = nullptr;
+    if (custom) { forcedStorage = detail_::base_override_for_(*custom); forced = &forcedStorage; }
     if (auto e = detail_::obtain_file(manifest.artifact_name,
-                    index_asset_urls(manifest.artifact_name, mirrorKey, manifest.index_version),
-                    artifactFile, manifest.artifact_sha256); !e.empty()) {
+                    index_asset_urls(manifest.artifact_name, mirrorKey,
+                                     manifest.index_version, custom),
+                    artifactFile, manifest.artifact_sha256, forced); !e.empty()) {
         err = std::format("fetch index artifact failed: {}", e);
         return false;
     }

@@ -217,22 +217,27 @@ bool main_should_attempt_artifact(bool isOfficialRemote,
 
 // Decide whether a sub-index should be fetched as a versioned artifact (vs git
 // clone/pull). Mirrors the main index's gating:
-//   - indexSource "artifact": force artifact for default-official subs.
+//   - indexSource "artifact": force artifact for default-official subs and
+//     (#377) repos with a declared artifact source.
 //   - indexSource "git":      always git.
 //   - indexSource "auto":     artifact for a default-official sub that is fresh
 //     (no pkgs), already artifact-managed, OR — once the MAIN index is
 //     artifact-managed — to MIGRATE an existing git checkout (the whole index
 //     is one unit; this is the C1 migration gate so existing installs don't
-//     stay split: main on artifact, subs on git).
-// Non-default / URL-overridden / local sub-indexes are never artifact-fetched.
+//     stay split: main on artifact, subs on git). #377: a repo that DECLARES
+//     an artifact source always attempts (converges like the main index; the
+//     atomic swap migrates an existing git checkout safely, so no C1 gate).
+// Repos with neither a default-official identity nor a declared artifact
+// source are never artifact-fetched.
 bool sub_should_attempt_artifact(bool isDefaultOfficial,
                                  const std::string& indexSource,
                                  bool subManaged, bool subHasPkgs,
-                                 bool mainArtifactManaged) {
-    if (indexSource == "artifact") return isDefaultOfficial;
+                                 bool mainArtifactManaged,
+                                 bool hasArtifactSource = false) {
+    if (indexSource == "artifact") return isDefaultOfficial || hasArtifactSource;
     if (indexSource == "git")      return false;
-    return isDefaultOfficial
-        && (subManaged || !subHasPkgs || mainArtifactManaged);
+    return hasArtifactSource
+        || (isDefaultOfficial && (subManaged || !subHasPkgs || mainArtifactManaged));
 }
 
 // A local repo source (file:// URL or a filesystem path) has no network host,
@@ -378,6 +383,30 @@ bool sync_repo(const std::filesystem::path& localDir,
     return true;
 }
 
+// #377: sync one CUSTOM repo that declares its own artifact source: artifact
+// first (per the repo's effective source mode), then the repo's pre-existing
+// git/local path via syncFallback. source:"artifact" hard-fails (no fallback),
+// mirroring the main index's XLINGS_INDEX_SOURCE=artifact semantics.
+bool sync_repo_with_artifact(const IndexRepo& repo,
+                             const std::filesystem::path& repoDir,
+                             const std::string& globalIndexSource,
+                             const std::function<bool()>& syncFallback) {
+    auto src = artifact_source_for(repo);
+    std::string mode = repo.source.empty() ? globalIndexSource : repo.source;
+    if (src && sub_should_attempt_artifact(false, mode, false, false, false, true)) {
+        std::string ferr;
+        if (fetch_index_artifact(repoDir, ferr, repo.name, &*src)) return true;
+        if (mode == "artifact") {
+            log::error("[index] '{}' artifact fetch failed and git fallback disabled "
+                       "(source=artifact): {}", repo.name, ferr);
+            return false;
+        }
+        log::warn("[index] '{}' artifact fetch failed ({}); falling back to git",
+                  repo.name, ferr);
+    }
+    return syncFallback();
+}
+
 // Extract repo directory name from URL (matches Lua _to_repodir behavior)
 // e.g. "https://github.com/d2learn/xim-pkgindex-d2x.git" -> "xim-pkgindex-d2x"
 std::string url_to_dirname(const std::string& url) {
@@ -404,11 +433,21 @@ std::vector<IndexRepo> load_sub_repos_json(const std::filesystem::path& jsonFile
 
         std::vector<IndexRepo> repos;
         for (auto it = json.begin(); it != json.end(); ++it) {
-            if (!it.value().is_string()) continue;
-            auto url = it.value().get<std::string>();
-            if (!url.empty()) {
-                repos.push_back({it.key(), url});
+            IndexRepo repo;
+            repo.name = it.key();
+            if (it.value().is_string()) {
+                repo.url = it.value().get<std::string>();
+            } else if (it.value().is_object()) {
+                // #377: object form carries the artifact declaration.
+                auto& v = it.value();
+                if (v.contains("url") && v["url"].is_string())
+                    repo.url = v["url"].get<std::string>();
+                if (v.contains("artifact") && v["artifact"].is_string())
+                    repo.artifactBase = v["artifact"].get<std::string>();
+                if (v.contains("source") && v["source"].is_string())
+                    repo.source = v["source"].get<std::string>();
             }
+            if (!repo.url.empty()) repos.push_back(std::move(repo));
         }
         return repos;
     } catch (...) {
@@ -421,7 +460,16 @@ void save_sub_repos_json(const std::filesystem::path& jsonFile,
                          const std::vector<IndexRepo>& repos) {
     nlohmann::json json = nlohmann::json::object();
     for (auto& repo : repos) {
-        json[repo.name] = repo.url;
+        if (repo.artifactBase.empty() && repo.source.empty()) {
+            json[repo.name] = repo.url;       // legacy string form
+        } else {
+            // #377: object form; old xlings skips non-string values gracefully.
+            nlohmann::json v;
+            v["url"] = repo.url;
+            if (!repo.artifactBase.empty()) v["artifact"] = repo.artifactBase;
+            if (!repo.source.empty())       v["source"]   = repo.source;
+            json[repo.name] = v;
+        }
     }
     try {
         std::filesystem::create_directories(jsonFile.parent_path());
@@ -560,23 +608,31 @@ bool sync_all_repos(bool force = false) {
             auto repoDir = Config::repo_dir_for(repo, projectScope);
             // The main index is artifact-managed (no .git); never git-sync it.
             if (!projectScope && mainArtifactManaged && repoDir == mainDir) { ++ok; continue; }
-            if (Config::is_local_repo_source(repo, projectScope)) {
-                auto sourceDir = Config::resolve_repo_source(repo, projectScope);
-                if (!detail_::ensure_local_repo_link_(repoDir, sourceDir)) {
-                    log::warn("index repo '{}' skipped: local source has no pkgs/ ({})",
-                              repo.name, sourceDir.string());
-                    continue;
-                }
-                ++ok;
-                continue;
-            }
 
-            auto url = detail_::sync_repo_url_(repo.url, mirror);
-            if (!sync_repo(repoDir, url, force)) {
-                log::warn("index repo '{}' skipped: sync failed ({})", repo.name, url);
-                continue;
-            }
-            ++ok;
+            auto fallbackSync = [&]() -> bool {
+                if (Config::is_local_repo_source(repo, projectScope)) {
+                    auto sourceDir = Config::resolve_repo_source(repo, projectScope);
+                    if (!detail_::ensure_local_repo_link_(repoDir, sourceDir)) {
+                        log::warn("index repo '{}' skipped: local source has no pkgs/ ({})",
+                                  repo.name, sourceDir.string());
+                        return false;
+                    }
+                    return true;
+                }
+                auto url = detail_::sync_repo_url_(repo.url, mirror);
+                if (!sync_repo(repoDir, url, force)) {
+                    log::warn("index repo '{}' skipped: sync failed ({})", repo.name, url);
+                    return false;
+                }
+                return true;
+            };
+
+            // #377: a repo-declared artifact source is tried first; git/local
+            // remains the fallback (source:"artifact" disables it in the helper).
+            bool okOne = repo.artifactBase.empty()
+                ? fallbackSync()
+                : sync_repo_with_artifact(repo, repoDir, indexSource, fallbackSync);
+            if (okOne) ++ok;
         }
         return total == 0 || ok > 0;
     };
@@ -618,20 +674,25 @@ bool sync_all_repos(bool force = false) {
             luaIt != luaUrl.end() && luaIt->second == repo.url
             && !Config::is_local_repo_source(repo, false);
         bool subManaged = fs::exists(repoDir / ".xlings-index-version");
+        // #377: user-added sub-indexes may declare their own artifact source.
+        std::optional<ArtifactSource> customSrc;
+        if (!subDefaultOfficial) customSrc = artifact_source_for(repo);
+        std::string subMode = repo.source.empty() ? indexSource : repo.source;
         bool subAttemptArtifact = sub_should_attempt_artifact(
-            subDefaultOfficial, indexSource, subManaged,
-            fs::exists(repoDir / "pkgs"), mainArtifactManaged);
+            subDefaultOfficial, subMode, subManaged,
+            fs::exists(repoDir / "pkgs"), mainArtifactManaged, customSrc.has_value());
 
         bool ok = false;
         if (subAttemptArtifact) {
             std::string ferr;
-            ok = fetch_index_artifact(repoDir, ferr, repo.name);
+            ok = fetch_index_artifact(repoDir, ferr, repo.name,
+                                      customSrc ? &*customSrc : nullptr);
             if (!ok)
                 log::warn("[index] sub-index '{}' artifact fetch failed: {}", repo.name, ferr);
         }
         // git fallback (and the path for user-added / local sub-indexes), unless
-        // an official sub was explicitly pinned to the artifact source.
-        if (!ok && !(indexSource == "artifact" && subDefaultOfficial)) {
+        // the sub was explicitly pinned to the artifact source.
+        if (!ok && !(subMode == "artifact" && (subDefaultOfficial || customSrc.has_value()))) {
             ok = sync_repo(repoDir, repo.url, force);
         }
         if (ok) syncedSubRepos.push_back(repo);
@@ -661,7 +722,12 @@ bool sync_all_repos(bool force = false) {
         fs::create_directories(projSubRoot);
         for (auto& [name, repo] : projMerged) {
             auto repoDir = sub_repo_dir_for(repo, true);
-            if (sync_repo(repoDir, repo.url, force)) {
+            // #377: project sub-indexes may declare artifact sources too.
+            auto fallbackSync = [&]{ return sync_repo(repoDir, repo.url, force); };
+            bool okOne = repo.artifactBase.empty()
+                ? fallbackSync()
+                : sync_repo_with_artifact(repo, repoDir, indexSource, fallbackSync);
+            if (okOne) {
                 projSyncedSubs.push_back(repo);
             } else {
                 log::warn("failed to sync project sub-index repo: {} ({})", repo.name, repo.url);

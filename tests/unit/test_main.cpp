@@ -264,6 +264,33 @@ TEST(CompactGitTest, MissingGitHonorsNoAutoInstallFlag) {
     fs::remove_all(missingGit.parent_path());
 }
 
+// ── compact::git CA bundle resolution (#378) ──
+TEST(CompactGitTest, CaBundleDefaultPresentReturnsEmpty) {
+    auto exists = [](const std::string& p) { return p == "/etc/ssl/cert.pem"; };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists), "");
+}
+
+TEST(CompactGitTest, CaBundleDebianLayout) {
+    auto exists = [](const std::string& p) {
+        return p == "/etc/ssl/certs/ca-certificates.crt";
+    };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists),
+              "/etc/ssl/certs/ca-certificates.crt");
+}
+
+TEST(CompactGitTest, CaBundleRhelLayout) {
+    auto exists = [](const std::string& p) {
+        return p == "/etc/pki/tls/certs/ca-bundle.crt";
+    };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists),
+              "/etc/pki/tls/certs/ca-bundle.crt");
+}
+
+TEST(CompactGitTest, CaBundleNothingFoundReturnsEmpty) {
+    auto exists = [](const std::string&) { return false; };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists), "");
+}
+
 TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
     namespace fs = std::filesystem;
 
@@ -607,6 +634,48 @@ TEST(ConfigTest, ResolveRepoSourceRemoteUrlReturnsEmpty) {
     };
     EXPECT_TRUE(xlings::Config::resolve_repo_source(repo, false).empty());
     EXPECT_FALSE(xlings::Config::is_local_repo_source(repo, false));
+}
+
+// ── #377: index_repos parsing with artifact/source fields ──
+TEST(ConfigIndexReposTest, PlainEntryHasNoArtifact) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a","url":"https://x/a.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "a");
+    EXPECT_EQ(repos[0].url, "https://x/a.git");
+    EXPECT_TRUE(repos[0].artifactBase.empty());
+    EXPECT_TRUE(repos[0].source.empty());
+}
+
+TEST(ConfigIndexReposTest, ArtifactStringTrimsTrailingSlash) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":"https://github.com/xlings-res/mcpp-index/","source":"auto"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].artifactBase, "https://github.com/xlings-res/mcpp-index");
+    EXPECT_EQ(repos[0].source, "auto");
+}
+
+TEST(ConfigIndexReposTest, ArtifactRegionObjectResolvesMirror) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":{"GLOBAL":"https://github.com/o/r","CN":"https://gitcode.com/o/r"}}]})");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "CN")[0].artifactBase,
+              "https://gitcode.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "")[0].artifactBase,
+              "https://github.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "XX")[0].artifactBase,
+              "https://github.com/o/r");  // unknown mirror -> GLOBAL fallback
+}
+
+TEST(ConfigIndexReposTest, MalformedEntriesSkipped) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a"},{"url":"u"},{"name":"b","url":"https://x/b.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "b");
 }
 
 // ============================================================
@@ -2339,6 +2408,59 @@ TEST(XimSubReposTest, SubArtifactAutoMigratesWhenMainArtifactManaged) {
     EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
         true, "auto", /*subManaged=*/false, /*subHasPkgs=*/true,
         /*mainArtifactManaged=*/true));
+}
+
+TEST(XimSubReposTest, SubReposJsonObjectFormatRoundTrip) {
+    namespace fs = std::filesystem;
+    auto dir = fs::temp_directory_path() / "xlings-test-subrepos-json";
+    fs::create_directories(dir);
+    auto file = dir / "xim-indexrepos.json";
+
+    std::vector<xlings::IndexRepo> repos;
+    repos.push_back({"plain", "https://x/plain.git", "", ""});
+    repos.push_back({"custom", "https://x/custom.git",
+                     "https://github.com/o/custom-index", "auto"});
+    xlings::xim::save_sub_repos_json(file, repos);
+
+    auto loaded = xlings::xim::load_sub_repos_json(file);
+    ASSERT_EQ(loaded.size(), 2u);
+    EXPECT_EQ(loaded[0].name, "custom");   // nlohmann object keys sort alphabetically
+    EXPECT_EQ(loaded[0].url, "https://x/custom.git");
+    EXPECT_EQ(loaded[0].artifactBase, "https://github.com/o/custom-index");
+    EXPECT_EQ(loaded[0].source, "auto");
+    EXPECT_EQ(loaded[1].name, "plain");
+    EXPECT_TRUE(loaded[1].artifactBase.empty());
+
+    // plain entries must persist as plain strings (old-xlings tolerant)
+    auto text = xlings::platform::read_file_to_string(file.string());
+    auto j = nlohmann::json::parse(text);
+    EXPECT_TRUE(j["plain"].is_string());
+    EXPECT_TRUE(j["custom"].is_object());
+    fs::remove_all(dir);
+}
+
+// ── #377: custom repos with a declared artifact source ──
+TEST(XimSubReposTest, SubArtifactCustomAutoAlwaysAttempts) {
+    // custom + artifact declared: attempts even for an existing git checkout
+    // with main not artifact-managed (no C1 gate — atomic swap migrates safely)
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        false, "auto", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactCustomForcedArtifact) {
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        false, "artifact", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactCustomGitForced) {
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        false, "git", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactNoSourceStaysGit) {
+    // default param: prior behavior for repos without artifact declarations
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        false, "auto", false, false, true));
 }
 
 TEST(XimSubReposTest, SubArtifactAutoAlreadyManaged) {

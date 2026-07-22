@@ -45,6 +45,45 @@ flowchart LR
 
 添加后执行 `xlings update` 拉取索引数据。
 
+## 自定义索引的 artifact 加速（0.4.68+）
+
+自定义索引默认走 git 同步。若索引发布方提供了 artifact（指针 + sha256 校验的
+tarball，与官方索引同构），可在条目上声明 `artifact` 来源，获得与官方索引相同的
+HTTP 下载健壮性（延迟重排 + 卡顿看门狗），git 自动降级为回退：
+
+```json
+{
+  "index_repos": [
+    {
+      "name": "mcpplibs",
+      "url": "https://github.com/mcpp-community/mcpp-index.git",
+      "artifact": "https://github.com/xlings-res/mcpp-index",
+      "source": "auto"
+    }
+  ]
+}
+```
+
+- `artifact` — artifact 来源 base。字符串,或区域对象
+  `{"GLOBAL": "...", "CN": "..."}`(按当前 mirror 解析、GLOBAL 兜底)。支持三类:
+  GitHub/GitCode 仓库 URL(raw 指针 + release 资产)、任意静态 HTTP 目录、
+  本地目录 / `file://`(目录内直接放指针与 tarball)。
+- `source` — 该仓的传输模式(可省略,默认 `auto`):
+  - `auto` — artifact 优先,失败回落 git;
+  - `artifact` — 只走 artifact,失败即报错;
+  - `git` — 强制 git,忽略 `artifact` 声明。
+
+**发布方契约**(索引发布方需提供,mcpp-index 即为参照实现):
+
+1. base 仓根部一个 raw 可取的 `<仓名>-pointers.json`,格式
+   `{"format_version":1,"indexes":{"<key>":{<manifest>}}}`;
+2. 每个版本一个 release,tag 为 `v<index_version>`,附 manifest 所写的 tarball;
+3. tarball 根部含 `pkgs/`;
+4. manifest 的 `artifact.sha256` 与资产一致。
+
+指针里的 key 优先按条目 `name` 精确匹配;指针只有一个条目时直接采用
+(发布方 key 与消费端命名空间不必一致)。
+
 ## 资源服务器（二进制镜像）
 
 资源服务器提供预编译包的下载加速。内置镜像：

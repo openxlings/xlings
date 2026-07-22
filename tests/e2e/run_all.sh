@@ -79,6 +79,7 @@ TESTS=(
     "E2E-27 |install_silent_failure_test.sh||"
     "E2E-28 |shim_owner_anchoring_test.sh||"
     "E2E-29 |interface_multi_repo_error_visibility_test.sh||"
+    "E2E-30 |custom_index_artifact_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0
