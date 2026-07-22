@@ -2410,6 +2410,30 @@ TEST(XimSubReposTest, SubArtifactAutoMigratesWhenMainArtifactManaged) {
         /*mainArtifactManaged=*/true));
 }
 
+// ── #377: custom repos with a declared artifact source ──
+TEST(XimSubReposTest, SubArtifactCustomAutoAlwaysAttempts) {
+    // custom + artifact declared: attempts even for an existing git checkout
+    // with main not artifact-managed (no C1 gate — atomic swap migrates safely)
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        false, "auto", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactCustomForcedArtifact) {
+    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
+        false, "artifact", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactCustomGitForced) {
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        false, "git", false, true, false, true));
+}
+
+TEST(XimSubReposTest, SubArtifactNoSourceStaysGit) {
+    // default param: prior behavior for repos without artifact declarations
+    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
+        false, "auto", false, false, true));
+}
+
 TEST(XimSubReposTest, SubArtifactAutoAlreadyManaged) {
     EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
         true, "auto", /*subManaged=*/true, /*subHasPkgs=*/true, false));
