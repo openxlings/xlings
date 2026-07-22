@@ -264,6 +264,33 @@ TEST(CompactGitTest, MissingGitHonorsNoAutoInstallFlag) {
     fs::remove_all(missingGit.parent_path());
 }
 
+// ── compact::git CA bundle resolution (#378) ──
+TEST(CompactGitTest, CaBundleDefaultPresentReturnsEmpty) {
+    auto exists = [](const std::string& p) { return p == "/etc/ssl/cert.pem"; };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists), "");
+}
+
+TEST(CompactGitTest, CaBundleDebianLayout) {
+    auto exists = [](const std::string& p) {
+        return p == "/etc/ssl/certs/ca-certificates.crt";
+    };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists),
+              "/etc/ssl/certs/ca-certificates.crt");
+}
+
+TEST(CompactGitTest, CaBundleRhelLayout) {
+    auto exists = [](const std::string& p) {
+        return p == "/etc/pki/tls/certs/ca-bundle.crt";
+    };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists),
+              "/etc/pki/tls/certs/ca-bundle.crt");
+}
+
+TEST(CompactGitTest, CaBundleNothingFoundReturnsEmpty) {
+    auto exists = [](const std::string&) { return false; };
+    EXPECT_EQ(xlings::compact::git::resolve_ca_bundle(exists), "");
+}
+
 TEST(XimRepoTest, SyncWithoutGitPreservesExistingSnapshot) {
     namespace fs = std::filesystem;
 

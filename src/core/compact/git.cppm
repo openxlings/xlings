@@ -28,6 +28,24 @@ enum class EnsureMode {
     AutoInstall,
 };
 
+// #378: CA bundle to pin via GIT_SSL_CAINFO. The linux xim:git static build
+// bakes OPENSSLDIR=/etc/ssl, so its default CA FILE is /etc/ssl/cert.pem — a
+// BSD/Alpine layout that Debian/Ubuntu/RHEL never create, which kills every
+// HTTPS transport. GIT_SSL_CAINFO is the only env that overrides git's
+// explicit CURLOPT_CAINFO (SSL_CERT_FILE / CURL_CA_BUNDLE / GIT_SSL_CAPATH
+// all lose). Returns "" when the built-in default exists or no known bundle
+// is found. Pure; existence probe injected for tests.
+std::string resolve_ca_bundle(const std::function<bool(const std::string&)>& exists) {
+    if (exists("/etc/ssl/cert.pem")) return {};
+    for (const char* f : {"/etc/ssl/certs/ca-certificates.crt",
+                          "/etc/pki/tls/certs/ca-bundle.crt",
+                          "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                          "/etc/ssl/ca-bundle.pem"}) {
+        if (exists(f)) return f;
+    }
+    return {};
+}
+
 namespace detail_ {
 
 inline std::string env_or_empty_(std::string_view name) {
@@ -85,6 +103,24 @@ inline void prepend_current_bin_dir_() {
     }
 }
 
+// #378: xvm-injected GIT_SSL_CAINFO (xim-pkgindex#406) never reaches us —
+// compact::git execs the binary directly, bypassing the shim. Pin it here so
+// index sync works with system git, XLINGS_COMPACT_GIT_BIN overrides, and
+// bootstrap alike. User/CI-set GIT_SSL_CAINFO always wins.
+inline void ensure_ca_env_() {
+#if defined(__linux__)
+    if (!env_or_empty_("GIT_SSL_CAINFO").empty()) return;
+    auto bundle = resolve_ca_bundle([](const std::string& p) {
+        std::error_code ec;
+        return std::filesystem::exists(p, ec);
+    });
+    if (!bundle.empty()) {
+        platform::set_env_variable("GIT_SSL_CAINFO", bundle);
+        log::debug("compact::git: GIT_SSL_CAINFO={} (/etc/ssl/cert.pem absent)", bundle);
+    }
+#endif
+}
+
 inline bool target_is_git_bootstrap_() {
     auto target = utils::trim_string(env_or_empty_("XLINGS_COMPACT_INSTALL_TARGET"));
     return target == "xim:git" || target == "git";
@@ -138,6 +174,7 @@ bool available() {
 }
 
 bool ensure_available(EnsureMode mode = EnsureMode::AutoInstall) {
+    detail_::ensure_ca_env_();
     detail_::prepend_current_bin_dir_();
     if (available()) return true;
 
