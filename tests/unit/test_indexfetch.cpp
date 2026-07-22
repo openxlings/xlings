@@ -2,11 +2,114 @@
 
 import std;
 import xlings.core.xim.indexfetch;
+import xlings.core.config;
 import xlings.platform;
 
 using xlings::xim::parse_index_manifest;
 using xlings::xim::index_asset_urls;
 using xlings::xim::reconcile_index_temps;
+
+// ── #377: per-repo artifact sources ──
+static xlings::IndexRepo mkrepo(std::string name, std::string base) {
+    xlings::IndexRepo r;
+    r.name = std::move(name);
+    r.url = "https://x/y.git";
+    r.artifactBase = std::move(base);
+    return r;
+}
+
+TEST(ArtifactSourceFor, GithubForgeBase) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("mcpplibs", "https://github.com/xlings-res/mcpp-index"));
+    ASSERT_TRUE(s.has_value());
+    EXPECT_TRUE(s->forge());
+    EXPECT_EQ(s->server, "https://github.com/xlings-res");
+    EXPECT_EQ(s->repoName, "mcpp-index");
+    EXPECT_EQ(s->key, "mcpplibs");
+    EXPECT_FALSE(s->localDir.has_value());
+}
+
+TEST(ArtifactSourceFor, GitcodeForgeBaseTrimsTrailingSlash) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("m", "https://gitcode.com/xlings-res/mcpp-index/"));
+    ASSERT_TRUE(s.has_value());
+    EXPECT_TRUE(s->forge());
+    EXPECT_EQ(s->server, "https://gitcode.com/xlings-res");
+    EXPECT_EQ(s->repoName, "mcpp-index");
+}
+
+TEST(ArtifactSourceFor, FlatHttpBase) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("m", "https://example.com/idx/myindex"));
+    ASSERT_TRUE(s.has_value());
+    EXPECT_FALSE(s->forge());
+    EXPECT_EQ(s->repoName, "myindex");
+    EXPECT_FALSE(s->localDir.has_value());
+}
+
+TEST(ArtifactSourceFor, LocalDirAndFileUrl) {
+    auto s1 = xlings::xim::artifact_source_for(mkrepo("m", "/tmp/serve/myindex"));
+    ASSERT_TRUE(s1.has_value());
+    ASSERT_TRUE(s1->localDir.has_value());
+    EXPECT_FALSE(s1->forge());
+    EXPECT_EQ(s1->repoName, "myindex");
+    auto s2 = xlings::xim::artifact_source_for(mkrepo("m", "file:///tmp/serve/myindex"));
+    ASSERT_TRUE(s2.has_value());
+    ASSERT_TRUE(s2->localDir.has_value());
+    EXPECT_EQ(s2->localDir->generic_string(), "/tmp/serve/myindex");
+}
+
+TEST(ArtifactSourceFor, EmptyBaseIsNullopt) {
+    EXPECT_FALSE(xlings::xim::artifact_source_for(mkrepo("m", "")).has_value());
+}
+
+TEST(SelectManifest, ExactMatchWins) {
+    std::map<std::string, xlings::xim::IndexManifest> p;
+    p["a"].index_name = "a";
+    p["b"].index_name = "b";
+    auto* m = xlings::xim::select_manifest(p, "b", true);
+    ASSERT_NE(m, nullptr);
+    EXPECT_EQ(m->index_name, "b");
+}
+
+TEST(SelectManifest, SoleEntryFallbackOnlyWhenEnabled) {
+    std::map<std::string, xlings::xim::IndexManifest> p;
+    p["mcpp"].index_name = "mcpp";
+    EXPECT_NE(xlings::xim::select_manifest(p, "mcpplibs", true), nullptr);
+    EXPECT_EQ(xlings::xim::select_manifest(p, "mcpplibs", false), nullptr);  // official: exact only
+}
+
+TEST(SelectManifest, MultiEntryMissIsNull) {
+    std::map<std::string, xlings::xim::IndexManifest> p;
+    p["a"].index_name = "a";
+    p["b"].index_name = "b";
+    EXPECT_EQ(xlings::xim::select_manifest(p, "c", true), nullptr);
+}
+
+TEST(IndexAssetUrls, CustomForgeVersionedTagFirstSingleServer) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("m", "https://github.com/xlings-res/mcpp-index"));
+    auto urls = index_asset_urls("mcpp-index-2e23e20.tar.gz", "GLOBAL", "2e23e20", &*s);
+    ASSERT_EQ(urls.size(), 2u);
+    EXPECT_EQ(urls[0], "https://github.com/xlings-res/mcpp-index/releases/download/v2e23e20/mcpp-index-2e23e20.tar.gz");
+    EXPECT_EQ(urls[1], "https://github.com/xlings-res/mcpp-index/releases/download/latest/mcpp-index-2e23e20.tar.gz");
+}
+
+TEST(IndexAssetUrls, CustomFlatBase) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("m", "https://example.com/idx/myindex"));
+    auto urls = index_asset_urls("a.tar.gz", "GLOBAL", "1", &*s);
+    ASSERT_EQ(urls.size(), 1u);
+    EXPECT_EQ(urls[0], "https://example.com/idx/myindex/a.tar.gz");
+}
+
+TEST(IndexPointerUrls, CustomForgeRawUrl) {
+    auto s = xlings::xim::artifact_source_for(
+        mkrepo("m", "https://github.com/xlings-res/mcpp-index"));
+    auto urls = xlings::xim::index_pointer_urls("mcpp-index-pointers.json", "GLOBAL", &*s);
+    ASSERT_EQ(urls.size(), 1u);
+    EXPECT_EQ(urls[0], "https://raw.githubusercontent.com/xlings-res/mcpp-index/main/mcpp-index-pointers.json");
+}
 
 TEST(IndexManifest, ParsesValid) {
     auto m = parse_index_manifest(R"({
