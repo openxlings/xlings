@@ -20,6 +20,7 @@ import xlings.core.xim.repo;
 import xlings.core.xim.extract;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.bindings;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -1722,6 +1723,51 @@ TEST(XvmDbTest, GetVDataAndVInfo) {
     EXPECT_EQ(xlings::xvm::get_vinfo(db, "nonexistent"), nullptr);
 }
 
+TEST(XvmDbTest, AddVersionStoresMaterializationMetadataPerVersion) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "tool", "1.0.0", "/provider-a", "program", "tool-a", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "tool", "2.0.0", "/provider-b", "lib", "libtool-b.so", "", "repo-b");
+
+    const auto* first =
+        xlings::xvm::get_vdata(db, "tool", "repo-a:1.0.0");
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->kind, "program");
+    EXPECT_EQ(first->sourceName, "tool-a");
+    EXPECT_EQ(first->destinationName, "tool");
+
+    const auto* second =
+        xlings::xvm::get_vdata(db, "tool", "repo-b:2.0.0");
+    ASSERT_NE(second, nullptr);
+    EXPECT_EQ(second->kind, "lib");
+    EXPECT_EQ(second->sourceName, "libtool-b.so");
+    EXPECT_EQ(second->destinationName, "libtool-b.so");
+
+    const auto* legacyInfo = xlings::xvm::get_vinfo(db, "tool");
+    ASSERT_NE(legacyInfo, nullptr);
+    EXPECT_EQ(legacyInfo->type, "program");
+    EXPECT_EQ(legacyInfo->filename, "tool-a");
+}
+
+TEST(XvmDbTest, AddVersionPreservesVirtualGroupWithoutProgramPayload) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "provider-root", "1.0.0", "/provider", "group");
+
+    const auto* root =
+        xlings::xvm::get_vdata(db, "provider-root", "1.0.0");
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->kind, "group");
+    EXPECT_TRUE(root->sourceName.empty());
+    EXPECT_TRUE(root->destinationName.empty());
+
+    const auto* legacyInfo = xlings::xvm::get_vinfo(db, "provider-root");
+    ASSERT_NE(legacyInfo, nullptr);
+    EXPECT_EQ(legacyInfo->type, "group");
+    EXPECT_TRUE(legacyInfo->filename.empty());
+}
+
 TEST(XvmDbTest, GetBinding) {
     xlings::xvm::VersionDB db;
     xlings::xvm::add_version(db, "gcc", "15.1.0", "/usr/bin");
@@ -1776,6 +1822,146 @@ TEST(XvmJsonTest, VDataMinimal) {
     EXPECT_EQ(restored.path, "/usr/bin");
     EXPECT_TRUE(restored.alias.empty());
     EXPECT_TRUE(restored.envs.empty());
+}
+
+TEST(XvmJsonTest, BindingGroupManifestAndMaterializationRoundTrip) {
+    xlings::xvm::VData original;
+    original.path = "/pkg/gcc-15";
+    original.kind = "group";
+    original.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "xim:gcc",
+        .providerVersion = "15.1.0",
+        .group = "xim-gnu-gcc",
+        .rootTarget = "xim-gnu-gcc",
+        .rootVersion = "xim:15.1.0",
+    };
+    original.bindingMembers = {
+        {"g++", "xim:15.1.0"},
+        {"gcc", "xim:15.1.0"},
+        {"gcc-ar", "xim:gcc-15.1.0"},
+        {"xim-gnu-gcc", "xim:15.1.0"},
+    };
+    original.bindingHeaders = {
+        {
+            .sourceDir = "include/c++/15.1.0",
+            .destinationPrefix = "c++/15.1.0",
+        },
+        {
+            .sourceDir = "include-fixed",
+            .destinationPrefix = "",
+        },
+    };
+
+    auto j = xlings::xvm::vdata_to_json(original);
+    ASSERT_TRUE(j.contains("bindingGroup"));
+    EXPECT_EQ(j["bindingGroup"]["provider"], "xim:gcc");
+    EXPECT_EQ(j["bindingGroup"]["version"], "15.1.0");
+    EXPECT_EQ(j["bindingGroup"]["group"], "xim-gnu-gcc");
+    EXPECT_EQ(j["bindingGroup"]["rootTarget"], "xim-gnu-gcc");
+    EXPECT_EQ(j["bindingGroup"]["rootVersion"], "xim:15.1.0");
+    EXPECT_EQ(j["bindingMembers"]["gcc-ar"], "xim:gcc-15.1.0");
+    EXPECT_EQ(j["kind"], "group");
+    EXPECT_FALSE(j.contains("sourceName"));
+    EXPECT_FALSE(j.contains("destinationName"));
+    ASSERT_EQ(j["bindingHeaders"].size(), 2u);
+    EXPECT_EQ(j["bindingHeaders"][0]["sourceDir"], "include/c++/15.1.0");
+    EXPECT_EQ(j["bindingHeaders"][0]["destinationPrefix"], "c++/15.1.0");
+    EXPECT_EQ(j["bindingHeaders"][1]["sourceDir"], "include-fixed");
+    EXPECT_EQ(j["bindingHeaders"][1]["destinationPrefix"], "");
+
+    auto restored = xlings::xvm::vdata_from_json(j);
+    ASSERT_TRUE(restored.bindingGroup.has_value());
+    EXPECT_EQ(restored.bindingGroup->provider, "xim:gcc");
+    EXPECT_EQ(restored.bindingGroup->providerVersion, "15.1.0");
+    EXPECT_EQ(restored.bindingGroup->group, "xim-gnu-gcc");
+    EXPECT_EQ(restored.bindingGroup->rootTarget, "xim-gnu-gcc");
+    EXPECT_EQ(restored.bindingGroup->rootVersion, "xim:15.1.0");
+    EXPECT_EQ(restored.bindingMembers, original.bindingMembers);
+    EXPECT_EQ(restored.kind, "group");
+    EXPECT_TRUE(restored.sourceName.empty());
+    EXPECT_TRUE(restored.destinationName.empty());
+    ASSERT_EQ(restored.bindingHeaders.size(), 2u);
+    EXPECT_EQ(restored.bindingHeaders[0].sourceDir, "include/c++/15.1.0");
+    EXPECT_EQ(restored.bindingHeaders[0].destinationPrefix, "c++/15.1.0");
+    EXPECT_EQ(restored.bindingHeaders[1].sourceDir, "include-fixed");
+    EXPECT_TRUE(restored.bindingHeaders[1].destinationPrefix.empty());
+}
+
+TEST(XvmJsonTest, LegacyVDataOmitsProviderAndMaterializationMetadata) {
+    auto legacy = nlohmann::json::parse(R"({
+        "path": "/usr/bin",
+        "alias": ["15"]
+    })");
+
+    auto restored = xlings::xvm::vdata_from_json(legacy);
+    EXPECT_FALSE(restored.bindingGroup.has_value());
+    EXPECT_TRUE(restored.bindingMembers.empty());
+    EXPECT_TRUE(restored.kind.empty());
+    EXPECT_TRUE(restored.sourceName.empty());
+    EXPECT_TRUE(restored.destinationName.empty());
+    EXPECT_TRUE(restored.bindingHeaders.empty());
+
+    auto serialized = xlings::xvm::vdata_to_json(restored);
+    EXPECT_FALSE(serialized.contains("bindingGroup"));
+    EXPECT_FALSE(serialized.contains("bindingMembers"));
+    EXPECT_FALSE(serialized.contains("kind"));
+    EXPECT_FALSE(serialized.contains("sourceName"));
+    EXPECT_FALSE(serialized.contains("destinationName"));
+    EXPECT_FALSE(serialized.contains("bindingHeaders"));
+}
+
+TEST(XvmJsonTest, PerVersionMetadataSupportsDifferentProvidersForOneTarget) {
+    xlings::xvm::VersionDB original;
+    original["tool"].type = "program";
+    original["tool"].filename = "first-provider-tool";
+
+    auto& first = original["tool"].versions["repo-a:1.0.0"];
+    first.path = "/pkg/provider-a";
+    first.kind = "program";
+    first.sourceName = "tool-a";
+    first.destinationName = "tool";
+    first.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "repo-a:provider",
+        .providerVersion = "1.0.0",
+        .group = "provider-a",
+        .rootTarget = "provider-a",
+        .rootVersion = "repo-a:1.0.0",
+    };
+
+    auto& second = original["tool"].versions["repo-b:2.0.0"];
+    second.path = "/pkg/provider-b";
+    second.kind = "lib";
+    second.sourceName = "libtool-b.so";
+    second.destinationName = "libtool.so";
+    second.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "repo-b:provider",
+        .providerVersion = "2.0.0",
+        .group = "provider-b",
+        .rootTarget = "provider-b",
+        .rootVersion = "repo-b:2.0.0",
+    };
+
+    auto restored =
+        xlings::xvm::versions_from_json(xlings::xvm::versions_to_json(original));
+
+    const auto& firstRestored =
+        restored.at("tool").versions.at("repo-a:1.0.0");
+    EXPECT_EQ(firstRestored.kind, "program");
+    EXPECT_EQ(firstRestored.sourceName, "tool-a");
+    EXPECT_EQ(firstRestored.destinationName, "tool");
+    ASSERT_TRUE(firstRestored.bindingGroup.has_value());
+    EXPECT_EQ(firstRestored.bindingGroup->provider, "repo-a:provider");
+
+    const auto& secondRestored =
+        restored.at("tool").versions.at("repo-b:2.0.0");
+    EXPECT_EQ(secondRestored.kind, "lib");
+    EXPECT_EQ(secondRestored.sourceName, "libtool-b.so");
+    EXPECT_EQ(secondRestored.destinationName, "libtool.so");
+    ASSERT_TRUE(secondRestored.bindingGroup.has_value());
+    EXPECT_EQ(secondRestored.bindingGroup->provider, "repo-b:provider");
+
+    EXPECT_EQ(restored.at("tool").type, "program");
+    EXPECT_EQ(restored.at("tool").filename, "first-provider-tool");
 }
 
 TEST(XvmJsonTest, VInfoRoundTrip) {
@@ -2857,6 +3043,448 @@ TEST(XvmDbTest, NamespacedVersionMatch) {
 // xvm binding tree tests
 // ============================================================
 
+namespace {
+
+xlings::xvm::BindingGroupRef make_binding_group_ref(
+    std::string provider,
+    std::string providerVersion,
+    std::string group,
+    std::string rootTarget,
+    std::string rootVersion) {
+    return {
+        .provider = std::move(provider),
+        .providerVersion = std::move(providerVersion),
+        .group = std::move(group),
+        .rootTarget = std::move(rootTarget),
+        .rootVersion = std::move(rootVersion),
+    };
+}
+
+xlings::xvm::VData& add_provider_group_member(
+    xlings::xvm::VersionDB& db,
+    const std::string& target,
+    const std::string& version,
+    const xlings::xvm::BindingGroupRef& group,
+    const std::string& kind,
+    const std::string& sourceName = "",
+    const std::string& destinationName = "") {
+    auto& data = db[target].versions[version];
+    data.path = "/pkg/" + group.providerVersion;
+    data.kind = kind;
+    data.sourceName = sourceName;
+    data.destinationName = destinationName;
+    data.bindingGroup = group;
+    return data;
+}
+
+void expect_binding_error(
+    const std::expected<xlings::xvm::BindingSelection,
+                        xlings::xvm::BindingError>& result,
+    xlings::xvm::BindingErrorKind kind,
+    std::string_view target,
+    std::string_view version) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind, kind);
+    EXPECT_EQ(result.error().target, target);
+    EXPECT_EQ(result.error().version, version);
+    EXPECT_FALSE(result.error().message.empty());
+}
+
+}  // namespace
+
+TEST(XvmBindingSelectionTest, ProviderGroupResolvesRootAndLeafExactly) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "xim-gnu-gcc",
+        "xim-gnu-gcc", "xim:15.1.0");
+    const std::map<std::string, std::string> expected{
+        {"g++", "xim:15.1.0"},
+        {"gcc", "xim:15.1.0"},
+        {"gcc-ar", "xim:gcc-15.1.0"},
+        {"libstdc++.so.6", "xim:gcc-15.1.0"},
+        {"xim-gnu-gcc", "xim:15.1.0"},
+    };
+
+    auto& root = add_provider_group_member(
+        db, "xim-gnu-gcc", "xim:15.1.0", group, "group");
+    root.bindingMembers = expected;
+    add_provider_group_member(
+        db, "gcc", "xim:15.1.0", group, "program", "gcc-15", "gcc");
+    add_provider_group_member(
+        db, "g++", "xim:15.1.0", group, "program", "g++-15", "g++");
+    add_provider_group_member(
+        db, "gcc-ar", "xim:gcc-15.1.0", group,
+        "program", "gcc-ar-15", "gcc-ar");
+    add_provider_group_member(
+        db, "libstdc++.so.6", "xim:gcc-15.1.0", group,
+        "lib", "libstdc++.so.6.0.34", "libstdc++.so.6");
+
+    auto fromLeaf = xlings::xvm::resolve_binding_selection(
+        db, "gcc", "xim:15.1.0");
+    ASSERT_TRUE(fromLeaf.has_value()) << fromLeaf.error().message;
+    EXPECT_EQ(fromLeaf->source, xlings::xvm::BindingSource::ProviderGroup);
+    EXPECT_EQ(fromLeaf->members, expected);
+
+    auto fromRoot = xlings::xvm::resolve_binding_selection(
+        db, "xim-gnu-gcc", "xim:15.1.0");
+    ASSERT_TRUE(fromRoot.has_value()) << fromRoot.error().message;
+    EXPECT_EQ(fromRoot->source, xlings::xvm::BindingSource::ProviderGroup);
+    EXPECT_EQ(fromRoot->members, expected);
+}
+
+TEST(XvmBindingSelectionTest, ProviderScopeSeparatesGroupsForSameTarget) {
+    xlings::xvm::VersionDB db;
+    db["cc"].type = "program";
+    db["cc"].filename = "first-writer-cc";
+
+    const auto groupA = make_binding_group_ref(
+        "repo-a:toolchain", "1.0.0", "toolchain-a",
+        "repo-a:root", "repo-a:1.0.0");
+    auto& rootA = add_provider_group_member(
+        db, "repo-a:root", "repo-a:1.0.0", groupA, "group");
+    rootA.bindingMembers = {
+        {"cc", "repo-a:1.0.0"},
+        {"repo-a:root", "repo-a:1.0.0"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo-a:1.0.0", groupA,
+        "program", "cc-a", "cc");
+
+    const auto groupB = make_binding_group_ref(
+        "repo-b:toolchain", "2.0.0", "toolchain-b",
+        "repo-b:root", "repo-b:2.0.0");
+    auto& rootB = add_provider_group_member(
+        db, "repo-b:root", "repo-b:2.0.0", groupB, "group");
+    rootB.bindingMembers = {
+        {"cc", "repo-b:2.0.0"},
+        {"repo-b:root", "repo-b:2.0.0"},
+    };
+    auto& ccB = add_provider_group_member(
+        db, "cc", "repo-b:2.0.0", groupB,
+        "lib", "libcc-b.so.2", "libcc.so");
+
+    ASSERT_EQ(ccB.kind, "lib");
+    EXPECT_EQ(ccB.sourceName, "libcc-b.so.2");
+    EXPECT_EQ(ccB.destinationName, "libcc.so");
+
+    auto selectedA = xlings::xvm::resolve_binding_selection(
+        db, "cc", "repo-a:1.0.0");
+    ASSERT_TRUE(selectedA.has_value()) << selectedA.error().message;
+    EXPECT_EQ(selectedA->members,
+              (std::map<std::string, std::string>{
+                  {"cc", "repo-a:1.0.0"},
+                  {"repo-a:root", "repo-a:1.0.0"},
+              }));
+
+    auto selectedB = xlings::xvm::resolve_binding_selection(
+        db, "cc", "repo-b:2.0.0");
+    ASSERT_TRUE(selectedB.has_value()) << selectedB.error().message;
+    EXPECT_EQ(selectedB->members,
+              (std::map<std::string, std::string>{
+                  {"cc", "repo-b:2.0.0"},
+                  {"repo-b:root", "repo-b:2.0.0"},
+              }));
+}
+
+TEST(XvmBindingSelectionErrorTest, RejectsMissingStartingTarget) {
+    xlings::xvm::VersionDB db;
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "missing", "1.0.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::TargetNotFound,
+        "missing", "1.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, RejectsMissingStartingVersion) {
+    xlings::xvm::VersionDB db;
+    db["tool"].versions["1.0.0"].path = "/tool";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "2.0.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::VersionNotFound,
+        "tool", "2.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRejectsMissingRootVersion) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "program", "gcc", "gcc");
+    db["root"].versions["14.2.0"].kind = "group";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::VersionNotFound,
+        "root", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRequiresRootSelfReference) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "program", "gcc", "gcc");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingGroup->rootTarget = "not-root";
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::RootReferenceMismatch,
+        "root", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRequiresMatchingRootIdentity) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "program", "gcc", "gcc");
+    auto otherGroup = group;
+    otherGroup.provider = "other:gcc";
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", otherGroup, "group");
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::GroupIdentityMismatch,
+        "root", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRequiresRootInManifest) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "program", "gcc", "gcc");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::RootMissingFromManifest,
+        "root", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRequiresStartInManifest) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "program", "gcc", "gcc");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"root", "15.1.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::StartMemberMissing,
+        "gcc", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRejectsMissingManifestTarget) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"missing", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "root", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::TargetNotFound,
+        "missing", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRejectsMissingManifestVersion) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+    add_provider_group_member(
+        db, "gcc", "14.2.0", group, "program", "gcc", "gcc");
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "root", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::VersionNotFound,
+        "gcc", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupRejectsMemberBackReference) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+    auto otherGroup = group;
+    otherGroup.group = "other";
+    add_provider_group_member(
+        db, "gcc", "15.1.0", otherGroup, "program", "gcc", "gcc");
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "root", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::MemberReferenceMismatch,
+        "gcc", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, ProviderGroupUsesPerVersionKind) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "xim:gcc", "15.1.0", "gcc", "root", "15.1.0");
+    auto& root =
+        add_provider_group_member(db, "root", "15.1.0", group, "group");
+    root.bindingMembers = {
+        {"gcc", "15.1.0"},
+        {"root", "15.1.0"},
+    };
+    add_provider_group_member(
+        db, "gcc", "15.1.0", group, "archive", "gcc", "gcc");
+    db["gcc"].type = "program";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "root", "15.1.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::UnsupportedKind,
+        "gcc", "15.1.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyRejectsMissingDestinationVersion) {
+    xlings::xvm::VersionDB db;
+    db["a"].type = "program";
+    db["a"].versions["1"].path = "/a";
+    db["b"].type = "program";
+    db["b"].versions["1"].path = "/b";
+    db["a"].bindings["b"]["1"] = "2";
+    db["b"].bindings["a"]["2"] = "1";
+
+    auto result = xlings::xvm::resolve_binding_selection(db, "a", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::VersionNotFound, "b", "2");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyRejectsAsymmetricEdge) {
+    xlings::xvm::VersionDB db;
+    db["a"].type = "program";
+    db["a"].versions["1"].path = "/a";
+    db["b"].type = "program";
+    db["b"].versions["1"].path = "/b";
+    db["a"].bindings["b"]["1"] = "1";
+
+    auto result = xlings::xvm::resolve_binding_selection(db, "a", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::AsymmetricEdge, "b", "1");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyRejectsSelfEdge) {
+    xlings::xvm::VersionDB db;
+    db["a"].type = "program";
+    db["a"].versions["1"].path = "/a";
+    db["a"].bindings["a"]["1"] = "1";
+
+    auto result = xlings::xvm::resolve_binding_selection(db, "a", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::SelfEdge, "a", "1");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyRejectsTargetVersionConflict) {
+    xlings::xvm::VersionDB db;
+    for (const auto& [target, version] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"a", "1"}, {"a", "2"}, {"b", "1"}, {"c", "1"}}) {
+        db[target].type = "program";
+        db[target].versions[version].path = "/" + target + "/" + version;
+    }
+    db["a"].bindings["b"]["1"] = "1";
+    db["b"].bindings["a"]["1"] = "1";
+    db["b"].bindings["c"]["1"] = "1";
+    db["c"].bindings["b"]["1"] = "1";
+    db["c"].bindings["a"]["1"] = "2";
+    db["a"].bindings["c"]["2"] = "1";
+
+    auto result = xlings::xvm::resolve_binding_selection(db, "a", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::ConflictingTargetVersion,
+        "a", "2");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyFallsBackToVInfoKind) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "archive";
+    db["tool"].versions["1"].path = "/tool";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::UnsupportedKind,
+        "tool", "1");
+}
+
+TEST(XvmBindingSelectionErrorTest, LegacyPrefersVDataKindOverVInfo) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1"].path = "/tool";
+    db["tool"].versions["1"].kind = "archive";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::UnsupportedKind,
+        "tool", "1");
+}
+
 TEST(XvmDbTest, AddVersionWithBinding) {
     xlings::xvm::VersionDB db;
 
@@ -2938,43 +3566,25 @@ TEST(XvmDbTest, AddVersionWithBindingNamespaced) {
 }
 
 TEST(XvmDbTest, BindingTreeTraversal) {
-    // Test the binding tree traversal logic used by cmd_use
     xlings::xvm::VersionDB db;
 
-    // Build a binding tree: xim-gnu-gcc -> gcc, g++, gcc-ar
     xlings::xvm::add_version(db, "xim-gnu-gcc", "15.1.0", "/pkg/gcc-15");
     xlings::xvm::add_version(db, "gcc", "15.1.0", "/pkg/gcc-15", "program", "gcc", "gcc", "", "xim-gnu-gcc@15.1.0");
     xlings::xvm::add_version(db, "g++", "15.1.0", "/pkg/gcc-15", "program", "g++", "g++", "", "xim-gnu-gcc@15.1.0");
     xlings::xvm::add_version(db, "gcc-ar", "gcc-15.1.0", "/pkg/gcc-15", "program", "gcc-ar", "gcc-ar", "", "xim-gnu-gcc@15.1.0");
 
-    // Simulate the collect_bindings traversal starting from "gcc" version "15.1.0"
-    std::map<std::string, std::string> to_switch;
-    std::set<std::string> visited;
+    auto selection =
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0");
 
-    std::function<void(const std::string&, const std::string&)> collect_bindings;
-    collect_bindings = [&](const std::string& node, const std::string& node_ver) {
-        if (visited.contains(node)) return;
-        visited.insert(node);
-        to_switch[node] = node_ver;
-
-        auto info = xlings::xvm::get_vinfo(db, node);
-        if (!info) return;
-        for (auto& [peer_name, vermap] : info->bindings) {
-            auto it = vermap.find(node_ver);
-            if (it != vermap.end()) {
-                collect_bindings(peer_name, it->second);
-            }
-        }
-    };
-
-    collect_bindings("gcc", "15.1.0");
-
-    // Should have traversed the entire binding tree
-    EXPECT_EQ(to_switch.size(), 4u);
-    EXPECT_EQ(to_switch.at("gcc"), "15.1.0");
-    EXPECT_EQ(to_switch.at("xim-gnu-gcc"), "15.1.0");
-    EXPECT_EQ(to_switch.at("g++"), "15.1.0");
-    EXPECT_EQ(to_switch.at("gcc-ar"), "gcc-15.1.0");
+    ASSERT_TRUE(selection.has_value()) << selection.error().message;
+    EXPECT_EQ(selection->source, xlings::xvm::BindingSource::LegacyGraph);
+    EXPECT_EQ(selection->members,
+              (std::map<std::string, std::string>{
+                  {"g++", "15.1.0"},
+                  {"gcc", "15.1.0"},
+                  {"gcc-ar", "gcc-15.1.0"},
+                  {"xim-gnu-gcc", "15.1.0"},
+              }));
 }
 
 TEST(XvmDbTest, BindingJsonRoundTrip) {

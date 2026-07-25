@@ -4,12 +4,31 @@ import std;
 
 export namespace xlings::xvm {
 
+struct BindingGroupRef {
+    std::string provider;
+    std::string providerVersion;
+    std::string group;
+    std::string rootTarget;
+    std::string rootVersion;
+};
+
+struct HeaderAsset {
+    std::string sourceDir;
+    std::string destinationPrefix;
+};
+
 struct VData {
     std::string path;
+    std::string kind;
+    std::string sourceName;
+    std::string destinationName;
     std::string includedir;  // source header directory (e.g., xpkgs/openssl/3.1.5/include)
     std::string libdir;      // source library directory (e.g., xpkgs/glibc/2.39/lib64)
     std::vector<std::string> alias;
     std::map<std::string, std::string> envs;
+    std::optional<BindingGroupRef> bindingGroup;
+    std::map<std::string, std::string> bindingMembers;
+    std::vector<HeaderAsset> bindingHeaders;
 
 #if defined(_MSC_VER)
     VData() = default;

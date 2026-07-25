@@ -49,6 +49,12 @@ void add_version(VersionDB& db,
     auto ver_key = make_ns_version(ns, version);
     VData vdata;
     vdata.path = path;
+    vdata.kind = type;
+    if (type != "group") {
+        vdata.sourceName = filename.empty() ? target : filename;
+        vdata.destinationName =
+            type == "program" ? target : vdata.sourceName;
+    }
     if (!alias.empty()) vdata.alias.push_back(alias);
     info.versions[ver_key] = std::move(vdata);
 
@@ -300,6 +306,10 @@ std::string expand_path(const std::string& path, const std::string& xlings_home)
 nlohmann::json vdata_to_json(const VData& vdata) {
     nlohmann::json j;
     j["path"] = vdata.path;
+    if (!vdata.kind.empty()) j["kind"] = vdata.kind;
+    if (!vdata.sourceName.empty()) j["sourceName"] = vdata.sourceName;
+    if (!vdata.destinationName.empty())
+        j["destinationName"] = vdata.destinationName;
     if (!vdata.includedir.empty()) j["includedir"] = vdata.includedir;
     if (!vdata.libdir.empty()) j["libdir"] = vdata.libdir;
     if (!vdata.alias.empty()) {
@@ -312,6 +322,32 @@ nlohmann::json vdata_to_json(const VData& vdata) {
         }
         j["envs"] = envs_j;
     }
+    if (vdata.bindingGroup) {
+        j["bindingGroup"] = {
+            {"provider", vdata.bindingGroup->provider},
+            {"version", vdata.bindingGroup->providerVersion},
+            {"group", vdata.bindingGroup->group},
+            {"rootTarget", vdata.bindingGroup->rootTarget},
+            {"rootVersion", vdata.bindingGroup->rootVersion},
+        };
+    }
+    if (!vdata.bindingMembers.empty()) {
+        nlohmann::json members = nlohmann::json::object();
+        for (const auto& [target, version] : vdata.bindingMembers) {
+            members[target] = version;
+        }
+        j["bindingMembers"] = std::move(members);
+    }
+    if (!vdata.bindingHeaders.empty()) {
+        nlohmann::json headers = nlohmann::json::array();
+        for (const auto& header : vdata.bindingHeaders) {
+            headers.push_back({
+                {"sourceDir", header.sourceDir},
+                {"destinationPrefix", header.destinationPrefix},
+            });
+        }
+        j["bindingHeaders"] = std::move(headers);
+    }
     return j;
 }
 
@@ -319,6 +355,12 @@ VData vdata_from_json(const nlohmann::json& j) {
     VData vdata;
     if (j.contains("path") && j["path"].is_string())
         vdata.path = j["path"].get<std::string>();
+    if (j.contains("kind") && j["kind"].is_string())
+        vdata.kind = j["kind"].get<std::string>();
+    if (j.contains("sourceName") && j["sourceName"].is_string())
+        vdata.sourceName = j["sourceName"].get<std::string>();
+    if (j.contains("destinationName") && j["destinationName"].is_string())
+        vdata.destinationName = j["destinationName"].get<std::string>();
     if (j.contains("includedir") && j["includedir"].is_string())
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())
@@ -333,6 +375,47 @@ VData vdata_from_json(const nlohmann::json& j) {
         for (auto it = envs.begin(); it != envs.end(); ++it) {
             if (it.value().is_string())
                 vdata.envs[it.key()] = it.value().get<std::string>();
+        }
+    }
+    if (j.contains("bindingGroup") && j["bindingGroup"].is_object()) {
+        const auto& group = j["bindingGroup"];
+        BindingGroupRef ref;
+        if (group.contains("provider") && group["provider"].is_string())
+            ref.provider = group["provider"].get<std::string>();
+        if (group.contains("version") && group["version"].is_string())
+            ref.providerVersion = group["version"].get<std::string>();
+        if (group.contains("group") && group["group"].is_string())
+            ref.group = group["group"].get<std::string>();
+        if (group.contains("rootTarget") && group["rootTarget"].is_string())
+            ref.rootTarget = group["rootTarget"].get<std::string>();
+        if (group.contains("rootVersion") && group["rootVersion"].is_string())
+            ref.rootVersion = group["rootVersion"].get<std::string>();
+        vdata.bindingGroup = std::move(ref);
+    }
+    if (j.contains("bindingMembers") && j["bindingMembers"].is_object()) {
+        const auto& members = j["bindingMembers"];
+        for (auto it = members.begin(); it != members.end(); ++it) {
+            if (it.value().is_string()) {
+                vdata.bindingMembers[it.key()] =
+                    it.value().get<std::string>();
+            }
+        }
+    }
+    if (j.contains("bindingHeaders") && j["bindingHeaders"].is_array()) {
+        for (const auto& headerJson : j["bindingHeaders"]) {
+            if (!headerJson.is_object()) continue;
+            HeaderAsset header;
+            if (headerJson.contains("sourceDir") &&
+                headerJson["sourceDir"].is_string()) {
+                header.sourceDir =
+                    headerJson["sourceDir"].get<std::string>();
+            }
+            if (headerJson.contains("destinationPrefix") &&
+                headerJson["destinationPrefix"].is_string()) {
+                header.destinationPrefix =
+                    headerJson["destinationPrefix"].get<std::string>();
+            }
+            vdata.bindingHeaders.push_back(std::move(header));
         }
     }
     return vdata;
