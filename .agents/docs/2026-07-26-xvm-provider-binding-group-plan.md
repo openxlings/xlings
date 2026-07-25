@@ -48,13 +48,17 @@ legacy compatibility; release xlings 0.4.70 with all platform CI green.
 
 - [ ] Add failing group-reference/manifest JSON round-trip and legacy-absence
       tests.
+- [ ] Add failing per-version kind/source/destination and header-manifest JSON
+      tests; retain `VInfo` only as a legacy read fallback.
 - [ ] Add failing production resolver tests for root/leaf, transformed member
       versions, multiple providers, namespace, and multiple groups.
+- [ ] Cover the same target with provider-specific materialization metadata and
+      prove a virtual `kind = group` root never creates a program shim.
 - [ ] Add failing invalid-graph tests: missing target/version, asymmetric edge,
       conflicting target version, self-edge.
-- [ ] Implement `BindingGroupRef`, root member manifests, serialization,
-      `BindingSelection`, structured errors, provider-group resolver, and
-      strict legacy resolver.
+- [ ] Implement `BindingGroupRef`, per-version materialization metadata, root
+      member/header manifests, serialization, `BindingSelection`, structured
+      errors, provider-group resolver, and strict legacy resolver.
 - [ ] Delete the unit test's copied traversal lambda and call production code.
 - [ ] Run focused XVM tests, then full `mcpp test`.
 - [ ] Commit: `feat(xvm): add provider-scoped binding selection model`
@@ -74,11 +78,16 @@ legacy compatibility; release xlings 0.4.70 with all platform CI green.
 - [ ] Cover transformed and namespaced member versions.
 - [ ] Add failing test proving ambiguous versionless sibling removal cannot
       erase the target.
+- [ ] Add a raw empty-operation unit test independent of libxpkg defaults.
+- [ ] Add failing tests for explicit provider-scoped `remove_all`, including a
+      same-named target owned by another provider.
 - [ ] Make `remove_version()` prune both sides and empty maps.
 - [ ] Snapshot provider/legacy selections before uninstall mutation.
 - [ ] Prefer provider-owned exact members; use validated legacy selection only
       as compatibility fallback.
 - [ ] Remove the versionless `db.erase(op.name)` branch.
+- [ ] Handle `remove_all` as a distinct operation scoped to the executing
+      provider; reject owner-less legacy all-version removal.
 - [ ] Run focused and full tests.
 - [ ] Commit: `fix(xvm): remove binding members by exact owned version`
 
@@ -95,9 +104,14 @@ legacy compatibility; release xlings 0.4.70 with all platform CI green.
 - [ ] Add tests for root-after-child operation order.
 - [ ] Add tests rejecting phantom roots, self-binding, duplicate exact nodes,
       cross-provider edges, and two versions of one target in one group.
+- [ ] Test idempotent same-owner registration, compatible owner-less legacy
+      adoption, and conflicting-owner rejection without mutation.
+- [ ] Test grouped header operations and ambiguous ungrouped headers.
 - [ ] Split add processing into node and binding/ownership passes.
 - [ ] Populate provider identity from `PlanNode.canonicalName/version`.
-- [ ] Assign stable group labels and retain compatible bidirectional edges.
+- [ ] Assign stable group labels, carry header group identity, and retain
+      compatible bidirectional edges.
+- [ ] Replace stale manifests/edges only for exact nodes in the validated batch.
 - [ ] Add every member type to current SubOS `installed[]`.
 - [ ] Run focused and full tests.
 - [ ] Commit: `feat(xim): register xvm groups as validated provider batches`
@@ -117,13 +131,21 @@ legacy compatibility; release xlings 0.4.70 with all platform CI green.
 - [ ] Add failing tests proving no workspace mutation on planner/preflight
       errors.
 - [ ] Add library and header switch tests for every member in a selection.
-- [ ] Add rollback test for an unavailable library/header source.
+- [ ] Add ownership-collision and Windows copy/hardlink materialization tests.
+- [ ] Add rollback/fault-injection tests for each staging, replace, and JSON
+      commit failure point.
+- [ ] Add stale-reader concurrency test proving lock acquisition is followed by
+      state reload.
 - [ ] Replace local traversal with `resolve_binding_selection()`.
 - [ ] Preflight the complete selection before changes.
-- [ ] Stage library/header changes and keep rollback records.
+- [ ] Persist a per-SubOS materialized-view ownership ledger.
+- [ ] Acquire the shared XVM state lock and reload DB/workspace/ledger under it.
+- [ ] Stage program shim/library/header changes and keep rollback records.
 - [ ] Update active/installed entries from one in-memory selection.
-- [ ] Atomically replace workspace JSON through a same-directory staged file.
-- [ ] Ensure generic program shims only after successful preflight.
+- [ ] Atomically replace workspace and ledger JSON through same-directory staged
+      files as the transaction commit point.
+- [ ] Treat generic program shims as staged changes; virtual group roots never
+      create shims.
 - [ ] Run focused and full tests.
 - [ ] Commit: `fix(xvm): apply binding group switches transactionally`
 
@@ -142,7 +164,12 @@ legacy compatibility; release xlings 0.4.70 with all platform CI green.
 - [ ] Test removing a non-active group preserves the active group.
 - [ ] Test removing an active group selects one complete surviving group or
       clears all removed members.
+- [ ] Test two SubOS instances: detach the provider release from one, preserve
+      the other's view and global payload, then globally purge only after the
+      final exact owner reference is gone.
 - [ ] Route activation/fallback through the common switch plan.
+- [ ] Separate current-SubOS detach from all-SubOS reference scan and global
+      payload/registration purge.
 - [ ] Run full tests.
 - [ ] Commit: `fix(xim): keep install and remove binding groups coherent`
 
@@ -211,7 +238,8 @@ checkouts.
 - [ ] Test add/remove default to the same runtime version.
 - [ ] Test `setup/teardown` propagate explicit versions to root/program/lib.
 - [ ] Test `remove_all` is the only empty/all-version operation.
-- [ ] Test optional group label round trip if shipped in this slice.
+- [ ] Transport `remove_all` as a distinct operation with provider scope.
+- [ ] Test structured group labels and header group identity round trips.
 - [ ] Build/test all supported libxpkg paths.
 - [ ] Commit, push, open PR, and wait for required CI.
 
@@ -246,18 +274,22 @@ feature checkout.
 
 - [ ] Create a temporary OS home and `XLINGS_HOME`.
 - [ ] Copy only the built test xlings bootstrap and a local modified index.
-- [ ] Hash host global/workspace config before the test.
+- [ ] Hash host global/workspace config, executable/shim directories, and
+      relevant package payload metadata before the test.
 - [ ] Install GCC 15.1.0 and 16.1.0 in the temporary home.
 - [ ] Switch with `gcc`, execute both `gcc` and `g++`.
 - [ ] Switch back with `g++`, execute both again.
 - [ ] Verify registered library links and exact versions.
 - [ ] Remove/reinstall one version and repeat both directions.
-- [ ] Hash host global/workspace config after the test and prove equality.
+- [ ] Hash the same host config, bin/shim, and payload paths after the test and
+      prove equality.
 - [ ] Preserve concise logs under `.agents/docs` or PR evidence.
 
 ## Task 11: Version, documentation, and xlings PR
 
-- [ ] Update VERSION and `mcpp.toml` to xlings 0.4.70.
+- [ ] After the libxpkg release is published, update the xpkg dependency in both
+      `mcpp.toml` and `mcpp.lock` to that exact patch.
+- [ ] Update VERSION and the xlings package version to 0.4.70.
 - [ ] Update user-facing docs/changelog only where the repository convention
       requires it.
 - [ ] Run formatting/style checks.
@@ -276,6 +308,6 @@ feature checkout.
 - [ ] Fix failures by reproducing root cause; do not bypass checks.
 - [ ] Confirm every cross-repository PR is green.
 - [ ] Re-read the user requirements and map each to current evidence.
-- [ ] Confirm host xlings config/workspace hashes did not change.
+- [ ] Confirm host config/workspace, bin/shim, and payload hashes did not change.
 - [ ] Record final PR URLs, commits, versions, tests, runtime proof, and any
       migration action in the comprehensive report.

@@ -186,10 +186,14 @@ struct BindingGroupRef {
 };
 
 struct VData {
-    // existing fields...
+    // Existing per-version fields: path, alias, envs, includedir/libdir.
+    std::string kind;             // program | lib | group
+    std::string sourceName;       // payload entry; empty for group
+    std::string destinationName;  // shim/sysroot name
     std::optional<BindingGroupRef> bindingGroup;
     // Populated only on bindingGroup.rootTarget@rootVersion.
     std::map<std::string, std::string> bindingMembers;
+    std::vector<HeaderAsset> bindingHeaders; // populated on the exact root
 };
 ```
 
@@ -197,12 +201,17 @@ Every member stores the same `BindingGroupRef`. The exact root additionally
 stores the complete member manifest. This is intentionally more than an owner
 tag: scanning only surviving `VData` cannot detect that a member was deleted,
 whereas a manifest makes both a missing root and a missing member observable.
+`kind`, source, and destination are deliberately version-scoped. The legacy
+`VInfo.type` and `VInfo.filename` fields remain read fallbacks only: target-level
+metadata cannot represent two providers whose same target has different kinds
+or filenames.
 
 Root JSON shape:
 
 ```json
 {
   "path": ".../gcc/15.1.0",
+  "kind": "group",
   "bindingGroup": {
     "provider": "xim:gcc",
     "version": "15.1.0",
@@ -248,6 +257,16 @@ Registration processes one config hook's XVM operations as a batch:
 6. choose one exact root, write its full member manifest, write the same root
    reference to every member, and retain compatible bidirectional bindings.
 
+Batch processing also defines safe reconfiguration:
+
+- an exact registration owned by the same provider release is an idempotent
+  upsert;
+- an owner-less legacy exact node can be adopted only when its payload metadata
+  matches the current package registration;
+- an exact node owned by another provider is a conflict and fails closed;
+- old edges/manifests are replaced only for exact nodes in the validated batch,
+  never by target-wide erase.
+
 Batching removes the current order dependency while still rejecting phantom
 roots, self-bindings, conflicting target versions in one group, and
 cross-provider binding references.
@@ -268,8 +287,33 @@ The serialized `VInfo.bindings` map is compatibility metadata, not the canonical
 source for provider-aware entries. A missing member is therefore a hard
 integrity error rather than a silently smaller group.
 
-For legacy entries without owner metadata, the resolver uses a strictly
+For legacy entries without group metadata, the resolver uses a strictly
 validated binding graph.
+
+### 5.4 Header assets and materialized-view ownership
+
+Headers are group assets, not phantom target versions. A `HeaderAsset` records
+its source directory and optional destination prefix in the root manifest. The
+cross-repository XVM operation carries a group label; when omitted it is
+accepted only if the config batch has one unambiguous group. No `headers`
+operation may create `db[node.name].versions[...]` implicitly.
+
+Each SubOS config persists a materialized-view ownership ledger beside
+`workspace`:
+
+```text
+materialized[path] = {
+    bindingGroupRef,
+    memberTarget,
+    memberVersion,
+    source
+}
+```
+
+It covers individual library and header destinations. Ownership must never be
+inferred from symlink targets because Windows may use hardlinks or copies. The
+ledger makes replacement, conflict detection, rollback, and later removal
+deterministic even when different providers expose the same filename.
 
 ## 6. Switch architecture
 
@@ -309,18 +353,28 @@ No filesystem or Config mutation occurs during planning.
 `cmd_use()` becomes:
 
 ```text
+acquire per-home/SubOS XVM state lock
+    -> reload versions/workspace/materialized ledger while holding the lock
 resolve requested member version
     -> build BindingSelection
     -> preflight every program/lib/header source
-    -> stage materialized-view changes
+    -> stage every materialized-view and shim change beside its destination
     -> update an in-memory workspace copy for every member
-    -> atomically persist workspace once
-    -> finalize staged views / ensure generic shims
+    -> replace staged filesystem destinations while retaining backups
+    -> atomically persist workspace + materialized ledger once (commit point)
+    -> delete backups and release the lock
 ```
 
-The command-level guarantee is all-or-nothing for expected errors. Staged
-filesystem operations retain rollback information. Workspace JSON is written
-through a same-directory temporary file and atomic rename/replace.
+Every fallible filesystem creation occurs before the commit point. A failed
+destination replacement or JSON commit restores filesystem backups and leaves
+the old workspace/ledger. Fault-injection tests cover each stage. Generic shims
+are staged exactly like other destinations; they are not a fallible
+post-commit action.
+
+The per-home/SubOS lock is shared by `use`, registration, and removal. State is
+reloaded after lock acquisition so two processes cannot overwrite changes
+loaded before either acquired the lock. Workspace JSON is written through a
+same-directory temporary file and atomic rename/replace.
 
 Full crash-atomicity across JSON plus many independent header/library paths
 would require a generation-based sysroot; that is outside this release. A crash
@@ -333,13 +387,20 @@ Program shims are version-independent xlings launchers. Installation creates
 them; `use` only ensures missing shims exist after successful preflight. Version
 selection is entirely the committed workspace map.
 
+`VData.kind == "group"` is a selectable virtual root: it participates in list,
+use, installed sets, manifests, and diagnostics, but has no executable payload
+and never creates a shim. This replaces the current accidental behavior where a
+default-program marker such as `xim-gnu-gcc` produces a bogus shim.
+
 ### 6.4 Libraries
 
-For every selected `type == "lib"` member:
+For every selected `VData.kind == "lib"` member:
 
-- source is `VData.path / (VInfo.filename or target)`;
-- destination is the active SubOS library directory;
-- the old selected member's file is removed only if it is owned by that target;
+- source is `VData.path / VData.sourceName`;
+- destination is the SubOS library directory plus
+  `VData.destinationName`;
+- the old destination is replaced only through its materialized-view ledger
+  entry and is retained as a transaction backup;
 - the new file is linked/copied through the existing cross-platform link
   abstraction;
 - failures roll back before workspace commit.
@@ -349,10 +410,11 @@ already-active library.
 
 ### 6.5 Headers
 
-Header directories recorded in selected members are switched for the whole
-selection, not only the CLI starting target. The old view is removed and the new
-view staged before commit. Existing recipes that manage headers themselves keep
-working; group-managed headers use the common materializer.
+Header assets recorded in the root manifest are expanded into individual staged
+destinations and recorded in the materialized-view ledger. They switch for the
+whole selection, not only the CLI starting target. Existing recipe-managed
+headers remain outside this ownership model until explicitly migrated and are
+not claimed as transactionally switched.
 
 ### 6.6 Installed sets and listing
 
@@ -368,9 +430,15 @@ the current SubOS `installed[]` set. Therefore:
 
 ### 7.1 Provider-aware removal
 
-When uninstalling a resolved package release, xlings knows its canonical
-provider and version from `PlanNode`/catalog resolution. Before mutating state it
-collects and validates every group manifest owned by that provider release.
+Removal is explicitly two-phase:
+
+1. resolve every group owned by the requested provider release and atomically
+   detach all members/assets from the current SubOS, applying a coherent
+   surviving-group fallback where available;
+2. scan every SubOS/project installed set for the exact owner tuples. If another
+   environment still references the release, retain global VersionDB entries
+   and payload. Otherwise run the uninstall hook and globally purge the exact
+   owned registrations and payload.
 
 Those exact target versions are authoritative. Recipe `xvm.remove` operations
 are validated against them but do not define ownership.
@@ -386,6 +454,10 @@ Removal:
   otherwise clears all removed members coherently;
 - rematerializes libraries/headers for the fallback group.
 
+The reference check operates on every group member, not only the package/root
+target. Removing a release from SubOS A must leave SubOS B's workspace,
+materialized view, and global payload usable.
+
 ### 7.2 Legacy versionless operations
 
 For old provider-less entries, uninstall snapshots the validated legacy
@@ -395,6 +467,11 @@ selection.
 If no unique exact version can be derived, uninstall fails before mutation.
 The old `db.erase(op.name)` fallback is removed. Deliberate all-version removal
 must use an explicit API/operation.
+
+`remove_all` is transported as a distinct `op = "remove_all"` operation. It is
+scoped to target versions owned by the currently executing provider; it cannot
+erase owner-less or other-provider entries. Provider-less legacy all-version
+removal is rejected.
 
 ## 8. Legacy integrity and repair
 
@@ -413,8 +490,9 @@ If validation finds a dangling/asymmetric/conflicting graph:
 - it recommends re-running the owning package/version install/config when that
   owner can be inferred, otherwise reports the affected targets.
 
-Re-running an already-installed package config writes group references and
-manifests and rebuilds compatible edges without re-downloading a valid payload.
+Re-running an already-installed package config performs the idempotent/adoption
+rules in §5.2, writes group references/manifests, and atomically replaces only
+the batch's compatible old edges without re-downloading a valid payload.
 
 ### 8.3 Doctor integration
 
@@ -441,10 +519,15 @@ The Lua operation API becomes symmetric:
 - `xvm.setup()` propagates its resolved version to root, programs, and libs;
 - `xvm.teardown()` removes the same exact version;
 - a structured optional group label can be transported without parsing target
-  ownership from strings.
+  ownership from strings;
+- header operations carry group identity instead of relying on the package name.
 
 The current official index does not call `setup/teardown`, so direct operation
 tests are required.
+
+The libxpkg change is released first. The xlings integration then updates both
+`mcpp.toml` and `mcpp.lock` to that exact patch release; CI must not silently
+continue using 0.0.46.
 
 ### 9.2 xim-pkgindex
 
@@ -464,16 +547,27 @@ they can merge before the stricter validator.
 
 ### 10.1 Unit tests
 
-- owner JSON round trip and legacy JSON compatibility;
+- group reference, exact-root manifest, per-version kind/source/destination,
+  header-asset, and materialized-ledger JSON round trips;
+- legacy JSON compatibility and `VInfo` materialization fallback;
 - provider-group planning from root and leaf;
 - different root/member versions;
-- multiple groups per provider and multiple providers per target;
+- multiple groups per provider, multiple providers per target, and same target
+  with provider-specific kind/source metadata;
 - namespace handling;
+- virtual group roots never create program shims;
 - valid legacy cycles;
 - missing VData, asymmetric edge, conflicting target version;
+- idempotent same-owner reconfiguration, compatible owner-less adoption, and
+  other-owner conflict;
 - exact version removal and reciprocal edge cleanup;
+- raw empty legacy remove normalization and explicit provider-scoped
+  `remove_all`;
 - no mutation on plan/preflight failure;
-- library/header materialization and rollback.
+- library/header materialization, ownership collision, Windows copy/hardlink
+  behavior, and rollback at every injected failure point;
+- lock-then-reload behavior under concurrent stale readers;
+- current-SubOS detach followed by all-SubOS reference accounting.
 
 Tests call production helpers. The existing copied traversal lambda is removed.
 
@@ -499,7 +593,12 @@ Scenarios:
 7. corrupt one peer and prove the failed switch changes nothing;
 8. remove non-active v1 and preserve v2;
 9. remove active v2 and apply a coherent fallback;
-10. run different selections in two SubOS instances.
+10. run different selections in two SubOS instances, detach from one, and prove
+    the other keeps its workspace, materialized view, and global payload;
+11. reconfigure the same provider idempotently, adopt a compatible legacy
+    entry, and reject a conflicting provider without mutation;
+12. exercise explicit provider-scoped `remove_all` without touching another
+    provider's same-named target.
 
 Shell coverage runs on Linux and macOS. PowerShell coverage runs on Windows and
 executes real `.exe` shims; file content is used where Windows symlink privilege
@@ -521,8 +620,9 @@ remove one version
 repeat both directions
 ```
 
-The host `.xlings.json`, host SubOS workspace, and host shims are hashed before
-and after to prove they were untouched.
+The host `.xlings.json`, host SubOS workspace, host executable/shim directories,
+and relevant host package payload metadata are hashed before and after to prove
+they were untouched.
 
 ## 11. Rollout and success gates
 
