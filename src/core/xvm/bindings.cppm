@@ -79,8 +79,31 @@ bool supported_kind_(std::string_view kind) {
     return kind == "program" || kind == "lib" || kind == "group";
 }
 
+std::optional<std::string_view>
+canonical_manifest_path_(const VData& data) {
+    if (data.bindingMembersDeclared || !data.bindingMembers.empty()) {
+        return "/bindingMembers";
+    }
+    if (data.bindingHeadersDeclared || !data.bindingHeaders.empty()) {
+        return "/bindingHeaders";
+    }
+    return std::nullopt;
+}
+
 bool has_canonical_manifest_(const VData& data) {
-    return !data.bindingMembers.empty() || !data.bindingHeaders.empty();
+    return canonical_manifest_path_(data).has_value();
+}
+
+BindingError metadata_integrity_error_(
+    const std::string& target,
+    const std::string& version,
+    std::string_view code,
+    std::string_view path) {
+    return binding_error_(
+        BindingErrorKind::MetadataIntegrityIssue,
+        target, version,
+        std::format("binding metadata integrity issue '{}' at '{}'",
+                    code, path));
 }
 
 std::optional<BindingError>
@@ -89,11 +112,42 @@ binding_integrity_error_(const VData& data,
                          const std::string& version) {
     if (data.bindingIntegrityIssues.empty()) return std::nullopt;
     const auto& issue = data.bindingIntegrityIssues.front();
-    return binding_error_(
-        BindingErrorKind::MetadataIntegrityIssue,
-        target, version,
-        std::format("binding metadata integrity issue '{}' at '{}'",
-                    issue.code, issue.path));
+    return metadata_integrity_error_(
+        target, version, issue.code, issue.path);
+}
+
+std::optional<std::string_view>
+invalid_group_identity_path_(const BindingGroupRef& group) {
+    if (group.provider.empty()) return "/bindingGroup/provider";
+    if (group.providerVersion.empty()) return "/bindingGroup/version";
+    if (group.group.empty()) return "/bindingGroup/group";
+    if (group.rootTarget.empty()) return "/bindingGroup/rootTarget";
+    if (group.rootVersion.empty()) return "/bindingGroup/rootVersion";
+    return std::nullopt;
+}
+
+std::optional<BindingError>
+group_identity_integrity_error_(const BindingGroupRef& group,
+                                const std::string& target,
+                                const std::string& version) {
+    const auto invalidPath = invalid_group_identity_path_(group);
+    if (!invalidPath) return std::nullopt;
+    return metadata_integrity_error_(
+        target, version, "binding-group-field-invalid", *invalidPath);
+}
+
+std::optional<BindingError>
+non_root_metadata_error_(const VData& data,
+                         const std::string& target,
+                         const std::string& version,
+                         const BindingGroupRef& group) {
+    if (target == group.rootTarget && version == group.rootVersion) {
+        return std::nullopt;
+    }
+    const auto metadataPath = canonical_manifest_path_(data);
+    if (!metadataPath) return std::nullopt;
+    return metadata_integrity_error_(
+        target, version, "binding-metadata-on-non-root", *metadataPath);
 }
 
 std::expected<BindingSelection, BindingError>
@@ -120,6 +174,13 @@ resolve_provider_group_(const VersionDB& db,
     if (auto error = binding_integrity_error_(
             root, group.rootTarget, group.rootVersion)) {
         return std::unexpected(std::move(*error));
+    }
+    if (root.bindingGroup) {
+        if (auto error = group_identity_integrity_error_(
+                *root.bindingGroup,
+                group.rootTarget, group.rootVersion)) {
+            return std::unexpected(std::move(*error));
+        }
     }
     if (!root.bindingGroup
         || root.bindingGroup->rootTarget != group.rootTarget
@@ -170,12 +231,23 @@ resolve_provider_group_(const VersionDB& db,
                 memberIt->second, memberTarget, memberVersion)) {
             return std::unexpected(std::move(*error));
         }
+        if (memberIt->second.bindingGroup) {
+            if (auto error = group_identity_integrity_error_(
+                    *memberIt->second.bindingGroup,
+                    memberTarget, memberVersion)) {
+                return std::unexpected(std::move(*error));
+            }
+        }
         if (!memberIt->second.bindingGroup
             || !same_group_(*memberIt->second.bindingGroup, group)) {
             return std::unexpected(binding_error_(
                 BindingErrorKind::MemberReferenceMismatch,
                 memberTarget, memberVersion,
                 "binding member back-reference is inconsistent"));
+        }
+        if (auto error = non_root_metadata_error_(
+                memberIt->second, memberTarget, memberVersion, group)) {
+            return std::unexpected(std::move(*error));
         }
         if (!supported_kind_(memberIt->second.kind)) {
             return std::unexpected(binding_error_(
@@ -228,6 +300,11 @@ resolve_legacy_graph_(const VersionDB& db,
             return std::unexpected(std::move(*error));
         }
         if (dataIt->second.bindingGroup) {
+            if (auto error = group_identity_integrity_error_(
+                    *dataIt->second.bindingGroup,
+                    currentTarget, currentVersion)) {
+                return std::unexpected(std::move(*error));
+            }
             return std::unexpected(binding_error_(
                 BindingErrorKind::ProviderMetadataInLegacyGraph,
                 currentTarget, currentVersion,
@@ -343,6 +420,15 @@ resolve_binding_selection(const VersionDB& db,
             "canonical binding manifest is missing its binding group"));
     }
     if (versionIt->second.bindingGroup) {
+        if (auto error = detail_::group_identity_integrity_error_(
+                *versionIt->second.bindingGroup, target, version)) {
+            return std::unexpected(std::move(*error));
+        }
+        if (auto error = detail_::non_root_metadata_error_(
+                versionIt->second, target, version,
+                *versionIt->second.bindingGroup)) {
+            return std::unexpected(std::move(*error));
+        }
         return detail_::resolve_provider_group_(
             db, target, version, *versionIt->second.bindingGroup);
     }

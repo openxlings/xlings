@@ -1794,6 +1794,54 @@ TEST(XvmDbTest, ExpandPath) {
 // xvm JSON serialization tests
 // ============================================================
 
+namespace {
+
+nlohmann::json valid_binding_group_json() {
+    return {
+        {"provider", "repo:provider"},
+        {"version", "1.0.0"},
+        {"group", "provider-group"},
+        {"rootTarget", "provider-root"},
+        {"rootVersion", "1.0.0"},
+    };
+}
+
+xlings::xvm::VData reload_vdata(const xlings::xvm::VData& data) {
+    return xlings::xvm::vdata_from_json(
+        xlings::xvm::vdata_to_json(data));
+}
+
+void expect_single_binding_integrity_issue(
+    const xlings::xvm::VData& data,
+    std::string_view code,
+    std::string_view path) {
+    ASSERT_EQ(data.bindingIntegrityIssues.size(), 1u);
+    EXPECT_EQ(data.bindingIntegrityIssues[0].code, code);
+    EXPECT_EQ(data.bindingIntegrityIssues[0].path, path);
+}
+
+void expect_metadata_integrity_failure(
+    const xlings::xvm::VData& data,
+    std::string_view code,
+    std::string_view path) {
+    xlings::xvm::VersionDB db;
+    db["subject"].type = "program";
+    db["subject"].versions["1.0.0"] = data;
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "subject", "1.0.0");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind,
+              xlings::xvm::BindingErrorKind::MetadataIntegrityIssue);
+    EXPECT_EQ(result.error().target, "subject");
+    EXPECT_EQ(result.error().version, "1.0.0");
+    EXPECT_NE(result.error().message.find(code), std::string::npos);
+    EXPECT_NE(result.error().message.find(path), std::string::npos);
+}
+
+}  // namespace
+
 TEST(XvmJsonTest, VDataRoundTrip) {
     xlings::xvm::VData original;
     original.path = "/usr/bin";
@@ -2008,6 +2056,326 @@ TEST(XvmJsonTest, MalformedCanonicalContainersRecordIntegrityIssues) {
     EXPECT_EQ(parsed.bindingIntegrityIssues[2].code,
               "binding-group-missing");
     EXPECT_EQ(parsed.bindingIntegrityIssues[2].path, "/bindingGroup");
+}
+
+TEST(XvmJsonTest, NonObjectBindingGroupPersistsIntegrityFailure) {
+    nlohmann::json malformed{
+        {"path", "/subject"},
+        {"kind", "program"},
+        {"bindingGroup", false},
+    };
+
+    auto parsed = xlings::xvm::vdata_from_json(malformed);
+    expect_single_binding_integrity_issue(
+        parsed, "binding-group-not-object", "/bindingGroup");
+    expect_metadata_integrity_failure(
+        parsed, "binding-group-not-object", "/bindingGroup");
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        SCOPED_TRACE(cycle);
+        parsed = reload_vdata(parsed);
+        expect_single_binding_integrity_issue(
+            parsed, "binding-group-not-object", "/bindingGroup");
+        expect_metadata_integrity_failure(
+            parsed, "binding-group-not-object", "/bindingGroup");
+    }
+}
+
+TEST(XvmJsonTest, EveryInvalidBindingGroupFieldPersistsIntegrityFailure) {
+    const std::array<std::string_view, 5> fields{
+        "provider",
+        "version",
+        "group",
+        "rootTarget",
+        "rootVersion",
+    };
+    const std::array<std::string_view, 3> invalidClasses{
+        "missing",
+        "wrong-type",
+        "empty",
+    };
+
+    for (const auto field : fields) {
+        for (const auto invalidClass : invalidClasses) {
+            SCOPED_TRACE(std::string(field) + ":" + std::string(invalidClass));
+            nlohmann::json malformed{
+                {"path", "/subject"},
+                {"kind", "program"},
+                {"bindingGroup", valid_binding_group_json()},
+            };
+            auto& group = malformed["bindingGroup"];
+            if (invalidClass == "missing") {
+                group.erase(std::string(field));
+            } else if (invalidClass == "wrong-type") {
+                group[std::string(field)] = false;
+            } else {
+                group[std::string(field)] = "";
+            }
+            const auto path = "/bindingGroup/" + std::string(field);
+
+            auto parsed = xlings::xvm::vdata_from_json(malformed);
+            expect_single_binding_integrity_issue(
+                parsed, "binding-group-field-invalid", path);
+            expect_metadata_integrity_failure(
+                parsed, "binding-group-field-invalid", path);
+
+            for (int cycle = 0; cycle < 3; ++cycle) {
+                SCOPED_TRACE(cycle);
+                parsed = reload_vdata(parsed);
+                expect_single_binding_integrity_issue(
+                    parsed, "binding-group-field-invalid", path);
+                expect_metadata_integrity_failure(
+                    parsed, "binding-group-field-invalid", path);
+            }
+        }
+    }
+}
+
+TEST(XvmJsonTest, MalformedPersistedIssueStateBecomesDurableFailure) {
+    struct Case {
+        std::string_view name;
+        nlohmann::json issueState;
+        std::string_view code;
+        std::string_view path;
+    };
+    const std::vector<Case> cases{
+        {
+            "container-not-array",
+            nlohmann::json::object(),
+            "binding-integrity-issues-not-array",
+            "/bindingIntegrityIssues",
+        },
+        {
+            "item-not-object",
+            nlohmann::json::array({false}),
+            "binding-integrity-issue-not-object",
+            "/bindingIntegrityIssues/0",
+        },
+        {
+            "code-missing",
+            nlohmann::json::array({
+                {{"path", "/bindingGroup/provider"}},
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/code",
+        },
+        {
+            "code-wrong-type",
+            nlohmann::json::array({
+                {
+                    {"code", false},
+                    {"path", "/bindingGroup/provider"},
+                },
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/code",
+        },
+        {
+            "code-empty",
+            nlohmann::json::array({
+                {
+                    {"code", ""},
+                    {"path", "/bindingGroup/provider"},
+                },
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/code",
+        },
+        {
+            "path-missing",
+            nlohmann::json::array({
+                {{"code", "existing-integrity-issue"}},
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/path",
+        },
+        {
+            "path-wrong-type",
+            nlohmann::json::array({
+                {
+                    {"code", "existing-integrity-issue"},
+                    {"path", false},
+                },
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/path",
+        },
+        {
+            "path-empty",
+            nlohmann::json::array({
+                {
+                    {"code", "existing-integrity-issue"},
+                    {"path", ""},
+                },
+            }),
+            "binding-integrity-issue-field-invalid",
+            "/bindingIntegrityIssues/0/path",
+        },
+    };
+
+    for (const auto& testCase : cases) {
+        SCOPED_TRACE(testCase.name);
+        nlohmann::json malformed{
+            {"path", "/subject"},
+            {"kind", "program"},
+            {"bindingIntegrityIssues", testCase.issueState},
+        };
+
+        auto parsed = xlings::xvm::vdata_from_json(malformed);
+        expect_single_binding_integrity_issue(
+            parsed, testCase.code, testCase.path);
+        expect_metadata_integrity_failure(
+            parsed, testCase.code, testCase.path);
+
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            SCOPED_TRACE(cycle);
+            parsed = reload_vdata(parsed);
+            expect_single_binding_integrity_issue(
+                parsed, testCase.code, testCase.path);
+            expect_metadata_integrity_failure(
+                parsed, testCase.code, testCase.path);
+        }
+    }
+}
+
+TEST(XvmJsonTest, DuplicateDerivedIntegrityIssuesCollapseAcrossReloads) {
+    nlohmann::json malformed{
+        {"path", "/subject"},
+        {"kind", "program"},
+        {"bindingGroup", valid_binding_group_json()},
+        {
+            "bindingIntegrityIssues",
+            nlohmann::json::array({
+                {
+                    {"code", "binding-group-field-invalid"},
+                    {"path", "/bindingGroup/provider"},
+                },
+                {
+                    {"code", "binding-group-field-invalid"},
+                    {"path", "/bindingGroup/provider"},
+                },
+            }),
+        },
+    };
+    malformed["bindingGroup"]["provider"] = "";
+
+    auto parsed = xlings::xvm::vdata_from_json(malformed);
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        SCOPED_TRACE(cycle);
+        expect_single_binding_integrity_issue(
+            parsed,
+            "binding-group-field-invalid",
+            "/bindingGroup/provider");
+        expect_metadata_integrity_failure(
+            parsed,
+            "binding-group-field-invalid",
+            "/bindingGroup/provider");
+        parsed = reload_vdata(parsed);
+    }
+}
+
+TEST(XvmJsonTest, EmptyBindingMemberTargetAndVersionPersistFailures) {
+    struct Case {
+        std::string_view name;
+        std::string target;
+        std::string version;
+        std::string_view code;
+        std::string_view path;
+    };
+    const std::vector<Case> cases{
+        {
+            "empty-target",
+            "",
+            "1.0.0",
+            "binding-member-target-empty",
+            "/bindingMembers/",
+        },
+        {
+            "empty-version",
+            "tool",
+            "",
+            "binding-member-version-empty",
+            "/bindingMembers/tool",
+        },
+    };
+
+    for (const auto& testCase : cases) {
+        SCOPED_TRACE(testCase.name);
+        nlohmann::json members = nlohmann::json::object();
+        members[testCase.target] = testCase.version;
+        nlohmann::json malformed{
+            {"path", "/subject"},
+            {"kind", "group"},
+            {"bindingGroup", valid_binding_group_json()},
+            {"bindingMembers", std::move(members)},
+        };
+
+        auto parsed = xlings::xvm::vdata_from_json(malformed);
+        expect_single_binding_integrity_issue(
+            parsed, testCase.code, testCase.path);
+        expect_metadata_integrity_failure(
+            parsed, testCase.code, testCase.path);
+        EXPECT_TRUE(parsed.bindingMembers.empty());
+
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            SCOPED_TRACE(cycle);
+            parsed = reload_vdata(parsed);
+            expect_single_binding_integrity_issue(
+                parsed, testCase.code, testCase.path);
+            expect_metadata_integrity_failure(
+                parsed, testCase.code, testCase.path);
+            EXPECT_TRUE(parsed.bindingMembers.empty());
+        }
+    }
+}
+
+TEST(XvmJsonTest, EmptyHeaderSourcePersistsWhileEmptyDestinationIsValid) {
+    nlohmann::json malformed{
+        {"path", "/subject"},
+        {"kind", "group"},
+        {"bindingGroup", valid_binding_group_json()},
+        {
+            "bindingHeaders",
+            nlohmann::json::array({
+                {
+                    {"sourceDir", ""},
+                    {"destinationPrefix", ""},
+                },
+            }),
+        },
+    };
+
+    auto parsed = xlings::xvm::vdata_from_json(malformed);
+    expect_single_binding_integrity_issue(
+        parsed,
+        "binding-header-source-dir-empty",
+        "/bindingHeaders/0/sourceDir");
+    expect_metadata_integrity_failure(
+        parsed,
+        "binding-header-source-dir-empty",
+        "/bindingHeaders/0/sourceDir");
+    EXPECT_TRUE(parsed.bindingHeaders.empty());
+
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        SCOPED_TRACE(cycle);
+        parsed = reload_vdata(parsed);
+        expect_single_binding_integrity_issue(
+            parsed,
+            "binding-header-source-dir-empty",
+            "/bindingHeaders/0/sourceDir");
+        expect_metadata_integrity_failure(
+            parsed,
+            "binding-header-source-dir-empty",
+            "/bindingHeaders/0/sourceDir");
+        EXPECT_TRUE(parsed.bindingHeaders.empty());
+    }
+
+    malformed["bindingHeaders"][0]["sourceDir"] = "include";
+    auto valid = xlings::xvm::vdata_from_json(malformed);
+    EXPECT_TRUE(valid.bindingIntegrityIssues.empty());
+    ASSERT_EQ(valid.bindingHeaders.size(), 1u);
+    EXPECT_EQ(valid.bindingHeaders[0].sourceDir, "include");
+    EXPECT_TRUE(valid.bindingHeaders[0].destinationPrefix.empty());
 }
 
 TEST(XvmJsonTest, PerVersionMetadataSupportsDifferentProvidersForOneTarget) {
@@ -3190,6 +3558,51 @@ void expect_binding_error(
     EXPECT_FALSE(result.error().message.empty());
 }
 
+struct BindingGroupIdentityFieldCase {
+    std::string_view path;
+    std::string xlings::xvm::BindingGroupRef::* member;
+};
+
+const std::array<BindingGroupIdentityFieldCase, 5>
+    binding_group_identity_fields{
+        BindingGroupIdentityFieldCase{
+            "/bindingGroup/provider",
+            &xlings::xvm::BindingGroupRef::provider,
+        },
+        BindingGroupIdentityFieldCase{
+            "/bindingGroup/version",
+            &xlings::xvm::BindingGroupRef::providerVersion,
+        },
+        BindingGroupIdentityFieldCase{
+            "/bindingGroup/group",
+            &xlings::xvm::BindingGroupRef::group,
+        },
+        BindingGroupIdentityFieldCase{
+            "/bindingGroup/rootTarget",
+            &xlings::xvm::BindingGroupRef::rootTarget,
+        },
+        BindingGroupIdentityFieldCase{
+            "/bindingGroup/rootVersion",
+            &xlings::xvm::BindingGroupRef::rootVersion,
+        },
+    };
+
+void expect_binding_metadata_error(
+    const std::expected<xlings::xvm::BindingSelection,
+                        xlings::xvm::BindingError>& result,
+    std::string_view target,
+    std::string_view version,
+    std::string_view code,
+    std::string_view path) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind,
+              xlings::xvm::BindingErrorKind::MetadataIntegrityIssue);
+    EXPECT_EQ(result.error().target, target);
+    EXPECT_EQ(result.error().version, version);
+    EXPECT_NE(result.error().message.find(code), std::string::npos);
+    EXPECT_NE(result.error().message.find(path), std::string::npos);
+}
+
 }  // namespace
 
 TEST(XvmBindingSelectionTest, ProviderGroupResolvesRootAndLeafExactly) {
@@ -3208,6 +3621,12 @@ TEST(XvmBindingSelectionTest, ProviderGroupResolvesRootAndLeafExactly) {
     auto& root = add_provider_group_member(
         db, "xim-gnu-gcc", "xim:15.1.0", group, "group");
     root.bindingMembers = expected;
+    root.bindingHeaders = {
+        {
+            .sourceDir = "include",
+            .destinationPrefix = "",
+        },
+    };
     add_provider_group_member(
         db, "gcc", "xim:15.1.0", group, "program", "gcc-15", "gcc");
     add_provider_group_member(
@@ -3372,6 +3791,188 @@ TEST(XvmBindingSelectionErrorTest, RejectsBindingHeadersWithoutGroup) {
     expect_binding_error(
         result, xlings::xvm::BindingErrorKind::PartialProviderMetadata,
         "tool", "1.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsBindingMembersOnNonRoot) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider-root", "1.0.0");
+    auto& root = add_provider_group_member(
+        db, "provider-root", "1.0.0", group, "group");
+    root.bindingMembers = {
+        {"provider-root", "1.0.0"},
+        {"tool", "1.0.0"},
+    };
+    auto& member = add_provider_group_member(
+        db, "tool", "1.0.0", group, "program");
+    member.bindingMembers = {
+        {"nested-tool", "1.0.0"},
+    };
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    expect_binding_metadata_error(
+        result, "tool", "1.0.0",
+        "binding-metadata-on-non-root", "/bindingMembers");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsBindingHeadersOnNonRoot) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider-root", "1.0.0");
+    auto& root = add_provider_group_member(
+        db, "provider-root", "1.0.0", group, "group");
+    root.bindingMembers = {
+        {"provider-root", "1.0.0"},
+        {"tool", "1.0.0"},
+    };
+    auto& member = add_provider_group_member(
+        db, "tool", "1.0.0", group, "program");
+    member.bindingHeaders = {
+        {
+            .sourceDir = "include",
+            .destinationPrefix = "",
+        },
+    };
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    expect_binding_metadata_error(
+        result, "tool", "1.0.0",
+        "binding-metadata-on-non-root", "/bindingHeaders");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsPersistedEmptyNonRootMetadataFields) {
+    struct Case {
+        std::string_view field;
+        nlohmann::json emptyValue;
+    };
+    const std::array<Case, 2> cases{
+        Case{"bindingMembers", nlohmann::json::object()},
+        Case{"bindingHeaders", nlohmann::json::array()},
+    };
+
+    for (const auto& testCase : cases) {
+        SCOPED_TRACE(testCase.field);
+        nlohmann::json memberJson{
+            {"path", "/pkg/1.0.0"},
+            {"kind", "program"},
+            {"bindingGroup", valid_binding_group_json()},
+            {std::string(testCase.field), testCase.emptyValue},
+        };
+        auto member = xlings::xvm::vdata_from_json(memberJson);
+        auto persisted = xlings::xvm::vdata_to_json(member);
+        ASSERT_TRUE(persisted.contains(testCase.field));
+        member = reload_vdata(member);
+
+        xlings::xvm::VersionDB db;
+        const auto group = make_binding_group_ref(
+            "repo:provider", "1.0.0", "provider-group",
+            "provider-root", "1.0.0");
+        auto& root = add_provider_group_member(
+            db, "provider-root", "1.0.0", group, "group");
+        root.bindingMembers = {
+            {"provider-root", "1.0.0"},
+            {"tool", "1.0.0"},
+        };
+        db["tool"].versions["1.0.0"] = std::move(member);
+
+        auto result = xlings::xvm::resolve_binding_selection(
+            db, "provider-root", "1.0.0");
+
+        expect_binding_metadata_error(
+            result, "tool", "1.0.0",
+            "binding-metadata-on-non-root",
+            "/" + std::string(testCase.field));
+    }
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     RejectsEveryEmptyStartingGroupIdentityField) {
+    for (const auto& testCase : binding_group_identity_fields) {
+        SCOPED_TRACE(testCase.path);
+        xlings::xvm::VersionDB db;
+        const auto group = make_binding_group_ref(
+            "repo:provider", "1.0.0", "provider-group",
+            "provider-root", "1.0.0");
+        auto& root = add_provider_group_member(
+            db, "provider-root", "1.0.0", group, "group");
+        root.bindingMembers = {
+            {"provider-root", "1.0.0"},
+            {"tool", "1.0.0"},
+        };
+        auto& start = add_provider_group_member(
+            db, "tool", "1.0.0", group, "program");
+        ((*start.bindingGroup).*testCase.member).clear();
+
+        auto result = xlings::xvm::resolve_binding_selection(
+            db, "tool", "1.0.0");
+
+        expect_binding_metadata_error(
+            result, "tool", "1.0.0",
+            "binding-group-field-invalid", testCase.path);
+    }
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     RejectsEveryEmptyRootGroupIdentityField) {
+    for (const auto& testCase : binding_group_identity_fields) {
+        SCOPED_TRACE(testCase.path);
+        xlings::xvm::VersionDB db;
+        const auto group = make_binding_group_ref(
+            "repo:provider", "1.0.0", "provider-group",
+            "provider-root", "1.0.0");
+        auto& root = add_provider_group_member(
+            db, "provider-root", "1.0.0", group, "group");
+        root.bindingMembers = {
+            {"provider-root", "1.0.0"},
+            {"tool", "1.0.0"},
+        };
+        ((*root.bindingGroup).*testCase.member).clear();
+        add_provider_group_member(
+            db, "tool", "1.0.0", group, "program");
+
+        auto result = xlings::xvm::resolve_binding_selection(
+            db, "tool", "1.0.0");
+
+        expect_binding_metadata_error(
+            result, "provider-root", "1.0.0",
+            "binding-group-field-invalid", testCase.path);
+    }
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     RejectsEveryEmptyMemberGroupIdentityField) {
+    for (const auto& testCase : binding_group_identity_fields) {
+        SCOPED_TRACE(testCase.path);
+        xlings::xvm::VersionDB db;
+        const auto group = make_binding_group_ref(
+            "repo:provider", "1.0.0", "provider-group",
+            "provider-root", "1.0.0");
+        auto& root = add_provider_group_member(
+            db, "provider-root", "1.0.0", group, "group");
+        root.bindingMembers = {
+            {"provider-root", "1.0.0"},
+            {"tool", "1.0.0"},
+        };
+        auto& member = add_provider_group_member(
+            db, "tool", "1.0.0", group, "program");
+        ((*member.bindingGroup).*testCase.member).clear();
+
+        auto result = xlings::xvm::resolve_binding_selection(
+            db, "provider-root", "1.0.0");
+
+        expect_binding_metadata_error(
+            result, "tool", "1.0.0",
+            "binding-group-field-invalid", testCase.path);
+    }
 }
 
 TEST(XvmBindingSelectionErrorTest,

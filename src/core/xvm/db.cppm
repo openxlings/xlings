@@ -331,14 +331,14 @@ nlohmann::json vdata_to_json(const VData& vdata) {
             {"rootVersion", vdata.bindingGroup->rootVersion},
         };
     }
-    if (!vdata.bindingMembers.empty()) {
+    if (vdata.bindingMembersDeclared || !vdata.bindingMembers.empty()) {
         nlohmann::json members = nlohmann::json::object();
         for (const auto& [target, version] : vdata.bindingMembers) {
             members[target] = version;
         }
         j["bindingMembers"] = std::move(members);
     }
-    if (!vdata.bindingHeaders.empty()) {
+    if (vdata.bindingHeadersDeclared || !vdata.bindingHeaders.empty()) {
         nlohmann::json headers = nlohmann::json::array();
         for (const auto& header : vdata.bindingHeaders) {
             headers.push_back({
@@ -365,6 +365,12 @@ VData vdata_from_json(const nlohmann::json& j) {
     VData vdata;
     const auto recordIssue =
         [&vdata](std::string code, std::string path) {
+            const auto duplicate = std::ranges::any_of(
+                vdata.bindingIntegrityIssues,
+                [&](const BindingIntegrityIssue& issue) {
+                    return issue.code == code && issue.path == path;
+                });
+            if (duplicate) return;
             vdata.bindingIntegrityIssues.push_back({
                 .code = std::move(code),
                 .path = std::move(path),
@@ -409,56 +415,112 @@ VData vdata_from_json(const nlohmann::json& j) {
                 vdata.envs[it.key()] = it.value().get<std::string>();
         }
     }
-    if (j.contains("bindingIntegrityIssues")
-        && j["bindingIntegrityIssues"].is_array()) {
-        for (const auto& issueJson : j["bindingIntegrityIssues"]) {
-            if (!issueJson.is_object()
-                || !issueJson.contains("code")
-                || !issueJson["code"].is_string()
-                || !issueJson.contains("path")
-                || !issueJson["path"].is_string()) {
-                continue;
+    if (j.contains("bindingIntegrityIssues")) {
+        if (!j["bindingIntegrityIssues"].is_array()) {
+            recordIssue(
+                "binding-integrity-issues-not-array",
+                "/bindingIntegrityIssues");
+        } else {
+            std::size_t index = 0;
+            for (const auto& issueJson : j["bindingIntegrityIssues"]) {
+                const auto issuePath =
+                    "/bindingIntegrityIssues/" + std::to_string(index++);
+                if (!issueJson.is_object()) {
+                    recordIssue(
+                        "binding-integrity-issue-not-object",
+                        issuePath);
+                    continue;
+                }
+
+                const auto validCode =
+                    issueJson.contains("code")
+                    && issueJson["code"].is_string()
+                    && !issueJson["code"].get_ref<
+                        const std::string&>().empty();
+                const auto validPath =
+                    issueJson.contains("path")
+                    && issueJson["path"].is_string()
+                    && !issueJson["path"].get_ref<
+                        const std::string&>().empty();
+                if (!validCode) {
+                    recordIssue(
+                        "binding-integrity-issue-field-invalid",
+                        issuePath + "/code");
+                }
+                if (!validPath) {
+                    recordIssue(
+                        "binding-integrity-issue-field-invalid",
+                        issuePath + "/path");
+                }
+                if (validCode && validPath) {
+                    recordIssue(
+                        issueJson["code"].get<std::string>(),
+                        issueJson["path"].get<std::string>());
+                }
             }
-            vdata.bindingIntegrityIssues.push_back({
-                .code = issueJson["code"].get<std::string>(),
-                .path = issueJson["path"].get<std::string>(),
-            });
         }
     }
-    if (j.contains("bindingGroup") && j["bindingGroup"].is_object()) {
-        const auto& group = j["bindingGroup"];
-        BindingGroupRef ref;
-        if (group.contains("provider") && group["provider"].is_string())
-            ref.provider = group["provider"].get<std::string>();
-        if (group.contains("version") && group["version"].is_string())
-            ref.providerVersion = group["version"].get<std::string>();
-        if (group.contains("group") && group["group"].is_string())
-            ref.group = group["group"].get<std::string>();
-        if (group.contains("rootTarget") && group["rootTarget"].is_string())
-            ref.rootTarget = group["rootTarget"].get<std::string>();
-        if (group.contains("rootVersion") && group["rootVersion"].is_string())
-            ref.rootVersion = group["rootVersion"].get<std::string>();
-        vdata.bindingGroup = std::move(ref);
+    if (j.contains("bindingGroup")) {
+        if (!j["bindingGroup"].is_object()) {
+            recordIssue(
+                "binding-group-not-object", "/bindingGroup");
+        } else {
+            const auto& group = j["bindingGroup"];
+            BindingGroupRef ref;
+            const auto parseGroupField =
+                [&](std::string_view name, std::string& destination) {
+                    const auto key = std::string(name);
+                    if (group.contains(key)
+                        && group[key].is_string()
+                        && !group[key].get_ref<
+                            const std::string&>().empty()) {
+                        destination = group[key].get<std::string>();
+                    } else {
+                        recordIssue(
+                            "binding-group-field-invalid",
+                            "/bindingGroup/" + key);
+                    }
+                };
+            parseGroupField("provider", ref.provider);
+            parseGroupField("version", ref.providerVersion);
+            parseGroupField("group", ref.group);
+            parseGroupField("rootTarget", ref.rootTarget);
+            parseGroupField("rootVersion", ref.rootVersion);
+            vdata.bindingGroup = std::move(ref);
+        }
     }
     if (j.contains("bindingMembers")) {
+        vdata.bindingMembersDeclared = true;
         if (!j["bindingMembers"].is_object()) {
             recordIssue(
                 "binding-members-not-object", "/bindingMembers");
         } else {
             const auto& members = j["bindingMembers"];
             for (auto it = members.begin(); it != members.end(); ++it) {
-                if (it.value().is_string()) {
-                    vdata.bindingMembers[it.key()] =
-                        it.value().get<std::string>();
-                } else {
+                const auto validTarget = !it.key().empty();
+                if (!validTarget) {
+                    recordIssue(
+                        "binding-member-target-empty",
+                        "/bindingMembers/");
+                }
+                if (!it.value().is_string()) {
                     recordIssue(
                         "binding-member-version-not-string",
                         "/bindingMembers/" + pointerToken(it.key()));
+                } else if (it.value().get_ref<
+                               const std::string&>().empty()) {
+                    recordIssue(
+                        "binding-member-version-empty",
+                        "/bindingMembers/" + pointerToken(it.key()));
+                } else if (validTarget) {
+                    vdata.bindingMembers[it.key()] =
+                        it.value().get<std::string>();
                 }
             }
         }
     }
     if (j.contains("bindingHeaders")) {
+        vdata.bindingHeadersDeclared = true;
         if (!j["bindingHeaders"].is_array()) {
             recordIssue(
                 "binding-headers-not-array", "/bindingHeaders");
@@ -475,6 +537,13 @@ VData vdata_from_json(const nlohmann::json& j) {
                     || !headerJson["sourceDir"].is_string()) {
                     recordIssue(
                         "binding-header-source-dir-not-string",
+                        headerPath + "/sourceDir");
+                    continue;
+                }
+                if (headerJson["sourceDir"].get_ref<
+                        const std::string&>().empty()) {
+                    recordIssue(
+                        "binding-header-source-dir-empty",
                         headerPath + "/sourceDir");
                     continue;
                 }

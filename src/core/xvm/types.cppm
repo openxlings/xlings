@@ -34,6 +34,8 @@ struct VData {
     std::optional<BindingGroupRef> bindingGroup;
     std::map<std::string, std::string> bindingMembers;
     std::vector<HeaderAsset> bindingHeaders;
+    bool bindingMembersDeclared { false };
+    bool bindingHeadersDeclared { false };
     std::vector<BindingIntegrityIssue> bindingIntegrityIssues;
 
 #if defined(_MSC_VER)
