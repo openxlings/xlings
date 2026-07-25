@@ -22,6 +22,7 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
+import xlings.core.xvm.registration;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -3608,6 +3609,1184 @@ void expect_binding_metadata_error(
 }
 
 }  // namespace
+
+TEST(XvmRegistrationTest,
+     RegistersChildBeforeRootWithNamespacedTransformedVersions) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const xlings::xvm::RegistrationBatch batch{
+        .provider = "xim:gcc",
+        .providerVersion = "15.1.0",
+        .nodes = {
+            {
+                .target = "gcc-ar",
+                .version = "xim:gcc-15.1.0",
+                .path = "/pkg/gcc/15.1.0/bin",
+                .kind = "program",
+                .sourceName = "gcc-ar-15",
+                .destinationName = "gcc-ar",
+                .binding = xlings::xvm::RegistrationBinding{
+                    .rootTarget = "xim-gnu-gcc",
+                    .rootVersion = "xim:15.1.0",
+                },
+            },
+            {
+                .target = "xim-gnu-gcc",
+                .version = "xim:15.1.0",
+                .path = "/pkg/gcc/15.1.0",
+                .kind = "group",
+            },
+        },
+    };
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->size(), 2u);
+    const auto& root =
+        db.at("xim-gnu-gcc").versions.at("xim:15.1.0");
+    const auto& child =
+        db.at("gcc-ar").versions.at("xim:gcc-15.1.0");
+    ASSERT_TRUE(root.bindingGroup.has_value());
+    ASSERT_TRUE(child.bindingGroup.has_value());
+    EXPECT_EQ(root.bindingGroup->group, "xim-gnu-gcc");
+    EXPECT_EQ(root.bindingGroup->rootTarget, "xim-gnu-gcc");
+    EXPECT_EQ(root.bindingGroup->rootVersion, "xim:15.1.0");
+    EXPECT_EQ(child.bindingGroup->provider, root.bindingGroup->provider);
+    EXPECT_EQ(
+        child.bindingGroup->providerVersion,
+        root.bindingGroup->providerVersion);
+    EXPECT_EQ(child.bindingGroup->group, root.bindingGroup->group);
+    EXPECT_EQ(
+        child.bindingGroup->rootTarget,
+        root.bindingGroup->rootTarget);
+    EXPECT_EQ(
+        child.bindingGroup->rootVersion,
+        root.bindingGroup->rootVersion);
+    EXPECT_EQ(
+        root.bindingMembers,
+        (std::map<std::string, std::string>{
+            {"gcc-ar", "xim:gcc-15.1.0"},
+            {"xim-gnu-gcc", "xim:15.1.0"},
+        }));
+    EXPECT_EQ(
+        db.at("xim-gnu-gcc")
+            .bindings.at("gcc-ar").at("xim:15.1.0"),
+        "xim:gcc-15.1.0");
+    EXPECT_EQ(
+        db.at("gcc-ar")
+            .bindings.at("xim-gnu-gcc").at("xim:gcc-15.1.0"),
+        "xim:15.1.0");
+    EXPECT_EQ(workspace.at("gcc-ar"), "xim:gcc-15.1.0");
+    EXPECT_EQ(workspace.at("xim-gnu-gcc"), "xim:15.1.0");
+    EXPECT_EQ(
+        installed.at("gcc-ar"),
+        (std::vector<std::string>{"xim:gcc-15.1.0"}));
+    EXPECT_EQ(
+        installed.at("xim-gnu-gcc"),
+        (std::vector<std::string>{"xim:15.1.0"}));
+}
+
+namespace {
+
+xlings::xvm::RegistrationNode make_registration_node(
+    std::string target,
+    std::string version,
+    std::string kind = "program") {
+    return {
+        .target = std::move(target),
+        .version = std::move(version),
+        .path = "/pkg/provider/1.0.0",
+        .kind = std::move(kind),
+        .sourceName = "payload",
+        .destinationName = "tool",
+    };
+}
+
+xlings::xvm::RegistrationBinding make_registration_binding(
+    std::string rootTarget,
+    std::string rootVersion,
+    std::string group = {}) {
+    return {
+        .rootTarget = std::move(rootTarget),
+        .rootVersion = std::move(rootVersion),
+        .group = std::move(group),
+    };
+}
+
+xlings::xvm::RegistrationBatch make_registration_batch(
+    std::vector<xlings::xvm::RegistrationNode> nodes) {
+    return {
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .nodes = std::move(nodes),
+    };
+}
+
+void expect_registration_error(
+    const std::expected<
+        std::vector<xlings::xvm::RegisteredMember>,
+        xlings::xvm::RegistrationError>& result,
+    xlings::xvm::RegistrationErrorKind kind,
+    std::string_view path,
+    std::string_view target = {},
+    std::string_view version = {}) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind, kind);
+    EXPECT_EQ(result.error().path, path);
+    EXPECT_EQ(result.error().target, target);
+    EXPECT_EQ(result.error().version, version);
+    EXPECT_FALSE(result.error().message.empty());
+}
+
+void expect_registration_state_unchanged(
+    const xlings::xvm::VersionDB& db,
+    const xlings::xvm::Workspace& workspace,
+    const xlings::xvm::WorkspaceInstalled& installed,
+    const nlohmann::json& dbBefore,
+    const xlings::xvm::Workspace& workspaceBefore,
+    const xlings::xvm::WorkspaceInstalled& installedBefore) {
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+}  // namespace
+
+TEST(XvmRegistrationTest, RootFirstAndRootLastSerializeIdentically) {
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto child = make_registration_node("tool", "repo:tool-1.0.0");
+    child.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+
+    xlings::xvm::VersionDB rootFirstDb;
+    xlings::xvm::Workspace rootFirstWorkspace;
+    xlings::xvm::WorkspaceInstalled rootFirstInstalled;
+    auto rootFirst = xlings::xvm::apply_registration_batch(
+        rootFirstDb, rootFirstWorkspace, rootFirstInstalled,
+        make_registration_batch({root, child}));
+    ASSERT_TRUE(rootFirst.has_value()) << rootFirst.error().message;
+
+    xlings::xvm::VersionDB rootLastDb;
+    xlings::xvm::Workspace rootLastWorkspace;
+    xlings::xvm::WorkspaceInstalled rootLastInstalled;
+    auto rootLast = xlings::xvm::apply_registration_batch(
+        rootLastDb, rootLastWorkspace, rootLastInstalled,
+        make_registration_batch({child, root}));
+    ASSERT_TRUE(rootLast.has_value()) << rootLast.error().message;
+
+    EXPECT_EQ(
+        xlings::xvm::versions_to_json(rootFirstDb),
+        xlings::xvm::versions_to_json(rootLastDb));
+    EXPECT_EQ(rootFirstWorkspace, rootLastWorkspace);
+    EXPECT_EQ(rootFirstInstalled, rootLastInstalled);
+}
+
+TEST(XvmRegistrationErrorTest, RejectsPhantomRootWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    db["sentinel"].versions["0"].path = "/sentinel";
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    auto child = make_registration_node("tool", "repo:1.0.0");
+    child.binding =
+        make_registration_binding("missing-root", "repo:1.0.0");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, make_registration_batch({child}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::RootNotInBatch,
+        "/nodes/0/binding", "missing-root", "repo:1.0.0");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationErrorTest, RejectsSelfBindingWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto node = make_registration_node("root", "repo:1.0.0", "group");
+    node.sourceName.clear();
+    node.destinationName.clear();
+    node.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, make_registration_batch({node}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::SelfBinding,
+        "/nodes/0/binding", "root", "repo:1.0.0");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationErrorTest, RejectsDuplicateExactNodeWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto node = make_registration_node("tool", "repo:1.0.0");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({node, node}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::DuplicateNode,
+        "/nodes/1", "tool", "repo:1.0.0");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationErrorTest,
+     RejectsTwoVersionsOfOneTargetInOneGroupWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto first = make_registration_node("tool", "repo:tool-1.0.0");
+    first.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+    auto second = make_registration_node("tool", "repo:tool-alt-1.0.0");
+    second.binding = first.binding;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({root, first, second}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::TargetVersionConflict,
+        "/nodes/2", "tool", "repo:tool-alt-1.0.0");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationErrorTest, RejectsOneGroupLabelWithTwoRoots) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto rootA = make_registration_node("root-a", "repo:a", "group");
+    rootA.sourceName.clear();
+    rootA.destinationName.clear();
+    auto rootB = make_registration_node("root-b", "repo:b", "group");
+    rootB.sourceName.clear();
+    rootB.destinationName.clear();
+    auto childA = make_registration_node("tool-a", "repo:a");
+    childA.binding =
+        make_registration_binding("root-a", "repo:a", "shared");
+    auto childB = make_registration_node("tool-b", "repo:b");
+    childB.binding =
+        make_registration_binding("root-b", "repo:b", "shared");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({rootA, childA, rootB, childB}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::GroupConflict,
+        "/nodes/3/binding/group", "tool-b", "repo:b");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationErrorTest, RejectsOneRootAssignedToTwoGroups) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto childA = make_registration_node("tool-a", "repo:a");
+    childA.binding =
+        make_registration_binding("root", "repo:1.0.0", "group-a");
+    auto childB = make_registration_node("tool-b", "repo:b");
+    childB.binding =
+        make_registration_binding("root", "repo:1.0.0", "group-b");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({root, childA, childB}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::GroupConflict,
+        "/nodes/2/binding/group", "tool-b", "repo:b");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationErrorTest, RejectsInvalidBatchNodeAndBindingIdentity) {
+    struct Case {
+        xlings::xvm::RegistrationBatch batch;
+        xlings::xvm::RegistrationErrorKind kind;
+        std::string path;
+        std::string target;
+        std::string version;
+    };
+
+    auto validNode = make_registration_node("tool", "repo:1.0.0");
+    auto emptyProvider = make_registration_batch({validNode});
+    emptyProvider.provider.clear();
+    auto emptyRelease = make_registration_batch({validNode});
+    emptyRelease.providerVersion.clear();
+    auto emptyTargetNode = validNode;
+    emptyTargetNode.target.clear();
+    auto emptyVersionNode = validNode;
+    emptyVersionNode.version.clear();
+    auto emptyRootNode = validNode;
+    emptyRootNode.binding =
+        make_registration_binding("", "repo:1.0.0");
+    auto emptyRootVersionNode = validNode;
+    emptyRootVersionNode.binding =
+        make_registration_binding("root", "");
+
+    const std::vector<Case> cases{
+        {
+            std::move(emptyProvider),
+            xlings::xvm::RegistrationErrorKind::InvalidBatchIdentity,
+            "/provider", "", "",
+        },
+        {
+            std::move(emptyRelease),
+            xlings::xvm::RegistrationErrorKind::InvalidBatchIdentity,
+            "/providerVersion", "", "",
+        },
+        {
+            make_registration_batch({emptyTargetNode}),
+            xlings::xvm::RegistrationErrorKind::InvalidNodeIdentity,
+            "/nodes/0/target", "", "repo:1.0.0",
+        },
+        {
+            make_registration_batch({emptyVersionNode}),
+            xlings::xvm::RegistrationErrorKind::InvalidNodeIdentity,
+            "/nodes/0/version", "tool", "",
+        },
+        {
+            make_registration_batch({emptyRootNode}),
+            xlings::xvm::RegistrationErrorKind::InvalidBindingIdentity,
+            "/nodes/0/binding/rootTarget", "tool", "repo:1.0.0",
+        },
+        {
+            make_registration_batch({emptyRootVersionNode}),
+            xlings::xvm::RegistrationErrorKind::InvalidBindingIdentity,
+            "/nodes/0/binding/rootVersion", "tool", "repo:1.0.0",
+        },
+    };
+
+    for (const auto& testCase : cases) {
+        SCOPED_TRACE(testCase.path);
+        xlings::xvm::VersionDB db;
+        xlings::xvm::Workspace workspace;
+        xlings::xvm::WorkspaceInstalled installed;
+
+        auto result = xlings::xvm::apply_registration_batch(
+            db, workspace, installed, testCase.batch);
+
+        expect_registration_error(
+            result, testCase.kind, testCase.path,
+            testCase.target, testCase.version);
+        EXPECT_TRUE(db.empty());
+        EXPECT_TRUE(workspace.empty());
+        EXPECT_TRUE(installed.empty());
+    }
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsOtherProviderExactCollisionWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    auto& existing = db["tool"].versions["repo:1.0.0"];
+    existing.path = "/other/tool";
+    existing.kind = "program";
+    existing.sourceName = "other-tool";
+    existing.destinationName = "tool";
+    existing.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "other:provider",
+        .providerVersion = "1.0.0",
+        .group = "tool",
+        .rootTarget = "tool",
+        .rootVersion = "repo:1.0.0",
+    };
+    existing.bindingMembers = {{"tool", "repo:1.0.0"}};
+    existing.bindingMembersDeclared = true;
+    xlings::xvm::Workspace workspace{{"tool", "repo:1.0.0"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"tool", {"repo:1.0.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            make_registration_node("tool", "repo:1.0.0"),
+        }));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::OwnershipConflict,
+        "/nodes/0", "tool", "repo:1.0.0");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsSameProviderDifferentReleaseCollisionWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    auto& existing = db["tool"].versions["repo:1.0.0"];
+    existing.path = "/provider/old";
+    existing.kind = "program";
+    existing.sourceName = "old-tool";
+    existing.destinationName = "tool";
+    existing.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "repo:provider",
+        .providerVersion = "0.9.0",
+        .group = "tool",
+        .rootTarget = "tool",
+        .rootVersion = "repo:1.0.0",
+    };
+    existing.bindingMembers = {{"tool", "repo:1.0.0"}};
+    existing.bindingMembersDeclared = true;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            make_registration_node("tool", "repo:1.0.0"),
+        }));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::OwnershipConflict,
+        "/nodes/0", "tool", "repo:1.0.0");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationOwnershipTest, SameOwnerReregistrationIsIdempotent) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto child = make_registration_node("tool", "repo:tool-1.0.0");
+    child.sourceName = "tool-real";
+    child.destinationName = "tool";
+    child.alias = {"--driver-mode=gcc"};
+    child.envs = {{"TOOLCHAIN_ROOT", "/pkg/provider/1.0.0"}};
+    child.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+    const auto batch = make_registration_batch({child, root});
+
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    const auto dbAfterFirst = xlings::xvm::versions_to_json(db);
+    const auto workspaceAfterFirst = workspace;
+    const auto installedAfterFirst = installed;
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbAfterFirst);
+    EXPECT_EQ(workspace, workspaceAfterFirst);
+    EXPECT_EQ(installed, installedAfterFirst);
+    EXPECT_EQ(
+        db.at("root").bindings.at("tool").size(),
+        1u);
+    EXPECT_EQ(
+        db.at("tool").bindings.at("root").size(),
+        1u);
+}
+
+namespace {
+
+void seed_complete_legacy_registration_group(
+    xlings::xvm::VersionDB& db) {
+    auto& rootInfo = db["legacy-root"];
+    rootInfo.type = "program";
+    rootInfo.filename = "legacy-root-real";
+    auto& root = rootInfo.versions["repo:1.0.0"];
+    root.path = "/pkg/provider/1.0.0";
+    root.alias = {"root-alias"};
+    root.envs = {{"ROOT_ENV", "root"}};
+
+    auto& childInfo = db["tool"];
+    childInfo.type = "program";
+    childInfo.filename = "tool-real";
+    auto& child = childInfo.versions["repo:tool-1.0.0"];
+    child.path = "/pkg/provider/1.0.0";
+    child.alias = {"tool-alias"};
+    child.envs = {{"TOOL_ENV", "tool"}};
+
+    rootInfo.bindings["tool"]["repo:1.0.0"] =
+        "repo:tool-1.0.0";
+    childInfo.bindings["legacy-root"]["repo:tool-1.0.0"] =
+        "repo:1.0.0";
+}
+
+xlings::xvm::RegistrationBatch complete_legacy_adoption_batch() {
+    auto root =
+        make_registration_node("legacy-root", "repo:1.0.0");
+    root.sourceName = "legacy-root-real";
+    root.destinationName = "legacy-root";
+    root.alias = {"root-alias"};
+    root.envs = {{"ROOT_ENV", "root"}};
+    auto child =
+        make_registration_node("tool", "repo:tool-1.0.0");
+    child.sourceName = "tool-real";
+    child.destinationName = "tool";
+    child.alias = {"tool-alias"};
+    child.envs = {{"TOOL_ENV", "tool"}};
+    child.binding = make_registration_binding(
+        "legacy-root", "repo:1.0.0");
+    return make_registration_batch({child, root});
+}
+
+}  // namespace
+
+TEST(XvmRegistrationOwnershipTest, AdoptsCompatibleCompleteLegacyGroup) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, complete_legacy_adoption_batch());
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    auto selection = xlings::xvm::resolve_binding_selection(
+        db, "tool", "repo:tool-1.0.0");
+    ASSERT_TRUE(selection.has_value()) << selection.error().message;
+    EXPECT_EQ(
+        selection->members,
+        (std::map<std::string, std::string>{
+            {"legacy-root", "repo:1.0.0"},
+            {"tool", "repo:tool-1.0.0"},
+        }));
+    EXPECT_EQ(
+        db.at("tool")
+            .versions.at("repo:tool-1.0.0")
+            .bindingGroup->provider,
+        "repo:provider");
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsIncompatibleLegacyPayloadWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace{{"tool", "repo:tool-1.0.0"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"tool", {"repo:tool-1.0.0"}},
+    };
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes[0].path = "/different/payload";
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::LegacyPayloadMismatch,
+        "/nodes/0/path", "tool", "repo:tool-1.0.0");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsIncompleteLegacyComponentWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes.erase(batch.nodes.begin());
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::IncompleteLegacyComponent,
+        "/nodes/0", "tool", "repo:tool-1.0.0");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsIncompleteSameOwnerGroupReconfiguration) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef group{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "toolchain",
+        .rootTarget = "root",
+        .rootVersion = "repo:1.0.0",
+    };
+    auto& root = db["root"].versions["repo:1.0.0"];
+    root.path = "/pkg/provider/1.0.0";
+    root.kind = "group";
+    root.bindingGroup = group;
+    root.bindingMembers = {
+        {"root", "repo:1.0.0"},
+        {"tool", "repo:tool-1.0.0"},
+    };
+    root.bindingMembersDeclared = true;
+    auto& child = db["tool"].versions["repo:tool-1.0.0"];
+    child.path = "/pkg/provider/1.0.0";
+    child.kind = "program";
+    child.sourceName = "tool-real";
+    child.destinationName = "tool";
+    child.bindingGroup = group;
+    db["root"].bindings["tool"]["repo:1.0.0"] =
+        "repo:tool-1.0.0";
+    db["tool"].bindings["root"]["repo:tool-1.0.0"] =
+        "repo:1.0.0";
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    auto replacement =
+        make_registration_node("root", "repo:1.0.0", "group");
+    replacement.sourceName.clear();
+    replacement.destinationName.clear();
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({replacement}));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::IncompleteOwnedGroup,
+        "/nodes/0", "tool", "repo:tool-1.0.0");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationReconfigureTest,
+     ReplacesCurrentExactEdgesAndPreservesAnotherVersion) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef currentGroup{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "toolchain",
+        .rootTarget = "root",
+        .rootVersion = "repo:1.0.0",
+    };
+    auto& currentRoot = db["root"].versions["repo:1.0.0"];
+    currentRoot.path = "/pkg/provider/1.0.0";
+    currentRoot.kind = "group";
+    currentRoot.bindingGroup = currentGroup;
+    currentRoot.bindingMembers = {
+        {"root", "repo:1.0.0"},
+        {"tool", "repo:tool-1.0.0"},
+    };
+    currentRoot.bindingMembersDeclared = true;
+    auto& currentTool = db["tool"].versions["repo:tool-1.0.0"];
+    currentTool.path = "/pkg/provider/1.0.0";
+    currentTool.kind = "program";
+    currentTool.sourceName = "tool-real";
+    currentTool.destinationName = "tool";
+    currentTool.bindingGroup = currentGroup;
+    db["root"].bindings["tool"]["repo:1.0.0"] =
+        "repo:tool-1.0.0";
+    db["tool"].bindings["root"]["repo:tool-1.0.0"] =
+        "repo:1.0.0";
+
+    auto& stale = db["stale"].versions["repo:stale-1.0.0"];
+    stale.path = "/pkg/stale";
+    stale.kind = "program";
+    stale.sourceName = "stale";
+    stale.destinationName = "stale";
+    db["root"].bindings["stale"]["repo:1.0.0"] =
+        "repo:stale-1.0.0";
+    db["stale"].bindings["root"]["repo:stale-1.0.0"] =
+        "repo:1.0.0";
+
+    const xlings::xvm::BindingGroupRef oldGroup{
+        .provider = "repo:provider",
+        .providerVersion = "0.9.0",
+        .group = "toolchain",
+        .rootTarget = "root",
+        .rootVersion = "repo:0.9.0",
+    };
+    auto& oldRoot = db["root"].versions["repo:0.9.0"];
+    oldRoot.path = "/pkg/provider/0.9.0";
+    oldRoot.kind = "group";
+    oldRoot.bindingGroup = oldGroup;
+    oldRoot.bindingMembers = {
+        {"root", "repo:0.9.0"},
+        {"tool", "repo:tool-0.9.0"},
+    };
+    oldRoot.bindingMembersDeclared = true;
+    auto& oldTool = db["tool"].versions["repo:tool-0.9.0"];
+    oldTool.path = "/pkg/provider/0.9.0";
+    oldTool.kind = "program";
+    oldTool.sourceName = "tool-old";
+    oldTool.destinationName = "tool";
+    oldTool.alias = {"--old"};
+    oldTool.envs = {{"OLD", "1"}};
+    oldTool.bindingGroup = oldGroup;
+    db["root"].bindings["tool"]["repo:0.9.0"] =
+        "repo:tool-0.9.0";
+    db["tool"].bindings["root"]["repo:tool-0.9.0"] =
+        "repo:0.9.0";
+    const auto oldRootBefore = xlings::xvm::vdata_to_json(oldRoot);
+    const auto oldToolBefore = xlings::xvm::vdata_to_json(oldTool);
+    const auto staleBefore = xlings::xvm::vdata_to_json(stale);
+
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto tool =
+        make_registration_node("tool", "repo:tool-1.0.0");
+    tool.sourceName = "tool-real";
+    tool.destinationName = "tool";
+    tool.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({tool, root}));
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_FALSE(db.at("root").bindings.contains("stale"));
+    EXPECT_FALSE(db.at("stale").bindings.contains("root"));
+    EXPECT_EQ(
+        xlings::xvm::vdata_to_json(
+            db.at("root").versions.at("repo:0.9.0")),
+        oldRootBefore);
+    EXPECT_EQ(
+        xlings::xvm::vdata_to_json(
+            db.at("tool").versions.at("repo:tool-0.9.0")),
+        oldToolBefore);
+    EXPECT_EQ(
+        xlings::xvm::vdata_to_json(
+            db.at("stale").versions.at("repo:stale-1.0.0")),
+        staleBefore);
+    EXPECT_EQ(
+        db.at("root")
+            .bindings.at("tool").at("repo:0.9.0"),
+        "repo:tool-0.9.0");
+    EXPECT_EQ(
+        db.at("tool")
+            .bindings.at("root").at("repo:tool-0.9.0"),
+        "repo:0.9.0");
+}
+
+TEST(XvmRegistrationTest, KeepsProviderReleaseGroupsIndependent) {
+    auto rootA = make_registration_node("root-a", "repo:a", "group");
+    rootA.sourceName.clear();
+    rootA.destinationName.clear();
+    auto toolA = make_registration_node("tool", "repo:tool-a");
+    toolA.sourceName = "tool-a";
+    toolA.binding =
+        make_registration_binding("root-a", "repo:a", "group-a");
+    auto rootB = make_registration_node("root-b", "repo:b", "group");
+    rootB.sourceName.clear();
+    rootB.destinationName.clear();
+    auto toolB = make_registration_node("tool", "repo:tool-b");
+    toolB.sourceName = "tool-b";
+    toolB.binding =
+        make_registration_binding("root-b", "repo:b", "group-b");
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({toolB, rootA, toolA, rootB}));
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    auto selectedA =
+        xlings::xvm::resolve_binding_selection(db, "root-a", "repo:a");
+    auto selectedB =
+        xlings::xvm::resolve_binding_selection(db, "root-b", "repo:b");
+    ASSERT_TRUE(selectedA.has_value()) << selectedA.error().message;
+    ASSERT_TRUE(selectedB.has_value()) << selectedB.error().message;
+    EXPECT_EQ(
+        selectedA->members,
+        (std::map<std::string, std::string>{
+            {"root-a", "repo:a"},
+            {"tool", "repo:tool-a"},
+        }));
+    EXPECT_EQ(
+        selectedB->members,
+        (std::map<std::string, std::string>{
+            {"root-b", "repo:b"},
+            {"tool", "repo:tool-b"},
+        }));
+}
+
+TEST(XvmRegistrationTest,
+     SameTargetIndependentGroupsIgnoreBatchNodeOrder) {
+    auto rootA = make_registration_node("root-a", "repo:a", "group");
+    rootA.sourceName.clear();
+    rootA.destinationName.clear();
+    auto toolA =
+        make_registration_node("tool", "repo:tool-a", "program");
+    toolA.sourceName = "tool-a";
+    toolA.destinationName = "tool";
+    toolA.binding =
+        make_registration_binding("root-a", "repo:a", "group-a");
+    auto rootB = make_registration_node("root-b", "repo:b", "group");
+    rootB.sourceName.clear();
+    rootB.destinationName.clear();
+    auto toolB = make_registration_node("tool", "repo:tool-b", "lib");
+    toolB.sourceName = "libtool-b.so.1";
+    toolB.destinationName = "libtool.so.1";
+    toolB.binding =
+        make_registration_binding("root-b", "repo:b", "group-b");
+
+    xlings::xvm::VersionDB forwardDb;
+    xlings::xvm::Workspace forwardWorkspace;
+    xlings::xvm::WorkspaceInstalled forwardInstalled;
+    auto forward = xlings::xvm::apply_registration_batch(
+        forwardDb, forwardWorkspace, forwardInstalled,
+        make_registration_batch({rootA, toolA, rootB, toolB}));
+    ASSERT_TRUE(forward.has_value()) << forward.error().message;
+
+    xlings::xvm::VersionDB reverseDb;
+    xlings::xvm::Workspace reverseWorkspace;
+    xlings::xvm::WorkspaceInstalled reverseInstalled;
+    auto reverse = xlings::xvm::apply_registration_batch(
+        reverseDb, reverseWorkspace, reverseInstalled,
+        make_registration_batch({toolB, rootB, toolA, rootA}));
+    ASSERT_TRUE(reverse.has_value()) << reverse.error().message;
+
+    EXPECT_EQ(
+        xlings::xvm::versions_to_json(forwardDb),
+        xlings::xvm::versions_to_json(reverseDb));
+    EXPECT_EQ(forwardWorkspace, reverseWorkspace);
+    EXPECT_EQ(forwardInstalled, reverseInstalled);
+}
+
+TEST(XvmRegistrationHeaderTest, RoutesExplicitHeaderToNamedGroupRoot) {
+    auto rootA = make_registration_node("root-a", "repo:a", "group");
+    rootA.sourceName.clear();
+    rootA.destinationName.clear();
+    auto toolA = make_registration_node("tool-a", "repo:a");
+    toolA.binding =
+        make_registration_binding("root-a", "repo:a", "group-a");
+    auto rootB = make_registration_node("root-b", "repo:b", "group");
+    rootB.sourceName.clear();
+    rootB.destinationName.clear();
+    auto toolB = make_registration_node("tool-b", "repo:b");
+    toolB.binding =
+        make_registration_binding("root-b", "repo:b", "group-b");
+    auto batch =
+        make_registration_batch({rootA, toolA, rootB, toolB});
+    batch.headers = {
+        {
+            .sourceDir = "include/compiler",
+            .destinationPrefix = "compiler",
+            .group = "group-b",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_TRUE(
+        db.at("root-a").versions.at("repo:a").bindingHeaders.empty());
+    const auto& routed =
+        db.at("root-b").versions.at("repo:b").bindingHeaders;
+    ASSERT_EQ(routed.size(), 1u);
+    EXPECT_EQ(routed[0].sourceDir, "include/compiler");
+    EXPECT_EQ(routed[0].destinationPrefix, "compiler");
+}
+
+TEST(XvmRegistrationHeaderTest, AcceptsUngroupedHeaderForSingleGroup) {
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto batch = make_registration_batch({root});
+    batch.headers = {
+        {
+            .sourceDir = "include",
+            .destinationPrefix = "",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& data =
+        db.at("root").versions.at("repo:1.0.0");
+    ASSERT_EQ(data.bindingHeaders.size(), 1u);
+    EXPECT_EQ(data.bindingHeaders[0].sourceDir, "include");
+    EXPECT_TRUE(data.bindingHeaders[0].destinationPrefix.empty());
+    EXPECT_TRUE(data.bindingHeadersDeclared);
+}
+
+TEST(XvmRegistrationHeaderErrorTest,
+     RejectsAmbiguousUngroupedHeaderWithoutMutation) {
+    auto first = make_registration_node("first", "repo:first");
+    auto second = make_registration_node("second", "repo:second");
+    auto batch = make_registration_batch({first, second});
+    batch.headers = {
+        {
+            .sourceDir = "include",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    db["sentinel"].versions["0"].path = "/sentinel";
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::HeaderAmbiguous,
+        "/headers/0/group");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationHeaderErrorTest,
+     RejectsMissingExplicitHeaderGroupWithoutMutation) {
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto batch = make_registration_batch({root});
+    batch.headers = {
+        {
+            .sourceDir = "include",
+            .group = "missing-group",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::HeaderGroupNotFound,
+        "/headers/0/group", "missing-group");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationHeaderErrorTest,
+     RejectsEmptyHeaderSourceWithoutMutation) {
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto batch = make_registration_batch({root});
+    batch.headers = {
+        {
+            .sourceDir = "",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::InvalidHeader,
+        "/headers/0/sourceDir");
+    EXPECT_TRUE(db.empty());
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationHeaderTest, HeaderNeverCreatesTargetOrVersion) {
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto batch = make_registration_batch({root});
+    batch.headers = {
+        {
+            .sourceDir = "phantom-header-target",
+            .destinationPrefix = "sdk",
+        },
+    };
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(db.size(), 1u);
+    EXPECT_FALSE(db.contains("phantom-header-target"));
+    EXPECT_EQ(
+        db.at("root")
+            .versions.at("repo:1.0.0")
+            .bindingHeaders.size(),
+        1u);
+}
+
+TEST(XvmRegistrationStateTest,
+     RegistersEveryMemberOnceAndHonorsActivationPolicy) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace{
+        {"root", "repo:0.9.0"},
+        {"tool", "repo:tool-0.9.0"},
+        {"runtime", "repo:runtime-0.9.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"root", {"repo:0.9.0"}},
+        {
+            "tool",
+            {
+                "repo:tool-0.9.0",
+                "repo:tool-1.0.0",
+                "repo:tool-1.0.0",
+            },
+        },
+        {"runtime", {"repo:runtime-0.9.0"}},
+    };
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName = "must-not-be-a-shim";
+    root.destinationName = "must-not-be-a-shim";
+    auto tool =
+        make_registration_node("tool", "repo:tool-1.0.0");
+    tool.sourceName = "tool-real";
+    tool.destinationName = "tool";
+    tool.binding = make_registration_binding(
+        "root", "repo:1.0.0", "toolchain");
+    auto runtime = make_registration_node(
+        "runtime", "repo:runtime-1.0.0", "lib");
+    runtime.sourceName = "libruntime.so.1.0";
+    runtime.destinationName = "libruntime.so.1";
+    runtime.binding = tool.binding;
+    auto batch = make_registration_batch({runtime, root, tool});
+
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    EXPECT_EQ(first->size(), 3u);
+    EXPECT_EQ(workspace.at("root"), "repo:0.9.0");
+    EXPECT_EQ(workspace.at("tool"), "repo:tool-0.9.0");
+    EXPECT_EQ(
+        workspace.at("runtime"), "repo:runtime-0.9.0");
+    EXPECT_EQ(
+        std::ranges::count(
+            installed.at("root"), "repo:1.0.0"),
+        1);
+    EXPECT_EQ(
+        std::ranges::count(
+            installed.at("tool"), "repo:tool-1.0.0"),
+        1);
+    EXPECT_EQ(
+        std::ranges::count(
+            installed.at("runtime"), "repo:runtime-1.0.0"),
+        1);
+
+    batch.useAfterInstall = true;
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+    EXPECT_EQ(workspace.at("root"), "repo:1.0.0");
+    EXPECT_EQ(workspace.at("tool"), "repo:tool-1.0.0");
+    EXPECT_EQ(
+        workspace.at("runtime"), "repo:runtime-1.0.0");
+    EXPECT_EQ(
+        std::ranges::count(
+            installed.at("tool"), "repo:tool-1.0.0"),
+        1);
+}
+
+TEST(XvmRegistrationStateTest,
+     VirtualGroupRetainsEmptyPayloadAndNoSelfEdge) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto root = make_registration_node("root", "repo:1.0.0", "group");
+    root.sourceName = "bogus-executable";
+    root.destinationName = "bogus-shim";
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({root}));
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& data =
+        db.at("root").versions.at("repo:1.0.0");
+    EXPECT_EQ(data.kind, "group");
+    EXPECT_TRUE(data.sourceName.empty());
+    EXPECT_TRUE(data.destinationName.empty());
+    EXPECT_FALSE(db.at("root").bindings.contains("root"));
+    EXPECT_EQ(workspace.at("root"), "repo:1.0.0");
+    EXPECT_EQ(
+        installed.at("root"),
+        (std::vector<std::string>{"repo:1.0.0"}));
+}
+
+TEST(XvmRegistrationStateTest,
+     FinalComponentValidationFailurePreservesEveryStateObject) {
+    xlings::xvm::VersionDB db;
+    db["sentinel"].versions["0"].path = "/sentinel";
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    auto valid =
+        make_registration_node("a-valid", "repo:valid");
+    auto invalid =
+        make_registration_node("z-invalid", "repo:invalid", "archive");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({valid, invalid}));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
+        "", "z-invalid", "repo:invalid");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
 
 TEST(XvmBindingSelectionTest, ProviderGroupResolvesRootAndLeafExactly) {
     xlings::xvm::VersionDB db;
