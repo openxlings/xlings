@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-28)
+# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-31)
 # with per-test timing + a slowest-first summary, mirroring mcpp's runner.
 #
 # Usage:  bash tests/e2e/run_all.sh <release-tarball>
@@ -80,6 +80,7 @@ TESTS=(
     "E2E-28 |shim_owner_anchoring_test.sh||"
     "E2E-29 |interface_multi_repo_error_visibility_test.sh||"
     "E2E-30 |custom_index_artifact_test.sh||"
+    "E2E-31 |index_same_name_namespace_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

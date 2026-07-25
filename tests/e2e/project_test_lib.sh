@@ -64,6 +64,7 @@ write_home_config() {
   local home_dir="$1"
   local mirror="${2:-GLOBAL}"
   local index_dir="${3:-$FIXTURE_INDEX_DIR}"
+  local index_name="${4:-xim}"
   mkdir -p "$home_dir"
   mkdir -p "$home_dir/subos/default/bin"
   cp "$(find_xlings_bin)" "$home_dir/xlings"
@@ -72,7 +73,7 @@ write_home_config() {
   "mirror": "$mirror",
   "index_repos": [
     {
-      "name": "xim",
+      "name": "$index_name",
       "url": "$index_dir"
     }
   ]

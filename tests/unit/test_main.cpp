@@ -86,6 +86,22 @@ std::optional<std::filesystem::path> find_pkgindex_repo() {
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
+    namespace fs = std::filesystem;
+
+    const std::vector<fs::path> candidates = {
+        fs::current_path() / "tests/fixtures" / name,
+        fs::current_path() / "../../tests/fixtures" / name,
+    };
+    for (auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path / "pkgs", ec)) {
+            return fs::weakly_canonical(path, ec);
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 // ============================================================
@@ -796,6 +812,54 @@ TEST_F(XimIndexTest, NonexistentRepoDirFails) {
     xlings::xim::IndexManager mgr("/tmp/nonexistent_xim_repo_dir_xyz");
     auto result = mgr.rebuild();
     EXPECT_FALSE(result.has_value());
+}
+
+TEST(XimNamespaceIndexTest, PreservesSameNameCandidatesAndCanonicalOperations) {
+    auto fixture = find_fixture_repo("index-same-name");
+    ASSERT_TRUE(fixture.has_value());
+
+    xlings::xim::IndexManager mgr(*fixture, "fixture-default");
+    auto result = mgr.rebuild();
+    ASSERT_TRUE(result.has_value()) << result.error();
+
+    EXPECT_EQ(
+        mgr.find_candidates("demo"),
+        (std::vector<std::string> { "alpha:demo", "beta:demo" }));
+    EXPECT_EQ(
+        mgr.find_candidates("demo", std::string_view { "alpha" }),
+        (std::vector<std::string> { "alpha:demo" }));
+
+    auto* alphaEntry = mgr.find_entry("alpha:demo");
+    auto* betaEntry = mgr.find_entry("beta:demo");
+    ASSERT_NE(alphaEntry, nullptr);
+    ASSERT_NE(betaEntry, nullptr);
+    EXPECT_EQ(alphaEntry->identity.namespaceName, "alpha");
+    EXPECT_EQ(betaEntry->identity.namespaceName, "beta");
+
+    auto alphaPackage = mgr.load_package("alpha:demo");
+    auto betaPackage = mgr.load_package("beta:demo");
+    ASSERT_TRUE(alphaPackage.has_value()) << alphaPackage.error();
+    ASSERT_TRUE(betaPackage.has_value()) << betaPackage.error();
+    EXPECT_EQ(alphaPackage->description, "Alpha namespace demo package");
+    EXPECT_EQ(betaPackage->description, "Beta namespace demo package");
+
+    mgr.mark_installed("alpha:demo", true);
+    EXPECT_TRUE(mgr.find_entry("alpha:demo")->installed);
+    EXPECT_FALSE(mgr.find_entry("beta:demo")->installed);
+    EXPECT_EQ(mgr.entry_path("alpha:demo"), alphaEntry->path);
+}
+
+TEST(XimNamespaceIndexTest, RejectsDuplicateEffectiveIdentityWithBothPaths) {
+    auto fixture = find_fixture_repo("index-duplicate");
+    ASSERT_TRUE(fixture.has_value());
+
+    xlings::xim::IndexManager mgr(*fixture, "xim");
+    auto result = mgr.rebuild();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("duplicate package identity 'xim:demo'"),
+              std::string::npos);
+    EXPECT_NE(result.error().find("implicit.demo.lua"), std::string::npos);
+    EXPECT_NE(result.error().find("explicit.demo.lua"), std::string::npos);
 }
 
 // ============================================================
