@@ -1,7 +1,7 @@
 # Issue #381 — 同仓库同名包的 namespace 索引身份设计
 
 **日期**: 2026-07-25
-**状态**: Implemented for xlings 0.4.69（待 PR、CI 与 release 验证）
+**状态**: Released and verified（libxpkg 0.0.46 / xlings 0.4.69）
 **Issue**: [openxlings/xlings#381](https://github.com/openxlings/xlings/issues/381)
 **影响版本**: xlings 0.4.68 + openxlings/libxpkg 0.0.45
 **涉及仓库**:
@@ -730,3 +730,18 @@ mcpp test
 
 > xlings 对外展示的 `namespace:name`，在索引存储、缓存、查询和依赖解析中始终代表同一个
 > 完整包身份；任何歧义都显式报告，任何重复身份都拒绝构建。
+
+---
+
+## 11. 实施结果
+
+设计已按六项 review 决策完成跨仓库落地并发布：
+
+- libxpkg 0.0.46；
+- mcpp-index `mcpplibs.xpkg` 0.0.46；
+- xlings 0.4.69；
+- xlings-res 的 GitHub/GitCode 二进制与 index artifact；
+- xim-pkgindex 的 xlings 0.4.69 官方条目。
+
+发布、CI、资源哈希和公共环境端到端验证记录见
+[2026-07-25-issue381-namespace-index-identity-validation.md](2026-07-25-issue381-namespace-index-identity-validation.md)。
