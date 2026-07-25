@@ -116,6 +116,50 @@ binding_integrity_error_(const VData& data,
         target, version, issue.code, issue.path);
 }
 
+std::string json_pointer_token_(std::string_view token) {
+    std::string escaped;
+    escaped.reserve(token.size());
+    for (const auto ch : token) {
+        if (ch == '~') {
+            escaped += "~0";
+        } else if (ch == '/') {
+            escaped += "~1";
+        } else {
+            escaped += ch;
+        }
+    }
+    return escaped;
+}
+
+std::optional<BindingError>
+root_content_integrity_error_(const VData& root,
+                              const std::string& target,
+                              const std::string& version) {
+    for (const auto& [memberTarget, memberVersion] : root.bindingMembers) {
+        if (memberTarget.empty()) {
+            return metadata_integrity_error_(
+                target, version,
+                "binding-member-target-empty", "/bindingMembers/");
+        }
+        if (memberVersion.empty()) {
+            return metadata_integrity_error_(
+                target, version,
+                "binding-member-version-empty",
+                "/bindingMembers/" + json_pointer_token_(memberTarget));
+        }
+    }
+    for (std::size_t index = 0;
+         index < root.bindingHeaders.size(); ++index) {
+        if (root.bindingHeaders[index].sourceDir.empty()) {
+            return metadata_integrity_error_(
+                target, version,
+                "binding-header-source-dir-empty",
+                std::format("/bindingHeaders/{}/sourceDir", index));
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string_view>
 invalid_group_identity_path_(const BindingGroupRef& group) {
     if (group.provider.empty()) return "/bindingGroup/provider";
@@ -195,6 +239,10 @@ resolve_provider_group_(const VersionDB& db,
             BindingErrorKind::GroupIdentityMismatch,
             group.rootTarget, group.rootVersion,
             "binding root group identity is inconsistent"));
+    }
+    if (auto error = root_content_integrity_error_(
+            root, group.rootTarget, group.rootVersion)) {
+        return std::unexpected(std::move(*error));
     }
 
     auto startIt = root.bindingMembers.find(target);

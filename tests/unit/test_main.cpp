@@ -3895,6 +3895,84 @@ TEST(XvmBindingSelectionErrorTest,
 }
 
 TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsEmptyRootManifestTargetBeforeLookup) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider-root", "1.0.0");
+    auto& root = add_provider_group_member(
+        db, "provider-root", "1.0.0", group, "group");
+    root.bindingMembers = {
+        {"", "existing-empty-target-version"},
+        {"provider-root", "1.0.0"},
+    };
+    add_provider_group_member(
+        db, "", "existing-empty-target-version", group, "program");
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    expect_binding_metadata_error(
+        result, "provider-root", "1.0.0",
+        "binding-member-target-empty", "/bindingMembers/");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsEmptyRootManifestVersionBeforeLookup) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider-root", "1.0.0");
+    auto& root = add_provider_group_member(
+        db, "provider-root", "1.0.0", group, "group");
+    root.bindingMembers = {
+        {"provider-root", "1.0.0"},
+        {"tool/member~alias", ""},
+    };
+    add_provider_group_member(
+        db, "tool/member~alias", "", group, "program");
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    expect_binding_metadata_error(
+        result, "provider-root", "1.0.0",
+        "binding-member-version-empty",
+        "/bindingMembers/tool~1member~0alias");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderGroupRejectsEmptyRootHeaderSource) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider-root", "1.0.0");
+    auto& root = add_provider_group_member(
+        db, "provider-root", "1.0.0", group, "group");
+    root.bindingMembers = {
+        {"provider-root", "1.0.0"},
+    };
+    root.bindingHeaders = {
+        {
+            .sourceDir = "include",
+            .destinationPrefix = "",
+        },
+        {
+            .sourceDir = "",
+            .destinationPrefix = "",
+        },
+    };
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    expect_binding_metadata_error(
+        result, "provider-root", "1.0.0",
+        "binding-header-source-dir-empty",
+        "/bindingHeaders/1/sourceDir");
+}
+
+TEST(XvmBindingSelectionErrorTest,
      RejectsEveryEmptyStartingGroupIdentityField) {
     for (const auto& testCase : binding_group_identity_fields) {
         SCOPED_TRACE(testCase.path);
