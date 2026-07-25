@@ -5128,6 +5128,88 @@ TEST(XimXvmRemovalAdapterTest,
 }
 
 TEST(XimXvmRemovalAdapterTest,
+     AuthoritativePurgeRemovesSnapshotWhenHookHasNoRemoveOps) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "toolchain", "15.1.0", "/pkg/toolchain",
+        "program", "", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "gcc-15.1.0", "/pkg/toolchain",
+        "program", "cc-15", "cc", "repo-a",
+        "toolchain@15.1.0");
+    xlings::xvm::Workspace workspace{
+        {"toolchain", "repo-a:15.1.0"},
+        {"cc", "repo-a:gcc-15.1.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"toolchain", {"repo-a:15.1.0"}},
+        {"cc", {"repo-a:gcc-15.1.0"}},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> hookOperations;
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, hookOperations,
+        "repo-a:toolchain", "15.1.0",
+        "toolchain", "repo-a:15.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, hookOperations, *context,
+        xlings::xvm::RemovalBatchOptions{
+            .purgeSelection = true,
+        });
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->removed.size(), 2u);
+    EXPECT_FALSE(db.contains("toolchain"));
+    EXPECT_FALSE(db.contains("cc"));
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+}
+
+TEST(XimXvmRemovalAdapterTest,
+     OperationsOnlyKeepsProviderSnapshotWhenConfigHookHasNoRemoveOps) {
+    xlings::xvm::VersionDB db;
+    const auto group = make_binding_group_ref(
+        "repo-a:toolchain", "15.1.0", "compiler",
+        "toolchain", "repo-a:15.1.0");
+    auto& root = add_provider_group_member(
+        db, "toolchain", "repo-a:15.1.0", group, "group");
+    root.bindingMembers = {
+        {"cc", "repo-a:gcc-15.1.0"},
+        {"toolchain", "repo-a:15.1.0"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo-a:gcc-15.1.0", group,
+        "program", "cc-15", "cc");
+    xlings::xvm::Workspace workspace{
+        {"toolchain", "repo-a:15.1.0"},
+        {"cc", "repo-a:gcc-15.1.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"toolchain", {"repo-a:15.1.0"}},
+        {"cc", {"repo-a:gcc-15.1.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<mcpplibs::xpkg::XvmOp> configOperations;
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, configOperations,
+        "repo-a:toolchain", "15.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    ASSERT_TRUE(context->hasSelection);
+
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, configOperations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_TRUE(result->removed.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XimXvmRemovalAdapterTest,
      PreSnapshotsConfigSelectionFromActiveRemovalTarget) {
     xlings::xvm::VersionDB db;
     xlings::xvm::add_version(
@@ -5189,20 +5271,78 @@ TEST(XimXvmRemovalAdapterTest,
         "repo-a:1.0.0");
 }
 
+TEST(XimXvmRemovalAdapterTest,
+     LegacyPreferredSelectionCannotAuthorizeCanonicalRemoveAll) {
+    xlings::xvm::VersionDB db;
+    auto& legacy = db["cc"].versions["legacy:0.9.0"];
+    legacy.path = "/pkg/legacy";
+    legacy.kind = "program";
+    legacy.sourceName = "cc-legacy";
+    legacy.destinationName = "cc";
+
+    const auto canonicalGroup = make_binding_group_ref(
+        "repo-a:provider", "1.0.0", "compiler",
+        "cc", "repo-a:1.0.0");
+    auto& canonical = add_provider_group_member(
+        db, "cc", "repo-a:1.0.0", canonicalGroup, "group");
+    canonical.bindingMembers = {
+        {"cc", "repo-a:1.0.0"},
+    };
+
+    xlings::xvm::Workspace workspace{
+        {"cc", "legacy:0.9.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"legacy:0.9.0", "repo-a:1.0.0"}},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove_all",
+            .name = "cc",
+        },
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations,
+        "repo-a:provider", "1.0.0",
+        "cc", "legacy:0.9.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    EXPECT_TRUE(context->provider.empty());
+    EXPECT_EQ(context->members.at("cc"), "legacy:0.9.0");
+
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::ProviderRequired);
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
 TEST(XimXvmRemovalAdapterTest, TransportsRemoveAllAsDistinctOperation) {
     xlings::xvm::VersionDB db;
-    auto& providerA = db["cc"].versions["repo-a:1.0.0"];
-    providerA.path = "/pkg/a";
-    providerA.kind = "program";
-    providerA.bindingGroup = make_binding_group_ref(
+    const auto groupA = make_binding_group_ref(
         "repo-a:provider", "1.0.0", "group-a",
-        "root-a", "repo-a:1.0.0");
-    auto& providerB = db["cc"].versions["repo-b:2.0.0"];
-    providerB.path = "/pkg/b";
-    providerB.kind = "program";
-    providerB.bindingGroup = make_binding_group_ref(
+        "cc", "repo-a:1.0.0");
+    auto& providerA = add_provider_group_member(
+        db, "cc", "repo-a:1.0.0", groupA, "group");
+    providerA.bindingMembers = {
+        {"cc", "repo-a:1.0.0"},
+    };
+    const auto groupB = make_binding_group_ref(
         "repo-b:provider", "2.0.0", "group-b",
-        "root-b", "repo-b:2.0.0");
+        "cc", "repo-b:2.0.0");
+    auto& providerB = add_provider_group_member(
+        db, "cc", "repo-b:2.0.0", groupB, "group");
+    providerB.bindingMembers = {
+        {"cc", "repo-b:2.0.0"},
+    };
     xlings::xvm::Workspace workspace{
         {"cc", "repo-a:1.0.0"},
     };
@@ -5215,12 +5355,15 @@ TEST(XimXvmRemovalAdapterTest, TransportsRemoveAllAsDistinctOperation) {
             .name = "cc",
         },
     };
-    const xlings::xvm::RemovalContext context{
-        .provider = "repo-a:provider",
-    };
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations,
+        "repo-a:provider", "1.0.0",
+        "cc", "repo-a:1.0.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    EXPECT_EQ(context->provider, "repo-a:provider");
 
     auto result = xlings::xim::apply_xpkg_removal_operations(
-        db, workspace, installed, operations, context);
+        db, workspace, installed, operations, *context);
 
     ASSERT_TRUE(result.has_value()) << result.error().message;
     ASSERT_EQ(result->removed.size(), 1u);
@@ -5230,6 +5373,265 @@ TEST(XimXvmRemovalAdapterTest, TransportsRemoveAllAsDistinctOperation) {
     EXPECT_EQ(db.at("cc").versions.size(), 1u);
     EXPECT_TRUE(db.at("cc").versions.contains("repo-b:2.0.0"));
     EXPECT_EQ(workspace.at("cc"), "repo-b:2.0.0");
+}
+
+TEST(XimXvmRemovalArtifactTest,
+     RemovesExactLibraryDestinationBeforeReplacement) {
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testRoot = fs::temp_directory_path()
+        / std::format("xlings-xvm-removal-artifact-{}", nonce);
+    const auto binDir = testRoot / "bin";
+    const auto libDir = testRoot / "lib";
+    const auto oldPayload = testRoot / "old";
+    const auto newPayload = testRoot / "new";
+    const auto unrelatedPayload = testRoot / "unrelated";
+    fs::create_directories(binDir);
+    fs::create_directories(libDir);
+    fs::create_directories(oldPayload);
+    fs::create_directories(newPayload);
+    fs::create_directories(unrelatedPayload);
+
+    const auto target = std::string{"compiler-runtime"};
+    const auto destinationName = std::string{"libcompiler.so"};
+    const auto oldSource = oldPayload / destinationName;
+    const auto newSource = newPayload / destinationName;
+    const auto unrelatedSource = unrelatedPayload / target;
+    xlings::platform::write_string_to_file(
+        oldSource.string(), "OLD");
+    xlings::platform::write_string_to_file(
+        newSource.string(), "NEW");
+    xlings::platform::write_string_to_file(
+        unrelatedSource.string(), "SENTINEL");
+    xlings::xvm::install_libs(
+        oldPayload.string(), libDir, {destinationName});
+    xlings::xvm::install_libs(
+        unrelatedPayload.string(), libDir, {target});
+
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, target, "repo-a:1.0.0", oldPayload.string(),
+        "lib", destinationName);
+    const auto dbBefore = db;
+    ASSERT_EQ(
+        dbBefore.at(target)
+            .versions.at("repo-a:1.0.0").destinationName,
+        destinationName);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove",
+            .name = target,
+            .version = "repo-a:1.0.0",
+        },
+    };
+    auto removalResult = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, operations, {});
+    ASSERT_TRUE(removalResult.has_value())
+        << removalResult.error().message;
+
+    xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, db, *removalResult);
+
+    EXPECT_FALSE(fs::exists(libDir / destinationName));
+    ASSERT_TRUE(fs::exists(libDir / target));
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(
+            (libDir / target).string()),
+        "SENTINEL");
+
+    xlings::xvm::add_version(
+        db, target, "repo-a:2.0.0", newPayload.string(),
+        "lib", destinationName);
+    xlings::xvm::install_libs(
+        newPayload.string(), libDir, {destinationName});
+    ASSERT_TRUE(fs::exists(libDir / destinationName));
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(
+            (libDir / destinationName).string()),
+        "NEW");
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(
+            (libDir / target).string()),
+        "SENTINEL");
+
+    std::error_code ec;
+    fs::remove_all(testRoot, ec);
+}
+
+TEST(XimXvmRemovalArtifactTest,
+     UsesLegacyLibraryFilenameWhenVersionDestinationIsMissing) {
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testRoot = fs::temp_directory_path()
+        / std::format("xlings-xvm-removal-legacy-lib-{}", nonce);
+    const auto sourceDir = testRoot / "source";
+    const auto libDir = testRoot / "lib";
+    const auto filename = std::string{"liblegacy.so"};
+    fs::create_directories(sourceDir);
+    xlings::platform::write_string_to_file(
+        (sourceDir / filename).string(), "LEGACY");
+    xlings::xvm::install_libs(
+        sourceDir.string(), libDir, {filename});
+
+    xlings::xvm::VersionDB dbBefore;
+    auto& info = dbBefore["legacy-runtime"];
+    info.type = "lib";
+    info.filename = filename;
+    auto& version = info.versions["1.0.0"];
+    version.path = sourceDir.string();
+    const xlings::xvm::RemovalBatchResult removalResult{
+        .removed = {
+            {
+                .target = "legacy-runtime",
+                .version = "1.0.0",
+            },
+        },
+    };
+
+    xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, {}, removalResult);
+
+    EXPECT_FALSE(fs::exists(libDir / filename));
+    std::error_code ec;
+    fs::remove_all(testRoot, ec);
+}
+
+TEST(XimXvmRemovalArtifactTest,
+     KeepsDestinationOwnedBySurvivingLibraryVersion) {
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testRoot = fs::temp_directory_path()
+        / std::format("xlings-xvm-removal-surviving-lib-{}", nonce);
+    const auto sourceDir = testRoot / "source";
+    const auto libDir = testRoot / "lib";
+    const auto target = std::string{"compiler-runtime"};
+    const auto filename = std::string{"libcompiler.so"};
+    fs::create_directories(sourceDir);
+    xlings::platform::write_string_to_file(
+        (sourceDir / filename).string(), "SURVIVOR");
+    xlings::xvm::install_libs(
+        sourceDir.string(), libDir, {filename});
+
+    xlings::xvm::VersionDB dbBefore;
+    xlings::xvm::add_version(
+        dbBefore, target, "1.0.0", "/old",
+        "lib", filename);
+    xlings::xvm::add_version(
+        dbBefore, target, "2.0.0", sourceDir.string(),
+        "lib", filename);
+    auto currentDb = dbBefore;
+    currentDb.at(target).versions.erase("1.0.0");
+    const xlings::xvm::RemovalBatchResult removalResult{
+        .removed = {
+            {
+                .target = target,
+                .version = "1.0.0",
+            },
+        },
+    };
+
+    xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, currentDb, removalResult);
+
+    ASSERT_TRUE(fs::exists(libDir / filename));
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(
+            (libDir / filename).string()),
+        "SURVIVOR");
+    std::error_code ec;
+    fs::remove_all(testRoot, ec);
+}
+
+TEST(XimXvmRemovalArtifactTest,
+     KeepsProgramShimWhenUsableVersionSurvives) {
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testRoot = fs::temp_directory_path()
+        / std::format("xlings-xvm-removal-surviving-shim-{}", nonce);
+    const auto binDir = testRoot / "bin";
+    fs::create_directories(binDir);
+#ifdef _WIN32
+    const auto shim = binDir / "cc.exe";
+#else
+    const auto shim = binDir / "cc";
+#endif
+    xlings::platform::write_string_to_file(shim.string(), "SHIM");
+
+    xlings::xvm::VersionDB dbBefore;
+    xlings::xvm::add_version(
+        dbBefore, "cc", "1.0.0", "/old", "program", "cc");
+    xlings::xvm::add_version(
+        dbBefore, "cc", "2.0.0", "/new", "program", "cc");
+    auto currentDb = dbBefore;
+    currentDb.at("cc").versions.erase("1.0.0");
+    const xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"2.0.0"}},
+    };
+    const xlings::xvm::RemovalBatchResult removalResult{
+        .removed = {
+            {
+                .target = "cc",
+                .version = "1.0.0",
+            },
+        },
+    };
+
+    xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, currentDb, installed, removalResult);
+
+    EXPECT_TRUE(fs::exists(shim));
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(shim.string()),
+        "SHIM");
+    std::error_code ec;
+    fs::remove_all(testRoot, ec);
+}
+
+TEST(XimXvmRemovalArtifactTest,
+     VirtualGroupNeverOwnsSameNamedProgramShim) {
+    namespace fs = std::filesystem;
+    const auto nonce =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto testRoot = fs::temp_directory_path()
+        / std::format("xlings-xvm-removal-group-shim-{}", nonce);
+    const auto binDir = testRoot / "bin";
+    fs::create_directories(binDir);
+#ifdef _WIN32
+    const auto shim = binDir / "toolchain.exe";
+#else
+    const auto shim = binDir / "toolchain";
+#endif
+    xlings::platform::write_string_to_file(shim.string(), "UNRELATED");
+
+    xlings::xvm::VersionDB dbBefore;
+    auto& info = dbBefore["toolchain"];
+    info.type = "program";
+    auto& version = info.versions["1.0.0"];
+    version.kind = "group";
+    const xlings::xvm::RemovalBatchResult removalResult{
+        .removed = {
+            {
+                .target = "toolchain",
+                .version = "1.0.0",
+            },
+        },
+    };
+
+    xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, {}, {}, removalResult);
+
+    EXPECT_TRUE(fs::exists(shim));
+    EXPECT_EQ(
+        xlings::platform::read_file_to_string(shim.string()),
+        "UNRELATED");
+    std::error_code ec;
+    fs::remove_all(testRoot, ec);
 }
 
 TEST(XvmDbTest, AddVersionWithBindingNamespaced) {

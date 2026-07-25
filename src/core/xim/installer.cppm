@@ -36,9 +36,7 @@ snapshot_xpkg_removal_context(
         const std::string& executingProviderVersion,
         const std::string& preferredTarget = {},
         const std::string& preferredVersion = {}) {
-    xvm::RemovalContext legacyContext{
-        .provider = executingProvider,
-    };
+    xvm::RemovalContext legacyContext;
     std::optional<xvm::RemovalContext> providerContext;
     std::set<std::pair<std::string, std::string>> seeds;
 
@@ -115,9 +113,6 @@ snapshot_xpkg_removal_context(
             }
             if (!providerContext) {
                 providerContext = std::move(*selection);
-                if (!executingProvider.empty()) {
-                    providerContext->provider = executingProvider;
-                }
             }
             return {};
         }
@@ -161,6 +156,7 @@ snapshot_xpkg_removal_context(
     }
 
     if (!providerContext
+        && !legacyContext.hasSelection
         && !executingProvider.empty()
         && !executingProviderVersion.empty()) {
         bool foundProviderRelease = false;
@@ -193,7 +189,8 @@ apply_xpkg_removal_operations(
         xvm::Workspace& workspace,
         xvm::WorkspaceInstalled& installed,
         const std::vector<mcpplibs::xpkg::XvmOp>& operations,
-        const xvm::RemovalContext& context) {
+        const xvm::RemovalContext& context,
+        const xvm::RemovalBatchOptions& options = {}) {
     std::vector<xvm::RemovalOperation> removals;
     for (const auto& operation : operations) {
         if (operation.op != "remove" && operation.op != "remove_all") {
@@ -206,7 +203,121 @@ apply_xpkg_removal_operations(
         });
     }
     return xvm::apply_removal_batch(
-        db, workspace, installed, removals, context);
+        db, workspace, installed, removals, context, options);
+}
+
+void cleanup_removed_xvm_library_artifacts(
+        const std::filesystem::path& libDir,
+        const xvm::VersionDB& dbBeforeRemoval,
+        const xvm::VersionDB& currentDb,
+        const xvm::RemovalBatchResult& removalResult) {
+    auto destinationName = [](
+            const std::string& target,
+            const xvm::VInfo& info,
+            const xvm::VData& data) {
+        if (!data.destinationName.empty()) {
+            return data.destinationName;
+        }
+        if (!info.filename.empty()) return info.filename;
+        return target;
+    };
+
+    std::set<std::string> destinations;
+    for (const auto& removed : removalResult.removed) {
+        auto targetIt = dbBeforeRemoval.find(removed.target);
+        if (targetIt == dbBeforeRemoval.end()) continue;
+        auto versionIt =
+            targetIt->second.versions.find(removed.version);
+        if (versionIt == targetIt->second.versions.end()) continue;
+        const auto& data = versionIt->second;
+        const auto kind = data.kind.empty()
+            ? targetIt->second.type
+            : data.kind;
+        if (kind != "lib") continue;
+        destinations.insert(destinationName(
+            removed.target, targetIt->second, data));
+    }
+
+    for (const auto& name : destinations) {
+        const auto hasSurvivingOwner = std::ranges::any_of(
+            currentDb,
+            [&](const auto& targetEntry) {
+                return std::ranges::any_of(
+                    targetEntry.second.versions,
+                    [&](const auto& versionEntry) {
+                        const auto& data = versionEntry.second;
+                        const auto kind = data.kind.empty()
+                            ? targetEntry.second.type
+                            : data.kind;
+                        return kind == "lib"
+                            && destinationName(
+                                targetEntry.first,
+                                targetEntry.second,
+                                data) == name;
+                    });
+            });
+        if (hasSurvivingOwner) continue;
+
+        const auto destination = libDir / name;
+        std::error_code ec;
+        if (std::filesystem::exists(destination, ec)
+            || std::filesystem::is_symlink(destination, ec)) {
+            ec.clear();
+            std::filesystem::remove(destination, ec);
+        }
+    }
+}
+
+void cleanup_removed_xvm_program_artifacts(
+        const std::filesystem::path& binDir,
+        const xvm::VersionDB& dbBeforeRemoval,
+        const xvm::VersionDB& currentDb,
+        const xvm::WorkspaceInstalled& installed,
+        const xvm::RemovalBatchResult& removalResult) {
+    std::set<std::string> removedPrograms;
+    for (const auto& removed : removalResult.removed) {
+        auto targetIt = dbBeforeRemoval.find(removed.target);
+        if (targetIt == dbBeforeRemoval.end()) continue;
+        auto versionIt =
+            targetIt->second.versions.find(removed.version);
+        if (versionIt == targetIt->second.versions.end()) continue;
+        const auto kind = versionIt->second.kind.empty()
+            ? targetIt->second.type
+            : versionIt->second.kind;
+        if (kind == "program") {
+            removedPrograms.insert(removed.target);
+        }
+    }
+
+    for (const auto& target : removedPrograms) {
+        if (xvm::has_usable_workspace_version(
+                currentDb, installed, target)) {
+            continue;
+        }
+#ifdef _WIN32
+        constexpr std::string_view shimExtension = ".exe";
+#else
+        constexpr std::string_view shimExtension = "";
+#endif
+        std::string shimName = target;
+        if (!shimExtension.empty()
+            && !shimName.ends_with(shimExtension)) {
+            shimName += shimExtension;
+        }
+        const auto shimPath = binDir / shimName;
+        std::error_code ec;
+        if (!std::filesystem::exists(shimPath, ec)
+            && !std::filesystem::is_symlink(shimPath, ec)) {
+            continue;
+        }
+        ec.clear();
+        std::filesystem::remove(shimPath, ec);
+        if (ec) {
+            log::warn("could not remove shim {}: {}; will be replaced "
+                      "on next install/use",
+                      shimPath.string(), ec.message());
+        }
+    }
 }
 
 bool evict_invalid_archive_cache_(
@@ -786,75 +897,6 @@ void detach_current_subos_(const std::string& target,
     }
 }
 
-void remove_xvm_target_artifacts_(const std::string& target,
-                                  bool removeProgramShim,
-                                  bool removeLibraryLink) {
-    namespace fs = std::filesystem;
-    const auto& paths = Config::paths();
-    if (removeLibraryLink) {
-        auto libraryPath = paths.libDir / target;
-        std::error_code ec;
-        if (fs::is_symlink(libraryPath, ec)) {
-            fs::remove(libraryPath, ec);
-        }
-    }
-    if (!removeProgramShim) return;
-
-#ifdef _WIN32
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    constexpr std::string_view shim_ext = "";
-#endif
-    std::string shimName = target;
-    if (!shim_ext.empty() && !shimName.ends_with(shim_ext)) {
-        shimName += shim_ext;
-    }
-    auto shimPath = paths.binDir / shimName;
-    std::error_code ec;
-    if (!fs::exists(shimPath, ec)) return;
-    ec.clear();
-    fs::remove(shimPath, ec);
-    if (ec) {
-        log::warn("could not remove shim {}: {}; will be replaced "
-                  "on next install/use",
-                  shimPath.string(), ec.message());
-    }
-}
-
-void cleanup_removed_xvm_artifacts_(
-        const xvm::VersionDB& dbBeforeRemoval,
-        const xvm::RemovalBatchResult& removalResult) {
-    std::map<std::string, std::pair<bool, bool>> removedKinds;
-    for (const auto& removed : removalResult.removed) {
-        auto& [program, library] = removedKinds[removed.target];
-        auto targetIt = dbBeforeRemoval.find(removed.target);
-        if (targetIt == dbBeforeRemoval.end()) {
-            program = true;
-            continue;
-        }
-        auto versionIt = targetIt->second.versions.find(removed.version);
-        auto kind = versionIt == targetIt->second.versions.end()
-            || versionIt->second.kind.empty()
-            ? targetIt->second.type
-            : versionIt->second.kind;
-        if (kind == "lib") {
-            library = true;
-        } else {
-            program = true;
-        }
-    }
-    for (const auto& [target, kinds] : removedKinds) {
-        if (xvm::has_usable_workspace_version(
-                Config::versions_mut(),
-                Config::workspace_installed(),
-                target)) {
-            continue;
-        }
-        remove_xvm_target_artifacts_(
-            target, kinds.first, kinds.second);
-    }
-}
-
 bool process_xvm_operations_(const PlanNode& node,
                              const std::filesystem::path& dataDir,
                              mcpplibs::xpkg::PackageExecutor& executor,
@@ -921,6 +963,12 @@ bool process_xvm_operations_(const PlanNode& node,
             removalResult.error().version);
         return false;
     }
+
+    cleanup_removed_xvm_library_artifacts(
+        sysroot_lib,
+        dbBeforeRemoval,
+        Config::versions_mut(),
+        *removalResult);
 
     for (auto& op : xvm_ops) {
         if (op.op == "add") {
@@ -1027,8 +1075,12 @@ bool process_xvm_operations_(const PlanNode& node,
         }
     }
 
-    cleanup_removed_xvm_artifacts_(
-        dbBeforeRemoval, *removalResult);
+    cleanup_removed_xvm_program_artifacts(
+        Config::paths().binDir,
+        dbBeforeRemoval,
+        Config::versions_mut(),
+        Config::workspace_installed(),
+        *removalResult);
 
     Config::save_versions();
     Config::save_workspace();
@@ -1853,7 +1905,10 @@ public:
             Config::workspace_mut(),
             Config::workspace_installed_mut(),
             xvm_ops,
-            *removalContext);
+            *removalContext,
+            xvm::RemovalBatchOptions{
+                .purgeSelection = true,
+            });
         if (!removalResult) {
             return std::unexpected(std::format(
                 "xvm removal batch failed for {}@{}: {} "
@@ -1877,8 +1932,17 @@ public:
                 detachedByBatch = true;
             }
         }
-        detail_::cleanup_removed_xvm_artifacts_(
-            dbBeforeRemoval, *removalResult);
+        cleanup_removed_xvm_library_artifacts(
+            Config::paths().libDir,
+            dbBeforeRemoval,
+            Config::versions_mut(),
+            *removalResult);
+        cleanup_removed_xvm_program_artifacts(
+            Config::paths().binDir,
+            dbBeforeRemoval,
+            Config::versions_mut(),
+            Config::workspace_installed(),
+            *removalResult);
         if (!detachedByBatch && !detachVersion.empty()) {
             detail_::detach_current_subos_(
                 detachTarget, detachVersion, false);

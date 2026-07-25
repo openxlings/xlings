@@ -29,6 +29,10 @@ struct RemovalBatchResult {
     std::vector<RemovedVersion> removed;
 };
 
+struct RemovalBatchOptions {
+    bool purgeSelection { false };
+};
+
 bool has_usable_workspace_version(
         const VersionDB& db,
         const WorkspaceInstalled& installed,
@@ -133,7 +137,8 @@ apply_removal_batch(VersionDB& db,
                     Workspace& workspace,
                     WorkspaceInstalled& installed,
                     const std::vector<RemovalOperation>& operations,
-                    const RemovalContext& context) {
+                    const RemovalContext& context,
+                    const RemovalBatchOptions& options = {}) {
     std::vector<RemovedVersion> removals;
     std::vector<RemovedVersion> selectedRecipeMembers;
     std::set<std::pair<std::string, std::string>> seen;
@@ -260,7 +265,7 @@ apply_removal_batch(VersionDB& db,
             removals.push_back(removal);
         }
     }
-    if (!selectedRecipeMembers.empty()) {
+    if (options.purgeSelection || !selectedRecipeMembers.empty()) {
         for (const auto& [target, version] : context.members) {
             auto exactVersion =
                 resolve_exact_version_key(db, target, version);
