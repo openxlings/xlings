@@ -14,7 +14,7 @@ namespace xpkg = mcpplibs::xpkg;
 
 namespace xlings::xim::cache_detail_ {
 
-constexpr int CACHE_FORMAT_VERSION = 1;
+constexpr int CACHE_FORMAT_VERSION = 2;
 
 int type_to_int(xpkg::PackageType t) {
     return static_cast<int>(t);
@@ -32,11 +32,18 @@ xpkg::PackageType int_to_type(int v) {
 
 bool save_index_cache(const xpkg::PackageIndex& index,
                       const std::filesystem::path& cacheFile,
-                      const std::string& repoHeadHash) {
+                      const std::string& repoHeadHash,
+                      const std::string& defaultNamespace) {
     try {
         nlohmann::json entries = nlohmann::json::object();
         for (auto& [key, entry] : index.entries) {
             entries[key] = {
+                {"identity", {
+                    {"namespace", entry.identity.namespaceName},
+                    {"name", entry.identity.name}
+                }},
+                {"canonical_name", entry.canonicalName},
+                {"entry_key", entry.entryKey},
                 {"name", entry.name},
                 {"version", entry.version},
                 {"path", entry.path.string()},
@@ -54,6 +61,7 @@ bool save_index_cache(const xpkg::PackageIndex& index,
         nlohmann::json root = {
             {"version", CACHE_FORMAT_VERSION},
             {"repo_head_hash", repoHeadHash},
+            {"default_namespace", defaultNamespace},
             {"entries", std::move(entries)},
             {"mutex_groups", std::move(mutexGroups)}
         };
@@ -72,7 +80,8 @@ struct CacheResult {
 };
 
 CacheResult load_index_cache(const std::filesystem::path& cacheFile,
-                             xpkg::PackageIndex& index) {
+                             xpkg::PackageIndex& index,
+                             const std::string& defaultNamespace) {
     CacheResult result;
     if (!std::filesystem::exists(cacheFile)) return result;
 
@@ -82,21 +91,68 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
         if (root.is_discarded() || !root.is_object()) return result;
 
         if (root.value("version", 0) != CACHE_FORMAT_VERSION) return result;
+        if (root.value("default_namespace", std::string{}) != defaultNamespace) {
+            return result;
+        }
 
         result.repoHeadHash = root.value("repo_head_hash", "");
 
-        if (root.contains("entries") && root["entries"].is_object()) {
-            for (auto it = root["entries"].begin(); it != root["entries"].end(); ++it) {
-                auto& val = it.value();
-                xpkg::IndexEntry entry;
-                entry.name        = val.value("name", "");
-                entry.version     = val.value("version", "");
-                entry.path        = std::filesystem::path(val.value("path", ""));
-                entry.type        = int_to_type(val.value("type", 0));
-                entry.description = val.value("description", "");
-                entry.ref         = val.value("ref", "");
-                index.entries[it.key()] = std::move(entry);
+        if (!root.contains("entries") || !root["entries"].is_object()) {
+            return result;
+        }
+        for (auto it = root["entries"].begin(); it != root["entries"].end(); ++it) {
+            auto& val = it.value();
+            if (!val.is_object()
+                    || !val.contains("identity")
+                    || !val["identity"].is_object()) {
+                return result;
             }
+            auto& identity = val["identity"];
+            if (!identity.contains("namespace")
+                    || !identity["namespace"].is_string()
+                    || !identity.contains("name")
+                    || !identity["name"].is_string()
+                    || !val.contains("canonical_name")
+                    || !val["canonical_name"].is_string()
+                    || !val.contains("entry_key")
+                    || !val["entry_key"].is_string()) {
+                return result;
+            }
+
+            xpkg::IndexEntry entry;
+            entry.identity.namespaceName = identity["namespace"].get<std::string>();
+            entry.identity.name = identity["name"].get<std::string>();
+            entry.canonicalName = val["canonical_name"].get<std::string>();
+            entry.entryKey = val["entry_key"].get<std::string>();
+            entry.name = val.value("name", "");
+            entry.version = val.value("version", "");
+            entry.path = std::filesystem::path(val.value("path", ""));
+            entry.type = int_to_type(val.value("type", 0));
+            entry.description = val.value("description", "");
+            entry.ref = val.value("ref", "");
+
+            if (entry.identity.name.empty()
+                    || entry.identity.canonical_name() != entry.canonicalName
+                    || entry.entryKey != it.key()
+                    || entry.name != entry.identity.name) {
+                return result;
+            }
+
+            auto [_, inserted] = index.entries.emplace(entry.entryKey, entry);
+            if (!inserted) return result;
+            index.identityEntries[entry.canonicalName].push_back(entry.entryKey);
+            index.shortNames[entry.identity.name].push_back(entry.canonicalName);
+        }
+
+        for (auto& [_, candidates] : index.identityEntries) {
+            std::ranges::sort(candidates);
+            auto uniqueEnd = std::ranges::unique(candidates).begin();
+            candidates.erase(uniqueEnd, candidates.end());
+        }
+        for (auto& [_, candidates] : index.shortNames) {
+            std::ranges::sort(candidates);
+            auto uniqueEnd = std::ranges::unique(candidates).begin();
+            candidates.erase(uniqueEnd, candidates.end());
         }
 
         if (root.contains("mutex_groups") && root["mutex_groups"].is_object()) {
@@ -123,16 +179,23 @@ export namespace xlings::xim {
 class IndexManager {
     xpkg::PackageIndex index_;
     std::filesystem::path repoDir_;
+    std::string defaultNamespace_;
     bool loaded_ { false };
 
 public:
     IndexManager() = default;
 
-    explicit IndexManager(const std::filesystem::path& repoDir)
-        : repoDir_(repoDir) {}
+    explicit IndexManager(const std::filesystem::path& repoDir,
+                          std::string defaultNamespace = {})
+        : repoDir_(repoDir),
+          defaultNamespace_(std::move(defaultNamespace)) {}
 
     void set_repo_dir(const std::filesystem::path& dir) {
         repoDir_ = dir;
+    }
+
+    void set_default_namespace(std::string defaultNamespace) {
+        defaultNamespace_ = std::move(defaultNamespace);
     }
 
     // Build index by scanning pkgs/ directory via libxpkg
@@ -150,7 +213,7 @@ public:
 
         log::debug("building package index from {}", repoDir_.string());
 
-        auto result = xpkg::build_index(repoDir_);
+        auto result = xpkg::build_index(repoDir_, defaultNamespace_);
         if (!result) {
             return std::unexpected(
                 std::format("build_index failed: {}", result.error()));
@@ -176,7 +239,8 @@ public:
         // Try loading from cache (unless forced or no git hash)
         if (!forceRebuild && !repoHeadHash.empty()) {
             xpkg::PackageIndex cached;
-            auto cacheResult = cache_detail_::load_index_cache(cacheFile, cached);
+            auto cacheResult = cache_detail_::load_index_cache(
+                cacheFile, cached, defaultNamespace_);
             if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash) {
                 index_ = std::move(cached);
                 loaded_ = true;
@@ -190,7 +254,8 @@ public:
         if (!result) return result;
 
         // Save cache (best effort)
-        if (!cache_detail_::save_index_cache(index_, cacheFile, repoHeadHash)) {
+        if (!cache_detail_::save_index_cache(
+                index_, cacheFile, repoHeadHash, defaultNamespace_)) {
             log::warn("failed to save index cache for {}", repoDir_.string());
         }
 
@@ -205,14 +270,31 @@ public:
         return xpkg::search(index_, keyword);
     }
 
+    std::vector<std::string>
+    find_candidates(
+            std::string_view name,
+            std::optional<std::string_view> namespaceName = std::nullopt) const {
+        return xpkg::find_candidates(index_, name, namespaceName);
+    }
+
     // Match a version query like "gcc@15" to best version "gcc@15.1.0"
     std::optional<std::string> match_version(const std::string& name) const {
-        return xpkg::match_version(index_, name);
+        if (name.contains(':') || index_.entries.contains(name)) {
+            return xpkg::match_version(index_, name);
+        }
+        auto candidates = find_candidates(name);
+        if (candidates.size() != 1) return std::nullopt;
+        return xpkg::match_version(index_, candidates.front());
     }
 
     // Resolve an alias (e.g., "c" -> "gcc")
     std::string resolve(const std::string& name) const {
-        return xpkg::resolve(index_, name);
+        if (name.contains(':') || index_.entries.contains(name)) {
+            return xpkg::resolve(index_, name);
+        }
+        auto candidates = find_candidates(name);
+        if (candidates.size() != 1) return name;
+        return xpkg::resolve(index_, candidates.front());
     }
 
     // Get mutex group packages for conflict detection

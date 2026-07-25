@@ -254,10 +254,20 @@ class PackageCatalog {
         RepoState state;
         state.spec = spec;
         state.index.set_repo_dir(spec.dir);
+        state.index.set_default_namespace(spec.defaultNamespace);
         return state;
     }
 
     static std::vector<PackageMatch> dedupe_matches_(std::vector<PackageMatch> matches) {
+        std::ranges::sort(matches, {}, [](const PackageMatch& match) {
+            return std::tuple {
+                match.canonicalName,
+                match.version,
+                match.scope == PackageScope::Project ? 0 : 1,
+                match.repoName,
+                match.rawName,
+            };
+        });
         std::vector<PackageMatch> unique;
         for (auto& match : matches) {
             bool seen = false;
@@ -272,57 +282,61 @@ class PackageCatalog {
         return unique;
     }
 
-    static PackageMatch build_match_(RepoState& state,
-                                     const detail_::ParsedTarget_& parsed,
-                                     const std::string& platform,
-                                     bool forSearch = false) {
-        auto resolved = state.index.resolve(parsed.name);
-        if (resolved.empty()) {
-            resolved = parsed.name;
+    static std::vector<PackageMatch>
+    build_matches_(RepoState& state,
+                   const detail_::ParsedTarget_& parsed,
+                   const std::string& platform,
+                   bool forSearch = false) {
+        std::optional<std::string_view> namespaceName;
+        if (parsed.explicitNamespace) namespaceName = parsed.namespaceName;
+
+        std::vector<PackageMatch> matches;
+        for (auto& candidate :
+                state.index.find_candidates(parsed.name, namespaceName)) {
+            auto resolved = state.index.resolve(candidate);
+            if (resolved.empty()) resolved = candidate;
+
+            std::optional<std::string> matched;
+            if (state.index.find_entry(resolved)) {
+                matched = resolved;
+            } else {
+                matched = state.index.match_version(resolved);
+            }
+            if (!matched) continue;
+
+            auto* entry = state.index.find_entry(*matched);
+            if (!entry) continue;
+            auto pkg = state.index.load_package(*matched);
+            if (!pkg) continue;
+
+            auto version = detail_::select_version_(*pkg, platform, parsed.version);
+            if (version.empty() && !forSearch) continue;
+
+            PackageMatch match;
+            match.query = parsed.raw;
+            match.rawName = *matched;
+            match.name = entry->identity.name;
+            match.version = version;
+            match.namespaceName = entry->identity.namespaceName;
+            match.canonicalName = entry->canonicalName;
+            match.repoName = state.spec.name;
+            match.pkgFile = entry->path;
+            match.scope = state.spec.scope;
+            match.storeRoot = (state.spec.scope == PackageScope::Project
+                ? Config::project_data_dir()
+                : Config::global_data_dir()) / "xpkgs";
+            if (!version.empty()) {
+                auto installDir = match.storeRoot
+                    / package_store_name(match.namespaceName, match.name)
+                    / match.version;
+                std::error_code ec;
+                match.installed = std::filesystem::exists(installDir, ec)
+                    && std::filesystem::is_directory(installDir, ec)
+                    && !std::filesystem::is_empty(installDir, ec);
+            }
+            matches.push_back(std::move(match));
         }
-
-        std::optional<std::string> matched;
-        if (auto* entry = state.index.find_entry(resolved)) {
-            matched = entry->name;
-        } else {
-            matched = state.index.match_version(resolved);
-        }
-        if (!matched) return {};
-
-        auto pkg = state.index.load_package(*matched);
-        if (!pkg) return {};
-
-        auto version = detail_::select_version_(*pkg, platform, parsed.version);
-        // For search: allow metadata-only packages (no xpm versions)
-        if (version.empty() && !forSearch) return {};
-
-        auto ns = pkg->namespace_.empty() ? state.spec.defaultNamespace : pkg->namespace_;
-        if (parsed.explicitNamespace && parsed.namespaceName != ns) return {};
-
-        auto* entry = state.index.find_entry(*matched);
-        if (!entry) return {};
-
-        PackageMatch match;
-        match.query = parsed.raw;
-        match.rawName = *matched;
-        match.name = pkg->name;
-        match.version = version;
-        match.namespaceName = ns;
-        match.canonicalName = detail_::make_canonical_name_(ns, pkg->name);
-        match.repoName = state.spec.name;
-        match.pkgFile = entry->path;
-        match.scope = state.spec.scope;
-        match.storeRoot = (state.spec.scope == PackageScope::Project
-            ? Config::project_data_dir()
-            : Config::global_data_dir()) / "xpkgs";
-        if (!version.empty()) {
-            auto installDir = match.storeRoot / package_store_name(match.namespaceName, match.name) / match.version;
-            std::error_code ec;
-            match.installed = std::filesystem::exists(installDir, ec)
-                && std::filesystem::is_directory(installDir, ec)
-                && !std::filesystem::is_empty(installDir, ec);
-        }
-        return match;
+        return matches;
     }
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
@@ -333,12 +347,15 @@ class PackageCatalog {
 
         auto collect = [&](std::vector<RepoState>& repos) {
             for (auto& repo : repos) {
-                auto match = build_match_(repo, parsed, platform);
-                if (match.name.empty()) continue;
+                auto matches = build_matches_(repo, parsed, platform);
                 if (repo.spec.subIndex) {
-                    subMatches.push_back(std::move(match));
+                    for (auto& match : matches) {
+                        subMatches.push_back(std::move(match));
+                    }
                 } else {
-                    primaryMatches.push_back(std::move(match));
+                    for (auto& match : matches) {
+                        primaryMatches.push_back(std::move(match));
+                    }
                 }
             }
         };
@@ -450,11 +467,13 @@ public:
         auto append = [&](std::vector<RepoState>& repos) {
             for (auto& repo : repos) {
                 for (auto& raw : repo.index.search(query)) {
-                    auto match = build_match_(repo, detail_::parse_target_(raw), platform, true);
-                    if (match.name.empty()) continue;
-                    auto key = match.canonicalName + "@" + match.version + ":" + match.repoName;
-                    if (seen.insert(key).second) {
-                        results.push_back(std::move(match));
+                    for (auto& match : build_matches_(
+                            repo, detail_::parse_target_(raw), platform, true)) {
+                        auto key = match.canonicalName + "@" + match.version
+                            + ":" + match.repoName;
+                        if (seen.insert(key).second) {
+                            results.push_back(std::move(match));
+                        }
                     }
                 }
             }
@@ -462,7 +481,7 @@ public:
 
         append(projectRepos_);
         append(globalRepos_);
-        return results;
+        return dedupe_matches_(std::move(results));
     }
 
     std::expected<xpkg::Package, std::string> load_package(const PackageMatch& match) {

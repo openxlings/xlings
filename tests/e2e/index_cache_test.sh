@@ -62,7 +62,12 @@ log "PASS: sub-repo cache file exists"
 # ── 4. Verify cache contains valid JSON with expected fields ──
 grep -q '"repo_head_hash"' "$MAIN_CACHE" || fail "cache missing repo_head_hash field"
 grep -q '"entries"' "$MAIN_CACHE" || fail "cache missing entries field"
-grep -q '"version"' "$MAIN_CACHE" || fail "cache missing version field"
+grep -q '"version":2' "$MAIN_CACHE" || fail "cache is not format v2"
+grep -q '"default_namespace":"xim"' "$MAIN_CACHE" \
+  || fail "cache missing main repo namespace context"
+grep -q '"identity"' "$MAIN_CACHE" || fail "cache missing identity metadata"
+grep -q '"canonical_name"' "$MAIN_CACHE" || fail "cache missing canonical names"
+grep -q '"entry_key"' "$MAIN_CACHE" || fail "cache missing entry keys"
 log "PASS: cache file has expected structure"
 
 # ── 5. Record cache mtime, run search, verify cache was NOT rewritten ──
