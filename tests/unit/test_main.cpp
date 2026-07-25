@@ -21,6 +21,7 @@ import xlings.core.xim.extract;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
+import xlings.core.xvm.removal;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -36,6 +37,7 @@ import xlings.capabilities;
 import xlings.libs.tinyhttps;
 import xlings.libs.sha256;
 import mcpplibs.xpkg;
+import mcpplibs.xpkg.executor;
 import mcpplibs.cmdline;
 
 namespace {
@@ -1663,12 +1665,14 @@ TEST(XvmDbTest, AddAndRemoveVersion) {
     auto all = xlings::xvm::get_all_versions(db, "gcc");
     EXPECT_EQ(all.size(), 2u);
 
-    xlings::xvm::remove_version(db, "gcc", "14.2.0");
+    ASSERT_TRUE(
+        xlings::xvm::remove_version(db, "gcc", "14.2.0").has_value());
     EXPECT_FALSE(xlings::xvm::has_version(db, "gcc", "14.2.0"));
     EXPECT_TRUE(xlings::xvm::has_version(db, "gcc", "15.1.0"));
 
     // Remove last version removes the target entirely
-    xlings::xvm::remove_version(db, "gcc", "15.1.0");
+    ASSERT_TRUE(
+        xlings::xvm::remove_version(db, "gcc", "15.1.0").has_value());
     EXPECT_FALSE(xlings::xvm::has_target(db, "gcc"));
 }
 
@@ -4498,6 +4502,734 @@ TEST(XvmDbTest, AddVersionWithBindingMultipleVersions) {
     ASSERT_NE(gcc_info, nullptr);
     EXPECT_EQ(gcc_info->bindings.at("xim-gnu-gcc").at("15.1.0"), "15.1.0");
     EXPECT_EQ(gcc_info->bindings.at("xim-gnu-gcc").at("14.2.0"), "14.2.0");
+}
+
+TEST(XvmExactRemovalTest, RemovesOnlyExactVersionReciprocalEdges) {
+    xlings::xvm::VersionDB db;
+
+    xlings::xvm::add_version(
+        db, "toolchain", "15.1.0", "/pkg/toolchain-15");
+    xlings::xvm::add_version(
+        db, "cc", "15.1.0", "/pkg/toolchain-15",
+        "program", "cc-15", "cc", "", "toolchain@15.1.0");
+    xlings::xvm::add_version(
+        db, "toolchain", "14.2.0", "/pkg/toolchain-14");
+    xlings::xvm::add_version(
+        db, "cc", "14.2.0", "/pkg/toolchain-14",
+        "program", "cc-14", "cc", "", "toolchain@14.2.0");
+
+    ASSERT_TRUE(
+        xlings::xvm::remove_version(db, "cc", "15.1.0").has_value());
+
+    ASSERT_TRUE(db.contains("cc"));
+    EXPECT_FALSE(db.at("cc").versions.contains("15.1.0"));
+    EXPECT_TRUE(db.at("cc").versions.contains("14.2.0"));
+    ASSERT_TRUE(db.at("cc").bindings.contains("toolchain"));
+    EXPECT_EQ(db.at("cc").bindings.at("toolchain").size(), 1u);
+    EXPECT_EQ(
+        db.at("cc").bindings.at("toolchain").at("14.2.0"),
+        "14.2.0");
+
+    ASSERT_TRUE(db.at("toolchain").bindings.contains("cc"));
+    EXPECT_EQ(db.at("toolchain").bindings.at("cc").size(), 1u);
+    EXPECT_EQ(
+        db.at("toolchain").bindings.at("cc").at("14.2.0"),
+        "14.2.0");
+}
+
+TEST(XvmExactRemovalTest, AmbiguousBareVersionFailsWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "cc", "1.0.0", "/pkg/repo-a", "program",
+        "cc-a", "cc", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "1.0.0", "/pkg/repo-b", "program",
+        "cc-b", "cc", "repo-b");
+    const auto before = xlings::xvm::versions_to_json(db);
+
+    auto result = xlings::xvm::remove_version(db, "cc", "1.0.0");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::AmbiguousVersion);
+    EXPECT_EQ(result.error().target, "cc");
+    EXPECT_EQ(result.error().version, "1.0.0");
+    EXPECT_TRUE(result.error().peerTarget.empty());
+    EXPECT_TRUE(result.error().peerVersion.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), before);
+}
+
+TEST(XvmRemovalBatchTest, LateAsymmetricEdgeFailsWithoutPartialMutation) {
+    xlings::xvm::VersionDB db;
+    db["safe"].versions["repo:safe-1"].path = "/pkg/safe";
+    db["a"].versions["repo:a-1"].path = "/pkg/a";
+    db["b"].versions["repo:b-1"].path = "/pkg/b";
+    db["a"].bindings["b"]["repo:a-1"] = "repo:b-1";
+    db["b"].bindings["a"]["repo:b-1"] = "repo:wrong-a";
+    xlings::xvm::Workspace workspace{
+        {"safe", "repo:safe-1"},
+        {"a", "repo:a-1"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"safe", {"repo:safe-1"}},
+        {"a", {"repo:a-1"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = "safe",
+            .version = "repo:safe-1",
+        },
+        {
+            .op = "remove",
+            .name = "a",
+            .version = "repo:a-1",
+        },
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::AsymmetricEdge);
+    EXPECT_EQ(result.error().target, "a");
+    EXPECT_EQ(result.error().version, "repo:a-1");
+    EXPECT_EQ(result.error().peerTarget, "b");
+    EXPECT_EQ(result.error().peerVersion, "repo:b-1");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XvmExactRemovalTest, UnpairedIncomingEdgeFailsWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    db["a"].versions["repo:a-1"].path = "/pkg/a";
+    db["b"].versions["repo:b-1"].path = "/pkg/b";
+    db["b"].bindings["a"]["repo:b-1"] = "repo:a-1";
+    const auto before = xlings::xvm::versions_to_json(db);
+
+    auto result =
+        xlings::xvm::remove_version(db, "a", "repo:a-1");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::AsymmetricEdge);
+    EXPECT_EQ(result.error().target, "a");
+    EXPECT_EQ(result.error().version, "repo:a-1");
+    EXPECT_EQ(result.error().peerTarget, "b");
+    EXPECT_EQ(result.error().peerVersion, "repo:b-1");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), before);
+}
+
+TEST(XvmRemovalBatchTest, RawEmptyOperationNeverMeansAllVersions) {
+    xlings::xvm::VersionDB db;
+    db["sibling"].versions["repo-a:1.0.0"].path = "/pkg/a";
+    db["sibling"].versions["repo-b:1.0.0"].path = "/pkg/b";
+    xlings::xvm::Workspace workspace{
+        {"sibling", "repo-a:1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"sibling", {"repo-a:1.0.0", "repo-b:1.0.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = "sibling",
+            .version = "",
+        },
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::AmbiguousVersion);
+    EXPECT_EQ(result.error().target, "sibling");
+    EXPECT_TRUE(result.error().version.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+
+    db["sibling"].versions.erase("repo-b:1.0.0");
+    workspace = {{"sibling", "repo-a:1.0.0"}};
+    installed = {{"sibling", {"repo-a:1.0.0"}}};
+    const auto oneVersionBefore = xlings::xvm::versions_to_json(db);
+
+    result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::VersionNotFound);
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), oneVersionBefore);
+    EXPECT_EQ(workspace.at("sibling"), "repo-a:1.0.0");
+    EXPECT_EQ(
+        installed.at("sibling"),
+        (std::vector<std::string>{"repo-a:1.0.0"}));
+}
+
+TEST(XvmRemovalBatchTest,
+     LegacySnapshotRemovesTransformedNamespacedMembersExactly) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "toolchain", "15.1.0", "/pkg/toolchain-15",
+        "program", "", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "gcc-15.1.0", "/pkg/toolchain-15",
+        "program", "cc-15", "cc", "repo-a",
+        "toolchain@15.1.0");
+    xlings::xvm::add_version(
+        db, "toolchain", "14.2.0", "/pkg/toolchain-14",
+        "program", "", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "gcc-14.2.0", "/pkg/toolchain-14",
+        "program", "cc-14", "cc", "repo-a",
+        "toolchain@14.2.0");
+    xlings::xvm::Workspace workspace{
+        {"toolchain", "repo-a:15.1.0"},
+        {"cc", "repo-a:gcc-15.1.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {
+            "toolchain",
+            {"repo-a:14.2.0", "repo-a:15.1.0"},
+        },
+        {
+            "cc",
+            {"repo-a:gcc-14.2.0", "repo-a:gcc-15.1.0"},
+        },
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = "toolchain",
+            .version = "",
+        },
+    };
+
+    auto context = xlings::xvm::snapshot_removal_context(
+        db, "toolchain", "repo-a:15.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    ASSERT_TRUE(context->hasSelection);
+    EXPECT_TRUE(context->provider.empty());
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->removed.size(), 2u);
+    EXPECT_EQ(result->removed[0].target, "toolchain");
+    EXPECT_EQ(result->removed[0].version, "repo-a:15.1.0");
+    EXPECT_EQ(result->removed[1].target, "cc");
+    EXPECT_EQ(result->removed[1].version, "repo-a:gcc-15.1.0");
+
+    ASSERT_TRUE(db.contains("toolchain"));
+    EXPECT_EQ(db.at("toolchain").versions.size(), 1u);
+    EXPECT_TRUE(db.at("toolchain").versions.contains("repo-a:14.2.0"));
+    ASSERT_TRUE(db.at("toolchain").bindings.contains("cc"));
+    EXPECT_EQ(db.at("toolchain").bindings.at("cc").size(), 1u);
+    EXPECT_EQ(
+        db.at("toolchain").bindings.at("cc").at("repo-a:14.2.0"),
+        "repo-a:gcc-14.2.0");
+
+    ASSERT_TRUE(db.contains("cc"));
+    EXPECT_EQ(db.at("cc").versions.size(), 1u);
+    EXPECT_TRUE(db.at("cc").versions.contains("repo-a:gcc-14.2.0"));
+    ASSERT_TRUE(db.at("cc").bindings.contains("toolchain"));
+    EXPECT_EQ(db.at("cc").bindings.at("toolchain").size(), 1u);
+    EXPECT_EQ(
+        db.at("cc").bindings.at("toolchain").at(
+            "repo-a:gcc-14.2.0"),
+        "repo-a:14.2.0");
+
+    EXPECT_EQ(workspace.at("toolchain"), "repo-a:14.2.0");
+    EXPECT_EQ(workspace.at("cc"), "repo-a:gcc-14.2.0");
+    EXPECT_EQ(
+        installed.at("toolchain"),
+        (std::vector<std::string>{"repo-a:14.2.0"}));
+    EXPECT_EQ(
+        installed.at("cc"),
+        (std::vector<std::string>{"repo-a:gcc-14.2.0"}));
+}
+
+TEST(XvmRemovalBatchTest,
+     ProviderRootOperationRemovesWholeOwnedReleaseOnly) {
+    xlings::xvm::VersionDB db;
+    auto addRelease = [&](const std::string& release,
+                          const std::string& rootVersion,
+                          const std::string& memberVersion) {
+        const auto group = make_binding_group_ref(
+            "repo-a:toolchain", release, "compiler",
+            "toolchain", rootVersion);
+        auto& root = add_provider_group_member(
+            db, "toolchain", rootVersion, group, "group");
+        root.bindingMembers = {
+            {"cc", memberVersion},
+            {"toolchain", rootVersion},
+        };
+        add_provider_group_member(
+            db, "cc", memberVersion, group,
+            "program", "cc-a", "cc");
+    };
+    addRelease("1.0.0", "repo-a:1.0.0", "repo-a:gcc-1.0.0");
+    addRelease("2.0.0", "repo-a:2.0.0", "repo-a:gcc-2.0.0");
+    xlings::xvm::Workspace workspace{
+        {"toolchain", "repo-a:1.0.0"},
+        {"cc", "repo-a:gcc-1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"toolchain", {"repo-a:1.0.0", "repo-a:2.0.0"}},
+        {"cc", {"repo-a:gcc-1.0.0", "repo-a:gcc-2.0.0"}},
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = "toolchain",
+        },
+    };
+    auto context = xlings::xvm::snapshot_removal_context(
+        db, "toolchain", "repo-a:1.0.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(result->removed.size(), 2u);
+    EXPECT_FALSE(
+        db.at("toolchain").versions.contains("repo-a:1.0.0"));
+    EXPECT_TRUE(
+        db.at("toolchain").versions.contains("repo-a:2.0.0"));
+    EXPECT_FALSE(
+        db.at("cc").versions.contains("repo-a:gcc-1.0.0"));
+    EXPECT_TRUE(
+        db.at("cc").versions.contains("repo-a:gcc-2.0.0"));
+    EXPECT_EQ(workspace.at("toolchain"), "repo-a:2.0.0");
+    EXPECT_EQ(workspace.at("cc"), "repo-a:gcc-2.0.0");
+}
+
+TEST(XvmRemovalBatchTest,
+     RemoveAllDeletesOnlyExecutingProviderAcrossReleases) {
+    xlings::xvm::VersionDB db;
+    auto& providerA1 = db["cc"].versions["repo-a:1.0.0"];
+    providerA1.path = "/pkg/a/1";
+    providerA1.kind = "program";
+    providerA1.bindingGroup = make_binding_group_ref(
+        "repo-a:provider", "1.0.0", "cc-a-1",
+        "root-a-1", "repo-a:1.0.0");
+    auto& providerA2 = db["cc"].versions["repo-a:2.0.0"];
+    providerA2.path = "/pkg/a/2";
+    providerA2.kind = "program";
+    providerA2.bindingGroup = make_binding_group_ref(
+        "repo-a:provider", "2.0.0", "cc-a-2",
+        "root-a-2", "repo-a:2.0.0");
+    auto& providerB = db["cc"].versions["repo-b:9.0.0"];
+    providerB.path = "/pkg/b/9";
+    providerB.kind = "program";
+    providerB.bindingGroup = make_binding_group_ref(
+        "repo-b:provider", "9.0.0", "cc-b-9",
+        "root-b-9", "repo-b:9.0.0");
+    db["cc"].versions["legacy:0.9.0"].path = "/pkg/legacy";
+
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-a:2.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {
+            "cc",
+            {
+                "legacy:0.9.0",
+                "repo-b:9.0.0",
+                "repo-a:1.0.0",
+                "repo-a:2.0.0",
+            },
+        },
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove_all",
+            .name = "cc",
+            .version = "",
+        },
+    };
+    const xlings::xvm::RemovalContext context{
+        .provider = "repo-a:provider",
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->removed.size(), 2u);
+    EXPECT_EQ(result->removed[0].target, "cc");
+    EXPECT_EQ(result->removed[0].version, "repo-a:1.0.0");
+    EXPECT_EQ(result->removed[1].target, "cc");
+    EXPECT_EQ(result->removed[1].version, "repo-a:2.0.0");
+
+    ASSERT_TRUE(db.contains("cc"));
+    EXPECT_EQ(db.at("cc").versions.size(), 2u);
+    EXPECT_TRUE(db.at("cc").versions.contains("repo-b:9.0.0"));
+    EXPECT_TRUE(db.at("cc").versions.contains("legacy:0.9.0"));
+    EXPECT_EQ(workspace.at("cc"), "repo-b:9.0.0");
+    EXPECT_EQ(
+        installed.at("cc"),
+        (std::vector<std::string>{
+            "legacy:0.9.0",
+            "repo-b:9.0.0",
+        }));
+}
+
+TEST(XvmRemovalBatchTest, RemoveAllRejectsMissingProviderContext) {
+    xlings::xvm::VersionDB db;
+    auto& data = db["cc"].versions["repo-a:1.0.0"];
+    data.path = "/pkg/a/1";
+    data.kind = "program";
+    data.bindingGroup = make_binding_group_ref(
+        "repo-a:provider", "1.0.0", "cc-a",
+        "root-a", "repo-a:1.0.0");
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-a:1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"repo-a:1.0.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove_all",
+            .name = "cc",
+            .version = "",
+        },
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::ProviderRequired);
+    EXPECT_EQ(result.error().target, "cc");
+    EXPECT_TRUE(result.error().version.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XvmRemovalBatchTest, RemoveAllRejectsNoOwnedMatchingVersion) {
+    xlings::xvm::VersionDB db;
+    auto& providerB = db["cc"].versions["repo-b:9.0.0"];
+    providerB.path = "/pkg/b/9";
+    providerB.kind = "program";
+    providerB.bindingGroup = make_binding_group_ref(
+        "repo-b:provider", "9.0.0", "cc-b",
+        "root-b", "repo-b:9.0.0");
+    db["cc"].versions["legacy:0.9.0"].path = "/pkg/legacy";
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-b:9.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"legacy:0.9.0", "repo-b:9.0.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove_all",
+            .name = "cc",
+            .version = "",
+        },
+    };
+    const xlings::xvm::RemovalContext context{
+        .provider = "repo-a:provider",
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, context);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::ProviderVersionNotFound);
+    EXPECT_EQ(result.error().target, "cc");
+    EXPECT_TRUE(result.error().version.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XvmRemovalBatchTest,
+     ProviderSnapshotRejectsRecipeVersionOutsideOwnedSelection) {
+    xlings::xvm::VersionDB db;
+    const auto groupA = make_binding_group_ref(
+        "repo-a:provider", "1.0.0", "group-a",
+        "root-a", "repo-a:1.0.0");
+    auto& rootA = add_provider_group_member(
+        db, "root-a", "repo-a:1.0.0", groupA, "group");
+    rootA.bindingMembers = {
+        {"cc", "repo-a:1.0.0"},
+        {"root-a", "repo-a:1.0.0"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo-a:1.0.0", groupA,
+        "program", "cc-a", "cc");
+
+    const auto groupB = make_binding_group_ref(
+        "repo-b:provider", "2.0.0", "group-b",
+        "root-b", "repo-b:2.0.0");
+    auto& rootB = add_provider_group_member(
+        db, "root-b", "repo-b:2.0.0", groupB, "group");
+    rootB.bindingMembers = {
+        {"cc", "repo-b:2.0.0"},
+        {"root-b", "repo-b:2.0.0"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo-b:2.0.0", groupB,
+        "program", "cc-b", "cc");
+
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-a:1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"repo-a:1.0.0", "repo-b:2.0.0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = "cc",
+            .version = "repo-b:2.0.0",
+        },
+    };
+    auto context = xlings::xvm::snapshot_removal_context(
+        db, "root-a", "repo-a:1.0.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    EXPECT_EQ(context->provider, "repo-a:provider");
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RemovalErrorKind::VersionMismatch);
+    EXPECT_EQ(result.error().target, "cc");
+    EXPECT_EQ(result.error().version, "repo-b:2.0.0");
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XvmRemovalBatchTest,
+     ProviderSnapshotIncludesEveryGroupOwnedByTheRelease) {
+    xlings::xvm::VersionDB db;
+    const auto compilerGroup = make_binding_group_ref(
+        "repo-a:toolchain", "1.0.0", "compiler",
+        "compiler-root", "repo-a:1.0.0");
+    auto& compilerRoot = add_provider_group_member(
+        db, "compiler-root", "repo-a:1.0.0",
+        compilerGroup, "group");
+    compilerRoot.bindingMembers = {
+        {"cc", "repo-a:1.0.0"},
+        {"compiler-root", "repo-a:1.0.0"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo-a:1.0.0",
+        compilerGroup, "program", "cc-a", "cc");
+
+    const auto toolsGroup = make_binding_group_ref(
+        "repo-a:toolchain", "1.0.0", "tools",
+        "tools-root", "repo-a:tools-1.0.0");
+    auto& toolsRoot = add_provider_group_member(
+        db, "tools-root", "repo-a:tools-1.0.0",
+        toolsGroup, "group");
+    toolsRoot.bindingMembers = {
+        {"ar", "repo-a:tools-1.0.0"},
+        {"tools-root", "repo-a:tools-1.0.0"},
+    };
+    add_provider_group_member(
+        db, "ar", "repo-a:tools-1.0.0",
+        toolsGroup, "program", "ar-a", "ar");
+
+    auto context = xlings::xvm::snapshot_removal_context(
+        db, "cc", "repo-a:1.0.0");
+
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    EXPECT_EQ(context->provider, "repo-a:toolchain");
+    EXPECT_EQ(
+        context->members,
+        (std::map<std::string, std::string>{
+            {"ar", "repo-a:tools-1.0.0"},
+            {"cc", "repo-a:1.0.0"},
+            {"compiler-root", "repo-a:1.0.0"},
+            {"tools-root", "repo-a:tools-1.0.0"},
+        }));
+}
+
+TEST(XimXvmRemovalAdapterTest,
+     PreSnapshotsUninstallSelectionForLaterVersionlessHookOps) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "toolchain", "15.1.0", "/pkg/toolchain",
+        "program", "", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "gcc-15.1.0", "/pkg/toolchain",
+        "program", "cc-15", "cc", "repo-a",
+        "toolchain@15.1.0");
+    xlings::xvm::Workspace workspace{
+        {"toolchain", "repo-a:15.1.0"},
+        {"cc", "repo-a:gcc-15.1.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"toolchain", {"repo-a:15.1.0"}},
+        {"cc", {"repo-a:gcc-15.1.0"}},
+    };
+
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, {}, "repo-a:toolchain", "15.1.0",
+        "toolchain", "repo-a:15.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    const std::vector<mcpplibs::xpkg::XvmOp> hookOperations{
+        {
+            .op = "remove",
+            .name = "cc",
+        },
+    };
+
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, hookOperations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->removed.size(), 2u);
+    EXPECT_EQ(result->removed[0].target, "cc");
+    EXPECT_EQ(result->removed[0].version, "repo-a:gcc-15.1.0");
+    EXPECT_EQ(result->removed[1].target, "toolchain");
+    EXPECT_EQ(result->removed[1].version, "repo-a:15.1.0");
+    EXPECT_FALSE(db.contains("toolchain"));
+    EXPECT_FALSE(db.contains("cc"));
+}
+
+TEST(XimXvmRemovalAdapterTest,
+     PreSnapshotsConfigSelectionFromActiveRemovalTarget) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(
+        db, "toolchain", "15.1.0", "/pkg/toolchain",
+        "program", "", "", "repo-a");
+    xlings::xvm::add_version(
+        db, "cc", "gcc-15.1.0", "/pkg/toolchain",
+        "program", "cc-15", "cc", "repo-a",
+        "toolchain@15.1.0");
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-a:gcc-15.1.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"repo-a:gcc-15.1.0"}},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove",
+            .name = "cc",
+        },
+    };
+
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations, "repo-a:toolchain", "15.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->removed.size(), 2u);
+    EXPECT_EQ(result->removed[0].target, "cc");
+    EXPECT_EQ(result->removed[0].version, "repo-a:gcc-15.1.0");
+    EXPECT_EQ(result->removed[1].target, "toolchain");
+    EXPECT_EQ(result->removed[1].version, "repo-a:15.1.0");
+    EXPECT_FALSE(db.contains("toolchain"));
+    EXPECT_FALSE(db.contains("cc"));
+    EXPECT_TRUE(workspace.empty());
+    EXPECT_TRUE(installed.empty());
+
+    xlings::xvm::VersionDB singletonDb;
+    singletonDb["base"].versions["repo-a:1.0.0"].kind = "subos-base";
+    xlings::xvm::Workspace singletonWorkspace{
+        {"base", "repo-a:1.0.0"},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> singletonOperations{
+        {
+            .op = "remove",
+            .name = "base",
+        },
+    };
+    auto singletonContext = xlings::xim::snapshot_xpkg_removal_context(
+        singletonDb, singletonWorkspace, singletonOperations,
+        "repo-a:base", "1.0.0");
+
+    ASSERT_TRUE(singletonContext.has_value())
+        << singletonContext.error().message;
+    EXPECT_EQ(
+        singletonContext->members.at("base"),
+        "repo-a:1.0.0");
+}
+
+TEST(XimXvmRemovalAdapterTest, TransportsRemoveAllAsDistinctOperation) {
+    xlings::xvm::VersionDB db;
+    auto& providerA = db["cc"].versions["repo-a:1.0.0"];
+    providerA.path = "/pkg/a";
+    providerA.kind = "program";
+    providerA.bindingGroup = make_binding_group_ref(
+        "repo-a:provider", "1.0.0", "group-a",
+        "root-a", "repo-a:1.0.0");
+    auto& providerB = db["cc"].versions["repo-b:2.0.0"];
+    providerB.path = "/pkg/b";
+    providerB.kind = "program";
+    providerB.bindingGroup = make_binding_group_ref(
+        "repo-b:provider", "2.0.0", "group-b",
+        "root-b", "repo-b:2.0.0");
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo-a:1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"repo-b:2.0.0", "repo-a:1.0.0"}},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove_all",
+            .name = "cc",
+        },
+    };
+    const xlings::xvm::RemovalContext context{
+        .provider = "repo-a:provider",
+    };
+
+    auto result = xlings::xim::apply_xpkg_removal_operations(
+        db, workspace, installed, operations, context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(result->removed.size(), 1u);
+    EXPECT_EQ(result->removed[0].target, "cc");
+    EXPECT_EQ(result->removed[0].version, "repo-a:1.0.0");
+    ASSERT_TRUE(db.contains("cc"));
+    EXPECT_EQ(db.at("cc").versions.size(), 1u);
+    EXPECT_TRUE(db.at("cc").versions.contains("repo-b:2.0.0"));
+    EXPECT_EQ(workspace.at("cc"), "repo-b:2.0.0");
 }
 
 TEST(XvmDbTest, AddVersionWithBindingNamespaced) {

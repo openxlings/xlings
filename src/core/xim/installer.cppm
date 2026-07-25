@@ -18,6 +18,7 @@ import xlings.core.common;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.removal;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
@@ -25,6 +26,188 @@ import xlings.core.xim.libxpkg.types.subos;
 import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
+
+std::expected<xvm::RemovalContext, xvm::RemovalError>
+snapshot_xpkg_removal_context(
+        const xvm::VersionDB& db,
+        const xvm::Workspace& workspace,
+        const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+        const std::string& executingProvider,
+        const std::string& executingProviderVersion,
+        const std::string& preferredTarget = {},
+        const std::string& preferredVersion = {}) {
+    xvm::RemovalContext legacyContext{
+        .provider = executingProvider,
+    };
+    std::optional<xvm::RemovalContext> providerContext;
+    std::set<std::pair<std::string, std::string>> seeds;
+
+    auto mergeSeed = [&](const std::string& target,
+                         const std::string& version)
+        -> std::expected<void, xvm::RemovalError> {
+        if (target.empty() || version.empty()
+            || !seeds.emplace(target, version).second) {
+            return {};
+        }
+        auto exactVersion =
+            xvm::resolve_exact_version_key(db, target, version);
+        if (!exactVersion) {
+            return std::unexpected(std::move(exactVersion.error()));
+        }
+        const auto& info = db.at(target);
+        const auto& data = info.versions.at(*exactVersion);
+        const auto hasOutgoingEdge = std::ranges::any_of(
+            info.bindings,
+            [&](const auto& peer) {
+                return peer.second.contains(*exactVersion);
+            });
+        const auto hasIncomingEdge = std::ranges::any_of(
+            db,
+            [&](const auto& peer) {
+                auto edgeIt = peer.second.bindings.find(target);
+                if (edgeIt == peer.second.bindings.end()) return false;
+                return std::ranges::any_of(
+                    edgeIt->second,
+                    [&](const auto& edge) {
+                        return edge.second == *exactVersion;
+                    });
+            });
+        const auto isUnboundLegacySingleton =
+            !data.bindingGroup
+            && !data.bindingMembersDeclared
+            && data.bindingMembers.empty()
+            && !data.bindingHeadersDeclared
+            && data.bindingHeaders.empty()
+            && data.bindingIntegrityIssues.empty()
+            && !hasOutgoingEdge
+            && !hasIncomingEdge;
+        if (isUnboundLegacySingleton) {
+            auto [it, inserted] =
+                legacyContext.members.emplace(target, *exactVersion);
+            if (!inserted && it->second != *exactVersion) {
+                return std::unexpected(xvm::RemovalError{
+                    .kind = xvm::RemovalErrorKind::SelectionInvalid,
+                    .target = target,
+                    .version = *exactVersion,
+                    .message =
+                        "legacy removal selections conflict on target version",
+                });
+            }
+            legacyContext.hasSelection = true;
+            return {};
+        }
+        auto selection =
+            xvm::snapshot_removal_context(db, target, *exactVersion);
+        if (!selection) {
+            return std::unexpected(std::move(selection.error()));
+        }
+        if (!selection->provider.empty()) {
+            if (!executingProvider.empty()
+                && selection->provider != executingProvider) {
+                return std::unexpected(xvm::RemovalError{
+                    .kind = xvm::RemovalErrorKind::ProviderMismatch,
+                    .target = target,
+                    .version = version,
+                    .message = std::format(
+                        "selected version is owned by provider '{}', not '{}'",
+                        selection->provider, executingProvider),
+                });
+            }
+            if (!providerContext) {
+                providerContext = std::move(*selection);
+                if (!executingProvider.empty()) {
+                    providerContext->provider = executingProvider;
+                }
+            }
+            return {};
+        }
+        if (providerContext) return {};
+
+        for (const auto& [memberTarget, memberVersion] :
+             selection->members) {
+            auto [it, inserted] =
+                legacyContext.members.emplace(memberTarget, memberVersion);
+            if (!inserted && it->second != memberVersion) {
+                return std::unexpected(xvm::RemovalError{
+                    .kind = xvm::RemovalErrorKind::SelectionInvalid,
+                    .target = memberTarget,
+                    .version = memberVersion,
+                    .message =
+                        "legacy removal selections conflict on target version",
+                });
+            }
+        }
+        legacyContext.hasSelection = true;
+        return {};
+    };
+
+    if (!preferredTarget.empty() && db.contains(preferredTarget)) {
+        auto merged = mergeSeed(preferredTarget, preferredVersion);
+        if (!merged) return std::unexpected(std::move(merged.error()));
+    }
+
+    for (const auto& operation : operations) {
+        if (operation.op != "remove") continue;
+        std::string version = operation.version;
+        if (version.empty()) {
+            auto activeIt = workspace.find(operation.name);
+            if (activeIt != workspace.end()) {
+                version = activeIt->second;
+            }
+        }
+        if (version.empty() || !db.contains(operation.name)) continue;
+        auto merged = mergeSeed(operation.name, version);
+        if (!merged) return std::unexpected(std::move(merged.error()));
+    }
+
+    if (!providerContext
+        && !executingProvider.empty()
+        && !executingProviderVersion.empty()) {
+        bool foundProviderRelease = false;
+        for (const auto& [target, info] : db) {
+            for (const auto& [version, data] : info.versions) {
+                if (!data.bindingGroup
+                    || data.bindingGroup->provider != executingProvider
+                    || data.bindingGroup->providerVersion
+                        != executingProviderVersion) {
+                    continue;
+                }
+                foundProviderRelease = true;
+                auto merged = mergeSeed(target, version);
+                if (!merged) {
+                    return std::unexpected(std::move(merged.error()));
+                }
+                break;
+            }
+            if (foundProviderRelease) break;
+        }
+    }
+
+    if (providerContext) return std::move(*providerContext);
+    return legacyContext;
+}
+
+std::expected<xvm::RemovalBatchResult, xvm::RemovalError>
+apply_xpkg_removal_operations(
+        xvm::VersionDB& db,
+        xvm::Workspace& workspace,
+        xvm::WorkspaceInstalled& installed,
+        const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+        const xvm::RemovalContext& context) {
+    std::vector<xvm::RemovalOperation> removals;
+    for (const auto& operation : operations) {
+        if (operation.op != "remove" && operation.op != "remove_all") {
+            continue;
+        }
+        removals.push_back({
+            .op = operation.op,
+            .name = operation.name,
+            .version = operation.version,
+        });
+    }
+    return xvm::apply_removal_batch(
+        db, workspace, installed, removals, context);
+}
 
 bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
@@ -459,8 +642,8 @@ bool is_version_referenced_anywhere_(PackageScope scope,
         // pin its xpkgs/ directory against GC.
         //
         // Stored values are namespaced (`ns:1.0` for non-primary repos,
-        // bare for primary), but `version` from the caller is bare —
-        // accept either form, same as detach_current_subos_.
+        // bare for primary). New removal callers pass the exact stored key;
+        // retain bare matching here for legacy workspace files.
         auto matches = [&](std::string_view stored) {
             return stored == version
                 || xvm::strip_namespace(std::string(stored)) == version;
@@ -533,19 +716,14 @@ void remove_target_shims_(const std::string& target, const std::string& version)
     }
 }
 
-void detach_current_subos_(const std::string& target, const std::string& version) {
+void detach_current_subos_(const std::string& target,
+                           const std::string& version,
+                           bool persist = true) {
     auto& ws = Config::workspace_mut();
     auto& wsi = Config::workspace_installed_mut();
 
-    // Stored ver-key in workspace/installed[] is namespaced
-    // (`make_ns_version(version_ns, ver)`) — for the primary repo this
-    // is bare, but for `fromsource:` / `myrepo:` packages it carries the
-    // `ns:` prefix. Callers (uninstall) pass us a bare `version` (the
-    // user's typed value, or PackageMatch.version which is always bare).
-    // Match either form so non-primary-namespace removes don't silently
-    // leave stale active+installed entries.
     auto matches = [&](std::string_view stored) {
-        return stored == version || xvm::strip_namespace(std::string(stored)) == version;
+        return stored == version;
     };
 
     // Step 1 (0.4.19+): always drop `version` from this subos's
@@ -603,10 +781,81 @@ void detach_current_subos_(const std::string& target, const std::string& version
         }
     }
 
-    if (wasActive || installedChanged) Config::save_workspace();
+    if (persist && (wasActive || installedChanged)) {
+        Config::save_workspace();
+    }
 }
 
-void process_xvm_operations_(const PlanNode& node,
+void remove_xvm_target_artifacts_(const std::string& target,
+                                  bool removeProgramShim,
+                                  bool removeLibraryLink) {
+    namespace fs = std::filesystem;
+    const auto& paths = Config::paths();
+    if (removeLibraryLink) {
+        auto libraryPath = paths.libDir / target;
+        std::error_code ec;
+        if (fs::is_symlink(libraryPath, ec)) {
+            fs::remove(libraryPath, ec);
+        }
+    }
+    if (!removeProgramShim) return;
+
+#ifdef _WIN32
+    constexpr std::string_view shim_ext = ".exe";
+#else
+    constexpr std::string_view shim_ext = "";
+#endif
+    std::string shimName = target;
+    if (!shim_ext.empty() && !shimName.ends_with(shim_ext)) {
+        shimName += shim_ext;
+    }
+    auto shimPath = paths.binDir / shimName;
+    std::error_code ec;
+    if (!fs::exists(shimPath, ec)) return;
+    ec.clear();
+    fs::remove(shimPath, ec);
+    if (ec) {
+        log::warn("could not remove shim {}: {}; will be replaced "
+                  "on next install/use",
+                  shimPath.string(), ec.message());
+    }
+}
+
+void cleanup_removed_xvm_artifacts_(
+        const xvm::VersionDB& dbBeforeRemoval,
+        const xvm::RemovalBatchResult& removalResult) {
+    std::map<std::string, std::pair<bool, bool>> removedKinds;
+    for (const auto& removed : removalResult.removed) {
+        auto& [program, library] = removedKinds[removed.target];
+        auto targetIt = dbBeforeRemoval.find(removed.target);
+        if (targetIt == dbBeforeRemoval.end()) {
+            program = true;
+            continue;
+        }
+        auto versionIt = targetIt->second.versions.find(removed.version);
+        auto kind = versionIt == targetIt->second.versions.end()
+            || versionIt->second.kind.empty()
+            ? targetIt->second.type
+            : versionIt->second.kind;
+        if (kind == "lib") {
+            library = true;
+        } else {
+            program = true;
+        }
+    }
+    for (const auto& [target, kinds] : removedKinds) {
+        if (xvm::has_usable_workspace_version(
+                Config::versions_mut(),
+                Config::workspace_installed(),
+                target)) {
+            continue;
+        }
+        remove_xvm_target_artifacts_(
+            target, kinds.first, kinds.second);
+    }
+}
+
+bool process_xvm_operations_(const PlanNode& node,
                              const std::filesystem::path& dataDir,
                              mcpplibs::xpkg::PackageExecutor& executor,
                              bool useAfterInstall) {
@@ -636,6 +885,41 @@ void process_xvm_operations_(const PlanNode& node,
         if (!isPrimary && !node.namespaceName.empty()) {
             version_ns = node.namespaceName;
         }
+    }
+
+    auto executingProvider = node.canonicalName.empty()
+        ? canonical_package_name(node.namespaceName, node.name)
+        : node.canonicalName;
+    auto removalContext = snapshot_xpkg_removal_context(
+        Config::versions_mut(), Config::workspace(), xvm_ops,
+        executingProvider, node.version);
+    if (!removalContext) {
+        log::warn(
+            "xvm removal selection failed for {}@{}: {} "
+            "(target='{}', version='{}')",
+            executingProvider, node.version,
+            removalContext.error().message,
+            removalContext.error().target,
+            removalContext.error().version);
+        return false;
+    }
+
+    const auto dbBeforeRemoval = Config::versions_mut();
+    auto removalResult = apply_xpkg_removal_operations(
+        Config::versions_mut(),
+        Config::workspace_mut(),
+        Config::workspace_installed_mut(),
+        xvm_ops,
+        *removalContext);
+    if (!removalResult) {
+        log::warn(
+            "xvm removal batch failed for {}@{}: {} "
+            "(target='{}', version='{}')",
+            executingProvider, node.version,
+            removalResult.error().message,
+            removalResult.error().target,
+            removalResult.error().version);
+        return false;
     }
 
     for (auto& op : xvm_ops) {
@@ -740,80 +1024,15 @@ void process_xvm_operations_(const PlanNode& node,
             vdata.includedir = op.includedir;
         } else if (op.op == "remove_headers") {
             xvm::remove_headers(op.includedir, sysroot_include);
-        } else if (op.op == "remove") {
-            auto& db = Config::versions_mut();
-            auto it = db.find(op.name);
-            bool isLib = (it != db.end() && it->second.type == "lib");
-
-            if (isLib) {
-                // Remove lib symlink from subos lib dir
-                auto dst = sysroot_lib / op.name;
-                std::error_code ec;
-                if (std::filesystem::is_symlink(dst, ec))
-                    std::filesystem::remove(dst, ec);
-            } else {
-                // Remove shim for uninstalled program. Use the error_code
-                // overload: on Windows the shim may be the running xlings.exe
-                // (when an install hook indirectly emits a remove for xlings),
-                // and DeleteFile on a running executable raises
-                // ERROR_SHARING_VIOLATION. Throwing here would escape main()
-                // (no top-level catch on the cmd_install path) and terminate
-                // the process — silent non-zero exit on CI. The next install
-                // / use cycle re-creates the shim via xself::create_shim, so
-                // a failure here is benign: warn and continue.
-                std::string shim_name = op.name;
-                if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
-                    shim_name += shim_ext;
-                auto shim_path = paths.binDir / shim_name;
-                std::error_code shim_ec;
-                if (std::filesystem::exists(shim_path, shim_ec)) {
-                    shim_ec.clear();
-                    std::filesystem::remove(shim_path, shim_ec);
-                    if (shim_ec) {
-                        log::warn("could not remove shim {}: {}; will be replaced "
-                                  "on next install/use",
-                                  shim_path.string(), shim_ec.message());
-                    }
-                }
-            }
-            Config::workspace_mut().erase(op.name);
-
-            // 0.4.19+: keep installed[] in sync with the versions DB
-            // wipe. detach_current_subos_ usually pruned `op.version`
-            // already (in the user-initiated remove flow), but
-            // install-time upgrades (recipe emits xvm:remove for the
-            // old version before xvm:add for the new) reach this op
-            // without going through detach. The version key inside
-            // installed[] is the namespaced form (`ns:ver` or bare —
-            // see `add` path above for derivation). Match either form
-            // so we don't leave stale entries when op.version arrives
-            // as a bare string from a recipe even though storage is
-            // namespaced.
-            auto& wsi = Config::workspace_installed_mut();
-            if (op.version.empty()) {
-                wsi.erase(op.name);
-            } else {
-                if (auto it = wsi.find(op.name); it != wsi.end()) {
-                    auto& list = it->second;
-                    auto erased = std::remove_if(list.begin(), list.end(),
-                        [&](const std::string& v) {
-                            return v == op.version
-                                || xvm::strip_namespace(v) == op.version;
-                        });
-                    list.erase(erased, list.end());
-                    if (list.empty()) wsi.erase(it);
-                }
-            }
-
-            if (op.version.empty()) {
-                db.erase(op.name);
-            } else {
-                xvm::remove_version(db, op.name, op.version);
-            }
         }
     }
+
+    cleanup_removed_xvm_artifacts_(
+        dbBeforeRemoval, *removalResult);
+
     Config::save_versions();
     Config::save_workspace();
+    return true;
 }
 
 bool run_config_hook_(const PlanNode& node,
@@ -832,8 +1051,8 @@ bool run_config_hook_(const PlanNode& node,
         log::warn("config hook failed for {}: {}", node.name, hookResult.error);
         return false;
     }
-    process_xvm_operations_(node, dataDir, executor, useAfterInstall);
-    return true;
+    return process_xvm_operations_(
+        node, dataDir, executor, useAfterInstall);
 }
 
 }  // namespace detail_
@@ -1510,6 +1729,45 @@ public:
 
         auto detachTarget = resolvedMatch ? resolvedMatch->name : targetName;
         auto detachVersion = resolvedMatch ? resolvedMatch->version : requestedVersion;
+        if (resolvedMatch) {
+            auto& globalRepos = Config::global_index_repos();
+            const bool isPrimary = !globalRepos.empty()
+                && resolvedMatch->namespaceName == globalRepos[0].name;
+            if (!isPrimary && !resolvedMatch->namespaceName.empty()) {
+                detachVersion = xvm::make_ns_version(
+                    resolvedMatch->namespaceName,
+                    resolvedMatch->version);
+            }
+        }
+        auto executingProvider = resolvedMatch
+            ? (resolvedMatch->canonicalName.empty()
+                ? canonical_package_name(
+                    resolvedMatch->namespaceName,
+                    resolvedMatch->name)
+                : resolvedMatch->canonicalName)
+            : targetName;
+        auto executingProviderVersion = resolvedMatch
+            ? resolvedMatch->version
+            : xvm::strip_namespace(detachVersion);
+
+        auto removalContext = snapshot_xpkg_removal_context(
+            Config::versions_mut(), Config::workspace(), {},
+            executingProvider, executingProviderVersion,
+            detachTarget, detachVersion);
+        if (!removalContext) {
+            return std::unexpected(std::format(
+                "xvm removal selection failed for {}@{}: {} "
+                "(target='{}', version='{}')",
+                executingProvider, executingProviderVersion,
+                removalContext.error().message,
+                removalContext.error().target,
+                removalContext.error().version));
+        }
+        if (auto memberIt = removalContext->members.find(detachTarget);
+            memberIt != removalContext->members.end()) {
+            detachVersion = memberIt->second;
+        }
+
         auto stillReferenced = !detachVersion.empty()
             && detail_::is_version_referenced_anywhere_(
                 resolvedMatch ? resolvedMatch->scope : PackageScope::Global,
@@ -1517,11 +1775,8 @@ public:
                 detachVersion,
                 currentWorkspacePath);
 
-        if (!detachVersion.empty()) {
-            detail_::detach_current_subos_(detachTarget, detachVersion);
-        }
-
         if (stillReferenced) {
+            detail_::detach_current_subos_(detachTarget, detachVersion);
             log::debug("{}@{} detached from current subos; payload retained",
                       detachTarget, detachVersion);
             return {};
@@ -1552,6 +1807,7 @@ public:
                                   .parent_path()
                                   .parent_path().string();
 
+        bool useDefaultRemoval = false;
         if (executor.has_hook(mcpplibs::xpkg::HookType::Uninstall)) {
             log::debug("uninstalling {}...", name);
             auto result = executor.run_hook(
@@ -1577,174 +1833,57 @@ public:
                     isSubosType  = (entry->type == mcpplibs::xpkg::PackageType::Subos);
                 }
             }
-            std::string ver = resolvedMatch ? resolvedMatch->version : std::string{};
-            if (isScriptType) {
-                script::default_uninstall(ctx.pkg_name, ver);
-            } else if (isSubosType) {
-                subos::default_uninstall(ctx.pkg_name, ver);
-            }
+            useDefaultRemoval = isScriptType || isSubosType;
         }
 
         // Process xvm operations collected by uninstall hook
         auto xvm_ops = executor.xvm_operations();
+        if (useDefaultRemoval) {
+            xvm_ops.push_back({
+                .op = "remove",
+                .name = detachTarget,
+                .version = detachVersion,
+            });
+        }
         auto sysroot_include = Config::paths().subosDir / "usr" / "include";
 
-        for (auto& op : xvm_ops) {
-            if (op.op == "remove") {
-                // Compute shim path now; we only delete the shim once we
-                // know there are no surviving versions of this program.
-                // Removing it eagerly (as the previous code did) leaves
-                // the workspace pointing at the highest-remaining version
-                // but the PATH entry is gone — `command not found`.
-#ifdef _WIN32
-                constexpr std::string_view shim_ext = ".exe";
-#else
-                constexpr std::string_view shim_ext = "";
-#endif
-                std::string shim_name = op.name;
-                if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
-                    shim_name += shim_ext;
-                auto shim_path = Config::paths().binDir / shim_name;
-                auto remove_shim_if_present = [&]() {
-                    // error_code overload only — on Windows the shim may be
-                    // the running xlings.exe (e.g. user runs
-                    // `xlings remove xim:xlings` and that's the only version
-                    // installed, so this branch fires). DeleteFile on a
-                    // running .exe raises ERROR_SHARING_VIOLATION, the
-                    // throwing overload would escape main() and silently
-                    // terminate the process (CI sees non-zero exit, no
-                    // diagnostic). The shim is repointed to whatever
-                    // bootstrap exists on the next install/use cycle, so
-                    // failing to remove it now is benign — log and move on.
-                    std::error_code ec;
-                    if (!std::filesystem::exists(shim_path, ec)) return;
-                    ec.clear();
-                    std::filesystem::remove(shim_path, ec);
-                    if (ec) {
-                        log::warn("could not remove shim {}: {}; will be replaced "
-                                  "on next install/use",
-                                  shim_path.string(), ec.message());
-                    }
-                };
+        const auto dbBeforeRemoval = Config::versions_mut();
+        auto removalResult = apply_xpkg_removal_operations(
+            Config::versions_mut(),
+            Config::workspace_mut(),
+            Config::workspace_installed_mut(),
+            xvm_ops,
+            *removalContext);
+        if (!removalResult) {
+            return std::unexpected(std::format(
+                "xvm removal batch failed for {}@{}: {} "
+                "(target='{}', version='{}')",
+                executingProvider, executingProviderVersion,
+                removalResult.error().message,
+                removalResult.error().target,
+                removalResult.error().version));
+        }
 
-                // Resolve the authoritative version to drop from the DB.
-                // Prefer what the hook sent; fall back to the outer resolve only when the
-                // op is for the same package as the top-level uninstall target.
-                std::string effective_version = op.version;
-                if (effective_version.empty() && op.name == detachTarget) {
-                    effective_version = detachVersion;
-                }
-
-                // Snapshot the active binding before we mutate anything. For detachTarget
-                // this was already cleared by detach_current_subos_ above; for sibling
-                // ops (npm/npx when removing node) it still reflects the pre-remove state.
-                std::string prev_active;
-                if (auto wit = Config::workspace().find(op.name);
-                    wit != Config::workspace().end()) {
-                    prev_active = wit->second;
-                }
-
-                if (effective_version.empty()) {
-                    // No version information anywhere — legacy fallback: clear the whole
-                    // entry. Should only happen for packages whose hook emits versionless
-                    // ops for sibling names that were never registered with a version.
-                    Config::versions_mut().erase(op.name);
-                    Config::workspace_mut().erase(op.name);
-                    remove_shim_if_present();
-                    continue;
-                }
-
-                xvm::remove_version(Config::versions_mut(), op.name, effective_version);
-
-                // 0.4.19+: also drop `effective_version` from this subos's
-                // installed[] (detach_current_subos_ already pruned it for
-                // op.name == detachTarget, but sibling ops emitted by the
-                // recipe — e.g. xvm.remove("npm") when uninstalling node —
-                // never went through detach).
-                {
-                    auto& wsi_mut = Config::workspace_installed_mut();
-                    if (auto it = wsi_mut.find(op.name); it != wsi_mut.end()) {
-                        auto erased = std::remove_if(it->second.begin(),
-                                                     it->second.end(),
-                            [&](const std::string& v) {
-                                return v == effective_version
-                                    || xvm::strip_namespace(v) == effective_version;
-                            });
-                        it->second.erase(erased, it->second.end());
-                        if (it->second.empty()) wsi_mut.erase(it);
-                    }
-                }
-
-                auto dit = Config::versions_mut().find(op.name);
-
-                // Decide the new active binding for this op.name.
-                //
-                // 0.4.19+: fallback candidates come from the **current subos's
-                // installed[]** set, not the global versions DB. Pre-fix the
-                // auto-switch picked the highest remaining version across
-                // ALL subos (`pick_highest_version(dit->second.versions)`) —
-                // which leaked another subos's choices into this one. Concrete
-                // case: subos A has rm-fixture@1.0.0, subos B has rm-fixture@2.0.0.
-                // `xlings remove rm-fixture` in B would auto-set B.workspace[rm-fixture]
-                // to "1.0.0" — a version B never opted into. With C2 schema
-                // each subos has its own opt-in set, so the fallback must
-                // come from the same set; if it's empty, clear the pointer
-                // (and drop the shim) instead of inventing one.
-                const auto& wsi_view = Config::workspace_installed();
-                auto subos_pick_highest = [&](const std::string& name) -> std::string {
-                    auto wit = wsi_view.find(name);
-                    if (wit == wsi_view.end() || wit->second.empty()) return {};
-                    // installed[] is stored sorted ascending → back() is highest
-                    return wit->second.back();
-                };
-
-                bool survivors = (dit != Config::versions_mut().end()
-                                  && !dit->second.versions.empty());
-                if (!survivors) {
-                    // Package fully gone from the global DB — clear workspace
-                    // binding and drop the PATH shim with it. (subos's
-                    // installed[] is already empty by construction.)
-                    Config::workspace_mut().erase(op.name);
-                    remove_shim_if_present();
-                } else if (prev_active.empty() || prev_active == effective_version) {
-                    // We just removed the active version (or detach already cleared
-                    // the slot for detachTarget). Auto-switch to highest version
-                    // this subos has opted into; if none, clear pointer + shim.
-                    auto fallback = subos_pick_highest(op.name);
-                    if (!fallback.empty()) {
-                        Config::workspace_mut()[op.name] = fallback;
-                    } else {
-                        Config::workspace_mut().erase(op.name);
-                        remove_shim_if_present();
-                    }
-                } else {
-                    // A non-active version was removed; keep the previous active
-                    // if it's still in this subos's installed[], otherwise pick
-                    // highest remaining (or clear).
-                    auto fallback = subos_pick_highest(op.name);
-                    bool prev_still_in_subos = false;
-                    if (auto wit = wsi_view.find(op.name); wit != wsi_view.end()) {
-                        for (auto& v : wit->second) {
-                            if (v == prev_active
-                                || xvm::strip_namespace(v) == xvm::strip_namespace(prev_active)) {
-                                prev_still_in_subos = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (prev_still_in_subos) {
-                        Config::workspace_mut()[op.name] = prev_active;
-                    } else if (!fallback.empty()) {
-                        Config::workspace_mut()[op.name] = fallback;
-                    } else {
-                        Config::workspace_mut().erase(op.name);
-                        remove_shim_if_present();
-                    }
-                }
-            } else if (op.op == "remove_headers") {
+        for (const auto& op : xvm_ops) {
+            if (op.op == "remove_headers") {
                 xvm::remove_headers(op.includedir, sysroot_include);
             }
         }
+
+        bool detachedByBatch = false;
+        for (const auto& removed : removalResult->removed) {
+            if (removed.target == detachTarget
+                && removed.version == detachVersion) {
+                detachedByBatch = true;
+            }
+        }
+        detail_::cleanup_removed_xvm_artifacts_(
+            dbBeforeRemoval, *removalResult);
+        if (!detachedByBatch && !detachVersion.empty()) {
+            detail_::detach_current_subos_(
+                detachTarget, detachVersion, false);
+        }
+
         Config::save_versions();
         Config::save_workspace();
 

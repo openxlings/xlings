@@ -72,30 +72,164 @@ void add_version(VersionDB& db,
 }
 
 // Remove a version from the database.
-// Matches exact key first, then tries "ns:version" patterns for bare version input.
-void remove_version(VersionDB& db,
-                    const std::string& target,
-                    const std::string& version) {
-    auto it = db.find(target);
-    if (it == db.end()) return;
-    auto& vers = it->second.versions;
+// Namespaced input must match exactly. Bare input resolves only when exactly
+// one stored key has that bare version.
+enum class RemovalErrorKind {
+    VersionNotFound,
+    AmbiguousVersion,
+    AsymmetricEdge,
+    SelectionInvalid,
+    ProviderRequired,
+    ProviderMismatch,
+    ProviderVersionNotFound,
+    VersionMismatch,
+};
 
-    // Exact match
-    if (vers.erase(version)) {
-        if (vers.empty()) db.erase(it);
-        return;
+struct RemovalError {
+    RemovalErrorKind kind { RemovalErrorKind::VersionNotFound };
+    std::string target;
+    std::string version;
+    std::string peerTarget;
+    std::string peerVersion;
+    std::string message;
+};
+
+std::expected<std::string, RemovalError>
+resolve_exact_version_key(const VersionDB& db,
+                          const std::string& target,
+                          const std::string& version) {
+    auto it = db.find(target);
+    if (it == db.end() || version.empty()) {
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "removal version is missing",
+        });
     }
 
-    // If bare version given, try removing any "ns:version" that matches
-    if (version.find(':') == std::string::npos) {
-        for (auto vit = vers.begin(); vit != vers.end(); ++vit) {
-            if (strip_namespace(vit->first) == version) {
-                vers.erase(vit);
-                if (vers.empty()) db.erase(it);
-                return;
+    if (version.find(':') != std::string::npos) {
+        if (it->second.versions.contains(version)) return version;
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "exact removal version is not registered",
+        });
+    }
+
+    std::vector<std::string> matches;
+    for (const auto& [storedVersion, _] : it->second.versions) {
+        if (strip_namespace(storedVersion) == version) {
+            matches.push_back(storedVersion);
+        }
+    }
+    if (matches.size() == 1) return matches.front();
+    if (matches.empty()) {
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "removal version is not registered",
+        });
+    }
+    return std::unexpected(RemovalError{
+        .kind = RemovalErrorKind::AmbiguousVersion,
+        .target = target,
+        .version = version,
+        .message = std::format(
+            "bare removal version '{}' matches {} stored versions",
+            version, matches.size()),
+    });
+}
+
+std::expected<std::string, RemovalError>
+remove_version(VersionDB& db,
+               const std::string& target,
+               const std::string& version) {
+    auto exactVersionResult =
+        resolve_exact_version_key(db, target, version);
+    if (!exactVersionResult) {
+        return std::unexpected(std::move(exactVersionResult.error()));
+    }
+    const auto& exactVersion = *exactVersionResult;
+
+    auto it = db.find(target);
+    auto& vers = it->second.versions;
+
+    std::vector<std::pair<std::string, std::string>> edges;
+    for (const auto& [peerTarget, versions] : it->second.bindings) {
+        if (auto edgeIt = versions.find(exactVersion);
+            edgeIt != versions.end()) {
+            edges.emplace_back(peerTarget, edgeIt->second);
+        }
+    }
+
+    for (const auto& [peerTarget, peerVersion] : edges) {
+        auto peerIt = db.find(peerTarget);
+        const auto reciprocal =
+            peerIt != db.end()
+            && peerIt->second.versions.contains(peerVersion)
+            && peerIt->second.bindings.contains(target)
+            && peerIt->second.bindings.at(target).contains(peerVersion)
+            && peerIt->second.bindings.at(target).at(peerVersion)
+                == exactVersion;
+        if (!reciprocal) {
+            return std::unexpected(RemovalError{
+                .kind = RemovalErrorKind::AsymmetricEdge,
+                .target = target,
+                .version = exactVersion,
+                .peerTarget = peerTarget,
+                .peerVersion = peerVersion,
+                .message = "removal binding edge is not reciprocal",
+            });
+        }
+    }
+
+    for (const auto& [peerTarget, peerInfo] : db) {
+        auto incomingIt = peerInfo.bindings.find(target);
+        if (incomingIt == peerInfo.bindings.end()) continue;
+        for (const auto& [peerVersion, targetVersion] : incomingIt->second) {
+            if (targetVersion != exactVersion) continue;
+            const auto reciprocal =
+                peerInfo.versions.contains(peerVersion)
+                && it->second.bindings.contains(peerTarget)
+                && it->second.bindings.at(peerTarget).contains(exactVersion)
+                && it->second.bindings.at(peerTarget).at(exactVersion)
+                    == peerVersion;
+            if (!reciprocal) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::AsymmetricEdge,
+                    .target = target,
+                    .version = exactVersion,
+                    .peerTarget = peerTarget,
+                    .peerVersion = peerVersion,
+                    .message = "incoming removal binding edge is not reciprocal",
+                });
             }
         }
     }
+
+    for (const auto& [peerTarget, peerVersion] : edges) {
+        auto bindingIt = it->second.bindings.find(peerTarget);
+        bindingIt->second.erase(exactVersion);
+        if (bindingIt->second.empty()) {
+            it->second.bindings.erase(bindingIt);
+        }
+
+        auto peerIt = db.find(peerTarget);
+        if (peerIt == db.end()) continue;
+        auto reverseIt = peerIt->second.bindings.find(target);
+        if (reverseIt == peerIt->second.bindings.end()) continue;
+        reverseIt->second.erase(peerVersion);
+        if (reverseIt->second.empty()) {
+            peerIt->second.bindings.erase(reverseIt);
+        }
+    }
+
+    vers.erase(exactVersion);
+    if (vers.empty() && it->second.bindings.empty()) db.erase(it);
+    return exactVersion;
 }
 
 // Pick the highest semver key from a version map (descending by dotted numeric components,
