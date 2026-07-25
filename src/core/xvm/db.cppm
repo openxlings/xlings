@@ -348,11 +348,43 @@ nlohmann::json vdata_to_json(const VData& vdata) {
         }
         j["bindingHeaders"] = std::move(headers);
     }
+    if (!vdata.bindingIntegrityIssues.empty()) {
+        nlohmann::json issues = nlohmann::json::array();
+        for (const auto& issue : vdata.bindingIntegrityIssues) {
+            issues.push_back({
+                {"code", issue.code},
+                {"path", issue.path},
+            });
+        }
+        j["bindingIntegrityIssues"] = std::move(issues);
+    }
     return j;
 }
 
 VData vdata_from_json(const nlohmann::json& j) {
     VData vdata;
+    const auto recordIssue =
+        [&vdata](std::string code, std::string path) {
+            vdata.bindingIntegrityIssues.push_back({
+                .code = std::move(code),
+                .path = std::move(path),
+            });
+        };
+    const auto pointerToken = [](std::string_view token) {
+        std::string escaped;
+        escaped.reserve(token.size());
+        for (char ch : token) {
+            if (ch == '~') {
+                escaped += "~0";
+            } else if (ch == '/') {
+                escaped += "~1";
+            } else {
+                escaped += ch;
+            }
+        }
+        return escaped;
+    };
+
     if (j.contains("path") && j["path"].is_string())
         vdata.path = j["path"].get<std::string>();
     if (j.contains("kind") && j["kind"].is_string())
@@ -377,6 +409,22 @@ VData vdata_from_json(const nlohmann::json& j) {
                 vdata.envs[it.key()] = it.value().get<std::string>();
         }
     }
+    if (j.contains("bindingIntegrityIssues")
+        && j["bindingIntegrityIssues"].is_array()) {
+        for (const auto& issueJson : j["bindingIntegrityIssues"]) {
+            if (!issueJson.is_object()
+                || !issueJson.contains("code")
+                || !issueJson["code"].is_string()
+                || !issueJson.contains("path")
+                || !issueJson["path"].is_string()) {
+                continue;
+            }
+            vdata.bindingIntegrityIssues.push_back({
+                .code = issueJson["code"].get<std::string>(),
+                .path = issueJson["path"].get<std::string>(),
+            });
+        }
+    }
     if (j.contains("bindingGroup") && j["bindingGroup"].is_object()) {
         const auto& group = j["bindingGroup"];
         BindingGroupRef ref;
@@ -392,31 +440,67 @@ VData vdata_from_json(const nlohmann::json& j) {
             ref.rootVersion = group["rootVersion"].get<std::string>();
         vdata.bindingGroup = std::move(ref);
     }
-    if (j.contains("bindingMembers") && j["bindingMembers"].is_object()) {
-        const auto& members = j["bindingMembers"];
-        for (auto it = members.begin(); it != members.end(); ++it) {
-            if (it.value().is_string()) {
-                vdata.bindingMembers[it.key()] =
-                    it.value().get<std::string>();
+    if (j.contains("bindingMembers")) {
+        if (!j["bindingMembers"].is_object()) {
+            recordIssue(
+                "binding-members-not-object", "/bindingMembers");
+        } else {
+            const auto& members = j["bindingMembers"];
+            for (auto it = members.begin(); it != members.end(); ++it) {
+                if (it.value().is_string()) {
+                    vdata.bindingMembers[it.key()] =
+                        it.value().get<std::string>();
+                } else {
+                    recordIssue(
+                        "binding-member-version-not-string",
+                        "/bindingMembers/" + pointerToken(it.key()));
+                }
             }
         }
     }
-    if (j.contains("bindingHeaders") && j["bindingHeaders"].is_array()) {
-        for (const auto& headerJson : j["bindingHeaders"]) {
-            if (!headerJson.is_object()) continue;
-            HeaderAsset header;
-            if (headerJson.contains("sourceDir") &&
-                headerJson["sourceDir"].is_string()) {
-                header.sourceDir =
-                    headerJson["sourceDir"].get<std::string>();
+    if (j.contains("bindingHeaders")) {
+        if (!j["bindingHeaders"].is_array()) {
+            recordIssue(
+                "binding-headers-not-array", "/bindingHeaders");
+        } else {
+            std::size_t index = 0;
+            for (const auto& headerJson : j["bindingHeaders"]) {
+                const auto headerPath =
+                    "/bindingHeaders/" + std::to_string(index++);
+                if (!headerJson.is_object()) {
+                    recordIssue("binding-header-not-object", headerPath);
+                    continue;
+                }
+                if (!headerJson.contains("sourceDir")
+                    || !headerJson["sourceDir"].is_string()) {
+                    recordIssue(
+                        "binding-header-source-dir-not-string",
+                        headerPath + "/sourceDir");
+                    continue;
+                }
+                if (headerJson.contains("destinationPrefix")
+                    && !headerJson["destinationPrefix"].is_string()) {
+                    recordIssue(
+                        "binding-header-destination-prefix-not-string",
+                        headerPath + "/destinationPrefix");
+                    continue;
+                }
+
+                HeaderAsset header{
+                    .sourceDir =
+                        headerJson["sourceDir"].get<std::string>(),
+                };
+                if (headerJson.contains("destinationPrefix")) {
+                    header.destinationPrefix =
+                        headerJson["destinationPrefix"].get<std::string>();
+                }
+                vdata.bindingHeaders.push_back(std::move(header));
             }
-            if (headerJson.contains("destinationPrefix") &&
-                headerJson["destinationPrefix"].is_string()) {
-                header.destinationPrefix =
-                    headerJson["destinationPrefix"].get<std::string>();
-            }
-            vdata.bindingHeaders.push_back(std::move(header));
         }
+    }
+    if ((j.contains("bindingMembers") || j.contains("bindingHeaders"))
+        && !vdata.bindingGroup) {
+        recordIssue("binding-group-missing", "/bindingGroup");
     }
     return vdata;
 }

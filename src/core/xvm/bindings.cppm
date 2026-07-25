@@ -24,6 +24,9 @@ enum class BindingErrorKind {
     SelfEdge,
     AsymmetricEdge,
     ConflictingTargetVersion,
+    PartialProviderMetadata,
+    ProviderMetadataInLegacyGraph,
+    MetadataIntegrityIssue,
 };
 
 struct BindingSelection {
@@ -38,7 +41,14 @@ struct BindingError {
     std::string message;
 };
 
-namespace detail_ {
+std::expected<BindingSelection, BindingError>
+resolve_binding_selection(const VersionDB& db,
+                          const std::string& target,
+                          const std::string& version);
+
+}  // namespace xlings::xvm
+
+namespace xlings::xvm::detail_ {
 
 BindingError binding_error_(BindingErrorKind kind,
                             const std::string& target,
@@ -69,6 +79,23 @@ bool supported_kind_(std::string_view kind) {
     return kind == "program" || kind == "lib" || kind == "group";
 }
 
+bool has_canonical_manifest_(const VData& data) {
+    return !data.bindingMembers.empty() || !data.bindingHeaders.empty();
+}
+
+std::optional<BindingError>
+binding_integrity_error_(const VData& data,
+                         const std::string& target,
+                         const std::string& version) {
+    if (data.bindingIntegrityIssues.empty()) return std::nullopt;
+    const auto& issue = data.bindingIntegrityIssues.front();
+    return binding_error_(
+        BindingErrorKind::MetadataIntegrityIssue,
+        target, version,
+        std::format("binding metadata integrity issue '{}' at '{}'",
+                    issue.code, issue.path));
+}
+
 std::expected<BindingSelection, BindingError>
 resolve_provider_group_(const VersionDB& db,
                         const std::string& target,
@@ -90,6 +117,10 @@ resolve_provider_group_(const VersionDB& db,
     }
 
     const auto& root = rootIt->second;
+    if (auto error = binding_integrity_error_(
+            root, group.rootTarget, group.rootVersion)) {
+        return std::unexpected(std::move(*error));
+    }
     if (!root.bindingGroup
         || root.bindingGroup->rootTarget != group.rootTarget
         || root.bindingGroup->rootVersion != group.rootVersion) {
@@ -134,6 +165,10 @@ resolve_provider_group_(const VersionDB& db,
                 BindingErrorKind::VersionNotFound,
                 memberTarget, memberVersion,
                 "binding member version is missing"));
+        }
+        if (auto error = binding_integrity_error_(
+                memberIt->second, memberTarget, memberVersion)) {
+            return std::unexpected(std::move(*error));
         }
         if (!memberIt->second.bindingGroup
             || !same_group_(*memberIt->second.bindingGroup, group)) {
@@ -187,6 +222,22 @@ resolve_legacy_graph_(const VersionDB& db,
                 BindingErrorKind::VersionNotFound,
                 currentTarget, currentVersion,
                 "legacy version is missing"));
+        }
+        if (auto error = binding_integrity_error_(
+                dataIt->second, currentTarget, currentVersion)) {
+            return std::unexpected(std::move(*error));
+        }
+        if (dataIt->second.bindingGroup) {
+            return std::unexpected(binding_error_(
+                BindingErrorKind::ProviderMetadataInLegacyGraph,
+                currentTarget, currentVersion,
+                "provider-aware version cannot participate in a legacy graph"));
+        }
+        if (has_canonical_manifest_(dataIt->second)) {
+            return std::unexpected(binding_error_(
+                BindingErrorKind::PartialProviderMetadata,
+                currentTarget, currentVersion,
+                "canonical binding manifest is missing its binding group"));
         }
         const auto kind = dataIt->second.kind.empty()
             ? std::string_view{infoIt->second.type}
@@ -260,7 +311,9 @@ resolve_legacy_graph_(const VersionDB& db,
     return selection;
 }
 
-}  // namespace detail_
+}  // namespace xlings::xvm::detail_
+
+namespace xlings::xvm {
 
 std::expected<BindingSelection, BindingError>
 resolve_binding_selection(const VersionDB& db,
@@ -277,6 +330,17 @@ resolve_binding_selection(const VersionDB& db,
         return std::unexpected(detail_::binding_error_(
             BindingErrorKind::VersionNotFound,
             target, version, "binding version is missing"));
+    }
+    if (auto error = detail_::binding_integrity_error_(
+            versionIt->second, target, version)) {
+        return std::unexpected(std::move(*error));
+    }
+    if (!versionIt->second.bindingGroup
+        && detail_::has_canonical_manifest_(versionIt->second)) {
+        return std::unexpected(detail_::binding_error_(
+            BindingErrorKind::PartialProviderMetadata,
+            target, version,
+            "canonical binding manifest is missing its binding group"));
     }
     if (versionIt->second.bindingGroup) {
         return detail_::resolve_provider_group_(

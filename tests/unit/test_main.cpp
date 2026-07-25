@@ -1868,6 +1868,7 @@ TEST(XvmJsonTest, BindingGroupManifestAndMaterializationRoundTrip) {
     EXPECT_EQ(j["bindingHeaders"][0]["destinationPrefix"], "c++/15.1.0");
     EXPECT_EQ(j["bindingHeaders"][1]["sourceDir"], "include-fixed");
     EXPECT_EQ(j["bindingHeaders"][1]["destinationPrefix"], "");
+    EXPECT_FALSE(j.contains("bindingIntegrityIssues"));
 
     auto restored = xlings::xvm::vdata_from_json(j);
     ASSERT_TRUE(restored.bindingGroup.has_value());
@@ -1885,6 +1886,7 @@ TEST(XvmJsonTest, BindingGroupManifestAndMaterializationRoundTrip) {
     EXPECT_EQ(restored.bindingHeaders[0].destinationPrefix, "c++/15.1.0");
     EXPECT_EQ(restored.bindingHeaders[1].sourceDir, "include-fixed");
     EXPECT_TRUE(restored.bindingHeaders[1].destinationPrefix.empty());
+    EXPECT_TRUE(restored.bindingIntegrityIssues.empty());
 }
 
 TEST(XvmJsonTest, LegacyVDataOmitsProviderAndMaterializationMetadata) {
@@ -1900,6 +1902,7 @@ TEST(XvmJsonTest, LegacyVDataOmitsProviderAndMaterializationMetadata) {
     EXPECT_TRUE(restored.sourceName.empty());
     EXPECT_TRUE(restored.destinationName.empty());
     EXPECT_TRUE(restored.bindingHeaders.empty());
+    EXPECT_TRUE(restored.bindingIntegrityIssues.empty());
 
     auto serialized = xlings::xvm::vdata_to_json(restored);
     EXPECT_FALSE(serialized.contains("bindingGroup"));
@@ -1908,6 +1911,103 @@ TEST(XvmJsonTest, LegacyVDataOmitsProviderAndMaterializationMetadata) {
     EXPECT_FALSE(serialized.contains("sourceName"));
     EXPECT_FALSE(serialized.contains("destinationName"));
     EXPECT_FALSE(serialized.contains("bindingHeaders"));
+    EXPECT_FALSE(serialized.contains("bindingIntegrityIssues"));
+}
+
+TEST(XvmJsonTest,
+     MalformedCanonicalEntriesRecordAndPersistIntegrityIssues) {
+    auto corrupt = nlohmann::json::parse(R"({
+        "path": "/pkg/provider",
+        "bindingGroup": {
+            "provider": "repo:provider",
+            "version": "1.0.0",
+            "group": "provider-group",
+            "rootTarget": "provider-root",
+            "rootVersion": "1.0.0"
+        },
+        "bindingMembers": {
+            "provider-root": "1.0.0",
+            "bad/member~name": 7
+        },
+        "bindingHeaders": [
+            {
+                "sourceDir": "include",
+                "destinationPrefix": ""
+            },
+            {
+                "sourceDir": false,
+                "destinationPrefix": "broken"
+            },
+            {
+                "sourceDir": "include-valid",
+                "destinationPrefix": 9
+            }
+        ]
+    })");
+
+    auto parsed = xlings::xvm::vdata_from_json(corrupt);
+
+    ASSERT_EQ(parsed.bindingMembers.size(), 1u);
+    EXPECT_EQ(parsed.bindingMembers.at("provider-root"), "1.0.0");
+    ASSERT_EQ(parsed.bindingHeaders.size(), 1u);
+    EXPECT_EQ(parsed.bindingHeaders.front().sourceDir, "include");
+    ASSERT_EQ(parsed.bindingIntegrityIssues.size(), 3u);
+    EXPECT_EQ(parsed.bindingIntegrityIssues[0].code,
+              "binding-member-version-not-string");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[0].path,
+              "/bindingMembers/bad~1member~0name");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[1].code,
+              "binding-header-source-dir-not-string");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[1].path,
+              "/bindingHeaders/1/sourceDir");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[2].code,
+              "binding-header-destination-prefix-not-string");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[2].path,
+              "/bindingHeaders/2/destinationPrefix");
+
+    auto serialized = xlings::xvm::vdata_to_json(parsed);
+    ASSERT_TRUE(serialized.contains("bindingIntegrityIssues"));
+    ASSERT_EQ(serialized["bindingIntegrityIssues"].size(), 3u);
+    EXPECT_EQ(serialized["bindingIntegrityIssues"][0]["code"],
+              "binding-member-version-not-string");
+    EXPECT_EQ(serialized["bindingIntegrityIssues"][0]["path"],
+              "/bindingMembers/bad~1member~0name");
+
+    auto restored = xlings::xvm::vdata_from_json(serialized);
+    ASSERT_EQ(restored.bindingIntegrityIssues.size(), 3u);
+    EXPECT_EQ(restored.bindingIntegrityIssues[0].code,
+              "binding-member-version-not-string");
+    EXPECT_EQ(restored.bindingIntegrityIssues[0].path,
+              "/bindingMembers/bad~1member~0name");
+    EXPECT_EQ(restored.bindingIntegrityIssues[1].code,
+              "binding-header-source-dir-not-string");
+    EXPECT_EQ(restored.bindingIntegrityIssues[1].path,
+              "/bindingHeaders/1/sourceDir");
+    EXPECT_EQ(restored.bindingIntegrityIssues[2].code,
+              "binding-header-destination-prefix-not-string");
+    EXPECT_EQ(restored.bindingIntegrityIssues[2].path,
+              "/bindingHeaders/2/destinationPrefix");
+}
+
+TEST(XvmJsonTest, MalformedCanonicalContainersRecordIntegrityIssues) {
+    auto corrupt = nlohmann::json::parse(R"({
+        "path": "/pkg/provider",
+        "bindingMembers": [],
+        "bindingHeaders": {}
+    })");
+
+    auto parsed = xlings::xvm::vdata_from_json(corrupt);
+
+    ASSERT_EQ(parsed.bindingIntegrityIssues.size(), 3u);
+    EXPECT_EQ(parsed.bindingIntegrityIssues[0].code,
+              "binding-members-not-object");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[0].path, "/bindingMembers");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[1].code,
+              "binding-headers-not-array");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[1].path, "/bindingHeaders");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[2].code,
+              "binding-group-missing");
+    EXPECT_EQ(parsed.bindingIntegrityIssues[2].path, "/bindingGroup");
 }
 
 TEST(XvmJsonTest, PerVersionMetadataSupportsDifferentProvidersForOneTarget) {
@@ -3184,6 +3284,180 @@ TEST(XvmBindingSelectionTest, ProviderScopeSeparatesGroupsForSameTarget) {
                   {"cc", "repo-b:2.0.0"},
                   {"repo-b:root", "repo-b:2.0.0"},
               }));
+}
+
+TEST(XvmBindingSelectionTest,
+     SameProviderVersionSeparatesGroupRootsAndMembers) {
+    xlings::xvm::VersionDB db;
+    const auto groupA = make_binding_group_ref(
+        "repo:toolchain", "1.0.0", "c-tools",
+        "c-root", "repo:c-root");
+    auto& rootA = add_provider_group_member(
+        db, "c-root", "repo:c-root", groupA, "group");
+    rootA.bindingMembers = {
+        {"c-root", "repo:c-root"},
+        {"cc", "repo:cc"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo:cc", groupA, "program", "cc", "cc");
+
+    const auto groupB = make_binding_group_ref(
+        "repo:toolchain", "1.0.0", "fortran-tools",
+        "fortran-root", "repo:fortran-root");
+    auto& rootB = add_provider_group_member(
+        db, "fortran-root", "repo:fortran-root", groupB, "group");
+    rootB.bindingMembers = {
+        {"cc", "repo:fc"},
+        {"fortran-root", "repo:fortran-root"},
+    };
+    add_provider_group_member(
+        db, "cc", "repo:fc", groupB, "program", "fc", "fc");
+
+    auto selectedA =
+        xlings::xvm::resolve_binding_selection(db, "cc", "repo:cc");
+    ASSERT_TRUE(selectedA.has_value()) << selectedA.error().message;
+    EXPECT_EQ(selectedA->members,
+              (std::map<std::string, std::string>{
+                  {"c-root", "repo:c-root"},
+                  {"cc", "repo:cc"},
+              }));
+
+    auto selectedB =
+        xlings::xvm::resolve_binding_selection(db, "cc", "repo:fc");
+    ASSERT_TRUE(selectedB.has_value()) << selectedB.error().message;
+    EXPECT_EQ(selectedB->members,
+              (std::map<std::string, std::string>{
+                  {"cc", "repo:fc"},
+                  {"fortran-root", "repo:fortran-root"},
+              }));
+
+    rootA.bindingMembers["cc"] = "repo:fc";
+    auto crossGroup =
+        xlings::xvm::resolve_binding_selection(db, "c-root", "repo:c-root");
+    expect_binding_error(
+        crossGroup, xlings::xvm::BindingErrorKind::MemberReferenceMismatch,
+        "cc", "repo:fc");
+}
+
+TEST(XvmBindingSelectionErrorTest, RejectsBindingMembersWithoutGroup) {
+    xlings::xvm::VersionDB db;
+    auto& data = db["tool"].versions["1.0.0"];
+    data.kind = "program";
+    data.bindingMembers = {
+        {"tool", "1.0.0"},
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1.0.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::PartialProviderMetadata,
+        "tool", "1.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest, RejectsBindingHeadersWithoutGroup) {
+    xlings::xvm::VersionDB db;
+    auto& data = db["tool"].versions["1.0.0"];
+    data.kind = "program";
+    data.bindingHeaders = {
+        {
+            .sourceDir = "include",
+            .destinationPrefix = "",
+        },
+    };
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1.0.0");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::PartialProviderMetadata,
+        "tool", "1.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     LegacyRejectsProviderAwareNodeReachedByTraversal) {
+    xlings::xvm::VersionDB db;
+    db["legacy"].type = "program";
+    db["legacy"].versions["1.0.0"].path = "/legacy";
+    db["provider"].type = "program";
+    auto& provider = db["provider"].versions["1.0.0"];
+    provider.path = "/provider";
+    provider.bindingGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "provider-group",
+        "provider", "1.0.0");
+    db["legacy"].bindings["provider"]["1.0.0"] = "1.0.0";
+    db["provider"].bindings["legacy"]["1.0.0"] = "1.0.0";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "legacy", "1.0.0");
+
+    expect_binding_error(
+        result,
+        xlings::xvm::BindingErrorKind::ProviderMetadataInLegacyGraph,
+        "provider", "1.0.0");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     ProviderResolutionRejectsPersistedIntegrityIssue) {
+    auto corruptRoot = nlohmann::json::parse(R"({
+        "path": "/provider",
+        "kind": "group",
+        "bindingGroup": {
+            "provider": "repo:provider",
+            "version": "1.0.0",
+            "group": "provider-group",
+            "rootTarget": "provider-root",
+            "rootVersion": "1.0.0"
+        },
+        "bindingMembers": {
+            "provider-root": "1.0.0",
+            "tool": false
+        }
+    })");
+    auto persisted = xlings::xvm::vdata_to_json(
+        xlings::xvm::vdata_from_json(corruptRoot));
+    xlings::xvm::VersionDB db;
+    db["provider-root"].versions["1.0.0"] =
+        xlings::xvm::vdata_from_json(persisted);
+
+    auto result = xlings::xvm::resolve_binding_selection(
+        db, "provider-root", "1.0.0");
+
+    ASSERT_FALSE(result.has_value());
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::MetadataIntegrityIssue,
+        "provider-root", "1.0.0");
+    EXPECT_NE(result.error().message.find(
+                  "binding-member-version-not-string"),
+              std::string::npos);
+    EXPECT_NE(result.error().message.find("/bindingMembers/tool"),
+              std::string::npos);
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     LegacyResolutionRejectsPersistedIntegrityIssue) {
+    auto corruptLegacy = nlohmann::json::parse(R"({
+        "path": "/legacy",
+        "bindingHeaders": [false]
+    })");
+    auto persisted = xlings::xvm::vdata_to_json(
+        xlings::xvm::vdata_from_json(corruptLegacy));
+    xlings::xvm::VersionDB db;
+    db["legacy"].type = "program";
+    db["legacy"].versions["1.0.0"] =
+        xlings::xvm::vdata_from_json(persisted);
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "legacy", "1.0.0");
+
+    ASSERT_FALSE(result.has_value());
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::MetadataIntegrityIssue,
+        "legacy", "1.0.0");
+    EXPECT_NE(result.error().message.find("binding-header-not-object"),
+              std::string::npos);
+    EXPECT_NE(result.error().message.find("/bindingHeaders/0"),
+              std::string::npos);
 }
 
 TEST(XvmBindingSelectionErrorTest, RejectsMissingStartingTarget) {

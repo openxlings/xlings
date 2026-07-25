@@ -17,6 +17,11 @@ struct HeaderAsset {
     std::string destinationPrefix;
 };
 
+struct BindingIntegrityIssue {
+    std::string code;
+    std::string path;
+};
+
 struct VData {
     std::string path;
     std::string kind;
@@ -29,6 +34,7 @@ struct VData {
     std::optional<BindingGroupRef> bindingGroup;
     std::map<std::string, std::string> bindingMembers;
     std::vector<HeaderAsset> bindingHeaders;
+    std::vector<BindingIntegrityIssue> bindingIntegrityIssues;
 
 #if defined(_MSC_VER)
     VData() = default;
