@@ -1,10 +1,13 @@
 name: xlings-ci-windows
 
+# Release-train integration branches (release/**) run the same matrix as
+# main: PRs land on the integration branch first and only reach main once
+# the whole train is green, so CI must gate them there, not at merge time.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
 
 env:
   GIT_TERMINAL_PROMPT: 0
@@ -80,8 +83,22 @@ jobs:
       - name: Reinitialize mcpp registry (GLOBAL)
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force "$env:USERPROFILE\.mcpp\registry" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.mcpp\registry" -ErrorAction SilentlyContinue
+          # See xlings-ci-linux.yml for the rationale: keep registry/data/xpkgs
+          # (sha256-pinned payloads) so a single unreachable upstream source
+          # host cannot fail the whole run, and so the mcpp cache restored one
+          # step earlier is actually worth something.
+          function Prune-Registry($root) {
+            if (-not (Test-Path $root)) { return }
+            Get-ChildItem -Force $root | Where-Object { $_.Name -ne 'data' } |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            $data = Join-Path $root 'data'
+            if (Test-Path $data) {
+              Get-ChildItem -Force $data | Where-Object { $_.Name -ne 'xpkgs' } |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+          Prune-Registry "$env:USERPROFILE\.mcpp\registry"
+          Prune-Registry "$env:GITHUB_WORKSPACE\.mcpp\registry"
           mcpp self config --mirror GLOBAL
 
       - name: Prepare unit fixture index repo
