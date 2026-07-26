@@ -11020,6 +11020,64 @@ TEST(XvmInspect, LegacyStateWithoutGroupsIsNotFlagged) {
         xlings::xvm::inspect_binding_state(db, {{"tool", "1.0.0"}}).empty());
 }
 
+TEST(XvmInspect, DeactivationTakesDownEveryMemberOfAnIncoherentRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}});
+    inspect_group_(db, "pkgindex:gcc", "16.1.0",
+                   {{"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "16.1.0"}});
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "15.1.0"}};
+
+    const auto plan = xlings::xvm::plan_incoherent_deactivation(db, ws);
+
+    // Leaving the agreeing members active would just swap one incoherent
+    // state for another, so the whole release comes down.
+    EXPECT_TRUE(plan.targets.contains("gcc"));
+    EXPECT_TRUE(plan.targets.contains("g++"));
+    EXPECT_TRUE(plan.targets.contains("gcc-ar"));
+    EXPECT_NE(plan.targets.at("gcc").find("pkgindex:gcc@"), std::string::npos)
+        << "the plan must say which release the target belonged to";
+}
+
+TEST(XvmInspect, DeactivationLeavesACoherentWorkspaceAlone) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+
+    EXPECT_TRUE(xlings::xvm::plan_incoherent_deactivation(db, ws).targets.empty());
+}
+
+TEST(XvmInspect, DeactivationIgnoresUnresolvableReleases) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db.at("g++").versions.erase("15.1.0");
+
+    // A release that does not resolve is a different problem, and repairing
+    // it means dropping stored metadata. --fix must not do that silently.
+    EXPECT_TRUE(
+        xlings::xvm::plan_incoherent_deactivation(db, {{"gcc", "15.1.0"}})
+            .targets.empty());
+}
+
+TEST(XvmInspect, DeactivationLeavesUngroupedTargetsAlone) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db["editor"].type = "program";
+    db["editor"].versions["1.0.0"].path = "/pkg";
+    db["editor"].versions["1.0.0"].kind = "program";
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "16.1.0"}, {"editor", "1.0.0"}};
+
+    const auto plan = xlings::xvm::plan_incoherent_deactivation(db, ws);
+
+    // An unrelated single package must not be collateral damage.
+    EXPECT_FALSE(plan.targets.contains("editor"));
+}
+
 // ============================================================
 // XvmUserError — every failure kind is explainable
 //

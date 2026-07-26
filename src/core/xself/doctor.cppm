@@ -15,6 +15,7 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.inspect;
+import xlings.core.xvm.lock;
 
 namespace xlings::xself {
 
@@ -364,6 +365,41 @@ export int cmd_doctor(EventStream& stream, bool fix) {
         }
         detail += std::format(" — {} — {}", finding.code, finding.hint);
         add_field("✗ binding state", std::move(detail));
+    }
+
+    // --fix for the one binding problem that can be repaired without
+    // guessing: an active release whose members disagree. Deactivate the
+    // whole release and let the user re-select. Choosing a survivor here
+    // would mean deciding which member was "right", which is exactly the
+    // silent decision that produces incoherent state to begin with.
+    //
+    // Unresolvable and corrupt entries are reported but not touched: fixing
+    // those means dropping stored metadata, which needs the user's explicit
+    // consent rather than a flag they passed for shim repair.
+    if (fix) {
+        auto plan = xvm::plan_incoherent_deactivation(db, ws);
+        if (!plan.targets.empty()) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                add_field("✗ binding state", std::format(
+                    "cannot deactivate incoherent releases: {}", lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableWs = Config::workspace_mut();
+                std::size_t dropped = 0;
+                for (const auto& [target, label] : plan.targets) {
+                    if (mutableWs.erase(target) == 0) continue;
+                    ++dropped;
+                    add_field("· deactivated", std::format(
+                        "{} (was part of {}) — run `xlings use {} <version>` "
+                        "to select a release", target, label, target));
+                }
+                if (dropped > 0) {
+                    Config::save_workspace();
+                    healed += static_cast<int>(dropped);
+                }
+            }
+        }
     }
 
     // Note: there is intentionally no --fix loop for broken payloads here.
