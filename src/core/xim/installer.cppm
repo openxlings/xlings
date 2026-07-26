@@ -138,6 +138,49 @@ struct XpkgXvmMetadataResult {
     std::vector<XpkgFilesystemEffect> effects;
 };
 
+// Keep `xlings use` able to swap sysroot headers.
+//
+// xvm::cmd_use reads VData::includedir of the target it was handed to decide
+// whether to move headers (commands.cppm). Before registration batches the
+// installer wrote that field directly on every `headers` op; the batch models
+// headers as group assets instead and does not carry it. Until the
+// materialization work consumes those group assets, the field still has to be
+// written or switching versions silently stops moving headers — and because
+// the install-time copy still happens, the breakage only surfaces on the
+// *second* version a user installs.
+//
+// One deliberate difference from the pre-batch behavior: this never brings a
+// target or a version into existence. The old code indexed both maps with
+// operator[], so a `headers` op from a package that registers no target of
+// its own materialized an entry with no path and no kind — precisely the
+// phantom state the binding-group work exists to prevent.
+//
+// Returns the number of entries updated (0 or 1), so callers can log the
+// no-op case instead of assuming it worked.
+std::size_t attach_legacy_header_dir(
+        xvm::VersionDB& db,
+        const std::string& target,
+        const std::string& version,
+        const std::vector<XpkgFilesystemEffect>& effects) {
+    const std::string* sourceDir = nullptr;
+    for (const auto& effect : effects) {
+        // Last one wins, matching how the installer used to assign per op.
+        if (effect.kind == XpkgFilesystemEffectKind::InstallHeaders
+            && !effect.sourceDir.empty()) {
+            sourceDir = &effect.sourceDir;
+        }
+    }
+    if (!sourceDir) return 0;
+
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return 0;
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return 0;
+
+    versionIt->second.includedir = *sourceDir;
+    return 1;
+}
+
 std::expected<XpkgRegistrationPlan, XpkgRegistrationError>
 normalize_xpkg_registration_plan(
         const PlanNode& node,
@@ -1371,6 +1414,26 @@ bool process_xvm_operations_(const PlanNode& node,
         dbBeforeRemoval,
         scopedDb,
         metadata->removal);
+
+    // Written after the batch, not inside it: the batch owns the group model
+    // and must not be taught a legacy field. This runs against the committed
+    // scopedDb, so a package whose own name is not a registered target simply
+    // gets no marker rather than a phantom entry.
+    if (const auto headerVersion =
+            xvm::make_ns_version(version_ns, node.version);
+        attach_legacy_header_dir(
+            scopedDb, node.name, headerVersion, metadata->effects) == 0) {
+        const bool declaresHeaders = std::ranges::any_of(
+            metadata->effects, [](const XpkgFilesystemEffect& effect) {
+                return effect.kind == XpkgFilesystemEffectKind::InstallHeaders;
+            });
+        if (declaresHeaders) {
+            log::debug(
+                "[xim] headers declared but '{}@{}' is not a registered "
+                "target; `xlings use` will not swap them",
+                node.name, headerVersion);
+        }
+    }
 
     for (const auto& effect : metadata->effects) {
         auto resolved = resolve_xpkg_filesystem_effect(
