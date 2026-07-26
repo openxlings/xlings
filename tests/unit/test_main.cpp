@@ -28,6 +28,7 @@ import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.inspect;
+import xlings.core.xvm.lock;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -10800,6 +10801,77 @@ TEST_F(AtomicWriteTest, ThrowsWhenParentDirectoryIsMissing) {
     EXPECT_THROW(xlings::platform::write_string_to_file(target.string(), "x"),
                  std::runtime_error);
     EXPECT_EQ(entry_count(), 0u) << "staging file leaked on failure";
+}
+
+// ============================================================
+// State lock — install/remove/use must not overwrite each other
+
+namespace {
+
+std::filesystem::path lock_test_home_(std::string_view name) {
+    namespace fs = std::filesystem;
+    auto home = fs::temp_directory_path() / ("xlings_lock_" + std::string(name));
+    std::error_code ec;
+    fs::remove_all(home, ec);
+    fs::create_directories(home);
+    return home;
+}
+
+}  // namespace
+
+TEST(XvmStateLock, IsHeldForTheHomeNotTheSubos) {
+    const auto home = lock_test_home_("scope");
+    // The version database is shared by every subos under a home, so the
+    // lock has to live at the home root to protect it.
+    EXPECT_EQ(xlings::xvm::state_lock_path(home), home / ".xlings.lock");
+    std::filesystem::remove_all(home);
+}
+
+TEST(XvmStateLock, SecondAcquisitionInTheSameProcessFailsFast) {
+    const auto home = lock_test_home_("contended");
+
+    auto first = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
+    ASSERT_TRUE(first.has_value()) << first.error();
+    EXPECT_TRUE(first->held());
+    EXPECT_FALSE(first->bypassed());
+
+    auto second = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
+    ASSERT_FALSE(second.has_value()) << "the lock did not exclude a second holder";
+    // The message has to be actionable: what is happening and what to do.
+    EXPECT_NE(second.error().find("another xlings process"), std::string::npos);
+    EXPECT_NE(second.error().find("XLINGS_NO_LOCK"), std::string::npos);
+
+    std::filesystem::remove_all(home);
+}
+
+TEST(XvmStateLock, ReleasesWhenTheHolderGoesOutOfScope) {
+    const auto home = lock_test_home_("released");
+    {
+        auto held = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(held.has_value()) << held.error();
+    }
+    auto again = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
+    EXPECT_TRUE(again.has_value())
+        << "the lock outlived its holder: " << again.error();
+    std::filesystem::remove_all(home);
+}
+
+TEST(XvmStateLock, LockFileContentsAreNeverRewritten) {
+    const auto home = lock_test_home_("inode");
+    const auto path = xlings::xvm::state_lock_path(home);
+
+    auto held = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
+    ASSERT_TRUE(held.has_value()) << held.error();
+
+    // Writing anything to the lock file through the normal path would
+    // rename a new inode over it, leaving the lock name unlocked while this
+    // process still believes it holds the lock. Nothing may be written, and
+    // in particular the file must stay empty.
+    ASSERT_TRUE(std::filesystem::exists(path));
+    EXPECT_EQ(std::filesystem::file_size(path), 0u)
+        << "something wrote to the lock file; flock is held on the old inode";
+
+    std::filesystem::remove_all(home);
 }
 
 // ============================================================

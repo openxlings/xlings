@@ -12,6 +12,7 @@ import xlings.core.semver;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.lock;
 import xlings.core.xvm.shim;
 
 export namespace xlings::xvm {
@@ -149,6 +150,17 @@ filter_to_subos_installed_(const std::string& target,
 // xlings use <target> <version>
 // Updates the active subos workspace and creates/updates bin/ hardlinks
 int cmd_use(const std::string& target, const std::string& version, EventStream& stream) {
+    // Serialize against any other xlings mutating this home, then re-read
+    // state under the lock: Config loaded it at process start, outside the
+    // lock, so acting on that snapshot is how two commands lose each other's
+    // work. See xvm/lock.cppm.
+    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
+    if (!stateLock) {
+        log::error("{}", stateLock.error());
+        return 1;
+    }
+    Config::reload_state();
+
     auto db = Config::versions();
     auto& p  = Config::paths();
 
