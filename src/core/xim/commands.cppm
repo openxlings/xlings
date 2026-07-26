@@ -19,6 +19,7 @@ import xlings.core.i18n;
 import xlings.platform;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.db;
+import xlings.core.xvm.lock;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.profile;
@@ -111,6 +112,17 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                 EventStream& stream, bool forceGlobal = false,
                 CancellationToken* cancel = nullptr, bool dryRun = false,
                 bool useAfterInstall = false) {
+    // Serialize against any other xlings mutating this home, then re-read
+    // state under the lock: Config loaded it at process start, outside the
+    // lock, so acting on that snapshot is how two commands lose each other's
+    // work. See xvm/lock.cppm.
+    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
+    if (!stateLock) {
+        log::error("{}", stateLock.error());
+        return 1;
+    }
+    Config::reload_state();
+
     auto& catalog = get_catalog();
     if (!catalog.is_loaded()) {
         log::info("package index not available, updating...");
@@ -537,6 +549,17 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 // approved the parent install, so the connected uninstall is implicit.
 // CLI-driven `xlings remove <pkg>` defaults to yes=false and bails on n.
 int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
+    // Serialize against any other xlings mutating this home, then re-read
+    // state under the lock: Config loaded it at process start, outside the
+    // lock, so acting on that snapshot is how two commands lose each other's
+    // work. See xvm/lock.cppm.
+    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
+    if (!stateLock) {
+        log::error("{}", stateLock.error());
+        return 1;
+    }
+    Config::reload_state();
+
     auto& catalog = get_catalog();
     if (!catalog.is_loaded()) {
         log::error("package index not available");
