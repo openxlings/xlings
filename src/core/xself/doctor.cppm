@@ -14,6 +14,7 @@ import xlings.runtime;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.inspect;
 
 namespace xlings::xself {
 
@@ -336,6 +337,33 @@ export int cmd_doctor(EventStream& stream, bool fix) {
                 name, version, alias_prog, expanded);
             add_field("⚠ alias unresolved", std::move(detail));
         }
+    }
+
+    // Check 4: the binding state itself.
+    //
+    // Everything above looks at shims and payloads. None of it can see a
+    // release whose members disagree about which release they are, or an
+    // active toolchain whose members drifted apart -- and those are exactly
+    // the states that make `xlings use` refuse. Without this, a user hitting
+    // that refusal has nowhere to look but versions.json.
+    //
+    // Read-only for now: reporting is what removes the dead end. Repair
+    // lands separately, because deactivating a group or dropping metadata
+    // is a decision the user should see spelled out before it happens.
+    const auto bindingFindings = xvm::inspect_binding_state(db, ws);
+    for (const auto& finding : bindingFindings) {
+        ++broken;
+        std::string detail = finding.summary;
+        if (!finding.target.empty()) {
+            detail += std::format(" [{}{}{}]", finding.target,
+                                  finding.version.empty() ? "" : "@",
+                                  finding.version);
+        }
+        if (!finding.field.empty()) {
+            detail += std::format(" at {}", finding.field);
+        }
+        detail += std::format(" — {} — {}", finding.code, finding.hint);
+        add_field("✗ binding state", std::move(detail));
     }
 
     // Note: there is intentionally no --fix loop for broken payloads here.
