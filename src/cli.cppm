@@ -11,6 +11,7 @@ import mcpplibs.cmdline;
 import mcpplibs.capi.lua;
 import mcpplibs.xpkg.executor;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.runtime;
@@ -458,46 +459,47 @@ void apply_global_opts_(const mcpplibs::cmdline::ParsedArgs& args) {
 }
 
 
-// Read-modify-write the global .xlings.json config file
-nlohmann::json load_global_config_json_() {
-    auto configPath = Config::paths().homeDir / ".xlings.json";
-    if (std::filesystem::exists(configPath)) {
-        try {
-            auto content = platform::read_file_to_string(configPath.string());
-            auto json = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded()) return json;
-        } catch (...) {}
-    }
-    return nlohmann::json::object();
-}
-
-void save_global_config_json_(const nlohmann::json& json) {
-    auto configPath = Config::paths().homeDir / ".xlings.json";
-    platform::write_string_to_file(configPath.string(), json.dump(2));
-}
-
 // config subcommand handler
 int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) {
-    bool changed = false;
-    auto json = load_global_config_json_();
+    // Edits are collected rather than applied, then replayed against the
+    // document `update_home_config` re-reads under the state lock. Applying
+    // them to a copy read here instead would write back every *other* key as
+    // it looked before an install that finished in the meantime -- see
+    // core/home_config.cppm. Validation and the user-facing logging stay out
+    // here so a rejected argument never reaches the lock.
+    std::vector<std::function<void(nlohmann::json&)>> edits;
 
     // --lang
     if (auto lang = args.value("lang")) {
-        json["lang"] = std::string(*lang);
-        log::println("lang = {}", *lang);
-        changed = true;
+        std::string value(*lang);
+        edits.push_back([value](nlohmann::json& j) { j["lang"] = value; });
+        log::println("lang = {}", value);
     }
 
     // --mirror
     if (auto mirror = args.value("mirror")) {
-        json["mirror"] = std::string(*mirror);
-        log::println("mirror = {}", *mirror);
-        changed = true;
+        std::string value(*mirror);
+        edits.push_back([value](nlohmann::json& j) { j["mirror"] = value; });
+        log::println("mirror = {}", value);
     }
+
+    auto commit_edits = [&]() -> bool {
+        if (edits.empty()) return true;
+        auto committed = update_home_config(
+            Config::paths().homeDir, [&](nlohmann::json& j) {
+                for (const auto& edit : edits) edit(j);
+                return true;
+            });
+        if (!committed) {
+            log::error("{}", committed.error());
+            return false;
+        }
+        return true;
+    };
 
     // --add-xpkg
     if (auto xpkg = args.value("add-xpkg")) {
-        if (changed) save_global_config_json_(json);
+        if (!commit_edits()) return 1;
         return xim::cmd_add_xpkg(std::string(*xpkg), stream);
     }
 
@@ -519,32 +521,30 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
             return 1;
         }
 
-        if (!json.contains("index_repos") || !json["index_repos"].is_array()) {
-            json["index_repos"] = nlohmann::json::array();
-        }
-        // Check for existing repo with same name and update
-        bool found = false;
-        for (auto& entry : json["index_repos"]) {
-            if (entry.is_object() && entry.contains("name") &&
-                entry["name"].get<std::string>() == name) {
-                entry["url"] = url;
-                found = true;
-                break;
+        // Upsert against the freshly-read document: a repo another process
+        // added since we started must be updated in place, not duplicated.
+        edits.push_back([name, url](nlohmann::json& json) {
+            if (!json.contains("index_repos")
+                || !json["index_repos"].is_array()) {
+                json["index_repos"] = nlohmann::json::array();
             }
-        }
-        if (!found) {
+            for (auto& entry : json["index_repos"]) {
+                if (entry.is_object() && entry.contains("name") &&
+                    entry["name"].get<std::string>() == name) {
+                    entry["url"] = url;
+                    return;
+                }
+            }
             nlohmann::json entry;
             entry["name"] = name;
             entry["url"] = url;
             json["index_repos"].push_back(entry);
-        }
+        });
         log::println("index-repo {} = {}", name, url);
-        changed = true;
     }
 
-    if (changed) {
-        save_global_config_json_(json);
-        return 0;
+    if (!edits.empty()) {
+        return commit_edits() ? 0 : 1;
     }
 
     // No options: show current config via TUI info panel
