@@ -9,6 +9,7 @@ import xlings.libs.json;
 import xlings.core.xim.commands;
 import xlings.core.xvm.commands;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.core.subos;
 import xlings.core.xself;
 import xlings.platform;
@@ -387,29 +388,6 @@ public:
     }
 };
 
-// File-local repo config helpers. Keep these non-inline (avoiding the C++20
-// module + libstdc++ static-link pitfall where inline functions touching
-// nlohmann::json triggers an unresolved std::shared_ptr<output_adapter_protocol>
-// copy ctor across translation units).
-namespace repo_helpers {
-
-nlohmann::json load_global_json() {
-    auto path = Config::paths().homeDir / ".xlings.json";
-    if (!std::filesystem::exists(path)) return nlohmann::json::object();
-    try {
-        auto content = platform::read_file_to_string(path.string());
-        auto j = nlohmann::json::parse(content, nullptr, false);
-        return j.is_discarded() ? nlohmann::json::object() : j;
-    } catch (...) { return nlohmann::json::object(); }
-}
-
-void save_global_json(const nlohmann::json& j) {
-    auto path = Config::paths().homeDir / ".xlings.json";
-    platform::write_string_to_file(path.string(), j.dump());
-}
-
-}  // namespace repo_helpers
-
 class AddRepo : public Capability {
 public:
     auto spec() const -> CapabilitySpec override {
@@ -434,30 +412,29 @@ public:
             return exit_result(1);
         }
 
-        auto cfg = repo_helpers::load_global_json();
-        if (!cfg.contains("index_repos") || !cfg["index_repos"].is_array()) {
-            cfg["index_repos"] = nlohmann::json::array();
-        }
-        bool updated = false;
-        for (auto& entry : cfg["index_repos"]) {
-            if (entry.is_object() && entry.contains("name")
-                && entry["name"].get<std::string>() == name) {
-                entry["url"] = url;
-                updated = true;
-                break;
-            }
-        }
-        if (!updated) {
-            nlohmann::json entry;
-            entry["name"] = name;
-            entry["url"]  = url;
-            cfg["index_repos"].push_back(std::move(entry));
-        }
-        try { repo_helpers::save_global_json(cfg); }
-        catch (const std::exception& e) {
+        auto committed = update_home_config(
+            Config::paths().homeDir, [&](nlohmann::json& cfg) {
+                if (!cfg.contains("index_repos")
+                    || !cfg["index_repos"].is_array()) {
+                    cfg["index_repos"] = nlohmann::json::array();
+                }
+                for (auto& entry : cfg["index_repos"]) {
+                    if (entry.is_object() && entry.contains("name")
+                        && entry["name"].get<std::string>() == name) {
+                        entry["url"] = url;
+                        return true;
+                    }
+                }
+                nlohmann::json entry;
+                entry["name"] = name;
+                entry["url"]  = url;
+                cfg["index_repos"].push_back(std::move(entry));
+                return true;
+            });
+        if (!committed) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Permission,
-                .message = std::string("write .xlings.json failed: ") + e.what(),
+                .message = "write .xlings.json failed: " + committed.error(),
                 .recoverable = false,
             });
             return exit_result(1);
@@ -489,38 +466,40 @@ public:
             return exit_result(1);
         }
 
-        auto cfg = repo_helpers::load_global_json();
-        if (!cfg.contains("index_repos") || !cfg["index_repos"].is_array()) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "no repo named '" + name + "'",
-                .recoverable = true,
+        // "not found" is decided inside the lock too. Deciding it from an
+        // earlier read could report success for a repo another process had
+        // already deleted, or -- worse -- write back an index_repos array
+        // that predates a repo it had just added.
+        auto committed = update_home_config(
+            Config::paths().homeDir, [&](nlohmann::json& cfg) {
+                if (!cfg.contains("index_repos")
+                    || !cfg["index_repos"].is_array()) {
+                    return false;
+                }
+                auto& arr = cfg["index_repos"];
+                bool removed = false;
+                for (auto it = arr.begin(); it != arr.end(); ) {
+                    if (it->is_object() && it->contains("name")
+                        && (*it)["name"].get<std::string>() == name) {
+                        it = arr.erase(it);
+                        removed = true;
+                    } else { ++it; }
+                }
+                return removed;
             });
-            return exit_result(1);
-        }
-        auto& arr = cfg["index_repos"];
-        bool removed = false;
-        for (auto it = arr.begin(); it != arr.end(); ) {
-            if (it->is_object() && it->contains("name")
-                && (*it)["name"].get<std::string>() == name) {
-                it = arr.erase(it);
-                removed = true;
-            } else { ++it; }
-        }
-        if (!removed) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "no repo named '" + name + "'",
-                .recoverable = true,
-            });
-            return exit_result(1);
-        }
-        try { repo_helpers::save_global_json(cfg); }
-        catch (const std::exception& e) {
+        if (!committed) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Permission,
-                .message = std::string("write .xlings.json failed: ") + e.what(),
+                .message = "write .xlings.json failed: " + committed.error(),
                 .recoverable = false,
+            });
+            return exit_result(1);
+        }
+        if (!*committed) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::NotFound,
+                .message = "no repo named '" + name + "'",
+                .recoverable = true,
             });
             return exit_result(1);
         }

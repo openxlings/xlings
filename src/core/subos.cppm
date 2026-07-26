@@ -20,6 +20,7 @@ export module xlings.core.subos;
 import std;
 
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -388,9 +389,11 @@ export int create(const std::string& name, const fs::path& customDir,
         }
     }
 
-    auto configPath = p.homeDir / ".xlings.json";
-    auto json = read_config_json_(configPath);
-    if (json.contains("subos") && json["subos"].contains(name)) {
+    // Cheap pre-check so the common "already exists" mistake fails before we
+    // lay down directories or run mkfs. It is advisory only -- the binding
+    // check that actually decides is the one inside the locked commit below.
+    if (read_home_config(p.homeDir).value("subos", nlohmann::json::object())
+            .contains(name)) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = "subos '" + name + "' already exists",
@@ -440,9 +443,45 @@ export int create(const std::string& name, const fs::path& customDir,
         xself::ensure_subos_shims(dir / "bin", xlingsBin, p.homeDir);
     }
 
-    if (!json.contains("subos")) json["subos"] = nlohmann::json::object();
-    json["subos"][name] = {{"dir", customDir.empty() ? "" : customDir.string()}};
-    write_config_json_(configPath, json);
+    // Everything above this point -- mkfs.ext4 for image storage in
+    // particular -- can take seconds. Reading the config before it and
+    // writing it after would put back a document that predates any install
+    // that finished meanwhile. Re-read under the lock and edit only our key.
+    bool raced = false;
+    auto committed = update_home_config(p.homeDir, [&](nlohmann::json& json) {
+        if (!json.contains("subos") || !json["subos"].is_object()) {
+            json["subos"] = nlohmann::json::object();
+        }
+        if (json["subos"].contains(name)) {
+            raced = true;
+            return false;
+        }
+        json["subos"][name] =
+            {{"dir", customDir.empty() ? "" : customDir.string()}};
+        return true;
+    });
+    if (!committed) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "subos '" + name + "' was created on disk but could "
+                       "not be recorded: " + committed.error(),
+            .recoverable = true,
+            .hint = "retry once the other xlings finishes; the directory at "
+                    + dir.string() + " is reused as-is",
+        });
+        return 1;
+    }
+    if (raced) {
+        // Another xlings registered this name while we were building. Its
+        // entry is the one on disk; ours would overwrite a directory the
+        // other command is using.
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "subos '" + name + "' already exists",
+            .recoverable = false,
+        });
+        return 1;
+    }
 
     nlohmann::json payload;
     payload["name"] = name;
@@ -806,10 +845,21 @@ int use_global(const std::string& name, EventStream& stream) {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
 
     auto& p = Config::paths();
-    auto configPath = p.homeDir / ".xlings.json";
-    auto json = read_config_json_(configPath);
-    json["activeSubos"] = name;
-    write_config_json_(configPath, json);
+    // The window here is short, but a full-document rewrite is a full-document
+    // rewrite: an install committing between the read and the write loses its
+    // `versions` entry all the same.
+    auto committed = update_home_config(p.homeDir, [&](nlohmann::json& json) {
+        json["activeSubos"] = name;
+        return true;
+    });
+    if (!committed) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "failed to switch subos: " + committed.error(),
+            .recoverable = true,
+        });
+        return 1;
+    }
 
     auto dir = Config::subos_dir(name);
     update_current_symlink_(stream, p.homeDir, dir);
@@ -1873,10 +1923,8 @@ export int remove(const std::string& name, EventStream& stream) {
         return 1;
     }
 
-    auto configPath = p.homeDir / ".xlings.json";
-    auto json = read_config_json_(configPath);
-
-    if (!json.contains("subos") || !json["subos"].contains(name)) {
+    if (!read_home_config(p.homeDir).value("subos", nlohmann::json::object())
+             .contains(name)) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::NotFound,
             .message = "subos '" + name + "' not found",
@@ -1925,8 +1973,23 @@ export int remove(const std::string& name, EventStream& stream) {
         }
     }
 
-    json["subos"].erase(name);
-    write_config_json_(configPath, json);
+    // remove_all above walks the whole subos tree and can run for a long
+    // time on a big one. Deleting our key out of a document read before that
+    // walk would resurrect every other key's pre-walk value.
+    auto committed = update_home_config(p.homeDir, [&](nlohmann::json& json) {
+        if (!json.contains("subos") || !json["subos"].is_object()) return false;
+        return json["subos"].erase(name) > 0;
+    });
+    if (!committed) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "subos '" + name + "' was deleted from disk but its "
+                       "entry could not be removed: " + committed.error(),
+            .recoverable = true,
+            .hint = "retry once the other xlings finishes",
+        });
+        return 1;
+    }
 
     nlohmann::json payload;
     payload["name"] = name;

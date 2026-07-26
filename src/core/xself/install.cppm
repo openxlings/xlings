@@ -4,6 +4,7 @@ import std;
 import xlings.core.xself.init;
 
 import xlings.core.config;
+import xlings.core.xvm.lock;
 import xlings.libs.json;
 import xlings.libs.tinyhttps;
 import xlings.core.log;
@@ -458,6 +459,11 @@ export int cmd_install() {
     // Skip if source == target and not temp — "fix links" in place (e.g. dev from source).
     if (!cmp_ec && sameDir && !fromTempExtract) {
         log::println("\n[xlings:self] already in target dir, fixing links");
+        auto lock = xvm::acquire_state_lock(targetHome);
+        if (!lock) {
+            log::error("[xlings:self] {}", lock.error());
+            return 1;
+        }
         if (!ensure_home_layout(targetHome)) {
             log::error("[xlings:self] failed to initialize {}", targetHome.string());
             return 1;
@@ -485,6 +491,28 @@ export int cmd_install() {
                 return 0;
             }
         }
+    }
+
+    // Everything past this point rewrites the home: the binary, the layout,
+    // and three separate read-modify-writes of `.xlings.json` (mirror,
+    // version, subos defaults). An install running in another terminal reads
+    // and writes the same file, so hold the home-wide state lock across the
+    // lot -- one lock rather than three, since the writes are interleaved
+    // with the tree replacement and only the whole sequence is meaningful.
+    //
+    // Taken here rather than at the top of the function on purpose: the
+    // confirmation prompts above would otherwise hold the lock for as long as
+    // the user takes to answer, and a lock held on human time is a lock that
+    // makes `xlings install` fail in the next terminal over.
+    //
+    // The patchelf-runtime-dep step below spawns `xlings install -g`. That
+    // child inherits the re-entrancy marker (xvm/lock.cppm) and works under
+    // this lock instead of waiting for one this process cannot release until
+    // the child returns.
+    auto stateLock = xvm::acquire_state_lock(targetHome);
+    if (!stateLock) {
+        log::error("[xlings:self] {}", stateLock.error());
+        return 1;
     }
 
     // Selective install: preserve data/ and subos/ unless user chose to overwrite

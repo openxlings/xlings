@@ -34,6 +34,7 @@ import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.platform;
 import xlings.libs.json;
 import xlings.core.xself;
@@ -11225,6 +11226,175 @@ TEST(XvmStateLock, LockFileContentsAreNeverRewritten) {
             << "something wrote to the lock file; the lock is held on the "
                "old inode";
     }
+    drop_lock_home_(home);
+}
+
+// ============================================================
+// update_home_config — one file, several owners
+//
+// `~/.xlings.json` carries `versions` and `workspace` (install/remove/use),
+// `subos` and `activeSubos` (the subos commands), `lang` and `mirror`
+// (`xlings config`), `index_repos` (the MCP repo capabilities) and `version`
+// (`self install`). Every one of them rewrites the whole document.
+//
+// install/remove/use took the state lock; nobody else did. So a subos
+// command that read the config, spent seconds in mkfs.ext4 and wrote back
+// what it read would put the file back to its pre-install state -- with the
+// installed payload still on disk and no record of it.
+// ============================================================
+
+namespace {
+
+std::filesystem::path home_config_test_home_(const char* name) {
+    namespace fs = std::filesystem;
+    auto home = fs::temp_directory_path()
+        / ("xlings_homecfg_" + std::string(name));
+    std::error_code ec;
+    fs::remove_all(home, ec);
+    fs::create_directories(home);
+    // Locks are re-entrant for a child of the holder; an earlier test in this
+    // binary may have left the marker set. Clear it so each case starts as an
+    // unrelated process.
+    xlings::platform::set_env_variable("XLINGS_STATE_LOCK_HELD", "");
+    return home;
+}
+
+void write_home_config_(const std::filesystem::path& home,
+                        const nlohmann::json& json) {
+    xlings::platform::write_string_to_file(
+        (home / ".xlings.json").string(), json.dump(2));
+}
+
+}  // namespace
+
+TEST(HomeConfig, ReadsAMissingOrCorruptConfigAsEmpty) {
+    const auto home = home_config_test_home_("read");
+    EXPECT_TRUE(xlings::read_home_config(home).empty());
+
+    xlings::platform::write_string_to_file(
+        (home / ".xlings.json").string(), "{not json");
+    EXPECT_TRUE(xlings::read_home_config(home).empty())
+        << "a corrupt config must read as no config, not throw";
+
+    // A JSON document that is valid but not an object is equally unusable as
+    // a config: every caller indexes it by key.
+    xlings::platform::write_string_to_file(
+        (home / ".xlings.json").string(), "[1, 2, 3]");
+    EXPECT_TRUE(xlings::read_home_config(home).empty());
+
+    drop_lock_home_(home);
+}
+
+// The regression this module exists for. A caller reads the config, does slow
+// work, and commits. Anything another process wrote in between must survive,
+// and the caller must not resurrect the values it read at the start.
+TEST(HomeConfig, CommitsAgainstTheDocumentAsItIsNowNotAsItWasRead) {
+    const auto home = home_config_test_home_("lost_update");
+    write_home_config_(home, nlohmann::json{
+        {"versions", {{"gcc", "15.1.0"}}},
+    });
+
+    // What a subos command would have read before starting its slow work.
+    const auto stale = xlings::read_home_config(home);
+    ASSERT_EQ(stale["versions"]["gcc"], "15.1.0");
+
+    // An install commits while that slow work is running.
+    write_home_config_(home, nlohmann::json{
+        {"versions", {{"gcc", "16.1.0"}}},
+        {"workspace", {{"active", {{"gcc", "16.1.0"}}}}},
+    });
+
+    auto committed = xlings::update_home_config(
+        home, [](nlohmann::json& json) {
+            json["subos"]["sandbox"] = {{"dir", ""}};
+            return true;
+        });
+    ASSERT_TRUE(committed.has_value()) << committed.error();
+    EXPECT_TRUE(*committed);
+
+    const auto after = xlings::read_home_config(home);
+    EXPECT_EQ(after["subos"]["sandbox"]["dir"], "");
+    EXPECT_EQ(after["versions"]["gcc"], "16.1.0")
+        << "the update reverted `versions` to the value it read before the "
+           "install committed";
+    EXPECT_TRUE(after.contains("workspace"))
+        << "`workspace` was dropped; the version database and the workspace "
+           "are two halves of one release and cannot diverge";
+
+    drop_lock_home_(home);
+}
+
+TEST(HomeConfig, DecliningToCommitLeavesTheFileByteForByte) {
+    const auto home = home_config_test_home_("declined");
+    write_home_config_(home, nlohmann::json{{"lang", "zh"}});
+    const auto before = xlings::platform::read_file_to_string(
+        (home / ".xlings.json").string());
+
+    auto committed = xlings::update_home_config(
+        home, [](nlohmann::json& json) {
+            json["lang"] = "en";  // discarded: the callback declines
+            return false;
+        });
+    ASSERT_TRUE(committed.has_value()) << committed.error();
+    EXPECT_FALSE(*committed);
+
+    EXPECT_EQ(xlings::platform::read_file_to_string(
+                  (home / ".xlings.json").string()),
+              before)
+        << "a declined update rewrote the file anyway";
+
+    drop_lock_home_(home);
+}
+
+// The mutation must not run at all while another process holds the lock --
+// otherwise the re-read it depends on is a re-read of a document that is
+// being replaced underneath it.
+TEST(HomeConfig, RefusesWhileAnUnrelatedProcessHoldsTheLock) {
+    const auto home = home_config_test_home_("contended");
+    write_home_config_(home, nlohmann::json{{"lang", "zh"}});
+
+    {
+        auto held = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(held.has_value()) << held.error();
+
+        // Stand in for an unrelated process: drop the re-entrancy marker the
+        // holder exported, so the update below is not treated as its child.
+        xlings::platform::set_env_variable("XLINGS_STATE_LOCK_HELD", "");
+
+        bool ran = false;
+        auto committed = xlings::update_home_config(
+            home,
+            [&](nlohmann::json& json) { ran = true; json["lang"] = "en"; return true; },
+            std::chrono::milliseconds{50});
+        ASSERT_FALSE(committed.has_value())
+            << "the update did not take the state lock";
+        EXPECT_NE(committed.error().find("another xlings process"),
+                  std::string::npos);
+        EXPECT_FALSE(ran) << "the mutation ran without the lock";
+    }
+
+    EXPECT_EQ(xlings::read_home_config(home)["lang"], "zh");
+    drop_lock_home_(home);
+}
+
+// A command that legitimately runs under an ancestor's lock -- a recipe hook
+// shelling out to xlings -- still gets to commit.
+TEST(HomeConfig, CommitsUnderAnAncestorsLock) {
+    const auto home = home_config_test_home_("reentrant");
+    {
+        auto outer = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(outer.has_value()) << outer.error();
+
+        auto committed = xlings::update_home_config(
+            home,
+            [](nlohmann::json& json) { json["lang"] = "en"; return true; },
+            std::chrono::milliseconds{50});
+        ASSERT_TRUE(committed.has_value()) << committed.error();
+        EXPECT_TRUE(*committed);
+    }
+    EXPECT_EQ(xlings::read_home_config(home)["lang"], "en");
     drop_lock_home_(home);
 }
 
