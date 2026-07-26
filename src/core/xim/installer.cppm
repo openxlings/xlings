@@ -49,6 +49,7 @@ struct XpkgRegistrationError {
 enum class XpkgFilesystemEffectKind {
     ProgramShim,
     Library,
+    FileAsset,
     InstallHeaders,
     RemoveHeaders,
 };
@@ -294,11 +295,16 @@ normalize_xpkg_registration_plan(
             : operation.version;
         const auto kind =
             operation.type.empty() ? std::string{"program"} : operation.type;
-        const auto sourceName = kind == "group"
-            ? std::string{}
-            : (operation.filename.empty()
+        // A `files` asset names no artifact to dispatch, so it carries no
+        // source or destination *name* -- what it carries is a src/dst pair,
+        // below. Treating it like a program would invent a sourceName from
+        // the target and then look for an executable that does not exist.
+        const auto namesAnArtifact = kind != "group" && kind != "files";
+        const auto sourceName = namesAnArtifact
+            ? (operation.filename.empty()
                 ? operation.name
-                : operation.filename);
+                : operation.filename)
+            : std::string{};
         xvm::RegistrationNode registrationNode{
             .target = operation.name,
             .version = {},
@@ -307,11 +313,11 @@ normalize_xpkg_registration_plan(
                 : operation.bindir,
             .kind = kind,
             .sourceName = sourceName,
-            .destinationName = kind == "group"
-                ? std::string{}
-                : (kind == "program"
-                    ? operation.name
-                    : sourceName),
+            .destinationName = namesAnArtifact
+                ? (kind == "program" ? operation.name : sourceName)
+                : std::string{},
+            .fileSrc = kind == "files" ? operation.src : std::string{},
+            .fileDst = kind == "files" ? operation.dst : std::string{},
         };
         auto exactVersion =
             normalizeVersion(rawVersion, index, operation.name);
@@ -367,11 +373,13 @@ normalize_xpkg_registration_plan(
                 .rootVersion = std::move(*rootVersion),
             };
         }
-        if (kind == "program" || kind == "lib") {
+        if (kind == "program" || kind == "lib" || kind == "files") {
             plan.effects.push_back({
                 .kind = kind == "program"
                     ? XpkgFilesystemEffectKind::ProgramShim
-                    : XpkgFilesystemEffectKind::Library,
+                    : (kind == "lib"
+                        ? XpkgFilesystemEffectKind::Library
+                        : XpkgFilesystemEffectKind::FileAsset),
                 .target = operation.name,
                 .version = registrationNode.version,
             });
@@ -1288,10 +1296,14 @@ void detach_current_subos_(const std::string& target,
                  xvm::group_header_assets(db, target, version)) {
             xvm::remove_headers(asset, sysroot_include);
         }
-        if (auto* vdata = xvm::get_vdata(db, target, version)) {
-            if (!vdata->libdir.empty()) {
-                xvm::remove_libdir(vdata->libdir, sysroot_lib);
-            }
+        if (const auto placement =
+                xvm::library_placement(db, target, version);
+            !placement.empty()) {
+            xvm::remove_library(placement.name, sysroot_lib);
+        }
+        if (const auto file = xvm::file_placement(db, target, version);
+            !file.empty()) {
+            xvm::remove_asset(Config::paths().subosDir / file.destination);
         }
         remove_target_shims_(target, version);
 
@@ -1462,8 +1474,15 @@ bool process_xvm_operations_(const PlanNode& node,
                  xvm::group_header_assets(scopedDb, target, version)) {
             xvm::install_headers(asset, sysroot_include);
         }
-        if (!dataIt->second.libdir.empty()) {
-            xvm::install_libdir(dataIt->second.libdir, sysroot_lib);
+        if (const auto placement =
+                xvm::library_placement(scopedDb, target, version);
+            !placement.empty()) {
+            xvm::place_library(placement.source, placement.name, sysroot_lib);
+        }
+        if (const auto file = xvm::file_placement(scopedDb, target, version);
+            !file.empty()) {
+            xvm::place_asset(file.source,
+                             Config::paths().subosDir / file.destination);
         }
     }
 
@@ -1565,8 +1584,39 @@ bool process_xvm_operations_(const PlanNode& node,
             }
             continue;
         }
+        if (resolved->kind == XpkgFilesystemEffectKind::FileAsset) {
+            if (!resolved->active) {
+                log::debug("[xim] file asset {}@{} not placed: not the "
+                           "active version", resolved->target,
+                           resolved->version);
+                continue;
+            }
+            if (const auto file = xvm::file_placement(
+                    scopedDb, resolved->target, resolved->version);
+                !file.empty()) {
+                xvm::place_asset(file.source,
+                                 artifactSubosDir / file.destination);
+            } else {
+                log::warn("[xim] file asset {}@{} declares no usable "
+                          "destination; nothing placed",
+                          resolved->target, resolved->version);
+            }
+            continue;
+        }
         if (resolved->kind != XpkgFilesystemEffectKind::Library
             || resolved->path.empty()) {
+            continue;
+        }
+        if (!resolved->active) {
+            // Installing a version that does not become active must not
+            // disturb the sysroot. `InstallHeaders` has been gated this way
+            // since 0.4.70; `Library` was not, so installing a second version
+            // of a package overwrote the active version's library while its
+            // headers stayed put -- the sysroot then held a library from one
+            // release beside headers from another, which compiles and fails
+            // at run time. `xlings use` is what moves libraries.
+            log::debug("[xim] library {}@{} not placed: not the active "
+                       "version", resolved->target, resolved->version);
             continue;
         }
 

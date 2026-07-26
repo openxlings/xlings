@@ -73,6 +73,70 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
                                              const std::string& target,
                                              const std::string& version);
 
+// Where one library entry has to be placed in the sysroot.
+//
+// `source` is the absolute file inside the payload; `name` is what it is
+// called in the sysroot lib directory. Both empty when the entry is not a
+// library, has no payload path, or resolves to no name.
+struct LibraryPlacement {
+    std::string source;
+    std::string name;
+
+    [[nodiscard]] bool empty() const { return source.empty(); }
+};
+
+// Resolve an entry to its library placement.
+//
+// Reads `path` + `sourceName` + `destinationName` through the shared
+// accessors in xvm.types -- the same three fields the install path has always
+// used. The switch planner used to look at `VData::libdir` instead, a field
+// with no writer anywhere in the tree, so it emitted no library work and
+// `xlings use` silently did nothing for libraries.
+LibraryPlacement library_placement(const VersionDB& db,
+                                   const std::string& target,
+                                   const std::string& version);
+
+// True when some other entry names this one as the root of its release.
+//
+// Recipes for library-only packages write `xvm.add(package.name)` with no
+// bindir and no programs -- they need a name to hang the release on, and the
+// model offers no way to say "this is only a name". With `type` unset the C++
+// side defaults it to "program", so the entry claims to be an executable that
+// does not exist. On a real installation 31 entries are in exactly this
+// state, and `self doctor` reported every one as a broken payload.
+//
+// Both shapes are recognised: the provider group written since 0.4.70
+// (`bindingGroup.rootTarget`) and the legacy pairwise edges that precede it,
+// where a member records `bindings[root][memberVersion] = rootVersion`.
+bool is_binding_root(const VersionDB& db,
+                     const std::string& target,
+                     const std::string& version);
+
+// Where one declared file asset has to be placed.
+//
+// `source` is absolute, inside the payload. `destination` is **relative to
+// the subos root** and deliberately left unresolved: a payload is shared
+// between subos, so the same asset lands at a different absolute path in
+// each. The caller joins it with the subos it is materializing into.
+struct FilePlacement {
+    std::string source;
+    std::string destination;
+
+    [[nodiscard]] bool empty() const { return source.empty(); }
+};
+
+// Whether a package may write this destination.
+//
+// Absolute paths and anything walking upward are refused: the first would be
+// right for one subos and wrong for the rest, the second escapes the subos
+// altogether. `bin/` is excluded because it belongs to the shims. A recipe
+// that trips this gets no placement rather than a surprising one.
+bool is_permitted_file_destination(std::string_view destination);
+
+FilePlacement file_placement(const VersionDB& db,
+                             const std::string& target,
+                             const std::string& version);
+
 }  // namespace xlings::xvm
 
 namespace xlings::xvm::detail_ {
@@ -103,7 +167,8 @@ bool same_group_(const BindingGroupRef& lhs, const BindingGroupRef& rhs) {
 }
 
 bool supported_kind_(std::string_view kind) {
-    return kind == "program" || kind == "lib" || kind == "group";
+    return kind == "program" || kind == "lib" || kind == "group"
+        || kind == "files";
 }
 
 std::optional<std::string_view>
@@ -594,6 +659,89 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
         return {HeaderAsset{.sourceDir = entry.includedir}};
     }
     return {};
+}
+
+LibraryPlacement library_placement(const VersionDB& db,
+                                   const std::string& target,
+                                   const std::string& version) {
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return {};
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return {};
+
+    const VInfo& info = targetIt->second;
+    const VData& data = versionIt->second;
+    const auto kind = effective_kind(info, data);
+    if (kind != "lib" || data.path.empty()) return {};
+
+    const auto sourceName = effective_source_name(target, info, data, kind);
+    const auto destinationName =
+        effective_destination_name(target, data, kind, sourceName);
+    if (sourceName.empty() || destinationName.empty()) return {};
+
+    return {
+        .source = (std::filesystem::path(data.path) / sourceName).string(),
+        .name = destinationName,
+    };
+}
+
+bool is_permitted_file_destination(std::string_view destination) {
+    if (destination.empty()) return false;
+    const std::filesystem::path p{destination};
+    if (p.is_absolute()) return false;
+    std::string first;
+    for (const auto& part : p) {
+        if (part == "..") return false;
+        if (first.empty()) first = part.string();
+    }
+    // Windows drive-relative forms ("C:foo") are absolute in spirit.
+    if (destination.size() > 1 && destination[1] == ':') return false;
+    return first == "usr" || first == "etc" || first == "share";
+}
+
+FilePlacement file_placement(const VersionDB& db,
+                             const std::string& target,
+                             const std::string& version) {
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return {};
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return {};
+
+    const VData& data = versionIt->second;
+    if (effective_kind(targetIt->second, data) != "files") return {};
+    if (data.path.empty() || data.fileSrc.empty() || data.fileDst.empty()) {
+        return {};
+    }
+    if (!is_permitted_file_destination(data.fileDst)) return {};
+
+    return {
+        .source = (std::filesystem::path(data.path) / data.fileSrc).string(),
+        .destination = data.fileDst,
+    };
+}
+
+bool is_binding_root(const VersionDB& db,
+                     const std::string& target,
+                     const std::string& version) {
+    for (const auto& [peerTarget, peerInfo] : db) {
+        for (const auto& [peerVersion, peerData] : peerInfo.versions) {
+            if (peerTarget == target && peerVersion == version) continue;
+            if (peerData.bindingGroup
+                && peerData.bindingGroup->rootTarget == target
+                && peerData.bindingGroup->rootVersion == version) {
+                return true;
+            }
+        }
+        if (peerTarget == target) continue;
+        // Legacy pairwise edge: the member side records the root it belongs
+        // to, keyed by its own version.
+        const auto edge = peerInfo.bindings.find(target);
+        if (edge == peerInfo.bindings.end()) continue;
+        for (const auto& [_, rootVersion] : edge->second) {
+            if (rootVersion == version) return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace xlings::xvm

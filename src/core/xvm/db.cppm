@@ -452,6 +452,8 @@ nlohmann::json vdata_to_json(const VData& vdata) {
     if (!vdata.sourceName.empty()) j["sourceName"] = vdata.sourceName;
     if (!vdata.destinationName.empty())
         j["destinationName"] = vdata.destinationName;
+    if (!vdata.fileSrc.empty()) j["fileSrc"] = vdata.fileSrc;
+    if (!vdata.fileDst.empty()) j["fileDst"] = vdata.fileDst;
     if (!vdata.includedir.empty()) j["includedir"] = vdata.includedir;
     if (!vdata.libdir.empty()) j["libdir"] = vdata.libdir;
     if (!vdata.alias.empty()) {
@@ -541,6 +543,10 @@ VData vdata_from_json(const nlohmann::json& j) {
         vdata.sourceName = j["sourceName"].get<std::string>();
     if (j.contains("destinationName") && j["destinationName"].is_string())
         vdata.destinationName = j["destinationName"].get<std::string>();
+    if (j.contains("fileSrc") && j["fileSrc"].is_string())
+        vdata.fileSrc = j["fileSrc"].get<std::string>();
+    if (j.contains("fileDst") && j["fileDst"].is_string())
+        vdata.fileDst = j["fileDst"].get<std::string>();
     if (j.contains("includedir") && j["includedir"].is_string())
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())

@@ -127,55 +127,82 @@ void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
     }
 }
 
-// Install library symlinks from source libdir into sysroot lib/
-void install_libs(const std::string& libdir, const fs::path& sysroot_lib,
-                  const std::vector<std::string>& libs) {
-    fs::create_directories(sysroot_lib);
+// Place one file at an exact destination, replacing whatever is there.
+//
+// Shared by libraries and by declared file assets: both are "this payload
+// file becomes that path in the subos", and both need the same replacement
+// discipline.
+//
+// Replaces by rename rather than remove-then-link. Two versions of a library
+// share a soname, so a switch overwrites the same name -- and `use`
+// re-materializes the active release on every invocation to repair a drifted
+// sysroot, so remove-then-link would open a window on every one of those
+// calls where the file is simply absent. Long enough for a concurrent build
+// step to fail on it. rename(2) replaces atomically; Windows has no
+// equivalent for every entry kind, so the staging file is cleaned up and the
+// direct path is taken there.
+void place_asset(const std::string& source, const fs::path& destination) {
+    if (source.empty() || destination.empty()) return;
     std::error_code ec;
-    for (auto& lib : libs) {
-        auto src = fs::path(libdir) / lib;
-        auto dst = sysroot_lib / lib;
-        if (fs::exists(dst, ec)) fs::remove(dst, ec);
-        if (fs::exists(src, ec)) create_link_(src, dst);
+    fs::path src(source);
+    if (!fs::exists(src, ec)) {
+        log::debug("[xvm] asset source missing, not placed: {}", source);
+        return;
+    }
+    fs::create_directories(destination.parent_path(), ec);
+
+    // Already pointing at this exact file: leave it alone. Keeps the repeated
+    // re-materialization that `use` performs down to a stat.
+    std::error_code sameEc;
+    if (fs::equivalent(destination, src, sameEc) && !sameEc) return;
+
+    const auto staging =
+        destination.parent_path()
+        / (destination.filename().string() + ".xlings-new");
+    fs::remove_all(staging, ec);
+    create_link_(src, staging);
+    if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
+        log::warn("[xvm] could not stage asset: {}", destination.string());
+        return;
+    }
+    ec.clear();
+    fs::rename(staging, destination, ec);
+    if (ec) {
+        // Platforms without an atomic replace for this entry kind. Accept the
+        // window rather than leave the staging file behind.
+        std::error_code rmEc;
+        fs::remove_all(destination, rmEc);
+        ec.clear();
+        fs::rename(staging, destination, ec);
+        if (ec) {
+            fs::remove_all(staging, rmEc);
+            log::warn("[xvm] could not place asset {}: {}",
+                      destination.string(), ec.message());
+        }
     }
 }
 
-// Install all library entries from source libdir into sysroot lib/
-void install_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    fs::create_directories(sysroot_lib);
+// Take one placed file back out.
+void remove_asset(const fs::path& destination) {
+    if (destination.empty()) return;
     std::error_code ec;
-    fs::path src(libdir);
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        std::error_code sameEc;
-        if (std::filesystem::equivalent(target, entry.path(), sameEc)
-            && !sameEc) {
-            continue;  // see install_headers
-        }
-        if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
-            fs::remove_all(target, ec);
-        }
-        create_link_(entry.path(), target);
+    if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
+        fs::remove_all(destination, ec);
     }
 }
 
-// Remove library symlinks that were installed from source libdir
-void remove_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    if (libdir.empty()) return;
-    fs::path src(libdir);
-    std::error_code ec;
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        if (fs::is_symlink(target, ec)) {
-            fs::remove(target, ec);
-#if defined(_WIN32)
-        } else if (fs::exists(target, ec)) {
-            fs::remove_all(target, ec);
-#endif
-        }
-    }
+// Library-shaped wrappers, kept because the sysroot lib directory is implied
+// rather than declared for libraries.
+void place_library(const std::string& source,
+                   const std::string& name,
+                   const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    place_asset(source, sysroot_lib / name);
+}
+
+void remove_library(const std::string& name, const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    remove_asset(sysroot_lib / name);
 }
 
 // Helper: filter a list of version keys (`ns:ver` or bare) down to those
@@ -290,7 +317,14 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // Everything above this line is a decision; everything below changes the
     // filesystem. Members that are already where they belong emit no change.
     auto sysroot_include = p.subosDir / "usr" / "include";
-    auto sysroot_lib     = p.subosDir / "usr" / "lib";
+    // `<subos>/lib`, which is where the install path has always put
+    // libraries (`Config::paths().libDir`) and where they actually are: 94
+    // entries on a real installation, against one on `<subos>/usr/lib`.
+    // This line used to read `usr/lib`, and the disagreement was invisible
+    // because the switch side never emitted any library work at all --
+    // `VData::libdir` has no writer. Making libraries switch without fixing
+    // it would have started filling a second, unused directory.
+    auto sysroot_lib     = p.libDir;
     // Headers first, and as two whole passes rather than per member: they are
     // an asset of the release, not of any one member of it. Interleaving the
     // passes -- remove one member's, install the next member's -- let the
@@ -305,10 +339,18 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     }
 
     for (const auto& change : plan->switches) {
-        if (!change.removeLibDir.empty())
-            remove_libdir(change.removeLibDir, sysroot_lib);
-        if (!change.installLibDir.empty())
-            install_libdir(change.installLibDir, sysroot_lib);
+        if (!change.removeLibName.empty())
+            remove_library(change.removeLibName, sysroot_lib);
+        if (!change.installLibSource.empty())
+            place_library(change.installLibSource, change.installLibName,
+                          sysroot_lib);
+        // File assets carry their own destination, relative to the subos
+        // root, so they are joined here rather than assumed into a fixed dir.
+        if (!change.removeFileDest.empty())
+            remove_asset(p.subosDir / change.removeFileDest);
+        if (!change.installFileSource.empty())
+            place_asset(change.installFileSource,
+                        p.subosDir / change.installFileDest);
         log::debug("switching {}: {} -> {}", change.target,
                    change.previousVersion.empty() ? "(none)"
                                                   : change.previousVersion,

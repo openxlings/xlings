@@ -25,14 +25,36 @@ export namespace xlings::xvm {
 
 // What has to change on disk for one member of the release.
 //
-// Libraries are per member -- each has its own libdir. Headers are not: they
-// belong to the release as a whole and live on the plan, below.
+// A library member is one file: `<payload>/<sourceName>` has to appear in the
+// sysroot lib directory as `<destinationName>`. Headers are not per member --
+// they belong to the release as a whole and live on the plan, below.
+//
+// This used to be phrased as a *directory* to link wholesale
+// (`installLibDir`), read from `VData::libdir`. Nothing ever wrote that field
+// -- on a real installation it is absent from all 372 entries -- so the
+// planner emitted no library work at all and `xlings use` was a no-op for
+// libraries. Every fact needed to place one was already in the entry:
+// `path` + `sourceName` + `destinationName`, exactly what the install path
+// has always used. The planner was simply reading the wrong field.
 struct MemberSwitch {
     std::string target;
     std::string version;
     std::string previousVersion;   // empty when the member was not active
-    std::string removeLibDir;      // empty when there is nothing to remove
-    std::string installLibDir;
+
+    // Library placement. Empty for members that are not libraries.
+    std::string installLibSource;  // absolute: <payload>/<sourceName>
+    std::string installLibName;    // basename in the sysroot lib directory
+
+    // Declared file asset. Empty for members that are not `files` entries.
+    // The destination is relative to the subos root -- see FilePlacement.
+    std::string installFileSource;
+    std::string installFileDest;
+    // What the outgoing version occupied, when it is a different path.
+    std::string removeFileDest;
+    // What the outgoing version occupied. Usually the same name as
+    // installLibName -- two versions of one library share a soname -- in
+    // which case the placement replaces it and nothing is unlinked.
+    std::string removeLibName;
 };
 
 struct UseSwitchPlan {
@@ -107,11 +129,15 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         const std::string previous =
             activeIt == workspace.end() ? std::string{} : activeIt->second;
 
-        const auto& current = db.at(memberTarget).versions.at(memberVersion);
         auto currentHeaders =
             group_header_assets(db, memberTarget, memberVersion);
         incoming.insert(incoming.end(),
                         currentHeaders.begin(), currentHeaders.end());
+
+        auto placement = library_placement(db, memberTarget, memberVersion);
+        auto installSource = std::move(placement.source);
+        auto installName = std::move(placement.name);
+        auto file = file_placement(db, memberTarget, memberVersion);
 
         if (previous == memberVersion) {
             // Already the active version, but the sysroot may not reflect it:
@@ -119,12 +145,15 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             // release's headers out and puts nothing back. Re-materializing
             // is idempotent, so `use` doubles as the repair for that -- and
             // as a no-op when nothing is wrong. Nothing to remove first.
-            if (current.libdir.empty()) continue;
+            if (installSource.empty() && file.empty()) continue;
             plan.switches.push_back({
                 .target = memberTarget,
                 .version = memberVersion,
                 .previousVersion = previous,
-                .installLibDir = current.libdir,
+                .installLibSource = std::move(installSource),
+                .installLibName = std::move(installName),
+                .installFileSource = std::move(file.source),
+                .installFileDest = std::move(file.destination),
             });
             continue;
         }
@@ -133,21 +162,35 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             .target = memberTarget,
             .version = memberVersion,
             .previousVersion = previous,
+            .installLibSource = std::move(installSource),
+            .installLibName = std::move(installName),
+            .installFileSource = std::move(file.source),
+            .installFileDest = std::move(file.destination),
         };
         if (!previous.empty()) {
             auto previousHeaders =
                 group_header_assets(db, memberTarget, previous);
             outgoing.insert(outgoing.end(),
                             previousHeaders.begin(), previousHeaders.end());
-            auto infoIt = db.find(memberTarget);
-            if (infoIt != db.end()) {
-                auto prevIt = infoIt->second.versions.find(previous);
-                if (prevIt != infoIt->second.versions.end()) {
-                    change.removeLibDir = prevIt->second.libdir;
-                }
+            auto previousPlacement =
+                library_placement(db, memberTarget, previous);
+            // Only worth recording when the outgoing version occupied a
+            // *different* name. The common case -- same soname across two
+            // versions -- is a replacement, and unlinking first would open a
+            // window with the library missing.
+            if (!previousPlacement.name.empty()
+                && previousPlacement.name != change.installLibName) {
+                change.removeLibName = std::move(previousPlacement.name);
+            }
+            // Same reasoning for a file asset: only unlink when the outgoing
+            // version occupied a path the incoming one does not reuse.
+            auto previousFile =
+                file_placement(db, memberTarget, previous);
+            if (!previousFile.destination.empty()
+                && previousFile.destination != change.installFileDest) {
+                change.removeFileDest = std::move(previousFile.destination);
             }
         }
-        change.installLibDir = current.libdir;
         plan.switches.push_back(std::move(change));
     }
 

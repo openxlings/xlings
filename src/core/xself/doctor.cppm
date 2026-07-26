@@ -12,6 +12,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.xvm.types;
+import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.inspect;
@@ -294,6 +295,29 @@ export int cmd_doctor(EventStream& stream, bool fix) {
             if (!alias_mode) {
                 auto exe = xvm::resolve_executable(name, vdata.path, home_str);
                 if (!exe.empty()) continue;  // OK
+
+                // A name that exists only to anchor a release is not a
+                // broken payload. Library-only packages have no program of
+                // their own, so their recipe registers the package name with
+                // no bindir purely to have something for the libraries to
+                // bind to; with `type` unset that entry defaults to
+                // "program" and then fails this check forever. On a real
+                // installation 31 entries were reported this way, and
+                // `xlings install <pkg>@<ver>` -- the hint we printed --
+                // cannot fix any of them, because nothing is wrong.
+                //
+                // Reported, but as what it is. Staying silent would hide the
+                // rarer case of a genuine program whose payload directory
+                // survived while its executable did not; that entry is also
+                // a binding root, so it lands here too and the user still
+                // sees the line.
+                if (xvm::is_binding_root(db, name, version)) {
+                    add_field("ⓘ release anchor", std::format(
+                        "{}@{} registers no program of its own; it names the "
+                        "release its libraries belong to", name, version));
+                    continue;
+                }
+
                 report_broken_payload(name, version, std::format(
                     "{}@{} executable '{}' not found in {}",
                     name, version, name, expanded));
