@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BOOTSTRAP_XLINGS_VERSION: '0.4.51'
+  BOOTSTRAP_XLINGS_VERSION: v0.4.69
 
 jobs:
   cross-build-and-run:
