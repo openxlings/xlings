@@ -5104,6 +5104,93 @@ TEST(XvmRegistrationHeaderTest, AcceptsUngroupedHeaderForSingleGroup) {
     EXPECT_TRUE(data.bindingHeadersDeclared);
 }
 
+// A recipe that registers several independent targets and then declares
+// headers is ordinary — a package exposing both a program and a library, for
+// instance. Every ungrouped node becomes its own singleton group, so the
+// "exactly one candidate group" rule alone rejects those recipes outright.
+// The package's own target breaks the tie: headers shipped by package `p`
+// belong with `p`.
+TEST(XvmRegistrationHeaderTest, UngroupedHeaderFallsBackToThePrimaryTarget) {
+    auto program = make_registration_node("openssl", "repo:3.1.5");
+    auto library = make_registration_node("libssl", "repo:3.1.5");
+    library.kind = "lib";
+    auto batch = make_registration_batch({program, library});
+    batch.primaryTarget = "openssl";
+    batch.headers = {{.sourceDir = "include"}};
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& owner = db.at("openssl").versions.at("repo:3.1.5");
+    ASSERT_EQ(owner.bindingHeaders.size(), 1u);
+    EXPECT_EQ(owner.bindingHeaders[0].sourceDir, "include");
+    EXPECT_TRUE(db.at("libssl").versions.at("repo:3.1.5").bindingHeaders.empty())
+        << "headers leaked onto a group that does not own them";
+}
+
+// The tie-break is the package's own target, not "pick the first group".
+// When the package registers nothing under its own name there is genuinely
+// no owner to infer, and guessing would attach headers to an arbitrary group.
+TEST(XvmRegistrationHeaderTest,
+     UngroupedHeaderStaysAmbiguousWhenPrimaryTargetIsNotRegistered) {
+    auto first = make_registration_node("first", "repo:first");
+    auto second = make_registration_node("second", "repo:second");
+    auto batch = make_registration_batch({first, second});
+    batch.primaryTarget = "not-registered";
+    batch.headers = {{.sourceDir = "include"}};
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::HeaderAmbiguous,
+        "/headers/0/group", "not-registered");
+    EXPECT_NE(result.error().message.find("primaryTarget"), std::string::npos)
+        << "the error must say how to resolve it, got: " << result.error().message;
+}
+
+// The same target bound into two different groups: naming it no longer
+// identifies one owner, so the header is still ambiguous. (Registering one
+// target at two versions *without* bindings is rejected earlier as a
+// GroupConflict, so two roots are what actually reaches this branch.)
+TEST(XvmRegistrationHeaderTest,
+     UngroupedHeaderStaysAmbiguousWhenPrimaryTargetSpansGroups) {
+    auto rootA = make_registration_node("root-a", "repo:a", "group");
+    rootA.sourceName.clear();
+    rootA.destinationName.clear();
+    auto rootB = make_registration_node("root-b", "repo:b", "group");
+    rootB.sourceName.clear();
+    rootB.destinationName.clear();
+    auto toolA = make_registration_node("tool", "repo:1.0.0");
+    toolA.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "root-a", .rootVersion = "repo:a"};
+    auto toolB = make_registration_node("tool", "repo:2.0.0");
+    toolB.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "root-b", .rootVersion = "repo:b"};
+    auto batch = make_registration_batch({rootA, rootB, toolA, toolB});
+    batch.primaryTarget = "tool";
+    batch.headers = {{.sourceDir = "include"}};
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::HeaderAmbiguous,
+        "/headers/0/group", "tool");
+    EXPECT_NE(result.error().message.find("spans"), std::string::npos)
+        << result.error().message;
+}
+
 TEST(XvmRegistrationHeaderErrorTest,
      RejectsAmbiguousUngroupedHeaderWithoutMutation) {
     auto first = make_registration_node("first", "repo:first");
@@ -7243,6 +7330,39 @@ TEST(XimXvmRegistrationAdapterTest,
     ASSERT_EQ(root.bindingHeaders.size(), 1u);
     EXPECT_EQ(root.bindingHeaders[0].sourceDir, "/payload/include");
     EXPECT_TRUE(root.bindingHeaders[0].destinationPrefix.empty());
+}
+
+// The shape this actually unblocks: a package that registers a program and a
+// library under no binding, then declares headers. Both nodes become
+// singleton groups, so before the primaryTarget tie-break this recipe failed
+// to install outright. Goes through the normalizer, so it also covers the
+// wiring -- that the batch carries the package's own name as the hint.
+TEST(XimXvmRegistrationAdapterTest,
+     UngroupedHeaderRoutesToThePackagesOwnTarget) {
+    xlings::xim::PlanNode provider;
+    provider.name = "openssl";
+    provider.version = "3.1.5";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {.op = "add", .name = "openssl"},
+        {.op = "add", .name = "libssl", .type = "lib", .filename = "libssl.so"},
+        {.op = "headers", .includedir = "/payload/include"},
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "", "/data", false);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    EXPECT_EQ(plan->batch.primaryTarget, "openssl");
+
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, plan->batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& owner = db.at("openssl").versions.at("3.1.5");
+    ASSERT_EQ(owner.bindingHeaders.size(), 1u);
+    EXPECT_EQ(owner.bindingHeaders[0].sourceDir, "/payload/include");
+    EXPECT_TRUE(db.at("libssl").versions.at("3.1.5").bindingHeaders.empty());
 }
 
 TEST(XimXvmRegistrationAdapterTest,
