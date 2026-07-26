@@ -92,6 +92,18 @@ resolve_xpkg_filesystem_effect(
     };
     if (effect.kind == XpkgFilesystemEffectKind::InstallHeaders
         || effect.kind == XpkgFilesystemEffectKind::RemoveHeaders) {
+        // Headers have no program payload to resolve, but they do have an
+        // owner, and whether that owner is the active version decides
+        // whether these headers belong in the sysroot right now.
+        if (!effect.target.empty()) {
+            auto headerActiveIt = workspace.find(effect.target);
+            resolved.active = headerActiveIt != workspace.end()
+                && headerActiveIt->second == effect.version;
+        } else {
+            // No owner recorded (older plan shape): keep the previous
+            // unconditional behavior rather than silently skipping.
+            resolved.active = true;
+        }
         return resolved;
     }
 
@@ -251,8 +263,15 @@ normalize_xpkg_registration_plan(
             plan.batch.headers.push_back({
                 .sourceDir = operation.includedir,
             });
+            // Carry the owning target and version so materialization can be
+            // gated on the version actually becoming active. Installing a
+            // version that does not become active used to copy its headers
+            // into the sysroot anyway, leaving the active release's headers
+            // overwritten by an inactive one.
             plan.effects.push_back({
                 .kind = XpkgFilesystemEffectKind::InstallHeaders,
+                .target = node.name,
+                .version = xvm::make_ns_version(versionNamespace, node.version),
                 .sourceDir = operation.includedir,
             });
             continue;
@@ -1379,6 +1398,7 @@ bool process_xvm_operations_(const PlanNode& node,
     }
 
     const auto dbBeforeRemoval = scopedDb;
+    const auto workspaceBeforeRemoval = scopedWorkspace;
     auto metadata = apply_xpkg_xvm_metadata_batch(
         scopedDb,
         scopedWorkspace,
@@ -1413,6 +1433,29 @@ bool process_xvm_operations_(const PlanNode& node,
         scopedDb,
         metadata->removal);
 
+    // Removal takes the removed release's headers out of the sysroot. When
+    // it then falls back to a surviving release, nothing put that release's
+    // headers back -- the sysroot ended up with none at all, and `xlings use`
+    // could not repair it because switching to an already-active version is
+    // a no-op. Re-materialize whatever the fallback made active.
+    for (const auto& [target, version] : scopedWorkspace) {
+        auto beforeIt = workspaceBeforeRemoval.find(target);
+        if (beforeIt != workspaceBeforeRemoval.end()
+            && beforeIt->second == version) {
+            continue;  // unchanged
+        }
+        auto infoIt = scopedDb.find(target);
+        if (infoIt == scopedDb.end()) continue;
+        auto dataIt = infoIt->second.versions.find(version);
+        if (dataIt == infoIt->second.versions.end()) continue;
+        if (!dataIt->second.includedir.empty()) {
+            xvm::install_headers(dataIt->second.includedir, sysroot_include);
+        }
+        if (!dataIt->second.libdir.empty()) {
+            xvm::install_libdir(dataIt->second.libdir, sysroot_lib);
+        }
+    }
+
     // Written after the batch, not inside it: the batch owns the group model
     // and must not be taught a legacy field. This runs against the committed
     // scopedDb, so a package whose own name is not a registered target simply
@@ -1445,6 +1488,15 @@ bool process_xvm_operations_(const PlanNode& node,
         }
         if (resolved->kind
             == XpkgFilesystemEffectKind::InstallHeaders) {
+            if (!resolved->active) {
+                // Installing a non-active version must not disturb the
+                // sysroot: `xlings use` is what moves headers, and it cannot
+                // undo this because switching to an already-active version
+                // is a no-op.
+                log::debug("[xim] headers for {}@{} not installed: not the "
+                           "active version", resolved->target, resolved->version);
+                continue;
+            }
             xvm::install_headers(
                 resolved->sourceDir, sysroot_include);
             continue;

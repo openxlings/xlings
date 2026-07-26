@@ -80,7 +80,24 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         const auto activeIt = workspace.find(memberTarget);
         const std::string previous =
             activeIt == workspace.end() ? std::string{} : activeIt->second;
-        if (previous == memberVersion) continue;  // already where it should be
+
+        const auto& current = db.at(memberTarget).versions.at(memberVersion);
+        if (previous == memberVersion) {
+            // Already the active version, but the sysroot may not reflect it:
+            // a removal that fell back to this release takes the removed
+            // release's headers out and puts nothing back. Re-materializing
+            // is idempotent, so `use` doubles as the repair for that -- and
+            // as a no-op when nothing is wrong. Nothing to remove first.
+            if (current.includedir.empty() && current.libdir.empty()) continue;
+            plan.switches.push_back({
+                .target = memberTarget,
+                .version = memberVersion,
+                .previousVersion = previous,
+                .installIncludeDir = current.includedir,
+                .installLibDir = current.libdir,
+            });
+            continue;
+        }
 
         MemberSwitch change{
             .target = memberTarget,
@@ -97,9 +114,8 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
                 }
             }
         }
-        const auto& data = db.at(memberTarget).versions.at(memberVersion);
-        change.installIncludeDir = data.includedir;
-        change.installLibDir = data.libdir;
+        change.installIncludeDir = current.includedir;
+        change.installLibDir = current.libdir;
         plan.switches.push_back(std::move(change));
     }
 
