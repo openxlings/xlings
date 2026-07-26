@@ -151,6 +151,51 @@ origin/main ──┬───────────────────�
 
 ---
 
+## P-1 — 集成分支的 CI 前置条件（计划外，实施时发现）
+
+> 计划初稿假定"PR 汇入集成分支即受 CI 门禁保护"。实测不成立，补记为 P-1。
+
+### P-1.1 六个 workflow 未覆盖 `release/**` ✅ 已修（PR #386）
+
+六个 workflow 的 `push` 与 `pull_request` 都只写了 `branches: [main, master]`，
+因此 **base 为 `release/0.4.70` 的 PR 完全不跑 CI**（#385 实测 `no checks reported`）。
+这让整个集成分支模型失去意义 —— 工作只会在抵达 main 时才被验证。
+
+已加 `release/**` 到六个 workflow。实测生效：改动推上去后六个 check 立即开始运行。
+
+### P-1.2 CI 每次运行都丢弃 mcpp payload 缓存 ✅ 已修（PR #386）
+
+每个 workflow 先恢复 ~800MB 的 `~/.mcpp` 缓存，紧接着执行
+`rm -rf "$HOME/.mcpp/registry"` —— 而 `registry/data/xpkgs` 正是已下载/解压的 payload
+所在。等于缓存毫无作用，且每次运行都必须从各上游主机重新拉取**全部传递依赖**。
+
+任何一个上游主机不可达 → 整个 CI 全线失败。已改为只清理需要为 GLOBAL 重新解析的
+索引与 mirror 配置，保留 `data/xpkgs`（payload 由 recipe 的 sha256 固定，与 mirror 无关）。
+
+实测生效：macOS `build-and-test` 由失败转通过，日志显示 `Cached compat.libarchive v3.8.7`
+（复用，无 Downloading）。
+
+### P-1.3 上游拉取稳定性 ⬜ 未解决（不在本仓）
+
+2026-07-26 当天，多个互不相关的包在冷缓存路径上拉取失败：
+`compat.bzip2@1.0.8`、`gtest@1.15.2`、`ftxui@6.1.9`。已排除索引仓 URL 失效
+（`git ls-remote` 正常）与源站失效（sourceware / gitcode 本地均 200），且
+**main 的内容当天同样失败**，属 runner 侧上游可达性问题。
+
+durable 修法在上游 mcpp registry：给这些包的 GLOBAL 源补可靠镜像 ——
+CN 侧已有 `gitcode.com/mcpp-res/*`，GLOBAL 侧缺同等镜像。
+
+> **对本计划的影响**：P-1.3 未解决期间，**R.3 的"三平台 CI 全绿"门禁无法达成**。
+> 这不改变门禁本身，只是把它的达成时点绑定到上游恢复。开发与 PR 审阅可继续 ——
+> 本机 mcpp 缓存是热的，`mcpp build` / `mcpp test` 正常。
+
+### P-1 的教训，回写到全局约束
+
+计划把 CI 当成既有基础设施，没有先验证它覆盖新的分支拓扑。**引入新的分支模型时，
+第一步应当是验证门禁在该拓扑下确实生效，而不是假定。**
+
+---
+
 ## 1. 全局约束
 
 沿用 `2026-07-26-xvm-provider-binding-group-plan.md` 的隔离纪律，并加严两条：
