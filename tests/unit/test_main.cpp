@@ -8273,6 +8273,16 @@ int run_xvm_registration_production_child_(
         return output.good();
     };
 
+    // Compare where the paths point, not how they are spelled. The test
+    // builds its expectations from fs::temp_directory_path(), while Config
+    // discovers the project root by walking up from the working directory.
+    // On macOS the temp dir lives under /var, which is a symlink to
+    // /private/var, so the two spellings differ while naming one directory.
+    const auto same_dir = [](const fs::path& lhs, const fs::path& rhs) {
+        std::error_code ec;
+        return fs::weakly_canonical(lhs, ec) == fs::weakly_canonical(rhs, ec);
+    };
+
     const auto home = root / "home" / ".xlings";
     const auto project = root / "project";
     const auto payload = root / "payload";
@@ -8375,9 +8385,8 @@ int run_xvm_registration_production_child_(
             configure_xpkg_execution_artifact_paths_(context);
         const auto expectedSubos =
             xlings::Config::xvm_artifact_subos_dir();
-        if (context.bin_dir != expectedSubos / "bin"
-            || context.subos_sysrootdir
-                != expectedSubos.string()) {
+        if (!same_dir(context.bin_dir, expectedSubos / "bin")
+            || !same_dir(context.subos_sysrootdir, expectedSubos)) {
             std::cerr
                 << "execution context does not match write scope\n";
             return false;
@@ -8394,13 +8403,12 @@ int run_xvm_registration_production_child_(
     if (!xlings::Config::has_project_config()) {
         return fail(4, "temporary project was not selected");
     }
-    if (xlings::Config::global_subos_dir() != globalSubos) {
+    if (!same_dir(xlings::Config::global_subos_dir(), globalSubos)) {
         return fail(
             5,
             "global subos root ignored XLINGS_ACTIVE_SUBOS");
     }
-    if (xlings::Config::xvm_artifact_subos_dir()
-        != projectSubos) {
+    if (!same_dir(xlings::Config::xvm_artifact_subos_dir(), projectSubos)) {
         return fail(
             6,
             "project metadata and artifact roots disagree");
@@ -8436,8 +8444,7 @@ int run_xvm_registration_production_child_(
     }
 
     xlings::Config::set_force_global_scope(true);
-    if (xlings::Config::xvm_artifact_subos_dir()
-        != globalSubos) {
+    if (!same_dir(xlings::Config::xvm_artifact_subos_dir(), globalSubos)) {
         return fail(
             11,
             "force-global metadata and artifact roots disagree");
