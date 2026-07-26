@@ -374,6 +374,10 @@ static void setup_shell_profiles(const fs::path& homeDir) {
     platform::exec(checkCmd);
 
     auto profilePs1 = homeDir / "config" / "shell" / "xlings-profile.ps1";
+
+    std::string profileSnippet = "`n# xlings`nif(Test-Path '" + profilePs1.string() +
+                                 "'){. '" + profilePs1.string() + "'}";
+
     std::string psCmd = "powershell -NoProfile -Command \""
         "$prof=$PROFILE;"
         "$dir=Split-Path $prof;"
@@ -381,11 +385,25 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         "if(!(Test-Path $prof)){New-Item -ItemType File -Force $prof|Out-Null};"
         "$c=Get-Content $prof -Raw -ErrorAction SilentlyContinue;"
         "if(!$c -or $c -notlike '*xlings-profile*'){"
-        "Add-Content $prof \\\"`n# xlings`nif(Test-Path '" + profilePs1.string() +
-        "'){. '" + profilePs1.string() + "'}\\\""
+        "Add-Content $prof \\\"" + profileSnippet + "\\\""
         ";Write-Host 'PS profile added'"
         "}else{Write-Host 'PS profile already set'}\"";
     platform::exec(psCmd);
+
+    std::string checkPwsh = "where pwsh >nul 2>&1";
+    if (platform::exec(checkPwsh) == 0) {
+        std::string pwshProfileCmd = "pwsh -NoProfile -Command \""
+            "$prof=$PROFILE;"
+            "$dir=Split-Path $prof;"
+            "if(!(Test-Path $dir)){New-Item -ItemType Directory -Force $dir|Out-Null};"
+            "if(!(Test-Path $prof)){New-Item -ItemType File -Force $prof|Out-Null};"
+            "$c=Get-Content $prof -Raw -ErrorAction SilentlyContinue;"
+            "if(!$c -or $c -notlike '*xlings-profile*'){"
+            "Add-Content $prof \\\"" + profileSnippet + "\\\""
+            ";Write-Host 'PS profile (pwsh) added'"
+            "}else{Write-Host 'PS profile (pwsh) already set'}\"";
+        platform::exec(pwshProfileCmd);
+    }
 #endif
 }
 
