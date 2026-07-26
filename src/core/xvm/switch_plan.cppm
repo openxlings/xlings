@@ -24,19 +24,37 @@ import xlings.core.xvm.errors;
 export namespace xlings::xvm {
 
 // What has to change on disk for one member of the release.
+//
+// Libraries are per member -- each has its own libdir. Headers are not: they
+// belong to the release as a whole and live on the plan, below.
 struct MemberSwitch {
     std::string target;
     std::string version;
     std::string previousVersion;   // empty when the member was not active
-    std::string removeIncludeDir;  // empty when there is nothing to remove
-    std::string removeLibDir;
-    std::string installIncludeDir;
+    std::string removeLibDir;      // empty when there is nothing to remove
     std::string installLibDir;
 };
 
 struct UseSwitchPlan {
     std::map<std::string, std::string> members;  // target -> version
     std::vector<MemberSwitch> switches;          // only members that move
+
+    // Header assets for the whole release, deduplicated, with the two lists
+    // already disjoint.
+    //
+    // Per-member header lists would be wrong twice over. Every member of a
+    // group resolves to the same declaration, so the same directory would be
+    // linked once per member. Worse, the loop that applied them removed and
+    // installed one member at a time: member B's removal of the outgoing
+    // release could delete links member A had just installed for the incoming
+    // one, whenever the two releases share a header name -- which for two
+    // versions of one toolchain is every header it ships.
+    //
+    // Hoisting them here makes the order unambiguous: everything the outgoing
+    // release put in the sysroot comes out, then everything the incoming one
+    // needs goes in.
+    std::vector<HeaderAsset> removeHeaders;
+    std::vector<HeaderAsset> installHeaders;
 };
 
 // Resolve the release and work out the filesystem changes.
@@ -76,24 +94,36 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         }
     }
 
+    // Accumulate the release's header assets while walking the members, then
+    // reconcile the two sets once at the end. Appending to a vector and
+    // deduplicating afterwards keeps the declaration order the recipe wrote,
+    // which decides which copy wins when two assets ship a header of the same
+    // name.
+    std::vector<HeaderAsset> incoming;
+    std::vector<HeaderAsset> outgoing;
+
     for (const auto& [memberTarget, memberVersion] : plan.members) {
         const auto activeIt = workspace.find(memberTarget);
         const std::string previous =
             activeIt == workspace.end() ? std::string{} : activeIt->second;
 
         const auto& current = db.at(memberTarget).versions.at(memberVersion);
+        auto currentHeaders =
+            group_header_assets(db, memberTarget, memberVersion);
+        incoming.insert(incoming.end(),
+                        currentHeaders.begin(), currentHeaders.end());
+
         if (previous == memberVersion) {
             // Already the active version, but the sysroot may not reflect it:
             // a removal that fell back to this release takes the removed
             // release's headers out and puts nothing back. Re-materializing
             // is idempotent, so `use` doubles as the repair for that -- and
             // as a no-op when nothing is wrong. Nothing to remove first.
-            if (current.includedir.empty() && current.libdir.empty()) continue;
+            if (current.libdir.empty()) continue;
             plan.switches.push_back({
                 .target = memberTarget,
                 .version = memberVersion,
                 .previousVersion = previous,
-                .installIncludeDir = current.includedir,
                 .installLibDir = current.libdir,
             });
             continue;
@@ -105,19 +135,50 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             .previousVersion = previous,
         };
         if (!previous.empty()) {
+            auto previousHeaders =
+                group_header_assets(db, memberTarget, previous);
+            outgoing.insert(outgoing.end(),
+                            previousHeaders.begin(), previousHeaders.end());
             auto infoIt = db.find(memberTarget);
             if (infoIt != db.end()) {
                 auto prevIt = infoIt->second.versions.find(previous);
                 if (prevIt != infoIt->second.versions.end()) {
-                    change.removeIncludeDir = prevIt->second.includedir;
                     change.removeLibDir = prevIt->second.libdir;
                 }
             }
         }
-        change.installIncludeDir = current.includedir;
         change.installLibDir = current.libdir;
         plan.switches.push_back(std::move(change));
     }
+
+    auto dedup = [](std::vector<HeaderAsset>& assets) {
+        std::set<std::pair<std::string, std::string>> seen;
+        std::erase_if(assets, [&](const HeaderAsset& asset) {
+            return asset.sourceDir.empty()
+                || !seen.emplace(asset.sourceDir,
+                                 asset.destinationPrefix).second;
+        });
+    };
+    dedup(incoming);
+    dedup(outgoing);
+
+    // An asset the incoming release also needs must not be taken out first.
+    // Two releases of the same toolchain can share a header directory, and
+    // `use` re-materializes the active release on every call to repair a
+    // drifted sysroot -- removing and relinking would open a window on every
+    // one of those calls where the header is simply absent, long enough for a
+    // concurrent build to fail on it. install_headers already skips a link
+    // that is correct; this makes sure nothing removes it beforehand.
+    std::set<std::pair<std::string, std::string>> kept;
+    for (const auto& asset : incoming) {
+        kept.emplace(asset.sourceDir, asset.destinationPrefix);
+    }
+    std::erase_if(outgoing, [&](const HeaderAsset& asset) {
+        return kept.contains({asset.sourceDir, asset.destinationPrefix});
+    });
+
+    plan.installHeaders = std::move(incoming);
+    plan.removeHeaders = std::move(outgoing);
 
     return plan;
 }

@@ -42,6 +42,25 @@ void create_link_(const fs::path& src, const fs::path& dst) {
     if (ec) log::warn("[xvm] link failed: {} -> {}", dst.string(), src.string());
 }
 
+// Where a header asset lands: `<sysroot>/include/<destinationPrefix>`, or
+// `<sysroot>/include` when the asset declares no prefix.
+//
+// The prefix exists because a source directory's name is not always the name
+// the compiler looks under -- a toolchain's `include/c++/15.1.0` has to appear
+// as `c++/15.1.0`, not as a flattened pile of its contents. Every asset the
+// current recipe API can produce has an empty prefix (libxpkg's `xvm.setup`
+// takes a single `includedir` and no destination), so today this is always
+// the sysroot include root; it is honored anyway because the field is part of
+// the persisted model and round-trips through the version database. A
+// serialized field that materialization ignores is exactly the kind of state
+// this release is removing, not adding.
+fs::path header_destination_(const HeaderAsset& asset,
+                             const fs::path& sysroot_include) {
+    return asset.destinationPrefix.empty()
+        ? sysroot_include
+        : sysroot_include / fs::path(asset.destinationPrefix);
+}
+
 // Install header symlinks from source includedir into sysroot include/
 void install_headers(const std::string& includedir, const fs::path& sysroot_include) {
     fs::create_directories(sysroot_include);
@@ -87,6 +106,24 @@ void remove_headers(const std::string& includedir, const fs::path& sysroot_inclu
             fs::remove_all(target, ec);
 #endif
         }
+    }
+}
+
+// Same two operations, addressed by header asset rather than by bare source
+// directory, so the destination prefix is honored.
+void install_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
+    install_headers(asset.sourceDir, header_destination_(asset, sysroot_include));
+}
+
+void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
+    const auto destination = header_destination_(asset, sysroot_include);
+    remove_headers(asset.sourceDir, destination);
+    // A prefix directory that only ever held this release's links is litter
+    // once they are gone. remove() on a non-empty directory fails, so this
+    // cannot take anything else with it.
+    if (!asset.destinationPrefix.empty()) {
+        std::error_code ec;
+        fs::remove(destination, ec);
     }
 }
 
@@ -254,13 +291,22 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // filesystem. Members that are already where they belong emit no change.
     auto sysroot_include = p.subosDir / "usr" / "include";
     auto sysroot_lib     = p.subosDir / "usr" / "lib";
+    // Headers first, and as two whole passes rather than per member: they are
+    // an asset of the release, not of any one member of it. Interleaving the
+    // passes -- remove one member's, install the next member's -- let the
+    // outgoing release's removal delete a link the incoming release had
+    // already put down, for every header name the two versions share. The
+    // plan has the two lists deduplicated and disjoint already.
+    for (const auto& asset : plan->removeHeaders) {
+        remove_headers(asset, sysroot_include);
+    }
+    for (const auto& asset : plan->installHeaders) {
+        install_headers(asset, sysroot_include);
+    }
+
     for (const auto& change : plan->switches) {
-        if (!change.removeIncludeDir.empty())
-            remove_headers(change.removeIncludeDir, sysroot_include);
         if (!change.removeLibDir.empty())
             remove_libdir(change.removeLibDir, sysroot_lib);
-        if (!change.installIncludeDir.empty())
-            install_headers(change.installIncludeDir, sysroot_include);
         if (!change.installLibDir.empty())
             install_libdir(change.installLibDir, sysroot_lib);
         log::debug("switching {}: {} -> {}", change.target,

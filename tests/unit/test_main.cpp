@@ -3034,6 +3034,68 @@ TEST_F(XvmHeaderSymlinkTest, RemoveHeadersNonexistentDir) {
     xlings::xvm::remove_headers("", sysrootInclude);
 }
 
+// A header asset's destination prefix decides the subdirectory it appears
+// under. The source directory's own name is not always the name the compiler
+// looks for: a toolchain's `include/c++/15.1.0` has to show up as
+// `c++/15.1.0`, not as its contents flattened into the include root.
+//
+// No recipe can set the prefix today -- libxpkg's `xvm.setup` takes a bare
+// `includedir` -- but the field is serialized and round-trips through the
+// version database, so materialization honoring it is what keeps it from
+// being another persisted-and-ignored value.
+TEST_F(XvmHeaderSymlinkTest, ADestinationPrefixDecidesWhereHeadersLand) {
+    namespace fs = std::filesystem;
+
+    auto srcInclude = testDir_ / "pkg" / "include" / "c++" / "15.1.0";
+    fs::create_directories(srcInclude);
+    xlings::platform::write_string_to_file(
+        (srcInclude / "vector").string(), "/* vector */");
+
+    auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
+    const xlings::xvm::HeaderAsset asset{
+        .sourceDir = srcInclude.string(),
+        .destinationPrefix = "c++/15.1.0",
+    };
+
+    xlings::xvm::install_headers(asset, sysrootInclude);
+    EXPECT_TRUE(fs::exists(sysrootInclude / "c++" / "15.1.0" / "vector"));
+    EXPECT_FALSE(fs::exists(sysrootInclude / "vector"))
+        << "the prefix was ignored and the headers were flattened into the "
+           "include root";
+
+    xlings::xvm::remove_headers(asset, sysrootInclude);
+    EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "15.1.0" / "vector"));
+    // The prefix directory only ever held this release's links, so it goes
+    // too rather than accumulating as litter.
+    EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "15.1.0"));
+}
+
+TEST_F(XvmHeaderSymlinkTest, APrefixDirectoryWithOtherContentSurvivesRemoval) {
+    namespace fs = std::filesystem;
+
+    auto srcInclude = testDir_ / "pkg" / "include";
+    fs::create_directories(srcInclude);
+    xlings::platform::write_string_to_file(
+        (srcInclude / "vector").string(), "/* vector */");
+
+    auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
+    const xlings::xvm::HeaderAsset asset{
+        .sourceDir = srcInclude.string(),
+        .destinationPrefix = "c++",
+    };
+    xlings::xvm::install_headers(asset, sysrootInclude);
+
+    // Something else lives under the same prefix -- another package's
+    // headers, or a file the user put there.
+    xlings::platform::write_string_to_file(
+        (sysrootInclude / "c++" / "keep.h").string(), "/* not ours */");
+
+    xlings::xvm::remove_headers(asset, sysrootInclude);
+    EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "vector"));
+    EXPECT_TRUE(fs::exists(sysrootInclude / "c++" / "keep.h"))
+        << "removing a header asset deleted a directory it did not own";
+}
+
 // ============================================================
 // xim sub-index repos tests
 // ============================================================
@@ -10937,10 +10999,18 @@ TEST(XvmSwitchPlan, SwapsHeadersAndLibsForEveryMovingMember) {
     // compile fails anyway.
     for (const auto& change : plan->switches) {
         EXPECT_EQ(change.previousVersion, "16.1.0");
-        EXPECT_NE(change.removeIncludeDir.find("16.1.0"), std::string::npos);
-        EXPECT_NE(change.installIncludeDir.find("15.1.0"), std::string::npos);
         EXPECT_NE(change.removeLibDir.find("16.1.0"), std::string::npos);
         EXPECT_NE(change.installLibDir.find("15.1.0"), std::string::npos);
+    }
+    // Headers belong to the release, so they are planned once for the whole
+    // of it rather than once per member.
+    ASSERT_EQ(plan->removeHeaders.size(), 2u);
+    ASSERT_EQ(plan->installHeaders.size(), 2u);
+    for (const auto& asset : plan->removeHeaders) {
+        EXPECT_NE(asset.sourceDir.find("16.1.0"), std::string::npos);
+    }
+    for (const auto& asset : plan->installHeaders) {
+        EXPECT_NE(asset.sourceDir.find("15.1.0"), std::string::npos);
     }
 }
 
@@ -10958,14 +11028,14 @@ TEST(XvmSwitchPlan, AnAlreadyActiveMemberIsRematerializedButNotUnwound) {
         plan->switches, [](const auto& c) { return c.target == "gcc"; });
     ASSERT_NE(gccChange, plan->switches.end());
     // gcc is already active, so there is nothing to take out of the sysroot.
-    EXPECT_TRUE(gccChange->removeIncludeDir.empty());
     EXPECT_TRUE(gccChange->removeLibDir.empty());
-    // But its headers are re-installed anyway. A removal that fell back to
+    EXPECT_TRUE(plan->removeHeaders.empty());
+    // But the headers are re-installed anyway. A removal that fell back to
     // this release took the removed release's headers out and put nothing
     // back; `use` could not repair that, because switching to the version
     // that is already active was a no-op. install_headers is idempotent, so
     // re-materializing costs nothing when nothing is wrong.
-    EXPECT_FALSE(gccChange->installIncludeDir.empty());
+    EXPECT_FALSE(plan->installHeaders.empty());
 
     const auto cxxChange = std::ranges::find_if(
         plan->switches, [](const auto& c) { return c.target == "g++"; });
@@ -10984,6 +11054,170 @@ TEST(XvmSwitchPlan, AMemberWithNoMaterializedAssetsEmitsNothing) {
     // Re-materializing is only worth emitting when there is something to
     // materialize; a program-only release in place is a genuine no-op.
     EXPECT_TRUE(plan->switches.empty());
+    EXPECT_TRUE(plan->installHeaders.empty());
+    EXPECT_TRUE(plan->removeHeaders.empty());
+}
+
+// ============================================================
+// Header assets are resolved from the group, not from one member's
+// `includedir`
+//
+// `bindingHeaders` records every header directory a release declares. Nothing
+// read it: materialization went through `VData::includedir`, which the
+// installer writes on the group root with last-op-wins semantics. A recipe
+// declaring two header directories -- a toolchain shipping `include/c++/<ver>`
+// alongside `include-fixed`, or one calling `xvm.setup` twice -- had both
+// materialized at install time (the effect list carries all of them) and only
+// the last one remembered for switching. So `xlings use` left the others'
+// headers in the sysroot and never brought the incoming release's copies in:
+// a sysroot mixing two releases, which is the state this whole release exists
+// to make unrepresentable.
+// ============================================================
+
+namespace {
+
+// A release declaring several header directories, as `xvm.setup` called more
+// than once would produce.
+void multi_header_group_(xlings::xvm::VersionDB& db,
+                         std::string_view version,
+                         const std::vector<std::string>& sourceDirs) {
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = "pkgindex:gcc",
+        .providerVersion = std::string(version),
+        .group = "gcc",
+        .rootTarget = "gcc",
+        .rootVersion = std::string(version),
+    };
+    for (const auto& t : {"gcc", "g++"}) {
+        auto& info = db[t];
+        info.type = "program";
+        auto& data = info.versions[std::string(version)];
+        data.path = std::format("/pkg/{}/{}", t, version);
+        data.kind = "program";
+        data.bindingGroup = ref;
+    }
+    auto& root = db["gcc"].versions[std::string(version)];
+    root.bindingMembers = {{"gcc", std::string(version)},
+                           {"g++", std::string(version)}};
+    root.bindingMembersDeclared = true;
+    for (const auto& dir : sourceDirs) {
+        root.bindingHeaders.push_back({.sourceDir = dir});
+    }
+    root.bindingHeadersDeclared = !sourceDirs.empty();
+    // What attach_legacy_header_dir writes: the last declared directory only,
+    // kept so a downgrade to 0.4.69 still switches something.
+    if (!sourceDirs.empty()) root.includedir = sourceDirs.back();
+}
+
+}  // namespace
+
+TEST(XvmGroupHeaders, EveryDeclaredDirectoryIsSwitchedNotJustTheLast) {
+    xlings::xvm::VersionDB db;
+    multi_header_group_(db, "15.1.0",
+                        {"/pkg/gcc/15.1.0/include/c++/15.1.0",
+                         "/pkg/gcc/15.1.0/include-fixed"});
+    multi_header_group_(db, "16.1.0",
+                        {"/pkg/gcc/16.1.0/include/c++/16.1.0",
+                         "/pkg/gcc/16.1.0/include-fixed"});
+    const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    auto sources = [](const std::vector<xlings::xvm::HeaderAsset>& assets) {
+        std::set<std::string> out;
+        for (const auto& a : assets) out.insert(a.sourceDir);
+        return out;
+    };
+    EXPECT_EQ(sources(plan->removeHeaders),
+              (std::set<std::string>{"/pkg/gcc/16.1.0/include/c++/16.1.0",
+                                     "/pkg/gcc/16.1.0/include-fixed"}))
+        << "the outgoing release left header directories in the sysroot";
+    EXPECT_EQ(sources(plan->installHeaders),
+              (std::set<std::string>{"/pkg/gcc/15.1.0/include/c++/15.1.0",
+                                     "/pkg/gcc/15.1.0/include-fixed"}))
+        << "the incoming release did not bring all its headers in";
+}
+
+TEST(XvmGroupHeaders, TheSameAssetIsPlannedOncePerReleaseNotOncePerMember) {
+    xlings::xvm::VersionDB db;
+    multi_header_group_(db, "15.1.0", {"/pkg/gcc/15.1.0/include"});
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    // gcc and g++ both resolve to the group's one declaration.
+    EXPECT_EQ(plan->installHeaders.size(), 1u);
+}
+
+// The reason headers are hoisted out of MemberSwitch. Applied per member, the
+// second member's removal of the outgoing release would delete links the
+// first member had just installed for the incoming one -- for every header
+// name the two versions share, which for two versions of one toolchain is all
+// of them.
+TEST(XvmGroupHeaders, AnAssetBothReleasesShareIsNeverRemoved) {
+    xlings::xvm::VersionDB db;
+    // A directory that does not move between the two releases: a vendored
+    // sysroot both of them link against.
+    multi_header_group_(db, "15.1.0",
+                        {"/pkg/gcc/15.1.0/include", "/shared/include"});
+    multi_header_group_(db, "16.1.0",
+                        {"/pkg/gcc/16.1.0/include", "/shared/include"});
+    const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    for (const auto& asset : plan->removeHeaders) {
+        EXPECT_NE(asset.sourceDir, "/shared/include")
+            << "an asset the incoming release also needs was taken out; "
+               "`use` would leave a window with the header missing";
+    }
+    EXPECT_EQ(plan->removeHeaders.size(), 1u);
+}
+
+TEST(XvmGroupHeaders, StateWithoutGroupHeadersStillUsesIncludedir) {
+    // 0.4.69 wrote no `bindingHeaders` at all. Its state has to keep
+    // switching headers after the upgrade -- the release notes promise there
+    // is no migration step.
+    xlings::xvm::VersionDB db;
+    auto& info = db["openssl"];
+    info.type = "lib";
+    auto& data = info.versions["3.1.5"];
+    data.path = "/pkg/openssl/3.1.5";
+    data.kind = "lib";
+    data.includedir = "/pkg/openssl/3.1.5/include";
+
+    const auto assets =
+        xlings::xvm::group_header_assets(db, "openssl", "3.1.5");
+    ASSERT_EQ(assets.size(), 1u);
+    EXPECT_EQ(assets[0].sourceDir, "/pkg/openssl/3.1.5/include");
+    EXPECT_TRUE(assets[0].destinationPrefix.empty());
+}
+
+TEST(XvmGroupHeaders, AMemberResolvesToTheGroupsDeclarationNotItsOwn) {
+    xlings::xvm::VersionDB db;
+    multi_header_group_(db, "15.1.0",
+                        {"/pkg/gcc/15.1.0/include", "/pkg/gcc/15.1.0/fixed"});
+    // g++ carries no headers of its own; before this it contributed nothing.
+    const auto fromMember =
+        xlings::xvm::group_header_assets(db, "g++", "15.1.0");
+    const auto fromRoot =
+        xlings::xvm::group_header_assets(db, "gcc", "15.1.0");
+    ASSERT_EQ(fromMember.size(), 2u);
+    ASSERT_EQ(fromRoot.size(), fromMember.size());
+    for (std::size_t i = 0; i < fromMember.size(); ++i) {
+        EXPECT_EQ(fromMember[i].sourceDir, fromRoot[i].sourceDir);
+        EXPECT_EQ(fromMember[i].destinationPrefix,
+                  fromRoot[i].destinationPrefix);
+    }
+}
+
+TEST(XvmGroupHeaders, AnUnknownEntryResolvesToNothing) {
+    xlings::xvm::VersionDB db;
+    multi_header_group_(db, "15.1.0", {"/pkg/gcc/15.1.0/include"});
+    EXPECT_TRUE(xlings::xvm::group_header_assets(db, "clang", "15.1.0").empty());
+    EXPECT_TRUE(xlings::xvm::group_header_assets(db, "gcc", "9.9.9").empty());
 }
 
 TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {

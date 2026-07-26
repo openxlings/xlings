@@ -46,6 +46,33 @@ resolve_binding_selection(const VersionDB& db,
                           const std::string& target,
                           const std::string& version);
 
+// The header directories a release puts into the sysroot.
+//
+// Headers are a property of the *group*, not of a member: `gcc` and `g++`
+// share one set of C++ headers, and which member the user happened to name is
+// not supposed to change what lands in the sysroot. So the declaration lives
+// on the group root as `bindingHeaders`, and this resolves any member of the
+// release to the same list.
+//
+// Until now nothing read that list. Materialization went through
+// `VData::includedir` instead, a single string the installer writes on the
+// root with last-op-wins semantics. For a recipe declaring one header
+// directory the two agree. For a recipe declaring two -- a toolchain with
+// `include/c++/<ver>` alongside `include-fixed`, or one calling `xvm.setup`
+// more than once -- they do not: install materializes both (it walks the
+// effect list), while `xlings use` only ever remembers the last. Switching
+// away therefore left the other directories' headers in the sysroot and
+// switching in never put the new release's copies there. The sysroot held a
+// mix of two releases, which is the exact state the binding-group work exists
+// to make unrepresentable.
+//
+// Falls back to `includedir` when the entry has no group headers to report:
+// state written by 0.4.69 has no `bindingHeaders` at all, and neither does a
+// registration that is not part of a provider group.
+std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
+                                             const std::string& target,
+                                             const std::string& version);
+
 }  // namespace xlings::xvm
 
 namespace xlings::xvm::detail_ {
@@ -534,6 +561,39 @@ resolve_binding_selection(const VersionDB& db,
             db, target, version, *versionIt->second.bindingGroup);
     }
     return detail_::resolve_legacy_graph_(db, target, version);
+}
+
+std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
+                                             const std::string& target,
+                                             const std::string& version) {
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return {};
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return {};
+    const VData& entry = versionIt->second;
+
+    const VData* root = &entry;
+    if (entry.bindingGroup) {
+        const auto& ref = *entry.bindingGroup;
+        if (auto rootTargetIt = db.find(ref.rootTarget);
+            rootTargetIt != db.end()) {
+            if (auto rootVersionIt =
+                    rootTargetIt->second.versions.find(ref.rootVersion);
+                rootVersionIt != rootTargetIt->second.versions.end()) {
+                root = &rootVersionIt->second;
+            }
+        }
+        // A dangling root reference is not repaired here. The selection layer
+        // already refuses such a release, and this is only ever called for
+        // one that resolved -- so falling back to the member's own view is
+        // the conservative answer rather than a second opinion on validity.
+    }
+
+    if (!root->bindingHeaders.empty()) return root->bindingHeaders;
+    if (!entry.includedir.empty()) {
+        return {HeaderAsset{.sourceDir = entry.includedir}};
+    }
+    return {};
 }
 
 }  // namespace xlings::xvm
