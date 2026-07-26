@@ -1,10 +1,13 @@
 name: xlings-ci-linux
 
+# Release-train integration branches (release/**) run the same matrix as
+# main: PRs land on the integration branch first and only reach main once
+# the whole train is green, so CI must gate them there, not at merge time.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
 
 env:
   GIT_TERMINAL_PROMPT: 0

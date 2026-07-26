@@ -7,11 +7,14 @@ name: xlings-ci-linux-root
 # (P0-1: no sudo dependency; P0-2: sudo chown-back).
 # Design: .agents/docs/2026-06-21-root-privilege-identity-design.md
 
+# Release-train integration branches (release/**) run the same matrix as
+# main: PRs land on the integration branch first and only reach main once
+# the whole train is green, so CI must gate them there, not at merge time.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
   pull_request:
-    branches: [main, master]
+    branches: [main, master, 'release/**']
 
 env:
   GIT_TERMINAL_PROMPT: 0

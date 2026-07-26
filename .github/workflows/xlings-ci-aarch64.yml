@@ -12,11 +12,14 @@ name: xlings-ci-aarch64
 # bootstrap mcpp. The artifact is a fully static musl aarch64 ELF — runnable
 # natively in Termux on an Android phone (no bionic dependency).
 
+# Release-train integration branches (release/**) run the same matrix as
+# main: PRs land on the integration branch first and only reach main once
+# the whole train is green, so CI must gate them there, not at merge time.
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   workflow_dispatch:
 
 concurrency:
