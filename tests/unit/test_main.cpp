@@ -27,6 +27,7 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
+import xlings.core.xvm.inspect;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -10799,6 +10800,152 @@ TEST_F(AtomicWriteTest, ThrowsWhenParentDirectoryIsMissing) {
     EXPECT_THROW(xlings::platform::write_string_to_file(target.string(), "x"),
                  std::runtime_error);
     EXPECT_EQ(entry_count(), 0u) << "staging file leaked on failure";
+}
+
+// ============================================================
+// inspect_binding_state — name the entry that made `use` refuse
+//
+// The selection layer fails closed, so a bad group makes `xlings use`
+// refuse. Until doctor could name the offending entry that refusal was a
+// dead end: doctor reported shims and payloads only, and the user was left
+// reading versions.json by hand.
+
+namespace {
+
+// One provider release, rooted at the first member.
+void inspect_group_(xlings::xvm::VersionDB& db,
+                    std::string_view provider,
+                    std::string_view providerVersion,
+                    const std::vector<std::pair<std::string, std::string>>& members) {
+    const auto& [rootTarget, rootVersion] = members.front();
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = std::string(provider),
+        .providerVersion = std::string(providerVersion),
+        .group = std::string(provider),
+        .rootTarget = rootTarget,
+        .rootVersion = rootVersion,
+    };
+    std::map<std::string, std::string> manifest;
+    for (const auto& [t, v] : members) manifest[t] = v;
+    for (const auto& [t, v] : members) {
+        auto& info = db[t];
+        if (info.type.empty()) info.type = "program";
+        auto& data = info.versions[v];
+        data.path = "/pkg";
+        data.kind = "program";
+        data.bindingGroup = ref;
+    }
+    auto& root = db[rootTarget].versions[rootVersion];
+    root.bindingMembers = manifest;
+    root.bindingMembersDeclared = true;
+}
+
+bool has_code_(const std::vector<xlings::xvm::BindingFinding>& findings,
+               std::string_view code) {
+    return std::ranges::any_of(findings, [&](const auto& f) {
+        return f.code == code;
+    });
+}
+
+}  // namespace
+
+TEST(XvmInspect, CleanStateReportsNothing) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+
+    EXPECT_TRUE(xlings::xvm::inspect_binding_state(db, ws).empty());
+}
+
+TEST(XvmInspect, NamesTheCorruptFieldAndItsEntry) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0", {{"gcc", "15.1.0"}});
+    db.at("gcc").versions.at("15.1.0").bindingIntegrityIssues = {
+        {.code = "binding-group-field-invalid", .path = "/bindingGroup/rootVersion"},
+    };
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "15.1.0"}});
+
+    ASSERT_FALSE(findings.empty());
+    const auto& first = findings.front();
+    EXPECT_EQ(first.code, "xvm-binding-metadata-corrupt");
+    EXPECT_EQ(first.target, "gcc");
+    // The JSON Pointer is the whole point: it is what turns "your state is
+    // bad" into something a user can actually go and look at.
+    EXPECT_EQ(first.field, "/bindingGroup/rootVersion");
+    EXPECT_FALSE(first.hint.empty());
+}
+
+TEST(XvmInspect, ReportsAReleaseWithAMissingMember) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db.at("g++").versions.erase("15.1.0");
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "15.1.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-binding-version-missing"))
+        << "a dangling member must be named, not just make `use` refuse";
+}
+
+TEST(XvmInspect, ReportsAnIncoherentActiveRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    inspect_group_(db, "pkgindex:gcc", "16.1.0",
+                   {{"gcc", "16.1.0"}, {"g++", "16.1.0"}});
+
+    // The exact state the release train exists to prevent: same names,
+    // different releases, and nothing on the surface says so.
+    const auto findings = xlings::xvm::inspect_binding_state(
+        db, {{"gcc", "15.1.0"}, {"g++", "16.1.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-active-group-incoherent"));
+    const auto incoherent = std::ranges::find_if(findings, [](const auto& f) {
+        return f.code == "xvm-active-group-incoherent";
+    });
+    EXPECT_NE(incoherent->hint.find("xlings use"), std::string::npos)
+        << "the hint has to name the command that fixes it";
+}
+
+TEST(XvmInspect, ReportsAnActiveVersionThatIsNotRegistered) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0", {{"gcc", "15.1.0"}});
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "99.0.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-active-version-missing"));
+}
+
+TEST(XvmInspect, ABrokenReleaseIsReportedOncePerRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}});
+    db.at("gcc-ar").versions.erase("15.1.0");
+
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+
+    // Five members short one member is one problem. Reporting it per member
+    // buries everything else in the output.
+    EXPECT_EQ(std::ranges::count_if(findings, [](const auto& f) {
+                  return f.code == "xvm-binding-version-missing";
+              }), 1);
+}
+
+TEST(XvmInspect, LegacyStateWithoutGroupsIsNotFlagged) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1.0.0"].path = "/pkg";
+    db["tool"].versions["1.0.0"].kind = "program";
+
+    // Pre-0.4.70 databases carry no group metadata at all. They are not
+    // broken, and doctor must not tell users otherwise.
+    EXPECT_TRUE(
+        xlings::xvm::inspect_binding_state(db, {{"tool", "1.0.0"}}).empty());
 }
 
 // ============================================================
