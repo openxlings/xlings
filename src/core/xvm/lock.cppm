@@ -35,6 +35,13 @@ export namespace xlings::xvm {
 // crossing a module boundary (here, as a default argument).
 constexpr std::string_view no_lock_env() { return "XLINGS_NO_LOCK"; }
 
+// Marks that an ancestor in this process tree already holds the lock.
+// Recipes legitimately shell out to xlings from their hooks -- d2mcpp's
+// config hook runs `xlings install` -- and the child inherits this, so it
+// works under the lock its parent is holding instead of waiting 30s for a
+// lock that will never be released until the child finishes.
+constexpr std::string_view reentry_env() { return "XLINGS_STATE_LOCK_HELD"; }
+
 constexpr std::chrono::milliseconds default_lock_timeout() {
     return std::chrono::seconds{30};
 }
@@ -48,21 +55,48 @@ public:
     StateLock() = default;
     StateLock(const StateLock&) = delete;
     StateLock& operator=(const StateLock&) = delete;
-    StateLock(StateLock&&) = default;
-    StateLock& operator=(StateLock&&) = default;
+    StateLock(StateLock&& other) noexcept
+        : lock_(std::move(other.lock_)),
+          held_(std::exchange(other.held_, false)),
+          bypassed_(std::exchange(other.bypassed_, false)),
+          inherited_(std::exchange(other.inherited_, false)),
+          ownsMarker_(std::exchange(other.ownsMarker_, false)) {}
+    StateLock& operator=(StateLock&& other) noexcept {
+        if (this != &other) {
+            clear_marker_();
+            lock_ = std::move(other.lock_);
+            held_ = std::exchange(other.held_, false);
+            bypassed_ = std::exchange(other.bypassed_, false);
+            inherited_ = std::exchange(other.inherited_, false);
+            ownsMarker_ = std::exchange(other.ownsMarker_, false);
+        }
+        return *this;
+    }
+    ~StateLock() { clear_marker_(); }
 
-    // True when the lock is genuinely held. Also true for the bypass, so
-    // callers cannot accidentally treat the escape hatch as a failure.
+    // True when the command may proceed. Also true for the bypass and for a
+    // lock inherited from an ancestor, so callers cannot accidentally treat
+    // either as a failure.
     [[nodiscard]] bool held() const { return held_; }
     [[nodiscard]] bool bypassed() const { return bypassed_; }
+    // Covered by an ancestor's lock rather than holding one of its own.
+    [[nodiscard]] bool inherited() const { return inherited_; }
 
 private:
     friend std::expected<StateLock, std::string> acquire_state_lock(
         const std::filesystem::path&, std::chrono::milliseconds);
 
+    void clear_marker_() {
+        if (!ownsMarker_) return;
+        platform::set_env_variable(std::string(reentry_env()), "");
+        ownsMarker_ = false;
+    }
+
     platform::FileLock lock_;
     bool held_ { false };
     bool bypassed_ { false };
+    bool inherited_ { false };
+    bool ownsMarker_ { false };
 };
 
 // Acquire the home-wide state lock, or explain why not.
@@ -93,6 +127,14 @@ std::expected<StateLock, std::string> acquire_state_lock(
         return lock;
     }
 
+    if (utils::get_env_or_default(std::string(reentry_env())) == "1") {
+        // An ancestor already holds it. Waiting here would deadlock: the
+        // holder cannot finish until this child does.
+        lock.inherited_ = true;
+        lock.held_ = true;
+        return lock;
+    }
+
     std::error_code ec;
     std::filesystem::create_directories(home, ec);
 
@@ -107,6 +149,9 @@ std::expected<StateLock, std::string> acquire_state_lock(
             no_lock_env()));
     }
 
+    // Children spawned from here on inherit this and skip locking.
+    platform::set_env_variable(std::string(reentry_env()), "1");
+    lock.ownsMarker_ = true;
     lock.held_ = true;
     return lock;
 }

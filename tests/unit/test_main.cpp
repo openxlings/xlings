@@ -11034,7 +11034,7 @@ TEST(XvmStateLock, IsHeldForTheHomeNotTheSubos) {
     drop_lock_home_(home);
 }
 
-TEST(XvmStateLock, SecondAcquisitionInTheSameProcessFailsFast) {
+TEST(XvmStateLock, AnUnrelatedHolderIsExcludedWithAnActionableMessage) {
     const auto home = lock_test_home_("contended");
     {
         auto first = xlings::xvm::acquire_state_lock(
@@ -11042,15 +11042,21 @@ TEST(XvmStateLock, SecondAcquisitionInTheSameProcessFailsFast) {
         ASSERT_TRUE(first.has_value()) << first.error();
         EXPECT_TRUE(first->held());
         EXPECT_FALSE(first->bypassed());
+        EXPECT_FALSE(first->inherited());
 
-        auto second = xlings::xvm::acquire_state_lock(
+        // Re-entry is by design for a child of the holder, so clear the
+        // marker the holder exported to stand in for an unrelated process:
+        // one that shares nothing but the home directory.
+        xlings::platform::set_env_variable("XLINGS_STATE_LOCK_HELD", "");
+
+        auto other = xlings::xvm::acquire_state_lock(
             home, std::chrono::milliseconds{50});
-        ASSERT_FALSE(second.has_value())
-            << "the lock did not exclude a second holder";
+        ASSERT_FALSE(other.has_value())
+            << "the lock did not exclude an unrelated holder";
         // The message has to be actionable: what is happening and what to do.
-        EXPECT_NE(second.error().find("another xlings process"),
+        EXPECT_NE(other.error().find("another xlings process"),
                   std::string::npos);
-        EXPECT_NE(second.error().find("XLINGS_NO_LOCK"), std::string::npos);
+        EXPECT_NE(other.error().find("XLINGS_NO_LOCK"), std::string::npos);
     }
     drop_lock_home_(home);
 }
@@ -11066,6 +11072,42 @@ TEST(XvmStateLock, ReleasesWhenTheHolderGoesOutOfScope) {
             home, std::chrono::milliseconds{50});
         EXPECT_TRUE(again.has_value())
             << "the lock outlived its holder: " << again.error();
+    }
+    drop_lock_home_(home);
+}
+
+// Recipes shell out to xlings from their hooks -- d2mcpp's config hook runs
+// `xlings install`. The child would otherwise wait 30s for a lock its own
+// parent is holding and cannot release until the child returns.
+TEST(XvmStateLock, AChildOfTheHolderProceedsWithoutWaiting) {
+    const auto home = lock_test_home_("reentrant");
+    {
+        auto outer = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(outer.has_value()) << outer.error();
+        EXPECT_FALSE(outer->inherited());
+
+        // Standing in for a spawned child: it inherits the marker the
+        // holder exported.
+        const auto start = std::chrono::steady_clock::now();
+        auto nested = xlings::xvm::acquire_state_lock(
+            home, std::chrono::seconds{30});
+        const auto waited = std::chrono::steady_clock::now() - start;
+
+        ASSERT_TRUE(nested.has_value())
+            << "a child of the holder deadlocked: " << nested.error();
+        EXPECT_TRUE(nested->inherited());
+        EXPECT_TRUE(nested->held());
+        EXPECT_LT(waited, std::chrono::seconds{5}) << "the child waited";
+    }
+    // The marker must not outlive the holder, or the next unrelated command
+    // in this process would silently skip locking.
+    {
+        auto after = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(after.has_value()) << after.error();
+        EXPECT_FALSE(after->inherited())
+            << "the re-entrancy marker outlived the lock that set it";
     }
     drop_lock_home_(home);
 }
