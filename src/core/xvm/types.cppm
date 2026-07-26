@@ -29,6 +29,16 @@ struct VData {
     std::string destinationName;
     std::string includedir;  // source header directory (e.g., xpkgs/openssl/3.1.5/include)
     std::string libdir;      // source library directory (e.g., xpkgs/glibc/2.39/lib64)
+
+    // kind = "files": one asset the package places into the subos.
+    //
+    // Both ends are relative and must stay that way. A payload is shared
+    // between subos and reference-counted, so an absolute destination
+    // recorded against it would be right for the subos that installed it and
+    // wrong for every other one. `fileSrc` is relative to the payload root,
+    // `fileDst` to the subos root.
+    std::string fileSrc;
+    std::string fileDst;
     std::vector<std::string> alias;
     std::map<std::string, std::string> envs;
     std::optional<BindingGroupRef> bindingGroup;
@@ -132,7 +142,8 @@ std::string effective_source_name(const std::string& target,
                                   const VInfo& info,
                                   const VData& data,
                                   std::string_view kind) {
-    if (kind == "group") return {};
+    // `group` and `files` name no artifact to dispatch.
+    if (kind == "group" || kind == "files") return {};
     if (!data.sourceName.empty()) return data.sourceName;
     return info.filename.empty() ? target : info.filename;
 }
@@ -141,7 +152,7 @@ std::string effective_destination_name(const std::string& target,
                                        const VData& data,
                                        std::string_view kind,
                                        std::string_view sourceName) {
-    if (kind == "group") return {};
+    if (kind == "group" || kind == "files") return {};
     if (!data.destinationName.empty()) return data.destinationName;
     if (kind == "program") return target;
     return std::string(sourceName);

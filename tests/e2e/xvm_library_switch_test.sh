@@ -23,7 +23,7 @@
 # Scenarios:
 #   1. install v1        → library and header both materialize at v1
 #   2. install v2        → v1 stays active; the sysroot must not move
-#   3. use v2            → library AND header both move to v2
+#   3. use v2            → library, header AND declared file all move
 #   4. use v1            → both move back
 #   5. remove (no teardown hook) → every entry of the release deregisters
 
@@ -99,6 +99,9 @@ function install()
                  "SOVERSION " .. version .. "\n")
     io.writefile(path.join(dir, "include", "fixture.h"),
                  "#define FIXTURE_VERSION \"" .. version .. "\"\n")
+    os.mkdir(path.join(dir, "share"))
+    io.writefile(path.join(dir, "share", "fixture.conf"),
+                 "version=" .. version .. "\n")
     return true
 end
 
@@ -125,6 +128,17 @@ function config()
     table.insert(_XVM_OPS, {
         op = "headers",
         includedir = path.join(dir, "include"),
+    })
+    -- A declared file asset: neither a program nor a library, placed at a
+    -- destination the recipe chooses. Both ends relative -- the payload is
+    -- shared between subos, so an absolute destination would be right for
+    -- one and wrong for the rest.
+    xvm.add("libfixture.files.1", {
+        type = "files",
+        bindir = dir,
+        src = "share/fixture.conf",
+        dst = "usr/share/fixture.conf",
+        binding = binding,
     })
     return true
 end
@@ -155,10 +169,16 @@ printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
 SYSROOT_LIB="$HOME_DIR/subos/default/lib/libfixture.so.1"
 SYSROOT_HDR="$HOME_DIR/subos/default/usr/include/fixture.h"
+SYSROOT_CONF="$HOME_DIR/subos/default/usr/share/fixture.conf"
 
 lib_version() {
   [[ -e "$SYSROOT_LIB" ]] || { echo ""; return; }
   sed -n 's/^SOVERSION \(.*\)$/\1/p' "$SYSROOT_LIB"
+}
+
+conf_version() {
+  [[ -e "$SYSROOT_CONF" ]] || { echo ""; return; }
+  sed -n 's/^version=\(.*\)$/\1/p' "$SYSROOT_CONF"
 }
 
 header_version() {
@@ -180,9 +200,10 @@ PY
 }
 
 expect_sysroot_at() {
-  local want="$1" ctx="$2" got_lib got_hdr
+  local want="$1" ctx="$2" got_lib got_hdr got_conf
   got_lib="$(lib_version)"
   got_hdr="$(header_version)"
+  got_conf="$(conf_version)"
   [[ "$got_lib" == "$want" ]] \
     || fail "$ctx: sysroot library is '$got_lib', expected '$want' — the library did not follow the release"
   [[ "$got_hdr" == "$want" ]] \
@@ -191,6 +212,9 @@ expect_sysroot_at() {
   # another is the state that compiles and then fails at run time.
   [[ "$got_lib" == "$got_hdr" ]] \
     || fail "$ctx: library '$got_lib' and header '$got_hdr' are from different releases"
+  # The declared file asset must move with everything else.
+  [[ "$got_conf" == "$want" ]] \
+    || fail "$ctx: sysroot usr/share/fixture.conf is '$got_conf', expected '$want' — the declared file asset did not follow the release"
 }
 
 # ── Scenario 1 ────────────────────────────────────────────────────

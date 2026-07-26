@@ -112,6 +112,31 @@ bool is_binding_root(const VersionDB& db,
                      const std::string& target,
                      const std::string& version);
 
+// Where one declared file asset has to be placed.
+//
+// `source` is absolute, inside the payload. `destination` is **relative to
+// the subos root** and deliberately left unresolved: a payload is shared
+// between subos, so the same asset lands at a different absolute path in
+// each. The caller joins it with the subos it is materializing into.
+struct FilePlacement {
+    std::string source;
+    std::string destination;
+
+    [[nodiscard]] bool empty() const { return source.empty(); }
+};
+
+// Whether a package may write this destination.
+//
+// Absolute paths and anything walking upward are refused: the first would be
+// right for one subos and wrong for the rest, the second escapes the subos
+// altogether. `bin/` is excluded because it belongs to the shims. A recipe
+// that trips this gets no placement rather than a surprising one.
+bool is_permitted_file_destination(std::string_view destination);
+
+FilePlacement file_placement(const VersionDB& db,
+                             const std::string& target,
+                             const std::string& version);
+
 }  // namespace xlings::xvm
 
 namespace xlings::xvm::detail_ {
@@ -142,7 +167,8 @@ bool same_group_(const BindingGroupRef& lhs, const BindingGroupRef& rhs) {
 }
 
 bool supported_kind_(std::string_view kind) {
-    return kind == "program" || kind == "lib" || kind == "group";
+    return kind == "program" || kind == "lib" || kind == "group"
+        || kind == "files";
 }
 
 std::optional<std::string_view>
@@ -656,6 +682,41 @@ LibraryPlacement library_placement(const VersionDB& db,
     return {
         .source = (std::filesystem::path(data.path) / sourceName).string(),
         .name = destinationName,
+    };
+}
+
+bool is_permitted_file_destination(std::string_view destination) {
+    if (destination.empty()) return false;
+    const std::filesystem::path p{destination};
+    if (p.is_absolute()) return false;
+    std::string first;
+    for (const auto& part : p) {
+        if (part == "..") return false;
+        if (first.empty()) first = part.string();
+    }
+    // Windows drive-relative forms ("C:foo") are absolute in spirit.
+    if (destination.size() > 1 && destination[1] == ':') return false;
+    return first == "usr" || first == "etc" || first == "share";
+}
+
+FilePlacement file_placement(const VersionDB& db,
+                             const std::string& target,
+                             const std::string& version) {
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return {};
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return {};
+
+    const VData& data = versionIt->second;
+    if (effective_kind(targetIt->second, data) != "files") return {};
+    if (data.path.empty() || data.fileSrc.empty() || data.fileDst.empty()) {
+        return {};
+    }
+    if (!is_permitted_file_destination(data.fileDst)) return {};
+
+    return {
+        .source = (std::filesystem::path(data.path) / data.fileSrc).string(),
+        .destination = data.fileDst,
     };
 }
 

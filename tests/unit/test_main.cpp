@@ -11521,6 +11521,177 @@ TEST(XvmLibrarySwitch, AProgramMemberHasNoLibraryPlacement) {
 }
 
 // ============================================================
+// Declared file assets
+//
+// A package that ships something which is neither a program nor a library --
+// headers under their own directory, pkg-config files, certificates -- had no
+// way to say so. `includedir` could only mean "this directory becomes sysroot
+// include", so index recipes grew their own file-placing helpers instead and
+// the version manager could neither switch nor remove what they wrote.
+//
+// `type = "files"` with a src/dst pair says it. Both ends stay relative: a
+// payload is shared between subos and reference-counted, so an absolute
+// destination recorded against it would be right for the subos that installed
+// it and wrong for every other one.
+// ============================================================
+
+namespace {
+
+void files_release_(xlings::xvm::VersionDB& db,
+                    std::string_view version,
+                    std::string_view dst = "usr/include/demo") {
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = "xim:demo",
+        .providerVersion = std::string(version),
+        .group = "demo",
+        .rootTarget = "demo",
+        .rootVersion = std::string(version),
+    };
+    auto& prog = db["demo"];
+    prog.type = "program";
+    auto& progData = prog.versions[std::string(version)];
+    progData.path = std::format("/pkg/demo/{}/bin", version);
+    progData.kind = "program";
+    progData.bindingGroup = ref;
+
+    auto& files = db["demo.files.1"];
+    files.type = "files";
+    auto& fileData = files.versions[std::string(version)];
+    fileData.path = std::format("/pkg/demo/{}", version);
+    fileData.kind = "files";
+    fileData.fileSrc = "include/demo";
+    fileData.fileDst = std::string(dst);
+    fileData.bindingGroup = ref;
+
+    progData.bindingMembers = {{"demo", std::string(version)},
+                               {"demo.files.1", std::string(version)}};
+    progData.bindingMembersDeclared = true;
+}
+
+}  // namespace
+
+TEST(XvmFileAsset, ResolvesToAPayloadSourceAndRelativeDestination) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+
+    const auto placement =
+        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0");
+    ASSERT_FALSE(placement.empty());
+    EXPECT_EQ(placement.source,
+              (std::filesystem::path("/pkg/demo/1.0.0") / "include/demo")
+                  .string());
+    // Relative on purpose: the caller joins it with the subos it is
+    // materializing into, because one payload serves several.
+    EXPECT_EQ(placement.destination, "usr/include/demo");
+}
+
+TEST(XvmFileAsset, AFileMemberIsPlannedForTheIncomingRelease) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+    files_release_(db, "2.0.0");
+    const xlings::xvm::Workspace ws{{"demo", "2.0.0"},
+                                    {"demo.files.1", "2.0.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    const auto entry = std::ranges::find_if(
+        plan->switches,
+        [](const auto& c) { return c.target == "demo.files.1"; });
+    ASSERT_NE(entry, plan->switches.end())
+        << "the file asset emitted no change";
+    EXPECT_NE(entry->installFileSource.find("1.0.0"), std::string::npos);
+    EXPECT_EQ(entry->installFileDest, "usr/include/demo");
+    // Same destination across versions is a replacement, not an unlink --
+    // unlinking first would open a window with the file absent.
+    EXPECT_TRUE(entry->removeFileDest.empty());
+}
+
+TEST(XvmFileAsset, AMovedDestinationIsUnlinked) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0", "usr/include/demo");
+    files_release_(db, "2.0.0", "usr/include/demo2");
+    const xlings::xvm::Workspace ws{{"demo", "1.0.0"},
+                                    {"demo.files.1", "1.0.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    const auto entry = std::ranges::find_if(
+        plan->switches,
+        [](const auto& c) { return c.target == "demo.files.1"; });
+    ASSERT_NE(entry, plan->switches.end());
+    EXPECT_EQ(entry->installFileDest, "usr/include/demo2");
+    EXPECT_EQ(entry->removeFileDest, "usr/include/demo")
+        << "the path the outgoing version occupied was left behind";
+}
+
+// A destination decides where a package may write inside someone else's
+// subos, so it is validated rather than trusted.
+TEST(XvmFileAsset, DestinationsAreConstrained) {
+    using xlings::xvm::is_permitted_file_destination;
+    EXPECT_TRUE(is_permitted_file_destination("usr/include/openssl"));
+    EXPECT_TRUE(is_permitted_file_destination("etc/ssl/certs"));
+    EXPECT_TRUE(is_permitted_file_destination("share/man/man1/x.1"));
+
+    EXPECT_FALSE(is_permitted_file_destination(""));
+    // Absolute: right for one subos, wrong for every other.
+    EXPECT_FALSE(is_permitted_file_destination("/usr/include/x"));
+    // Escapes the subos entirely.
+    EXPECT_FALSE(is_permitted_file_destination("../../etc/passwd"));
+    EXPECT_FALSE(is_permitted_file_destination("usr/../../x"));
+    // bin/ belongs to the shims.
+    EXPECT_FALSE(is_permitted_file_destination("bin/gcc"));
+    EXPECT_FALSE(is_permitted_file_destination("lib/libx.so"));
+}
+
+TEST(XvmFileAsset, ARejectedDestinationYieldsNoPlacement) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+    db["demo.files.1"].versions["1.0.0"].fileDst = "bin/evil";
+
+    EXPECT_TRUE(
+        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0").empty())
+        << "a destination outside the permitted roots must place nothing";
+}
+
+TEST(XvmFileAsset, NonFileEntriesResolveToNoPlacement) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+    EXPECT_TRUE(xlings::xvm::file_placement(db, "demo", "1.0.0").empty());
+    EXPECT_TRUE(xlings::xvm::file_placement(db, "nope", "1.0.0").empty());
+}
+
+// The release identity is a date now. `self update` resolves `latest` and
+// then sorts with this comparator, so a client on any 0.x has to see the new
+// scheme as newer -- otherwise the upgrade it is told about never applies.
+TEST(XvmDateVersioning, ADateVersionOutranksEverySemanticVersion) {
+    using xlings::xvm::version_key_greater;
+    for (const auto* older : {"0.4.68", "0.4.69", "0.4.70", "0.4.9", "1.2.3"}) {
+        EXPECT_TRUE(version_key_greater("2026.7.27.0", older))
+            << "a client on " << older << " would not see the upgrade";
+    }
+    // And dates order among themselves, including the same-day sequence.
+    EXPECT_TRUE(version_key_greater("2026.7.28.0", "2026.7.27.0"));
+    EXPECT_TRUE(version_key_greater("2026.7.27.1", "2026.7.27.0"));
+    EXPECT_TRUE(version_key_greater("2026.8.1.0", "2026.7.31.0"));
+    EXPECT_TRUE(version_key_greater("2027.1.1.0", "2026.12.31.9"));
+    // And this is the concrete reason the scheme forbids leading zeros.
+    //
+    // The comparator parses each component numerically, so "07" and "7" are
+    // the same number -- but when every component ties it falls back to a
+    // lexicographic tiebreak to keep the order total, which `sort` requires.
+    // So the two spellings are *not* one key: they are two distinct keys that
+    // are numerically equal and arbitrarily ordered. A database holding both
+    // would have two entries for one version, and which one `latest`
+    // resolves to would depend on string bytes.
+    EXPECT_TRUE(version_key_greater("2026.07.27.0", "2026.7.27.0")
+                != version_key_greater("2026.7.27.0", "2026.07.27.0"))
+        << "the two spellings must be distinguishable, which is exactly why "
+           "only one of them may ever be written";
+}
+
+// ============================================================
 // State lock — install/remove/use must not overwrite each other
 
 namespace {

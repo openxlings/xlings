@@ -20,6 +20,9 @@ struct RegistrationNode {
     std::string kind;
     std::string sourceName;
     std::string destinationName;
+    // kind = "files" only; see VData for why both ends are relative.
+    std::string fileSrc;
+    std::string fileDst;
     std::vector<std::string> alias;
     std::map<std::string, std::string> envs;
     std::optional<RegistrationBinding> binding;
@@ -178,12 +181,14 @@ std::optional<std::string> legacy_payload_mismatch_(
         node.target, info, data, kind);
     const auto destinationName = effective_destination_name_(
         node.target, data, kind, sourceName);
-    const auto expectedSourceName = node.kind == "group"
-        ? std::string_view{}
-        : std::string_view{node.sourceName};
-    const auto expectedDestinationName = node.kind == "group"
-        ? std::string_view{}
-        : std::string_view{node.destinationName};
+    const auto namesAnArtifact =
+        node.kind != "group" && node.kind != "files";
+    const auto expectedSourceName = namesAnArtifact
+        ? std::string_view{node.sourceName}
+        : std::string_view{};
+    const auto expectedDestinationName = namesAnArtifact
+        ? std::string_view{node.destinationName}
+        : std::string_view{};
     if (data.path != node.path) return "path";
     if (kind != node.kind) return "kind";
     if (sourceName != expectedSourceName) return "sourceName";
@@ -277,7 +282,8 @@ apply_registration_batch(
         }
         if (node.kind != "program"
             && node.kind != "lib"
-            && node.kind != "group") {
+            && node.kind != "group"
+            && node.kind != "files") {
             return std::unexpected(detail_::registration_error_(
                 RegistrationErrorKind::InvalidNodePayload,
                 nodePath + "/kind", node.target, node.version,
@@ -285,17 +291,40 @@ apply_registration_batch(
                     "unsupported registration node kind '{}'",
                     node.kind)));
         }
-        if (node.kind != "group" && node.sourceName.empty()) {
+        // `group` and `files` name no artifact to dispatch, so neither
+        // carries a source or destination *name*. A files entry is validated
+        // on its src/dst pair instead -- that is what it does carry.
+        const bool namesAnArtifact =
+            node.kind != "group" && node.kind != "files";
+        if (namesAnArtifact && node.sourceName.empty()) {
             return std::unexpected(detail_::registration_error_(
                 RegistrationErrorKind::InvalidNodePayload,
                 nodePath + "/sourceName", node.target, node.version,
                 "materialized registration source name is empty"));
         }
-        if (node.kind != "group" && node.destinationName.empty()) {
+        if (namesAnArtifact && node.destinationName.empty()) {
             return std::unexpected(detail_::registration_error_(
                 RegistrationErrorKind::InvalidNodePayload,
                 nodePath + "/destinationName", node.target, node.version,
                 "materialized registration destination name is empty"));
+        }
+        if (node.kind == "files") {
+            if (node.fileSrc.empty()) {
+                return std::unexpected(detail_::registration_error_(
+                    RegistrationErrorKind::InvalidNodePayload,
+                    nodePath + "/src", node.target, node.version,
+                    "file asset declares no source"));
+            }
+            if (!is_permitted_file_destination(node.fileDst)) {
+                return std::unexpected(detail_::registration_error_(
+                    RegistrationErrorKind::InvalidNodePayload,
+                    nodePath + "/dst", node.target, node.version,
+                    std::format(
+                        "file asset destination '{}' is not allowed: it must "
+                        "be relative to the subos root, must not walk "
+                        "upward, and must live under usr/, etc/ or share/",
+                        node.fileDst)));
+            }
         }
         if (node.binding && node.binding->rootTarget.empty()) {
             return std::unexpected(detail_::registration_error_(
@@ -733,6 +762,8 @@ apply_registration_batch(
         auto& data = info.versions[node.version];
         data.path = node.path;
         data.kind = node.kind;
+        data.fileSrc = node.fileSrc;
+        data.fileDst = node.fileDst;
         data.sourceName =
             node.kind == "group" ? std::string{} : node.sourceName;
         data.destinationName =

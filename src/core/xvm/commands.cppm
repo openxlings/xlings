@@ -127,40 +127,42 @@ void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
     }
 }
 
-// Place one library file in the sysroot lib directory, replacing whatever
-// is there.
+// Place one file at an exact destination, replacing whatever is there.
+//
+// Shared by libraries and by declared file assets: both are "this payload
+// file becomes that path in the subos", and both need the same replacement
+// discipline.
 //
 // Replaces by rename rather than remove-then-link. Two versions of a library
 // share a soname, so a switch overwrites the same name -- and `use`
 // re-materializes the active release on every invocation to repair a drifted
 // sysroot, so remove-then-link would open a window on every one of those
-// calls where the library is simply absent. Long enough for a concurrent link
+// calls where the file is simply absent. Long enough for a concurrent build
 // step to fail on it. rename(2) replaces atomically; Windows has no
-// equivalent for every case, so the staging file is cleaned up and the
+// equivalent for every entry kind, so the staging file is cleaned up and the
 // direct path is taken there.
-void place_library(const std::string& source,
-                   const std::string& name,
-                   const fs::path& sysroot_lib) {
-    if (source.empty() || name.empty()) return;
+void place_asset(const std::string& source, const fs::path& destination) {
+    if (source.empty() || destination.empty()) return;
     std::error_code ec;
     fs::path src(source);
     if (!fs::exists(src, ec)) {
-        log::debug("[xvm] library source missing, not placed: {}", source);
+        log::debug("[xvm] asset source missing, not placed: {}", source);
         return;
     }
-    fs::create_directories(sysroot_lib, ec);
-    const auto destination = sysroot_lib / name;
+    fs::create_directories(destination.parent_path(), ec);
 
     // Already pointing at this exact file: leave it alone. Keeps the repeated
     // re-materialization that `use` performs down to a stat.
     std::error_code sameEc;
     if (fs::equivalent(destination, src, sameEc) && !sameEc) return;
 
-    const auto staging = sysroot_lib / (name + ".xlings-new");
+    const auto staging =
+        destination.parent_path()
+        / (destination.filename().string() + ".xlings-new");
     fs::remove_all(staging, ec);
     create_link_(src, staging);
     if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
-        log::warn("[xvm] could not stage library: {}", destination.string());
+        log::warn("[xvm] could not stage asset: {}", destination.string());
         return;
     }
     ec.clear();
@@ -174,20 +176,33 @@ void place_library(const std::string& source,
         fs::rename(staging, destination, ec);
         if (ec) {
             fs::remove_all(staging, rmEc);
-            log::warn("[xvm] could not place library {}: {}",
+            log::warn("[xvm] could not place asset {}: {}",
                       destination.string(), ec.message());
         }
     }
 }
 
-// Take one library file back out of the sysroot lib directory.
-void remove_library(const std::string& name, const fs::path& sysroot_lib) {
-    if (name.empty()) return;
+// Take one placed file back out.
+void remove_asset(const fs::path& destination) {
+    if (destination.empty()) return;
     std::error_code ec;
-    const auto destination = sysroot_lib / name;
     if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
         fs::remove_all(destination, ec);
     }
+}
+
+// Library-shaped wrappers, kept because the sysroot lib directory is implied
+// rather than declared for libraries.
+void place_library(const std::string& source,
+                   const std::string& name,
+                   const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    place_asset(source, sysroot_lib / name);
+}
+
+void remove_library(const std::string& name, const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    remove_asset(sysroot_lib / name);
 }
 
 // Helper: filter a list of version keys (`ns:ver` or bare) down to those
@@ -329,6 +344,13 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         if (!change.installLibSource.empty())
             place_library(change.installLibSource, change.installLibName,
                           sysroot_lib);
+        // File assets carry their own destination, relative to the subos
+        // root, so they are joined here rather than assumed into a fixed dir.
+        if (!change.removeFileDest.empty())
+            remove_asset(p.subosDir / change.removeFileDest);
+        if (!change.installFileSource.empty())
+            place_asset(change.installFileSource,
+                        p.subosDir / change.installFileDest);
         log::debug("switching {}: {} -> {}", change.target,
                    change.previousVersion.empty() ? "(none)"
                                                   : change.previousVersion,

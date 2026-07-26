@@ -44,6 +44,13 @@ struct MemberSwitch {
     // Library placement. Empty for members that are not libraries.
     std::string installLibSource;  // absolute: <payload>/<sourceName>
     std::string installLibName;    // basename in the sysroot lib directory
+
+    // Declared file asset. Empty for members that are not `files` entries.
+    // The destination is relative to the subos root -- see FilePlacement.
+    std::string installFileSource;
+    std::string installFileDest;
+    // What the outgoing version occupied, when it is a different path.
+    std::string removeFileDest;
     // What the outgoing version occupied. Usually the same name as
     // installLibName -- two versions of one library share a soname -- in
     // which case the placement replaces it and nothing is unlinked.
@@ -130,6 +137,7 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         auto placement = library_placement(db, memberTarget, memberVersion);
         auto installSource = std::move(placement.source);
         auto installName = std::move(placement.name);
+        auto file = file_placement(db, memberTarget, memberVersion);
 
         if (previous == memberVersion) {
             // Already the active version, but the sysroot may not reflect it:
@@ -137,13 +145,15 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             // release's headers out and puts nothing back. Re-materializing
             // is idempotent, so `use` doubles as the repair for that -- and
             // as a no-op when nothing is wrong. Nothing to remove first.
-            if (installSource.empty()) continue;
+            if (installSource.empty() && file.empty()) continue;
             plan.switches.push_back({
                 .target = memberTarget,
                 .version = memberVersion,
                 .previousVersion = previous,
                 .installLibSource = std::move(installSource),
                 .installLibName = std::move(installName),
+                .installFileSource = std::move(file.source),
+                .installFileDest = std::move(file.destination),
             });
             continue;
         }
@@ -154,6 +164,8 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             .previousVersion = previous,
             .installLibSource = std::move(installSource),
             .installLibName = std::move(installName),
+            .installFileSource = std::move(file.source),
+            .installFileDest = std::move(file.destination),
         };
         if (!previous.empty()) {
             auto previousHeaders =
@@ -169,6 +181,14 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             if (!previousPlacement.name.empty()
                 && previousPlacement.name != change.installLibName) {
                 change.removeLibName = std::move(previousPlacement.name);
+            }
+            // Same reasoning for a file asset: only unlink when the outgoing
+            // version occupied a path the incoming one does not reuse.
+            auto previousFile =
+                file_placement(db, memberTarget, previous);
+            if (!previousFile.destination.empty()
+                && previousFile.destination != change.installFileDest) {
+                change.removeFileDest = std::move(previousFile.destination);
             }
         }
         plan.switches.push_back(std::move(change));

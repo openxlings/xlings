@@ -49,6 +49,7 @@ struct XpkgRegistrationError {
 enum class XpkgFilesystemEffectKind {
     ProgramShim,
     Library,
+    FileAsset,
     InstallHeaders,
     RemoveHeaders,
 };
@@ -294,11 +295,16 @@ normalize_xpkg_registration_plan(
             : operation.version;
         const auto kind =
             operation.type.empty() ? std::string{"program"} : operation.type;
-        const auto sourceName = kind == "group"
-            ? std::string{}
-            : (operation.filename.empty()
+        // A `files` asset names no artifact to dispatch, so it carries no
+        // source or destination *name* -- what it carries is a src/dst pair,
+        // below. Treating it like a program would invent a sourceName from
+        // the target and then look for an executable that does not exist.
+        const auto namesAnArtifact = kind != "group" && kind != "files";
+        const auto sourceName = namesAnArtifact
+            ? (operation.filename.empty()
                 ? operation.name
-                : operation.filename);
+                : operation.filename)
+            : std::string{};
         xvm::RegistrationNode registrationNode{
             .target = operation.name,
             .version = {},
@@ -307,11 +313,11 @@ normalize_xpkg_registration_plan(
                 : operation.bindir,
             .kind = kind,
             .sourceName = sourceName,
-            .destinationName = kind == "group"
-                ? std::string{}
-                : (kind == "program"
-                    ? operation.name
-                    : sourceName),
+            .destinationName = namesAnArtifact
+                ? (kind == "program" ? operation.name : sourceName)
+                : std::string{},
+            .fileSrc = kind == "files" ? operation.src : std::string{},
+            .fileDst = kind == "files" ? operation.dst : std::string{},
         };
         auto exactVersion =
             normalizeVersion(rawVersion, index, operation.name);
@@ -367,11 +373,13 @@ normalize_xpkg_registration_plan(
                 .rootVersion = std::move(*rootVersion),
             };
         }
-        if (kind == "program" || kind == "lib") {
+        if (kind == "program" || kind == "lib" || kind == "files") {
             plan.effects.push_back({
                 .kind = kind == "program"
                     ? XpkgFilesystemEffectKind::ProgramShim
-                    : XpkgFilesystemEffectKind::Library,
+                    : (kind == "lib"
+                        ? XpkgFilesystemEffectKind::Library
+                        : XpkgFilesystemEffectKind::FileAsset),
                 .target = operation.name,
                 .version = registrationNode.version,
             });
@@ -1293,6 +1301,10 @@ void detach_current_subos_(const std::string& target,
             !placement.empty()) {
             xvm::remove_library(placement.name, sysroot_lib);
         }
+        if (const auto file = xvm::file_placement(db, target, version);
+            !file.empty()) {
+            xvm::remove_asset(Config::paths().subosDir / file.destination);
+        }
         remove_target_shims_(target, version);
 
         // Auto-fallback: when the user removes the active version but
@@ -1467,6 +1479,11 @@ bool process_xvm_operations_(const PlanNode& node,
             !placement.empty()) {
             xvm::place_library(placement.source, placement.name, sysroot_lib);
         }
+        if (const auto file = xvm::file_placement(scopedDb, target, version);
+            !file.empty()) {
+            xvm::place_asset(file.source,
+                             Config::paths().subosDir / file.destination);
+        }
     }
 
     // Written after the batch, not inside it: the batch owns the group model
@@ -1564,6 +1581,25 @@ bool process_xvm_operations_(const PlanNode& node,
                 }
                 xself::compat::v0_4_8::cleanup_legacy_alias_shims(
                     artifactBinDir, xlings_bin);
+            }
+            continue;
+        }
+        if (resolved->kind == XpkgFilesystemEffectKind::FileAsset) {
+            if (!resolved->active) {
+                log::debug("[xim] file asset {}@{} not placed: not the "
+                           "active version", resolved->target,
+                           resolved->version);
+                continue;
+            }
+            if (const auto file = xvm::file_placement(
+                    scopedDb, resolved->target, resolved->version);
+                !file.empty()) {
+                xvm::place_asset(file.source,
+                                 artifactSubosDir / file.destination);
+            } else {
+                log::warn("[xim] file asset {}@{} declares no usable "
+                          "destination; nothing placed",
+                          resolved->target, resolved->version);
             }
             continue;
         }
