@@ -4215,6 +4215,80 @@ TEST(XvmRegistrationOwnershipTest,
 }
 
 TEST(XvmRegistrationOwnershipTest,
+     MissingPersistedRootRejectsDifferentIncomingGroupWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    const auto oldGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "old-group",
+        "shared-root", "repo:root");
+    add_provider_group_member(
+        db, "old-member", "repo:old-member", oldGroup,
+        "program", "old-member", "old-member");
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto root =
+        make_registration_node("shared-root", "repo:root", "group");
+    auto newMember =
+        make_registration_node("new-member", "repo:new-member");
+    newMember.binding = make_registration_binding(
+        "shared-root", "repo:root", "new-group");
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({root, newMember}));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
+        "/bindingGroups/old-group", "shared-root", "repo:root");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsPersistedTwoLabelsForOneRootWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    const auto alphaGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "alpha",
+        "shared-root", "repo:root");
+    auto& root = add_provider_group_member(
+        db, "shared-root", "repo:root", alphaGroup, "group");
+    root.bindingMembers = {
+        {"shared-root", "repo:root"},
+    };
+    root.bindingMembersDeclared = true;
+    const auto betaGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "beta",
+        "shared-root", "repo:root");
+    add_provider_group_member(
+        db, "beta-member", "repo:beta", betaGroup,
+        "program", "beta-member", "beta-member");
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            make_registration_node("fresh", "repo:fresh"),
+        }));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
+        "/bindingGroups/beta", "shared-root", "repo:root");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
      RejectsOtherProviderExactCollisionWithoutMutation) {
     xlings::xvm::VersionDB db;
     auto& existing = db["tool"].versions["repo:1.0.0"];
@@ -5034,27 +5108,43 @@ TEST(XvmRegistrationStateTest,
 }
 
 TEST(XvmRegistrationStateTest,
-     InvalidPayloadInFinalNodePreservesEveryStateObject) {
+     FinalComponentValidationFailurePreservesEveryStateObject) {
     xlings::xvm::VersionDB db;
     db["sentinel"].versions["0"].path = "/sentinel";
-    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
-    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto staleGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "stale-group",
+        "future-root", "repo:root");
+    add_provider_group_member(
+        db, "stale-member", "repo:stale-member", staleGroup,
+        "program", "stale-member", "stale-member");
+    xlings::xvm::Workspace workspace{
+        {"future-root", "repo:previous"},
+        {"sentinel", "0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"future-root", {"repo:previous"}},
+        {"sentinel", {"0"}},
+    };
     const auto dbBefore = xlings::xvm::versions_to_json(db);
     const auto workspaceBefore = workspace;
     const auto installedBefore = installed;
-    auto valid =
-        make_registration_node("a-valid", "repo:valid");
-    auto invalid =
-        make_registration_node("z-invalid", "repo:invalid", "archive");
+
+    auto root =
+        make_registration_node("future-root", "repo:root", "group");
+    auto freshMember =
+        make_registration_node("fresh-member", "repo:fresh-member");
+    freshMember.binding = make_registration_binding(
+        "future-root", "repo:root", "replacement-group");
+    auto batch = make_registration_batch({root, freshMember});
+    batch.useAfterInstall = true;
 
     auto result = xlings::xvm::apply_registration_batch(
-        db, workspace, installed,
-        make_registration_batch({valid, invalid}));
+        db, workspace, installed, batch);
 
     expect_registration_error(
         result,
-        xlings::xvm::RegistrationErrorKind::InvalidNodePayload,
-        "/nodes/1/kind", "z-invalid", "repo:invalid");
+        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
+        "/bindingGroups/stale-group", "future-root", "repo:root");
     expect_registration_state_unchanged(
         db, workspace, installed,
         dbBefore, workspaceBefore, installedBefore);

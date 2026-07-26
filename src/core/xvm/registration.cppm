@@ -87,6 +87,12 @@ apply_registration_batch(
 namespace xlings::xvm::detail_ {
 
 using RegistrationExactKey = std::pair<std::string, std::string>;
+using RegistrationGroupIdentity = std::tuple<
+    std::string,
+    std::string,
+    std::string,
+    std::string,
+    std::string>;
 
 struct RegistrationGroup {
     std::string label;
@@ -120,6 +126,17 @@ bool same_registration_group_(
         && lhs.group == rhs.group
         && lhs.rootTarget == rhs.rootTarget
         && lhs.rootVersion == rhs.rootVersion;
+}
+
+RegistrationGroupIdentity registration_group_identity_(
+    const BindingGroupRef& group) {
+    return {
+        group.provider,
+        group.providerVersion,
+        group.group,
+        group.rootTarget,
+        group.rootVersion,
+    };
 }
 
 std::string effective_kind_(
@@ -753,16 +770,39 @@ apply_registration_batch(
             candidateDb.at(target)
                 .bindings[group.root.first][version] = group.root.second;
         }
+    }
 
+    std::map<
+        detail_::RegistrationGroupIdentity,
+        detail_::RegistrationExactKey> candidateGroups;
+    for (const auto& [target, info] : candidateDb) {
+        for (const auto& [version, data] : info.versions) {
+            if (!data.bindingGroup) continue;
+            const auto& ref = *data.bindingGroup;
+            if (ref.provider != batch.provider
+                || ref.providerVersion != batch.providerVersion) {
+                continue;
+            }
+            candidateGroups.try_emplace(
+                detail_::registration_group_identity_(ref),
+                target, version);
+        }
+    }
+    for (const auto& [_, representative] : candidateGroups) {
+        const auto& ref =
+            *candidateDb.at(representative.first)
+                 .versions.at(representative.second)
+                 .bindingGroup;
         auto selection = resolve_binding_selection(
-            candidateDb, group.root.first, group.root.second);
+            candidateDb, representative.first, representative.second);
         if (!selection) {
-            return std::unexpected(RegistrationError{
-                .kind = RegistrationErrorKind::BindingValidationFailed,
-                .target = selection.error().target,
-                .version = selection.error().version,
-                .message = selection.error().message,
-            });
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::BindingValidationFailed,
+                "/bindingGroups/"
+                    + detail_::registration_path_token_(ref.group),
+                selection.error().target,
+                selection.error().version,
+                selection.error().message));
         }
     }
 
