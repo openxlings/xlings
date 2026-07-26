@@ -351,6 +351,15 @@ private:
         return {};
     }
 
+    [[nodiscard]] std::filesystem::path global_subos_dir_() const {
+        auto activeSubos = utils::get_env_or_default(
+            "XLINGS_ACTIVE_SUBOS");
+        if (activeSubos.empty()) {
+            activeSubos = globalActiveSubos_;
+        }
+        return paths_.homeDir / "subos" / activeSubos;
+    }
+
     [[nodiscard]] static std::vector<std::string>
     lookup_resource_servers_in_(const MirrorServerMap& source, std::string_view mirror) {
         auto key = effective_mirror_name_(mirror, "GLOBAL");
@@ -971,9 +980,27 @@ public:
         return instance_().paths_.homeDir / "subos" / name;
     }
 
+    [[nodiscard]] static std::filesystem::path global_subos_dir() {
+        return instance_().global_subos_dir_();
+    }
+
     [[nodiscard]] static std::filesystem::path global_subos_bin_dir() {
+        return global_subos_dir() / "bin";
+    }
+
+    [[nodiscard]] static std::filesystem::path
+    xvm_artifact_subos_dir() {
         auto& self = instance_();
-        return self.paths_.homeDir / "subos" / self.globalActiveSubos_ / "bin";
+        const bool useProject =
+            self.hasProjectConfig_ && !self.forceGlobalScope_;
+        if (useProject
+            && (self.projectSubosMode_
+                    == ProjectSubosMode::Named
+                || self.projectSubosMode_
+                    == ProjectSubosMode::Anonymous)) {
+            return self.project_subos_dir_();
+        }
+        return self.global_subos_dir_();
     }
 
     static std::vector<std::string> list_subos_names() {
@@ -1064,18 +1091,10 @@ public:
             // spawns `xlings install -g`) when the user happens to run
             // self install from inside an xlings repo / project tree.
             //
-            // Compose the global-scope path from XLINGS_ACTIVE_SUBOS env
-            // (per-shell override) or globalActiveSubos_ (~/.xlings.json
-            // snapshot) — both are valid global-scope subos names whose
-            // directories exist on disk.
-            std::string global_name;
-            if (auto env = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
-                !env.empty()) {
-                global_name = env;
-            } else {
-                global_name = self.globalActiveSubos_;
-            }
-            subosConfigPath = self.paths_.homeDir / "subos" / global_name / ".xlings.json";
+            // Resolve the same global-scope subos root used by XVM
+            // filesystem effects.
+            subosConfigPath =
+                self.global_subos_dir_() / ".xlings.json";
         }
 
         nlohmann::json json;

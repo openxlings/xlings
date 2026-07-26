@@ -6878,6 +6878,1455 @@ TEST(XvmRemovalBatchTest,
         }));
 }
 
+TEST(XimXvmRegistrationAdapterTest,
+     RootAfterChildProducesOneExactProviderGroup) {
+    xlings::xim::PlanNode provider;
+    provider.name = "toolchain";
+    provider.version = "15.1.0";
+    provider.namespaceName = "repo-a";
+    provider.canonicalName = "repo-a:toolchain";
+    provider.storeRoot = "/store";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "cc",
+            .version = "gcc-15.1.0",
+            .bindir = "/payload/bin",
+            .type = "program",
+            .filename = "cc-real",
+            .binding = "toolchain@15.1.0",
+        },
+        {
+            .op = "add",
+            .name = "toolchain",
+            .version = "15.1.0",
+            .type = "group",
+        },
+    };
+
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo-a", "/data", false);
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    EXPECT_EQ(plan->batch.provider, "repo-a:toolchain");
+    EXPECT_EQ(plan->batch.providerVersion, "15.1.0");
+    ASSERT_EQ(plan->batch.nodes.size(), 2u);
+    EXPECT_EQ(plan->batch.nodes[0].target, "cc");
+    EXPECT_EQ(plan->batch.nodes[0].version, "repo-a:gcc-15.1.0");
+    ASSERT_TRUE(plan->batch.nodes[0].binding.has_value());
+    EXPECT_EQ(
+        plan->batch.nodes[0].binding->rootTarget,
+        "toolchain");
+    EXPECT_EQ(
+        plan->batch.nodes[0].binding->rootVersion,
+        "repo-a:15.1.0");
+    EXPECT_EQ(plan->batch.nodes[1].target, "toolchain");
+    EXPECT_EQ(plan->batch.nodes[1].version, "repo-a:15.1.0");
+
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, plan->batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& root =
+        db.at("toolchain").versions.at("repo-a:15.1.0");
+    const auto& child =
+        db.at("cc").versions.at("repo-a:gcc-15.1.0");
+    ASSERT_TRUE(root.bindingGroup.has_value());
+    ASSERT_TRUE(child.bindingGroup.has_value());
+    EXPECT_EQ(root.bindingGroup->provider, "repo-a:toolchain");
+    EXPECT_EQ(root.bindingGroup->providerVersion, "15.1.0");
+    EXPECT_EQ(root.bindingGroup->group, "toolchain");
+    EXPECT_EQ(
+        child.bindingGroup->provider,
+        root.bindingGroup->provider);
+    EXPECT_EQ(
+        child.bindingGroup->providerVersion,
+        root.bindingGroup->providerVersion);
+    EXPECT_EQ(
+        child.bindingGroup->group,
+        root.bindingGroup->group);
+    EXPECT_EQ(
+        child.bindingGroup->rootTarget,
+        root.bindingGroup->rootTarget);
+    EXPECT_EQ(
+        child.bindingGroup->rootVersion,
+        root.bindingGroup->rootVersion);
+    EXPECT_EQ(
+        root.bindingMembers,
+        (std::map<std::string, std::string>{
+            {"cc", "repo-a:gcc-15.1.0"},
+            {"toolchain", "repo-a:15.1.0"},
+        }));
+    EXPECT_EQ(
+        installed.at("cc"),
+        (std::vector<std::string>{"repo-a:gcc-15.1.0"}));
+    EXPECT_EQ(
+        installed.at("toolchain"),
+        (std::vector<std::string>{"repo-a:15.1.0"}));
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     NormalizesVersionNamespaceExactlyOnceAndRejectsConflicts) {
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo-a";
+    const auto makeAdd = [](std::string version) {
+        return std::vector<mcpplibs::xpkg::XvmOp>{
+            {
+                .op = "add",
+                .name = "tool",
+                .version = std::move(version),
+            },
+        };
+    };
+
+    auto matching = xlings::xim::normalize_xpkg_registration_plan(
+        provider, makeAdd("repo-a:tool-1.0.0"),
+        "repo-a", "/data", false);
+    ASSERT_TRUE(matching.has_value()) << matching.error().message;
+    ASSERT_EQ(matching->batch.nodes.size(), 1u);
+    EXPECT_EQ(
+        matching->batch.nodes[0].version,
+        "repo-a:tool-1.0.0");
+
+    struct InvalidCase {
+        std::string expectedNamespace;
+        std::string version;
+    };
+    const std::array<InvalidCase, 3> invalidCases{
+        InvalidCase{"repo-a", "repo-b:tool-1.0.0"},
+        InvalidCase{"", "repo-a:tool-1.0.0"},
+        InvalidCase{"repo-a", "repo-a:repo-a:tool-1.0.0"},
+    };
+    for (const auto& testCase : invalidCases) {
+        SCOPED_TRACE(testCase.version);
+        auto result = xlings::xim::normalize_xpkg_registration_plan(
+            provider, makeAdd(testCase.version),
+            testCase.expectedNamespace, "/data", false);
+
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(
+            result.error().kind,
+            xlings::xim::XpkgRegistrationErrorKind::InvalidVersion);
+        EXPECT_EQ(result.error().operationIndex, 0u);
+        EXPECT_EQ(result.error().target, "tool");
+        EXPECT_EQ(result.error().version, testCase.version);
+        EXPECT_FALSE(result.error().message.empty());
+    }
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     RejectsMalformedLegacyBindingBeforeRegistration) {
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo-a";
+    const std::array<std::string, 4> invalidBindings{
+        "root",
+        "@1.0.0",
+        "root@",
+        "root@1.0.0@extra",
+    };
+
+    for (const auto& binding : invalidBindings) {
+        SCOPED_TRACE(binding);
+        const std::vector<mcpplibs::xpkg::XvmOp> operations{
+            {
+                .op = "add",
+                .name = "child",
+                .binding = binding,
+            },
+        };
+        auto result = xlings::xim::normalize_xpkg_registration_plan(
+            provider, operations, "repo-a", "/data", false);
+
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(
+            result.error().kind,
+            xlings::xim::XpkgRegistrationErrorKind::InvalidBinding);
+        EXPECT_EQ(result.error().operationIndex, 0u);
+        EXPECT_EQ(result.error().target, "child");
+        EXPECT_EQ(result.error().version, binding);
+        EXPECT_FALSE(result.error().message.empty());
+    }
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     DeduplicatesEqualEnvironmentAndRejectsConflictingDuplicate) {
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    const std::vector<mcpplibs::xpkg::XvmOp> equalOperations{
+        {
+            .op = "add",
+            .name = "tool",
+            .envs = {
+                {"MODE", "release"},
+                {"MODE", "release"},
+            },
+        },
+    };
+    auto equal = xlings::xim::normalize_xpkg_registration_plan(
+        provider, equalOperations, "", "/data", false);
+
+    ASSERT_TRUE(equal.has_value()) << equal.error().message;
+    ASSERT_EQ(equal->batch.nodes.size(), 1u);
+    EXPECT_EQ(
+        equal->batch.nodes[0].envs,
+        (std::map<std::string, std::string>{
+            {"MODE", "release"},
+        }));
+
+    const std::vector<mcpplibs::xpkg::XvmOp> conflictOperations{
+        {
+            .op = "add",
+            .name = "tool",
+            .envs = {
+                {"MODE", "release"},
+                {"MODE", "debug"},
+            },
+        },
+    };
+    auto conflict = xlings::xim::normalize_xpkg_registration_plan(
+        provider, conflictOperations, "", "/data", false);
+
+    ASSERT_FALSE(conflict.has_value());
+    EXPECT_EQ(
+        conflict.error().kind,
+        xlings::xim::XpkgRegistrationErrorKind::ConflictingEnvironment);
+    EXPECT_EQ(conflict.error().operationIndex, 0u);
+    EXPECT_EQ(conflict.error().target, "tool");
+    EXPECT_EQ(conflict.error().version, "MODE");
+    EXPECT_FALSE(conflict.error().message.empty());
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     CanonicalProviderAndVersionPayloadDriveDeferredEffects) {
+    xlings::xim::PlanNode provider;
+    provider.name = "recipe-name";
+    provider.version = "2.0.0";
+    provider.namespaceName = "repo-a";
+    provider.canonicalName = "canonical:provider";
+    provider.storeRoot = "/store";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "cc",
+            .alias = "--driver",
+            .envs = {
+                {"CC_MODE", "strict"},
+            },
+        },
+        {
+            .op = "add",
+            .name = "compiler-runtime",
+            .version = "runtime-2.0.0",
+            .bindir = "/payload/lib",
+            .type = "lib",
+            .filename = "libcompiler.so.2",
+        },
+        {
+            .op = "add",
+            .name = "toolchain",
+            .type = "group",
+        },
+    };
+
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo-a", "/data", true);
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    EXPECT_EQ(plan->batch.provider, "canonical:provider");
+    EXPECT_EQ(plan->batch.providerVersion, "2.0.0");
+    EXPECT_TRUE(plan->batch.useAfterInstall);
+    ASSERT_EQ(plan->batch.nodes.size(), 3u);
+
+    const auto& program = plan->batch.nodes[0];
+    EXPECT_EQ(program.target, "cc");
+    EXPECT_EQ(program.version, "repo-a:2.0.0");
+    EXPECT_EQ(
+        program.path,
+        "/store/repo-a-x-recipe-name/2.0.0");
+    EXPECT_EQ(program.kind, "program");
+    EXPECT_EQ(program.sourceName, "cc");
+    EXPECT_EQ(program.destinationName, "cc");
+    EXPECT_EQ(
+        program.alias,
+        (std::vector<std::string>{"--driver"}));
+    EXPECT_EQ(
+        program.envs,
+        (std::map<std::string, std::string>{
+            {"CC_MODE", "strict"},
+        }));
+
+    const auto& library = plan->batch.nodes[1];
+    EXPECT_EQ(library.target, "compiler-runtime");
+    EXPECT_EQ(library.version, "repo-a:runtime-2.0.0");
+    EXPECT_EQ(library.path, "/payload/lib");
+    EXPECT_EQ(library.kind, "lib");
+    EXPECT_EQ(library.sourceName, "libcompiler.so.2");
+    EXPECT_EQ(library.destinationName, "libcompiler.so.2");
+
+    const auto& group = plan->batch.nodes[2];
+    EXPECT_EQ(group.target, "toolchain");
+    EXPECT_EQ(group.version, "repo-a:2.0.0");
+    EXPECT_EQ(group.kind, "group");
+    EXPECT_TRUE(group.sourceName.empty());
+    EXPECT_TRUE(group.destinationName.empty());
+
+    ASSERT_EQ(plan->effects.size(), 2u);
+    EXPECT_EQ(
+        plan->effects[0].kind,
+        xlings::xim::XpkgFilesystemEffectKind::ProgramShim);
+    EXPECT_EQ(plan->effects[0].target, "cc");
+    EXPECT_EQ(plan->effects[0].version, "repo-a:2.0.0");
+    EXPECT_EQ(
+        plan->effects[1].kind,
+        xlings::xim::XpkgFilesystemEffectKind::Library);
+    EXPECT_EQ(plan->effects[1].target, "compiler-runtime");
+    EXPECT_EQ(
+        plan->effects[1].version,
+        "repo-a:runtime-2.0.0");
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     UngroupedHeaderRoutesToOnlyRootWithoutPhantomProviderTarget) {
+    xlings::xim::PlanNode provider;
+    provider.name = "recipe-provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo-a";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "toolchain",
+            .type = "group",
+        },
+        {
+            .op = "headers",
+            .includedir = "/payload/include",
+        },
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo-a", "/data", false);
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    ASSERT_EQ(plan->batch.headers.size(), 1u);
+    EXPECT_EQ(
+        plan->batch.headers[0].sourceDir,
+        "/payload/include");
+    EXPECT_TRUE(plan->batch.headers[0].destinationPrefix.empty());
+    EXPECT_TRUE(plan->batch.headers[0].group.empty());
+    ASSERT_EQ(plan->effects.size(), 1u);
+    EXPECT_EQ(
+        plan->effects[0].kind,
+        xlings::xim::XpkgFilesystemEffectKind::InstallHeaders);
+    EXPECT_EQ(plan->effects[0].sourceDir, "/payload/include");
+
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, plan->batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_TRUE(db.contains("toolchain"));
+    EXPECT_FALSE(db.contains("recipe-provider"));
+    const auto& root =
+        db.at("toolchain").versions.at("repo-a:1.0.0");
+    ASSERT_EQ(root.bindingHeaders.size(), 1u);
+    EXPECT_EQ(root.bindingHeaders[0].sourceDir, "/payload/include");
+    EXPECT_TRUE(root.bindingHeaders[0].destinationPrefix.empty());
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     UngroupedHeaderRejectsMultipleGroupsWithoutMutation) {
+    xlings::xim::PlanNode provider;
+    provider.name = "recipe-provider";
+    provider.version = "1.0.0";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "compiler",
+            .type = "group",
+        },
+        {
+            .op = "add",
+            .name = "tools",
+            .version = "tools-1.0.0",
+            .type = "group",
+        },
+        {
+            .op = "headers",
+            .includedir = "/payload/include",
+        },
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "", "/data", false);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+
+    xlings::xvm::VersionDB db;
+    db["sentinel"].versions["0"].path = "/sentinel";
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"sentinel", {"0"}},
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, plan->batch);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(
+        result.error().kind,
+        xlings::xvm::RegistrationErrorKind::HeaderAmbiguous);
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XimXvmRegistrationAdapterTest,
+     RemoveHeadersProducesOnlyADeferredCompatibilityEffect) {
+    xlings::xim::PlanNode provider;
+    provider.name = "recipe-provider";
+    provider.version = "1.0.0";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove_headers",
+            .includedir = "/payload/include",
+        },
+    };
+
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "", "/data", false);
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    EXPECT_TRUE(plan->batch.nodes.empty());
+    EXPECT_TRUE(plan->batch.headers.empty());
+    ASSERT_EQ(plan->effects.size(), 1u);
+    EXPECT_EQ(
+        plan->effects[0].kind,
+        xlings::xim::XpkgFilesystemEffectKind::RemoveHeaders);
+    EXPECT_EQ(plan->effects[0].sourceDir, "/payload/include");
+}
+
+TEST(XimXvmMetadataBatchTest,
+     LateRegistrationConflictPreservesCallerStateAndArtifact) {
+    xlings::xvm::VersionDB db;
+    auto& oldVersion = db["old-tool"].versions["repo:old-1.0.0"];
+    oldVersion.path = "/old/tool";
+    oldVersion.kind = "program";
+    oldVersion.sourceName = "old-tool";
+    oldVersion.destinationName = "old-tool";
+
+    auto& conflict = db["new-tool"].versions["repo:new-1.0.0"];
+    conflict.path = "/other/tool";
+    conflict.kind = "program";
+    conflict.sourceName = "other-tool";
+    conflict.destinationName = "new-tool";
+    conflict.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "other:provider",
+        .providerVersion = "1.0.0",
+        .group = "new-tool",
+        .rootTarget = "new-tool",
+        .rootVersion = "repo:new-1.0.0",
+    };
+    conflict.bindingMembers = {
+        {"new-tool", "repo:new-1.0.0"},
+    };
+    conflict.bindingMembersDeclared = true;
+
+    xlings::xvm::Workspace workspace{
+        {"old-tool", "repo:old-1.0.0"},
+        {"new-tool", "repo:new-1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"old-tool", {"repo:old-1.0.0"}},
+        {"new-tool", {"repo:new-1.0.0"}},
+    };
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove",
+            .name = "old-tool",
+            .version = "repo:old-1.0.0",
+        },
+        {
+            .op = "add",
+            .name = "new-tool",
+            .version = "repo:new-1.0.0",
+            .bindir = "/new/tool",
+        },
+    };
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:provider";
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo", "/data", false);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations,
+        provider.canonicalName, provider.version);
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const auto artifactDir =
+        std::filesystem::temp_directory_path()
+        / std::format(
+            "xlings-xvm-metadata-batch-sentinel-{}",
+            std::chrono::steady_clock::now()
+                .time_since_epoch()
+                .count());
+    std::filesystem::create_directories(artifactDir);
+    const auto artifact = artifactDir / "keep";
+    {
+        std::ofstream output(artifact);
+        output << "unchanged";
+    }
+
+    auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, operations, *context, *plan);
+
+    ASSERT_FALSE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<xlings::xvm::RegistrationError>(
+        result.error()));
+    EXPECT_EQ(
+        std::get<xlings::xvm::RegistrationError>(result.error()).kind,
+        xlings::xvm::RegistrationErrorKind::OwnershipConflict);
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+    ASSERT_TRUE(std::filesystem::exists(artifact));
+    std::ifstream input(artifact);
+    std::string artifactContents;
+    input >> artifactContents;
+    EXPECT_EQ(artifactContents, "unchanged");
+    std::filesystem::remove_all(artifactDir);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     RemoveOldAddNewCommitsAndPreservesAnotherProviderRelease) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const auto seedRelease = [&](
+            const std::string& release,
+            bool useAfterInstall) {
+        xlings::xim::PlanNode provider;
+        provider.name = "toolchain";
+        provider.version = release;
+        provider.namespaceName = "repo";
+        provider.canonicalName = "repo:toolchain";
+        const std::vector<mcpplibs::xpkg::XvmOp> operations{
+            {
+                .op = "add",
+                .name = "cc",
+                .version = "cc-" + release,
+                .bindir = "/payload/" + release + "/bin",
+                .binding = "toolchain@" + release,
+            },
+            {
+                .op = "add",
+                .name = "compiler-runtime",
+                .version = "runtime-" + release,
+                .bindir = "/payload/" + release + "/lib",
+                .type = "lib",
+                .filename = "libcompiler.so",
+                .binding = "toolchain@" + release,
+            },
+            {
+                .op = "add",
+                .name = "toolchain",
+                .type = "group",
+            },
+        };
+        auto plan = xlings::xim::normalize_xpkg_registration_plan(
+            provider, operations, "repo", "/data", useAfterInstall);
+        EXPECT_TRUE(plan.has_value());
+        if (!plan) return;
+        auto result = xlings::xvm::apply_registration_batch(
+            db, workspace, installed, plan->batch);
+        EXPECT_TRUE(result.has_value());
+    };
+    seedRelease("0.9.0", false);
+    seedRelease("1.0.0", true);
+    ASSERT_EQ(db.at("toolchain").versions.size(), 2u);
+
+    xlings::xim::PlanNode provider;
+    provider.name = "toolchain";
+    provider.version = "2.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:toolchain";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "remove",
+            .name = "toolchain",
+            .version = "repo:1.0.0",
+        },
+        {
+            .op = "add",
+            .name = "cc",
+            .version = "cc-2.0.0",
+            .bindir = "/payload/2.0.0/bin",
+            .binding = "toolchain@2.0.0",
+        },
+        {
+            .op = "add",
+            .name = "compiler-runtime",
+            .version = "runtime-2.0.0",
+            .bindir = "/payload/2.0.0/lib",
+            .type = "lib",
+            .filename = "libcompiler.so",
+            .binding = "toolchain@2.0.0",
+        },
+        {
+            .op = "add",
+            .name = "toolchain",
+            .type = "group",
+        },
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo", "/data", true);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations,
+        provider.canonicalName, provider.version);
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, operations, *context, *plan);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->removal.removed.size(), 3u);
+    EXPECT_EQ(result->registered.size(), 3u);
+    ASSERT_EQ(result->effects.size(), 2u);
+    EXPECT_EQ(
+        result->effects[0].kind,
+        xlings::xim::XpkgFilesystemEffectKind::ProgramShim);
+    EXPECT_EQ(
+        result->effects[1].kind,
+        xlings::xim::XpkgFilesystemEffectKind::Library);
+    for (const auto& [target, oldVersion, otherVersion, newVersion] :
+         std::array<std::array<std::string, 4>, 3>{
+             std::array<std::string, 4>{
+                 "toolchain", "repo:1.0.0",
+                 "repo:0.9.0", "repo:2.0.0",
+             },
+             std::array<std::string, 4>{
+                 "cc", "repo:cc-1.0.0",
+                 "repo:cc-0.9.0", "repo:cc-2.0.0",
+             },
+             std::array<std::string, 4>{
+                 "compiler-runtime", "repo:runtime-1.0.0",
+                 "repo:runtime-0.9.0", "repo:runtime-2.0.0",
+             },
+         }) {
+        SCOPED_TRACE(target);
+        ASSERT_TRUE(db.contains(target));
+        EXPECT_FALSE(db.at(target).versions.contains(oldVersion));
+        EXPECT_TRUE(db.at(target).versions.contains(otherVersion));
+        EXPECT_TRUE(db.at(target).versions.contains(newVersion));
+        EXPECT_EQ(workspace.at(target), newVersion);
+        EXPECT_EQ(
+            installed.at(target),
+            (std::vector<std::string>{otherVersion, newVersion}));
+    }
+    const auto& newRoot =
+        db.at("toolchain").versions.at("repo:2.0.0");
+    ASSERT_TRUE(newRoot.bindingGroup.has_value());
+    EXPECT_EQ(newRoot.bindingGroup->provider, "repo:toolchain");
+    EXPECT_EQ(newRoot.bindingGroup->providerVersion, "2.0.0");
+    EXPECT_EQ(newRoot.bindingMembers.size(), 3u);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     EmptyMetadataOperationsDoNotPurgeDiscoveredProviderSelection) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:provider";
+    const std::vector<mcpplibs::xpkg::XvmOp> seedOperations{
+        {
+            .op = "add",
+            .name = "provider-root",
+            .type = "group",
+        },
+    };
+    auto seedPlan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, seedOperations, "repo", "/data", true);
+    ASSERT_TRUE(seedPlan.has_value()) << seedPlan.error().message;
+    auto seeded = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, seedPlan->batch);
+    ASSERT_TRUE(seeded.has_value()) << seeded.error().message;
+
+    const std::vector<mcpplibs::xpkg::XvmOp> operations;
+    auto emptyPlan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo", "/data", false);
+    ASSERT_TRUE(emptyPlan.has_value()) << emptyPlan.error().message;
+    auto context = xlings::xim::snapshot_xpkg_removal_context(
+        db, workspace, operations,
+        provider.canonicalName, provider.version);
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    ASSERT_TRUE(context->hasSelection);
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed,
+        operations, *context, *emptyPlan);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->removal.removed.empty());
+    EXPECT_TRUE(result->registered.empty());
+    EXPECT_TRUE(result->effects.empty());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     RootOrderPermutationsSerializeIdenticallyThroughAdapter) {
+    xlings::xim::PlanNode provider;
+    provider.name = "toolchain";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:toolchain";
+    const mcpplibs::xpkg::XvmOp root{
+        .op = "add",
+        .name = "toolchain",
+        .type = "group",
+    };
+    const mcpplibs::xpkg::XvmOp child{
+        .op = "add",
+        .name = "cc",
+        .version = "cc-1.0.0",
+        .bindir = "/payload/bin",
+        .filename = "cc-real",
+        .binding = "toolchain@1.0.0",
+    };
+    const auto apply = [&](
+            const std::vector<mcpplibs::xpkg::XvmOp>& operations) {
+        xlings::xvm::VersionDB db;
+        xlings::xvm::Workspace workspace;
+        xlings::xvm::WorkspaceInstalled installed;
+        auto plan = xlings::xim::normalize_xpkg_registration_plan(
+            provider, operations, "repo", "/data", false);
+        EXPECT_TRUE(plan.has_value());
+        if (!plan) {
+            return std::tuple{
+                nlohmann::json{},
+                xlings::xvm::Workspace{},
+                xlings::xvm::WorkspaceInstalled{},
+            };
+        }
+        auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+            db, workspace, installed, operations,
+            xlings::xvm::RemovalContext{}, *plan);
+        EXPECT_TRUE(result.has_value());
+        return std::tuple{
+            xlings::xvm::versions_to_json(db),
+            std::move(workspace),
+            std::move(installed),
+        };
+    };
+
+    const auto rootFirst = apply({root, child});
+    const auto rootLast = apply({child, root});
+
+    EXPECT_EQ(rootFirst, rootLast);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     PhantomAndSelfBindingsPropagateWithoutStateMutation) {
+    struct InvalidCase {
+        std::string binding;
+        xlings::xvm::RegistrationErrorKind expected;
+    };
+    const std::array<InvalidCase, 2> invalidCases{
+        InvalidCase{
+            "missing-root@1.0.0",
+            xlings::xvm::RegistrationErrorKind::RootNotInBatch,
+        },
+        InvalidCase{
+            "child@1.0.0",
+            xlings::xvm::RegistrationErrorKind::SelfBinding,
+        },
+    };
+    for (const auto& testCase : invalidCases) {
+        SCOPED_TRACE(testCase.binding);
+        xlings::xim::PlanNode provider;
+        provider.name = "provider";
+        provider.version = "1.0.0";
+        provider.namespaceName = "repo";
+        provider.canonicalName = "repo:provider";
+        const std::vector<mcpplibs::xpkg::XvmOp> operations{
+            {
+                .op = "add",
+                .name = "child",
+                .binding = testCase.binding,
+            },
+        };
+        auto plan = xlings::xim::normalize_xpkg_registration_plan(
+            provider, operations, "repo", "/data", false);
+        ASSERT_TRUE(plan.has_value()) << plan.error().message;
+
+        xlings::xvm::VersionDB db;
+        db["sentinel"].versions["0"].path = "/sentinel";
+        xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+        xlings::xvm::WorkspaceInstalled installed{
+            {"sentinel", {"0"}},
+        };
+        const auto dbBefore = xlings::xvm::versions_to_json(db);
+        const auto workspaceBefore = workspace;
+        const auto installedBefore = installed;
+
+        auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+            db, workspace, installed, operations,
+            xlings::xvm::RemovalContext{}, *plan);
+
+        ASSERT_FALSE(result.has_value());
+        ASSERT_TRUE(std::holds_alternative<
+            xlings::xvm::RegistrationError>(result.error()));
+        EXPECT_EQ(
+            std::get<xlings::xvm::RegistrationError>(
+                result.error()).kind,
+            testCase.expected);
+        EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+        EXPECT_EQ(workspace, workspaceBefore);
+        EXPECT_EQ(installed, installedBefore);
+    }
+}
+
+TEST(XimXvmMetadataBatchTest,
+     AdoptsCompatibleLegacyStateAndRerunsIdempotentlyThroughAdapter) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    xlings::xim::PlanNode provider;
+    provider.name = "provider";
+    provider.version = "1.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:provider";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "tool",
+            .version = "tool-1.0.0",
+            .bindir = "/pkg/provider/1.0.0",
+            .alias = "tool-alias",
+            .filename = "tool-real",
+            .binding = "legacy-root@1.0.0",
+            .envs = {
+                {"TOOL_ENV", "tool"},
+            },
+        },
+        {
+            .op = "add",
+            .name = "legacy-root",
+            .bindir = "/pkg/provider/1.0.0",
+            .alias = "root-alias",
+            .filename = "legacy-root-real",
+            .envs = {
+                {"ROOT_ENV", "root"},
+            },
+        },
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo", "/data", false);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+
+    auto first = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, operations,
+        xlings::xvm::RemovalContext{}, *plan);
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(
+        db.at("legacy-root")
+            .versions.at("repo:1.0.0")
+            .bindingGroup.has_value());
+    EXPECT_EQ(
+        db.at("legacy-root")
+            .versions.at("repo:1.0.0")
+            .bindingGroup->provider,
+        "repo:provider");
+    EXPECT_EQ(
+        installed.at("legacy-root"),
+        (std::vector<std::string>{"repo:1.0.0"}));
+    EXPECT_EQ(
+        installed.at("tool"),
+        (std::vector<std::string>{"repo:tool-1.0.0"}));
+    const auto dbAfterFirst = xlings::xvm::versions_to_json(db);
+    const auto workspaceAfterFirst = workspace;
+    const auto installedAfterFirst = installed;
+
+    auto second = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, operations,
+        xlings::xvm::RemovalContext{}, *plan);
+
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbAfterFirst);
+    EXPECT_EQ(workspace, workspaceAfterFirst);
+    EXPECT_EQ(installed, installedAfterFirst);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     SameProviderDifferentReleaseCollisionPreservesState) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    xlings::xim::PlanNode oldProvider;
+    oldProvider.name = "provider";
+    oldProvider.version = "0.9.0";
+    oldProvider.namespaceName = "repo";
+    oldProvider.canonicalName = "repo:provider";
+    const std::vector<mcpplibs::xpkg::XvmOp> oldOperations{
+        {
+            .op = "add",
+            .name = "tool",
+            .version = "shared-1.0.0",
+            .bindir = "/old/tool",
+        },
+    };
+    auto oldPlan = xlings::xim::normalize_xpkg_registration_plan(
+        oldProvider, oldOperations, "repo", "/data", false);
+    ASSERT_TRUE(oldPlan.has_value()) << oldPlan.error().message;
+    auto seeded = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, oldOperations,
+        xlings::xvm::RemovalContext{}, *oldPlan);
+    ASSERT_TRUE(seeded.has_value());
+
+    xlings::xim::PlanNode newProvider = oldProvider;
+    newProvider.version = "1.0.0";
+    const std::vector<mcpplibs::xpkg::XvmOp> newOperations{
+        {
+            .op = "add",
+            .name = "tool",
+            .version = "shared-1.0.0",
+            .bindir = "/new/tool",
+        },
+    };
+    auto newPlan = xlings::xim::normalize_xpkg_registration_plan(
+        newProvider, newOperations, "repo", "/data", false);
+    ASSERT_TRUE(newPlan.has_value()) << newPlan.error().message;
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, newOperations,
+        xlings::xvm::RemovalContext{}, *newPlan);
+
+    ASSERT_FALSE(result.has_value());
+    ASSERT_TRUE(std::holds_alternative<
+        xlings::xvm::RegistrationError>(result.error()));
+    EXPECT_EQ(
+        std::get<xlings::xvm::RegistrationError>(
+            result.error()).kind,
+        xlings::xvm::RegistrationErrorKind::OwnershipConflict);
+    EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
+    EXPECT_EQ(workspace, workspaceBefore);
+    EXPECT_EQ(installed, installedBefore);
+}
+
+TEST(XimXvmMetadataBatchTest,
+     ResolvesDeferredEffectsFromFinalExactMetadata) {
+    xlings::xvm::VersionDB db;
+    auto& oldProgram = db["cc"].versions["repo:cc-1.0.0"];
+    oldProgram.path = "/old/bin";
+    oldProgram.kind = "program";
+    oldProgram.sourceName = "old-cc";
+    oldProgram.destinationName = "cc";
+    auto& oldLibrary =
+        db["compiler-runtime"].versions["repo:runtime-1.0.0"];
+    oldLibrary.path = "/old/lib";
+    oldLibrary.kind = "lib";
+    oldLibrary.sourceName = "libold.so";
+    oldLibrary.destinationName = "libold.so";
+    xlings::xvm::Workspace workspace{
+        {"cc", "repo:cc-1.0.0"},
+        {"compiler-runtime", "repo:runtime-1.0.0"},
+    };
+    xlings::xvm::WorkspaceInstalled installed{
+        {"cc", {"repo:cc-1.0.0"}},
+        {"compiler-runtime", {"repo:runtime-1.0.0"}},
+    };
+    xlings::xim::PlanNode provider;
+    provider.name = "toolchain";
+    provider.version = "2.0.0";
+    provider.namespaceName = "repo";
+    provider.canonicalName = "repo:toolchain";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {
+            .op = "add",
+            .name = "cc",
+            .version = "cc-2.0.0",
+            .bindir = "/final/bin",
+            .filename = "cc-real",
+            .binding = "toolchain@2.0.0",
+        },
+        {
+            .op = "add",
+            .name = "compiler-runtime",
+            .version = "runtime-2.0.0",
+            .bindir = "/final/lib",
+            .type = "lib",
+            .filename = "libcompiler.so.2",
+            .binding = "toolchain@2.0.0",
+        },
+        {
+            .op = "add",
+            .name = "toolchain",
+            .type = "group",
+        },
+    };
+    auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        provider, operations, "repo", "/data", true);
+    ASSERT_TRUE(plan.has_value()) << plan.error().message;
+    auto applied = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, workspace, installed, operations,
+        xlings::xvm::RemovalContext{}, *plan);
+    ASSERT_TRUE(applied.has_value());
+    ASSERT_EQ(applied->effects.size(), 2u);
+
+    auto program = xlings::xim::resolve_xpkg_filesystem_effect(
+        db, workspace, applied->effects[0]);
+    auto library = xlings::xim::resolve_xpkg_filesystem_effect(
+        db, workspace, applied->effects[1]);
+
+    ASSERT_TRUE(program.has_value());
+    EXPECT_EQ(
+        program->kind,
+        xlings::xim::XpkgFilesystemEffectKind::ProgramShim);
+    EXPECT_EQ(program->target, "cc");
+    EXPECT_EQ(program->version, "repo:cc-2.0.0");
+    EXPECT_EQ(program->path, "/final/bin");
+    EXPECT_EQ(program->sourceName, "cc-real");
+    EXPECT_EQ(program->destinationName, "cc");
+    EXPECT_TRUE(program->active);
+    ASSERT_TRUE(library.has_value());
+    EXPECT_EQ(
+        library->kind,
+        xlings::xim::XpkgFilesystemEffectKind::Library);
+    EXPECT_EQ(library->target, "compiler-runtime");
+    EXPECT_EQ(library->version, "repo:runtime-2.0.0");
+    EXPECT_EQ(library->path, "/final/lib");
+    EXPECT_EQ(library->sourceName, "libcompiler.so.2");
+    EXPECT_EQ(library->destinationName, "libcompiler.so.2");
+    EXPECT_TRUE(library->active);
+    EXPECT_FALSE(std::ranges::any_of(
+        applied->effects,
+        [](const auto& effect) {
+            return effect.target == "toolchain";
+        }));
+}
+
+namespace {
+
+int run_xvm_registration_production_child_(
+        const std::filesystem::path& root) {
+    namespace fs = std::filesystem;
+
+    const auto fail = [](int code, std::string_view message) {
+        std::cerr << "xvm registration production child: "
+                  << message << '\n';
+        return code;
+    };
+    const auto write_text = [&](const fs::path& path,
+                                std::string_view contents) {
+        fs::create_directories(path.parent_path());
+        std::ofstream output(path);
+        output << contents;
+        return output.good();
+    };
+
+    const auto home = root / "home" / ".xlings";
+    const auto project = root / "project";
+    const auto payload = root / "payload";
+    const auto temp = root / "tmp";
+    const auto projectSubos = project / ".xlings" / "subos" / "_";
+    const auto globalSubos = home / "subos" / "env-scope";
+    fs::create_directories(temp);
+    fs::create_directories(project);
+    fs::create_directories(payload / "bin");
+    fs::create_directories(globalSubos);
+    if (!write_text(
+            home / ".xlings.json",
+            R"({"activeSubos":"persisted-scope"})")
+        || !write_text(
+            globalSubos / ".xlings.json",
+            R"({"workspace":{}})")
+        || !write_text(
+            project / ".xlings.json",
+            R"({"workspace":{}})")) {
+        return fail(2, "failed to create isolated Config fixtures");
+    }
+
+    xlings::platform::set_env_variable("HOME", (root / "home").string());
+    xlings::platform::set_env_variable("XLINGS_HOME", home.string());
+    xlings::platform::set_env_variable(
+        "XLINGS_ACTIVE_SUBOS", "env-scope");
+    xlings::platform::set_env_variable("XLINGS_PROJECT_DIR", "");
+    xlings::platform::set_env_variable(
+        "XDG_CONFIG_HOME", (root / "config").string());
+    xlings::platform::set_env_variable(
+        "XDG_CACHE_HOME", (root / "cache").string());
+    xlings::platform::set_env_variable(
+        "XDG_DATA_HOME", (root / "data").string());
+    xlings::platform::set_env_variable("TMPDIR", temp.string());
+    fs::current_path(project);
+
+#ifdef _WIN32
+    constexpr std::string_view executableExtension = ".exe";
+#else
+    constexpr std::string_view executableExtension = "";
+#endif
+    const auto bootstrap =
+        home / "bin"
+        / ("xlings" + std::string(executableExtension));
+    if (!write_text(bootstrap, "old-bootstrap")) {
+        return fail(3, "failed to seed isolated bootstrap");
+    }
+    fs::permissions(
+        bootstrap,
+        fs::perms::owner_all
+            | fs::perms::group_read
+            | fs::perms::group_exec
+            | fs::perms::others_read
+            | fs::perms::others_exec,
+        fs::perm_options::replace);
+
+    const auto write_recipe = [&](
+            const fs::path& recipe,
+            std::string_view target,
+            std::string_view filename = {}) {
+        std::ofstream output(recipe);
+        output
+            << "import(\"xim.libxpkg.pkginfo\")\n"
+            << "import(\"xim.libxpkg.xvm\")\n"
+            << "function config()\n"
+            << "  xvm.add(\"" << target
+            << "\", { bindir = path.join("
+               "pkginfo.install_dir(), \"bin\")";
+        if (!filename.empty()) {
+            output << ", filename = \"" << filename << "\"";
+        }
+        output << " })\n  return true\nend\n";
+        return output.good();
+    };
+    const auto run_config = [&](
+            const fs::path& recipe,
+            std::string name,
+            std::string version,
+            const fs::path& installDir,
+            bool useAfterInstall) {
+        auto executor = mcpplibs::xpkg::create_executor(recipe);
+        if (!executor) {
+            std::cerr << executor.error() << '\n';
+            return false;
+        }
+        xlings::xim::PlanNode node;
+        node.name = std::move(name);
+        node.canonicalName = node.name;
+        node.version = std::move(version);
+        mcpplibs::xpkg::ExecutionContext context;
+        context.pkg_name = node.name;
+        context.version = node.version;
+        context.platform = std::string(xlings::platform::OS_NAME);
+        context.arch = "x86_64";
+        context.install_file = recipe;
+        context.install_dir = installDir;
+        context.run_dir = installDir;
+        context.xpkg_dir = root / "data";
+        xlings::xim::detail_::
+            configure_xpkg_execution_artifact_paths_(context);
+        const auto expectedSubos =
+            xlings::Config::xvm_artifact_subos_dir();
+        if (context.bin_dir != expectedSubos / "bin"
+            || context.subos_sysrootdir
+                != expectedSubos.string()) {
+            std::cerr
+                << "execution context does not match write scope\n";
+            return false;
+        }
+        return xlings::xim::detail_::run_config_hook_(
+            node,
+            root / "data",
+            *executor,
+            context,
+            {},
+            useAfterInstall);
+    };
+
+    if (!xlings::Config::has_project_config()) {
+        return fail(4, "temporary project was not selected");
+    }
+    if (xlings::Config::global_subos_dir() != globalSubos) {
+        return fail(
+            5,
+            "global subos root ignored XLINGS_ACTIVE_SUBOS");
+    }
+    if (xlings::Config::xvm_artifact_subos_dir()
+        != projectSubos) {
+        return fail(
+            6,
+            "project metadata and artifact roots disagree");
+    }
+
+    const auto projectRecipe = root / "project-provider.lua";
+    if (!write_recipe(projectRecipe, "task3b-project-tool")) {
+        return fail(7, "failed to write project recipe");
+    }
+    if (!run_config(
+            projectRecipe,
+            "task3b-project-provider",
+            "1.0.0",
+            payload / "project",
+            true)) {
+        return fail(8, "project-scope config hook failed");
+    }
+    if (!xlings::Config::project_versions().contains(
+            "task3b-project-tool")
+        || !xlings::Config::workspace_mut().contains(
+            "task3b-project-tool")
+        || !xlings::Config::workspace_installed_mut().contains(
+            "task3b-project-tool")) {
+        return fail(
+            9,
+            "project registration did not use project metadata");
+    }
+    if (!fs::exists(
+            projectSubos / "bin" / "task3b-project-tool")) {
+        return fail(
+            10,
+            "project registration did not use project artifact root");
+    }
+
+    xlings::Config::set_force_global_scope(true);
+    if (xlings::Config::xvm_artifact_subos_dir()
+        != globalSubos) {
+        return fail(
+            11,
+            "force-global metadata and artifact roots disagree");
+    }
+    const auto selfRecipe = root / "self-provider.lua";
+    if (!write_recipe(
+            selfRecipe, "xlings", "xlings-real")) {
+        return fail(12, "failed to write self-replace recipe");
+    }
+    const auto selfPayload = payload / "self";
+    const auto selfSource =
+        selfPayload / "bin"
+        / ("xlings-real"
+           + std::string(executableExtension));
+    if (!write_text(selfSource, "new-bootstrap")) {
+        return fail(13, "failed to create custom self source");
+    }
+    fs::permissions(
+        selfSource,
+        fs::perms::owner_all
+            | fs::perms::group_read
+            | fs::perms::group_exec
+            | fs::perms::others_read
+            | fs::perms::others_exec,
+        fs::perm_options::replace);
+    if (!run_config(
+            selfRecipe,
+            "task3b-self-provider",
+            "2.0.0",
+            selfPayload,
+            true)) {
+        return fail(14, "force-global self config hook failed");
+    }
+    if (!xlings::Config::global_versions().contains("xlings")
+        || xlings::Config::project_versions().contains("xlings")) {
+        return fail(
+            15,
+            "force-global registration did not use global metadata");
+    }
+    if (!fs::exists(
+            globalSubos / "bin"
+            / ("xlings" + std::string(executableExtension)))
+        || fs::exists(
+            projectSubos / "bin"
+            / ("xlings" + std::string(executableExtension)))) {
+        return fail(
+            16,
+            "force-global shim was written to the wrong artifact root");
+    }
+    {
+        std::ifstream input(bootstrap);
+        std::string contents;
+        input >> contents;
+        if (contents != "new-bootstrap") {
+            return fail(
+                17,
+                "self-replace ignored final exact sourceName");
+        }
+    }
+
+    xlings::Config::set_force_global_scope(false);
+    auto& db = xlings::Config::versions_mut();
+    auto& workspace = xlings::Config::workspace_mut();
+    auto& installed =
+        xlings::Config::workspace_installed_mut();
+    constexpr std::string_view conflictTarget =
+        "task3b-conflict-tool";
+    constexpr std::string_view conflictVersion = "3.0.0";
+    constexpr std::string_view removedTarget =
+        "task3b-removal-sentinel";
+    constexpr std::string_view removedVersion = "0.1.0";
+    auto& removed =
+        db[std::string(removedTarget)]
+            .versions[std::string(removedVersion)];
+    removed.path = "/old/payload";
+    removed.kind = "program";
+    removed.sourceName = std::string(removedTarget);
+    removed.destinationName = std::string(removedTarget);
+    workspace[std::string(removedTarget)] =
+        std::string(removedVersion);
+    installed[std::string(removedTarget)] = {
+        std::string(removedVersion),
+    };
+    auto& conflict =
+        db[std::string(conflictTarget)]
+            .versions[std::string(conflictVersion)];
+    conflict.path = "/other/payload";
+    conflict.kind = "program";
+    conflict.sourceName = "other-tool";
+    conflict.destinationName = std::string(conflictTarget);
+    conflict.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "other-provider",
+        .providerVersion = "9.0.0",
+        .group = std::string(conflictTarget),
+        .rootTarget = std::string(conflictTarget),
+        .rootVersion = std::string(conflictVersion),
+    };
+    conflict.bindingMembers = {
+        {std::string(conflictTarget),
+         std::string(conflictVersion)},
+    };
+    conflict.bindingMembersDeclared = true;
+    workspace[std::string(conflictTarget)] =
+        std::string(conflictVersion);
+    installed[std::string(conflictTarget)] = {
+        std::string(conflictVersion),
+    };
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+    const auto conflictShim =
+        projectSubos / "bin"
+        / (std::string(conflictTarget)
+           + std::string(executableExtension));
+    const auto removalShim =
+        projectSubos / "bin"
+        / (std::string(removedTarget)
+           + std::string(executableExtension));
+    if (fs::exists(conflictShim)) {
+        return fail(18, "conflict shim unexpectedly pre-exists");
+    }
+    if (!write_text(removalShim, "keep-removal-shim")) {
+        return fail(19, "failed to seed exact removal artifact");
+    }
+    const auto conflictRecipe = root / "conflict-provider.lua";
+    {
+        std::ofstream output(conflictRecipe);
+        output
+            << "import(\"xim.libxpkg.pkginfo\")\n"
+            << "import(\"xim.libxpkg.xvm\")\n"
+            << "function config()\n"
+            << "  xvm.remove(\"" << removedTarget
+            << "\", \"" << removedVersion << "\")\n"
+            << "  xvm.add(\"" << conflictTarget
+            << "\", { bindir = path.join("
+               "pkginfo.install_dir(), \"bin\") })\n"
+            << "  return true\nend\n";
+        if (!output.good()) {
+            return fail(20, "failed to write conflict recipe");
+        }
+    }
+    if (run_config(
+            conflictRecipe,
+            "task3b-conflict-provider",
+            std::string(conflictVersion),
+            payload / "conflict",
+            true)) {
+        return fail(
+            21,
+            "production config hook swallowed registration failure");
+    }
+    if (xlings::xvm::versions_to_json(db) != dbBefore
+        || workspace != workspaceBefore
+        || installed != installedBefore) {
+        return fail(
+            22,
+            "late registration conflict mutated scoped metadata");
+    }
+    if (fs::exists(conflictShim)) {
+        return fail(
+            23,
+            "late registration conflict ran its exact shim effect");
+    }
+    {
+        std::ifstream input(removalShim);
+        std::string contents;
+        input >> contents;
+        if (contents != "keep-removal-shim") {
+            return fail(
+                24,
+                "late conflict ran candidate removal cleanup");
+        }
+    }
+
+    return 0;
+}
+
+}  // namespace
+
+TEST(XimXvmProductionPathTest,
+     UsesMatchingScopedArtifactsAndSuppressesFailedEffects) {
+    namespace fs = std::filesystem;
+    const auto root =
+        fs::temp_directory_path()
+        / std::format(
+            "xlings-task3b-production-{}",
+            std::chrono::steady_clock::now()
+                .time_since_epoch()
+                .count());
+    fs::remove_all(root);
+    fs::create_directories(root);
+    const auto executable =
+        xlings::platform::get_executable_path();
+    ASSERT_FALSE(executable.empty());
+    auto command = std::format(
+        "{} --xvm-registration-production-child {}",
+        xlings::platform::shell_quote(executable.string()),
+        xlings::platform::shell_quote(root.string()));
+#ifdef _WIN32
+    command = "\"" + command + "\"";
+#endif
+    auto child = xlings::platform::spawn_command(command);
+    ASSERT_GT(child.pid, 0);
+    auto [status, output] = xlings::platform::wait_or_kill(
+        child, nullptr, std::chrono::seconds{30});
+    EXPECT_EQ(status, 0) << output;
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
 TEST(XimXvmRemovalAdapterTest,
      PreSnapshotsUninstallSelectionForLaterVersionlessHookOps) {
     xlings::xvm::VersionDB db;
@@ -8875,6 +10324,11 @@ int main(int argc, char** argv) {
         std::ofstream(argv[3]) << "ready";
         std::this_thread::sleep_for(std::chrono::milliseconds{400});
         return 0;
+    }
+    if (argc == 3
+        && std::string_view(argv[1])
+            == "--xvm-registration-production-child") {
+        return run_xvm_registration_production_child_(argv[2]);
     }
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

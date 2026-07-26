@@ -19,6 +19,7 @@ import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.removal;
+import xlings.core.xvm.registration;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
@@ -26,6 +27,286 @@ import xlings.core.xim.libxpkg.types.subos;
 import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
+
+enum class XpkgRegistrationErrorKind {
+    InvalidVersion,
+    InvalidBinding,
+    ConflictingEnvironment,
+};
+
+struct XpkgRegistrationError {
+    XpkgRegistrationErrorKind kind {
+        XpkgRegistrationErrorKind::InvalidVersion
+    };
+    std::size_t operationIndex { 0 };
+    std::string target;
+    std::string version;
+    std::string message;
+};
+
+enum class XpkgFilesystemEffectKind {
+    ProgramShim,
+    Library,
+    InstallHeaders,
+    RemoveHeaders,
+};
+
+struct XpkgFilesystemEffect {
+    XpkgFilesystemEffectKind kind {
+        XpkgFilesystemEffectKind::ProgramShim
+    };
+    std::string target;
+    std::string version;
+    std::string sourceDir;
+};
+
+struct XpkgResolvedFilesystemEffect {
+    XpkgFilesystemEffectKind kind {
+        XpkgFilesystemEffectKind::ProgramShim
+    };
+    std::string target;
+    std::string version;
+    std::string sourceDir;
+    std::string path;
+    std::string sourceName;
+    std::string destinationName;
+    bool active { false };
+};
+
+struct XpkgRegistrationPlan {
+    xvm::RegistrationBatch batch;
+    std::vector<XpkgFilesystemEffect> effects;
+};
+
+std::optional<XpkgResolvedFilesystemEffect>
+resolve_xpkg_filesystem_effect(
+        const xvm::VersionDB& db,
+        const xvm::Workspace& workspace,
+        const XpkgFilesystemEffect& effect) {
+    XpkgResolvedFilesystemEffect resolved{
+        .kind = effect.kind,
+        .target = effect.target,
+        .version = effect.version,
+        .sourceDir = effect.sourceDir,
+    };
+    if (effect.kind == XpkgFilesystemEffectKind::InstallHeaders
+        || effect.kind == XpkgFilesystemEffectKind::RemoveHeaders) {
+        return resolved;
+    }
+
+    auto targetIt = db.find(effect.target);
+    if (targetIt == db.end()) return std::nullopt;
+    auto versionIt =
+        targetIt->second.versions.find(effect.version);
+    if (versionIt == targetIt->second.versions.end()) {
+        return std::nullopt;
+    }
+    const auto& data = versionIt->second;
+    const auto kind =
+        data.kind.empty() ? targetIt->second.type : data.kind;
+    const auto expectedKind =
+        effect.kind == XpkgFilesystemEffectKind::ProgramShim
+        ? std::string_view{"program"}
+        : std::string_view{"lib"};
+    if (kind != expectedKind) return std::nullopt;
+
+    resolved.path = data.path;
+    resolved.sourceName = !data.sourceName.empty()
+        ? data.sourceName
+        : (!targetIt->second.filename.empty()
+            ? targetIt->second.filename
+            : effect.target);
+    resolved.destinationName = !data.destinationName.empty()
+        ? data.destinationName
+        : (effect.kind == XpkgFilesystemEffectKind::ProgramShim
+            ? effect.target
+            : resolved.sourceName);
+    auto activeIt = workspace.find(effect.target);
+    resolved.active =
+        activeIt != workspace.end()
+        && activeIt->second == effect.version;
+    return resolved;
+}
+
+using XpkgXvmMetadataError = std::variant<
+    xvm::RemovalError,
+    xvm::RegistrationError>;
+
+struct XpkgXvmMetadataResult {
+    xvm::RemovalBatchResult removal;
+    std::vector<xvm::RegisteredMember> registered;
+    std::vector<XpkgFilesystemEffect> effects;
+};
+
+std::expected<XpkgRegistrationPlan, XpkgRegistrationError>
+normalize_xpkg_registration_plan(
+        const PlanNode& node,
+        const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+        const std::string& versionNamespace,
+        const std::filesystem::path& dataDir,
+        bool useAfterInstall) {
+    auto normalizeVersion = [&](
+            const std::string& version,
+            std::size_t operationIndex,
+            const std::string& target)
+        -> std::expected<std::string, XpkgRegistrationError> {
+        if (version.empty()) {
+            return std::unexpected(XpkgRegistrationError{
+                .kind = XpkgRegistrationErrorKind::InvalidVersion,
+                .operationIndex = operationIndex,
+                .target = target,
+                .version = version,
+                .message = "xvm registration version is empty",
+            });
+        }
+        const auto separator = version.find(':');
+        if (separator == std::string::npos) {
+            return xvm::make_ns_version(versionNamespace, version);
+        }
+        const auto actualNamespace = version.substr(0, separator);
+        const auto bareVersion = version.substr(separator + 1);
+        if (actualNamespace.empty()
+            || bareVersion.empty()
+            || bareVersion.contains(':')
+            || actualNamespace != versionNamespace) {
+            return std::unexpected(XpkgRegistrationError{
+                .kind = XpkgRegistrationErrorKind::InvalidVersion,
+                .operationIndex = operationIndex,
+                .target = target,
+                .version = version,
+                .message = std::format(
+                    "xvm registration version namespace '{}' "
+                    "does not match expected namespace '{}'",
+                    actualNamespace, versionNamespace),
+            });
+        }
+        return version;
+    };
+    const auto fallbackPath =
+        (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot)
+        / package_store_name(node.namespaceName, node.name)
+        / node.version;
+    XpkgRegistrationPlan plan{
+        .batch = {
+            .provider = node.canonicalName.empty()
+                ? canonical_package_name(node.namespaceName, node.name)
+                : node.canonicalName,
+            .providerVersion = node.version,
+            .useAfterInstall = useAfterInstall,
+        },
+    };
+
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+        const auto& operation = operations[index];
+        if (operation.op == "headers") {
+            plan.batch.headers.push_back({
+                .sourceDir = operation.includedir,
+            });
+            plan.effects.push_back({
+                .kind = XpkgFilesystemEffectKind::InstallHeaders,
+                .sourceDir = operation.includedir,
+            });
+            continue;
+        }
+        if (operation.op == "remove_headers") {
+            plan.effects.push_back({
+                .kind = XpkgFilesystemEffectKind::RemoveHeaders,
+                .sourceDir = operation.includedir,
+            });
+            continue;
+        }
+        if (operation.op != "add") continue;
+        const auto rawVersion = operation.version.empty()
+            ? node.version
+            : operation.version;
+        const auto kind =
+            operation.type.empty() ? std::string{"program"} : operation.type;
+        const auto sourceName = kind == "group"
+            ? std::string{}
+            : (operation.filename.empty()
+                ? operation.name
+                : operation.filename);
+        xvm::RegistrationNode registrationNode{
+            .target = operation.name,
+            .version = {},
+            .path = operation.bindir.empty()
+                ? fallbackPath.string()
+                : operation.bindir,
+            .kind = kind,
+            .sourceName = sourceName,
+            .destinationName = kind == "group"
+                ? std::string{}
+                : (kind == "program"
+                    ? operation.name
+                    : sourceName),
+        };
+        auto exactVersion =
+            normalizeVersion(rawVersion, index, operation.name);
+        if (!exactVersion) {
+            return std::unexpected(std::move(exactVersion.error()));
+        }
+        registrationNode.version = std::move(*exactVersion);
+        if (!operation.alias.empty()) {
+            registrationNode.alias.push_back(operation.alias);
+        }
+        for (const auto& [key, value] : operation.envs) {
+            auto [environmentIt, inserted] =
+                registrationNode.envs.emplace(key, value);
+            if (!inserted && environmentIt->second != value) {
+                return std::unexpected(XpkgRegistrationError{
+                    .kind = XpkgRegistrationErrorKind::ConflictingEnvironment,
+                    .operationIndex = index,
+                    .target = operation.name,
+                    .version = key,
+                    .message = std::format(
+                        "xvm registration environment '{}' has "
+                        "conflicting values",
+                        key),
+                });
+            }
+        }
+        if (!operation.binding.empty()) {
+            const auto separator = operation.binding.find('@');
+            if (separator == std::string::npos
+                || separator == 0
+                || separator + 1 == operation.binding.size()
+                || operation.binding.find('@', separator + 1)
+                    != std::string::npos) {
+                return std::unexpected(XpkgRegistrationError{
+                    .kind = XpkgRegistrationErrorKind::InvalidBinding,
+                    .operationIndex = index,
+                    .target = operation.name,
+                    .version = operation.binding,
+                    .message =
+                        "xvm registration binding must be '<root>@<version>'",
+                });
+            }
+            const auto rootTarget =
+                operation.binding.substr(0, separator);
+            auto rootVersion = normalizeVersion(
+                operation.binding.substr(separator + 1),
+                index, rootTarget);
+            if (!rootVersion) {
+                return std::unexpected(std::move(rootVersion.error()));
+            }
+            registrationNode.binding = xvm::RegistrationBinding{
+                .rootTarget = rootTarget,
+                .rootVersion = std::move(*rootVersion),
+            };
+        }
+        if (kind == "program" || kind == "lib") {
+            plan.effects.push_back({
+                .kind = kind == "program"
+                    ? XpkgFilesystemEffectKind::ProgramShim
+                    : XpkgFilesystemEffectKind::Library,
+                .target = operation.name,
+                .version = registrationNode.version,
+            });
+        }
+        plan.batch.nodes.push_back(std::move(registrationNode));
+    }
+    return plan;
+}
 
 std::expected<xvm::RemovalContext, xvm::RemovalError>
 snapshot_xpkg_removal_context(
@@ -206,6 +487,60 @@ apply_xpkg_removal_operations(
         db, workspace, installed, removals, context, options);
 }
 
+std::expected<XpkgXvmMetadataResult, XpkgXvmMetadataError>
+apply_xpkg_xvm_metadata_batch(
+        xvm::VersionDB& db,
+        xvm::Workspace& workspace,
+        xvm::WorkspaceInstalled& installed,
+        const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+        const xvm::RemovalContext& removalContext,
+        const XpkgRegistrationPlan& registration,
+        const xvm::RemovalBatchOptions& removalOptions = {}) {
+    auto candidateDb = db;
+    auto candidateWorkspace = workspace;
+    auto candidateInstalled = installed;
+
+    auto removal = apply_xpkg_removal_operations(
+        candidateDb,
+        candidateWorkspace,
+        candidateInstalled,
+        operations,
+        removalContext,
+        removalOptions);
+    if (!removal) {
+        return std::unexpected(XpkgXvmMetadataError{
+            std::in_place_type<xvm::RemovalError>,
+            std::move(removal.error()),
+        });
+    }
+
+    std::vector<xvm::RegisteredMember> registered;
+    if (!registration.batch.nodes.empty()
+        || !registration.batch.headers.empty()) {
+        auto registrationResult = xvm::apply_registration_batch(
+            candidateDb,
+            candidateWorkspace,
+            candidateInstalled,
+            registration.batch);
+        if (!registrationResult) {
+            return std::unexpected(XpkgXvmMetadataError{
+                std::in_place_type<xvm::RegistrationError>,
+                std::move(registrationResult.error()),
+            });
+        }
+        registered = std::move(*registrationResult);
+    }
+
+    db.swap(candidateDb);
+    workspace.swap(candidateWorkspace);
+    installed.swap(candidateInstalled);
+    return XpkgXvmMetadataResult{
+        .removal = std::move(*removal),
+        .registered = std::move(registered),
+        .effects = registration.effects,
+    };
+}
+
 void cleanup_removed_xvm_library_artifacts(
         const std::filesystem::path& libDir,
         const xvm::VersionDB& dbBeforeRemoval,
@@ -334,6 +669,15 @@ bool evict_invalid_archive_cache_(
 }
 
 namespace detail_ {
+
+std::filesystem::path
+configure_xpkg_execution_artifact_paths_(
+        mcpplibs::xpkg::ExecutionContext& context) {
+    auto subosDir = Config::xvm_artifact_subos_dir();
+    context.bin_dir = subosDir / "bin";
+    context.subos_sysrootdir = subosDir.string();
+    return subosDir;
+}
 
 std::string effective_store_name_(std::string_view namespaceName, std::string_view name) {
     return package_store_name(namespaceName, name);
@@ -902,9 +1246,16 @@ bool process_xvm_operations_(const PlanNode& node,
                              mcpplibs::xpkg::PackageExecutor& executor,
                              bool useAfterInstall) {
     auto xvm_ops = executor.xvm_operations();
-    auto sysroot_include = Config::paths().subosDir / "usr" / "include";
-    auto sysroot_lib = Config::paths().libDir;
     auto& paths = Config::paths();
+    auto& scopedDb = Config::versions_mut();
+    auto& scopedWorkspace = Config::workspace_mut();
+    auto& scopedInstalled = Config::workspace_installed_mut();
+    const auto artifactSubosDir =
+        Config::xvm_artifact_subos_dir();
+    const auto artifactBinDir = artifactSubosDir / "bin";
+    const auto sysroot_lib = artifactSubosDir / "lib";
+    const auto sysroot_include =
+        artifactSubosDir / "usr" / "include";
 
     // Locate xlings binary for shim creation
 #ifdef _WIN32
@@ -929,161 +1280,202 @@ bool process_xvm_operations_(const PlanNode& node,
         }
     }
 
-    auto executingProvider = node.canonicalName.empty()
-        ? canonical_package_name(node.namespaceName, node.name)
-        : node.canonicalName;
-    auto removalContext = snapshot_xpkg_removal_context(
-        Config::versions_mut(), Config::workspace(), xvm_ops,
-        executingProvider, node.version);
-    if (!removalContext) {
+    auto registration = normalize_xpkg_registration_plan(
+        node, xvm_ops, version_ns, dataDir, useAfterInstall);
+    if (!registration) {
         log::warn(
-            "xvm removal selection failed for {}@{}: {} "
-            "(target='{}', version='{}')",
-            executingProvider, node.version,
-            removalContext.error().message,
-            removalContext.error().target,
-            removalContext.error().version);
+            "xvm registration normalization failed for {}@{}: {} "
+            "(operation={}, target='{}', version='{}')",
+            node.canonicalName.empty()
+                ? canonical_package_name(node.namespaceName, node.name)
+                : node.canonicalName,
+            node.version,
+            registration.error().message,
+            registration.error().operationIndex,
+            registration.error().target,
+            registration.error().version);
         return false;
     }
-
-    const auto dbBeforeRemoval = Config::versions_mut();
-    auto removalResult = apply_xpkg_removal_operations(
-        Config::versions_mut(),
-        Config::workspace_mut(),
-        Config::workspace_installed_mut(),
+    const bool hasRemoval = std::ranges::any_of(
         xvm_ops,
-        *removalContext);
-    if (!removalResult) {
-        log::warn(
-            "xvm removal batch failed for {}@{}: {} "
-            "(target='{}', version='{}')",
-            executingProvider, node.version,
-            removalResult.error().message,
-            removalResult.error().target,
-            removalResult.error().version);
+        [](const auto& operation) {
+            return operation.op == "remove"
+                || operation.op == "remove_all";
+        });
+    if (!hasRemoval
+        && registration->batch.nodes.empty()
+        && registration->batch.headers.empty()
+        && registration->effects.empty()) {
+        return true;
+    }
+
+    xvm::RemovalContext removalContext;
+    if (hasRemoval) {
+        auto snapshot = snapshot_xpkg_removal_context(
+            scopedDb, scopedWorkspace, xvm_ops,
+            registration->batch.provider,
+            registration->batch.providerVersion);
+        if (!snapshot) {
+            log::warn(
+                "xvm removal selection failed for {}@{}: {} "
+                "(target='{}', version='{}')",
+                registration->batch.provider,
+                registration->batch.providerVersion,
+                snapshot.error().message,
+                snapshot.error().target,
+                snapshot.error().version);
+            return false;
+        }
+        removalContext = std::move(*snapshot);
+    }
+
+    const auto dbBeforeRemoval = scopedDb;
+    auto metadata = apply_xpkg_xvm_metadata_batch(
+        scopedDb,
+        scopedWorkspace,
+        scopedInstalled,
+        xvm_ops,
+        removalContext,
+        *registration);
+    if (!metadata) {
+        if (std::holds_alternative<xvm::RemovalError>(
+                metadata.error())) {
+            const auto& error =
+                std::get<xvm::RemovalError>(metadata.error());
+            log::warn(
+                "xvm removal batch failed for {}@{}: {} "
+                "(target='{}', version='{}')",
+                registration->batch.provider,
+                registration->batch.providerVersion,
+                error.message,
+                error.target,
+                error.version);
+        } else {
+            const auto& error =
+                std::get<xvm::RegistrationError>(metadata.error());
+            log::warn(
+                "xvm registration batch failed for {}@{}: {} "
+                "(path='{}', target='{}', version='{}')",
+                registration->batch.provider,
+                registration->batch.providerVersion,
+                error.message,
+                error.path,
+                error.target,
+                error.version);
+        }
         return false;
     }
 
     cleanup_removed_xvm_library_artifacts(
         sysroot_lib,
         dbBeforeRemoval,
-        Config::versions_mut(),
-        *removalResult);
+        scopedDb,
+        metadata->removal);
 
-    for (auto& op : xvm_ops) {
-        if (op.op == "add") {
-            std::string ver = op.version.empty() ? node.version : op.version;
-            std::string p = op.bindir.empty()
-                ? ((node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot)
-                    / detail_::effective_store_name_(node)
-                    / node.version).string()
-                : op.bindir;
-            std::string type = op.type.empty() ? "program" : op.type;
-            xvm::add_version(Config::versions_mut(),
-                             op.name, ver, p, type, op.filename, op.alias,
-                             version_ns, op.binding);
-
-            // Write envs from XvmOp into VData
-            auto ver_key = xvm::make_ns_version(version_ns, ver);
-            if (!op.envs.empty()) {
-                auto& vdata = Config::versions_mut()[op.name].versions[ver_key];
-                for (auto& [key, val] : op.envs) {
-                    vdata.envs[key] = val;
+    for (const auto& effect : metadata->effects) {
+        auto resolved = resolve_xpkg_filesystem_effect(
+            scopedDb, scopedWorkspace, effect);
+        if (!resolved) {
+            log::warn(
+                "validated xvm effect target disappeared or changed kind: "
+                "{}@{}",
+                effect.target, effect.version);
+            continue;
+        }
+        if (resolved->kind
+            == XpkgFilesystemEffectKind::InstallHeaders) {
+            xvm::install_headers(
+                resolved->sourceDir, sysroot_include);
+            continue;
+        }
+        if (resolved->kind
+            == XpkgFilesystemEffectKind::RemoveHeaders) {
+            xvm::remove_headers(
+                resolved->sourceDir, sysroot_include);
+            continue;
+        }
+        if (resolved->kind
+            == XpkgFilesystemEffectKind::ProgramShim) {
+            if (std::filesystem::exists(xlings_bin)) {
+                std::string shimName = resolved->target;
+                if (!shim_ext.empty() && !shimName.ends_with(shim_ext)) {
+                    shimName += shim_ext;
+                }
+                std::filesystem::create_directories(artifactBinDir);
+                xself::create_shim(
+                    xlings_bin, artifactBinDir / shimName);
+                if (artifactBinDir
+                    != Config::global_subos_bin_dir()) {
+                    common::mirror_shim_to_global_bin(
+                        xlings_bin, shimName);
                 }
             }
 
-            // Activate and create shim for each added program.
-            // Auto-activate only when no version is currently active for this
-            // program OR the caller passed useAfterInstall (`--use`). Otherwise
-            // preserve the user's existing choice. The shim is always
-            // (re-)created so the program is reachable on PATH once activated.
-            if (type == "program") {
-                auto& ws = Config::workspace();
-                bool hasActive = ws.contains(op.name) && !ws.at(op.name).empty();
-                bool didActivate = !hasActive || useAfterInstall;
-                if (didActivate) {
-                    Config::workspace_mut()[op.name] = ver_key;
+            if (resolved->active
+                && xvm::is_xlings_binary(resolved->target)
+                && std::filesystem::exists(xlings_bin)
+                && !resolved->path.empty()
+                && !resolved->sourceName.empty()) {
+                auto activeName = resolved->sourceName;
+                if (!shim_ext.empty()
+                    && !activeName.ends_with(shim_ext)) {
+                    activeName += shim_ext;
                 }
-
-                // 0.4.19+: track ver_key in this subos's installed[] set.
-                // Independent of the active-pointer decision above — a
-                // version is "installed in this subos" once the package
-                // recipe has been run for it, regardless of whether it's
-                // the currently selected one. The set is what powers
-                // subos-aware list/use/update in the next PR.
-                {
-                    auto& list = Config::workspace_installed_mut()[op.name];
-                    if (std::find(list.begin(), list.end(), ver_key) == list.end()) {
-                        list.push_back(ver_key);
+                const auto activeBin =
+                    std::filesystem::path(resolved->path)
+                    / activeName;
+                if (std::filesystem::exists(activeBin)) {
+                    if (platform::atomic_replace_executable(
+                            activeBin, xlings_bin)) {
+                        log::debug(
+                            "[self-replace] bootstrap {} <- {}",
+                            xlings_bin.string(), activeBin.string());
+                    } else {
+                        log::warn(
+                            "[self-replace] failed: bootstrap {} <- {}",
+                            xlings_bin.string(), activeBin.string());
                     }
                 }
-                if (std::filesystem::exists(xlings_bin)) {
-                    std::string shim_name = op.name;
-                    if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
-                        shim_name += shim_ext;
-                    std::filesystem::create_directories(paths.binDir);
-                    xself::create_shim(xlings_bin, paths.binDir / shim_name);
-                    common::mirror_shim_to_global_bin(xlings_bin, shim_name);
-                }
-
-                // Self-replace bootstrap when activating xlings/xim/xvm.
-                // main.cpp's multiplexer short-circuits these names to the
-                // local cli::run() — it doesn't consult the workspace at
-                // runtime. So the only way to make "active xlings = X.Y.Z"
-                // visible to the user is to physically replace the bootstrap
-                // binary at xlings_bin with the version we just installed.
-                // Atomic replace (POSIX rename / Windows MoveFileEx-old-then-
-                // copy) is safe even when the running process IS the bootstrap.
-                if (didActivate
-                    && xvm::is_xlings_binary(op.name)
-                    && std::filesystem::exists(xlings_bin)
-                    && !op.bindir.empty()) {
-                    auto active_bin = std::filesystem::path(op.bindir)
-                                    / ("xlings" + std::string(shim_ext));
-                    if (std::filesystem::exists(active_bin)) {
-                        if (platform::atomic_replace_executable(active_bin, xlings_bin)) {
-                            log::debug("[self-replace] bootstrap {} <- {}",
-                                      xlings_bin.string(), active_bin.string());
-                        } else {
-                            log::warn("[self-replace] failed: bootstrap {} <- {}",
-                                     xlings_bin.string(), active_bin.string());
-                        }
-                    }
-                    // COMPAT(0.4.8 → drop in 0.6.0): opportunistic legacy
-                    // alias cleanup, alongside the bootstrap replacement.
-                    xself::compat::v0_4_8::cleanup_legacy_alias_shims(paths.binDir, xlings_bin);
-                }
-            } else if (type == "lib" && !op.bindir.empty()) {
-                // Install lib symlink to subos lib dir
-                std::string fname = op.filename.empty() ? op.name : op.filename;
-                auto src = std::filesystem::path(op.bindir) / fname;
-                std::filesystem::create_directories(sysroot_lib);
-                auto dst = sysroot_lib / fname;
-                std::error_code ec;
-                if (std::filesystem::exists(dst, ec) || std::filesystem::is_symlink(dst, ec))
-                    std::filesystem::remove(dst, ec);
-                if (std::filesystem::exists(src, ec))
-                    std::filesystem::create_symlink(src, dst, ec);
+                xself::compat::v0_4_8::cleanup_legacy_alias_shims(
+                    artifactBinDir, xlings_bin);
             }
-        } else if (op.op == "headers") {
-            xvm::install_headers(op.includedir, sysroot_include);
-            auto hdr_ver_key = xvm::make_ns_version(version_ns, node.version);
-            auto& vdata = Config::versions_mut()[node.name].versions[hdr_ver_key];
-            vdata.includedir = op.includedir;
-        } else if (op.op == "remove_headers") {
-            xvm::remove_headers(op.includedir, sysroot_include);
+            continue;
+        }
+        if (resolved->kind != XpkgFilesystemEffectKind::Library
+            || resolved->path.empty()) {
+            continue;
+        }
+
+        const auto source =
+            std::filesystem::path(resolved->path)
+            / resolved->sourceName;
+        const auto destination =
+            sysroot_lib / resolved->destinationName;
+        std::filesystem::create_directories(sysroot_lib);
+        std::error_code ec;
+        if (std::filesystem::exists(destination, ec)
+            || std::filesystem::is_symlink(destination, ec)) {
+            std::filesystem::remove(destination, ec);
+        }
+        ec.clear();
+        if (std::filesystem::exists(source, ec)) {
+            std::filesystem::create_symlink(
+                source, destination, ec);
         }
     }
 
     cleanup_removed_xvm_program_artifacts(
-        Config::paths().binDir,
+        artifactBinDir,
         dbBeforeRemoval,
-        Config::versions_mut(),
-        Config::workspace_installed(),
-        *removalResult);
+        scopedDb,
+        scopedInstalled,
+        metadata->removal);
 
-    Config::save_versions();
-    Config::save_workspace();
+    if (!metadata->removal.removed.empty()
+        || !metadata->registered.empty()) {
+        Config::save_versions();
+        Config::save_workspace();
+    }
     return true;
 }
 
@@ -1304,10 +1696,10 @@ public:
             ctx.platform = platform;
             auto targetRoot = node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot;
             ctx.install_dir = targetRoot / detail_::effective_store_name_(node) / node.version;
-            ctx.bin_dir = Config::paths().binDir;
+            detail_::configure_xpkg_execution_artifact_paths_(
+                ctx);
             ctx.xpkg_dir = node.pkgFile.parent_path();
             ctx.project_data_dir = Config::project_data_dir();
-            ctx.subos_sysrootdir = Config::paths().subosDir.string();
             // pkgindex_dir: package index repo root (for custom module loading).
             // pkgFile layout: <pkgindex>/pkgs/<letter>/<name>.lua → 3 levels up.
             ctx.pkgindex_dir = node.pkgFile.parent_path()
@@ -1623,7 +2015,7 @@ public:
             // Apply elfpatch auto-patching if the install hook enabled it
             if (!payloadInstalled) {
                 // Ensure binDir is in PATH so elfpatch can find patchelf
-                auto binDir = Config::paths().binDir.string();
+                auto binDir = ctx.bin_dir.string();
                 auto curPath = std::string(std::getenv("PATH") ? std::getenv("PATH") : "");
                 if (!binDir.empty() && curPath.find(binDir) == std::string::npos) {
                     platform::set_env_variable("PATH",
@@ -1851,10 +2243,11 @@ public:
         ctx.pkg_name = resolvedMatch ? resolvedMatch->name : name;
         ctx.version = resolvedMatch ? resolvedMatch->version : std::string{};
         ctx.platform = platform;
-        ctx.bin_dir = Config::paths().binDir;
+        const auto artifactSubosDir =
+            detail_::configure_xpkg_execution_artifact_paths_(
+                ctx);
         ctx.install_dir = installDir;
         ctx.xpkg_dir = pkgFile.parent_path();
-        ctx.subos_sysrootdir = Config::paths().subosDir.string();
         ctx.pkgindex_dir = pkgFile.parent_path()
                                   .parent_path()
                                   .parent_path().string();
@@ -1897,7 +2290,8 @@ public:
                 .version = detachVersion,
             });
         }
-        auto sysroot_include = Config::paths().subosDir / "usr" / "include";
+        auto sysroot_include =
+            artifactSubosDir / "usr" / "include";
 
         const auto dbBeforeRemoval = Config::versions_mut();
         auto removalResult = apply_xpkg_removal_operations(
@@ -1933,12 +2327,12 @@ public:
             }
         }
         cleanup_removed_xvm_library_artifacts(
-            Config::paths().libDir,
+            artifactSubosDir / "lib",
             dbBeforeRemoval,
             Config::versions_mut(),
             *removalResult);
         cleanup_removed_xvm_program_artifacts(
-            Config::paths().binDir,
+            artifactSubosDir / "bin",
             dbBeforeRemoval,
             Config::versions_mut(),
             Config::workspace_installed(),
