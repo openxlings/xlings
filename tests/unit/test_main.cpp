@@ -10487,6 +10487,112 @@ TEST_F(AtomicWriteTest, ThrowsWhenParentDirectoryIsMissing) {
 }
 
 // ============================================================
+// attach_legacy_header_dir — keep `xlings use` able to swap headers
+//
+// xvm::cmd_use decides whether to swap the sysroot headers by reading
+// VData::includedir of the target it was given (commands.cppm). Before the
+// registration batch existed, the installer set that field directly for
+// every `headers` op. The batch does not carry it, so without this the
+// field stays empty on every freshly installed package and switching
+// versions silently stops moving headers — the install-time copy still
+// happens, so the breakage only shows up on the *second* version.
+//
+// Restores the field with one deliberate difference from the pre-batch
+// behavior: it never brings a target or a version into existence. The old
+// code used operator[] on both maps, so a `headers` op for a package that
+// registers no target of its own would materialize a phantom entry with no
+// path and no kind. That is exactly the class of state the binding-group
+// work exists to prevent.
+
+namespace {
+
+xlings::xim::XpkgFilesystemEffect header_effect_(std::string sourceDir) {
+    return {
+        .kind = xlings::xim::XpkgFilesystemEffectKind::InstallHeaders,
+        .sourceDir = std::move(sourceDir),
+    };
+}
+
+xlings::xvm::VersionDB db_with_(const std::string& target,
+                                const std::string& version) {
+    xlings::xvm::VersionDB db;
+    auto& info = db[target];
+    info.type = "program";
+    auto& data = info.versions[version];
+    data.path = "/xpkgs/" + target + "/" + version;
+    data.kind = "program";
+    return db;
+}
+
+}  // namespace
+
+TEST(LegacyHeaderDir, SetsIncludedirOnThePackageVersion) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/gcc/15.1.0/include"),
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 1u);
+    EXPECT_EQ(db.at("gcc").versions.at("15.1.0").includedir,
+              "/xpkgs/gcc/15.1.0/include");
+}
+
+TEST(LegacyHeaderDir, DoesNotCreateAPhantomTarget) {
+    xlings::xvm::VersionDB db;
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/headers-only/1.0/include"),
+    };
+
+    EXPECT_EQ(
+        xlings::xim::attach_legacy_header_dir(db, "headers-only", "1.0", effects),
+        0u);
+    EXPECT_TRUE(db.empty()) << "a headers op invented a target entry";
+}
+
+TEST(LegacyHeaderDir, DoesNotCreateAPhantomVersion) {
+    auto db = db_with_("gcc", "16.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/gcc/15.1.0/include"),
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 0u);
+    EXPECT_FALSE(db.at("gcc").versions.contains("15.1.0"))
+        << "a headers op invented a version entry";
+    EXPECT_EQ(db.at("gcc").versions.size(), 1u);
+}
+
+TEST(LegacyHeaderDir, LastHeadersEffectWins) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/first/include"),
+        header_effect_("/second/include"),
+    };
+
+    // Matches the pre-batch behavior: the installer assigned per op, so the
+    // last `headers` op of a recipe was the one that stuck.
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 1u);
+    EXPECT_EQ(db.at("gcc").versions.at("15.1.0").includedir, "/second/include");
+}
+
+TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        {
+            .kind = xlings::xim::XpkgFilesystemEffectKind::ProgramShim,
+            .target = "gcc",
+            .version = "15.1.0",
+        },
+        {
+            .kind = xlings::xim::XpkgFilesystemEffectKind::RemoveHeaders,
+            .sourceDir = "/stale/include",
+        },
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 0u);
+    EXPECT_TRUE(db.at("gcc").versions.at("15.1.0").includedir.empty());
+}
+
+// ============================================================
 
 #ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {
