@@ -504,7 +504,16 @@ apply_registration_batch(
     for (const auto& [label, group] : groups) {
         const auto persistedIt = persistedGroups.find(label);
         if (persistedIt == persistedGroups.end()) continue;
+        const auto missingMemberIt = std::ranges::find_if(
+            persistedIt->second.members,
+            [&](const auto& member) {
+                return !nodeIndexes.contains(member);
+            });
         if (persistedIt->second.root != group.root) {
+            if (missingMemberIt
+                == persistedIt->second.members.end()) {
+                continue;
+            }
             return std::unexpected(detail_::registration_error_(
                 RegistrationErrorKind::GroupConflict,
                 group.identityPath,
@@ -516,17 +525,18 @@ apply_registration_batch(
                     persistedIt->second.root.first,
                     persistedIt->second.root.second)));
         }
-        for (const auto& member : persistedIt->second.members) {
-            if (nodeIndexes.contains(member)) continue;
-            return std::unexpected(detail_::registration_error_(
-                RegistrationErrorKind::IncompleteOwnedGroup,
-                group.identityPath,
-                member.first,
-                member.second,
-                std::format(
-                    "same-owner registration omits an existing member of group '{}'",
-                    label)));
+        if (missingMemberIt
+            == persistedIt->second.members.end()) {
+            continue;
         }
+        return std::unexpected(detail_::registration_error_(
+            RegistrationErrorKind::IncompleteOwnedGroup,
+            group.identityPath,
+            missingMemberIt->first,
+            missingMemberIt->second,
+            std::format(
+                "same-owner registration omits an existing member of group '{}'",
+                label)));
     }
 
     for (std::size_t index = 0; index < batch.headers.size(); ++index) {

@@ -4289,6 +4289,209 @@ TEST(XvmRegistrationOwnershipTest,
 }
 
 TEST(XvmRegistrationOwnershipTest,
+     CompleteSameOwnerRootMigrationIsAtomicAndOrderIndependent) {
+    const auto oldGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "shared",
+        "old-root", "repo:old-root");
+    xlings::xvm::VersionDB initialDb;
+    auto& oldRoot = add_provider_group_member(
+        initialDb, "old-root", "repo:old-root", oldGroup, "group");
+    oldRoot.bindingMembers = {
+        {"old-a", "repo:old-a"},
+        {"old-b", "repo:old-b"},
+        {"old-root", "repo:old-root"},
+    };
+    oldRoot.bindingMembersDeclared = true;
+    oldRoot.bindingHeaders = {
+        {
+            .sourceDir = "/pkg/old/include",
+            .destinationPrefix = "old",
+        },
+    };
+    oldRoot.bindingHeadersDeclared = true;
+    add_provider_group_member(
+        initialDb, "old-a", "repo:old-a", oldGroup,
+        "program", "old-a", "old-a");
+    add_provider_group_member(
+        initialDb, "old-b", "repo:old-b", oldGroup,
+        "program", "old-b", "old-b");
+    initialDb["old-root"].bindings["old-a"]["repo:old-root"] =
+        "repo:old-a";
+    initialDb["old-a"].bindings["old-root"]["repo:old-a"] =
+        "repo:old-root";
+    initialDb["old-root"].bindings["old-b"]["repo:old-root"] =
+        "repo:old-b";
+    initialDb["old-b"].bindings["old-root"]["repo:old-b"] =
+        "repo:old-root";
+    const xlings::xvm::Workspace initialWorkspace{
+        {"old-a", "repo:old-a"},
+        {"old-b", "repo:old-b"},
+        {"old-root", "repo:old-root"},
+    };
+    const xlings::xvm::WorkspaceInstalled initialInstalled{
+        {"old-a", {"repo:old-a"}},
+        {"old-b", {"repo:old-b"}},
+        {"old-root", {"repo:old-root"}},
+    };
+
+    auto newRoot =
+        make_registration_node("new-root", "repo:new-root", "group");
+    auto migratedOldRoot =
+        make_registration_node("old-root", "repo:old-root", "group");
+    migratedOldRoot.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    auto migratedA =
+        make_registration_node("old-a", "repo:old-a");
+    migratedA.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    auto migratedB =
+        make_registration_node("old-b", "repo:old-b");
+    migratedB.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    auto forwardBatch = make_registration_batch({
+        migratedA,
+        newRoot,
+        migratedOldRoot,
+        migratedB,
+    });
+    auto reverseBatch = forwardBatch;
+    std::ranges::reverse(reverseBatch.nodes);
+
+    auto forwardDb = initialDb;
+    auto forwardWorkspace = initialWorkspace;
+    auto forwardInstalled = initialInstalled;
+    auto forward = xlings::xvm::apply_registration_batch(
+        forwardDb, forwardWorkspace, forwardInstalled, forwardBatch);
+    auto reverseDb = initialDb;
+    auto reverseWorkspace = initialWorkspace;
+    auto reverseInstalled = initialInstalled;
+    auto reverse = xlings::xvm::apply_registration_batch(
+        reverseDb, reverseWorkspace, reverseInstalled, reverseBatch);
+
+    ASSERT_TRUE(forward.has_value()) << forward.error().message;
+    ASSERT_TRUE(reverse.has_value()) << reverse.error().message;
+    EXPECT_EQ(
+        xlings::xvm::versions_to_json(forwardDb),
+        xlings::xvm::versions_to_json(reverseDb));
+    EXPECT_EQ(forwardWorkspace, reverseWorkspace);
+    EXPECT_EQ(forwardInstalled, reverseInstalled);
+
+    const std::map<std::string, std::string> expectedMembers{
+        {"new-root", "repo:new-root"},
+        {"old-a", "repo:old-a"},
+        {"old-b", "repo:old-b"},
+        {"old-root", "repo:old-root"},
+    };
+    const auto& migratedRoot =
+        forwardDb.at("new-root").versions.at("repo:new-root");
+    EXPECT_EQ(migratedRoot.bindingMembers, expectedMembers);
+    EXPECT_TRUE(migratedRoot.bindingHeaders.empty());
+
+    for (const auto& [target, version] : expectedMembers) {
+        const auto& member = forwardDb.at(target).versions.at(version);
+        ASSERT_TRUE(member.bindingGroup.has_value());
+        EXPECT_EQ(member.bindingGroup->group, "shared");
+        EXPECT_EQ(member.bindingGroup->rootTarget, "new-root");
+        EXPECT_EQ(member.bindingGroup->rootVersion, "repo:new-root");
+    }
+    std::size_t sharedRefCount = 0;
+    std::set<std::pair<std::string, std::string>> sharedRoots;
+    for (const auto& [_, info] : forwardDb) {
+        for (const auto& versionEntry : info.versions) {
+            const auto& data = versionEntry.second;
+            if (!data.bindingGroup
+                || data.bindingGroup->provider != "repo:provider"
+                || data.bindingGroup->providerVersion != "1.0.0"
+                || data.bindingGroup->group != "shared") {
+                continue;
+            }
+            ++sharedRefCount;
+            sharedRoots.emplace(
+                data.bindingGroup->rootTarget,
+                data.bindingGroup->rootVersion);
+        }
+    }
+    EXPECT_EQ(sharedRefCount, expectedMembers.size());
+    EXPECT_EQ(
+        sharedRoots,
+        (std::set<std::pair<std::string, std::string>>{
+            {"new-root", "repo:new-root"},
+        }));
+
+    const auto& migratedOldRootData =
+        forwardDb.at("old-root").versions.at("repo:old-root");
+    EXPECT_TRUE(migratedOldRootData.bindingMembers.empty());
+    EXPECT_FALSE(migratedOldRootData.bindingMembersDeclared);
+    EXPECT_TRUE(migratedOldRootData.bindingHeaders.empty());
+    EXPECT_FALSE(migratedOldRootData.bindingHeadersDeclared);
+    EXPECT_FALSE(forwardDb.at("old-root").bindings.contains("old-a"));
+    EXPECT_FALSE(forwardDb.at("old-root").bindings.contains("old-b"));
+    EXPECT_FALSE(forwardDb.at("old-a").bindings.contains("old-root"));
+    EXPECT_FALSE(forwardDb.at("old-b").bindings.contains("old-root"));
+    EXPECT_EQ(
+        forwardDb.at("old-root")
+            .bindings.at("new-root").at("repo:old-root"),
+        "repo:new-root");
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RootMigrationRejectsOmittedManifestOnlyMemberWithoutMutation) {
+    const auto oldGroup = make_binding_group_ref(
+        "repo:provider", "1.0.0", "shared",
+        "old-root", "repo:old-root");
+    xlings::xvm::VersionDB db;
+    auto& oldRoot = add_provider_group_member(
+        db, "old-root", "repo:old-root", oldGroup, "group");
+    oldRoot.bindingMembers = {
+        {"manifest-only", "repo:manifest-only"},
+        {"old-member", "repo:old-member"},
+        {"old-root", "repo:old-root"},
+    };
+    oldRoot.bindingMembersDeclared = true;
+    add_provider_group_member(
+        db, "old-member", "repo:old-member", oldGroup,
+        "program", "old-member", "old-member");
+    auto& manifestOnly =
+        db["manifest-only"].versions["repo:manifest-only"];
+    manifestOnly.path = "/pkg/provider/1.0.0";
+    manifestOnly.kind = "program";
+    manifestOnly.sourceName = "manifest-only";
+    manifestOnly.destinationName = "manifest-only";
+
+    auto newRoot =
+        make_registration_node("new-root", "repo:new-root", "group");
+    auto migratedOldRoot =
+        make_registration_node("old-root", "repo:old-root", "group");
+    migratedOldRoot.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    auto migratedMember =
+        make_registration_node("old-member", "repo:old-member");
+    migratedMember.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            migratedOldRoot,
+            migratedMember,
+            newRoot,
+        }));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::IncompleteOwnedGroup,
+        "/nodes/0", "manifest-only", "repo:manifest-only");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
      RejectsOtherProviderExactCollisionWithoutMutation) {
     xlings::xvm::VersionDB db;
     auto& existing = db["tool"].versions["repo:1.0.0"];
