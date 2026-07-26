@@ -64,20 +64,18 @@ use openssl 3.2.0  →  workspace 3.2.0 | 头 3.1.5 | 库 3.2.0   ✗
 
 影响面：**同一个包装了 ≥2 个版本、且提供头文件或库**。官方索引里为 openssl / glibc / python / linux-headers。只装一个版本、或纯 program 包（索引里绝大多数）不受影响。
 
-### 1.4 幻影节点：31 个假警报（真实数据）
+### 1.4 幻影节点：doctor 的锚点误报（真实数据）
 
 `cairo.lua` 写 `xvm.add(package.name)`，`type` 未设 → C++ 侧默认成 `"program"`。而 cairo payload **连 bin 目录都没有**。
 
-在一台真实机器（372 条目、246 target）上统计：
+在一台真实机器（372 条目、246 target）上，`self doctor` **实测**报出 **9 条**
+`✗ broken payload`，其中 **2 条是锚点节点**（`binutils@2.42`、`cairo@1.18.0`）——
+它们没有可执行文件是设计使然，而给出的修复建议 `xlings install <pkg>@<ver>` 修不了。
 
-```
-31  ★ 锚点节点（无可执行文件、无 alias）  binutils@2.42, cairo@1.18.0, dlltool@2.42 …
-25  alias 节点（转发到别的程序，是真程序）
-18  payload 目录不存在（陈旧记录）
- 9  alias 字段里是路径或命令行
-```
-
-`self doctor` 把这 31 条全报成 `✗ broken payload`。
+> **一处更正**：本文早先版本写的是"31 条假警报"。那是一个脚本的口径（program 类型、
+> payload 根目录下没有同名可执行文件），**不是 doctor 的输出**。doctor 走
+> `resolve_executable`，会一并搜 `bin/` 子目录，所以那 31 条里绝大多数能解析、从未被报出。
+> 实测口径是 **9 报 2 误**。
 
 **根因**：recipe 想说"这只是一个挂发布的名字"，**模型里没有这个概念**，于是它撒谎说这是个程序。C++ 里其实有 `group` kind（`supported_kind_` 接受），但 Lua 的默认值让它不可达。
 
@@ -122,7 +120,7 @@ xvm.add("openssl_xvm_files",    { type = "files", src = "include/openssl",
                                   dst = "usr/include/openssl", binding = tag })
 ```
 
-带 `type = "files"` 的节点比今天的幻影**严格更好**：doctor 知道不该找可执行文件 → **31 个假警报消失**。
+带 `type = "files"` 的节点比今天的幻影**严格更好**：doctor 知道不该找可执行文件 → 锚点误报从根上消失。
 
 约束：
 - 名字用保留形态（`<pkg>_xvm_files`），防止与真实包碰撞
@@ -291,7 +289,7 @@ use_deps = { "glibc", "linux-headers" }
 | **清单存放处** | → 展开结果搬到声明之外（见 D3） |
 | **group 的名字** | → label 显式声明，默认取包名，**不再要求有对应节点** |
 
-两条都解掉后，根节点没工作了 → 幻影消失 → 31 个假警报消失。
+两条都解掉后，根节点没工作了 → 幻影消失 → 那 2 条误报随之消失。
 
 **顺带修掉 #406 撞到的坑**：`xvm.setup` 调两次报重复注册，是因为每次都 `M.add(name)` 造根节点。根不再需要之后，同 label 的两次声明就是合并。
 
@@ -339,7 +337,7 @@ use_deps = { "glibc", "linux-headers" }
 | sysroot 写入者 | 7 | **1** |
 | 物化代码路径 | 3 | **1** |
 | `active` 门禁 | 需要（且 `Library` 漏了） | **概念消失** |
-| 幻影锚点节点 | 31 个假警报 | **消失** |
+| 幻影锚点节点 | 2 条误报为 broken payload | **正确归类** |
 | 冲突策略 | 2 种互相矛盾 | **1 种** |
 | 属性 `mode` / `switch` | 讨论中一度需要 | **均已删除** |
 | gcc 手写 binding tag | **22 处**，漏一处即静默半切换 | 隐式 |
@@ -534,7 +532,7 @@ if (pkg->spec == "2" && !pkg->archs.empty()) { ... }
 
 - **没有任何官方 recipe 声明过 header op**，4 个铺 sysroot 的走的都是 Lua 路径
 - 受影响的只有"同一个包装 ≥2 个版本且提供头/库"—— 官方索引里 4 个包
-- 31 个 doctor 假警报**可以单独修**（让 doctor 识别锚点节点），不需要任何架构改动
+- doctor 的锚点误报**可以单独修**（让它识别锚点节点），不需要任何架构改动 —— 事实上已经修了
 
 **如果多版本头文件/库不是真实用户需求，那么"只修具体 bug"是正确选择。** 本设计的价值取决于这个判断。
 
@@ -544,7 +542,7 @@ if (pkg->spec == "2" && !pkg->archs.empty()) { ... }
 
 #### 阶段 0 —— 立刻可做，不依赖任何决策
 
-- [ ] `doctor` 识别 group 锚点节点，不再报 `broken payload`（**修掉 31 个假警报**）
+- [ ] `doctor` 识别 group 锚点节点，不再报 `broken payload`（**修掉锚点误报**）
 - [ ] `Library` effect 补 `active` 门禁 —— *注：若阶段一采纳 D1(b)，此项作废，所以可以直接等*
 - [ ] `VData::libdir` 写入或删掉依赖它的死代码（`install_libs()` 零调用点）
 - [ ] 写 E2E 证明 **provider-scoped 卸载能替代手写 `xvm.remove`** —— 这是删掉所有 recipe `uninstall()` 样板的前提，且**完全无条件**
@@ -558,7 +556,7 @@ if (pkg->spec == "2" && !pkg->archs.empty()) { ... }
 - 冲突：报错 + 显式优先级（D4a）
 - 迁移 B、C 两类试点
 
-**收益**：7 个写入者 → 1；头文件真正可切换；卸载精确；冲突可检测；31 个假警报消失；`active` 门禁概念消失。
+**收益**：7 个写入者 → 1；头文件真正可切换；卸载精确；冲突可检测；锚点误报消失；`active` 门禁概念消失。
 
 **不需要**：manifest、`use()` hook、`args` 模板、`use_deps`、generation。
 
