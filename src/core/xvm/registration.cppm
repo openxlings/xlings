@@ -48,6 +48,7 @@ struct RegisteredMember {
 enum class RegistrationErrorKind {
     InvalidBatchIdentity,
     InvalidNodeIdentity,
+    InvalidNodePayload,
     InvalidBindingIdentity,
     DuplicateNode,
     RootNotInBatch,
@@ -90,6 +91,8 @@ using RegistrationExactKey = std::pair<std::string, std::string>;
 struct RegistrationGroup {
     std::string label;
     RegistrationExactKey root;
+    RegistrationExactKey identityNode;
+    std::string identityPath;
     std::map<std::string, std::string> members;
     std::vector<HeaderAsset> headers;
 };
@@ -155,15 +158,36 @@ std::optional<std::string> legacy_payload_mismatch_(
         node.target, info, data, kind);
     const auto destinationName = effective_destination_name_(
         node.target, data, kind, sourceName);
+    const auto expectedSourceName = node.kind == "group"
+        ? std::string_view{}
+        : std::string_view{node.sourceName};
+    const auto expectedDestinationName = node.kind == "group"
+        ? std::string_view{}
+        : std::string_view{node.destinationName};
     if (data.path != node.path) return "path";
     if (kind != node.kind) return "kind";
-    if (sourceName != node.sourceName) return "sourceName";
-    if (destinationName != node.destinationName) {
+    if (sourceName != expectedSourceName) return "sourceName";
+    if (destinationName != expectedDestinationName) {
         return "destinationName";
     }
     if (data.alias != node.alias) return "alias";
     if (data.envs != node.envs) return "envs";
     return std::nullopt;
+}
+
+std::string registration_path_token_(std::string_view token) {
+    std::string escaped;
+    escaped.reserve(token.size());
+    for (const auto ch : token) {
+        if (ch == '~') {
+            escaped += "~0";
+        } else if (ch == '/') {
+            escaped += "~1";
+        } else {
+            escaped += ch;
+        }
+    }
+    return escaped;
 }
 
 void erase_exact_registration_edges_(
@@ -230,6 +254,28 @@ apply_registration_batch(
                 RegistrationErrorKind::InvalidNodeIdentity,
                 nodePath + "/version", node.target, node.version,
                 "registration version is empty"));
+        }
+        if (node.kind != "program"
+            && node.kind != "lib"
+            && node.kind != "group") {
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::InvalidNodePayload,
+                nodePath + "/kind", node.target, node.version,
+                std::format(
+                    "unsupported registration node kind '{}'",
+                    node.kind)));
+        }
+        if (node.kind != "group" && node.sourceName.empty()) {
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::InvalidNodePayload,
+                nodePath + "/sourceName", node.target, node.version,
+                "materialized registration source name is empty"));
+        }
+        if (node.kind != "group" && node.destinationName.empty()) {
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::InvalidNodePayload,
+                nodePath + "/destinationName", node.target, node.version,
+                "materialized registration destination name is empty"));
         }
         if (node.binding && node.binding->rootTarget.empty()) {
             return std::unexpected(detail_::registration_error_(
@@ -351,6 +397,10 @@ apply_registration_batch(
             detail_::RegistrationGroup{
                 .label = label,
                 .root = root,
+                .identityNode = key,
+                .identityPath = node.binding->group.empty()
+                    ? nodePath + "/binding/rootTarget"
+                    : nodePath + "/binding/group",
             });
         rootGroups[root] = label;
         nodeGroups[key] = label;
@@ -388,11 +438,77 @@ apply_registration_batch(
             detail_::RegistrationGroup{
                 .label = label,
                 .root = key,
+                .identityNode = key,
+                .identityPath =
+                    std::format("/nodes/{}/target", index),
             });
         nodeGroups[key] = label;
         rootGroups[key] = label;
         if (auto error = addMember(groupIt->second, node, index)) {
             return std::unexpected(std::move(*error));
+        }
+    }
+
+    struct PersistedRegistrationGroup {
+        detail_::RegistrationExactKey root;
+        std::set<detail_::RegistrationExactKey> members;
+    };
+    std::map<std::string, PersistedRegistrationGroup> persistedGroups;
+    for (const auto& [target, info] : db) {
+        for (const auto& [version, data] : info.versions) {
+            if (!data.bindingGroup) continue;
+            const auto& ref = *data.bindingGroup;
+            if (ref.provider != batch.provider
+                || ref.providerVersion != batch.providerVersion) {
+                continue;
+            }
+            const detail_::RegistrationExactKey root{
+                ref.rootTarget,
+                ref.rootVersion,
+            };
+            auto [groupIt, inserted] = persistedGroups.try_emplace(
+                ref.group,
+                PersistedRegistrationGroup{
+                    .root = root,
+                });
+            if (!inserted && groupIt->second.root != root) {
+                return std::unexpected(detail_::registration_error_(
+                    RegistrationErrorKind::GroupConflict,
+                    "/bindingGroups/"
+                        + detail_::registration_path_token_(ref.group),
+                    target, version,
+                    std::format(
+                        "persisted registration group '{}' has multiple roots",
+                        ref.group)));
+            }
+            groupIt->second.members.emplace(target, version);
+        }
+    }
+    for (const auto& [label, group] : groups) {
+        const auto persistedIt = persistedGroups.find(label);
+        if (persistedIt == persistedGroups.end()) continue;
+        if (persistedIt->second.root != group.root) {
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::GroupConflict,
+                group.identityPath,
+                group.identityNode.first,
+                group.identityNode.second,
+                std::format(
+                    "registration group '{}' conflicts with persisted root '{}@{}'",
+                    label,
+                    persistedIt->second.root.first,
+                    persistedIt->second.root.second)));
+        }
+        for (const auto& member : persistedIt->second.members) {
+            if (nodeIndexes.contains(member)) continue;
+            return std::unexpected(detail_::registration_error_(
+                RegistrationErrorKind::IncompleteOwnedGroup,
+                group.identityPath,
+                member.first,
+                member.second,
+                std::format(
+                    "same-owner registration omits an existing member of group '{}'",
+                    label)));
         }
     }
 

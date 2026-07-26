@@ -323,6 +323,20 @@ resolve_legacy_graph_(const VersionDB& db,
         {target, version},
     };
     std::set<std::pair<std::string, std::string>> visited;
+    std::map<
+        std::pair<std::string, std::string>,
+        std::vector<std::pair<std::string, std::string>>> incomingEdges;
+    for (const auto& [sourceTarget, sourceInfo] : db) {
+        for (const auto& [destinationTarget, versions] :
+             sourceInfo.bindings) {
+            for (const auto& [sourceVersion, destinationVersion] :
+                 versions) {
+                incomingEdges[
+                    {destinationTarget, destinationVersion}]
+                    .emplace_back(sourceTarget, sourceVersion);
+            }
+        }
+    }
 
     while (!pending.empty()) {
         auto [currentTarget, currentVersion] = std::move(pending.back());
@@ -372,6 +386,45 @@ resolve_legacy_graph_(const VersionDB& db,
                 BindingErrorKind::UnsupportedKind,
                 currentTarget, currentVersion,
                 std::format("unsupported legacy member kind '{}'", kind)));
+        }
+
+        const auto incomingIt =
+            incomingEdges.find({currentTarget, currentVersion});
+        if (incomingIt != incomingEdges.end()) {
+            for (const auto& [sourceTarget, sourceVersion] :
+                 incomingIt->second) {
+                if (sourceTarget == currentTarget) {
+                    return std::unexpected(binding_error_(
+                        BindingErrorKind::SelfEdge,
+                        currentTarget, currentVersion,
+                        "legacy binding contains a self-edge"));
+                }
+                const auto& sourceInfo = db.at(sourceTarget);
+                if (!sourceInfo.versions.contains(sourceVersion)) {
+                    return std::unexpected(binding_error_(
+                        BindingErrorKind::VersionNotFound,
+                        sourceTarget, sourceVersion,
+                        "legacy binding source version is missing"));
+                }
+
+                const auto reciprocalIt =
+                    infoIt->second.bindings.find(sourceTarget);
+                if (reciprocalIt == infoIt->second.bindings.end()) {
+                    return std::unexpected(binding_error_(
+                        BindingErrorKind::AsymmetricEdge,
+                        sourceTarget, sourceVersion,
+                        "legacy binding is asymmetric"));
+                }
+                const auto reciprocalVersionIt =
+                    reciprocalIt->second.find(currentVersion);
+                if (reciprocalVersionIt == reciprocalIt->second.end()
+                    || reciprocalVersionIt->second != sourceVersion) {
+                    return std::unexpected(binding_error_(
+                        BindingErrorKind::AsymmetricEdge,
+                        sourceTarget, sourceVersion,
+                        "legacy binding is asymmetric"));
+                }
+            }
         }
 
         if (auto selectedIt = selection.members.find(currentTarget);

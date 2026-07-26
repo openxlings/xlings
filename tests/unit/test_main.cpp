@@ -4005,6 +4005,215 @@ TEST(XvmRegistrationErrorTest, RejectsInvalidBatchNodeAndBindingIdentity) {
     }
 }
 
+TEST(XvmRegistrationErrorTest,
+     RejectsInvalidNodePayloadAtIndexedPathWithoutMutation) {
+    struct Case {
+        xlings::xvm::RegistrationNode node;
+        std::string path;
+    };
+
+    auto unsupported =
+        make_registration_node("archive", "repo:archive", "archive");
+    auto emptyProgramSource =
+        make_registration_node("program", "repo:program", "program");
+    emptyProgramSource.sourceName.clear();
+    auto emptyProgramDestination =
+        make_registration_node("program", "repo:program", "program");
+    emptyProgramDestination.destinationName.clear();
+    auto emptyLibrarySource =
+        make_registration_node("library", "repo:library", "lib");
+    emptyLibrarySource.sourceName.clear();
+    auto emptyLibraryDestination =
+        make_registration_node("library", "repo:library", "lib");
+    emptyLibraryDestination.destinationName.clear();
+
+    const std::vector<Case> cases{
+        {
+            std::move(unsupported),
+            "/nodes/0/kind",
+        },
+        {
+            std::move(emptyProgramSource),
+            "/nodes/0/sourceName",
+        },
+        {
+            std::move(emptyProgramDestination),
+            "/nodes/0/destinationName",
+        },
+        {
+            std::move(emptyLibrarySource),
+            "/nodes/0/sourceName",
+        },
+        {
+            std::move(emptyLibraryDestination),
+            "/nodes/0/destinationName",
+        },
+    };
+
+    for (const auto& testCase : cases) {
+        SCOPED_TRACE(testCase.path);
+        xlings::xvm::VersionDB db;
+        db["sentinel"].versions["0"].path = "/sentinel";
+        xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+        xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+        const auto dbBefore = xlings::xvm::versions_to_json(db);
+        const auto workspaceBefore = workspace;
+        const auto installedBefore = installed;
+
+        auto result = xlings::xvm::apply_registration_batch(
+            db, workspace, installed,
+            make_registration_batch({testCase.node}));
+
+        expect_registration_error(
+            result,
+            xlings::xvm::RegistrationErrorKind::InvalidNodePayload,
+            testCase.path, testCase.node.target, testCase.node.version);
+        expect_registration_state_unchanged(
+            db, workspace, installed,
+            dbBefore, workspaceBefore, installedBefore);
+    }
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsPersistedGroupLabelWithDifferentRootWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef existingGroup{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "shared",
+        .rootTarget = "old-root",
+        .rootVersion = "repo:old-root",
+    };
+    auto& oldRoot = db["old-root"].versions["repo:old-root"];
+    oldRoot.path = "/pkg/provider/old";
+    oldRoot.kind = "group";
+    oldRoot.bindingGroup = existingGroup;
+    oldRoot.bindingMembers = {
+        {"old-root", "repo:old-root"},
+    };
+    oldRoot.bindingMembersDeclared = true;
+
+    auto newRoot =
+        make_registration_node("new-root", "repo:new-root", "group");
+    auto newTool =
+        make_registration_node("new-tool", "repo:new-tool");
+    newTool.binding = make_registration_binding(
+        "new-root", "repo:new-root", "shared");
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({newRoot, newTool}));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::GroupConflict,
+        "/nodes/1/binding/group", "new-tool", "repo:new-tool");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsPersistedGroupLabelWithDuplicateRootsWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef oldGroup{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "shared",
+        .rootTarget = "old-root",
+        .rootVersion = "repo:old-root",
+    };
+    auto& oldRoot = db["old-root"].versions["repo:old-root"];
+    oldRoot.path = "/pkg/provider/old";
+    oldRoot.kind = "group";
+    oldRoot.bindingGroup = oldGroup;
+    oldRoot.bindingMembers = {
+        {"old-root", "repo:old-root"},
+    };
+    oldRoot.bindingMembersDeclared = true;
+
+    const xlings::xvm::BindingGroupRef otherGroup{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "shared",
+        .rootTarget = "other-root",
+        .rootVersion = "repo:other-root",
+    };
+    auto& otherRoot = db["other-root"].versions["repo:other-root"];
+    otherRoot.path = "/pkg/provider/other";
+    otherRoot.kind = "group";
+    otherRoot.bindingGroup = otherGroup;
+    otherRoot.bindingMembers = {
+        {"other-root", "repo:other-root"},
+    };
+    otherRoot.bindingMembersDeclared = true;
+
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            make_registration_node("fresh", "repo:fresh"),
+        }));
+
+    expect_registration_error(
+        result, xlings::xvm::RegistrationErrorKind::GroupConflict,
+        "/bindingGroups/shared", "other-root", "repo:other-root");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     MissingPersistedRootStillRequiresEveryOwnedMemberWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef existingGroup{
+        .provider = "repo:provider",
+        .providerVersion = "1.0.0",
+        .group = "shared",
+        .rootTarget = "root",
+        .rootVersion = "repo:root",
+    };
+    auto& oldMember = db["old-member"].versions["repo:old-member"];
+    oldMember.path = "/pkg/provider/old";
+    oldMember.kind = "program";
+    oldMember.sourceName = "old-member";
+    oldMember.destinationName = "old-member";
+    oldMember.bindingGroup = existingGroup;
+
+    auto root = make_registration_node("root", "repo:root", "group");
+    auto newMember =
+        make_registration_node("new-member", "repo:new-member");
+    newMember.binding =
+        make_registration_binding("root", "repo:root", "shared");
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({root, newMember}));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::IncompleteOwnedGroup,
+        "/nodes/1/binding/group",
+        "old-member", "repo:old-member");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
+}
+
 TEST(XvmRegistrationOwnershipTest,
      RejectsOtherProviderExactCollisionWithoutMutation) {
     xlings::xvm::VersionDB db;
@@ -4190,6 +4399,33 @@ TEST(XvmRegistrationOwnershipTest, AdoptsCompatibleCompleteLegacyGroup) {
 }
 
 TEST(XvmRegistrationOwnershipTest,
+     AdoptsOwnerlessLegacyGroupWithNormalizedVirtualPayload) {
+    xlings::xvm::VersionDB db;
+    auto& info = db["virtual"];
+    info.type = "group";
+    auto& legacy = info.versions["repo:virtual"];
+    legacy.path = "/pkg/provider/1.0.0";
+    legacy.kind = "group";
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto group =
+        make_registration_node("virtual", "repo:virtual", "group");
+    group.sourceName = "ignored-payload";
+    group.destinationName = "ignored-shim";
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({group}));
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& adopted = db.at("virtual").versions.at("repo:virtual");
+    EXPECT_TRUE(adopted.sourceName.empty());
+    EXPECT_TRUE(adopted.destinationName.empty());
+    ASSERT_TRUE(adopted.bindingGroup.has_value());
+    EXPECT_EQ(adopted.bindingGroup->group, "virtual");
+}
+
+TEST(XvmRegistrationOwnershipTest,
      RejectsIncompatibleLegacyPayloadWithoutMutation) {
     xlings::xvm::VersionDB db;
     seed_complete_legacy_registration_group(db);
@@ -4234,6 +4470,42 @@ TEST(XvmRegistrationOwnershipTest,
     EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
     EXPECT_TRUE(workspace.empty());
     EXPECT_TRUE(installed.empty());
+}
+
+TEST(XvmRegistrationOwnershipTest,
+     RejectsIncomingOnlyLegacyEdgeWithoutMutation) {
+    xlings::xvm::VersionDB db;
+    auto& toolInfo = db["tool"];
+    toolInfo.type = "program";
+    toolInfo.filename = "payload";
+    auto& tool = toolInfo.versions["repo:tool"];
+    tool.path = "/pkg/provider/1.0.0";
+
+    auto& peerInfo = db["peer"];
+    peerInfo.type = "program";
+    peerInfo.filename = "peer";
+    peerInfo.versions["repo:peer"].path = "/pkg/peer";
+    peerInfo.bindings["tool"]["repo:peer"] = "repo:tool";
+
+    xlings::xvm::Workspace workspace{{"sentinel", "0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"sentinel", {"0"}}};
+    const auto dbBefore = xlings::xvm::versions_to_json(db);
+    const auto workspaceBefore = workspace;
+    const auto installedBefore = installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed,
+        make_registration_batch({
+            make_registration_node("tool", "repo:tool"),
+        }));
+
+    expect_registration_error(
+        result,
+        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
+        "/nodes/0", "peer", "repo:peer");
+    expect_registration_state_unchanged(
+        db, workspace, installed,
+        dbBefore, workspaceBefore, installedBefore);
 }
 
 TEST(XvmRegistrationOwnershipTest,
@@ -4762,7 +5034,7 @@ TEST(XvmRegistrationStateTest,
 }
 
 TEST(XvmRegistrationStateTest,
-     FinalComponentValidationFailurePreservesEveryStateObject) {
+     InvalidPayloadInFinalNodePreservesEveryStateObject) {
     xlings::xvm::VersionDB db;
     db["sentinel"].versions["0"].path = "/sentinel";
     xlings::xvm::Workspace workspace{{"sentinel", "0"}};
@@ -4781,8 +5053,8 @@ TEST(XvmRegistrationStateTest,
 
     expect_registration_error(
         result,
-        xlings::xvm::RegistrationErrorKind::BindingValidationFailed,
-        "", "z-invalid", "repo:invalid");
+        xlings::xvm::RegistrationErrorKind::InvalidNodePayload,
+        "/nodes/1/kind", "z-invalid", "repo:invalid");
     expect_registration_state_unchanged(
         db, workspace, installed,
         dbBefore, workspaceBefore, installedBefore);
@@ -5558,6 +5830,56 @@ TEST(XvmBindingSelectionErrorTest, LegacyRejectsAsymmetricEdge) {
 
     expect_binding_error(
         result, xlings::xvm::BindingErrorKind::AsymmetricEdge, "b", "1");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     LegacyRejectsIncomingOnlyEdgeFromStartingNode) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1"].path = "/tool";
+    db["peer"].type = "program";
+    db["peer"].versions["1"].path = "/peer";
+    db["peer"].bindings["tool"]["1"] = "1";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::AsymmetricEdge, "peer", "1");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     LegacyIncomingEdgeRejectsMissingSourceVersion) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1"].path = "/tool";
+    db["peer"].type = "program";
+    db["peer"].versions["1"].path = "/peer";
+    db["peer"].bindings["tool"]["2"] = "1";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::VersionNotFound, "peer", "2");
+}
+
+TEST(XvmBindingSelectionErrorTest,
+     LegacyIncomingEdgeReportsMismatchedReciprocalSourceExactly) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1"].path = "/tool";
+    db["peer"].type = "program";
+    db["peer"].versions["1"].path = "/peer/1";
+    db["peer"].versions["2"].path = "/peer/2";
+    db["peer"].bindings["tool"]["1"] = "1";
+    db["tool"].bindings["peer"]["1"] = "2";
+
+    auto result =
+        xlings::xvm::resolve_binding_selection(db, "tool", "1");
+
+    expect_binding_error(
+        result, xlings::xvm::BindingErrorKind::AsymmetricEdge, "peer", "1");
 }
 
 TEST(XvmBindingSelectionErrorTest, LegacyRejectsSelfEdge) {
