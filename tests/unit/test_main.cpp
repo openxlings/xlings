@@ -7436,9 +7436,12 @@ TEST(XimXvmRegistrationAdapterTest,
     const auto& program = plan->batch.nodes[0];
     EXPECT_EQ(program.target, "cc");
     EXPECT_EQ(program.version, "repo-a:2.0.0");
+    // Built as a filesystem path, so compare as one: on Windows the
+    // separators are backslashes and a POSIX literal never matches.
     EXPECT_EQ(
         program.path,
-        "/store/repo-a-x-recipe-name/2.0.0");
+        (std::filesystem::path("/store") / "repo-a-x-recipe-name" / "2.0.0")
+            .string());
     EXPECT_EQ(program.kind, "program");
     EXPECT_EQ(program.sourceName, "cc");
     EXPECT_EQ(program.destinationName, "cc");
@@ -7729,7 +7732,10 @@ TEST(XimXvmMetadataBatchTest,
     std::string artifactContents;
     input >> artifactContents;
     EXPECT_EQ(artifactContents, "unchanged");
-    std::filesystem::remove_all(artifactDir);
+    // Non-throwing: Windows refuses to delete a file that is still open,
+    // and a cleanup failure here says nothing about what was tested.
+    std::error_code cleanupEc;
+    std::filesystem::remove_all(artifactDir, cleanupEc);
 }
 
 TEST(XimXvmMetadataBatchTest,
@@ -8273,6 +8279,16 @@ int run_xvm_registration_production_child_(
         return output.good();
     };
 
+    // Compare where the paths point, not how they are spelled. The test
+    // builds its expectations from fs::temp_directory_path(), while Config
+    // discovers the project root by walking up from the working directory.
+    // On macOS the temp dir lives under /var, which is a symlink to
+    // /private/var, so the two spellings differ while naming one directory.
+    const auto same_dir = [](const fs::path& lhs, const fs::path& rhs) {
+        std::error_code ec;
+        return fs::weakly_canonical(lhs, ec) == fs::weakly_canonical(rhs, ec);
+    };
+
     const auto home = root / "home" / ".xlings";
     const auto project = root / "project";
     const auto payload = root / "payload";
@@ -8375,9 +8391,8 @@ int run_xvm_registration_production_child_(
             configure_xpkg_execution_artifact_paths_(context);
         const auto expectedSubos =
             xlings::Config::xvm_artifact_subos_dir();
-        if (context.bin_dir != expectedSubos / "bin"
-            || context.subos_sysrootdir
-                != expectedSubos.string()) {
+        if (!same_dir(context.bin_dir, expectedSubos / "bin")
+            || !same_dir(context.subos_sysrootdir, expectedSubos)) {
             std::cerr
                 << "execution context does not match write scope\n";
             return false;
@@ -8394,13 +8409,12 @@ int run_xvm_registration_production_child_(
     if (!xlings::Config::has_project_config()) {
         return fail(4, "temporary project was not selected");
     }
-    if (xlings::Config::global_subos_dir() != globalSubos) {
+    if (!same_dir(xlings::Config::global_subos_dir(), globalSubos)) {
         return fail(
             5,
             "global subos root ignored XLINGS_ACTIVE_SUBOS");
     }
-    if (xlings::Config::xvm_artifact_subos_dir()
-        != projectSubos) {
+    if (!same_dir(xlings::Config::xvm_artifact_subos_dir(), projectSubos)) {
         return fail(
             6,
             "project metadata and artifact roots disagree");
@@ -8428,16 +8442,24 @@ int run_xvm_registration_production_child_(
             9,
             "project registration did not use project metadata");
     }
+    // Program shims are named after the target plus the platform's
+    // executable suffix, so a bare name only exists on POSIX.
+    const auto shim_name = [](std::string_view target) {
+#if defined(_WIN32)
+        return std::string(target) + ".exe";
+#else
+        return std::string(target);
+#endif
+    };
     if (!fs::exists(
-            projectSubos / "bin" / "task3b-project-tool")) {
+            projectSubos / "bin" / shim_name("task3b-project-tool"))) {
         return fail(
             10,
             "project registration did not use project artifact root");
     }
 
     xlings::Config::set_force_global_scope(true);
-    if (xlings::Config::xvm_artifact_subos_dir()
-        != globalSubos) {
+    if (!same_dir(xlings::Config::xvm_artifact_subos_dir(), globalSubos)) {
         return fail(
             11,
             "force-global metadata and artifact roots disagree");
@@ -10994,29 +11016,49 @@ std::filesystem::path lock_test_home_(std::string_view name) {
 
 }  // namespace
 
+// Windows will not delete a file that is still open, so every lock must be
+// out of scope before the directory is removed -- and the removal itself
+// must not throw, or a stray handle turns cleanup into a test failure that
+// says nothing about the lock. (POSIX allows unlinking an open file, which
+// is why this only ever showed up on Windows.)
+void drop_lock_home_(const std::filesystem::path& home) {
+    std::error_code ec;
+    std::filesystem::remove_all(home, ec);
+}
+
 TEST(XvmStateLock, IsHeldForTheHomeNotTheSubos) {
     const auto home = lock_test_home_("scope");
     // The version database is shared by every subos under a home, so the
     // lock has to live at the home root to protect it.
     EXPECT_EQ(xlings::xvm::state_lock_path(home), home / ".xlings.lock");
-    std::filesystem::remove_all(home);
+    drop_lock_home_(home);
 }
 
-TEST(XvmStateLock, SecondAcquisitionInTheSameProcessFailsFast) {
+TEST(XvmStateLock, AnUnrelatedHolderIsExcludedWithAnActionableMessage) {
     const auto home = lock_test_home_("contended");
+    {
+        auto first = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(first.has_value()) << first.error();
+        EXPECT_TRUE(first->held());
+        EXPECT_FALSE(first->bypassed());
+        EXPECT_FALSE(first->inherited());
 
-    auto first = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
-    ASSERT_TRUE(first.has_value()) << first.error();
-    EXPECT_TRUE(first->held());
-    EXPECT_FALSE(first->bypassed());
+        // Re-entry is by design for a child of the holder, so clear the
+        // marker the holder exported to stand in for an unrelated process:
+        // one that shares nothing but the home directory.
+        xlings::platform::set_env_variable("XLINGS_STATE_LOCK_HELD", "");
 
-    auto second = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
-    ASSERT_FALSE(second.has_value()) << "the lock did not exclude a second holder";
-    // The message has to be actionable: what is happening and what to do.
-    EXPECT_NE(second.error().find("another xlings process"), std::string::npos);
-    EXPECT_NE(second.error().find("XLINGS_NO_LOCK"), std::string::npos);
-
-    std::filesystem::remove_all(home);
+        auto other = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_FALSE(other.has_value())
+            << "the lock did not exclude an unrelated holder";
+        // The message has to be actionable: what is happening and what to do.
+        EXPECT_NE(other.error().find("another xlings process"),
+                  std::string::npos);
+        EXPECT_NE(other.error().find("XLINGS_NO_LOCK"), std::string::npos);
+    }
+    drop_lock_home_(home);
 }
 
 TEST(XvmStateLock, ReleasesWhenTheHolderGoesOutOfScope) {
@@ -11025,28 +11067,69 @@ TEST(XvmStateLock, ReleasesWhenTheHolderGoesOutOfScope) {
         auto held = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
         ASSERT_TRUE(held.has_value()) << held.error();
     }
-    auto again = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
-    EXPECT_TRUE(again.has_value())
-        << "the lock outlived its holder: " << again.error();
-    std::filesystem::remove_all(home);
+    {
+        auto again = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        EXPECT_TRUE(again.has_value())
+            << "the lock outlived its holder: " << again.error();
+    }
+    drop_lock_home_(home);
+}
+
+// Recipes shell out to xlings from their hooks -- d2mcpp's config hook runs
+// `xlings install`. The child would otherwise wait 30s for a lock its own
+// parent is holding and cannot release until the child returns.
+TEST(XvmStateLock, AChildOfTheHolderProceedsWithoutWaiting) {
+    const auto home = lock_test_home_("reentrant");
+    {
+        auto outer = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(outer.has_value()) << outer.error();
+        EXPECT_FALSE(outer->inherited());
+
+        // Standing in for a spawned child: it inherits the marker the
+        // holder exported.
+        const auto start = std::chrono::steady_clock::now();
+        auto nested = xlings::xvm::acquire_state_lock(
+            home, std::chrono::seconds{30});
+        const auto waited = std::chrono::steady_clock::now() - start;
+
+        ASSERT_TRUE(nested.has_value())
+            << "a child of the holder deadlocked: " << nested.error();
+        EXPECT_TRUE(nested->inherited());
+        EXPECT_TRUE(nested->held());
+        EXPECT_LT(waited, std::chrono::seconds{5}) << "the child waited";
+    }
+    // The marker must not outlive the holder, or the next unrelated command
+    // in this process would silently skip locking.
+    {
+        auto after = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(after.has_value()) << after.error();
+        EXPECT_FALSE(after->inherited())
+            << "the re-entrancy marker outlived the lock that set it";
+    }
+    drop_lock_home_(home);
 }
 
 TEST(XvmStateLock, LockFileContentsAreNeverRewritten) {
     const auto home = lock_test_home_("inode");
     const auto path = xlings::xvm::state_lock_path(home);
+    {
+        auto held = xlings::xvm::acquire_state_lock(
+            home, std::chrono::milliseconds{50});
+        ASSERT_TRUE(held.has_value()) << held.error();
 
-    auto held = xlings::xvm::acquire_state_lock(home, std::chrono::milliseconds{50});
-    ASSERT_TRUE(held.has_value()) << held.error();
-
-    // Writing anything to the lock file through the normal path would
-    // rename a new inode over it, leaving the lock name unlocked while this
-    // process still believes it holds the lock. Nothing may be written, and
-    // in particular the file must stay empty.
-    ASSERT_TRUE(std::filesystem::exists(path));
-    EXPECT_EQ(std::filesystem::file_size(path), 0u)
-        << "something wrote to the lock file; flock is held on the old inode";
-
-    std::filesystem::remove_all(home);
+        // Writing anything to the lock file through the normal path would
+        // rename a new inode over it, leaving the lock name unlocked while
+        // this process still believes it holds the lock. Nothing may be
+        // written, and in particular the file must stay empty.
+        ASSERT_TRUE(std::filesystem::exists(path));
+        EXPECT_EQ(std::filesystem::file_size(path), 0u)
+            << "something wrote to the lock file; the lock is held on the "
+               "old inode";
+    }
+    drop_lock_home_(home);
 }
 
 // ============================================================
