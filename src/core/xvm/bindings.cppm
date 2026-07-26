@@ -73,6 +73,29 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
                                              const std::string& target,
                                              const std::string& version);
 
+// Where one library entry has to be placed in the sysroot.
+//
+// `source` is the absolute file inside the payload; `name` is what it is
+// called in the sysroot lib directory. Both empty when the entry is not a
+// library, has no payload path, or resolves to no name.
+struct LibraryPlacement {
+    std::string source;
+    std::string name;
+
+    [[nodiscard]] bool empty() const { return source.empty(); }
+};
+
+// Resolve an entry to its library placement.
+//
+// Reads `path` + `sourceName` + `destinationName` through the shared
+// accessors in xvm.types -- the same three fields the install path has always
+// used. The switch planner used to look at `VData::libdir` instead, a field
+// with no writer anywhere in the tree, so it emitted no library work and
+// `xlings use` silently did nothing for libraries.
+LibraryPlacement library_placement(const VersionDB& db,
+                                   const std::string& target,
+                                   const std::string& version);
+
 }  // namespace xlings::xvm
 
 namespace xlings::xvm::detail_ {
@@ -594,6 +617,30 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
         return {HeaderAsset{.sourceDir = entry.includedir}};
     }
     return {};
+}
+
+LibraryPlacement library_placement(const VersionDB& db,
+                                   const std::string& target,
+                                   const std::string& version) {
+    auto targetIt = db.find(target);
+    if (targetIt == db.end()) return {};
+    auto versionIt = targetIt->second.versions.find(version);
+    if (versionIt == targetIt->second.versions.end()) return {};
+
+    const VInfo& info = targetIt->second;
+    const VData& data = versionIt->second;
+    const auto kind = effective_kind(info, data);
+    if (kind != "lib" || data.path.empty()) return {};
+
+    const auto sourceName = effective_source_name(target, info, data, kind);
+    const auto destinationName =
+        effective_destination_name(target, data, kind, sourceName);
+    if (sourceName.empty() || destinationName.empty()) return {};
+
+    return {
+        .source = (std::filesystem::path(data.path) / sourceName).string(),
+        .name = destinationName,
+    };
 }
 
 }  // namespace xlings::xvm

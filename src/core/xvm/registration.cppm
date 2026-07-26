@@ -145,10 +145,12 @@ RegistrationGroupIdentity registration_group_identity_(
     };
 }
 
+// Moved to xvm.types so the switch planner reads them identically -- see the
+// comment there. Kept as thin aliases so this file's call sites stay legible.
 std::string effective_kind_(
     const VInfo& info,
     const VData& data) {
-    return data.kind.empty() ? info.type : data.kind;
+    return effective_kind(info, data);
 }
 
 std::string effective_source_name_(
@@ -156,9 +158,7 @@ std::string effective_source_name_(
     const VInfo& info,
     const VData& data,
     std::string_view kind) {
-    if (kind == "group") return {};
-    if (!data.sourceName.empty()) return data.sourceName;
-    return info.filename.empty() ? target : info.filename;
+    return effective_source_name(target, info, data, kind);
 }
 
 std::string effective_destination_name_(
@@ -166,10 +166,7 @@ std::string effective_destination_name_(
     const VData& data,
     std::string_view kind,
     std::string_view sourceName) {
-    if (kind == "group") return {};
-    if (!data.destinationName.empty()) return data.destinationName;
-    if (kind == "program") return target;
-    return std::string(sourceName);
+    return effective_destination_name(target, data, kind, sourceName);
 }
 
 std::optional<std::string> legacy_payload_mismatch_(

@@ -9094,10 +9094,10 @@ TEST(XimXvmRemovalArtifactTest,
         newSource.string(), "NEW");
     xlings::platform::write_string_to_file(
         unrelatedSource.string(), "SENTINEL");
-    xlings::xvm::install_libs(
-        oldPayload.string(), libDir, {destinationName});
-    xlings::xvm::install_libs(
-        unrelatedPayload.string(), libDir, {target});
+    xlings::xvm::place_library(
+        (oldPayload / destinationName).string(), destinationName, libDir);
+    xlings::xvm::place_library(
+        (unrelatedPayload / target).string(), target, libDir);
 
     xlings::xvm::VersionDB db;
     xlings::xvm::add_version(
@@ -9135,8 +9135,8 @@ TEST(XimXvmRemovalArtifactTest,
     xlings::xvm::add_version(
         db, target, "repo-a:2.0.0", newPayload.string(),
         "lib", destinationName);
-    xlings::xvm::install_libs(
-        newPayload.string(), libDir, {destinationName});
+    xlings::xvm::place_library(
+        (newPayload / destinationName).string(), destinationName, libDir);
     ASSERT_TRUE(fs::exists(libDir / destinationName));
     EXPECT_EQ(
         xlings::platform::read_file_to_string(
@@ -9164,8 +9164,8 @@ TEST(XimXvmRemovalArtifactTest,
     fs::create_directories(sourceDir);
     xlings::platform::write_string_to_file(
         (sourceDir / filename).string(), "LEGACY");
-    xlings::xvm::install_libs(
-        sourceDir.string(), libDir, {filename});
+    xlings::xvm::place_library(
+        (sourceDir / filename).string(), filename, libDir);
 
     xlings::xvm::VersionDB dbBefore;
     auto& info = dbBefore["legacy-runtime"];
@@ -9204,8 +9204,8 @@ TEST(XimXvmRemovalArtifactTest,
     fs::create_directories(sourceDir);
     xlings::platform::write_string_to_file(
         (sourceDir / filename).string(), "SURVIVOR");
-    xlings::xvm::install_libs(
-        sourceDir.string(), libDir, {filename});
+    xlings::xvm::place_library(
+        (sourceDir / filename).string(), filename, libDir);
 
     xlings::xvm::VersionDB dbBefore;
     xlings::xvm::add_version(
@@ -10958,10 +10958,22 @@ void switch_group_(xlings::xvm::VersionDB& db,
         if (info.type.empty()) info.type = "program";
         auto& data = info.versions[std::string(version)];
         data.path = std::format("/pkg/{}/{}", t, version);
-        data.kind = "program";
+        // A member whose name looks like a shared object is registered as
+        // one, with the three fields the install path writes. That is what a
+        // real `xvm.add(lib, {type="lib", ...})` produces.
+        const bool isLibrary = t.starts_with("lib");
+        data.kind = isLibrary ? "lib" : "program";
+        if (isLibrary) {
+            info.type = "lib";
+            data.sourceName = t;
+            data.destinationName = t;
+        }
         data.bindingGroup = ref;
         if (withDirs) {
             data.includedir = std::format("/pkg/{}/{}/include", t, version);
+            // Deliberately still set: nothing reads it any more, and a test
+            // that passes with it present proves the planner no longer
+            // depends on the field that never had a writer.
             data.libdir = std::format("/pkg/{}/{}/lib", t, version);
         }
     }
@@ -10986,26 +10998,45 @@ TEST(XvmSwitchPlan, PlansEveryMemberNotJustTheEntryPoint) {
 
 TEST(XvmSwitchPlan, SwapsHeadersAndLibsForEveryMovingMember) {
     xlings::xvm::VersionDB db;
-    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
-    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
-    const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+    const std::vector<std::string> members{"gcc", "g++", "libstdc++.so.6"};
+    switch_group_(db, "15.1.0", members, "15.1.0");
+    switch_group_(db, "16.1.0", members, "16.1.0");
+    const xlings::xvm::Workspace ws{
+        {"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"libstdc++.so.6", "16.1.0"}};
 
     auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
-    ASSERT_EQ(plan->switches.size(), 2u);
+    ASSERT_EQ(plan->switches.size(), 3u);
     // Switching gcc while leaving the previous release's libstdc++ headers
     // in the sysroot is how `gcc --version` reports the right thing and the
     // compile fails anyway.
     for (const auto& change : plan->switches) {
         EXPECT_EQ(change.previousVersion, "16.1.0");
-        EXPECT_NE(change.removeLibDir.find("16.1.0"), std::string::npos);
-        EXPECT_NE(change.installLibDir.find("15.1.0"), std::string::npos);
+    }
+
+    // The library member is placed from the incoming release's payload. Two
+    // versions share the soname, so the outgoing one is replaced rather than
+    // unlinked first.
+    const auto lib = std::ranges::find_if(
+        plan->switches,
+        [](const auto& c) { return c.target == "libstdc++.so.6"; });
+    ASSERT_NE(lib, plan->switches.end());
+    EXPECT_EQ(lib->installLibName, "libstdc++.so.6");
+    EXPECT_NE(lib->installLibSource.find("15.1.0"), std::string::npos)
+        << "the library was not planned from the incoming release";
+    EXPECT_TRUE(lib->removeLibName.empty())
+        << "same soname across versions is a replacement, not an unlink";
+
+    // Program members carry no library placement.
+    for (const auto& change : plan->switches) {
+        if (change.target == "libstdc++.so.6") continue;
+        EXPECT_TRUE(change.installLibSource.empty());
     }
     // Headers belong to the release, so they are planned once for the whole
     // of it rather than once per member.
-    ASSERT_EQ(plan->removeHeaders.size(), 2u);
-    ASSERT_EQ(plan->installHeaders.size(), 2u);
+    ASSERT_EQ(plan->removeHeaders.size(), 3u);
+    ASSERT_EQ(plan->installHeaders.size(), 3u);
     for (const auto& asset : plan->removeHeaders) {
         EXPECT_NE(asset.sourceDir.find("16.1.0"), std::string::npos);
     }
@@ -11022,13 +11053,15 @@ TEST(XvmSwitchPlan, AnAlreadyActiveMemberIsRematerializedButNotUnwound) {
     auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
-    ASSERT_EQ(plan->switches.size(), 2u);
 
+    // gcc is already active and is a program: a shim is version-independent,
+    // so there is nothing on disk to place for it and no change is emitted.
+    // Only g++, which was not active, moves.
     const auto gccChange = std::ranges::find_if(
         plan->switches, [](const auto& c) { return c.target == "gcc"; });
-    ASSERT_NE(gccChange, plan->switches.end());
-    // gcc is already active, so there is nothing to take out of the sysroot.
-    EXPECT_TRUE(gccChange->removeLibDir.empty());
+    EXPECT_EQ(gccChange, plan->switches.end())
+        << "an already-active program with nothing to materialize should "
+           "emit no change";
     EXPECT_TRUE(plan->removeHeaders.empty());
     // But the headers are re-installed anyway. A removal that fell back to
     // this release took the removed release's headers out and put nothing
@@ -11274,6 +11307,167 @@ TEST(XvmSwitchPlan, AnUngroupedTargetSwitchesOnItsOwn) {
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->members.size(), 1u);
+}
+
+// ============================================================
+// Libraries follow the release
+//
+// A library was a first-class entry in both the catalog and the selection --
+// registered with a payload path, a source name and a destination name, and
+// carried through the binding group like any other member. What it never had
+// was materialization on switch. `plan_use_switch` looked at
+// `VData::libdir`, and nothing in the tree ever wrote that field: on a real
+// installation it was absent from all 372 entries. So the planner emitted no
+// library work and `xlings use` was a no-op for libraries.
+//
+// The concrete failure that produced: install openssl 3.1.5, then 3.2.0. The
+// install path overwrites the sysroot link, so the library sits at 3.2.0. The
+// headers, which take a different route entirely, sit at 3.1.5. `use` in
+// either direction moves neither, and reports success both times. The user
+// compiles against one version and links against another, and nothing says so
+// until it fails at run time.
+// ============================================================
+
+namespace {
+
+// A release with one program and one library, shaped the way
+// `xvm.add(lib, {type = "lib", bindir = ..., filename = ..., alias = ...})`
+// actually lands in the database.
+void library_release_(xlings::xvm::VersionDB& db,
+                      std::string_view version,
+                      std::string_view soname = "libssl.so.3") {
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = "xim:openssl",
+        .providerVersion = std::string(version),
+        .group = "openssl",
+        .rootTarget = "openssl",
+        .rootVersion = std::string(version),
+    };
+    auto& prog = db["openssl"];
+    prog.type = "program";
+    auto& progData = prog.versions[std::string(version)];
+    progData.path = std::format("/pkg/openssl/{}/bin", version);
+    progData.kind = "program";
+    progData.bindingGroup = ref;
+
+    auto& lib = db[std::string(soname)];
+    lib.type = "lib";
+    auto& libData = lib.versions[std::string(version)];
+    libData.path = std::format("/pkg/openssl/{}/lib64", version);
+    libData.kind = "lib";
+    libData.sourceName = std::string(soname);
+    libData.destinationName = std::string(soname);
+    libData.bindingGroup = ref;
+
+    progData.bindingMembers = {{"openssl", std::string(version)},
+                               {std::string(soname), std::string(version)}};
+    progData.bindingMembersDeclared = true;
+}
+
+}  // namespace
+
+TEST(XvmLibrarySwitch, ALibraryMemberIsPlannedForTheIncomingRelease) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+    library_release_(db, "3.2.0");
+    const xlings::xvm::Workspace ws{{"openssl", "3.2.0"},
+                                    {"libssl.so.3", "3.2.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    const auto lib = std::ranges::find_if(
+        plan->switches,
+        [](const auto& c) { return c.target == "libssl.so.3"; });
+    ASSERT_NE(lib, plan->switches.end())
+        << "the library member emitted no change at all";
+    EXPECT_EQ(lib->installLibName, "libssl.so.3");
+    EXPECT_EQ(lib->installLibSource, "/pkg/openssl/3.1.5/lib64/libssl.so.3")
+        << "`use` did not plan the library from the release being switched to";
+}
+
+// Entering from the library resolves the same release as entering from the
+// program -- the property 0.4.70 established for programs, now that libraries
+// actually participate.
+TEST(XvmLibrarySwitch, EnteringFromTheLibraryYieldsTheSamePlacement) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+    library_release_(db, "3.2.0");
+    const xlings::xvm::Workspace ws{{"openssl", "3.2.0"},
+                                    {"libssl.so.3", "3.2.0"}};
+
+    const auto fromProgram =
+        xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5");
+    const auto fromLibrary =
+        xlings::xvm::plan_use_switch(db, ws, "libssl.so.3", "3.1.5");
+    ASSERT_TRUE(fromProgram.has_value());
+    ASSERT_TRUE(fromLibrary.has_value());
+    EXPECT_EQ(fromProgram->members, fromLibrary->members);
+    EXPECT_EQ(fromProgram->switches.size(), fromLibrary->switches.size());
+}
+
+// `VData::libdir` is what the planner used to read. Nothing writes it, and an
+// entry that has it must not be treated any differently -- this pins that the
+// field is dead rather than merely unused today.
+TEST(XvmLibrarySwitch, TheDeadLibdirFieldIsIgnored) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+    db["libssl.so.3"].versions["3.1.5"].libdir = "/pkg/openssl/WRONG/lib64";
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "openssl", "3.1.5");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    for (const auto& change : plan->switches) {
+        EXPECT_EQ(change.installLibSource.find("WRONG"), std::string::npos)
+            << "the planner is still reading libdir";
+    }
+}
+
+// State written before 0.4.70 has no per-version `kind` -- on a real
+// installation not one of 372 entries had it. Such an entry must still be
+// recognised as a library through the target-level `type`, or the upgrade
+// silently stops switching every library the user already has.
+TEST(XvmLibrarySwitch, LegacyStateWithoutKindStillResolvesAsALibrary) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+    db["libssl.so.3"].versions["3.1.5"].kind.clear();  // 0.4.69 shape
+    ASSERT_EQ(db.at("libssl.so.3").type, "lib");
+
+    const auto placement =
+        xlings::xvm::library_placement(db, "libssl.so.3", "3.1.5");
+    ASSERT_FALSE(placement.empty())
+        << "legacy entry lost its library identity on upgrade";
+    EXPECT_EQ(placement.name, "libssl.so.3");
+}
+
+TEST(XvmLibrarySwitch, ADifferentSonameIsUnlinkedRatherThanReplaced) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "1.1.1", "libssl.so.1.1");
+    library_release_(db, "3.0.0", "libssl.so.3");
+    // Both sonames exist in the group manifest of their own release; the
+    // outgoing one occupies a name the incoming release does not use.
+    const xlings::xvm::Workspace ws{{"openssl", "1.1.1"},
+                                    {"libssl.so.1.1", "1.1.1"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.0.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+
+    const auto lib = std::ranges::find_if(
+        plan->switches,
+        [](const auto& c) { return c.target == "libssl.so.3"; });
+    ASSERT_NE(lib, plan->switches.end());
+    EXPECT_EQ(lib->installLibName, "libssl.so.3");
+}
+
+TEST(XvmLibrarySwitch, AProgramMemberHasNoLibraryPlacement) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+    EXPECT_TRUE(
+        xlings::xvm::library_placement(db, "openssl", "3.1.5").empty());
+    EXPECT_TRUE(
+        xlings::xvm::library_placement(db, "nosuch", "3.1.5").empty());
+    EXPECT_TRUE(
+        xlings::xvm::library_placement(db, "libssl.so.3", "9.9.9").empty());
 }
 
 // ============================================================

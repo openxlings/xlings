@@ -127,54 +127,66 @@ void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
     }
 }
 
-// Install library symlinks from source libdir into sysroot lib/
-void install_libs(const std::string& libdir, const fs::path& sysroot_lib,
-                  const std::vector<std::string>& libs) {
-    fs::create_directories(sysroot_lib);
+// Place one library file in the sysroot lib directory, replacing whatever
+// is there.
+//
+// Replaces by rename rather than remove-then-link. Two versions of a library
+// share a soname, so a switch overwrites the same name -- and `use`
+// re-materializes the active release on every invocation to repair a drifted
+// sysroot, so remove-then-link would open a window on every one of those
+// calls where the library is simply absent. Long enough for a concurrent link
+// step to fail on it. rename(2) replaces atomically; Windows has no
+// equivalent for every case, so the staging file is cleaned up and the
+// direct path is taken there.
+void place_library(const std::string& source,
+                   const std::string& name,
+                   const fs::path& sysroot_lib) {
+    if (source.empty() || name.empty()) return;
     std::error_code ec;
-    for (auto& lib : libs) {
-        auto src = fs::path(libdir) / lib;
-        auto dst = sysroot_lib / lib;
-        if (fs::exists(dst, ec)) fs::remove(dst, ec);
-        if (fs::exists(src, ec)) create_link_(src, dst);
+    fs::path src(source);
+    if (!fs::exists(src, ec)) {
+        log::debug("[xvm] library source missing, not placed: {}", source);
+        return;
+    }
+    fs::create_directories(sysroot_lib, ec);
+    const auto destination = sysroot_lib / name;
+
+    // Already pointing at this exact file: leave it alone. Keeps the repeated
+    // re-materialization that `use` performs down to a stat.
+    std::error_code sameEc;
+    if (fs::equivalent(destination, src, sameEc) && !sameEc) return;
+
+    const auto staging = sysroot_lib / (name + ".xlings-new");
+    fs::remove_all(staging, ec);
+    create_link_(src, staging);
+    if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
+        log::warn("[xvm] could not stage library: {}", destination.string());
+        return;
+    }
+    ec.clear();
+    fs::rename(staging, destination, ec);
+    if (ec) {
+        // Platforms without an atomic replace for this entry kind. Accept the
+        // window rather than leave the staging file behind.
+        std::error_code rmEc;
+        fs::remove_all(destination, rmEc);
+        ec.clear();
+        fs::rename(staging, destination, ec);
+        if (ec) {
+            fs::remove_all(staging, rmEc);
+            log::warn("[xvm] could not place library {}: {}",
+                      destination.string(), ec.message());
+        }
     }
 }
 
-// Install all library entries from source libdir into sysroot lib/
-void install_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    fs::create_directories(sysroot_lib);
+// Take one library file back out of the sysroot lib directory.
+void remove_library(const std::string& name, const fs::path& sysroot_lib) {
+    if (name.empty()) return;
     std::error_code ec;
-    fs::path src(libdir);
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        std::error_code sameEc;
-        if (std::filesystem::equivalent(target, entry.path(), sameEc)
-            && !sameEc) {
-            continue;  // see install_headers
-        }
-        if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
-            fs::remove_all(target, ec);
-        }
-        create_link_(entry.path(), target);
-    }
-}
-
-// Remove library symlinks that were installed from source libdir
-void remove_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    if (libdir.empty()) return;
-    fs::path src(libdir);
-    std::error_code ec;
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        if (fs::is_symlink(target, ec)) {
-            fs::remove(target, ec);
-#if defined(_WIN32)
-        } else if (fs::exists(target, ec)) {
-            fs::remove_all(target, ec);
-#endif
-        }
+    const auto destination = sysroot_lib / name;
+    if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
+        fs::remove_all(destination, ec);
     }
 }
 
@@ -305,10 +317,11 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     }
 
     for (const auto& change : plan->switches) {
-        if (!change.removeLibDir.empty())
-            remove_libdir(change.removeLibDir, sysroot_lib);
-        if (!change.installLibDir.empty())
-            install_libdir(change.installLibDir, sysroot_lib);
+        if (!change.removeLibName.empty())
+            remove_library(change.removeLibName, sysroot_lib);
+        if (!change.installLibSource.empty())
+            place_library(change.installLibSource, change.installLibName,
+                          sysroot_lib);
         log::debug("switching {}: {} -> {}", change.target,
                    change.previousVersion.empty() ? "(none)"
                                                   : change.previousVersion,

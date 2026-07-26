@@ -1288,10 +1288,10 @@ void detach_current_subos_(const std::string& target,
                  xvm::group_header_assets(db, target, version)) {
             xvm::remove_headers(asset, sysroot_include);
         }
-        if (auto* vdata = xvm::get_vdata(db, target, version)) {
-            if (!vdata->libdir.empty()) {
-                xvm::remove_libdir(vdata->libdir, sysroot_lib);
-            }
+        if (const auto placement =
+                xvm::library_placement(db, target, version);
+            !placement.empty()) {
+            xvm::remove_library(placement.name, sysroot_lib);
         }
         remove_target_shims_(target, version);
 
@@ -1462,8 +1462,10 @@ bool process_xvm_operations_(const PlanNode& node,
                  xvm::group_header_assets(scopedDb, target, version)) {
             xvm::install_headers(asset, sysroot_include);
         }
-        if (!dataIt->second.libdir.empty()) {
-            xvm::install_libdir(dataIt->second.libdir, sysroot_lib);
+        if (const auto placement =
+                xvm::library_placement(scopedDb, target, version);
+            !placement.empty()) {
+            xvm::place_library(placement.source, placement.name, sysroot_lib);
         }
     }
 
