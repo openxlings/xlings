@@ -758,6 +758,23 @@ apply_registration_batch(
 
     std::vector<RegisteredMember> registered;
     for (const auto& [_, group] : groups) {
+        // Decide activation once for the release, not once per member.
+        //
+        // Per member, a release that adds a name the previous one did not
+        // have would activate just that name: the new member goes to this
+        // release while everything else stays on the old one, and the
+        // workspace ends up spanning two of them -- the exact state the
+        // binding-group model exists to prevent, produced by install.
+        //
+        // Leaving a name alone when something already owns it is also the
+        // right answer across providers: installing gcc must not silently
+        // take `cc` away from an active llvm.
+        const bool anyMemberActive = std::ranges::any_of(
+            group.members, [&](const auto& member) {
+                return candidateWorkspace.contains(member.first);
+            });
+        const bool activateGroup = batch.useAfterInstall || !anyMemberActive;
+
         const BindingGroupRef ref{
             .provider = batch.provider,
             .providerVersion = batch.providerVersion,
@@ -793,8 +810,7 @@ apply_registration_batch(
             if (!foundVersion) {
                 versions.push_back(version);
             }
-            if (!candidateWorkspace.contains(target)
-                || batch.useAfterInstall) {
+            if (activateGroup) {
                 candidateWorkspace[target] = version;
             }
         }

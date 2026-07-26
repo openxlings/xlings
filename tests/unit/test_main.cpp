@@ -5114,6 +5114,47 @@ TEST(XvmRegistrationHeaderTest, AcceptsUngroupedHeaderForSingleGroup) {
 // "exactly one candidate group" rule alone rejects those recipes outright.
 // The package's own target breaks the tie: headers shipped by package `p`
 // belong with `p`.
+// Installing a release must not split the workspace across two of them.
+// The activation decision has to be made once per release: if any member is
+// already active, install leaves the whole release alone; a member that is
+// new in this release must not be activated on its own.
+TEST(XvmRegistrationTest, InstallDoesNotSplitTheWorkspaceAcrossReleases) {
+    auto oldGcc = make_registration_node("gcc", "15.1.0");
+    auto oldCxx = make_registration_node("g++", "15.1.0");
+    oldCxx.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "15.1.0"};
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, make_registration_batch({oldGcc, oldCxx}));
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    ASSERT_EQ(workspace.at("gcc"), "15.1.0");
+    ASSERT_EQ(workspace.at("g++"), "15.1.0");
+
+    // The next release adds a member the previous one did not have.
+    auto newGcc = make_registration_node("gcc", "16.1.0");
+    auto newCxx = make_registration_node("g++", "16.1.0");
+    newCxx.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "16.1.0"};
+    auto newAr = make_registration_node("gcc-ar", "16.1.0");
+    newAr.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "16.1.0"};
+    auto batch = make_registration_batch({newGcc, newCxx, newAr});
+    batch.providerVersion = "16.1.0";
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    // Install without an explicit use must not change what is active.
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0");
+    EXPECT_EQ(workspace.at("g++"), "15.1.0");
+    EXPECT_FALSE(workspace.contains("gcc-ar"))
+        << "a member new in 16.1.0 was activated while the rest stayed on "
+           "15.1.0 — the workspace now spans two releases";
+}
+
 TEST(XvmRegistrationHeaderTest, UngroupedHeaderFallsBackToThePrimaryTarget) {
     auto program = make_registration_node("openssl", "repo:3.1.5");
     auto library = make_registration_node("libssl", "repo:3.1.5");
