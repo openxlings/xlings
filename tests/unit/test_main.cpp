@@ -11382,7 +11382,12 @@ TEST(XvmLibrarySwitch, ALibraryMemberIsPlannedForTheIncomingRelease) {
     ASSERT_NE(lib, plan->switches.end())
         << "the library member emitted no change at all";
     EXPECT_EQ(lib->installLibName, "libssl.so.3");
-    EXPECT_EQ(lib->installLibSource, "/pkg/openssl/3.1.5/lib64/libssl.so.3")
+    // Built with `path` rather than written as a literal: the planner joins
+    // with `std::filesystem::path`, which yields native separators, so a
+    // POSIX literal can never match on Windows.
+    EXPECT_EQ(lib->installLibSource,
+              (std::filesystem::path("/pkg/openssl/3.1.5/lib64")
+               / "libssl.so.3").string())
         << "`use` did not plan the library from the release being switched to";
 }
 
