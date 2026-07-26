@@ -83,6 +83,7 @@ TESTS=(
     "E2E-31 |index_same_name_namespace_test.sh||"
     "E2E-32 |xvm_group_switch_test.sh||"
     "E2E-33 |home_config_lock_test.sh||"
+    "E2E-34 |xvm_library_switch_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

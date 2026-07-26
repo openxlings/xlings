@@ -1571,6 +1571,18 @@ bool process_xvm_operations_(const PlanNode& node,
             || resolved->path.empty()) {
             continue;
         }
+        if (!resolved->active) {
+            // Installing a version that does not become active must not
+            // disturb the sysroot. `InstallHeaders` has been gated this way
+            // since 0.4.70; `Library` was not, so installing a second version
+            // of a package overwrote the active version's library while its
+            // headers stayed put -- the sysroot then held a library from one
+            // release beside headers from another, which compiles and fails
+            // at run time. `xlings use` is what moves libraries.
+            log::debug("[xim] library {}@{} not placed: not the active "
+                       "version", resolved->target, resolved->version);
+            continue;
+        }
 
         const auto source =
             std::filesystem::path(resolved->path)

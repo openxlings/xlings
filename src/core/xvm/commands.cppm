@@ -302,7 +302,14 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // Everything above this line is a decision; everything below changes the
     // filesystem. Members that are already where they belong emit no change.
     auto sysroot_include = p.subosDir / "usr" / "include";
-    auto sysroot_lib     = p.subosDir / "usr" / "lib";
+    // `<subos>/lib`, which is where the install path has always put
+    // libraries (`Config::paths().libDir`) and where they actually are: 94
+    // entries on a real installation, against one on `<subos>/usr/lib`.
+    // This line used to read `usr/lib`, and the disagreement was invisible
+    // because the switch side never emitted any library work at all --
+    // `VData::libdir` has no writer. Making libraries switch without fixing
+    // it would have started filling a second, unused directory.
+    auto sysroot_lib     = p.libDir;
     // Headers first, and as two whole passes rather than per member: they are
     // an asset of the release, not of any one member of it. Interleaving the
     // passes -- remove one member's, install the next member's -- let the
