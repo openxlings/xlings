@@ -6512,6 +6512,192 @@ TEST(XvmExactRemovalTest, UnpairedIncomingEdgeFailsWithoutMutation) {
     EXPECT_EQ(xlings::xvm::versions_to_json(db), before);
 }
 
+// ── Group-coherent reactivation after removal ────────────────────────
+//
+// Removing the active release has to leave the workspace coherent: every
+// member of a toolchain either moves to the same surviving release together,
+// or the whole group goes inactive. Picking a replacement per target is how
+// `gcc` ends up on GCC 15 while `g++` lands on musl's 15 -- the mixed state
+// the whole binding-group model exists to prevent, reintroduced at the moment
+// of removal.
+
+namespace {
+
+// Register `members` as one provider release, rooted at the first entry.
+void add_provider_group_(xlings::xvm::VersionDB& db,
+                         std::string_view provider,
+                         std::string_view providerVersion,
+                         std::string_view group,
+                         const std::vector<std::pair<std::string, std::string>>& members) {
+    const auto& [rootTarget, rootVersion] = members.front();
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = std::string(provider),
+        .providerVersion = std::string(providerVersion),
+        .group = std::string(group),
+        .rootTarget = rootTarget,
+        .rootVersion = rootVersion,
+    };
+    std::map<std::string, std::string> manifest;
+    for (const auto& [target, version] : members) manifest[target] = version;
+
+    for (const auto& [target, version] : members) {
+        auto& info = db[target];
+        if (info.type.empty()) info.type = "program";
+        auto& data = info.versions[version];
+        data.path = std::string("/pkg/") + std::string(provider);
+        data.kind = "program";
+        data.sourceName = target;
+        data.destinationName = target;
+        data.bindingGroup = ref;
+    }
+    auto& root = db[rootTarget].versions[rootVersion];
+    root.bindingMembers = manifest;
+    root.bindingMembersDeclared = true;
+}
+
+}  // namespace
+
+TEST(XvmRemovalFallbackTest, IncoherentSurvivorDeactivatesTheWholeGroup) {
+    xlings::xvm::VersionDB db;
+    add_provider_group_(db, "pkgindex:gcc", "16.1.0", "gcc",
+                        {{"gcc", "16.1.0"}, {"g++", "16.1.0"}});
+    add_provider_group_(db, "pkgindex:gcc", "15.1.0", "gcc",
+                        {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    // musl also provides a `g++`. It is installed, but its own group is not
+    // complete here -- only the g++ member of it is present.
+    add_provider_group_(db, "pkgindex:musl", "1.2.5", "musl",
+                        {{"g++", "musl:15.1.0"}});
+
+    xlings::xvm::Workspace workspace{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+    // g++ lists the musl build last on purpose: an insertion-order-driven
+    // fallback picks it, which is exactly the bug.
+    xlings::xvm::WorkspaceInstalled installed{
+        {"gcc", {"15.1.0", "16.1.0"}},
+        {"g++", {"15.1.0", "16.1.0", "musl:15.1.0"}},
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "gcc", .version = "16.1.0"},
+        {.op = "remove", .name = "g++", .version = "16.1.0"},
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    ASSERT_TRUE(workspace.contains("gcc"));
+    ASSERT_TRUE(workspace.contains("g++"));
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0");
+    EXPECT_EQ(workspace.at("g++"), "15.1.0")
+        << "g++ fell back to a different provider than gcc";
+}
+
+TEST(XvmRemovalFallbackTest, CoherentSurvivingGroupIsActivatedWholesale) {
+    xlings::xvm::VersionDB db;
+    add_provider_group_(db, "pkgindex:gcc", "16.1.0", "gcc",
+                        {{"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "16.1.0"}});
+    add_provider_group_(db, "pkgindex:gcc", "15.1.0", "gcc",
+                        {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}});
+    xlings::xvm::Workspace workspace{
+        {"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "16.1.0"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"gcc", {"15.1.0", "16.1.0"}},
+        {"g++", {"15.1.0", "16.1.0"}},
+        {"gcc-ar", {"15.1.0", "16.1.0"}},
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "gcc", .version = "16.1.0"},
+        {.op = "remove", .name = "g++", .version = "16.1.0"},
+        {.op = "remove", .name = "gcc-ar", .version = "16.1.0"},
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0");
+    EXPECT_EQ(workspace.at("g++"), "15.1.0");
+    EXPECT_EQ(workspace.at("gcc-ar"), "15.1.0");
+}
+
+TEST(XvmRemovalFallbackTest, NoCompleteSurvivorLeavesEveryMemberInactive) {
+    xlings::xvm::VersionDB db;
+    add_provider_group_(db, "pkgindex:gcc", "16.1.0", "gcc",
+                        {{"gcc", "16.1.0"}, {"g++", "16.1.0"}});
+    // 15 is only half installed: its manifest names gcc and g++, but only
+    // g++ is registered. Rooted at g++ so the manifest survives the gap.
+    add_provider_group_(db, "pkgindex:gcc", "15.1.0", "gcc",
+                        {{"g++", "15.1.0"}, {"gcc", "15.1.0"}});
+    db.at("gcc").versions.erase("15.1.0");
+    xlings::xvm::Workspace workspace{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"gcc", {"16.1.0"}},
+        {"g++", {"15.1.0", "16.1.0"}},
+    };
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "gcc", .version = "16.1.0"},
+        {.op = "remove", .name = "g++", .version = "16.1.0"},
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    // g++ 15 survives on disk, but activating it alone would leave a `g++`
+    // with no matching `gcc`. Better inactive than incoherent.
+    EXPECT_FALSE(workspace.contains("gcc"));
+    EXPECT_FALSE(workspace.contains("g++"))
+        << "a lone member was activated without the rest of its group";
+}
+
+TEST(XvmRemovalFallbackTest, ResultDoesNotDependOnInstalledOrder) {
+    const auto run = [](std::vector<std::string> gccOrder) {
+        xlings::xvm::VersionDB db;
+        for (const auto* v : {"14.1.0", "15.1.0", "16.1.0"}) {
+            add_provider_group_(db, "pkgindex:gcc", v, "gcc",
+                                {{"gcc", v}, {"g++", v}});
+        }
+        xlings::xvm::Workspace workspace{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+        xlings::xvm::WorkspaceInstalled installed{
+            {"gcc", gccOrder},
+            {"g++", {"14.1.0", "15.1.0", "16.1.0"}},
+        };
+        const std::vector<xlings::xvm::RemovalOperation> operations{
+            {.op = "remove", .name = "gcc", .version = "16.1.0"},
+            {.op = "remove", .name = "g++", .version = "16.1.0"},
+        };
+        auto result = xlings::xvm::apply_removal_batch(
+            db, workspace, installed, operations, {});
+        EXPECT_TRUE(result.has_value());
+        return workspace;
+    };
+
+    // installed[] is append-ordered by whatever the user happened to install
+    // first. The surviving release must not depend on it.
+    const auto ascending = run({"14.1.0", "15.1.0", "16.1.0"});
+    const auto descending = run({"16.1.0", "15.1.0", "14.1.0"});
+    EXPECT_EQ(ascending, descending);
+    EXPECT_EQ(ascending.at("gcc"), "15.1.0") << "expected the highest survivor";
+}
+
+TEST(XvmRemovalFallbackTest, UngroupedLegacyTargetStillFallsBack) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1.0.0"].path = "/pkg/tool";
+    db["tool"].versions["2.0.0"].path = "/pkg/tool";
+    xlings::xvm::Workspace workspace{{"tool", "2.0.0"}};
+    xlings::xvm::WorkspaceInstalled installed{{"tool", {"1.0.0", "2.0.0"}}};
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "tool", .version = "2.0.0"},
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    // A target with no group is a group of one, so it can always fall back.
+    EXPECT_EQ(workspace.at("tool"), "1.0.0");
+}
+
 TEST(XvmRemovalBatchTest, RawEmptyOperationNeverMeansAllVersions) {
     xlings::xvm::VersionDB db;
     db["sibling"].versions["repo-a:1.0.0"].path = "/pkg/a";
@@ -6723,9 +6909,17 @@ TEST(XvmRemovalBatchTest,
     auto& providerB = db["cc"].versions["repo-b:9.0.0"];
     providerB.path = "/pkg/b/9";
     providerB.kind = "program";
+    // Self-rooted, with a manifest. This entry is the one the workspace is
+    // expected to fall back to, and reactivation now requires the candidate's
+    // group to actually resolve -- a group whose root is not registered is
+    // exactly the dangling state that used to get written into the active
+    // workspace. The other entries stay minimal: they are only ever removal
+    // subjects here, never fallback candidates.
     providerB.bindingGroup = make_binding_group_ref(
         "repo-b:provider", "9.0.0", "cc-b-9",
-        "root-b-9", "repo-b:9.0.0");
+        "cc", "repo-b:9.0.0");
+    providerB.bindingMembers = {{"cc", "repo-b:9.0.0"}};
+    providerB.bindingMembersDeclared = true;
     db["cc"].versions["legacy:0.9.0"].path = "/pkg/legacy";
 
     xlings::xvm::Workspace workspace{
