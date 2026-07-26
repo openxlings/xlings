@@ -584,6 +584,35 @@ if (pkg->spec == "2" && !pkg->archs.empty()) { ... }
 
 ---
 
+## 9.6 执行拓扑（跨仓库依赖顺序）
+
+> **定序原则：xlings 先发布，再迁 xpkg 包。** 索引 recipe 依赖新的声明能力，
+> 而新能力要经由 libxpkg 发版、进入 mcpp-index、被 xlings 消费之后才存在。
+> 反过来先迁索引，会让已发布的 xlings 读不懂新 recipe。
+
+```
+T1  xlings 侧实现 + 六平台 CI                    ← 不依赖任何外部仓库
+     │  库随 release 切换 / 非激活不覆盖 / lib 目录统一 / doctor 锚点
+     ↓
+T2  合入 → 发布 xlings 0.4.70                    ← 用户拿到修复
+     │
+     ├─────────────────────────────┐
+     ↓                             ↓
+T3  libxpkg 0.0.47                T5a 老用户无感升级演练
+     │  merge → tag → mcpp-index        (xlings self update，隔离 HOME)
+     ↓
+T4  xim-pkgindex 包迁移 + 规范文档
+     │  B 类先行；glibc 待定
+     ↓
+T5b 全生态功能验证（隔离环境）
+```
+
+**为什么 T3 排在 T2 之后而不是并行**：libxpkg 的新字段只有被 xlings 消费才有意义，
+而消费代码要进 xlings 的下一个版本。先发 0.4.70（不含消费代码）让已验证的修复落地，
+libxpkg 与索引迁移作为下一个版本的内容推进 —— 与 §9.4 的阶段划分一致。
+
+**每一层的失败都不回滚上一层**：T4 卡住不影响已发布的 T2；T3 卡住不影响 T4 之外的任何事。
+
 ## 10. 核心 review 点
 
 请重点确认这几条：
