@@ -29,6 +29,7 @@ import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.inspect;
 import xlings.core.xvm.lock;
+import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -10801,6 +10802,151 @@ TEST_F(AtomicWriteTest, ThrowsWhenParentDirectoryIsMissing) {
     EXPECT_THROW(xlings::platform::write_string_to_file(target.string(), "x"),
                  std::runtime_error);
     EXPECT_EQ(entry_count(), 0u) << "staging file leaked on failure";
+}
+
+// ============================================================
+// plan_use_switch — `xlings use` moves a whole release or nothing
+//
+// cmd_use needs a Config singleton and a real filesystem, so none of its
+// logic was reachable from a test. The decision now lives in a pure
+// function and cmd_use just carries it out.
+
+namespace {
+
+void switch_group_(xlings::xvm::VersionDB& db,
+                   std::string_view providerVersion,
+                   const std::vector<std::string>& targets,
+                   std::string_view version,
+                   bool withDirs = true) {
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = "pkgindex:gcc",
+        .providerVersion = std::string(providerVersion),
+        .group = "gcc",
+        .rootTarget = targets.front(),
+        .rootVersion = std::string(version),
+    };
+    std::map<std::string, std::string> manifest;
+    for (const auto& t : targets) manifest[t] = std::string(version);
+    for (const auto& t : targets) {
+        auto& info = db[t];
+        if (info.type.empty()) info.type = "program";
+        auto& data = info.versions[std::string(version)];
+        data.path = std::format("/pkg/{}/{}", t, version);
+        data.kind = "program";
+        data.bindingGroup = ref;
+        if (withDirs) {
+            data.includedir = std::format("/pkg/{}/{}/include", t, version);
+            data.libdir = std::format("/pkg/{}/{}/lib", t, version);
+        }
+    }
+    auto& root = db[targets.front()].versions[std::string(version)];
+    root.bindingMembers = manifest;
+    root.bindingMembersDeclared = true;
+}
+
+}  // namespace
+
+TEST(XvmSwitchPlan, PlansEveryMemberNotJustTheEntryPoint) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_EQ(plan->members.size(), 3u);
+    EXPECT_TRUE(plan->members.contains("g++"));
+    EXPECT_TRUE(plan->members.contains("libstdc++"));
+}
+
+TEST(XvmSwitchPlan, SwapsHeadersAndLibsForEveryMovingMember) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+    const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    ASSERT_EQ(plan->switches.size(), 2u);
+    // Switching gcc while leaving the previous release's libstdc++ headers
+    // in the sysroot is how `gcc --version` reports the right thing and the
+    // compile fails anyway.
+    for (const auto& change : plan->switches) {
+        EXPECT_EQ(change.previousVersion, "16.1.0");
+        EXPECT_NE(change.removeIncludeDir.find("16.1.0"), std::string::npos);
+        EXPECT_NE(change.installIncludeDir.find("15.1.0"), std::string::npos);
+        EXPECT_NE(change.removeLibDir.find("16.1.0"), std::string::npos);
+        EXPECT_NE(change.installLibDir.find("15.1.0"), std::string::npos);
+    }
+}
+
+TEST(XvmSwitchPlan, MembersAlreadyInPlaceProduceNoChange) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    ASSERT_EQ(plan->switches.size(), 1u);
+    EXPECT_EQ(plan->switches.front().target, "g++")
+        << "an already-active member must not be re-swapped";
+}
+
+TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
+
+    const auto fromRoot = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    const auto fromMember = xlings::xvm::plan_use_switch(db, {}, "g++", "15.1.0");
+    const auto fromLib =
+        xlings::xvm::plan_use_switch(db, {}, "libstdc++", "15.1.0");
+
+    ASSERT_TRUE(fromRoot.has_value());
+    ASSERT_TRUE(fromMember.has_value());
+    ASSERT_TRUE(fromLib.has_value());
+    EXPECT_EQ(fromRoot->members, fromMember->members);
+    EXPECT_EQ(fromRoot->members, fromLib->members);
+}
+
+TEST(XvmSwitchPlan, AMissingMemberIsAnErrorNotAPartialSwitch) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
+    // Resolution succeeds from the manifest; the payload record is what is
+    // gone. The old path would have swapped gcc's headers first and only
+    // then walked into the gap.
+    db.at("libstdc++").versions.erase("15.1.0");
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_FALSE(plan.error().code.empty());
+    EXPECT_FALSE(plan.error().hint.empty())
+        << "a refusal without a way out is not an improvement";
+}
+
+TEST(XvmSwitchPlan, AnUnresolvableGroupIsRefusedBeforeAnyChange) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
+    db.at("g++").versions.at("15.1.0").bindingGroup->providerVersion = "bogus";
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+
+    ASSERT_FALSE(plan.has_value());
+    EXPECT_FALSE(plan.error().hint.empty());
+}
+
+TEST(XvmSwitchPlan, AnUngroupedTargetSwitchesOnItsOwn) {
+    xlings::xvm::VersionDB db;
+    db["editor"].type = "program";
+    auto& data = db["editor"].versions["1.0.0"];
+    data.path = "/pkg/editor";
+    data.kind = "program";
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "editor", "1.0.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_EQ(plan->members.size(), 1u);
 }
 
 // ============================================================
