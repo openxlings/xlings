@@ -35,12 +35,23 @@ export namespace xlings::xvm {
 // crossing a module boundary (here, as a default argument).
 constexpr std::string_view no_lock_env() { return "XLINGS_NO_LOCK"; }
 
-// Marks that an ancestor in this process tree already holds the lock.
-// Recipes legitimately shell out to xlings from their hooks -- d2mcpp's
-// config hook runs `xlings install` -- and the child inherits this, so it
-// works under the lock its parent is holding instead of waiting 30s for a
-// lock that will never be released until the child finishes.
+// Carries the home whose lock an ancestor in this process tree already
+// holds. Recipes legitimately shell out to xlings from their hooks --
+// d2mcpp's config hook runs `xlings install` -- and the child inherits
+// this, so it works under the lock its parent holds instead of waiting 30s
+// for a lock that cannot be released until the child finishes.
+//
+// It carries the home rather than a bare flag because the lock is
+// per-home. A child operating on a *different* home would otherwise
+// inherit the marker and skip locking a home nobody holds -- silently
+// reintroducing the lost update this exists to prevent.
 constexpr std::string_view reentry_env() { return "XLINGS_STATE_LOCK_HELD"; }
+
+std::string lock_scope_key(const std::filesystem::path& home) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(home, ec);
+    return (ec ? home : canonical).string();
+}
 
 constexpr std::chrono::milliseconds default_lock_timeout() {
     return std::chrono::seconds{30};
@@ -60,7 +71,8 @@ public:
           held_(std::exchange(other.held_, false)),
           bypassed_(std::exchange(other.bypassed_, false)),
           inherited_(std::exchange(other.inherited_, false)),
-          ownsMarker_(std::exchange(other.ownsMarker_, false)) {}
+          ownsMarker_(std::exchange(other.ownsMarker_, false)),
+          previousMarker_(std::move(other.previousMarker_)) {}
     StateLock& operator=(StateLock&& other) noexcept {
         if (this != &other) {
             clear_marker_();
@@ -69,6 +81,7 @@ public:
             bypassed_ = std::exchange(other.bypassed_, false);
             inherited_ = std::exchange(other.inherited_, false);
             ownsMarker_ = std::exchange(other.ownsMarker_, false);
+            previousMarker_ = std::move(other.previousMarker_);
         }
         return *this;
     }
@@ -88,7 +101,10 @@ private:
 
     void clear_marker_() {
         if (!ownsMarker_) return;
-        platform::set_env_variable(std::string(reentry_env()), "");
+        // Restore whatever was there rather than clearing outright: locking
+        // a second home while holding the first must not erase the first
+        // one's marker, or a later child would try to re-lock it and hang.
+        platform::set_env_variable(std::string(reentry_env()), previousMarker_);
         ownsMarker_ = false;
     }
 
@@ -97,6 +113,7 @@ private:
     bool bypassed_ { false };
     bool inherited_ { false };
     bool ownsMarker_ { false };
+    std::string previousMarker_;
 };
 
 // Acquire the home-wide state lock, or explain why not.
@@ -127,8 +144,10 @@ std::expected<StateLock, std::string> acquire_state_lock(
         return lock;
     }
 
-    if (utils::get_env_or_default(std::string(reentry_env())) == "1") {
-        // An ancestor already holds it. Waiting here would deadlock: the
+    const auto scope = lock_scope_key(home);
+    const auto marker = utils::get_env_or_default(std::string(reentry_env()));
+    if (!marker.empty() && marker == scope) {
+        // An ancestor already holds this home. Waiting would deadlock: the
         // holder cannot finish until this child does.
         lock.inherited_ = true;
         lock.held_ = true;
@@ -149,8 +168,10 @@ std::expected<StateLock, std::string> acquire_state_lock(
             no_lock_env()));
     }
 
-    // Children spawned from here on inherit this and skip locking.
-    platform::set_env_variable(std::string(reentry_env()), "1");
+    // Children spawned from here on inherit this and skip locking -- but
+    // only for this home.
+    lock.previousMarker_ = marker;
+    platform::set_env_variable(std::string(reentry_env()), scope);
     lock.ownsMarker_ = true;
     lock.held_ = true;
     return lock;

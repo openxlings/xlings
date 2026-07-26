@@ -50,6 +50,19 @@ void install_headers(const std::string& includedir, const fs::path& sysroot_incl
     if (!fs::exists(src, ec)) return;
     for (auto& entry : platform::dir_entries(src)) {
         auto target = sysroot_include / entry.path().filename();
+        // Already pointing at this exact source: leave it alone.
+        // `xlings use` now re-materializes the active release on every
+        // invocation so it can repair a sysroot that drifted, and
+        // remove-then-relink would open a window on every one of those
+        // calls where the header is simply absent -- long enough for a
+        // concurrent build to fail on it. equivalent() covers symlinks,
+        // Windows junctions and hard links alike; a copy fallback compares
+        // unequal and is relinked, which is correct.
+        std::error_code sameEc;
+        if (std::filesystem::equivalent(target, entry.path(), sameEc)
+            && !sameEc) {
+            continue;
+        }
         if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
             log::debug("[xvm] overwriting header: {}", entry.path().filename().string());
             fs::remove_all(target, ec);
@@ -98,6 +111,11 @@ void install_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
     if (!fs::exists(src, ec)) return;
     for (auto& entry : platform::dir_entries(src)) {
         auto target = sysroot_lib / entry.path().filename();
+        std::error_code sameEc;
+        if (std::filesystem::equivalent(target, entry.path(), sameEc)
+            && !sameEc) {
+            continue;  // see install_headers
+        }
         if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
             fs::remove_all(target, ec);
         }

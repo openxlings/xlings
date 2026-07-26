@@ -11112,6 +11112,61 @@ TEST(XvmStateLock, AChildOfTheHolderProceedsWithoutWaiting) {
     drop_lock_home_(home);
 }
 
+// The marker names the home it covers. A child working on a different home
+// must still lock it -- inheriting a bare flag would leave that home
+// unlocked while nobody holds it.
+TEST(XvmStateLock, InheritanceDoesNotLeakToAnotherHome) {
+    const auto held = lock_test_home_("scoped-held");
+    const auto other = lock_test_home_("scoped-other");
+    {
+        auto outer = xlings::xvm::acquire_state_lock(
+            held, std::chrono::milliseconds{50});
+        ASSERT_TRUE(outer.has_value()) << outer.error();
+
+        // Same home: covered by the ancestor.
+        auto sameHome = xlings::xvm::acquire_state_lock(
+            held, std::chrono::milliseconds{50});
+        ASSERT_TRUE(sameHome.has_value()) << sameHome.error();
+        EXPECT_TRUE(sameHome->inherited());
+
+        // Different home: must take a lock of its own, not inherit.
+        auto otherHome = xlings::xvm::acquire_state_lock(
+            other, std::chrono::milliseconds{50});
+        ASSERT_TRUE(otherHome.has_value()) << otherHome.error();
+        EXPECT_FALSE(otherHome->inherited())
+            << "a different home inherited a lock nobody holds for it";
+        EXPECT_TRUE(std::filesystem::exists(
+            xlings::xvm::state_lock_path(other)));
+    }
+    drop_lock_home_(held);
+    drop_lock_home_(other);
+}
+
+// Locking a second home while holding the first must not erase the first
+// one's marker, or a later child of the first would try to re-lock it.
+TEST(XvmStateLock, NestingRestoresTheOuterMarker) {
+    const auto outerHome = lock_test_home_("nest-outer");
+    const auto innerHome = lock_test_home_("nest-inner");
+    {
+        auto outer = xlings::xvm::acquire_state_lock(
+            outerHome, std::chrono::milliseconds{50});
+        ASSERT_TRUE(outer.has_value()) << outer.error();
+        {
+            auto inner = xlings::xvm::acquire_state_lock(
+                innerHome, std::chrono::milliseconds{50});
+            ASSERT_TRUE(inner.has_value()) << inner.error();
+            EXPECT_FALSE(inner->inherited());
+        }
+        auto childOfOuter = xlings::xvm::acquire_state_lock(
+            outerHome, std::chrono::milliseconds{50});
+        ASSERT_TRUE(childOfOuter.has_value())
+            << "the outer marker was lost: " << childOfOuter.error();
+        EXPECT_TRUE(childOfOuter->inherited());
+    }
+    drop_lock_home_(outerHome);
+    drop_lock_home_(innerHome);
+}
+
 TEST(XvmStateLock, LockFileContentsAreNeverRewritten) {
     const auto home = lock_test_home_("inode");
     const auto path = xlings::xvm::state_lock_path(home);
