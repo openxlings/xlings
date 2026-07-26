@@ -235,6 +235,11 @@ normalize_xpkg_registration_plan(
                 ? canonical_package_name(node.namespaceName, node.name)
                 : node.canonicalName,
             .providerVersion = node.version,
+            // Owner hint for headers that do not name a group. Recipes
+            // conventionally register a target under the package's own name,
+            // so that target identifies which group the package's headers
+            // belong to when several groups exist.
+            .primaryTarget = node.name,
             .useAfterInstall = useAfterInstall,
         },
     };

@@ -34,6 +34,12 @@ struct RegistrationHeader {
 struct RegistrationBatch {
     std::string provider;
     std::string providerVersion;
+    // The package's own target name. Used only to decide which group owns a
+    // header that does not name one: headers shipped by package `p` belong
+    // with `p`. Empty means "no hint", which is not an error -- it just
+    // leaves an ungrouped header ambiguous when there is more than one
+    // candidate group.
+    std::string primaryTarget;
     std::vector<RegistrationNode> nodes;
     std::vector<RegistrationHeader> headers;
     bool useAfterInstall { false };
@@ -560,16 +566,46 @@ apply_registration_batch(
                         "registration header group '{}' does not exist",
                         header.group)));
             }
+        } else if (groups.size() == 1) {
+            groupIt = groups.begin();
         } else {
-            if (groups.size() != 1) {
+            // More than one candidate. A recipe registering several
+            // independent targets (a program plus a library, say) makes every
+            // ungrouped node its own singleton group, so requiring exactly one
+            // candidate would reject perfectly ordinary recipes. Break the tie
+            // with the package's own target: headers shipped by package `p`
+            // belong with `p`.
+            //
+            // Only when that target resolves to exactly one group. If it is
+            // absent, or registered at versions that landed in different
+            // groups, naming it identifies no single owner and guessing would
+            // attach the headers to an arbitrary group.
+            std::string_view resolved;
+            bool spansGroups = false;
+            if (!batch.primaryTarget.empty()) {
+                for (const auto& [key, label] : nodeGroups) {
+                    if (key.first != batch.primaryTarget) continue;
+                    if (resolved.empty()) {
+                        resolved = label;
+                    } else if (resolved != label) {
+                        spansGroups = true;
+                        break;
+                    }
+                }
+            }
+            if (resolved.empty() || spansGroups) {
                 return std::unexpected(detail_::registration_error_(
                     RegistrationErrorKind::HeaderAmbiguous,
-                    headerPath + "/group", {}, {},
+                    headerPath + "/group", batch.primaryTarget, {},
                     std::format(
-                        "ungrouped registration header has {} candidate groups",
-                        groups.size())));
+                        "ungrouped registration header has {} candidate "
+                        "groups and primaryTarget '{}' {}; name the owning "
+                        "group on the header",
+                        groups.size(), batch.primaryTarget,
+                        spansGroups ? "spans several of them"
+                                    : "is not one of them")));
             }
-            groupIt = groups.begin();
+            groupIt = groups.find(std::string(resolved));
         }
         groupIt->second.headers.push_back({
             .sourceDir = header.sourceDir,
