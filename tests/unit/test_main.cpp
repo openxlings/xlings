@@ -10880,7 +10880,7 @@ TEST(XvmSwitchPlan, SwapsHeadersAndLibsForEveryMovingMember) {
     }
 }
 
-TEST(XvmSwitchPlan, MembersAlreadyInPlaceProduceNoChange) {
+TEST(XvmSwitchPlan, AnAlreadyActiveMemberIsRematerializedButNotUnwound) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
     const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}};
@@ -10888,9 +10888,38 @@ TEST(XvmSwitchPlan, MembersAlreadyInPlaceProduceNoChange) {
     auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
-    ASSERT_EQ(plan->switches.size(), 1u);
-    EXPECT_EQ(plan->switches.front().target, "g++")
-        << "an already-active member must not be re-swapped";
+    ASSERT_EQ(plan->switches.size(), 2u);
+
+    const auto gccChange = std::ranges::find_if(
+        plan->switches, [](const auto& c) { return c.target == "gcc"; });
+    ASSERT_NE(gccChange, plan->switches.end());
+    // gcc is already active, so there is nothing to take out of the sysroot.
+    EXPECT_TRUE(gccChange->removeIncludeDir.empty());
+    EXPECT_TRUE(gccChange->removeLibDir.empty());
+    // But its headers are re-installed anyway. A removal that fell back to
+    // this release took the removed release's headers out and put nothing
+    // back; `use` could not repair that, because switching to the version
+    // that is already active was a no-op. install_headers is idempotent, so
+    // re-materializing costs nothing when nothing is wrong.
+    EXPECT_FALSE(gccChange->installIncludeDir.empty());
+
+    const auto cxxChange = std::ranges::find_if(
+        plan->switches, [](const auto& c) { return c.target == "g++"; });
+    ASSERT_NE(cxxChange, plan->switches.end());
+    EXPECT_TRUE(cxxChange->previousVersion.empty());
+}
+
+TEST(XvmSwitchPlan, AMemberWithNoMaterializedAssetsEmitsNothing) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0", /*withDirs=*/false);
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    // Re-materializing is only worth emitting when there is something to
+    // materialize; a program-only release in place is a genuine no-op.
+    EXPECT_TRUE(plan->switches.empty());
 }
 
 TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {
