@@ -613,6 +613,49 @@ libxpkg 与索引迁移作为下一个版本的内容推进 —— 与 §9.4 的
 
 **每一层的失败都不回滚上一层**：T4 卡住不影响已发布的 T2；T3 卡住不影响 T4 之外的任何事。
 
+## 9.7 版本命名规范
+
+发布对外使用**复合标识**：
+
+```
+(0.4.70) 2026.07.27.0
+ ^^^^^^   ^^^^^^^^^^^^
+ 语义版本   发布日期 + 当日序号
+```
+
+| 用途 | 用哪个 | 为什么 |
+|---|---|---|
+| `mcpp.toml` / `Info::VERSION` / git tag / 索引条目键 | **语义版本 `0.4.70`** | **机器要比较它** |
+| release 标题、CHANGELOG、发布说明、文档 | **`(0.4.70) 2026.07.27.0`** | 人读，带时间线 |
+| 同日多次发布 | 末位递增 `.1` `.2` | — |
+
+**为什么机器版本不改成日期式**：`~/.xlings.json` 里存着 `"version": "v0.4.68"`，
+`xlings self update` 靠版本比较决定是否升级，mcpp-index / xim-pkgindex 的条目也以版本号为键。
+把机器可读版本换成 `2026.07.27.0`，**已发布的老客户端无法与 semver 比较** —— 它们要么不升，
+要么误升。这与"老用户无感升级"直接冲突。
+
+日期式若要成为机器版本，需要单独设计一个升级期的双版本比较兼容窗口，属独立改动。
+
+## 9.8 libxpkg 发布链（T3 展开）
+
+`xvm.files` / `args` 需要经完整发布链才能被索引使用：
+
+```
+1. openxlings/libxpkg   PR 合并 → tag 0.0.47
+2. GitHub release       产物（tarball）+ sha256
+3. gitcode 镜像         CN 侧产物（mcpp-index 条目是 GLOBAL + CN 双 URL）
+4. mcpplibs/mcpp-index  pkgs/x/xpkg.lua 增加 0.0.47 条目（两个 URL + sha256）
+5. xlings               mcpp.toml 的 xpkg 升到 0.0.47
+6. xlings               实现消费 type="files" 的物化（新代码 + 一轮 CI）
+7. xim-pkgindex         recipe 改用 xvm.files
+```
+
+**第 3 步（CN 镜像）容易漏。** mcpp-index 每个版本条目都带 `GLOBAL`（GitHub）和
+`CN`（gitcode）两个 URL；只发 GitHub 会让 CN 用户解析失败。
+校验 gitcode 产物要用 GET 而非 HEAD（HEAD 返回 401，GET 302 → CDN 200）。
+
+**xlings 0.4.70 不在这条链上** —— 它只用 0.0.46 已有的字段，可以先发。
+
 ## 10. 核心 review 点
 
 请重点确认这几条：
