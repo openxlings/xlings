@@ -13,6 +13,9 @@ import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
+import xlings.core.xvm.bindings;
+import xlings.core.xvm.errors;
+import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
 
 export namespace xlings::xvm {
@@ -207,46 +210,46 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     log::debug("fuzzy version match: {} -> {}", version, resolved);
 
-    // Header & lib switching: remove old, install new
+    // Resolve the whole release before touching anything.
+    //
+    // This used to walk the binding edges by hand, keyed by target rather
+    // than by (target, version), and without checking that what it reached
+    // actually existed. A stale edge would take it to a version with no
+    // VData, which it then wrote into the active workspace -- the shim
+    // failed later, far from the command that caused it. Header and library
+    // switching ran *before* that walk and only for the entry target, so a
+    // failure part-way through left the sysroot holding one release and the
+    // workspace claiming another.
+    //
+    // resolve_binding_selection validates the whole group and fails closed.
+    // Running it first means a bad group costs the user an error message
+    // instead of a half-switched toolchain.
+    auto workspace = Config::effective_workspace();
+    auto plan = plan_use_switch(db, workspace, target, resolved);
+    if (!plan) {
+        log::error("{}", render(plan.error(), true));
+        return 1;
+    }
+    const auto& to_switch = plan->members;
+
+    // Everything above this line is a decision; everything below changes the
+    // filesystem. Members that are already where they belong emit no change.
     auto sysroot_include = p.subosDir / "usr" / "include";
     auto sysroot_lib     = p.subosDir / "usr" / "lib";
-    auto workspace = Config::effective_workspace();
-    auto old_active = get_active_version(workspace, target);
-    log::debug("switching headers: {} -> {}", old_active.empty() ? "(none)" : old_active, resolved);
-    if (!old_active.empty() && old_active != resolved) {
-        auto old_vdata = get_vdata(db, target, old_active);
-        if (old_vdata && !old_vdata->includedir.empty())
-            remove_headers(old_vdata->includedir, sysroot_include);
-        if (old_vdata && !old_vdata->libdir.empty())
-            remove_libdir(old_vdata->libdir, sysroot_lib);
+    for (const auto& change : plan->switches) {
+        if (!change.removeIncludeDir.empty())
+            remove_headers(change.removeIncludeDir, sysroot_include);
+        if (!change.removeLibDir.empty())
+            remove_libdir(change.removeLibDir, sysroot_lib);
+        if (!change.installIncludeDir.empty())
+            install_headers(change.installIncludeDir, sysroot_include);
+        if (!change.installLibDir.empty())
+            install_libdir(change.installLibDir, sysroot_lib);
+        log::debug("switching {}: {} -> {}", change.target,
+                   change.previousVersion.empty() ? "(none)"
+                                                  : change.previousVersion,
+                   change.version);
     }
-    auto new_vdata = get_vdata(db, target, resolved);
-    if (new_vdata && !new_vdata->includedir.empty())
-        install_headers(new_vdata->includedir, sysroot_include);
-    if (new_vdata && !new_vdata->libdir.empty())
-        install_libdir(new_vdata->libdir, sysroot_lib);
-
-    // Collect all (target, version) pairs by traversing the binding tree
-    std::map<std::string, std::string> to_switch;
-    std::set<std::string> visited;
-
-    std::function<void(const std::string&, const std::string&)> collect_bindings;
-    collect_bindings = [&](const std::string& node, const std::string& node_ver) {
-        if (visited.contains(node)) return;
-        visited.insert(node);
-        to_switch[node] = node_ver;
-
-        auto info = get_vinfo(db, node);
-        if (!info) return;
-        for (auto& [peer_name, vermap] : info->bindings) {
-            auto it = vermap.find(node_ver);
-            if (it != vermap.end()) {
-                collect_bindings(peer_name, it->second);
-            }
-        }
-    };
-
-    collect_bindings(target, resolved);
 
     // Update workspace for all nodes in the binding tree, and opt this
     // subos into the version's installed[] set if it wasn't already.
