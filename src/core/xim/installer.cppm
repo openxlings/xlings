@@ -20,6 +20,7 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
+import xlings.core.xvm.errors;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
@@ -1364,14 +1365,14 @@ bool process_xvm_operations_(const PlanNode& node,
             registration->batch.provider,
             registration->batch.providerVersion);
         if (!snapshot) {
-            log::warn(
-                "xvm removal selection failed for {}@{}: {} "
-                "(target='{}', version='{}')",
-                registration->batch.provider,
-                registration->batch.providerVersion,
-                snapshot.error().message,
-                snapshot.error().target,
-                snapshot.error().version);
+            // Selection runs before any mutation, so nothing has moved yet.
+            log::error("{}", xvm::render(
+                xvm::describe(
+                    snapshot.error(),
+                    std::format("{}@{}",
+                                registration->batch.provider,
+                                registration->batch.providerVersion)),
+                /*nothingChanged=*/true));
             return false;
         }
         removalContext = std::move(*snapshot);
@@ -1386,30 +1387,22 @@ bool process_xvm_operations_(const PlanNode& node,
         removalContext,
         *registration);
     if (!metadata) {
+        const auto owner = std::format("{}@{}",
+                                       registration->batch.provider,
+                                       registration->batch.providerVersion);
+        // apply_xpkg_xvm_metadata_batch works on copies and only swaps them
+        // in on success, so a failure here has left the stored state alone.
         if (std::holds_alternative<xvm::RemovalError>(
                 metadata.error())) {
-            const auto& error =
-                std::get<xvm::RemovalError>(metadata.error());
-            log::warn(
-                "xvm removal batch failed for {}@{}: {} "
-                "(target='{}', version='{}')",
-                registration->batch.provider,
-                registration->batch.providerVersion,
-                error.message,
-                error.target,
-                error.version);
+            log::error("{}", xvm::render(
+                xvm::describe(
+                    std::get<xvm::RemovalError>(metadata.error()), owner),
+                /*nothingChanged=*/true));
         } else {
-            const auto& error =
-                std::get<xvm::RegistrationError>(metadata.error());
-            log::warn(
-                "xvm registration batch failed for {}@{}: {} "
-                "(path='{}', target='{}', version='{}')",
-                registration->batch.provider,
-                registration->batch.providerVersion,
-                error.message,
-                error.path,
-                error.target,
-                error.version);
+            log::error("{}", xvm::render(
+                xvm::describe(
+                    std::get<xvm::RegistrationError>(metadata.error()), owner),
+                /*nothingChanged=*/true));
         }
         return false;
     }

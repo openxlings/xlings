@@ -26,6 +26,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
+import xlings.core.xvm.errors;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
 import xlings.core.compact;
@@ -10798,6 +10799,126 @@ TEST_F(AtomicWriteTest, ThrowsWhenParentDirectoryIsMissing) {
     EXPECT_THROW(xlings::platform::write_string_to_file(target.string(), "x"),
                  std::runtime_error);
     EXPECT_EQ(entry_count(), 0u) << "staging file leaked on failure";
+}
+
+// ============================================================
+// XvmUserError — every failure kind is explainable
+//
+// Failing closed is only useful if the person on the other side is told what
+// happened and what to do. These tests hold the line that no error kind can
+// reach a user as an unexplained "install failed": each maps to a stable
+// code and a hint that names an action.
+
+namespace {
+
+template <typename Kind>
+void expect_every_kind_described_(const std::vector<Kind>& kinds,
+                                  std::string_view label) {
+    std::set<std::string_view> codes;
+    for (const auto kind : kinds) {
+        const auto described = xlings::xvm::describe_kind(kind);
+        EXPECT_NE(described.code, xlings::xvm::kUnclassifiedCode)
+            << label << " kind " << static_cast<int>(kind)
+            << " has no user-facing description";
+        EXPECT_FALSE(described.hint.empty())
+            << label << " kind " << static_cast<int>(kind) << " has no hint";
+        EXPECT_TRUE(described.code.starts_with("xvm-"))
+            << "code should be namespaced: " << described.code;
+        EXPECT_TRUE(codes.insert(described.code).second)
+            << "duplicate code " << described.code
+            << " — codes are searchable identifiers and must be unique";
+    }
+    EXPECT_EQ(codes.size(), kinds.size());
+}
+
+}  // namespace
+
+TEST(XvmUserError, EveryRegistrationKindHasACodeAndHint) {
+    using K = xlings::xvm::RegistrationErrorKind;
+    expect_every_kind_described_<K>(
+        {K::InvalidBatchIdentity, K::InvalidNodeIdentity, K::InvalidNodePayload,
+         K::InvalidBindingIdentity, K::DuplicateNode, K::RootNotInBatch,
+         K::SelfBinding, K::GroupConflict, K::TargetVersionConflict,
+         K::OwnershipConflict, K::LegacyPayloadMismatch,
+         K::IncompleteLegacyComponent, K::IncompleteOwnedGroup,
+         K::InvalidHeader, K::HeaderGroupNotFound, K::HeaderAmbiguous,
+         K::BindingValidationFailed},
+        "RegistrationErrorKind");
+}
+
+TEST(XvmUserError, EveryRemovalKindHasACodeAndHint) {
+    using K = xlings::xvm::RemovalErrorKind;
+    expect_every_kind_described_<K>(
+        {K::VersionNotFound, K::AmbiguousVersion, K::AsymmetricEdge,
+         K::SelectionInvalid, K::ProviderRequired, K::ProviderMismatch,
+         K::ProviderVersionNotFound, K::VersionMismatch},
+        "RemovalErrorKind");
+}
+
+TEST(XvmUserError, EveryBindingKindHasACodeAndHint) {
+    using K = xlings::xvm::BindingErrorKind;
+    expect_every_kind_described_<K>(
+        {K::InvalidGraph, K::TargetNotFound, K::VersionNotFound,
+         K::RootReferenceMismatch, K::GroupIdentityMismatch,
+         K::RootMissingFromManifest, K::StartMemberMissing,
+         K::MemberReferenceMismatch, K::UnsupportedKind, K::SelfEdge,
+         K::AsymmetricEdge, K::ConflictingTargetVersion,
+         K::PartialProviderMetadata, K::ProviderMetadataInLegacyGraph,
+         K::MetadataIntegrityIssue},
+        "BindingErrorKind");
+}
+
+TEST(XvmUserError, RenderCarriesEveryFieldTheUserNeeds) {
+    const xlings::xvm::RegistrationError error{
+        .kind = xlings::xvm::RegistrationErrorKind::OwnershipConflict,
+        .path = "/nodes/2",
+        .target = "gcc",
+        .version = "15.1.0",
+        .message = "exact registration is owned by 'pkgindex:llvm@20.1.7'",
+    };
+
+    const auto rendered = xlings::xvm::render(
+        xlings::xvm::describe(error, "pkgindex:gcc@15.1.0"), true);
+
+    EXPECT_NE(rendered.find("owned by 'pkgindex:llvm@20.1.7'"), std::string::npos);
+    EXPECT_NE(rendered.find("xvm-ownership-conflict"), std::string::npos);
+    EXPECT_NE(rendered.find("pkgindex:gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(rendered.find("gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(rendered.find("/nodes/2"), std::string::npos);
+    EXPECT_NE(rendered.find("uninstall that package first"), std::string::npos);
+    EXPECT_NE(rendered.find("nothing was changed"), std::string::npos);
+}
+
+TEST(XvmUserError, NothingWasChangedIsOnlyClaimedWhenAsked) {
+    const xlings::xvm::RemovalError error{
+        .kind = xlings::xvm::RemovalErrorKind::AmbiguousVersion,
+        .target = "cc",
+        .version = "1.0",
+        .message = "bare removal version '1.0' matches 2 stored versions",
+    };
+
+    // The line is a promise about stored state, so it must never appear
+    // unless the caller vouched for it.
+    EXPECT_EQ(xlings::xvm::render(xlings::xvm::describe(error), false)
+                  .find("nothing was changed"),
+              std::string::npos);
+}
+
+TEST(XvmUserError, PeerOfAnAsymmetricEdgeIsShown) {
+    const xlings::xvm::RemovalError error{
+        .kind = xlings::xvm::RemovalErrorKind::AsymmetricEdge,
+        .target = "gcc",
+        .version = "15.1.0",
+        .peerTarget = "g++",
+        .peerVersion = "15.1.0",
+        .message = "removal binding edge is not reciprocal",
+    };
+
+    // Without the peer the message names only one side of a two-sided
+    // problem, which is not enough to go look at anything.
+    EXPECT_NE(xlings::xvm::render(xlings::xvm::describe(error), true)
+                  .find("peer g++@15.1.0"),
+              std::string::npos);
 }
 
 // ============================================================
