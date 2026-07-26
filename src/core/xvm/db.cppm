@@ -236,34 +236,42 @@ remove_version(VersionDB& db,
 // then by component count). Namespace prefix is stripped before comparison, but the
 // original key is returned so callers can write it back to the workspace as-is.
 // Returns empty string if the map is empty.
-std::string pick_highest_version(const std::map<std::string, VData>& versions) {
-    if (versions.empty()) return {};
-
-    auto split = [](const std::string& s) -> std::vector<std::string> {
+// Order two version keys highest-first: dotted numeric components descending,
+// then the longer component list, then the raw key as a total tiebreak.
+//
+// The raw-key tiebreak is what makes this a strict weak ordering. Without it
+// two keys that differ only by namespace ("15.1.0" vs "musl:15.1.0") compare
+// equal in both directions, so which one a sort leaves in front depends on the
+// input order. Callers that pick "the highest" would then return different
+// answers for the same set depending on how it happened to be built.
+bool version_key_greater(const std::string& lhs, const std::string& rhs) {
+    const auto split = [](const std::string& s) {
         std::vector<std::string> parts;
         std::istringstream iss(s);
         std::string part;
-        while (std::getline(iss, part, '.')) {
-            parts.push_back(part);
-        }
+        while (std::getline(iss, part, '.')) parts.push_back(part);
         return parts;
     };
+    const auto pa = split(strip_namespace(lhs));
+    const auto pb = split(strip_namespace(rhs));
+    for (std::size_t i = 0; i < std::min(pa.size(), pb.size()); ++i) {
+        int na = 0, nb = 0;
+        std::from_chars(pa[i].data(), pa[i].data() + pa[i].size(), na);
+        std::from_chars(pb[i].data(), pb[i].data() + pb[i].size(), nb);
+        if (na != nb) return na > nb;
+    }
+    if (pa.size() != pb.size()) return pa.size() > pb.size();
+    return lhs < rhs;
+}
+
+std::string pick_highest_version(const std::map<std::string, VData>& versions) {
+    if (versions.empty()) return {};
 
     std::vector<std::string> keys;
     keys.reserve(versions.size());
     for (auto& [k, _] : versions) keys.push_back(k);
 
-    std::ranges::sort(keys, [&](const std::string& a, const std::string& b) {
-        auto pa = split(strip_namespace(a));
-        auto pb = split(strip_namespace(b));
-        for (std::size_t i = 0; i < std::min(pa.size(), pb.size()); ++i) {
-            int na = 0, nb = 0;
-            std::from_chars(pa[i].data(), pa[i].data() + pa[i].size(), na);
-            std::from_chars(pb[i].data(), pb[i].data() + pb[i].size(), nb);
-            if (na != nb) return na > nb;
-        }
-        return pa.size() > pb.size();
-    });
+    std::ranges::sort(keys, version_key_greater);
 
     return keys.front();
 }

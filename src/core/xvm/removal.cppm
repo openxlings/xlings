@@ -309,18 +309,68 @@ apply_removal_batch(VersionDB& db,
         }
     }
 
+    // ── Group-coherent reactivation ──────────────────────────────────
+    //
+    // Removing the active release leaves its members with no active version.
+    // Choosing a replacement per target independently is how `gcc` ends up on
+    // GCC 15 while `g++` lands on musl's 15: two targets, two searches, no
+    // shared answer. That is the mixed-toolchain state this whole model
+    // exists to prevent, reintroduced at the moment of removal.
+    //
+    // Move a whole surviving release at once or move nothing. A candidate
+    // qualifies only when every member of its group is still registered, is
+    // opted into this subos, and does not contradict an already-active
+    // version. Otherwise the group stays inactive and the user re-selects
+    // explicitly -- an inactive toolchain is a visible problem, an
+    // incoherent one is not.
+    const auto memberAvailable =
+        [&](const std::string& target, const std::string& version) {
+            auto dbIt = candidateDb.find(target);
+            if (dbIt == candidateDb.end()
+                || !dbIt->second.versions.contains(version)) {
+                return false;
+            }
+            auto installedIt = candidateInstalled.find(target);
+            if (installedIt == candidateInstalled.end()
+                || std::ranges::find(installedIt->second, version)
+                       == installedIt->second.end()) {
+                return false;
+            }
+            auto activeIt = candidateWorkspace.find(target);
+            return activeIt == candidateWorkspace.end()
+                || activeIt->second == version;
+        };
+
     for (const auto& target : touchedTargets) {
         if (candidateWorkspace.contains(target)) continue;
         auto installedIt = candidateInstalled.find(target);
         if (installedIt == candidateInstalled.end()) continue;
-        for (auto versionIt = installedIt->second.rbegin();
-             versionIt != installedIt->second.rend(); ++versionIt) {
-            auto targetIt = candidateDb.find(target);
-            if (targetIt != candidateDb.end()
-                && targetIt->second.versions.contains(*versionIt)) {
-                candidateWorkspace[target] = *versionIt;
-                break;
+
+        // Highest surviving release first, by version rather than by the
+        // order the user happened to install things in.
+        auto candidates = installedIt->second;
+        std::ranges::sort(candidates, version_key_greater);
+
+        for (const auto& candidate : candidates) {
+            auto dbIt = candidateDb.find(target);
+            if (dbIt == candidateDb.end()
+                || !dbIt->second.versions.contains(candidate)) {
+                continue;
             }
+            auto selection =
+                resolve_binding_selection(candidateDb, target, candidate);
+            if (!selection) continue;
+            if (!std::ranges::all_of(
+                    selection->members, [&](const auto& member) {
+                        return memberAvailable(member.first, member.second);
+                    })) {
+                continue;
+            }
+            for (const auto& [memberTarget, memberVersion] :
+                 selection->members) {
+                candidateWorkspace[memberTarget] = memberVersion;
+            }
+            break;
         }
     }
 
