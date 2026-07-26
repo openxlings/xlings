@@ -146,4 +146,58 @@ std::vector<BindingFinding> inspect_binding_state(
     return findings;
 }
 
+struct DeactivationPlan {
+    // Targets to drop from the active workspace, and the release each
+    // belonged to, so the caller can tell the user what to re-select.
+    std::map<std::string, std::string> targets;  // target -> "provider@version"
+};
+
+// Bring the workspace back to INV-2 by deactivating every release whose
+// members disagree.
+//
+// Deactivating rather than repairing is deliberate. Repair would mean
+// choosing which member is "right", and there is no basis for that choice:
+// the user may have meant either release, and picking one silently is how
+// the incoherent state arises in the first place. An inactive toolchain is a
+// visible problem the user resolves with one `xlings use`; an incoherent one
+// reports the right version from `gcc --version` and fails much later.
+//
+// Pure: returns the plan, applies nothing.
+DeactivationPlan plan_incoherent_deactivation(const VersionDB& db,
+                                              const Workspace& workspace) {
+    DeactivationPlan plan;
+    for (const auto& [target, version] : workspace) {
+        auto infoIt = db.find(target);
+        if (infoIt == db.end()) continue;
+        auto dataIt = infoIt->second.versions.find(version);
+        if (dataIt == infoIt->second.versions.end()) continue;
+        if (!dataIt->second.bindingGroup) continue;
+        auto selection = resolve_binding_selection(db, target, version);
+        if (!selection) continue;  // unresolvable is a different problem
+
+        const bool coherent = std::ranges::all_of(
+            selection->members, [&](const auto& member) {
+                auto activeIt = workspace.find(member.first);
+                return activeIt != workspace.end()
+                    && activeIt->second == member.second;
+            });
+        if (coherent) continue;
+
+        const auto& ref = *dataIt->second.bindingGroup;
+        const auto label =
+            std::format("{}@{}", ref.provider, ref.providerVersion);
+        // Take down every member of this release that is active, not just
+        // the entry point: leaving the rest behind would swap one
+        // incoherent state for another.
+        for (const auto& [memberTarget, memberVersion] : selection->members) {
+            auto activeIt = workspace.find(memberTarget);
+            if (activeIt == workspace.end()) continue;
+            if (activeIt->second != memberVersion) continue;
+            plan.targets.emplace(memberTarget, label);
+        }
+        plan.targets.emplace(target, label);
+    }
+    return plan;
+}
+
 }  // namespace xlings::xvm
