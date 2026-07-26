@@ -96,6 +96,22 @@ LibraryPlacement library_placement(const VersionDB& db,
                                    const std::string& target,
                                    const std::string& version);
 
+// True when some other entry names this one as the root of its release.
+//
+// Recipes for library-only packages write `xvm.add(package.name)` with no
+// bindir and no programs -- they need a name to hang the release on, and the
+// model offers no way to say "this is only a name". With `type` unset the C++
+// side defaults it to "program", so the entry claims to be an executable that
+// does not exist. On a real installation 31 entries are in exactly this
+// state, and `self doctor` reported every one as a broken payload.
+//
+// Both shapes are recognised: the provider group written since 0.4.70
+// (`bindingGroup.rootTarget`) and the legacy pairwise edges that precede it,
+// where a member records `bindings[root][memberVersion] = rootVersion`.
+bool is_binding_root(const VersionDB& db,
+                     const std::string& target,
+                     const std::string& version);
+
 }  // namespace xlings::xvm
 
 namespace xlings::xvm::detail_ {
@@ -641,6 +657,30 @@ LibraryPlacement library_placement(const VersionDB& db,
         .source = (std::filesystem::path(data.path) / sourceName).string(),
         .name = destinationName,
     };
+}
+
+bool is_binding_root(const VersionDB& db,
+                     const std::string& target,
+                     const std::string& version) {
+    for (const auto& [peerTarget, peerInfo] : db) {
+        for (const auto& [peerVersion, peerData] : peerInfo.versions) {
+            if (peerTarget == target && peerVersion == version) continue;
+            if (peerData.bindingGroup
+                && peerData.bindingGroup->rootTarget == target
+                && peerData.bindingGroup->rootVersion == version) {
+                return true;
+            }
+        }
+        if (peerTarget == target) continue;
+        // Legacy pairwise edge: the member side records the root it belongs
+        // to, keyed by its own version.
+        const auto edge = peerInfo.bindings.find(target);
+        if (edge == peerInfo.bindings.end()) continue;
+        for (const auto& [_, rootVersion] : edge->second) {
+            if (rootVersion == version) return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace xlings::xvm

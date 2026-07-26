@@ -11459,6 +11459,51 @@ TEST(XvmLibrarySwitch, ADifferentSonameIsUnlinkedRatherThanReplaced) {
     EXPECT_EQ(lib->installLibName, "libssl.so.3");
 }
 
+// A library-only package has no program of its own, so its recipe registers
+// the package name with no bindir purely to give the libraries something to
+// bind to. With `type` unset that entry defaults to "program" and then claims
+// to be an executable that will never exist. `self doctor` reported two such
+// entries on a real installation as broken payloads, with a hint
+// (`xlings install <pkg>@<ver>`) that cannot fix them because nothing is
+// wrong. Recognising the shape is what lets doctor say what it actually is.
+TEST(XvmBindingRoot, AnEntryOtherMembersBindToIsRecognised) {
+    xlings::xvm::VersionDB db;
+    library_release_(db, "3.1.5");
+
+    EXPECT_TRUE(xlings::xvm::is_binding_root(db, "openssl", "3.1.5"))
+        << "the entry the library binds to was not recognised as a root";
+    EXPECT_FALSE(xlings::xvm::is_binding_root(db, "libssl.so.3", "3.1.5"))
+        << "a member is not a root";
+    EXPECT_FALSE(xlings::xvm::is_binding_root(db, "openssl", "9.9.9"))
+        << "a version nothing binds to is not a root";
+}
+
+// 0.4.69 and earlier expressed the same relation as pairwise edges, with the
+// member recording `bindings[root][memberVersion] = rootVersion`. Entries in
+// that shape are what an upgraded installation is full of, so recognising
+// only the newer provider group would leave every existing anchor
+// misreported.
+TEST(XvmBindingRoot, LegacyPairwiseEdgesAreRecognisedToo) {
+    xlings::xvm::VersionDB db;
+    db["cairo"].type = "program";
+    db["cairo"].versions["1.18.0"].path = "/pkg/cairo/1.18.0";
+    db["libcairo.so.2"].type = "lib";
+    db["libcairo.so.2"].versions["1.18.0"].path = "/pkg/cairo/1.18.0/lib";
+    // The member side of the legacy edge, exactly as registration writes it.
+    db["libcairo.so.2"].bindings["cairo"]["1.18.0"] = "1.18.0";
+
+    EXPECT_TRUE(xlings::xvm::is_binding_root(db, "cairo", "1.18.0"));
+    EXPECT_FALSE(xlings::xvm::is_binding_root(db, "libcairo.so.2", "1.18.0"));
+}
+
+TEST(XvmBindingRoot, AStandaloneProgramIsNotARoot) {
+    xlings::xvm::VersionDB db;
+    db["editor"].type = "program";
+    db["editor"].versions["1.0.0"].path = "/pkg/editor";
+    EXPECT_FALSE(xlings::xvm::is_binding_root(db, "editor", "1.0.0"))
+        << "a genuinely broken standalone program must stay reportable";
+}
+
 TEST(XvmLibrarySwitch, AProgramMemberHasNoLibraryPlacement) {
     xlings::xvm::VersionDB db;
     library_release_(db, "3.1.5");
