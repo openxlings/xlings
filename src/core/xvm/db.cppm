@@ -49,6 +49,12 @@ void add_version(VersionDB& db,
     auto ver_key = make_ns_version(ns, version);
     VData vdata;
     vdata.path = path;
+    vdata.kind = type;
+    if (type != "group") {
+        vdata.sourceName = filename.empty() ? target : filename;
+        vdata.destinationName =
+            type == "program" ? target : vdata.sourceName;
+    }
     if (!alias.empty()) vdata.alias.push_back(alias);
     info.versions[ver_key] = std::move(vdata);
 
@@ -66,30 +72,164 @@ void add_version(VersionDB& db,
 }
 
 // Remove a version from the database.
-// Matches exact key first, then tries "ns:version" patterns for bare version input.
-void remove_version(VersionDB& db,
-                    const std::string& target,
-                    const std::string& version) {
-    auto it = db.find(target);
-    if (it == db.end()) return;
-    auto& vers = it->second.versions;
+// Namespaced input must match exactly. Bare input resolves only when exactly
+// one stored key has that bare version.
+enum class RemovalErrorKind {
+    VersionNotFound,
+    AmbiguousVersion,
+    AsymmetricEdge,
+    SelectionInvalid,
+    ProviderRequired,
+    ProviderMismatch,
+    ProviderVersionNotFound,
+    VersionMismatch,
+};
 
-    // Exact match
-    if (vers.erase(version)) {
-        if (vers.empty()) db.erase(it);
-        return;
+struct RemovalError {
+    RemovalErrorKind kind { RemovalErrorKind::VersionNotFound };
+    std::string target;
+    std::string version;
+    std::string peerTarget;
+    std::string peerVersion;
+    std::string message;
+};
+
+std::expected<std::string, RemovalError>
+resolve_exact_version_key(const VersionDB& db,
+                          const std::string& target,
+                          const std::string& version) {
+    auto it = db.find(target);
+    if (it == db.end() || version.empty()) {
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "removal version is missing",
+        });
     }
 
-    // If bare version given, try removing any "ns:version" that matches
-    if (version.find(':') == std::string::npos) {
-        for (auto vit = vers.begin(); vit != vers.end(); ++vit) {
-            if (strip_namespace(vit->first) == version) {
-                vers.erase(vit);
-                if (vers.empty()) db.erase(it);
-                return;
+    if (version.find(':') != std::string::npos) {
+        if (it->second.versions.contains(version)) return version;
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "exact removal version is not registered",
+        });
+    }
+
+    std::vector<std::string> matches;
+    for (const auto& [storedVersion, _] : it->second.versions) {
+        if (strip_namespace(storedVersion) == version) {
+            matches.push_back(storedVersion);
+        }
+    }
+    if (matches.size() == 1) return matches.front();
+    if (matches.empty()) {
+        return std::unexpected(RemovalError{
+            .kind = RemovalErrorKind::VersionNotFound,
+            .target = target,
+            .version = version,
+            .message = "removal version is not registered",
+        });
+    }
+    return std::unexpected(RemovalError{
+        .kind = RemovalErrorKind::AmbiguousVersion,
+        .target = target,
+        .version = version,
+        .message = std::format(
+            "bare removal version '{}' matches {} stored versions",
+            version, matches.size()),
+    });
+}
+
+std::expected<std::string, RemovalError>
+remove_version(VersionDB& db,
+               const std::string& target,
+               const std::string& version) {
+    auto exactVersionResult =
+        resolve_exact_version_key(db, target, version);
+    if (!exactVersionResult) {
+        return std::unexpected(std::move(exactVersionResult.error()));
+    }
+    const auto& exactVersion = *exactVersionResult;
+
+    auto it = db.find(target);
+    auto& vers = it->second.versions;
+
+    std::vector<std::pair<std::string, std::string>> edges;
+    for (const auto& [peerTarget, versions] : it->second.bindings) {
+        if (auto edgeIt = versions.find(exactVersion);
+            edgeIt != versions.end()) {
+            edges.emplace_back(peerTarget, edgeIt->second);
+        }
+    }
+
+    for (const auto& [peerTarget, peerVersion] : edges) {
+        auto peerIt = db.find(peerTarget);
+        const auto reciprocal =
+            peerIt != db.end()
+            && peerIt->second.versions.contains(peerVersion)
+            && peerIt->second.bindings.contains(target)
+            && peerIt->second.bindings.at(target).contains(peerVersion)
+            && peerIt->second.bindings.at(target).at(peerVersion)
+                == exactVersion;
+        if (!reciprocal) {
+            return std::unexpected(RemovalError{
+                .kind = RemovalErrorKind::AsymmetricEdge,
+                .target = target,
+                .version = exactVersion,
+                .peerTarget = peerTarget,
+                .peerVersion = peerVersion,
+                .message = "removal binding edge is not reciprocal",
+            });
+        }
+    }
+
+    for (const auto& [peerTarget, peerInfo] : db) {
+        auto incomingIt = peerInfo.bindings.find(target);
+        if (incomingIt == peerInfo.bindings.end()) continue;
+        for (const auto& [peerVersion, targetVersion] : incomingIt->second) {
+            if (targetVersion != exactVersion) continue;
+            const auto reciprocal =
+                peerInfo.versions.contains(peerVersion)
+                && it->second.bindings.contains(peerTarget)
+                && it->second.bindings.at(peerTarget).contains(exactVersion)
+                && it->second.bindings.at(peerTarget).at(exactVersion)
+                    == peerVersion;
+            if (!reciprocal) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::AsymmetricEdge,
+                    .target = target,
+                    .version = exactVersion,
+                    .peerTarget = peerTarget,
+                    .peerVersion = peerVersion,
+                    .message = "incoming removal binding edge is not reciprocal",
+                });
             }
         }
     }
+
+    for (const auto& [peerTarget, peerVersion] : edges) {
+        auto bindingIt = it->second.bindings.find(peerTarget);
+        bindingIt->second.erase(exactVersion);
+        if (bindingIt->second.empty()) {
+            it->second.bindings.erase(bindingIt);
+        }
+
+        auto peerIt = db.find(peerTarget);
+        if (peerIt == db.end()) continue;
+        auto reverseIt = peerIt->second.bindings.find(target);
+        if (reverseIt == peerIt->second.bindings.end()) continue;
+        reverseIt->second.erase(peerVersion);
+        if (reverseIt->second.empty()) {
+            peerIt->second.bindings.erase(reverseIt);
+        }
+    }
+
+    vers.erase(exactVersion);
+    if (vers.empty() && it->second.bindings.empty()) db.erase(it);
+    return exactVersion;
 }
 
 // Pick the highest semver key from a version map (descending by dotted numeric components,
@@ -300,6 +440,10 @@ std::string expand_path(const std::string& path, const std::string& xlings_home)
 nlohmann::json vdata_to_json(const VData& vdata) {
     nlohmann::json j;
     j["path"] = vdata.path;
+    if (!vdata.kind.empty()) j["kind"] = vdata.kind;
+    if (!vdata.sourceName.empty()) j["sourceName"] = vdata.sourceName;
+    if (!vdata.destinationName.empty())
+        j["destinationName"] = vdata.destinationName;
     if (!vdata.includedir.empty()) j["includedir"] = vdata.includedir;
     if (!vdata.libdir.empty()) j["libdir"] = vdata.libdir;
     if (!vdata.alias.empty()) {
@@ -312,13 +456,83 @@ nlohmann::json vdata_to_json(const VData& vdata) {
         }
         j["envs"] = envs_j;
     }
+    if (vdata.bindingGroup) {
+        j["bindingGroup"] = {
+            {"provider", vdata.bindingGroup->provider},
+            {"version", vdata.bindingGroup->providerVersion},
+            {"group", vdata.bindingGroup->group},
+            {"rootTarget", vdata.bindingGroup->rootTarget},
+            {"rootVersion", vdata.bindingGroup->rootVersion},
+        };
+    }
+    if (vdata.bindingMembersDeclared || !vdata.bindingMembers.empty()) {
+        nlohmann::json members = nlohmann::json::object();
+        for (const auto& [target, version] : vdata.bindingMembers) {
+            members[target] = version;
+        }
+        j["bindingMembers"] = std::move(members);
+    }
+    if (vdata.bindingHeadersDeclared || !vdata.bindingHeaders.empty()) {
+        nlohmann::json headers = nlohmann::json::array();
+        for (const auto& header : vdata.bindingHeaders) {
+            headers.push_back({
+                {"sourceDir", header.sourceDir},
+                {"destinationPrefix", header.destinationPrefix},
+            });
+        }
+        j["bindingHeaders"] = std::move(headers);
+    }
+    if (!vdata.bindingIntegrityIssues.empty()) {
+        nlohmann::json issues = nlohmann::json::array();
+        for (const auto& issue : vdata.bindingIntegrityIssues) {
+            issues.push_back({
+                {"code", issue.code},
+                {"path", issue.path},
+            });
+        }
+        j["bindingIntegrityIssues"] = std::move(issues);
+    }
     return j;
 }
 
 VData vdata_from_json(const nlohmann::json& j) {
     VData vdata;
+    const auto recordIssue =
+        [&vdata](std::string code, std::string path) {
+            const auto duplicate = std::ranges::any_of(
+                vdata.bindingIntegrityIssues,
+                [&](const BindingIntegrityIssue& issue) {
+                    return issue.code == code && issue.path == path;
+                });
+            if (duplicate) return;
+            vdata.bindingIntegrityIssues.push_back({
+                .code = std::move(code),
+                .path = std::move(path),
+            });
+        };
+    const auto pointerToken = [](std::string_view token) {
+        std::string escaped;
+        escaped.reserve(token.size());
+        for (char ch : token) {
+            if (ch == '~') {
+                escaped += "~0";
+            } else if (ch == '/') {
+                escaped += "~1";
+            } else {
+                escaped += ch;
+            }
+        }
+        return escaped;
+    };
+
     if (j.contains("path") && j["path"].is_string())
         vdata.path = j["path"].get<std::string>();
+    if (j.contains("kind") && j["kind"].is_string())
+        vdata.kind = j["kind"].get<std::string>();
+    if (j.contains("sourceName") && j["sourceName"].is_string())
+        vdata.sourceName = j["sourceName"].get<std::string>();
+    if (j.contains("destinationName") && j["destinationName"].is_string())
+        vdata.destinationName = j["destinationName"].get<std::string>();
     if (j.contains("includedir") && j["includedir"].is_string())
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())
@@ -334,6 +548,162 @@ VData vdata_from_json(const nlohmann::json& j) {
             if (it.value().is_string())
                 vdata.envs[it.key()] = it.value().get<std::string>();
         }
+    }
+    if (j.contains("bindingIntegrityIssues")) {
+        if (!j["bindingIntegrityIssues"].is_array()) {
+            recordIssue(
+                "binding-integrity-issues-not-array",
+                "/bindingIntegrityIssues");
+        } else {
+            std::size_t index = 0;
+            for (const auto& issueJson : j["bindingIntegrityIssues"]) {
+                const auto issuePath =
+                    "/bindingIntegrityIssues/" + std::to_string(index++);
+                if (!issueJson.is_object()) {
+                    recordIssue(
+                        "binding-integrity-issue-not-object",
+                        issuePath);
+                    continue;
+                }
+
+                const auto validCode =
+                    issueJson.contains("code")
+                    && issueJson["code"].is_string()
+                    && !issueJson["code"].get_ref<
+                        const std::string&>().empty();
+                const auto validPath =
+                    issueJson.contains("path")
+                    && issueJson["path"].is_string()
+                    && !issueJson["path"].get_ref<
+                        const std::string&>().empty();
+                if (!validCode) {
+                    recordIssue(
+                        "binding-integrity-issue-field-invalid",
+                        issuePath + "/code");
+                }
+                if (!validPath) {
+                    recordIssue(
+                        "binding-integrity-issue-field-invalid",
+                        issuePath + "/path");
+                }
+                if (validCode && validPath) {
+                    recordIssue(
+                        issueJson["code"].get<std::string>(),
+                        issueJson["path"].get<std::string>());
+                }
+            }
+        }
+    }
+    if (j.contains("bindingGroup")) {
+        if (!j["bindingGroup"].is_object()) {
+            recordIssue(
+                "binding-group-not-object", "/bindingGroup");
+        } else {
+            const auto& group = j["bindingGroup"];
+            BindingGroupRef ref;
+            const auto parseGroupField =
+                [&](std::string_view name, std::string& destination) {
+                    const auto key = std::string(name);
+                    if (group.contains(key)
+                        && group[key].is_string()
+                        && !group[key].get_ref<
+                            const std::string&>().empty()) {
+                        destination = group[key].get<std::string>();
+                    } else {
+                        recordIssue(
+                            "binding-group-field-invalid",
+                            "/bindingGroup/" + key);
+                    }
+                };
+            parseGroupField("provider", ref.provider);
+            parseGroupField("version", ref.providerVersion);
+            parseGroupField("group", ref.group);
+            parseGroupField("rootTarget", ref.rootTarget);
+            parseGroupField("rootVersion", ref.rootVersion);
+            vdata.bindingGroup = std::move(ref);
+        }
+    }
+    if (j.contains("bindingMembers")) {
+        vdata.bindingMembersDeclared = true;
+        if (!j["bindingMembers"].is_object()) {
+            recordIssue(
+                "binding-members-not-object", "/bindingMembers");
+        } else {
+            const auto& members = j["bindingMembers"];
+            for (auto it = members.begin(); it != members.end(); ++it) {
+                const auto validTarget = !it.key().empty();
+                if (!validTarget) {
+                    recordIssue(
+                        "binding-member-target-empty",
+                        "/bindingMembers/");
+                }
+                if (!it.value().is_string()) {
+                    recordIssue(
+                        "binding-member-version-not-string",
+                        "/bindingMembers/" + pointerToken(it.key()));
+                } else if (it.value().get_ref<
+                               const std::string&>().empty()) {
+                    recordIssue(
+                        "binding-member-version-empty",
+                        "/bindingMembers/" + pointerToken(it.key()));
+                } else if (validTarget) {
+                    vdata.bindingMembers[it.key()] =
+                        it.value().get<std::string>();
+                }
+            }
+        }
+    }
+    if (j.contains("bindingHeaders")) {
+        vdata.bindingHeadersDeclared = true;
+        if (!j["bindingHeaders"].is_array()) {
+            recordIssue(
+                "binding-headers-not-array", "/bindingHeaders");
+        } else {
+            std::size_t index = 0;
+            for (const auto& headerJson : j["bindingHeaders"]) {
+                const auto headerPath =
+                    "/bindingHeaders/" + std::to_string(index++);
+                if (!headerJson.is_object()) {
+                    recordIssue("binding-header-not-object", headerPath);
+                    continue;
+                }
+                if (!headerJson.contains("sourceDir")
+                    || !headerJson["sourceDir"].is_string()) {
+                    recordIssue(
+                        "binding-header-source-dir-not-string",
+                        headerPath + "/sourceDir");
+                    continue;
+                }
+                if (headerJson["sourceDir"].get_ref<
+                        const std::string&>().empty()) {
+                    recordIssue(
+                        "binding-header-source-dir-empty",
+                        headerPath + "/sourceDir");
+                    continue;
+                }
+                if (headerJson.contains("destinationPrefix")
+                    && !headerJson["destinationPrefix"].is_string()) {
+                    recordIssue(
+                        "binding-header-destination-prefix-not-string",
+                        headerPath + "/destinationPrefix");
+                    continue;
+                }
+
+                HeaderAsset header{
+                    .sourceDir =
+                        headerJson["sourceDir"].get<std::string>(),
+                };
+                if (headerJson.contains("destinationPrefix")) {
+                    header.destinationPrefix =
+                        headerJson["destinationPrefix"].get<std::string>();
+                }
+                vdata.bindingHeaders.push_back(std::move(header));
+            }
+        }
+    }
+    if ((j.contains("bindingMembers") || j.contains("bindingHeaders"))
+        && !vdata.bindingGroup) {
+        recordIssue("binding-group-missing", "/bindingGroup");
     }
     return vdata;
 }

@@ -1,0 +1,335 @@
+export module xlings.core.xvm.removal;
+
+import std;
+
+import xlings.core.xvm.types;
+import xlings.core.xvm.bindings;
+import xlings.core.xvm.db;
+
+export namespace xlings::xvm {
+
+struct RemovalOperation {
+    std::string op;
+    std::string name;
+    std::string version;
+};
+
+struct RemovalContext {
+    std::map<std::string, std::string> members;
+    std::string provider;
+    bool hasSelection { false };
+};
+
+struct RemovedVersion {
+    std::string target;
+    std::string version;
+};
+
+struct RemovalBatchResult {
+    std::vector<RemovedVersion> removed;
+};
+
+struct RemovalBatchOptions {
+    bool purgeSelection { false };
+};
+
+bool has_usable_workspace_version(
+        const VersionDB& db,
+        const WorkspaceInstalled& installed,
+        const std::string& target) {
+    auto installedIt = installed.find(target);
+    auto targetIt = db.find(target);
+    if (installedIt == installed.end() || targetIt == db.end()) {
+        return false;
+    }
+    return std::ranges::any_of(
+        installedIt->second,
+        [&](const std::string& version) {
+            return targetIt->second.versions.contains(version);
+        });
+}
+
+std::expected<RemovalContext, RemovalError>
+snapshot_removal_context(const VersionDB& db,
+                         const std::string& target,
+                         const std::string& version) {
+    auto exactVersion =
+        resolve_exact_version_key(db, target, version);
+    if (!exactVersion) {
+        return std::unexpected(std::move(exactVersion.error()));
+    }
+    const auto& data = db.at(target).versions.at(*exactVersion);
+    auto resolveSelection = [&](const std::string& memberTarget,
+                                const std::string& memberVersion)
+        -> std::expected<BindingSelection, RemovalError> {
+        auto selection = resolve_binding_selection(
+            db, memberTarget, memberVersion);
+        if (!selection) {
+            return std::unexpected(RemovalError{
+                .kind = RemovalErrorKind::SelectionInvalid,
+                .target = selection.error().target,
+                .version = selection.error().version,
+                .message = selection.error().message,
+            });
+        }
+        return std::move(*selection);
+    };
+
+    auto firstSelection = resolveSelection(target, *exactVersion);
+    if (!firstSelection) {
+        return std::unexpected(std::move(firstSelection.error()));
+    }
+    if (!data.bindingGroup) {
+        return RemovalContext{
+            .members = std::move(firstSelection->members),
+            .hasSelection = true,
+        };
+    }
+
+    const auto& owner = *data.bindingGroup;
+    std::set<std::tuple<std::string, std::string, std::string>> groups;
+    for (const auto& [_, info] : db) {
+        for (const auto& [__, member] : info.versions) {
+            if (!member.bindingGroup
+                || member.bindingGroup->provider != owner.provider
+                || member.bindingGroup->providerVersion
+                    != owner.providerVersion) {
+                continue;
+            }
+            groups.emplace(
+                member.bindingGroup->group,
+                member.bindingGroup->rootTarget,
+                member.bindingGroup->rootVersion);
+        }
+    }
+
+    std::map<std::string, std::string> members;
+    for (const auto& [_, rootTarget, rootVersion] : groups) {
+        auto selection = resolveSelection(rootTarget, rootVersion);
+        if (!selection) {
+            return std::unexpected(std::move(selection.error()));
+        }
+        for (const auto& [memberTarget, memberVersion] :
+             selection->members) {
+            auto [it, inserted] =
+                members.emplace(memberTarget, memberVersion);
+            if (!inserted && it->second != memberVersion) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::SelectionInvalid,
+                    .target = memberTarget,
+                    .version = memberVersion,
+                    .message =
+                        "provider release selects conflicting member versions",
+                });
+            }
+        }
+    }
+
+    return RemovalContext{
+        .members = std::move(members),
+        .provider = owner.provider,
+        .hasSelection = true,
+    };
+}
+
+std::expected<RemovalBatchResult, RemovalError>
+apply_removal_batch(VersionDB& db,
+                    Workspace& workspace,
+                    WorkspaceInstalled& installed,
+                    const std::vector<RemovalOperation>& operations,
+                    const RemovalContext& context,
+                    const RemovalBatchOptions& options = {}) {
+    std::vector<RemovedVersion> removals;
+    std::vector<RemovedVersion> selectedRecipeMembers;
+    std::set<std::pair<std::string, std::string>> seen;
+
+    for (const auto& operation : operations) {
+        if (operation.op == "remove_all") {
+            if (context.provider.empty()) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::ProviderRequired,
+                    .target = operation.name,
+                    .version = operation.version,
+                    .message =
+                        "remove_all requires a canonical provider context",
+                });
+            }
+            auto targetIt = db.find(operation.name);
+            bool matched = false;
+            if (targetIt != db.end()) {
+                for (const auto& [version, data] : targetIt->second.versions) {
+                    if (!data.bindingGroup
+                        || data.bindingGroup->provider != context.provider) {
+                        continue;
+                    }
+                    matched = true;
+                    if (seen.emplace(operation.name, version).second) {
+                        removals.push_back({
+                            .target = operation.name,
+                            .version = version,
+                        });
+                    }
+                }
+            }
+            if (!matched) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::ProviderVersionNotFound,
+                    .target = operation.name,
+                    .version = operation.version,
+                    .message = std::format(
+                        "target has no version owned by provider '{}'",
+                        context.provider),
+                });
+            }
+            continue;
+        }
+        if (operation.op != "remove") continue;
+
+        if (context.hasSelection) {
+            auto memberIt = context.members.find(operation.name);
+            if (memberIt == context.members.end()) {
+                return std::unexpected(RemovalError{
+                    .kind = RemovalErrorKind::SelectionInvalid,
+                    .target = operation.name,
+                    .version = operation.version,
+                    .message =
+                        "recipe removal target is outside the owned selection",
+                });
+            }
+            auto selectedVersion = resolve_exact_version_key(
+                db, operation.name, memberIt->second);
+            if (!selectedVersion) {
+                return std::unexpected(
+                    std::move(selectedVersion.error()));
+            }
+            if (!operation.version.empty()) {
+                auto recipeVersion = resolve_exact_version_key(
+                    db, operation.name, operation.version);
+                if (!recipeVersion) {
+                    return std::unexpected(
+                        std::move(recipeVersion.error()));
+                }
+                if (*recipeVersion != *selectedVersion) {
+                    return std::unexpected(RemovalError{
+                        .kind = RemovalErrorKind::VersionMismatch,
+                        .target = operation.name,
+                        .version = operation.version,
+                        .message = std::format(
+                            "recipe removal version does not match "
+                            "selected owned version '{}'",
+                            *selectedVersion),
+                    });
+                }
+            }
+            selectedRecipeMembers.push_back({
+                .target = operation.name,
+                .version = *selectedVersion,
+            });
+            continue;
+        }
+
+        std::expected<std::string, RemovalError> exactVersion =
+            std::unexpected(RemovalError{
+                .kind = RemovalErrorKind::VersionNotFound,
+                .target = operation.name,
+                .version = operation.version,
+                .message = "removal operation has no exact version",
+            });
+        if (!operation.version.empty()) {
+            exactVersion = resolve_exact_version_key(
+                db, operation.name, operation.version);
+        } else if (auto targetIt = db.find(operation.name);
+                   targetIt != db.end()
+                   && targetIt->second.versions.size() > 1) {
+            exactVersion = std::unexpected(RemovalError{
+                .kind = RemovalErrorKind::AmbiguousVersion,
+                .target = operation.name,
+                .version = operation.version,
+                .message =
+                    "versionless removal has no unique validated selection",
+            });
+        }
+        if (!exactVersion) {
+            return std::unexpected(std::move(exactVersion.error()));
+        }
+        if (seen.emplace(operation.name, *exactVersion).second) {
+            removals.push_back({
+                .target = operation.name,
+                .version = *exactVersion,
+            });
+        }
+    }
+
+    for (const auto& removal : selectedRecipeMembers) {
+        if (seen.emplace(removal.target, removal.version).second) {
+            removals.push_back(removal);
+        }
+    }
+    if (options.purgeSelection || !selectedRecipeMembers.empty()) {
+        for (const auto& [target, version] : context.members) {
+            auto exactVersion =
+                resolve_exact_version_key(db, target, version);
+            if (!exactVersion) {
+                return std::unexpected(
+                    std::move(exactVersion.error()));
+            }
+            if (seen.emplace(target, *exactVersion).second) {
+                removals.push_back({
+                    .target = target,
+                    .version = *exactVersion,
+                });
+            }
+        }
+    }
+
+    auto candidateDb = db;
+    auto candidateWorkspace = workspace;
+    auto candidateInstalled = installed;
+    std::set<std::string> touchedTargets;
+
+    for (const auto& removal : removals) {
+        auto result =
+            remove_version(candidateDb, removal.target, removal.version);
+        if (!result) {
+            return std::unexpected(std::move(result.error()));
+        }
+        touchedTargets.insert(removal.target);
+
+        if (auto installedIt = candidateInstalled.find(removal.target);
+            installedIt != candidateInstalled.end()) {
+            std::erase(installedIt->second, removal.version);
+            if (installedIt->second.empty()) {
+                candidateInstalled.erase(installedIt);
+            }
+        }
+        if (auto activeIt = candidateWorkspace.find(removal.target);
+            activeIt != candidateWorkspace.end()
+            && activeIt->second == removal.version) {
+            candidateWorkspace.erase(activeIt);
+        }
+    }
+
+    for (const auto& target : touchedTargets) {
+        if (candidateWorkspace.contains(target)) continue;
+        auto installedIt = candidateInstalled.find(target);
+        if (installedIt == candidateInstalled.end()) continue;
+        for (auto versionIt = installedIt->second.rbegin();
+             versionIt != installedIt->second.rend(); ++versionIt) {
+            auto targetIt = candidateDb.find(target);
+            if (targetIt != candidateDb.end()
+                && targetIt->second.versions.contains(*versionIt)) {
+                candidateWorkspace[target] = *versionIt;
+                break;
+            }
+        }
+    }
+
+    db.swap(candidateDb);
+    workspace.swap(candidateWorkspace);
+    installed.swap(candidateInstalled);
+    return RemovalBatchResult{
+        .removed = std::move(removals),
+    };
+}
+
+}  // namespace xlings::xvm

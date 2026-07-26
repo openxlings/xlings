@@ -8,6 +8,7 @@ import xlings.core.config;
 import xlings.core.log;
 import xlings.core.xself;
 import xlings.core.xvm.db;
+import xlings.core.xvm.removal;
 import mcpplibs.xpkg.executor;
 
 export namespace xlings::xim::script {
@@ -77,6 +78,29 @@ bool default_config(const PlanNode& node,
 }
 
 bool default_uninstall(const std::string& name, const std::string& version) {
+    if (version.empty()) return false;
+
+    auto exactVersion = xvm::resolve_exact_version_key(
+        Config::versions_mut(), name, version);
+    if (!exactVersion) return false;
+    const auto wasActive =
+        Config::workspace().contains(name)
+        && Config::workspace().at(name) == *exactVersion;
+    const std::vector<xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = name,
+            .version = *exactVersion,
+        },
+    };
+    auto removal = xvm::apply_removal_batch(
+        Config::versions_mut(),
+        Config::workspace_mut(),
+        Config::workspace_installed_mut(),
+        operations,
+        {});
+    if (!removal) return false;
+
     auto paths = Config::paths();
 #ifdef _WIN32
     constexpr std::string_view shim_ext = ".exe";
@@ -87,15 +111,16 @@ bool default_uninstall(const std::string& name, const std::string& version) {
     if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
         shim_name += std::string(shim_ext);
     auto shim_path = paths.binDir / shim_name;
-    if (std::filesystem::exists(shim_path)) {
-        std::filesystem::remove(shim_path);
-    }
-
-    Config::workspace_mut().erase(name);
-    if (version.empty()) {
-        Config::versions_mut().erase(name);
-    } else {
-        xvm::remove_version(Config::versions_mut(), name, version);
+    if (wasActive
+        && !xvm::has_usable_workspace_version(
+            Config::versions_mut(),
+            Config::workspace_installed(),
+            name)) {
+        std::error_code ec;
+        if (std::filesystem::exists(shim_path, ec)) {
+            ec.clear();
+            std::filesystem::remove(shim_path, ec);
+        }
     }
 
     Config::save_versions();

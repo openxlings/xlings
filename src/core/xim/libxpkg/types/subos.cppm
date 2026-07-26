@@ -7,6 +7,7 @@ import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.core.xvm.db;
+import xlings.core.xvm.removal;
 import xlings.libs.json;
 import mcpplibs.xpkg.executor;
 
@@ -102,12 +103,21 @@ bool default_uninstall(const std::string& name, const std::string& version) {
     // payload at xpkgs/<name>/<ver>/. Forks already in subos/ are independent
     // and not touched by this — their .xlings.json points to xpkgs they
     // reference directly (deps), and those deps are independent xpkgs.
-    Config::workspace_mut().erase(name);
-    if (version.empty()) {
-        Config::versions_mut().erase(name);
-    } else {
-        xvm::remove_version(Config::versions_mut(), name, version);
-    }
+    if (version.empty()) return false;
+    const std::vector<xvm::RemovalOperation> operations{
+        {
+            .op = "remove",
+            .name = name,
+            .version = version,
+        },
+    };
+    auto removal = xvm::apply_removal_batch(
+        Config::versions_mut(),
+        Config::workspace_mut(),
+        Config::workspace_installed_mut(),
+        operations,
+        {});
+    if (!removal) return false;
 
     Config::save_versions();
     Config::save_workspace();
