@@ -80,10 +80,17 @@ function install()
     os.tryrm(dir)
     os.mkdir(path.join(dir, "bin"))
     os.mkdir(path.join(dir, "include"))
+    os.mkdir(path.join(dir, "include-fixed"))
     -- Each version ships a header stamped with its own version, so the
     -- sysroot can be checked for which release is actually materialized.
     io.writefile(path.join(dir, "include", "tcver.h"),
                  "#define TC_VERSION \"" .. version .. "\"\n")
+    -- A second header directory, which is what real toolchains have:
+    -- `include/` alongside `include-fixed/`. Only the last-declared one used
+    -- to be remembered for switching, so this is the one that catches a
+    -- release whose headers half-moved.
+    io.writefile(path.join(dir, "include-fixed", "tcfixed.h"),
+                 "#define TC_FIXED \"" .. version .. "\"\n")
     -- Plain files: this test checks which release the workspace and the
     -- sysroot point at, not that the programs run. (os.runv is not in the
     -- libxpkg Lua sandbox, so there is no chmod here anyway.)
@@ -102,6 +109,21 @@ function config()
         includedir = "include",
         programs   = {"tcc", "tcxx"},
     })
+    -- A second header directory for the same release, which is what
+    -- `bindingHeaders` is a list for. `xvm.setup` takes one `includedir` per
+    -- call and re-registers the root on every call, so calling it twice is
+    -- refused as a duplicate registration -- the op is pushed directly
+    -- instead. Nothing in the official index does this today; the point is
+    -- that the persisted model allows it, and materialization has to agree
+    -- with the model rather than with the single legacy `includedir` field.
+    --
+    -- Before the fix: install linked both directories, `xlings use` only
+    -- remembered the last, so switching moved `include-fixed/` and left
+    -- `include/` pointing at the other release.
+    table.insert(_XVM_OPS, {
+        op = "headers",
+        includedir = path.join(pkginfo.install_dir(), "include-fixed"),
+    })
     return true
 end
 
@@ -109,6 +131,10 @@ function uninstall()
     xvm.teardown("toolchain-fixture", {
         includedir = "include",
         programs   = {"tcc", "tcxx"},
+    })
+    table.insert(_XVM_OPS, {
+        op = "remove_headers",
+        includedir = path.join(pkginfo.install_dir(), "include-fixed"),
     })
     return true
 end
@@ -131,6 +157,7 @@ mkdir -p "$HOME_DIR/data/xim-index-repos"
 printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
 SYSROOT_HEADER="$HOME_DIR/subos/default/usr/include/tcver.h"
+SYSROOT_FIXED_HEADER="$HOME_DIR/subos/default/usr/include/tcfixed.h"
 
 active_version() {
   # Read the active version of $1 straight out of the subos workspace.
@@ -152,11 +179,17 @@ header_version() {
   sed -n 's/.*TC_VERSION "\([^"]*\)".*/\1/p' "$SYSROOT_HEADER"
 }
 
+fixed_header_version() {
+  [[ -f "$SYSROOT_FIXED_HEADER" ]] || { echo ""; return; }
+  sed -n 's/.*TC_FIXED "\([^"]*\)".*/\1/p' "$SYSROOT_FIXED_HEADER"
+}
+
 expect_group_at() {
-  local want="$1" ctx="$2" got_tcc got_tcxx got_hdr
+  local want="$1" ctx="$2" got_tcc got_tcxx got_hdr got_fixed
   got_tcc="$(active_version tcc)"
   got_tcxx="$(active_version tcxx)"
   got_hdr="$(header_version)"
+  got_fixed="$(fixed_header_version)"
   [[ "$got_tcc" == "$want" ]] \
     || fail "$ctx: tcc is '$got_tcc', expected '$want'"
   # The whole point: a member left behind is the bug.
@@ -164,6 +197,12 @@ expect_group_at() {
     || fail "$ctx: tcxx is '$got_tcxx' while tcc is '$want' — release split"
   [[ "$got_hdr" == "$want" ]] \
     || fail "$ctx: sysroot header is '$got_hdr', expected '$want' — headers did not follow"
+  # Both declared header directories have to move, not just the last one the
+  # recipe declared. A sysroot holding one release's `include/` beside another
+  # release's `include-fixed/` is the same class of split as a member left
+  # behind, and it used to be the default outcome for any recipe declaring two.
+  [[ "$got_fixed" == "$want" ]] \
+    || fail "$ctx: sysroot include-fixed header is '$got_fixed', expected '$want' — only one of the two declared header directories moved"
 }
 
 log "Installing both releases"
@@ -215,6 +254,7 @@ expect_group_at "1.0.0" "S5 (before)"
 
 WS_BEFORE="$(cat "$HOME_DIR/subos/default/.xlings.json")"
 HDR_BEFORE="$(header_version)"
+FIXED_BEFORE="$(fixed_header_version)"
 
 # Drop tcxx@1.0.0 from the version database, leaving the release's manifest
 # still naming it. This is the dangling state a stale edge used to produce.
@@ -237,6 +277,8 @@ fi
   || fail "S5: refused but the workspace changed anyway"
 [[ "$(header_version)" == "$HDR_BEFORE" ]] \
   || fail "S5: refused but the sysroot headers changed anyway"
+[[ "$(fixed_header_version)" == "$FIXED_BEFORE" ]] \
+  || fail "S5: refused but the second header directory changed anyway"
 log "S5: refused with the workspace and sysroot untouched"
 
 log "PASS: xvm group switch"

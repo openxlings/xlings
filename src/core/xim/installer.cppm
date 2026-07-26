@@ -18,6 +18,7 @@ import xlings.core.common;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
@@ -151,16 +152,20 @@ struct XpkgXvmMetadataResult {
     std::vector<XpkgFilesystemEffect> effects;
 };
 
-// Keep `xlings use` able to swap sysroot headers.
+// Keep the release readable by an older xlings.
 //
-// xvm::cmd_use reads VData::includedir of the target it was handed to decide
-// whether to move headers (commands.cppm). Before registration batches the
-// installer wrote that field directly on every `headers` op; the batch models
-// headers as group assets instead and does not carry it. Until the
-// materialization work consumes those group assets, the field still has to be
-// written or switching versions silently stops moving headers — and because
-// the install-time copy still happens, the breakage only surfaces on the
-// *second* version a user installs.
+// Materialization now resolves headers through `xvm::group_header_assets`,
+// which reads the group's declared assets from the root and only falls back
+// to this field when there are none. So this is no longer what makes
+// `xlings use` move headers -- the group assets are.
+//
+// It is still written, for one reason: 0.4.69 knows nothing about
+// `bindingHeaders` and switches headers by reading `includedir` alone.
+// Dropping it would make a downgrade from 0.4.70 silently stop moving
+// headers, and the release notes promise the rollback is safe. It records
+// only the last of the declared directories, which is exactly the limitation
+// 0.4.69 had before -- a downgrade gets the old behavior back, not a worse
+// one.
 //
 // One deliberate difference from the pre-batch behavior: this never brings a
 // target or a version into existence. The old code indexed both maps with
@@ -1275,10 +1280,15 @@ void detach_current_subos_(const std::string& target,
         auto db = Config::versions();
         auto sysroot_include = Config::paths().subosDir / "usr" / "include";
         auto sysroot_lib = Config::paths().libDir;
+        // The whole release's headers, not just whatever single directory
+        // landed in this entry's `includedir`: a release declaring more than
+        // one header directory would otherwise leave all but the last behind
+        // in the sysroot, pointing into a payload that is being deleted.
+        for (const auto& asset :
+                 xvm::group_header_assets(db, target, version)) {
+            xvm::remove_headers(asset, sysroot_include);
+        }
         if (auto* vdata = xvm::get_vdata(db, target, version)) {
-            if (!vdata->includedir.empty()) {
-                xvm::remove_headers(vdata->includedir, sysroot_include);
-            }
             if (!vdata->libdir.empty()) {
                 xvm::remove_libdir(vdata->libdir, sysroot_lib);
             }
@@ -1448,8 +1458,9 @@ bool process_xvm_operations_(const PlanNode& node,
         if (infoIt == scopedDb.end()) continue;
         auto dataIt = infoIt->second.versions.find(version);
         if (dataIt == infoIt->second.versions.end()) continue;
-        if (!dataIt->second.includedir.empty()) {
-            xvm::install_headers(dataIt->second.includedir, sysroot_include);
+        for (const auto& asset :
+                 xvm::group_header_assets(scopedDb, target, version)) {
+            xvm::install_headers(asset, sysroot_include);
         }
         if (!dataIt->second.libdir.empty()) {
             xvm::install_libdir(dataIt->second.libdir, sysroot_lib);
