@@ -1080,8 +1080,12 @@ TEST(XvmSysrootUntracked, IsANoticeRatherThanABreak) {
     files_release_(db, "2.0.0");
     legacy_demo_release_(db, "1.0.0");
 
-    const auto* finding =
-        find_untracked_(xlings::xvm::inspect_binding_state(db, {}), "1.0.0");
+    // Bind the vector: find_untracked_ returns a pointer into it, and
+    // dereferencing a pointer into the temporary would be reading freed
+    // memory. It happened to hold the right value on Linux and read back
+    // Broken on macOS.
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+    const auto* finding = find_untracked_(findings, "1.0.0");
     ASSERT_NE(finding, nullptr);
     // The upgrade inherited this state, it did not create it. Counting it as
     // broken would paint every upgraded installation red.

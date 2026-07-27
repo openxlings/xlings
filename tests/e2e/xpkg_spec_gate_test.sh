@@ -110,6 +110,24 @@ RUN self init >/dev/null 2>&1 || fail "self init failed"
 mkdir -p "$HOME_DIR/data/xim-index-repos"
 printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
+# Whether a target has an entry in the version database.
+#
+# NOT `xlings list`: that renders the index catalog, so it matches any
+# package that merely exists in the index -- which every fixture here
+# does. The difference only shows once the catalog builds, so a local run
+# where it failed passed this check for the wrong reason.
+registered() {  # <target>
+  python3 - "$HOME_DIR/.xlings.json" "$1" <<'PYSTATE'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    print("no"); raise SystemExit(0)
+versions = state.get("versions") or state.get("data") or {}
+print("yes" if sys.argv[2] in versions else "no")
+PYSTATE
+}
+
 # ── Scenario 1: the refusal happens and says why ─────────────────────────
 log "scenario 1: a spec above the cap is refused"
 OUT="$(RUN install specfuture@1.0.0 -y 2>&1 || true)"
@@ -120,9 +138,8 @@ fi
 grep -qi 'self update' <<<"$OUT" \
   || fail "the refusal gave the user no way forward"
 
-if RUN list 2>/dev/null | grep -q 'specfuture'; then
-  fail "a refused package was registered anyway"
-fi
+[[ "$(registered specfuture)" == "no" ]] \
+  || fail "a refused package was registered anyway"
 log "  ✓ refused, and nothing was registered"
 
 # ── Scenario 2: the refusal does not take the sibling down with it ───────
@@ -132,10 +149,12 @@ if ! grep -qi 'spec "3" is newer' <<<"$OUT"; then
   echo "$OUT" >&2
   fail "the spec-3 recipe was not refused in the combined install"
 fi
-if ! RUN list 2>/dev/null | grep -q 'specfine'; then
+[[ "$(registered specfine)" == "yes" ]] || {
   echo "$OUT" >&2
   fail "one unreadable recipe blocked a healthy one — the gate is too coarse"
-fi
+}
+[[ "$(registered specfuture2)" == "no" ]] \
+  || fail "the spec-3 recipe was registered despite being refused"
 log "  ✓ per-package skip, transaction survived"
 
 log "E2E-35 xpkg spec gate: PASS"

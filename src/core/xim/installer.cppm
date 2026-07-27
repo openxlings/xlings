@@ -1774,6 +1774,12 @@ public:
         log::debug("installer: {} node(s) in plan, dataDir={}", plan.nodes.size(), dataDir.string());
         std::vector<DownloadTask> dlTasks;
         std::unordered_set<std::string> plannedDownloads;
+        // Nodes a gate below refused. Phase 2 walks plan.nodes again and is
+        // otherwise unaware of anything decided here, so `continue` alone
+        // only skips the download -- the package still runs install() and
+        // config() and ends up registered. This set is what makes a refusal
+        // mean refused.
+        std::unordered_set<std::string> refusedNodes;
         for (auto& node : plan.nodes) {
             if (node.alreadyInstalled) continue;
 
@@ -1805,6 +1811,7 @@ public:
                     log::error("{}: unreadable xpackage spec \"{}\"",
                                node.name, pkg->spec);
                 }
+                refusedNodes.insert(detail_::plan_key_(node));
                 continue;
             }
 
@@ -1829,6 +1836,9 @@ public:
                     for (auto& a : pkg->archs) { if (!have.empty()) have += ", "; have += a; }
                     log::error("{}: unsupported architecture '{}' (supported: {})",
                                node.name, hostArchCheck, have);
+                    // Same reason as the spec gate: without this the package
+                    // is skipped for download and then installed anyway.
+                    refusedNodes.insert(detail_::plan_key_(node));
                     continue;
                 }
             }
@@ -1897,6 +1907,10 @@ public:
 
         // Phase 2: Install each package in topological order
         for (auto& node : plan.nodes) {
+            // Refused by a gate in phase 1. Skipping here rather than there
+            // is what keeps the refusal per-package: the rest of the plan
+            // installs normally.
+            if (refusedNodes.contains(detail_::plan_key_(node))) continue;
             if (cancel && cancel->is_cancelled()) {
                 return std::unexpected(std::string("cancelled"));
             }
