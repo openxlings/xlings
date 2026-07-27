@@ -96,9 +96,26 @@ legacy_component(const VersionDB& db,
         for (const auto& [peerTarget, ownVersions] : infoIt->second.bindings) {
             auto it = ownVersions.find(version);
             if (it == ownVersions.end()) continue;
-            if (!members.contains(peerTarget)) {
-                queue.emplace_back(peerTarget, it->second);
-            }
+            if (members.contains(peerTarget)) continue;
+
+            // A peer whose version is not registered is not a member. The
+            // edge names something nobody can switch to, so admitting it
+            // would build a group with a hole in it -- and a `use` that
+            // "succeeds" onto a version that does not exist is worse than the
+            // refusal it replaced.
+            //
+            // This is the difference between the two shapes that both look
+            // like a broken edge. `gcc@15.1.0 -> xim-gnu-gcc@15.1.0` where
+            // xim-gnu-gcc exists only at 16.1.0 is a dangling edge, and
+            // dropping it is repair (see XvmDanglingEdge). A pair where both
+            // versions exist but only one direction of the edge was written
+            // is a partial write, and reading it as a group is repair too.
+            // Membership, not reverse-reachability, is what tells them apart.
+            auto peerIt = db.find(peerTarget);
+            if (peerIt == db.end()) continue;
+            if (!peerIt->second.versions.contains(it->second)) continue;
+
+            queue.emplace_back(peerTarget, it->second);
         }
     }
     return members;
