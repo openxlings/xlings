@@ -356,3 +356,82 @@ A 设计文档（本文）
 | `glibc` / `gcc` 切换影响整个工具链 | 这两个放迁移队列**最后**，各自单独一个 PR，前面 7 个跑通再动 |
 | B1 再次挂 #384 的测试 | 那 7 条是**验收条件**不是障碍：改动必须让它们不修改而通过 |
 | Windows 路径分隔符 | 断言一律用 `std::filesystem::path` 构造，不写字面量 `/`（已两次踩坑） |
+
+---
+
+## 11. 实施结果
+
+发布 **2026.7.27.1**（[#413](https://github.com/openxlings/xlings/pull/413)）
+与 **2026.7.27.2**（[#414](https://github.com/openxlings/xlings/pull/414)），
+索引迁移 [xim-pkgindex#422](https://github.com/openxlings/xim-pkgindex/pull/422)。
+
+### 计划外发现的三个缺陷
+
+都不是读代码看出来的，是被"更严格的断言"逼出来的：
+
+| 缺陷 | 怎么暴露的 |
+|---|---|
+| **被拒绝的包仍会安装并注册** —— 门禁只跳过下载，phase 2 独立遍历 `plan.nodes` 照跑 `install()`/`config()`。**既有的 arch 门禁自 shipped 起就有同一个洞** | 把 E2E 里 `xlings list \| grep` 换成直接查版本库 |
+| **`FileAsset` 效果永远解析不出来** —— kind 比对只有 `program`/`lib` 两种拼写，`files` 必然不匹配；每个声明文件资产的包都在一次**完全正确的安装**上报假警告，且 `active` 门禁是死代码 | 在隔离 HOME 里装第一个迁移后的 recipe |
+| 测试里的悬垂指针（临时 vector），Linux 侥幸正确、macOS 读到垃圾 | macOS CI |
+
+第二条是 2026.7.27.0 就带进去的：资产照样物化（激活那一遍走另一条路径），
+所以唯一症状是一条警告，而当时索引里**没有任何 recipe 声明文件资产** ——
+它只可能被第一个真实迁移的包照出来。
+
+### 最大的一个发现：`glibc` 和 `openssl` 在当前客户端上装不上
+
+0.4.70 引入的 `xvm-duplicate-registration`（同名同版本注册两次）**校验本身是
+对的**，但它撞上了两个被 0.4.69 静默接受的既有 recipe 缺陷：
+
+| recipe | 缺陷 | 后果 |
+|---|---|---|
+| `glibc` | `glibc_libs` 里 `librt.so.1` 写了两次 | **glibc 装不上，拖垮所有依赖它的包** |
+| `openssl` | `programs` 含 `"openssl"`，`config()` 末尾又 `xvm.add(package.name)` | openssl 装不上 |
+
+差分实测 —— 同一 recipe、同一 tarball 缓存、同一隔离 HOME，只换二进制：
+
+```
+0.4.69       install glibc@2.39  → rc=0  ✓ 1 package(s) installed
+2026.7.27.2  install glibc@2.39  → rc=1  duplicate exact registration node
+```
+
+两条都修在索引里（xim-pkgindex#424 与迁移 PR），**合入即对所有用户生效，不需要
+再发客户端**。全量扫描 118 个 recipe，确认没有第三例。
+
+**这一条 CI 永远看不到，因为 CI 装的是 fixture，不是真实索引。** 任何新增校验
+都会遇到按旧的宽松行为写成的 recipe —— 发布前必须用真实的顶层包（glibc /
+openssl / gcc）在一次性 HOME 里新旧二进制各跑一遍对比。
+
+### 验证方法上的两条更正
+
+**老客户端的断言必须是差分的，不能是绝对的。** 多个 recipe 把拷贝守卫在
+`os.isdir(sysroot/usr/include)` 上，而全新 home 里这个目录不存在 —— **原版
+recipe 同样什么都不放**。"头文件必须存在"会把一个被忠实保留的既有怪癖误报成
+回归。改为用同一个 0.4.69 二进制分别跑迁移索引和原版索引，比对整个 sysroot
+清单。
+
+**doctor 的输出不能用来数条目。** 它的 TUI 只重绘固定区域，重定向捕获到的
+内容天然不完整，且截断点不稳定。判定要看结果（`use` 是否恢复、版本库里的边
+是否被剪掉），不能看渲染出来的行。
+
+### 真实配置上的升级演练
+
+宿主机真实的 246 target / 372 条目配置，只读拷进隔离 HOME，跑 2026.7.27.2：
+
+- `use gcc 16.1.0` 直接可用
+- `use gcc 15.1.0` 因一条**升级前就存在**的悬空边被拒
+  （`gcc.bindings["xim-gnu-gcc"]["15.1.0"]` 指向只注册了 16.1.0 的锚点）
+- `self doctor --fix` 剪掉该边 → `use gcc 15.1.0` 恢复
+
+即 #412 的机制在真实数据上完好。
+
+### 迁移进度
+
+| recipe | 状态 |
+|---|---|
+| `openssl` / `zlib` / `libxml2` | 已迁移，新旧客户端真实安装验证 |
+| `ca-certificates` / `freetype` | 放进 sysroot 的是**生成**的内容，`src` 必须相对 payload 根，要先改成生成到 payload 里 |
+| `linux-headers` | 整棵树 + stamp 失效机制 |
+| `python` | 条件依赖 sysroot 是否存在 |
+| `gcc` / `glibc` | 按 §10 的风险表，工具链根放最后、各自单独 PR |
