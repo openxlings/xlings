@@ -47,6 +47,14 @@ struct RepairPolicy {
     bool allowNetwork   { true };
     // R3 (remove + install) is the destructive rung.
     bool allowReinstall { true };
+    // How to invoke the client. Bare `xlings` resolves through PATH, which is
+    // right when doctor was itself started from a shim -- but doctor can be
+    // started by absolute path (the upgrade simulation does exactly that to
+    // test a candidate build), and then the repair would be performed by
+    // whatever OTHER client happens to be on PATH rather than by the one that
+    // decided what to repair. Callers pass their own executable path; the
+    // default keeps unit tests deterministic and environment-free.
+    std::string client { "xlings" };
 };
 
 struct RepairResult {
@@ -95,12 +103,13 @@ std::string quiet_suffix() {
 // reads the catalog only -- local, no network -- and answers 0/1 cleanly.
 bool probe_reinstallable(const std::string& target,
                          const std::string& version,
-                         const CommandRunner& run) {
+                         const CommandRunner& run,
+                         const std::string& client = "xlings") {
     if (!is_shell_safe_token(target) || !is_shell_safe_token(version)) {
         return false;
     }
-    return run(std::format("xlings info {}@{}{}",
-                           target, version, quiet_suffix())) == 0;
+    return run(std::format("{} info {}@{}{}",
+                           client, target, version, quiet_suffix())) == 0;
 }
 
 // The one-line nudge toward `self doctor --fix`.
@@ -161,10 +170,10 @@ RepairResult repair_one(const RepairTask& task,
                                "are disabled for this pass"};
     }
 
-    const auto install = std::format("xlings install {}@{} -y",
-                                     task.target, task.version);
-    const auto remove  = std::format("xlings remove {}@{} -y",
-                                     task.target, task.version);
+    const auto install = std::format("{} install {}@{} -y",
+                                     policy.client, task.target, task.version);
+    const auto remove  = std::format("{} remove {}@{} -y",
+                                     policy.client, task.target, task.version);
 
     // R2
     if (run(install) == 0) return {true, "re-register", {}};

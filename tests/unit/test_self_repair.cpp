@@ -167,6 +167,35 @@ TEST(SelfRepairLadder, RefusesVersionsThatAreNotSafeForAShell) {
     EXPECT_TRUE(f.ran.empty());
 }
 
+// ------------------------------------------------- which client runs it
+
+// The ladder must be driven by the client that decided what to repair, not by
+// whatever `xlings` happens to resolve to on PATH. They differ whenever doctor
+// was started by absolute path -- which is exactly how the upgrade simulation
+// runs a candidate build, so the released client on PATH would otherwise be
+// the one doing the work.
+TEST(SelfRepairLadder, UsesTheInjectedClientPathForEveryRung) {
+    FakeRunner f{.codes = {1, 0, 0}};   // force all three commands
+    RepairPolicy p;
+    p.client = "/opt/xlings/bin/xlings";
+    auto r = repair_one(task(), p, runner_of(f));
+
+    EXPECT_TRUE(r.healed);
+    ASSERT_EQ(f.ran.size(), 3u);
+    for (const auto& cmd : f.ran) {
+        EXPECT_EQ(cmd.rfind("/opt/xlings/bin/xlings ", 0), 0u)
+            << "rung did not use the injected client: " << cmd;
+    }
+}
+
+TEST(SelfRepairProbe, UsesTheInjectedClientToo) {
+    FakeRunner f{.codes = {0}};
+    EXPECT_TRUE(probe_reinstallable("llvm", "20.1.7", runner_of(f),
+                                    "/opt/xlings/bin/xlings"));
+    ASSERT_EQ(f.ran.size(), 1u);
+    EXPECT_EQ(f.ran[0].rfind("/opt/xlings/bin/xlings info llvm@20.1.7", 0), 0u);
+}
+
 // ---------------------------------------------------------------- probe
 
 TEST(SelfRepairProbe, ReinstallabilityComesFromInfoNotFromInstallsExitCode) {

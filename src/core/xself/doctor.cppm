@@ -601,6 +601,17 @@ export int cmd_doctor(EventStream& stream, bool fix,
             return platform::exec(cmd);
         };
 
+        // Repair with the client that is running, not with whatever `xlings`
+        // resolves to on PATH. Normally they are the same binary; they are
+        // not when doctor was started by absolute path, and then the repair
+        // would be carried out by a different client than the one that
+        // decided what needed repairing.
+        RepairPolicy policy;
+        {
+            const auto self = platform::get_executable_path().string();
+            if (!self.empty() && is_shell_safe_token(self)) policy.client = self;
+        }
+
         // A finding names an xvm TARGET; the ladder installs a PACKAGE, and
         // the two are not the same thing. A broken llvm release reports
         // `ar@22.1.8`, `clang@22.1.8`, `cc@22.1.8` and forty more -- none of
@@ -617,7 +628,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
             auto key = std::pair{name, ver};
             auto it = probed.find(key);
             if (it != probed.end()) return it->second;
-            bool ok = probe_reinstallable(name, ver, run);
+            bool ok = probe_reinstallable(name, ver, run, policy.client);
             probed.emplace(key, ok);
             return ok;
         };
@@ -705,7 +716,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
                                              covered.size() == 1 ? "y" : "ies"),
                 .reinstallable = true,   // confirmed by the probe above
             };
-            auto result = repair_one(task, RepairPolicy{}, run);
+            auto result = repair_one(task, policy, run);
             // Attribute the outcome to every finding the owner covers, so the
             // re-detect below checks the entries the user was shown.
             for (const auto& c : covered) outcomes.emplace_back(c, result);
