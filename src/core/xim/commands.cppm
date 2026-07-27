@@ -1021,7 +1021,7 @@ int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream) {
         fs::path src(fileOrUrl);
         if (!src.is_absolute()) src = fs::current_path() / src;
         if (!fs::exists(src)) {
-            log::error("file not found: {}", src.string());
+            log::error("file not found: {}", Config::display_path(src));
             return 1;
         }
         luaFile = pkgsDir / src.filename();
