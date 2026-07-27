@@ -90,7 +90,12 @@ std::vector<BindingFinding> inspect_binding_state(
                     .target = target,
                     .version = version,
                     .field = issue.path,
-                    .hint = "reinstall the package that owns this entry",
+                    // Reinstall first: it restores the release. The reset
+                    // only discards it, and is the answer when the package
+                    // is no longer installable.
+                    .hint = "reinstall the package that owns this entry, or "
+                            "run `xlings self doctor --reset-metadata` to "
+                            "discard the unreadable release metadata",
                 });
             }
         }
@@ -325,6 +330,74 @@ DeactivationPlan plan_incoherent_deactivation(const VersionDB& db,
         plan.targets.emplace(target, label);
     }
     return plan;
+}
+
+// Entries whose binding metadata cannot be read, and would be discarded.
+struct MetadataReset {
+    struct Entry {
+        std::string target;
+        std::string version;
+        // The codes that made this entry unreadable, so the user sees what
+        // is being thrown away rather than a bare count.
+        std::vector<std::string> codes;
+    };
+    std::vector<Entry> entries;
+
+    [[nodiscard]] bool empty() const { return entries.empty(); }
+};
+
+// Collect every entry carrying unreadable binding metadata.
+//
+// Unlike the two repairs above this one *loses information*: the group, its
+// members and its header assets are dropped and the entry becomes a legacy
+// singleton, switchable on its own. That is why it sits behind its own flag
+// instead of plain `--fix`.
+//
+// It is only offerable at all because load/save is now lossless for corrupt
+// entries (`VData::bindingUnreadable`). Before that, the original was already
+// gone by the time anyone could ask for it, and "reset" would have been
+// indistinguishable from the silent rewrite that destroyed it.
+//
+// Pure: returns the plan, applies nothing.
+MetadataReset plan_metadata_reset(const VersionDB& db) {
+    MetadataReset plan;
+    for (const auto& [target, info] : db) {
+        for (const auto& [version, data] : info.versions) {
+            if (data.bindingIntegrityIssues.empty()) continue;
+            MetadataReset::Entry entry{.target = target, .version = version};
+            for (const auto& issue : data.bindingIntegrityIssues) {
+                entry.codes.push_back(issue.code);
+            }
+            plan.entries.push_back(std::move(entry));
+        }
+    }
+    return plan;
+}
+
+// Apply the reset. Returns how many entries were cleared.
+std::size_t apply_metadata_reset(VersionDB& db, const MetadataReset& plan) {
+    std::size_t cleared = 0;
+    for (const auto& entry : plan.entries) {
+        auto infoIt = db.find(entry.target);
+        if (infoIt == db.end()) continue;
+        auto dataIt = infoIt->second.versions.find(entry.version);
+        if (dataIt == infoIt->second.versions.end()) continue;
+        auto& data = dataIt->second;
+        if (data.bindingIntegrityIssues.empty()) continue;
+
+        // Everything that describes the release, including the preserved
+        // originals -- leaving those behind would resurrect the corruption
+        // on the next save, which is the one outcome a reset must not have.
+        data.bindingGroup.reset();
+        data.bindingMembers.clear();
+        data.bindingHeaders.clear();
+        data.bindingMembersDeclared = false;
+        data.bindingHeadersDeclared = false;
+        data.bindingIntegrityIssues.clear();
+        data.bindingUnreadable.clear();
+        ++cleared;
+    }
+    return cleared;
 }
 
 // Edges to drop: (owner target, owner version, peer target, peer version).

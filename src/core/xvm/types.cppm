@@ -48,6 +48,21 @@ struct VData {
     bool bindingHeadersDeclared { false };
     std::vector<BindingIntegrityIssue> bindingIntegrityIssues;
 
+    // Verbatim JSON text of every top-level binding field this build could
+    // not read, keyed by field name.
+    //
+    // A field we failed to parse is a field we cannot re-emit from the parsed
+    // model: rewriting the entry from `bindingGroup` / `bindingMembers` /
+    // `bindingHeaders` alone silently drops whatever did not fit. Keeping the
+    // original text makes load/save lossless even for a corrupt entry, which
+    // is the precondition for offering to discard it -- a discard the user
+    // asked for is a repair, the same discard as a side effect of saving is
+    // data loss.
+    //
+    // Text rather than a JSON object so this stays a plain value type with no
+    // dependency on the JSON library.
+    std::map<std::string, std::string> bindingUnreadable;
+
 #if defined(_MSC_VER)
     VData() = default;
     ~VData() = default;

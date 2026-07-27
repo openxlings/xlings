@@ -14,7 +14,7 @@
 //   xself/config.cppm           — `self config`
 //   xself/clean.cppm            — `self clean [--dry-run]`
 //   xself/migrate.cppm          — `self migrate`
-//   xself/doctor.cppm           — `self doctor [--fix]`
+//   xself/doctor.cppm           — `self doctor [--fix] [--reset-metadata]`
 //   compact/xself.cppm          — cross-version compat shims, organized
 //                                 into vX_Y_Z sub-namespaces. See its
 //                                 header for the removal procedure when
@@ -55,7 +55,7 @@ static int cmd_help(EventStream& stream) {
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
-        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair)"}},
+        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --reset-metadata to discard unreadable release metadata)"}},
     });
     stream.emit(DataEvent{"help", payload.dump()});
     return 0;
@@ -89,10 +89,15 @@ export int run(int argc, char* argv[], EventStream& stream) {
     if (action == "migrate") return cmd_migrate();
     if (action == "doctor") {
         bool fix = false;
+        bool resetMetadata = false;
         for (int i = 3; i < argc; ++i) {
-            if (std::string(argv[i]) == "--fix") { fix = true; break; }
+            const auto arg = std::string(argv[i]);
+            if (arg == "--fix") fix = true;
+            // Discards unreadable binding metadata, so it is opt-in on top
+            // of --fix rather than part of it.
+            if (arg == "--reset-metadata") resetMetadata = true;
         }
-        return cmd_doctor(stream, fix);
+        return cmd_doctor(stream, fix, resetMetadata);
     }
     // help / unknown-action handling. Distinguish a deliberate help
     // request (no action / -h / --help) from a typo / made-up action so

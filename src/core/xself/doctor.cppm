@@ -61,7 +61,13 @@ namespace fs = std::filesystem;
 //                      existence on disk now, so re-running the install
 //                      hook is automatic when the payload is missing.
 //   - alias warning  → not auto-fixed (could be intentional external).
-export int cmd_doctor(EventStream& stream, bool fix) {
+//   - corrupt binding metadata → --reset-metadata only.  Why: it is the one
+//                      repair that loses information (the release, its
+//                      members and its header assets are discarded and the
+//                      entry becomes a standalone version), so it must be
+//                      asked for, not inherited from --fix.
+export int cmd_doctor(EventStream& stream, bool fix,
+                      bool resetMetadata = false) {
     auto& p   = Config::paths();
     auto db   = Config::versions();
     auto ws   = Config::effective_workspace();
@@ -403,9 +409,49 @@ export int cmd_doctor(EventStream& stream, bool fix) {
     // would mean deciding which member was "right", which is exactly the
     // silent decision that produces incoherent state to begin with.
     //
-    // Unresolvable and corrupt entries are reported but not touched: fixing
-    // those means dropping stored metadata, which needs the user's explicit
-    // consent rather than a flag they passed for shim repair.
+    // Unresolvable entries are reported but not touched: repairing one means
+    // deciding which member was "right". Corrupt metadata is repairable, but
+    // only by discarding it, so it takes its own flag (--reset-metadata)
+    // rather than riding along on one the user passed for shim repair.
+    if (resetMetadata) {
+        // Before the deactivation pass: an entry whose group is unreadable
+        // makes its release unresolvable, which that pass would otherwise
+        // report as a different problem.
+        if (auto reset = xvm::plan_metadata_reset(db); !reset.empty()) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                add_field("✗ binding state", std::format(
+                    "cannot reset binding metadata: {}", lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableDb = Config::versions_mut();
+                const auto replanned = xvm::plan_metadata_reset(mutableDb);
+                const auto cleared =
+                    xvm::apply_metadata_reset(mutableDb, replanned);
+                if (cleared > 0) {
+                    Config::save_versions();
+                    healed += static_cast<int>(cleared);
+                    for (const auto& entry : replanned.entries) {
+                        std::string codes;
+                        for (const auto& code : entry.codes) {
+                            if (!codes.empty()) codes += ", ";
+                            codes += code;
+                        }
+                        // Name what was discarded. This is the one repair
+                        // that loses information, so a bare count would be
+                        // the wrong report.
+                        add_field("· metadata reset", std::format(
+                            "{}@{} dropped its release metadata ({}) and is "
+                            "now switchable on its own — reinstall it to "
+                            "restore the release",
+                            entry.target, entry.version, codes));
+                    }
+                    db = Config::versions();
+                }
+            }
+        }
+    }
+
     if (fix) {
         // Dangling pairwise edges first: they are repairable without
         // guessing, and leaving one in place keeps the release it names

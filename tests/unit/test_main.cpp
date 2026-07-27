@@ -12599,6 +12599,142 @@ TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
 }
 
 // ============================================================
+// Corrupt binding metadata: lossless round-trip, then an explicit discard
+//
+// The dead end this closes: an entry whose bindingGroup is malformed makes
+// `use` refuse, and nothing could repair it -- hand-editing versions.json
+// was the only way out.
+//
+// The first attempt at a fix (stop serializing the integrity markers) was
+// backed out because it made things worse: an unreadable entry holds no
+// group in memory, so dropping the marker turned a visibly-broken entry
+// into a healthy-looking group-less one. The real defect was underneath --
+// rewriting an entry we could not fully read loses whatever did not fit,
+// marker or no marker. So the entry's original text is preserved, and only
+// then can a discard be offered as something the user asks for rather than
+// something saving does to them.
+// ============================================================
+
+namespace {
+
+nlohmann::json corrupt_group_json_() {
+    return nlohmann::json::parse(R"({
+        "path": "/pkg/demo/1.0.0",
+        "bindingGroup": {
+            "provider": "xim:demo",
+            "version": 7,
+            "group": "demo",
+            "rootTarget": "demo",
+            "rootVersion": "1.0.0"
+        },
+        "bindingMembers": { "demo": "1.0.0", "bad": 9 }
+    })");
+}
+
+}  // namespace
+
+TEST(XvmMetadataReset, SavingACorruptEntryNoLongerLosesIt) {
+    const auto original = corrupt_group_json_();
+    const auto parsed = xlings::xvm::vdata_from_json(original);
+    ASSERT_FALSE(parsed.bindingIntegrityIssues.empty())
+        << "fixture is not actually corrupt";
+
+    const auto saved = xlings::xvm::vdata_to_json(parsed);
+    // The whole point: what we write back for a field we could not read is
+    // the field as it was, not the subset that happened to parse.
+    EXPECT_EQ(saved["bindingGroup"], original["bindingGroup"]);
+    EXPECT_EQ(saved["bindingMembers"], original["bindingMembers"]);
+}
+
+TEST(XvmMetadataReset, TheRoundTripIsStableAcrossRepeatedSaves) {
+    // A user runs several commands before getting round to repairing. Each
+    // one rewrites the file; none of them may erode the entry further.
+    auto json = corrupt_group_json_();
+    for (int i = 0; i < 3; ++i) {
+        json = xlings::xvm::vdata_to_json(xlings::xvm::vdata_from_json(json));
+        EXPECT_EQ(json["bindingGroup"], corrupt_group_json_()["bindingGroup"])
+            << "eroded on save " << i + 1;
+    }
+}
+
+TEST(XvmMetadataReset, WellFormedEntriesCarryNoPreservedText) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+    const auto& data = db.at("demo").versions.at("1.0.0");
+    EXPECT_TRUE(data.bindingUnreadable.empty());
+
+    const auto round =
+        xlings::xvm::vdata_from_json(xlings::xvm::vdata_to_json(data));
+    EXPECT_TRUE(round.bindingUnreadable.empty())
+        << "a healthy entry must not acquire salvage state";
+    EXPECT_TRUE(round.bindingIntegrityIssues.empty());
+}
+
+TEST(XvmMetadataReset, ResetClearsTheEntryAndTheCorruptionDoesNotComeBack) {
+    xlings::xvm::VersionDB db;
+    db["demo"].type = "program";
+    db["demo"].versions["1.0.0"] =
+        xlings::xvm::vdata_from_json(corrupt_group_json_());
+
+    const auto plan = xlings::xvm::plan_metadata_reset(db);
+    ASSERT_EQ(plan.entries.size(), 1u);
+    EXPECT_EQ(plan.entries[0].target, "demo");
+    EXPECT_EQ(plan.entries[0].version, "1.0.0");
+    EXPECT_FALSE(plan.entries[0].codes.empty())
+        << "the user has to see what is being discarded";
+
+    EXPECT_EQ(xlings::xvm::apply_metadata_reset(db, plan), 1u);
+    const auto& data = db.at("demo").versions.at("1.0.0");
+    EXPECT_FALSE(data.bindingGroup.has_value());
+    EXPECT_TRUE(data.bindingMembers.empty());
+    EXPECT_TRUE(data.bindingIntegrityIssues.empty());
+    // Clearing the parsed view but keeping the salvaged text would
+    // resurrect the corruption on the very next save.
+    EXPECT_TRUE(data.bindingUnreadable.empty());
+
+    const auto saved = xlings::xvm::vdata_to_json(data);
+    EXPECT_FALSE(saved.contains("bindingGroup"));
+    EXPECT_FALSE(saved.contains("bindingIntegrityIssues"));
+    EXPECT_TRUE(xlings::xvm::vdata_from_json(saved)
+                    .bindingIntegrityIssues.empty());
+}
+
+TEST(XvmMetadataReset, ResetLeavesHealthyEntriesAlone) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "1.0.0");
+    db["demo"].versions["2.0.0"] =
+        xlings::xvm::vdata_from_json(corrupt_group_json_());
+
+    const auto plan = xlings::xvm::plan_metadata_reset(db);
+    ASSERT_EQ(plan.entries.size(), 1u);
+    EXPECT_EQ(plan.entries[0].version, "2.0.0");
+
+    EXPECT_EQ(xlings::xvm::apply_metadata_reset(db, plan), 1u);
+    EXPECT_TRUE(db.at("demo").versions.at("1.0.0").bindingGroup.has_value())
+        << "the reset reached past the entries it was planned for";
+}
+
+TEST(XvmMetadataReset, TheUseRefusalIsReproducedAndThenLifted) {
+    xlings::xvm::VersionDB db;
+    db["demo"].type = "program";
+    db["demo"].versions["1.0.0"] =
+        xlings::xvm::vdata_from_json(corrupt_group_json_());
+
+    // The symptom the user actually reports.
+    auto before = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0");
+    ASSERT_FALSE(before.has_value())
+        << "the dead end under test no longer reproduces";
+
+    const auto plan = xlings::xvm::plan_metadata_reset(db);
+    ASSERT_EQ(xlings::xvm::apply_metadata_reset(db, plan), 1u);
+
+    auto after = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0");
+    EXPECT_TRUE(after.has_value())
+        << "reset did not restore switching: "
+        << (after.has_value() ? std::string{} : after.error().what);
+}
+
+// ============================================================
 // Sysroot files placed before this client tracked them
 //
 // The upgrade case. Before 2026.7.27.0 a recipe copied headers into the
