@@ -417,6 +417,32 @@ const VInfo* get_vinfo(const VersionDB& db, const std::string& target) {
     return &it->second;
 }
 
+// Both accessors above hand back a pointer INTO the map, so passing a
+// temporary map is a use-after-free every time -- the map dies at the end of
+// the full expression and the caller is left holding a pointer into freed
+// storage.
+//
+// That is not hypothetical. `Config::versions()` and
+// `Config::effective_workspace()` return BY VALUE (global and project state
+// are merged into a fresh map), and
+//
+//     const auto* vinfo = xvm::get_vinfo(Config::versions(), name);
+//
+// compiled cleanly, shipped in three releases, and SIGSEGV'd in the field
+// (#432) when the next line walked the freed map and read a stack address as
+// a string length.
+//
+// A `const&` parameter binds to a temporary, so nothing stopped it. Deleting
+// the rvalue overload does: the same line is now a compile error at every
+// call site, present and future. `const VersionDB&&` rather than
+// `VersionDB&&` so a const temporary is caught too.
+//
+// The point fix in #432 corrected one call site; this is what makes the class
+// of bug unwritable instead of a comment someone has to remember to read.
+const VData* get_vdata(const VersionDB&&, const std::string&,
+                       const std::string&) = delete;
+const VInfo* get_vinfo(const VersionDB&&, const std::string&) = delete;
+
 // Get binding for a target (e.g., g++ -> g++-15 for gcc version 15.1.0)
 std::string get_binding(const VersionDB& db,
                         const std::string& target,
