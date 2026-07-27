@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-36)
+# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-37)
 # with per-test timing + a slowest-first summary, mirroring mcpp's runner.
 #
 # Usage:  bash tests/e2e/run_all.sh <release-tarball>
@@ -86,6 +86,7 @@ TESTS=(
     "E2E-34 |xvm_library_switch_test.sh||"
     "E2E-35 |xpkg_spec_gate_test.sh||"
     "E2E-36 |xvm_metadata_reset_test.sh||"
+    "E2E-37 |xvm_files_probe_compat_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0
