@@ -381,7 +381,39 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // Read-only for now: reporting is what removes the dead end. Repair
     // lands separately, because deactivating a group or dropping metadata
     // is a decision the user should see spelled out before it happens.
-    const auto bindingFindings = xvm::inspect_binding_state(db, ws);
+    auto bindingFindings = xvm::inspect_binding_state(db, ws);
+
+    // Sysroot ownership. Reported only for destinations a package declares,
+    // not for the whole tree: the subos carries the host image, so listing
+    // every unmanaged entry would bury the two or three that matter under
+    // hundreds that are simply not ours to manage. Drift on a declared
+    // destination is the actionable case, and that is what this finds.
+    {
+        std::vector<xvm::SysrootEntry> entries;
+        for (const auto& [target, version] : ws) {
+            auto infoIt = db.find(target);
+            if (infoIt == db.end()) continue;
+            auto dataIt = infoIt->second.versions.find(version);
+            if (dataIt == infoIt->second.versions.end()) continue;
+            const auto& dst = dataIt->second.fileDst;
+            if (dst.empty()) continue;
+            const auto abs = p.subosDir / dst;
+            std::error_code ec;
+            if (!fs::exists(abs, ec) && !fs::is_symlink(abs, ec)) continue;
+            xvm::SysrootEntry entry{.path = dst};
+            if (fs::is_symlink(abs, ec)) {
+                entry.linkTarget = fs::read_symlink(abs, ec).string();
+                if (ec) entry.linkTarget.clear();
+            }
+            entries.push_back(std::move(entry));
+        }
+        auto ownership = xvm::inspect_sysroot_ownership(
+            db, ws, entries, (p.dataDir / "xpkgs").string());
+        bindingFindings.insert(bindingFindings.end(),
+                               std::make_move_iterator(ownership.begin()),
+                               std::make_move_iterator(ownership.end()));
+    }
+
     for (const auto& finding : bindingFindings) {
         const bool notice =
             finding.severity == xvm::BindingSeverity::Notice;

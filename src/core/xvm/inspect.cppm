@@ -278,6 +278,89 @@ std::vector<BindingFinding> inspect_binding_state(
     return findings;
 }
 
+// One entry found in the subos, as the caller read it off disk.
+struct SysrootEntry {
+    // Relative to the subos root, e.g. "usr/include/openssl".
+    std::string path;
+    // Where the symlink points, absolute. Empty when the entry is a real
+    // file or directory rather than a link.
+    std::string linkTarget;
+};
+
+// Which sysroot entries xlings put there, and which it merely found.
+//
+// The 0.4.70 design calls for a persisted ledger, and also says why one is
+// not required to answer this question: "ledger 是派生数据（可由扫描 +
+// Selection 重建），存盘只是为了避免每次全量扫描 sysroot". The saved copy is
+// an optimisation for the reconciler, and the reconciler does not exist yet.
+// Deriving the answer instead means there is no second record that can drift
+// from the filesystem -- which, for a question that is *about* whether the
+// filesystem matches the records, would be the wrong kind of state to add.
+//
+// The rule is decidable from one readlink: everything xlings materializes is
+// a link into the payload store -- declared file assets, libraries and the
+// header farm alike. So an entry that is not such a link is not ours.
+//
+// Pure over (db, workspace, entries), like the rest of this module: the
+// caller does the reading, every case below is reachable from a unit test.
+std::vector<BindingFinding> inspect_sysroot_ownership(
+        const VersionDB& db,
+        const Workspace& workspace,
+        const std::vector<SysrootEntry>& entries,
+        std::string_view payloadRoot) {
+    std::vector<BindingFinding> findings;
+    if (payloadRoot.empty()) return findings;
+
+    // Destinations the active selection says should be ours.
+    std::map<std::string, std::pair<std::string, std::string>> claimed;
+    for (const auto& [target, version] : workspace) {
+        auto infoIt = db.find(target);
+        if (infoIt == db.end()) continue;
+        auto dataIt = infoIt->second.versions.find(version);
+        if (dataIt == infoIt->second.versions.end()) continue;
+        if (!dataIt->second.fileDst.empty()) {
+            claimed.emplace(dataIt->second.fileDst,
+                            std::pair{target, version});
+        }
+    }
+
+    for (const auto& entry : entries) {
+        const bool ours = !entry.linkTarget.empty()
+            && std::string_view{entry.linkTarget}.starts_with(payloadRoot);
+        if (ours) continue;
+
+        if (auto it = claimed.find(entry.path); it != claimed.end()) {
+            // Declared, but what is on disk is not the link we would have
+            // made. Something replaced it after the fact.
+            findings.push_back({
+                .code = "xvm-sysroot-drift",
+                .summary = std::format(
+                    "'{}' is declared by {}@{} but is not the link xlings "
+                    "placed", entry.path, it->second.first,
+                    it->second.second),
+                .target = it->second.first,
+                .version = it->second.second,
+                .hint = std::format(
+                    "run `xlings use {} {}` to put it back",
+                    it->second.first, it->second.second),
+            });
+            continue;
+        }
+
+        // Nothing claims it. Could be the host image, could be a package
+        // that placed it by hand and is now gone -- either way xlings will
+        // not move it on a version switch, and cannot remove it.
+        findings.push_back({
+            .code = "xvm-sysroot-unmanaged",
+            .summary = std::format(
+                "'{}' is in the subos but no package declares it", entry.path),
+            .hint = "left as-is; xlings only moves what a package declares",
+            .severity = BindingSeverity::Notice,
+        });
+    }
+    return findings;
+}
+
 struct DeactivationPlan {
     // Targets to drop from the active workspace, and the release each
     // belonged to, so the caller can tell the user what to re-select.
