@@ -226,6 +226,29 @@ log "S3: use tcc 1.0.0 again → identical to entering from tcxx"
 RUN use tcc 1.0.0 >/dev/null 2>&1 || fail "S3: use failed"
 expect_group_at "1.0.0" "S3"
 
+# ── Scenario 3b: profile rollback moves the whole release ─────────
+# `profile commit` records Config::effective_workspace() -- one entry per
+# target -- and `profile rollback` replays it through xvm::cmd_use, one call
+# per entry. For a bound release that is not obviously right: the first call
+# switches the entire group, so the calls that follow are either redundant or,
+# if the recorded generation were internally inconsistent, contradictory.
+# Assert the observable contract instead of the mechanism: after a rollback
+# the release is whole and at the recorded version, headers included.
+log "S3b: commit at 1.0.0, switch to 2.0.0, rollback → whole release returns"
+expect_group_at "1.0.0" "S3b (before commit)"
+RUN profile commit "before upgrade" >/dev/null 2>&1 \
+  || fail "S3b: profile commit failed"
+GEN="$(RUN profile list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
+        | awk '/before upgrade/ {print $2; exit}')"
+[[ -n "$GEN" ]] || fail "S3b: could not read the generation number back"
+
+RUN use tcc 2.0.0 >/dev/null 2>&1 || fail "S3b: use 2.0.0 failed"
+expect_group_at "2.0.0" "S3b (after switch)"
+
+RUN profile rollback "$GEN" >/dev/null 2>&1 \
+  || fail "S3b: profile rollback $GEN failed"
+expect_group_at "1.0.0" "S3b (after rollback)"
+
 # ── Scenario 4: removal falls back as a whole ─────────────────────
 log "S4: switch to 2.0.0, remove it → fall back to 1.0.0 coherently"
 RUN use tcc 2.0.0 >/dev/null 2>&1 || fail "S4: use failed"
@@ -281,4 +304,4 @@ fi
   || fail "S5: refused but the second header directory changed anyway"
 log "S5: refused with the workspace and sysroot untouched"
 
-log "PASS: xvm group switch"
+log "PASS: xvm group switch (incl. S3b profile rollback)"
