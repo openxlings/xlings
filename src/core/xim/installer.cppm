@@ -153,10 +153,20 @@ resolve_xpkg_filesystem_effect(
     const auto& data = versionIt->second;
     const auto kind =
         data.kind.empty() ? targetIt->second.type : data.kind;
+    // Three kinds, not two. This read `program` or else `lib`, which meant a
+    // FileAsset effect was compared against "lib" and could never match an
+    // entry registered as "files" -- so every declared file asset resolved to
+    // nullopt, the caller logged "validated xvm effect target disappeared or
+    // changed kind", and the FileAsset branch below was dead code. The assets
+    // still landed, because the activation pass places them separately, so
+    // the only visible symptom was a warning on a correct install. It stayed
+    // hidden until a real recipe declared one.
     const auto expectedKind =
         effect.kind == XpkgFilesystemEffectKind::ProgramShim
-        ? std::string_view{"program"}
-        : std::string_view{"lib"};
+            ? std::string_view{"program"}
+        : effect.kind == XpkgFilesystemEffectKind::FileAsset
+            ? std::string_view{"files"}
+            : std::string_view{"lib"};
     if (kind != expectedKind) return std::nullopt;
 
     resolved.path = data.path;
