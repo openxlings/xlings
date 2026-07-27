@@ -21,7 +21,7 @@ std::string pad_to(std::string s, std::size_t width) {
 void render_rows_(ftxui::Elements rows) {
     using namespace ftxui;
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -218,7 +218,7 @@ void print_tip(std::string_view message) {
         text("  " + std::string(theme::icon::info) + " ") | color(theme::cyan()),
         text(std::string(message)) | color(theme::dim_color()),
     });
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -231,7 +231,7 @@ void print_usage(std::string_view usage) {
         text("  Usage: ") | color(theme::dim_color()),
         text(std::string(usage)) | color(theme::text_color()),
     });
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");

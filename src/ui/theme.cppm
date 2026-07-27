@@ -175,4 +175,20 @@ namespace icon {
     inline constexpr auto package     = "\xe2\x97\x86";   // ◆ U+25C6
 } // namespace icon
 
+// Height for a document we intend to print in full.
+//
+// ftxui's Dimension::Fit(doc) takes extend_beyond_screen = false by default,
+// which clamps the fitted height to the terminal's. When stdout is not a tty
+// ftxui reports a default 80x24, so every row past 24 was dropped -- silently,
+// with no marker. `xlings list` on a home with 246 targets printed 25 lines;
+// `self doctor` printed its findings and lost the summary underneath them,
+// which is the one line saying how bad it is.
+//
+// A report is not a viewport. Print all of it and let the terminal scroll.
+// The redraw-in-place progress bars in :progress deliberately do NOT use this
+// -- they overwrite a known number of lines and must stay inside the screen.
+inline ftxui::Dimensions fit_full_height(ftxui::Element& doc) {
+    return ftxui::Dimension::Fit(doc, /*extend_beyond_screen=*/true);
+}
+
 } // namespace xlings::ui::theme
