@@ -10,11 +10,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-XLINGS_BIN="${1:-}"
-if [[ -z "$XLINGS_BIN" ]]; then
-  XLINGS_BIN="$(find "$PROJECT_DIR/build" -path '*debug*' -name xlings -type f -perm -111 2>/dev/null | head -1)"
-fi
-[[ -x "$XLINGS_BIN" ]] || { echo "[test] SKIP: no xlings binary (build first)"; exit 0; }
+# Binary discovery is shared, not local. This used to be
+#   find "$PROJECT_DIR/build" -path '*debug*' -name xlings
+# with a SKIP-and-exit-0 when nothing turned up. Two ways that lied:
+#   * run_all.sh passes no argument here, and CI builds into target/ (mcpp),
+#     not build/ -- so in CI the find matched nothing, the test skipped, and
+#     run_all recorded "PASS: E2E-30 (7ms)". The custom-index-artifact
+#     feature had no CI coverage at all while appearing to have it.
+#   * run standalone on a dev box the find DID match -- a three-week-old
+#     debug build -- and the test failed against behaviour that had since
+#     changed.
+# find_xlings_bin picks the newest build under target/ and warns when its
+# version does not match the source. See project_test_lib.sh.
+# shellcheck source=./project_test_lib.sh
+source "$SCRIPT_DIR/project_test_lib.sh"
+
+XLINGS_BIN="${1:-$(find_xlings_bin)}"
+# Not a skip. A test that cannot find the thing it tests has failed to test
+# it, and saying so is the whole point.
+[[ -x "$XLINGS_BIN" ]] || { echo "[test] FAIL: no xlings binary found" >&2; exit 1; }
 
 pass() { echo "[test] OK: $*"; }
 fail() { echo "[test] FAIL: $*" >&2; exit 1; }

@@ -90,6 +90,7 @@ TESTS=(
     "E2E-38 |self_update_failure_test.sh||"
     "E2E-39 |subos_profile_upgrade_test.sh||"
     "E2E-40 |subos_shell_level_test.sh||"
+    "E2E-41 |index_artifact_update_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0
