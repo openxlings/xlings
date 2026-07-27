@@ -1137,6 +1137,51 @@ public:
         platform::write_string_to_file(configPath.string(), json.dump(2));
     }
 
+    // Which xlings set this home up.
+    //
+    // Always the HOME config, never a project one: this describes the
+    // installed client, not a workspace. Historically only `self install`
+    // wrote it (xself/install.cppm), so `self update` -- which installs
+    // xlings@latest as an ordinary package -- left it reading the previous
+    // version forever. The field is what tells a user their packages predate
+    // their client, so a stale one is worse than none.
+    [[nodiscard]] static std::string recorded_client_version() {
+        namespace fs = std::filesystem;
+        auto configPath = instance_().paths_.homeDir / ".xlings.json";
+        if (!fs::exists(configPath)) return {};
+        try {
+            auto content = platform::read_file_to_string(configPath.string());
+            auto json = nlohmann::json::parse(content, nullptr, false);
+            if (json.is_discarded() || !json.is_object()) return {};
+            auto it = json.find("version");
+            if (it == json.end() || !it->is_string()) return {};
+            return it->get<std::string>();
+        } catch (...) { return {}; }
+    }
+
+    // Read-modify-write of the single field, deliberately: the file also
+    // holds the xvm versions DB and the user's config, and this is called
+    // from a command that has not necessarily loaded either.
+    static void record_client_version(const std::string& version) {
+        namespace fs = std::filesystem;
+        auto configPath = instance_().paths_.homeDir / ".xlings.json";
+        nlohmann::json json = nlohmann::json::object();
+        if (fs::exists(configPath)) {
+            try {
+                auto content = platform::read_file_to_string(configPath.string());
+                json = nlohmann::json::parse(content, nullptr, false);
+                if (json.is_discarded() || !json.is_object()) {
+                    // Refuse to replace a file we could not parse. Overwriting
+                    // it here would trade a stale version field for a lost
+                    // versions DB.
+                    return;
+                }
+            } catch (...) { return; }
+        }
+        json["version"] = version;
+        platform::write_string_to_file(configPath.string(), json.dump(2));
+    }
+
     // Save current subos workspace (project-local if project config exists)
     static void save_workspace() {
         namespace fs = std::filesystem;

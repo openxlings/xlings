@@ -17,6 +17,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.inspect;
 import xlings.core.xvm.lock;
+import xlings.core.xself.repair;
 
 namespace xlings::xself {
 
@@ -46,20 +47,32 @@ namespace fs = std::filesystem;
 //      so users get a heads-up before they `xlings use` an inactive
 //      version that is actually broken.
 //
-// `--fix` policy (deliberately conservative):
+// `--fix` policy:
 //   - missing shim   → recreate from the bootstrap binary  (safe, local)
 //   - orphan shim    → remove the file                     (safe, local)
-//   - broken payload → DO NOTHING.  Print an actionable hint
-//                      `xlings install <pkg>@<ver>` that the user can
-//                      run themselves.  doctor never deletes payload
-//                      metadata or pulls from the network.  Why: an
-//                      auto reinstall would silently touch the network
-//                      (failure-prone) and rerun install hooks (side
-//                      effects); the user is the right party to decide
-//                      to do that.  The recipe is just `install` —
-//                      installer's xvm-DB shortcut verifies payload
-//                      existence on disk now, so re-running the install
-//                      hook is automatic when the payload is missing.
+//   - broken payload → REPAIR, via the ladder in xself/repair.cppm:
+//                      re-register (`xlings install <pkg>@<ver>`), and if
+//                      that fails, remove-then-install.
+//
+//                      This used to print the command and refuse to run it,
+//                      on the grounds that touching the network and rerunning
+//                      install hooks were the user's decision. That reasoning
+//                      does not survive contact with an upgraded home: 0.4.69
+//                      records a headers-only package as ONE program-typed
+//                      entry with a payload path and no executable inside it,
+//                      so the new client cannot tell it from a program whose
+//                      binary vanished, and reports every such package.
+//                      Measured on the upgrade simulation: 56 findings on a
+//                      home with five packages in it, each with a printed
+//                      command that was in fact the correct cure. Handing a
+//                      user 56 commands to paste is not a diagnosis.
+//
+//                      The promise that replaces "never touches the network":
+//                      `--dry-run` shows exactly what would run and stops,
+//                      each (name, version) gets at most one pass, and the
+//                      result is verified by re-detecting from a reloaded
+//                      state file rather than by trusting a subprocess's
+//                      exit code.
 //   - alias warning  → not auto-fixed (could be intentional external).
 //   - corrupt binding metadata → --reset-metadata only.  Why: it is the one
 //                      repair that loses information (the release, its
@@ -67,7 +80,8 @@ namespace fs = std::filesystem;
 //                      entry becomes a standalone version), so it must be
 //                      asked for, not inherited from --fix.
 export int cmd_doctor(EventStream& stream, bool fix,
-                      bool resetMetadata = false) {
+                      bool resetMetadata = false,
+                      bool dryRun = false) {
     auto& p   = Config::paths();
     auto db   = Config::versions();
     auto ws   = Config::effective_workspace();
@@ -101,6 +115,13 @@ export int cmd_doctor(EventStream& stream, bool fix,
     int broken   = 0;
     int warnings = 0;
     int healed   = 0;
+    // Binding-state problems are counted apart from broken payloads.
+    // They used to share `broken`, and the summary then reported
+    // "broken payloads 1" on a home whose only finding was an unregistered
+    // active version -- a count with nothing in the list to explain it, and
+    // a --fix hint claiming payloads could not be repaired when the repair
+    // pass had never run. Two different defects need two different counters.
+    int bindingIssues = 0;
 
     // Check 1: every workspace program has its shim.
     for (auto& [name, version] : ws) {
@@ -262,10 +283,67 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // command. See the policy comment on cmd_doctor for the rationale.
     auto home_str = p.homeDir.string();
 
+    // Does this payload ship ANY executable?
+    //
+    // The discriminator between "a library-only package that xvm typed as a
+    // program" and "a program whose binary went missing". `is_binding_root`
+    // was doing that job and cannot: it skips the entry itself, so a package
+    // that is the sole member of its own release -- gcc-runtime@15.1.0, found
+    // by the ten-package upgrade simulation -- comes back false and gets
+    // reported as broken. Reinstalling it can never help, because nothing is
+    // wrong; it just has no program to find. Left that way it also blocks the
+    // migration marker forever, so the hint telling the user to run --fix
+    // never turns off after they have run it.
+    //
+    // Scanning is confined to the failure path, and shallow: the payload root
+    // and bin/, which is where a recipe puts programs. A package with other
+    // executables present but this one missing is genuinely broken and still
+    // reported.
+    auto payload_has_any_executable = [](const fs::path& dir) {
+        auto scan = [](const fs::path& d) {
+            std::error_code ec;
+            if (!fs::is_directory(d, ec)) return false;
+            for (auto& e : platform::dir_entries(d)) {
+                std::error_code fec;
+                if (!e.is_regular_file(fec) && !e.is_symlink(fec)) continue;
+#if defined(_WIN32)
+                auto ext = e.path().extension().string();
+                if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
+#else
+                auto st = fs::status(e.path(), fec);
+                if (!fec && (st.permissions() & (fs::perms::owner_exec
+                                                 | fs::perms::group_exec
+                                                 | fs::perms::others_exec))
+                            != fs::perms::none) {
+                    return true;
+                }
+#endif
+            }
+            return false;
+        };
+        return scan(dir) || scan(dir / "bin");
+    };
+
+    // Findings the repair ladder can act on, collected during detection and
+    // acted on afterwards. Repairing inline would mutate the database that
+    // the rest of detection is still walking.
+    std::vector<RepairTask> repairTasks;
+    // Findings the repair pass owned and could not resolve. Distinct from
+    // `issues`, which also counts things --fix is not responsible for.
+    int repairFailed = 0;
+
     auto report_broken_payload = [&](const std::string& name,
                                      const std::string& version,
                                      std::string detail) {
         ++broken;
+        if (fix) {
+            repairTasks.push_back(RepairTask{
+                .kind    = RepairKind::BrokenPayload,
+                .target  = name,
+                .version = version,
+                .detail  = detail,
+            });
+        }
         auto wit = ws.find(name);
         bool is_active = (wit != ws.end() && wit->second == version);
         std::string label = is_active ? "✗ broken payload [active]"
@@ -320,7 +398,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
                 // survived while its executable did not; that entry is also
                 // a binding root, so it lands here too and the user still
                 // sees the line.
-                if (xvm::is_binding_root(db, name, version)) {
+                if (xvm::is_binding_root(db, name, version)
+                    || !payload_has_any_executable(expanded)) {
                     add_field("ⓘ release anchor", std::format(
                         "{}@{} registers no program of its own; it names the "
                         "release its libraries belong to", name, version));
@@ -423,7 +502,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         // A notice describes state the upgrade inherited rather than
         // created, so it does not colour the run red -- same reasoning as
         // the release anchors above. It still prints its remediation.
-        if (!notice) ++broken;
+        if (!notice) ++bindingIssues;
         std::string detail = finding.summary;
         if (!finding.target.empty()) {
             detail += std::format(" [{}{}{}]", finding.target,
@@ -545,11 +624,206 @@ export int cmd_doctor(EventStream& stream, bool fix,
         }
     }
 
-    // Note: there is intentionally no --fix loop for broken payloads here.
-    // Hints inline above each broken finding tell the user exactly what
-    // to run.
+    // ------------------------------------------------------------------
+    // Repair pass.
+    //
+    // `--fix` used to stop at the shim layer and print a copy-pasteable
+    // `xlings install` for every broken payload. On a home carried over from
+    // an older client that is not a handful of lines -- 0.4.69 records a
+    // headers-only package as one program-typed entry with a payload path and
+    // no executable, so every such package is reported, and the user has to
+    // run the command by hand for each one. Measured on the upgrade
+    // simulation (PR #434): the printed remedy IS the cure, because
+    // re-running install re-runs config() and re-registers the package in the
+    // current form. Doing it for them is the whole point of --fix.
+    //
+    // See .agents/docs/2026-07-28-self-repair-design.md for the ladder.
+    if (fix && !repairTasks.empty()) {
+        const CommandRunner run = [](const std::string& cmd) {
+            return platform::exec(cmd);
+        };
 
-    int issues = missing + orphans + broken;
+        // Repair with the client that is running, not with whatever `xlings`
+        // resolves to on PATH. Normally they are the same binary; they are
+        // not when doctor was started by absolute path, and then the repair
+        // would be carried out by a different client than the one that
+        // decided what needed repairing.
+        RepairPolicy policy;
+        {
+            const auto self = platform::get_executable_path().string();
+            if (!self.empty() && is_shell_safe_token(self)) policy.client = self;
+        }
+
+        // A finding names an xvm TARGET; the ladder installs a PACKAGE, and
+        // the two are not the same thing. A broken llvm release reports
+        // `ar@22.1.8`, `clang@22.1.8`, `cc@22.1.8` and forty more -- none of
+        // which is installable, because they are programs the llvm package
+        // registers. Nor is the binding ROOT reliably the package: gcc's root
+        // target is `xim-gnu-gcc`, and `xlings install xim-gnu-gcc` is not a
+        // thing.
+        //
+        // So the owner is looked for, in descending order of confidence, and
+        // each candidate is confirmed against the index before it is used.
+        // Nothing is repaired on a guess.
+        std::map<std::pair<std::string, std::string>, bool> probed;
+        auto resolves = [&](const std::string& name, const std::string& ver) {
+            auto key = std::pair{name, ver};
+            auto it = probed.find(key);
+            if (it != probed.end()) return it->second;
+            bool ok = probe_reinstallable(name, ver, run, policy.client);
+            probed.emplace(key, ok);
+            return ok;
+        };
+
+        auto owning_package = [&](const std::string& target,
+                                  const std::string& version)
+            -> std::optional<std::pair<std::string, std::string>> {
+            // 1. Recorded provider. Present on anything a current client
+            //    registered, and authoritative when it is.
+            if (const auto* vi = xvm::get_vinfo(db, target)) {
+                if (auto it = vi->versions.find(version);
+                    it != vi->versions.end() && it->second.bindingGroup) {
+                    const auto& g = *it->second.bindingGroup;
+                    if (resolves(g.provider, g.providerVersion)) {
+                        return std::pair{g.provider, g.providerVersion};
+                    }
+                }
+            }
+            // 2. The target itself. This is the case that matters for a
+            //    0.4.69 home: its owner-less anchor entries ARE package-named
+            //    (`llvm@20.1.7`, `linux-headers@5.11.1`, `gcc@15.1.0`).
+            if (resolves(target, version)) return std::pair{target, version};
+            // 3. A binding root reachable from here, for a member whose own
+            //    name means nothing to the index.
+            if (auto sel = xvm::resolve_binding_selection(db, target, version)) {
+                for (const auto& [m, v] : sel->members) {
+                    if (m == target) continue;
+                    if (!xvm::is_binding_root(db, m, v)) continue;
+                    if (resolves(m, v)) return std::pair{m, v};
+                }
+            }
+            return std::nullopt;
+        };
+
+        // Collapse the findings onto their owners: one install per release,
+        // not one per program in it.
+        std::map<std::pair<std::string, std::string>,
+                 std::vector<RepairTask>> byOwner;
+        std::vector<RepairTask> unowned;
+        for (auto& task : repairTasks) {
+            if (auto owner = owning_package(task.target, task.version)) {
+                byOwner[*owner].push_back(task);
+            } else {
+                unowned.push_back(task);
+            }
+        }
+
+        repairFailed += static_cast<int>(unowned.size());
+        for (const auto& task : unowned) {
+            add_field("✗ repair skipped", std::format(
+                "{}@{} — no package in the index provides this entry; "
+                "removing it could not be undone",
+                task.target, task.version));
+        }
+
+        // `--dry-run`: show the plan and stop.
+        //
+        // `--fix` used to be network-free and side-effect-free; the ladder
+        // ends that, so the promise is replaced with a narrower one rather
+        // than dropped -- you can always see exactly what it would do before
+        // it does it. The probe above has already run, so the plan shown is
+        // the plan that would execute, not a guess at one.
+        if (dryRun) {
+            for (const auto& [owner, covered] : byOwner) {
+                add_field("→ would run", std::format(
+                    "xlings install {}@{}   ({} entr{})",
+                    owner.first, owner.second, covered.size(),
+                    covered.size() == 1 ? "y" : "ies"));
+            }
+            add_field("dry run", std::format(
+                "{} package(s) would be repaired; nothing was changed",
+                byOwner.size()), true);
+            repairTasks.clear();
+            byOwner.clear();
+        }
+
+        std::vector<std::pair<RepairTask, RepairResult>> outcomes;
+        for (const auto& [owner, covered] : byOwner) {
+            RepairTask task{
+                .kind          = RepairKind::BrokenPayload,
+                .target        = owner.first,
+                .version       = owner.second,
+                .detail        = std::format("{} broken entr{}",
+                                             covered.size(),
+                                             covered.size() == 1 ? "y" : "ies"),
+                .reinstallable = true,   // confirmed by the probe above
+            };
+            auto result = repair_one(task, policy, run);
+            // Attribute the outcome to every finding the owner covers, so the
+            // re-detect below checks the entries the user was shown.
+            for (const auto& c : covered) outcomes.emplace_back(c, result);
+        }
+
+        // Re-detect rather than believe the ladder.
+        //
+        // A rung reporting success while the finding survives is this
+        // codebase's recurring shape, and here it would be worse than usual:
+        // `healed` feeds the exit code, so a lying rung turns a still-broken
+        // home into `status OK`. The database is reloaded from disk and each
+        // repaired entry re-checked, so "healed" means the finding is gone,
+        // not that a subprocess exited 0.
+        //
+        // reload_state() first, and not as a precaution: the repairs ran in
+        // SUBPROCESSES that wrote the state file, while this process still
+        // holds the copy it read at startup. Without the reload, a cure that
+        // is purely a re-registration -- which is what the ladder mostly does
+        // -- reads as a failure, and only repairs that happened to restore a
+        // directory on disk appear to work, because that branch stats the
+        // filesystem. Measured on a real 0.4.69 home: 55 healed and one false
+        // failure, the single entry whose cure was metadata-only.
+        Config::reload_state();
+        const auto after = Config::versions();
+        for (const auto& [task, result] : outcomes) {
+            const auto* vi = xvm::get_vinfo(after, task.target);
+            const xvm::VData* vd = nullptr;
+            if (vi) {
+                if (auto it = vi->versions.find(task.version);
+                    it != vi->versions.end()) {
+                    vd = &it->second;
+                }
+            }
+
+            bool cured = false;
+            if (vd) {
+                // Two ways to be cured, matching the two ways to be broken:
+                // the payload resolves again, or re-registration made the
+                // entry recognisable as a release anchor (a package that
+                // ships no program of its own was never broken).
+                cured = !xvm::resolve_executable(
+                             task.target, vd->path, home_str).empty()
+                     || xvm::is_binding_root(after, task.target, task.version);
+            } else {
+                // The entry is gone. Only a cure if the ladder took it out on
+                // purpose and could not put it back -- which it reports as a
+                // failure, not a cure.
+                cured = false;
+            }
+
+            if (cured) {
+                ++healed;
+                // Not printed per entry: one repaired release accounts for
+                // dozens of findings, and listing them all would bury the
+                // failures. The count goes in the summary.
+            } else {
+                ++repairFailed;
+                add_field("✗ repair failed", std::format(
+                    "{}@{}{}{}", task.target, task.version,
+                    result.note.empty() ? "" : " — ", result.note));
+            }
+        }
+    }
+
+    int issues = missing + orphans + broken + bindingIssues;
     if (issues == 0 && warnings == 0) {
         add_field("status",
                   "OK — workspace, shims, and payloads are all consistent",
@@ -558,11 +832,13 @@ export int cmd_doctor(EventStream& stream, bool fix,
         if (missing  > 0) add_field("missing shims",   std::to_string(missing));
         if (orphans  > 0) add_field("orphan shims",    std::to_string(orphans));
         if (broken   > 0) add_field("broken payloads", std::to_string(broken));
+        if (bindingIssues > 0)
+            add_field("binding state", std::to_string(bindingIssues));
         if (warnings > 0) add_field("warnings",        std::to_string(warnings));
         if (fix) {
             if (healed > 0) add_field("healed", std::to_string(healed), true);
-            if (broken > 0) add_field("hint",
-                "broken payloads not auto-fixed — run the listed `xlings install` commands",
+            if (broken > healed) add_field("hint",
+                "some payloads could not be repaired — see the reasons above",
                 true);
         } else {
             if (missing > 0 || orphans > 0)
@@ -572,13 +848,44 @@ export int cmd_doctor(EventStream& stream, bool fix,
         }
     }
 
+    // Exit non-zero only when issues remain after the (optional) fix pass.
+    int unresolved = issues - (fix ? healed : 0);
+
+    // Stamp the home with the client that just checked it.
+    //
+    // `.xlings.json:version` records which xlings set the home up. Only
+    // `self install` ever wrote it, so `self update` -- which installs
+    // xlings@latest as a package -- left it reading the old version forever.
+    // That made the field useless for the one thing it is shaped for, which
+    // is telling a user their packages predate their client.
+    //
+    // Stamped here it becomes the migration marker: the hint below appears
+    // while the home is behind and stops once a --fix has actually migrated
+    // the packages. Stamping on a failed pass would silence the hint while
+    // leaving the state it points at.
+    //
+    // Gated on the REPAIR pass, not on `unresolved`. doctor also reports
+    // things --fix is not responsible for -- on a real upgraded home,
+    // active-group incoherence across two providers that both claim `cc` and
+    // `c++` accounts for 190 findings on its own, measured. Requiring a
+    // spotless home would mean the marker never lands and the hint nags
+    // forever about a migration that already happened.
+    if (fix && !dryRun && repairFailed == 0) {
+        Config::record_client_version(std::string(Info::VERSION));
+    }
+
+    // The nudge, for the reader who ran plain `doctor` (or whose fix left
+    // something behind) on a home an older client set up.
+    if (auto hint = migration_hint(Config::recorded_client_version(),
+                                   Info::VERSION)) {
+        add_field("ⓘ migration", *hint);
+    }
+
     nlohmann::json payload;
     payload["title"]  = "xlings self doctor";
     payload["fields"] = std::move(fields);
     stream.emit(DataEvent{"info_panel", payload.dump()});
 
-    // Exit non-zero only when issues remain after the (optional) fix pass.
-    int unresolved = issues - (fix ? healed : 0);
     return unresolved == 0 ? 0 : 1;
 }
 

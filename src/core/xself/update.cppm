@@ -46,6 +46,22 @@ export int cmd_update() {
         return rc;
     }
 
+    // The migration nudge, printed rather than performed.
+    //
+    // This function is running the OLD binary -- it has just replaced itself
+    // on disk and is about to exit. It cannot do the migration: the code that
+    // knows how is in the binary that is not running yet, and a half-finished
+    // pass over a home it can no longer reason about is worse than none.
+    //
+    // What it can do is say so at the moment the mismatch is created. The new
+    // client repeats it (see cmd_doctor's migration hint) until a --fix
+    // actually brings the home in line, so this is a nudge and not the only
+    // chance to see it.
+    log::info("");
+    log::info("packages installed by the previous client may still be "
+              "registered in its format");
+    log::info("  run  xlings self doctor --fix");
+
     return 0;
 }
 
