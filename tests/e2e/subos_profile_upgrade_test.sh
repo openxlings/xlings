@@ -15,6 +15,16 @@ RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_profile_upgrade"
 HOME_DIR="$RUNTIME_DIR/home"
 XLINGS_BIN_PATH="$(find_xlings_bin)"
 
+# Read the expected marker from the source of truth instead of pinning it.
+# It was pinned at 9, the profiles moved to 10, and this test was failing
+# unnoticed because it is not in run_all.sh. The property under test is
+# "the emitted profile carries the marker the source declares" -- what the
+# number happens to be today is not part of it.
+PROFILE_VERSION="$(grep -oP 'xlings-profile-version: \K[0-9]+' \
+    "$ROOT_DIR/src/core/xself/profile_resources.cppm" | head -1)"
+[[ -n "$PROFILE_VERSION" ]] \
+    || fail "could not read the profile version from profile_resources.cppm"
+
 cleanup() { rm -rf "$RUNTIME_DIR"; }
 trap cleanup EXIT
 cleanup
@@ -28,11 +38,11 @@ run_xlings() {
 # ── 1. Fresh init produces a v2 profile ───────────────────────────────
 log "Scenario 1: fresh init writes v2 profile"
 run_xlings self init >/dev/null
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.sh" \
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.sh" \
     || fail "S1: bash profile missing version marker"
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.fish" \
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.fish" \
     || fail "S1: fish profile missing version marker"
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.ps1" \
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.ps1" \
     || fail "S1: pwsh profile missing version marker"
 
 # ── 2. Legacy profile (no marker) gets upgraded ───────────────────────
@@ -46,7 +56,7 @@ case ":$PATH:" in
 esac
 EOF
 run_xlings self init >/dev/null
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.sh" \
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.sh" \
     || fail "S2: legacy profile was not upgraded"
 grep -q 'XLINGS_ACTIVE_SUBOS' "$HOME_DIR/config/shell/xlings-profile.sh" \
     || fail "S2: upgraded profile missing env-fallback logic"
@@ -66,7 +76,7 @@ cat > "$HOME_DIR/config/shell/xlings-profile.sh" <<'EOF'
 export FOO=bar
 EOF
 run_xlings self init >/dev/null
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.sh" \
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.sh" \
     || fail "S4: v1-marked profile was not upgraded"
 
 log "PASS: subos profile upgrade (1-4)"

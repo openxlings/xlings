@@ -23,6 +23,16 @@ RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_shell_level"
 HOME_DIR="$RUNTIME_DIR/home"
 XLINGS_BIN_PATH="$(find_xlings_bin)"
 
+# Read the expected marker from the source of truth instead of pinning it.
+# It was pinned at 9, the profiles moved to 10, and this test was failing
+# unnoticed because it is not in run_all.sh. The property under test is
+# "the emitted profile carries the marker the source declares" -- what the
+# number happens to be today is not part of it.
+PROFILE_VERSION="$(grep -oP 'xlings-profile-version: \K[0-9]+' \
+    "$ROOT_DIR/src/core/xself/profile_resources.cppm" | head -1)"
+[[ -n "$PROFILE_VERSION" ]] \
+    || fail "could not read the profile version from profile_resources.cppm"
+
 cleanup() {
     rm -rf "$RUNTIME_DIR"
 }
@@ -41,8 +51,8 @@ run_xlings self init >/dev/null
 
 # ── 1. Profile contains version marker + env fallback logic ────────────
 log "Scenario 1: profile is v2 (has version marker + env fallback)"
-grep -q "^# xlings-profile-version: 9" "$HOME_DIR/config/shell/xlings-profile.sh" \
-    || fail "S1: missing 'xlings-profile-version: 9' marker"
+grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.sh" \
+    || fail "S1: missing 'xlings-profile-version: $PROFILE_VERSION' marker"
 grep -q 'XLINGS_ACTIVE_SUBOS' "$HOME_DIR/config/shell/xlings-profile.sh" \
     || fail "S1: missing XLINGS_ACTIVE_SUBOS in bash profile"
 grep -q 'XLINGS_ACTIVE_SUBOS' "$HOME_DIR/config/shell/xlings-profile.fish" \
