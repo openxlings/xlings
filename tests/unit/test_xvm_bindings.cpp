@@ -7057,6 +7057,68 @@ TEST(XvmDbTest, BindingJsonRoundTrip) {
 
 
 // ============================================================
+// A declared file asset must resolve as an effect
+//
+// resolve_xpkg_filesystem_effect compared the entry's kind against exactly
+// two spellings -- "program" for a shim, "lib" for everything else -- so a
+// FileAsset effect was matched against "lib" and never resolved. Every
+// package declaring one logged "validated xvm effect target disappeared or
+// changed kind" on a perfectly correct install, and the FileAsset branch of
+// the caller, including its active gate, was unreachable.
+//
+// Only a real recipe declaring an asset surfaced it: the assets still land,
+// because the activation pass places them by a different route.
+// ============================================================
+
+TEST(XimXvmFileAssetEffect, ResolvesInsteadOfWarningAboutAChangedKind) {
+    xlings::xvm::VersionDB db;
+    auto& info = db["demo.files.1"];
+    info.type = "files";
+    auto& data = info.versions["1.0.0"];
+    data.kind = "files";
+    data.path = "/pkg/demo/1.0.0";
+    data.fileSrc = "include/demo.h";
+    data.fileDst = "usr/include/demo.h";
+    const xlings::xvm::Workspace workspace{{"demo.files.1", "1.0.0"}};
+
+    const xlings::xim::XpkgFilesystemEffect effect{
+        .kind = xlings::xim::XpkgFilesystemEffectKind::FileAsset,
+        .target = "demo.files.1",
+        .version = "1.0.0",
+    };
+
+    auto resolved =
+        xlings::xim::resolve_xpkg_filesystem_effect(db, workspace, effect);
+    ASSERT_TRUE(resolved.has_value())
+        << "a declared file asset did not resolve -- this is the warning on "
+           "an install that is actually fine";
+    EXPECT_EQ(resolved->kind,
+              xlings::xim::XpkgFilesystemEffectKind::FileAsset);
+    EXPECT_EQ(resolved->target, "demo.files.1");
+    // The active gate is what the caller reads to decide whether to place
+    // the asset; it was unreachable while this resolved to nullopt.
+    EXPECT_TRUE(resolved->active);
+}
+
+TEST(XimXvmFileAssetEffect, StillRefusesWhenTheEntryIsNotAFileAsset) {
+    // The kind check has to keep rejecting a mismatch; widening it to three
+    // spellings must not turn it into "anything goes".
+    xlings::xvm::VersionDB db;
+    db["demo.files.1"].type = "program";
+    db["demo.files.1"].versions["1.0.0"].kind = "program";
+    db["demo.files.1"].versions["1.0.0"].path = "/pkg/demo/1.0.0/bin";
+
+    const xlings::xim::XpkgFilesystemEffect effect{
+        .kind = xlings::xim::XpkgFilesystemEffectKind::FileAsset,
+        .target = "demo.files.1",
+        .version = "1.0.0",
+    };
+    EXPECT_FALSE(
+        xlings::xim::resolve_xpkg_filesystem_effect(db, {}, effect)
+            .has_value());
+}
+
+// ============================================================
 
 // The production-path test re-executes this binary; the child mode has to
 // live in the same translation unit as the function it calls.
