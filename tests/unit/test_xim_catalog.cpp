@@ -1,0 +1,584 @@
+// tests/unit/test_xim_catalog.cpp — xim types, config, catalog, index and resolver — turning a recipe tree
+// into a resolvable plan.
+//
+// Split out of the former single 12.7k-line test_main.cpp. Section order
+// and contents are unchanged; only the file boundary is new.
+
+#include <gtest/gtest.h>
+#include <iomanip>
+#ifdef __unix__
+#include <sys/wait.h>
+#endif
+#if !defined(_WIN32)
+#include <unistd.h>  // geteuid — AtomicWriteTest skips permission cases as root
+#endif
+
+import std;
+import xlings.core.i18n;
+import xlings.core.log;
+import xlings.core.utils;
+import xlings.ui;
+import xlings.core.xim.libxpkg.types.type;
+import xlings.core.xim.index;
+import xlings.core.xim.catalog;
+import xlings.core.xim.resolver;
+import xlings.core.xim.downloader;
+import xlings.core.xim.installer;
+import xlings.core.xim.commands;
+import xlings.core.xim.repo;
+import xlings.core.xim.extract;
+import xlings.core.xvm.types;
+import xlings.core.xvm.db;
+import xlings.core.xvm.bindings;
+import xlings.core.xvm.removal;
+import xlings.core.xvm.registration;
+import xlings.core.xvm.errors;
+import xlings.core.xvm.inspect;
+import xlings.core.xvm.lock;
+import xlings.core.xvm.switch_plan;
+import xlings.core.xvm.shim;
+import xlings.core.xvm.commands;
+import xlings.core.compact;
+import xlings.core.config;
+import xlings.core.home_config;
+import xlings.platform;
+import xlings.libs.json;
+import xlings.core.xself;
+import xlings.core.profile;
+import xlings.core.subos.gpu;
+import xlings.core.xim.downloader;
+import xlings.runtime;
+import xlings.capabilities;
+import xlings.libs.tinyhttps;
+import xlings.libs.sha256;
+import mcpplibs.xpkg;
+import mcpplibs.xpkg.executor;
+import mcpplibs.cmdline;
+
+namespace {
+
+struct ScopedEnvVar {
+    std::string name;
+    bool had_prev{false};
+    std::string prev_value;
+
+    ScopedEnvVar(std::string_view key, std::string_view value) : name(key) {
+        if (auto* prev = std::getenv(name.c_str())) {
+            had_prev = true;
+            prev_value = prev;
+        }
+        set(value);
+    }
+
+    ~ScopedEnvVar() {
+        if (had_prev) set(prev_value);
+        else set("");
+    }
+
+    void set(std::string_view value) {
+        xlings::platform::set_env_variable(name, std::string(value));
+    }
+};
+
+std::optional<std::filesystem::path> find_pkgindex_repo() {
+    namespace fs = std::filesystem;
+
+    if (auto env = std::getenv("XIM_PKGINDEX_DIR")) {
+        fs::path path(env);
+        if (fs::exists(path / "pkgs")) return path;
+    }
+
+    const std::vector<fs::path> candidates = {
+        fs::current_path() / "tests/fixtures/xim-pkgindex",
+        fs::current_path() / "../xim-pkgindex",
+        fs::current_path() / "../d2learn/xim-pkgindex",
+        fs::current_path() / "../../xim-pkgindex",
+        fs::current_path() / "../../d2learn/xim-pkgindex",
+    };
+
+    for (auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path / "pkgs", ec)) return fs::weakly_canonical(path, ec);
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
+    namespace fs = std::filesystem;
+
+    const std::vector<fs::path> candidates = {
+        fs::current_path() / "tests/fixtures" / name,
+        fs::current_path() / "../../tests/fixtures" / name,
+    };
+    for (auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path / "pkgs", ec)) {
+            return fs::weakly_canonical(path, ec);
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+// ============================================================
+// xim types tests
+// ============================================================
+
+TEST(XimTypesTest, InstallPlanEmpty) {
+    xlings::xim::InstallPlan plan;
+    EXPECT_FALSE(plan.has_errors());
+    EXPECT_EQ(plan.pending_count(), 0u);
+}
+
+TEST(XimTypesTest, InstallPlanWithNodes) {
+    xlings::xim::InstallPlan plan;
+    {
+        xlings::xim::PlanNode n; n.name = "gcc@15.1.0"; n.version = "15.1.0";
+        plan.nodes.push_back(std::move(n));
+    }
+    {
+        xlings::xim::PlanNode n; n.name = "glibc@2.39"; n.version = "2.39"; n.alreadyInstalled = true;
+        plan.nodes.push_back(std::move(n));
+    }
+    {
+        xlings::xim::PlanNode n; n.name = "binutils@2.42"; n.version = "2.42";
+        plan.nodes.push_back(std::move(n));
+    }
+    EXPECT_EQ(plan.pending_count(), 2u);  // gcc + binutils (glibc already installed)
+}
+
+TEST(XimTypesTest, InstallPlanErrors) {
+    xlings::xim::InstallPlan plan;
+    plan.errors.push_back("cyclic dependency detected");
+    EXPECT_TRUE(plan.has_errors());
+}
+
+TEST(XimTypesTest, DownloadTaskInit) {
+    xlings::xim::DownloadTask task {
+        .name = "gcc@15.1.0",
+        .url = "https://example.com/gcc.tar.gz",
+        .sha256 = "abcdef",
+        .destDir = "/tmp/xim"
+    };
+    EXPECT_EQ(task.name, "gcc@15.1.0");
+    EXPECT_EQ(task.sha256, "abcdef");
+}
+
+TEST(XimCatalogTest, CanonicalPackageNameAndStoreName) {
+    EXPECT_EQ(xlings::xim::canonical_package_name("xim", "gcc"), "xim:gcc");
+    EXPECT_EQ(xlings::xim::canonical_package_name("", "gcc"), "gcc");
+    EXPECT_EQ(xlings::xim::package_store_name("xim", "gcc"), "xim-x-gcc");
+    EXPECT_EQ(xlings::xim::package_store_name("", "gcc"), "gcc");
+}
+
+TEST(XimCatalogTest, FormatAmbiguousCandidates) {
+    std::vector<xlings::xim::PackageMatch> matches = {
+        {
+            .name = "gcc",
+            .version = "15.1.0",
+            .namespaceName = "xim",
+            .canonicalName = "xim:gcc",
+            .repoName = "xim",
+            .scope = xlings::xim::PackageScope::Global,
+        },
+        {
+            .name = "gcc",
+            .version = "15.1.0",
+            .namespaceName = "project",
+            .canonicalName = "project:gcc",
+            .repoName = "project",
+            .scope = xlings::xim::PackageScope::Project,
+        },
+    };
+
+    auto msg = xlings::xim::format_ambiguous_candidates("gcc", matches);
+    EXPECT_NE(msg.find("package 'gcc' is ambiguous"), std::string::npos);
+    EXPECT_NE(msg.find("1. xim:gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(msg.find("2. project:gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(msg.find("from global repo 'xim'"), std::string::npos);
+    EXPECT_NE(msg.find("from project repo 'project'"), std::string::npos);
+    EXPECT_NE(msg.find("xlings install xim:gcc@15.1.0"), std::string::npos);
+}
+
+TEST(ConfigTest, WorkspaceInstallTargets) {
+    xlings::xvm::Workspace ws;
+    ws["gcc"] = "15.1.0";
+    ws["node"] = "";
+
+    auto targets = xlings::Config::workspace_install_targets(ws);
+    ASSERT_EQ(targets.size(), 2u);
+    EXPECT_EQ(targets[0], "gcc@15.1.0");
+    EXPECT_EQ(targets[1], "node");
+}
+
+TEST(ConfigTest, MergedWorkspaceAnonymousOverridesGlobal) {
+    xlings::xvm::Workspace globalWs;
+    globalWs["gcc"] = "15.1.0";
+    globalWs["node"] = "22.0.0";
+
+    xlings::xvm::Workspace projectWs;
+    projectWs["gcc"] = "14.2.0";
+    projectWs["python"] = "3.12.0";
+
+    auto effective = xlings::Config::merged_workspace(
+        globalWs, projectWs, {}, xlings::ProjectSubosMode::Anonymous);
+
+    ASSERT_EQ(effective.size(), 3u);
+    EXPECT_EQ(effective["gcc"], "14.2.0");
+    EXPECT_EQ(effective["node"], "22.0.0");
+    EXPECT_EQ(effective["python"], "3.12.0");
+}
+
+TEST(ConfigTest, MergedWorkspaceNamedDoesNotInheritGlobal) {
+    xlings::xvm::Workspace globalWs;
+    globalWs["gcc"] = "15.1.0";
+    globalWs["node"] = "22.0.0";
+
+    xlings::xvm::Workspace projectWs;
+    projectWs["gcc"] = "14.2.0";
+
+    xlings::xvm::Workspace subosWs;
+    subosWs["clang"] = "18.1.0";
+
+    auto effective = xlings::Config::merged_workspace(
+        globalWs, projectWs, subosWs, xlings::ProjectSubosMode::Named);
+
+    ASSERT_EQ(effective.size(), 2u);
+    EXPECT_EQ(effective["gcc"], "14.2.0");
+    EXPECT_EQ(effective["clang"], "18.1.0");
+    EXPECT_FALSE(effective.contains("node"));
+}
+
+TEST(ConfigTest, MergedVersionsProjectOverridesGlobal) {
+    xlings::xvm::VersionDB globalDb;
+    xlings::xvm::add_version(globalDb, "gcc", "15.1.0", "/global/gcc-15");
+    xlings::xvm::add_version(globalDb, "node", "22.0.0", "/global/node-22");
+
+    xlings::xvm::VersionDB projectDb;
+    xlings::xvm::add_version(projectDb, "gcc", "14.2.0", "/project/gcc-14");
+    xlings::xvm::add_version(projectDb, "python", "3.12.0", "/project/python-3.12");
+
+    auto merged = xlings::Config::merged_versions(globalDb, projectDb);
+    ASSERT_EQ(merged.size(), 3u);
+    EXPECT_TRUE(xlings::xvm::has_version(merged, "gcc", "15.1.0"));
+    EXPECT_TRUE(xlings::xvm::has_version(merged, "gcc", "14.2.0"));
+    EXPECT_TRUE(xlings::xvm::has_version(merged, "node", "22.0.0"));
+    EXPECT_TRUE(xlings::xvm::has_version(merged, "python", "3.12.0"));
+}
+
+TEST(ConfigTest, ResolveRepoSourceAbsolutePath) {
+#ifdef _WIN32
+    xlings::IndexRepo repo { .name = "local", .url = "C:\\tmp\\xim-pkgindex" };
+    auto expected = std::filesystem::path("C:\\tmp\\xim-pkgindex");
+#else
+    xlings::IndexRepo repo { .name = "local", .url = "/tmp/xim-pkgindex" };
+    auto expected = std::filesystem::path("/tmp/xim-pkgindex");
+#endif
+    auto path = xlings::Config::resolve_repo_source(repo, false);
+    EXPECT_EQ(path, expected);
+    EXPECT_TRUE(xlings::Config::is_local_repo_source(repo, false));
+}
+
+TEST(ConfigTest, ResolveRepoSourceFileScheme) {
+#ifdef _WIN32
+    // Standard file URI: file:///C:/path — production code strips the leading /
+    xlings::IndexRepo repo { .name = "local", .url = "file:///C:/tmp/xim-pkgindex" };
+    auto expected = std::filesystem::path("C:\\tmp\\xim-pkgindex");
+#else
+    xlings::IndexRepo repo { .name = "local", .url = "file:///tmp/xim-pkgindex" };
+    auto expected = std::filesystem::path("/tmp/xim-pkgindex");
+#endif
+    auto path = xlings::Config::resolve_repo_source(repo, false);
+    EXPECT_EQ(path, expected);
+    EXPECT_TRUE(xlings::Config::is_local_repo_source(repo, false));
+}
+
+TEST(ConfigTest, ResolveRepoSourceRemoteUrlReturnsEmpty) {
+    xlings::IndexRepo repo {
+        .name = "xim",
+        .url = "https://github.com/openxlings/xim-pkgindex.git"
+    };
+    EXPECT_TRUE(xlings::Config::resolve_repo_source(repo, false).empty());
+    EXPECT_FALSE(xlings::Config::is_local_repo_source(repo, false));
+}
+
+// ── #377: index_repos parsing with artifact/source fields ──
+TEST(ConfigIndexReposTest, PlainEntryHasNoArtifact) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a","url":"https://x/a.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "a");
+    EXPECT_EQ(repos[0].url, "https://x/a.git");
+    EXPECT_TRUE(repos[0].artifactBase.empty());
+    EXPECT_TRUE(repos[0].source.empty());
+}
+
+TEST(ConfigIndexReposTest, ArtifactStringTrimsTrailingSlash) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":"https://github.com/xlings-res/mcpp-index/","source":"auto"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].artifactBase, "https://github.com/xlings-res/mcpp-index");
+    EXPECT_EQ(repos[0].source, "auto");
+}
+
+TEST(ConfigIndexReposTest, ArtifactRegionObjectResolvesMirror) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"m","url":"https://x/m.git",
+         "artifact":{"GLOBAL":"https://github.com/o/r","CN":"https://gitcode.com/o/r"}}]})");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "CN")[0].artifactBase,
+              "https://gitcode.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "")[0].artifactBase,
+              "https://github.com/o/r");
+    EXPECT_EQ(xlings::parse_index_repos_json(j, "XX")[0].artifactBase,
+              "https://github.com/o/r");  // unknown mirror -> GLOBAL fallback
+}
+
+TEST(ConfigIndexReposTest, MalformedEntriesSkipped) {
+    auto j = nlohmann::json::parse(R"({"index_repos":[
+        {"name":"a"},{"url":"u"},{"name":"b","url":"https://x/b.git"}]})");
+    auto repos = xlings::parse_index_repos_json(j, "");
+    ASSERT_EQ(repos.size(), 1u);
+    EXPECT_EQ(repos[0].name, "b");
+}
+
+// ============================================================
+// xim index tests (requires xim-pkgindex repo)
+// ============================================================
+
+class XimIndexTest : public ::testing::Test {
+protected:
+    std::filesystem::path repoDir_;
+
+    void SetUp() override {
+        auto repo = find_pkgindex_repo();
+        if (!repo) GTEST_SKIP() << "xim-pkgindex repo not found";
+        repoDir_ = *repo;
+    }
+};
+
+TEST_F(XimIndexTest, BuildIndex) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto result = mgr.rebuild();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_TRUE(mgr.is_loaded());
+    EXPECT_GT(mgr.size(), 40u);  // should have 50+ entries
+}
+
+TEST_F(XimIndexTest, SearchPackage) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    auto results = mgr.search("gcc");
+    EXPECT_FALSE(results.empty());
+    // At least one result should contain "gcc"
+    bool found = false;
+    for (auto& name : results) {
+        if (name.find("gcc") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "search for 'gcc' should return gcc-related packages";
+}
+
+TEST_F(XimIndexTest, MatchVersion) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    auto match = mgr.match_version("gcc");
+    EXPECT_TRUE(match.has_value()) << "should find a versioned gcc entry";
+    if (match) {
+        EXPECT_NE(match->find("gcc"), std::string::npos);
+    }
+}
+
+TEST_F(XimIndexTest, FindEntry) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    // Find a known package
+    auto match = mgr.match_version("gcc");
+    ASSERT_TRUE(match.has_value());
+    auto* entry = mgr.find_entry(*match);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_FALSE(entry->path.empty());
+}
+
+TEST_F(XimIndexTest, LoadPackage) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    auto match = mgr.match_version("gcc");
+    ASSERT_TRUE(match.has_value());
+
+    auto pkg = mgr.load_package(*match);
+    ASSERT_TRUE(pkg.has_value()) << pkg.error();
+    EXPECT_EQ(pkg->name, "gcc");
+}
+
+TEST_F(XimIndexTest, AllNames) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    auto names = mgr.all_names();
+    EXPECT_GT(names.size(), 40u);
+    // Should be sorted
+    EXPECT_TRUE(std::is_sorted(names.begin(), names.end()));
+}
+
+TEST_F(XimIndexTest, MarkInstalled) {
+    xlings::xim::IndexManager mgr(repoDir_);
+    auto r = mgr.rebuild();
+    ASSERT_TRUE(r.has_value()) << r.error();
+
+    auto match = mgr.match_version("gcc");
+    ASSERT_TRUE(match.has_value());
+
+    mgr.mark_installed(*match, true);
+    auto* entry = mgr.find_entry(*match);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_TRUE(entry->installed);
+
+    mgr.mark_installed(*match, false);
+    entry = mgr.find_entry(*match);
+    EXPECT_FALSE(entry->installed);
+}
+
+TEST_F(XimIndexTest, EmptyRepoDirFails) {
+    xlings::xim::IndexManager mgr;
+    auto result = mgr.rebuild();
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(XimIndexTest, NonexistentRepoDirFails) {
+    xlings::xim::IndexManager mgr("/tmp/nonexistent_xim_repo_dir_xyz");
+    auto result = mgr.rebuild();
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(XimNamespaceIndexTest, PreservesSameNameCandidatesAndCanonicalOperations) {
+    auto fixture = find_fixture_repo("index-same-name");
+    ASSERT_TRUE(fixture.has_value());
+
+    xlings::xim::IndexManager mgr(*fixture, "fixture-default");
+    auto result = mgr.rebuild();
+    ASSERT_TRUE(result.has_value()) << result.error();
+
+    EXPECT_EQ(
+        mgr.find_candidates("demo"),
+        (std::vector<std::string> { "alpha:demo", "beta:demo" }));
+    EXPECT_EQ(
+        mgr.find_candidates("demo", std::string_view { "alpha" }),
+        (std::vector<std::string> { "alpha:demo" }));
+
+    auto* alphaEntry = mgr.find_entry("alpha:demo");
+    auto* betaEntry = mgr.find_entry("beta:demo");
+    ASSERT_NE(alphaEntry, nullptr);
+    ASSERT_NE(betaEntry, nullptr);
+    EXPECT_EQ(alphaEntry->identity.namespaceName, "alpha");
+    EXPECT_EQ(betaEntry->identity.namespaceName, "beta");
+
+    auto alphaPackage = mgr.load_package("alpha:demo");
+    auto betaPackage = mgr.load_package("beta:demo");
+    ASSERT_TRUE(alphaPackage.has_value()) << alphaPackage.error();
+    ASSERT_TRUE(betaPackage.has_value()) << betaPackage.error();
+    EXPECT_EQ(alphaPackage->description, "Alpha namespace demo package");
+    EXPECT_EQ(betaPackage->description, "Beta namespace demo package");
+
+    mgr.mark_installed("alpha:demo", true);
+    EXPECT_TRUE(mgr.find_entry("alpha:demo")->installed);
+    EXPECT_FALSE(mgr.find_entry("beta:demo")->installed);
+    EXPECT_EQ(mgr.entry_path("alpha:demo"), alphaEntry->path);
+}
+
+TEST(XimNamespaceIndexTest, RejectsDuplicateEffectiveIdentityWithBothPaths) {
+    auto fixture = find_fixture_repo("index-duplicate");
+    ASSERT_TRUE(fixture.has_value());
+
+    xlings::xim::IndexManager mgr(*fixture, "xim");
+    auto result = mgr.rebuild();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("duplicate package identity 'xim:demo'"),
+              std::string::npos);
+    EXPECT_NE(result.error().find("implicit.demo.lua"), std::string::npos);
+    EXPECT_NE(result.error().find("explicit.demo.lua"), std::string::npos);
+}
+
+// ============================================================
+// xim resolver tests
+// ============================================================
+
+class XimResolverTest : public ::testing::Test {
+protected:
+    std::filesystem::path repoDir_;
+    xlings::xim::IndexManager mgr_;
+
+    void SetUp() override {
+        auto repo = find_pkgindex_repo();
+        if (!repo) GTEST_SKIP() << "xim-pkgindex repo not found";
+        repoDir_ = *repo;
+        mgr_ = xlings::xim::IndexManager(repoDir_);
+        auto r = mgr_.rebuild();
+        if (!r) GTEST_SKIP() << "rebuild failed: " << r.error();
+    }
+};
+
+TEST_F(XimResolverTest, ResolveSinglePackage) {
+    std::vector<std::string> targets = { "xvm" };
+    auto result = xlings::xim::resolve(mgr_, targets, "linux");
+    // Should succeed (xvm has no complex deps on linux)
+    ASSERT_FALSE(result->has_errors())
+        << "errors: " << (result->errors.empty() ? "" : result->errors[0]);
+    EXPECT_FALSE(result->nodes.empty());
+}
+
+TEST_F(XimResolverTest, ResolveWithDeps) {
+    std::vector<std::string> targets = { "pnpm" };
+    auto result = xlings::xim::resolve(mgr_, targets, "linux");
+    // pnpm depends on node (package name is "node", not "nodejs")
+    if (result.has_value() && !result->has_errors()) {
+        bool hasNode = false;
+        for (auto& node : result->nodes) {
+            if (node.name.find("node") != std::string::npos) {
+                hasNode = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(hasNode) << "pnpm should pull in node as dependency";
+        // Deps should come before dependents in topo order
+        int nodeIdx = -1, pnpmIdx = -1;
+        for (int i = 0; i < static_cast<int>(result->nodes.size()); ++i) {
+            if (result->nodes[i].name.find("node") != std::string::npos) nodeIdx = i;
+            if (result->nodes[i].name.find("pnpm") != std::string::npos) pnpmIdx = i;
+        }
+        if (nodeIdx >= 0 && pnpmIdx >= 0) {
+            EXPECT_LT(nodeIdx, pnpmIdx)
+                << "node should come before pnpm in topo order";
+        }
+    }
+}
+
+TEST_F(XimResolverTest, ResolveNonexistent) {
+    std::vector<std::string> targets = { "nonexistent_pkg_xyz_123" };
+    auto result = xlings::xim::resolve(mgr_, targets, "linux");
+    EXPECT_TRUE(result->has_errors());
+}
+
+TEST_F(XimResolverTest, ResolveMultipleTargets) {
+    std::vector<std::string> targets = { "xvm", "claude-code" };
+    auto result = xlings::xim::resolve(mgr_, targets, "linux");
+    if (result.has_value() && !result->has_errors()) {
+        // Should have at least 2 nodes
+        EXPECT_GE(result->nodes.size(), 2u);
+    }
+}
