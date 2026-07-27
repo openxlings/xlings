@@ -14,6 +14,7 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
 import xlings.core.xvm.bindings;
+import xlings.core.xvm.inspect;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
@@ -248,6 +249,31 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         return 1;
     }
     Config::reload_state();
+
+    // Self-heal a dangling legacy edge before planning anything.
+    //
+    // State written by <= 0.4.69 can carry a pairwise edge pointing at a
+    // version that is not registered. Such an edge describes no member
+    // anyone could switch to -- it can only make the release unresolvable --
+    // so dropping it needs no guessing, which is exactly why it does not
+    // need the user's permission either.
+    //
+    // Until now it was reported by doctor and only repaired by
+    // `doctor --fix`, which meant an upgraded user hit a refusal from `use`
+    // with no idea that a second command existed. Repairing it here makes
+    // the upgrade what it was supposed to be: silent. doctor keeps the
+    // report and the flag for anyone inspecting rather than switching.
+    if (auto pruning = plan_dangling_edge_pruning(Config::versions());
+        !pruning.empty()) {
+        auto& mutableDb = Config::versions_mut();
+        const auto dropped =
+            apply_dangling_edge_pruning(mutableDb, pruning);
+        if (dropped > 0) {
+            Config::save_versions();
+            log::debug("[xvm] pruned {} dangling binding edge(s) written by "
+                       "an older xlings", dropped);
+        }
+    }
 
     auto db = Config::versions();
     auto& p  = Config::paths();
