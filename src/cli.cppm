@@ -785,7 +785,7 @@ export int run(int argc, char* argv[]) {
                     {"config",   "Show configuration details"},
                     {"clean",    "Remove cache + gc orphaned packages (--dry-run)"},
                     {"migrate",  "Migrate old layout to subos/default"},
-                    {"doctor",   "Verify workspace/shim consistency (--fix to repair)"},
+                    {"doctor",   "Verify workspace/shim consistency (--fix to repair, --reset-metadata to discard unreadable release metadata)"},
                 },
             };
             else if (match("subos")) h = SubHelp{

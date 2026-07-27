@@ -502,6 +502,21 @@ nlohmann::json vdata_to_json(const VData& vdata) {
         }
         j["bindingIntegrityIssues"] = std::move(issues);
     }
+    // Preserved originals win over the reconstructed view.
+    //
+    // For a field we could not read, the parsed model holds at best a subset
+    // -- the members that happened to be well-formed, a group with the
+    // unreadable keys blanked. Writing that back is the silent rewrite this
+    // whole mechanism exists to stop, so the original text is restored last
+    // and overwrites whatever the blocks above produced for that key.
+    for (const auto& [field, text] : vdata.bindingUnreadable) {
+        try {
+            j[field] = nlohmann::json::parse(text);
+        } catch (const std::exception&) {
+            // Unreachable in practice: the text came from dump(). If it ever
+            // is, keeping the reconstructed value beats dropping the field.
+        }
+    }
     return j;
 }
 
@@ -718,6 +733,34 @@ VData vdata_from_json(const nlohmann::json& j) {
     if ((j.contains("bindingMembers") || j.contains("bindingHeaders"))
         && !vdata.bindingGroup) {
         recordIssue("binding-group-missing", "/bindingGroup");
+    }
+
+    // Keep the original text of every binding field we could not fully read.
+    //
+    // Without this the next save rewrites the entry from the parsed model and
+    // whatever did not fit is gone -- the marker survives, the data does not.
+    // That is why `--reset-metadata` could not be offered before: there was
+    // nothing left to reset from, and the destruction had already happened
+    // silently on the first save after the corruption.
+    //
+    // Whole-field granularity: a field with one bad member is re-emitted
+    // entire, because a partial re-emission is exactly the lossy rewrite this
+    // is here to prevent.
+    for (const auto& issue : vdata.bindingIntegrityIssues) {
+        static constexpr std::string_view fields[] = {
+            "bindingGroup", "bindingMembers",
+            "bindingHeaders", "bindingIntegrityIssues",
+        };
+        for (const auto field : fields) {
+            const auto prefix = "/" + std::string(field);
+            if (!issue.path.starts_with(prefix)) continue;
+            // `binding-group-missing` names a field that is not there; there
+            // is nothing to preserve and nothing was lost.
+            const auto key = std::string(field);
+            if (!j.contains(key)) break;
+            vdata.bindingUnreadable.emplace(key, j[key].dump());
+            break;
+        }
     }
     return vdata;
 }

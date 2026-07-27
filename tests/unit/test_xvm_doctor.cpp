@@ -1,0 +1,674 @@
+// tests/unit/test_xvm_doctor.cpp — what doctor can see and explain: dangling edges, binding state, error
+// kinds, and the legacy header directory.
+//
+// Split out of the former single 12.7k-line test_main.cpp. Section order
+// and contents are unchanged; only the file boundary is new.
+
+#include <gtest/gtest.h>
+#include <iomanip>
+#ifdef __unix__
+#include <sys/wait.h>
+#endif
+#if !defined(_WIN32)
+#include <unistd.h>  // geteuid — AtomicWriteTest skips permission cases as root
+#endif
+
+import std;
+import xlings.core.i18n;
+import xlings.core.log;
+import xlings.core.utils;
+import xlings.ui;
+import xlings.core.xim.libxpkg.types.type;
+import xlings.core.xim.index;
+import xlings.core.xim.catalog;
+import xlings.core.xim.resolver;
+import xlings.core.xim.downloader;
+import xlings.core.xim.installer;
+import xlings.core.xim.commands;
+import xlings.core.xim.repo;
+import xlings.core.xim.extract;
+import xlings.core.xvm.types;
+import xlings.core.xvm.db;
+import xlings.core.xvm.bindings;
+import xlings.core.xvm.removal;
+import xlings.core.xvm.registration;
+import xlings.core.xvm.errors;
+import xlings.core.xvm.inspect;
+import xlings.core.xvm.lock;
+import xlings.core.xvm.switch_plan;
+import xlings.core.xvm.shim;
+import xlings.core.xvm.commands;
+import xlings.core.compact;
+import xlings.core.config;
+import xlings.core.home_config;
+import xlings.platform;
+import xlings.libs.json;
+import xlings.core.xself;
+import xlings.core.profile;
+import xlings.core.subos.gpu;
+import xlings.core.xim.downloader;
+import xlings.runtime;
+import xlings.capabilities;
+import xlings.libs.tinyhttps;
+import xlings.libs.sha256;
+import mcpplibs.xpkg;
+import mcpplibs.xpkg.executor;
+import mcpplibs.cmdline;
+
+namespace {
+
+struct ScopedEnvVar {
+    std::string name;
+    bool had_prev{false};
+    std::string prev_value;
+
+    ScopedEnvVar(std::string_view key, std::string_view value) : name(key) {
+        if (auto* prev = std::getenv(name.c_str())) {
+            had_prev = true;
+            prev_value = prev;
+        }
+        set(value);
+    }
+
+    ~ScopedEnvVar() {
+        if (had_prev) set(prev_value);
+        else set("");
+    }
+
+    void set(std::string_view value) {
+        xlings::platform::set_env_variable(name, std::string(value));
+    }
+};
+
+std::optional<std::filesystem::path> find_pkgindex_repo() {
+    namespace fs = std::filesystem;
+
+    if (auto env = std::getenv("XIM_PKGINDEX_DIR")) {
+        fs::path path(env);
+        if (fs::exists(path / "pkgs")) return path;
+    }
+
+    const std::vector<fs::path> candidates = {
+        fs::current_path() / "tests/fixtures/xim-pkgindex",
+        fs::current_path() / "../xim-pkgindex",
+        fs::current_path() / "../d2learn/xim-pkgindex",
+        fs::current_path() / "../../xim-pkgindex",
+        fs::current_path() / "../../d2learn/xim-pkgindex",
+    };
+
+    for (auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path / "pkgs", ec)) return fs::weakly_canonical(path, ec);
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
+    namespace fs = std::filesystem;
+
+    const std::vector<fs::path> candidates = {
+        fs::current_path() / "tests/fixtures" / name,
+        fs::current_path() / "../../tests/fixtures" / name,
+    };
+    for (auto& path : candidates) {
+        std::error_code ec;
+        if (fs::exists(path / "pkgs", ec)) {
+            return fs::weakly_canonical(path, ec);
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+// ============================================================
+// Dangling legacy binding edges
+//
+// Found by finally running the real-toolchain check the plan had carried
+// since the start and never executed. On a real installation `gcc@15.1.0`
+// carries a pairwise edge to `xim-gnu-gcc@15.1.0`, an anchor registered only
+// at 16.1.0. `xlings use gcc 15.1.0` works on 0.4.68 and is refused on
+// 0.4.70 with "a member of this release is registered at no such version" --
+// and `doctor` did not report it, `--fix` could not repair it, so reinstall
+// was the only way out. For an upgrade sold as seamless, that is the
+// opposite.
+//
+// The edge names a version that does not exist, so it cannot describe a
+// member anyone could switch to. Dropping it is repair without guessing,
+// which is what separates it from an incoherent release.
+// ============================================================
+
+namespace {
+
+// gcc@15.1.0 bound to an anchor that only exists at 16.1.0 -- the shape
+// found on a real machine.
+xlings::xvm::VersionDB dangling_edge_db_() {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["15.1.0"].path = "/pkg/gcc/15.1.0/bin";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["xim-gnu-gcc"].type = "program";
+    db["xim-gnu-gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0";
+    // Legacy pairwise edges, as registration writes them.
+    db["gcc"].bindings["xim-gnu-gcc"]["15.1.0"] = "15.1.0";   // dangling
+    db["gcc"].bindings["xim-gnu-gcc"]["16.1.0"] = "16.1.0";   // fine
+    db["xim-gnu-gcc"].bindings["gcc"]["16.1.0"] = "16.1.0";   // fine
+    return db;
+}
+
+}  // namespace
+
+TEST(XvmDanglingEdge, TheRefusalIsReproducedBeforeAnythingIsFixed) {
+    const auto db = dangling_edge_db_();
+    // This is the user-visible symptom: a version that resolved on 0.4.68.
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    ASSERT_FALSE(plan.has_value())
+        << "the failing state under test no longer reproduces";
+    EXPECT_EQ(plan.error().code, "xvm-binding-version-missing");
+}
+
+TEST(XvmDanglingEdge, DoctorReportsIt) {
+    const auto db = dangling_edge_db_();
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+
+    const auto it = std::ranges::find_if(findings, [](const auto& f) {
+        return f.code == "xvm-legacy-edge-dangling";
+    });
+    ASSERT_NE(it, findings.end())
+        << "a state that blocks `use` was invisible to doctor";
+    EXPECT_EQ(it->target, "gcc");
+    EXPECT_EQ(it->version, "15.1.0");
+    EXPECT_FALSE(it->hint.empty())
+        << "a finding the user cannot act on is not an improvement";
+}
+
+TEST(XvmDanglingEdge, PruningDropsOnlyTheEdgeThatNamesNothing) {
+    auto db = dangling_edge_db_();
+    const auto plan = xlings::xvm::plan_dangling_edge_pruning(db);
+    ASSERT_EQ(plan.edges.size(), 1u) << "healthy edges must not be touched";
+    EXPECT_EQ(plan.edges[0].target, "gcc");
+    EXPECT_EQ(plan.edges[0].version, "15.1.0");
+    EXPECT_EQ(plan.edges[0].peerTarget, "xim-gnu-gcc");
+    EXPECT_EQ(plan.edges[0].peerVersion, "15.1.0");
+
+    EXPECT_EQ(xlings::xvm::apply_dangling_edge_pruning(db, plan), 1u);
+    // The 16.1.0 edges survive in both directions.
+    EXPECT_EQ(db.at("gcc").bindings.at("xim-gnu-gcc").at("16.1.0"), "16.1.0");
+    EXPECT_EQ(db.at("xim-gnu-gcc").bindings.at("gcc").at("16.1.0"), "16.1.0");
+    EXPECT_FALSE(db.at("gcc").bindings.at("xim-gnu-gcc").contains("15.1.0"));
+}
+
+TEST(XvmDanglingEdge, AfterPruningTheSwitchWorksAgain) {
+    auto db = dangling_edge_db_();
+    xlings::xvm::apply_dangling_edge_pruning(
+        db, xlings::xvm::plan_dangling_edge_pruning(db));
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    // gcc@15.1.0 stands alone once the edge to the missing anchor is gone --
+    // which is what 0.4.68 did, and what the user expects.
+    EXPECT_EQ(plan->members.size(), 1u);
+    EXPECT_EQ(plan->members.at("gcc"), "15.1.0");
+    // 16.1.0 still resolves as a release, so pruning did not flatten
+    // everything into standalone entries.
+    auto still = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0");
+    ASSERT_TRUE(still.has_value()) << still.error().what;
+    EXPECT_EQ(still->members.size(), 2u);
+}
+
+// An edge recorded under a version that is not registered either can never be
+// reached: resolution always starts from a real (target, version). Leaving it
+// alone keeps the repair to what is demonstrably harmful.
+TEST(XvmDanglingEdge, UnreachableEdgesAreLeftAlone) {
+    auto db = dangling_edge_db_();
+    db["gcc"].bindings["ghost"]["9.9.9"] = "9.9.9";  // owner version absent
+
+    const auto plan = xlings::xvm::plan_dangling_edge_pruning(db);
+    for (const auto& edge : plan.edges) {
+        EXPECT_NE(edge.version, "9.9.9")
+            << "pruned an edge no resolution can reach";
+    }
+}
+
+TEST(XvmDanglingEdge, AHealthyDatabaseYieldsNoPruning) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["g++"].type = "program";
+    db["g++"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["gcc"].bindings["g++"]["16.1.0"] = "16.1.0";
+    db["g++"].bindings["gcc"]["16.1.0"] = "16.1.0";
+
+    EXPECT_TRUE(xlings::xvm::plan_dangling_edge_pruning(db).empty());
+}
+
+// ============================================================
+// inspect_binding_state — name the entry that made `use` refuse
+//
+// The selection layer fails closed, so a bad group makes `xlings use`
+// refuse. Until doctor could name the offending entry that refusal was a
+// dead end: doctor reported shims and payloads only, and the user was left
+// reading versions.json by hand.
+
+namespace {
+
+// One provider release, rooted at the first member.
+void inspect_group_(xlings::xvm::VersionDB& db,
+                    std::string_view provider,
+                    std::string_view providerVersion,
+                    const std::vector<std::pair<std::string, std::string>>& members) {
+    const auto& [rootTarget, rootVersion] = members.front();
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = std::string(provider),
+        .providerVersion = std::string(providerVersion),
+        .group = std::string(provider),
+        .rootTarget = rootTarget,
+        .rootVersion = rootVersion,
+    };
+    std::map<std::string, std::string> manifest;
+    for (const auto& [t, v] : members) manifest[t] = v;
+    for (const auto& [t, v] : members) {
+        auto& info = db[t];
+        if (info.type.empty()) info.type = "program";
+        auto& data = info.versions[v];
+        data.path = "/pkg";
+        data.kind = "program";
+        data.bindingGroup = ref;
+    }
+    auto& root = db[rootTarget].versions[rootVersion];
+    root.bindingMembers = manifest;
+    root.bindingMembersDeclared = true;
+}
+
+bool has_code_(const std::vector<xlings::xvm::BindingFinding>& findings,
+               std::string_view code) {
+    return std::ranges::any_of(findings, [&](const auto& f) {
+        return f.code == code;
+    });
+}
+
+}  // namespace
+
+TEST(XvmInspect, CleanStateReportsNothing) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+
+    EXPECT_TRUE(xlings::xvm::inspect_binding_state(db, ws).empty());
+}
+
+TEST(XvmInspect, NamesTheCorruptFieldAndItsEntry) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0", {{"gcc", "15.1.0"}});
+    db.at("gcc").versions.at("15.1.0").bindingIntegrityIssues = {
+        {.code = "binding-group-field-invalid", .path = "/bindingGroup/rootVersion"},
+    };
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "15.1.0"}});
+
+    ASSERT_FALSE(findings.empty());
+    const auto& first = findings.front();
+    EXPECT_EQ(first.code, "xvm-binding-metadata-corrupt");
+    EXPECT_EQ(first.target, "gcc");
+    // The JSON Pointer is the whole point: it is what turns "your state is
+    // bad" into something a user can actually go and look at.
+    EXPECT_EQ(first.field, "/bindingGroup/rootVersion");
+    EXPECT_FALSE(first.hint.empty());
+}
+
+TEST(XvmInspect, ReportsAReleaseWithAMissingMember) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db.at("g++").versions.erase("15.1.0");
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "15.1.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-binding-version-missing"))
+        << "a dangling member must be named, not just make `use` refuse";
+}
+
+TEST(XvmInspect, ReportsAnIncoherentActiveRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    inspect_group_(db, "pkgindex:gcc", "16.1.0",
+                   {{"gcc", "16.1.0"}, {"g++", "16.1.0"}});
+
+    // The exact state the release train exists to prevent: same names,
+    // different releases, and nothing on the surface says so.
+    const auto findings = xlings::xvm::inspect_binding_state(
+        db, {{"gcc", "15.1.0"}, {"g++", "16.1.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-active-group-incoherent"));
+    const auto incoherent = std::ranges::find_if(findings, [](const auto& f) {
+        return f.code == "xvm-active-group-incoherent";
+    });
+    EXPECT_NE(incoherent->hint.find("xlings use"), std::string::npos)
+        << "the hint has to name the command that fixes it";
+}
+
+TEST(XvmInspect, ReportsAnActiveVersionThatIsNotRegistered) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0", {{"gcc", "15.1.0"}});
+
+    const auto findings =
+        xlings::xvm::inspect_binding_state(db, {{"gcc", "99.0.0"}});
+
+    EXPECT_TRUE(has_code_(findings, "xvm-active-version-missing"));
+}
+
+TEST(XvmInspect, ABrokenReleaseIsReportedOncePerRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}});
+    db.at("gcc-ar").versions.erase("15.1.0");
+
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+
+    // Five members short one member is one problem. Reporting it per member
+    // buries everything else in the output.
+    EXPECT_EQ(std::ranges::count_if(findings, [](const auto& f) {
+                  return f.code == "xvm-binding-version-missing";
+              }), 1);
+}
+
+TEST(XvmInspect, LegacyStateWithoutGroupsIsNotFlagged) {
+    xlings::xvm::VersionDB db;
+    db["tool"].type = "program";
+    db["tool"].versions["1.0.0"].path = "/pkg";
+    db["tool"].versions["1.0.0"].kind = "program";
+
+    // Pre-0.4.70 databases carry no group metadata at all. They are not
+    // broken, and doctor must not tell users otherwise.
+    EXPECT_TRUE(
+        xlings::xvm::inspect_binding_state(db, {{"tool", "1.0.0"}}).empty());
+}
+
+TEST(XvmInspect, DeactivationTakesDownEveryMemberOfAnIncoherentRelease) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}});
+    inspect_group_(db, "pkgindex:gcc", "16.1.0",
+                   {{"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "16.1.0"}});
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "16.1.0"}, {"gcc-ar", "15.1.0"}};
+
+    const auto plan = xlings::xvm::plan_incoherent_deactivation(db, ws);
+
+    // Leaving the agreeing members active would just swap one incoherent
+    // state for another, so the whole release comes down.
+    EXPECT_TRUE(plan.targets.contains("gcc"));
+    EXPECT_TRUE(plan.targets.contains("g++"));
+    EXPECT_TRUE(plan.targets.contains("gcc-ar"));
+    EXPECT_NE(plan.targets.at("gcc").find("pkgindex:gcc@"), std::string::npos)
+        << "the plan must say which release the target belonged to";
+}
+
+TEST(XvmInspect, DeactivationLeavesACoherentWorkspaceAlone) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+
+    EXPECT_TRUE(xlings::xvm::plan_incoherent_deactivation(db, ws).targets.empty());
+}
+
+TEST(XvmInspect, DeactivationIgnoresUnresolvableReleases) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db.at("g++").versions.erase("15.1.0");
+
+    // A release that does not resolve is a different problem, and repairing
+    // it means dropping stored metadata. --fix must not do that silently.
+    EXPECT_TRUE(
+        xlings::xvm::plan_incoherent_deactivation(db, {{"gcc", "15.1.0"}})
+            .targets.empty());
+}
+
+TEST(XvmInspect, DeactivationLeavesUngroupedTargetsAlone) {
+    xlings::xvm::VersionDB db;
+    inspect_group_(db, "pkgindex:gcc", "15.1.0",
+                   {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db["editor"].type = "program";
+    db["editor"].versions["1.0.0"].path = "/pkg";
+    db["editor"].versions["1.0.0"].kind = "program";
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "16.1.0"}, {"editor", "1.0.0"}};
+
+    const auto plan = xlings::xvm::plan_incoherent_deactivation(db, ws);
+
+    // An unrelated single package must not be collateral damage.
+    EXPECT_FALSE(plan.targets.contains("editor"));
+}
+
+// ============================================================
+// XvmUserError — every failure kind is explainable
+//
+// Failing closed is only useful if the person on the other side is told what
+// happened and what to do. These tests hold the line that no error kind can
+// reach a user as an unexplained "install failed": each maps to a stable
+// code and a hint that names an action.
+
+namespace {
+
+template <typename Kind>
+void expect_every_kind_described_(const std::vector<Kind>& kinds,
+                                  std::string_view label) {
+    std::set<std::string_view> codes;
+    for (const auto kind : kinds) {
+        const auto described = xlings::xvm::describe_kind(kind);
+        EXPECT_NE(described.code, xlings::xvm::kUnclassifiedCode)
+            << label << " kind " << static_cast<int>(kind)
+            << " has no user-facing description";
+        EXPECT_FALSE(described.hint.empty())
+            << label << " kind " << static_cast<int>(kind) << " has no hint";
+        EXPECT_TRUE(described.code.starts_with("xvm-"))
+            << "code should be namespaced: " << described.code;
+        EXPECT_TRUE(codes.insert(described.code).second)
+            << "duplicate code " << described.code
+            << " — codes are searchable identifiers and must be unique";
+    }
+    EXPECT_EQ(codes.size(), kinds.size());
+}
+
+}  // namespace
+
+TEST(XvmUserError, EveryRegistrationKindHasACodeAndHint) {
+    using K = xlings::xvm::RegistrationErrorKind;
+    expect_every_kind_described_<K>(
+        {K::InvalidBatchIdentity, K::InvalidNodeIdentity, K::InvalidNodePayload,
+         K::InvalidBindingIdentity, K::DuplicateNode, K::RootNotInBatch,
+         K::SelfBinding, K::GroupConflict, K::TargetVersionConflict,
+         K::OwnershipConflict, K::LegacyPayloadMismatch,
+         K::IncompleteLegacyComponent, K::IncompleteOwnedGroup,
+         K::InvalidHeader, K::HeaderGroupNotFound, K::HeaderAmbiguous,
+         K::BindingValidationFailed},
+        "RegistrationErrorKind");
+}
+
+TEST(XvmUserError, EveryRemovalKindHasACodeAndHint) {
+    using K = xlings::xvm::RemovalErrorKind;
+    expect_every_kind_described_<K>(
+        {K::VersionNotFound, K::AmbiguousVersion, K::AsymmetricEdge,
+         K::SelectionInvalid, K::ProviderRequired, K::ProviderMismatch,
+         K::ProviderVersionNotFound, K::VersionMismatch},
+        "RemovalErrorKind");
+}
+
+TEST(XvmUserError, EveryBindingKindHasACodeAndHint) {
+    using K = xlings::xvm::BindingErrorKind;
+    expect_every_kind_described_<K>(
+        {K::InvalidGraph, K::TargetNotFound, K::VersionNotFound,
+         K::RootReferenceMismatch, K::GroupIdentityMismatch,
+         K::RootMissingFromManifest, K::StartMemberMissing,
+         K::MemberReferenceMismatch, K::UnsupportedKind, K::SelfEdge,
+         K::AsymmetricEdge, K::ConflictingTargetVersion,
+         K::PartialProviderMetadata, K::ProviderMetadataInLegacyGraph,
+         K::MetadataIntegrityIssue},
+        "BindingErrorKind");
+}
+
+TEST(XvmUserError, RenderCarriesEveryFieldTheUserNeeds) {
+    const xlings::xvm::RegistrationError error{
+        .kind = xlings::xvm::RegistrationErrorKind::OwnershipConflict,
+        .path = "/nodes/2",
+        .target = "gcc",
+        .version = "15.1.0",
+        .message = "exact registration is owned by 'pkgindex:llvm@20.1.7'",
+    };
+
+    const auto rendered = xlings::xvm::render(
+        xlings::xvm::describe(error, "pkgindex:gcc@15.1.0"), true);
+
+    EXPECT_NE(rendered.find("owned by 'pkgindex:llvm@20.1.7'"), std::string::npos);
+    EXPECT_NE(rendered.find("xvm-ownership-conflict"), std::string::npos);
+    EXPECT_NE(rendered.find("pkgindex:gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(rendered.find("gcc@15.1.0"), std::string::npos);
+    EXPECT_NE(rendered.find("/nodes/2"), std::string::npos);
+    EXPECT_NE(rendered.find("uninstall that package first"), std::string::npos);
+    EXPECT_NE(rendered.find("nothing was changed"), std::string::npos);
+}
+
+TEST(XvmUserError, NothingWasChangedIsOnlyClaimedWhenAsked) {
+    const xlings::xvm::RemovalError error{
+        .kind = xlings::xvm::RemovalErrorKind::AmbiguousVersion,
+        .target = "cc",
+        .version = "1.0",
+        .message = "bare removal version '1.0' matches 2 stored versions",
+    };
+
+    // The line is a promise about stored state, so it must never appear
+    // unless the caller vouched for it.
+    EXPECT_EQ(xlings::xvm::render(xlings::xvm::describe(error), false)
+                  .find("nothing was changed"),
+              std::string::npos);
+}
+
+TEST(XvmUserError, PeerOfAnAsymmetricEdgeIsShown) {
+    const xlings::xvm::RemovalError error{
+        .kind = xlings::xvm::RemovalErrorKind::AsymmetricEdge,
+        .target = "gcc",
+        .version = "15.1.0",
+        .peerTarget = "g++",
+        .peerVersion = "15.1.0",
+        .message = "removal binding edge is not reciprocal",
+    };
+
+    // Without the peer the message names only one side of a two-sided
+    // problem, which is not enough to go look at anything.
+    EXPECT_NE(xlings::xvm::render(xlings::xvm::describe(error), true)
+                  .find("peer g++@15.1.0"),
+              std::string::npos);
+}
+
+// ============================================================
+// attach_legacy_header_dir — keep `xlings use` able to swap headers
+//
+// xvm::cmd_use decides whether to swap the sysroot headers by reading
+// VData::includedir of the target it was given (commands.cppm). Before the
+// registration batch existed, the installer set that field directly for
+// every `headers` op. The batch does not carry it, so without this the
+// field stays empty on every freshly installed package and switching
+// versions silently stops moving headers — the install-time copy still
+// happens, so the breakage only shows up on the *second* version.
+//
+// Restores the field with one deliberate difference from the pre-batch
+// behavior: it never brings a target or a version into existence. The old
+// code used operator[] on both maps, so a `headers` op for a package that
+// registers no target of its own would materialize a phantom entry with no
+// path and no kind. That is exactly the class of state the binding-group
+// work exists to prevent.
+
+namespace {
+
+xlings::xim::XpkgFilesystemEffect header_effect_(std::string sourceDir) {
+    return {
+        .kind = xlings::xim::XpkgFilesystemEffectKind::InstallHeaders,
+        .sourceDir = std::move(sourceDir),
+    };
+}
+
+xlings::xvm::VersionDB db_with_(const std::string& target,
+                                const std::string& version) {
+    xlings::xvm::VersionDB db;
+    auto& info = db[target];
+    info.type = "program";
+    auto& data = info.versions[version];
+    data.path = "/xpkgs/" + target + "/" + version;
+    data.kind = "program";
+    return db;
+}
+
+}  // namespace
+
+TEST(LegacyHeaderDir, SetsIncludedirOnThePackageVersion) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/gcc/15.1.0/include"),
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 1u);
+    EXPECT_EQ(db.at("gcc").versions.at("15.1.0").includedir,
+              "/xpkgs/gcc/15.1.0/include");
+}
+
+TEST(LegacyHeaderDir, DoesNotCreateAPhantomTarget) {
+    xlings::xvm::VersionDB db;
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/headers-only/1.0/include"),
+    };
+
+    EXPECT_EQ(
+        xlings::xim::attach_legacy_header_dir(db, "headers-only", "1.0", effects),
+        0u);
+    EXPECT_TRUE(db.empty()) << "a headers op invented a target entry";
+}
+
+TEST(LegacyHeaderDir, DoesNotCreateAPhantomVersion) {
+    auto db = db_with_("gcc", "16.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/xpkgs/gcc/15.1.0/include"),
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 0u);
+    EXPECT_FALSE(db.at("gcc").versions.contains("15.1.0"))
+        << "a headers op invented a version entry";
+    EXPECT_EQ(db.at("gcc").versions.size(), 1u);
+}
+
+TEST(LegacyHeaderDir, LastHeadersEffectWins) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        header_effect_("/first/include"),
+        header_effect_("/second/include"),
+    };
+
+    // Matches the pre-batch behavior: the installer assigned per op, so the
+    // last `headers` op of a recipe was the one that stuck.
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 1u);
+    EXPECT_EQ(db.at("gcc").versions.at("15.1.0").includedir, "/second/include");
+}
+
+TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
+    auto db = db_with_("gcc", "15.1.0");
+    const std::vector<xlings::xim::XpkgFilesystemEffect> effects{
+        {
+            .kind = xlings::xim::XpkgFilesystemEffectKind::ProgramShim,
+            .target = "gcc",
+            .version = "15.1.0",
+        },
+        {
+            .kind = xlings::xim::XpkgFilesystemEffectKind::RemoveHeaders,
+            .sourceDir = "/stale/include",
+        },
+    };
+
+    EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 0u);
+    EXPECT_TRUE(db.at("gcc").versions.at("15.1.0").includedir.empty());
+}

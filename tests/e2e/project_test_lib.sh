@@ -12,6 +12,26 @@ git config user.email >/dev/null 2>&1 || git config --global user.email "ci@xlin
 log()  { echo "[project-e2e] $*"; }
 fail() { echo "[project-e2e] FAIL: $*" >&2; exit 1; }
 
+# Second line of defence behind "pick the newest": timestamps can still lie
+# (a restored cache, a touched file). Comparing against the version in the
+# source makes a stale pick loud instead of showing up as the feature under
+# test simply not working.
+#
+# A warning, not a failure: XLINGS_BIN is the supported way to point the
+# suite at some other build deliberately, and that path returns before this.
+warn_if_stale_bin() {
+  local bin="$1" want got
+  want="$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' \
+            "$ROOT_DIR/src/core/config.cppm" 2>/dev/null | head -1)"
+  [[ -n "$want" ]] || return 0
+  got="$("$bin" --version 2>/dev/null | head -1 | tr -d '\r')"
+  case "$got" in
+    *"$want"*) return 0 ;;
+  esac
+  echo "[project-e2e] WARN: testing '$bin' (${got:-unknown}) but the source" >&2
+  echo "[project-e2e]       says $want — rebuild, or set XLINGS_BIN" >&2
+}
+
 find_xlings_bin() {
   local candidate="${XLINGS_BIN:-}"
   if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
@@ -19,13 +39,24 @@ find_xlings_bin() {
     return 0
   fi
 
-  candidate="$(find "$ROOT_DIR/target" -path '*/bin/xlings' -type f 2>/dev/null | head -1)"
+  # Newest, not first. `target/` accumulates a directory per build
+  # configuration and `find | head -1` returns them in directory order, so a
+  # months-old binary from some earlier config wins as often as not. That is
+  # not a flaky test, it is every E2E silently exercising the wrong build --
+  # it cost a full debugging cycle on 2026.7.27.1, where a gate absent from a
+  # 0.4.66 binary read as the feature not working.
+  # `ls -t` rather than find's -printf: BSD find (macOS) has no -printf, and
+  # `find -exec ls -t {} +` sorts by mtime on both.
+  candidate="$(find "$ROOT_DIR/target" -path '*/bin/xlings' -type f \
+                 -exec ls -t {} + 2>/dev/null | head -1)"
   if [[ -n "$candidate" && -x "$candidate" ]]; then
+    warn_if_stale_bin "$candidate"
     printf '%s\n' "$candidate"
     return 0
   fi
 
-  candidate="$(find "$BUILD_DIR" -path '*/release/xlings' -type f | head -1)"
+  candidate="$(find "$BUILD_DIR" -path '*/release/xlings' -type f \
+                 -exec ls -t {} + 2>/dev/null | head -1)"
   [[ -n "$candidate" && -x "$candidate" ]] || fail "xlings binary not found; set XLINGS_BIN"
   printf '%s\n' "$candidate"
 }
