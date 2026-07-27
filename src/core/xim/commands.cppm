@@ -645,7 +645,19 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
         // "✓ removed" anyway. Picking from the xvm DB instead anchors
         // the resolution to reality.
         if (active.empty()) {
-            const auto* vinfo = xvm::get_vinfo(Config::versions(), bareName);
+            // The database has to outlive the pointer into it.
+            // Config::versions() returns by VALUE, so passing the call
+            // directly to get_vinfo() handed back a pointer into a temporary
+            // that died at the end of that full expression -- and the next
+            // line read it. Use-after-free: `xlings remove glibc` on a home
+            // where glibc is registered but not active SIGSEGV'd on the
+            // released musl-static build and threw bad_alloc on a glibc one,
+            // from pick_highest_version walking a map that was gone.
+            //
+            // Reported 2026-07-28; reproduces identically on 2026.7.27.2,
+            // .3 and .4, so it is as old as this fallback.
+            const auto db = Config::versions();
+            const auto* vinfo = xvm::get_vinfo(db, bareName);
             if (vinfo && !vinfo->versions.empty()) {
                 active = xvm::pick_highest_version(vinfo->versions);
             }

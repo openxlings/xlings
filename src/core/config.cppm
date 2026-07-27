@@ -902,6 +902,16 @@ public:
     // caller). Empty => default xlings-res raw-pointer + release-artifact path.
     [[nodiscard]] static std::string index_base() { return instance_().indexBase_; }
 
+    // Returns BY VALUE -- global and project state are merged into a fresh
+    // map, so there is no long-lived object to hand out a reference to.
+    //
+    // Bind it to a named local before taking any pointer or reference into
+    // it. `get_vinfo(Config::versions(), name)` compiles, and returns a
+    // pointer into a temporary that dies at the end of that full expression;
+    // the next line then reads freed memory. That was a real crash --
+    // `xlings remove glibc` SIGSEGV'd on the musl-static release build and
+    // threw bad_alloc on a glibc one, reported 2026-07-28 and present since
+    // the fallback was written.
     [[nodiscard]] static xvm::VersionDB versions() {
         auto& self = instance_();
         return merged_versions(self.globalVersions_, self.projectVersions_);
