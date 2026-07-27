@@ -261,6 +261,12 @@ phase_bootstrap() {
 # case cannot exercise `use` and hides every group/binding bug. llvm is the
 # one package published for all three, so it carries that role everywhere.
 #
+# The two node versions are ones the index publishes for ALL THREE platforms.
+# node@20.19.0 is linux/macOS only, and picking it recorded a Windows blocker
+# that was the harness asking for something that does not exist -- checking
+# that a package has a windows table is not the same as checking that the
+# version does.
+#
 # gcc is linux-only in the index (the windows table has one version that
 # delegates to mingw, and there is no macosx table at all), so asking for it
 # elsewhere would record an index gap as an upgrade blocker.
@@ -268,11 +274,11 @@ case "$SIM_OS" in
   linux)
     POPULATE=(gcc@15.1.0 gcc@16.1.0
               llvm@20.1.7 llvm@22.1.8
-              node@20.19.0 node@22.17.1
+              node@22.12.0 node@22.17.1
               cmake ninja xmake jq ripgrep fd bat mcpp) ;;
   macosx|windows)
     POPULATE=(llvm@20.1.7 llvm@22.1.8
-              node@20.19.0 node@22.17.1
+              node@22.12.0 node@22.17.1
               cmake ninja xmake jq ripgrep fd bat mcpp) ;;
 esac
 # Override for a quick run: SIM_PACKAGES="mcpp llvm@20.1.7"
