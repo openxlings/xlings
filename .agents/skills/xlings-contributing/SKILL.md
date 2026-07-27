@@ -212,12 +212,33 @@ Common CI failures:
 
 ## Version bumping (release flow)
 
+### Version numbering
+
+Releases are date-based: `YYYY.M.D.N`, e.g. `2026.7.28.1`.
+
+**`N` starts at `1`. Do NOT use `.0` for an ordinary release.**
+`.0` is reserved for a formal/milestone release on that date. A routine
+same-day fix or feature release is `.1`, the next `.2`, and so on. When in
+doubt, it is not a formal release — use `.1`.
+
+```
+2026.7.28.1   ← first release of the day (the normal case)
+2026.7.28.2   ← second release of the day
+2026.7.28.0   ← reserved: formal release, only when explicitly intended
+```
+
+Note that `semver::parse` rejects a four-component version, so resolution
+falls back to lexicographic ordering — always publish and reference these
+through an explicit `latest` ref rather than relying on version comparison.
+
+### Steps
+
 After feature PRs merge, if a release is planned:
 
 ```bash
 # On main:
 # Edit src/core/config.cppm VERSION
-git commit -m "chore(0.4.XX): bump version for release"
+git commit -m "chore(2026.7.28.1): bump version for release"
 git push origin main
 
 # Trigger release

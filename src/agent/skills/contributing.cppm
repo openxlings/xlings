@@ -92,14 +92,29 @@ VERSION BUMP + RELEASE — separate from feature work
 
 Releasing a new version is a MULTI-STEP process. Do NOT skip steps.
 
+VERSION NUMBERING — date-based, YYYY.M.D.N (e.g. 2026.7.28.1).
+
+  N STARTS AT 1. Do NOT use .0 for an ordinary release.
+  .0 is reserved for a formal / milestone release on that date.
+  A routine same-day fix or feature release is .1, the next .2, and
+  so on. If you are unsure whether it is formal: it is not. Use .1.
+
+    2026.7.28.1   first release of the day (the normal case)
+    2026.7.28.2   second release of the day
+    2026.7.28.0   RESERVED — formal release, only when explicitly asked
+
+  semver::parse rejects a four-component version, so resolution falls
+  back to lexicographic order. Always publish and reference these
+  through an explicit `latest` ref, never by version comparison.
+
 STEP 1: AFTER all feature PRs are merged to main, create a
         version-bump PR (yes, a PR — not a direct push):
-  git switch -c chore/bump-0.4.XX origin/main
-  # Edit src/core/config.cppm: VERSION = "0.4.XX"
+  git switch -c chore/bump-2026.7.28.1 origin/main
+  # Edit src/core/config.cppm: VERSION = "2026.7.28.1"
   git add src/core/config.cppm
-  git commit -m "chore: bump version to 0.4.XX"
-  git push -u origin chore/bump-0.4.XX
-  gh pr create --title "chore: bump version to 0.4.XX"
+  git commit -m "chore: bump version to 2026.7.28.1"
+  git push -u origin chore/bump-2026.7.28.1
+  gh pr create --title "chore: bump version to 2026.7.28.1"
 
 STEP 2: Wait for CI to pass on the bump PR.
 
