@@ -264,6 +264,36 @@ out=$(RUN self doctor --fix 2>&1) || rc=$?
 echo "$out" | grep -q "repaired\|would run" \
   && fail "S8c: second --fix should have had nothing to do; got:\n$out"
 
+# ── S8d: payload present, OTHER executables present, ours missing ────
+#
+# The discriminator behind the "release anchor" classification. A package that
+# ships no executable at all is not a broken program -- it is a library-only
+# package that xvm typed as a program, and reinstalling it can never change
+# that. But a payload that HAS executables and is merely missing the one we
+# name is genuinely broken, and must not be swept into the same bucket.
+#
+# Without this case the anchor rule is unfalsifiable: S7 deletes the whole
+# payload directory, which is caught by an earlier check and never reaches it.
+log "S8d: payload with other executables but ours missing → still broken"
+rm -f "$PAYLOAD_DIR/bin/doctor-fixture"
+printf '#!/bin/sh\necho sibling\n' > "$PAYLOAD_DIR/bin/some-other-tool"
+chmod +x "$PAYLOAD_DIR/bin/some-other-tool"
+
+rc=0
+out=$(RUN self doctor 2>&1) || rc=$?
+[[ $rc -ne 0 ]] \
+  || fail "S8d: a missing binary next to other executables must stay an error"
+echo "$out" | grep -q "broken payload" \
+  || fail "S8d: should still report 'broken payload', not a release anchor; got:\n$out"
+echo "$out" | grep -q "release anchor  doctor-fixture" \
+  && fail "S8d: must NOT reclassify a real breakage as a release anchor"
+
+# put it back for the scenarios that follow
+RUN install doctor-fixture@1.0.0 -y >/dev/null 2>&1 \
+  || fail "S8d cleanup: reinstall should succeed"
+rm -f "$PAYLOAD_DIR/bin/some-other-tool"
+RUN self doctor >/dev/null 2>&1 || fail "S8d cleanup: doctor should be clean again"
+
 # ── Setup for alias-mode scenarios: a fixture with vdata.alias set ──
 # Inject a new fixture file. The catalog cache was warm from the earlier
 # scenarios and won't pick this up automatically — invalidate so `install`

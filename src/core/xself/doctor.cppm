@@ -283,6 +283,47 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // command. See the policy comment on cmd_doctor for the rationale.
     auto home_str = p.homeDir.string();
 
+    // Does this payload ship ANY executable?
+    //
+    // The discriminator between "a library-only package that xvm typed as a
+    // program" and "a program whose binary went missing". `is_binding_root`
+    // was doing that job and cannot: it skips the entry itself, so a package
+    // that is the sole member of its own release -- gcc-runtime@15.1.0, found
+    // by the ten-package upgrade simulation -- comes back false and gets
+    // reported as broken. Reinstalling it can never help, because nothing is
+    // wrong; it just has no program to find. Left that way it also blocks the
+    // migration marker forever, so the hint telling the user to run --fix
+    // never turns off after they have run it.
+    //
+    // Scanning is confined to the failure path, and shallow: the payload root
+    // and bin/, which is where a recipe puts programs. A package with other
+    // executables present but this one missing is genuinely broken and still
+    // reported.
+    auto payload_has_any_executable = [](const fs::path& dir) {
+        auto scan = [](const fs::path& d) {
+            std::error_code ec;
+            if (!fs::is_directory(d, ec)) return false;
+            for (auto& e : platform::dir_entries(d)) {
+                std::error_code fec;
+                if (!e.is_regular_file(fec) && !e.is_symlink(fec)) continue;
+#if defined(_WIN32)
+                auto ext = e.path().extension().string();
+                if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
+#else
+                auto st = fs::status(e.path(), fec);
+                if (!fec && (st.permissions() & (fs::perms::owner_exec
+                                                 | fs::perms::group_exec
+                                                 | fs::perms::others_exec))
+                            != fs::perms::none) {
+                    return true;
+                }
+#endif
+            }
+            return false;
+        };
+        return scan(dir) || scan(dir / "bin");
+    };
+
     // Findings the repair ladder can act on, collected during detection and
     // acted on afterwards. Repairing inline would mutate the database that
     // the rest of detection is still walking.
@@ -357,7 +398,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
                 // survived while its executable did not; that entry is also
                 // a binding root, so it lands here too and the user still
                 // sees the line.
-                if (xvm::is_binding_root(db, name, version)) {
+                if (xvm::is_binding_root(db, name, version)
+                    || !payload_has_any_executable(expanded)) {
                     add_field("ⓘ release anchor", std::format(
                         "{}@{} registers no program of its own; it names the "
                         "release its libraries belong to", name, version));
