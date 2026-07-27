@@ -75,7 +75,11 @@ mkdir -p "$SIM_ROOT" "$CKPT"
 # The host is behind a local proxy; without it every download in the isolated
 # env either hangs or silently falls back to a slow direct route, which would
 # read as "the upgrade is slow" rather than "the test harness is misconfigured".
-PROXY_ENV=()
+#
+# Seeded with a harmless entry rather than left empty: macOS ships bash 3.2,
+# where expanding an empty array under `set -u` is itself an "unbound
+# variable" error. That took out every step on the macOS runner at 26ms each.
+PROXY_ENV=("XLINGS_SIM=1")
 for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY ALL_PROXY; do
   [[ -n "${!v:-}" ]] && PROXY_ENV+=("$v=${!v}")
 done
@@ -186,25 +190,39 @@ phase_bootstrap() {
   fi
   [[ -f "$STAGE/$asset" ]] || { log "FATAL: no $asset"; return 1; }
 
-  rm -rf "$STAGE/pkg"; mkdir -p "$STAGE/pkg"
+  rm -rf "$STAGE/pkg" "$STAGE/raw"; mkdir -p "$STAGE/pkg"
+  local pkgdir="$STAGE/pkg"
   if [[ "$SIM_OS" == windows ]]; then
-    # unzip has no --strip-components; extract then lift the single top dir.
+    # unzip has no --strip-components. Use the extracted top-level directory
+    # in place rather than moving its contents: `mv "$top"/*` silently skips
+    # dotfiles, and the release package's marker is `.xlings.json` -- without
+    # it `self install` reports "cannot detect source package directory".
     run_step bootstrap-extract "extract release package" -- \
       unzip -q "$STAGE/$asset" -d "$STAGE/raw"
-    local top
-    top="$(find "$STAGE/raw" -mindepth 1 -maxdepth 1 -type d | head -1)"
-    [[ -n "$top" ]] && mv "$top"/* "$STAGE/pkg/"
+    pkgdir="$(find "$STAGE/raw" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -n "$pkgdir" ]] || { log "FATAL: no top-level dir in $asset"; return 1; }
   else
     run_step bootstrap-extract "extract release package" -- \
       tar -xzf "$STAGE/$asset" -C "$STAGE/pkg" --strip-components=1
   fi
+  [[ -f "$pkgdir/.xlings.json" ]] \
+    || log "WARNING: $pkgdir has no .xlings.json; self install will not find the package"
 
   # `self install` derives the target home from HOME. XLINGS_HOME must stay
   # unset here: with it set, self install has historically written to one
   # place and recorded another.
   run_step bootstrap-self-install "self install (old client)" -- \
-    run_isolated "$STAGE/pkg/bin/xlings$SIM_EXE" self install
+    run_isolated "$pkgdir/bin/xlings$SIM_EXE" self install
 
+  # Stop here rather than let every later phase report rc=127. A broken
+  # bootstrap produced 19 "blockers" on the macOS and Windows runners, all of
+  # them the harness failing to start -- which is exactly the kind of noise
+  # that makes a findings table worth ignoring.
+  if [[ ! -x "$XHOME/bin/xlings$SIM_EXE" ]]; then
+    log "FATAL: bootstrap did not produce $XHOME/bin/xlings$SIM_EXE"
+    log "       the remaining phases would only report the harness failing"
+    return 1
+  fi
   log "    installed version: $(recorded_version)"
   mark_done bootstrap
 }
@@ -398,7 +416,15 @@ main() {
       log "=============== $p: already done, skipping (SIM_FORCE=1 to redo)"
       continue
     fi
-    "phase_$p"
+    # A phase that reports itself unusable (bootstrap with no client binary)
+    # short-circuits to the report. Everything after it would measure the
+    # harness, not the upgrade.
+    if ! "phase_$p" && [[ "$p" != report ]]; then
+      log ""
+      log "=============== $p failed; skipping to report"
+      phase_report
+      return 1
+    fi
   done
 }
 
