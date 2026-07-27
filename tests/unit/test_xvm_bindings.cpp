@@ -40,6 +40,7 @@ import xlings.core.xim.repo;
 import xlings.core.xim.extract;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.groups;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
@@ -7178,6 +7179,178 @@ TEST(XvmRemovalDangling, AResolvableReleaseStillRemovesEveryMember) {
 // ============================================================
 
 // The production-path test re-executes this binary; the child mode has to
+
+// ── group normalization (P2.1) ─────────────────────────────────────────
+//
+// Three on-disk forms describe the same thing, and all three are live: a
+// real installation on 2026-07-27 carried 62 `bindingGroup` entries, 7
+// `bindingMembers` and 221 targets with legacy edges in one file. These
+// assert they normalize to one in-memory table.
+
+namespace {
+
+xlings::xvm::VData make_group_root_(const std::string& provider,
+                                    const std::string& providerVersion,
+                                    const std::string& group,
+                                    const std::string& rootTarget,
+                                    const std::string& rootVersion,
+                                    std::map<std::string, std::string> members) {
+    xlings::xvm::VData d;
+    d.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = provider, .providerVersion = providerVersion,
+        .group = group, .rootTarget = rootTarget, .rootVersion = rootVersion};
+    d.bindingMembers = std::move(members);
+    d.bindingMembersDeclared = true;
+    return d;
+}
+
+} // namespace
+
+TEST(XvmGroupNormalize, RootManifestBecomesOneGroup) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["15.1.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0",
+        {{"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"libstdc++.so.6", "15.1.0"}});
+    db["g++"].type = "program";
+    db["g++"].versions["15.1.0"] = xlings::xvm::VData{};
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    ASSERT_EQ(table.size(), 1u);
+    const auto& g = table.begin()->second;
+    EXPECT_EQ(g.id, "gcc@15.1.0/toolchain");
+    EXPECT_EQ(g.provider, "gcc");
+    EXPECT_EQ(g.origin, "root-manifest");
+    EXPECT_EQ(g.members.size(), 3u);
+    EXPECT_EQ(g.members.at("g++"), "15.1.0");
+}
+
+TEST(XvmGroupNormalize, RootIsAMemberEvenIfManifestOmitsIt) {
+    // Under the old model this omission was RootMissingFromManifest. Holding
+    // the manifest is itself proof of membership, so it is no longer an error.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0",
+        {{"g++", "15.1.0"}});
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    ASSERT_EQ(table.size(), 1u);
+    EXPECT_EQ(table.begin()->second.members.at("gcc"), "15.1.0");
+}
+
+TEST(XvmGroupNormalize, LegacyEdgesBecomeOneGroup) {
+    // <= 0.4.69 star edges. bindings[version][peer] = peerVersion.
+    // bindings[peerTarget][ownVersion] = peerVersion -- peer first. db.cppm
+    // writes both directions of every edge, which is why a transposed reading
+    // still walks something and still looks plausible.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["gcc"].bindings["g++"]["15.1.0"] = "15.1.0";
+    db["gcc"].bindings["cpp"]["15.1.0"] = "15.1.0";
+    db["g++"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["g++"].bindings["gcc"]["15.1.0"] = "15.1.0";
+    db["cpp"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["cpp"].bindings["gcc"]["15.1.0"] = "15.1.0";
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    ASSERT_EQ(table.size(), 1u);
+    const auto& g = table.begin()->second;
+    EXPECT_EQ(g.origin, "legacy-edges");
+    EXPECT_EQ(g.members.size(), 3u);
+    EXPECT_TRUE(g.members.contains("cpp"));
+}
+
+TEST(XvmGroupNormalize, LegacyComponentIdIsStableAcrossInsertionOrder) {
+    // The id must not depend on which member the walk happened to start from,
+    // or the same component would get a different name on the next load.
+    auto build = [](bool reversed) {
+        xlings::xvm::VersionDB db;
+        db["aaa"].versions["1"] = xlings::xvm::VData{};
+        db["zzz"].versions["1"] = xlings::xvm::VData{};
+        if (reversed) {
+            db["zzz"].bindings["aaa"]["1"] = "1";
+        } else {
+            db["aaa"].bindings["zzz"]["1"] = "1";
+        }
+        return xlings::xvm::normalize_binding_groups(db);
+    };
+    auto a = build(false);
+    auto b = build(true);
+    ASSERT_EQ(a.size(), 1u);
+    ASSERT_EQ(b.size(), 1u);
+    EXPECT_EQ(a.begin()->first, b.begin()->first);
+}
+
+TEST(XvmGroupNormalize, NewerFormWinsOverLegacyRemnant) {
+    // An upgraded client rewrote the group in the newer form but the old
+    // pairwise edges are still in the file. That is one group, not two.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0",
+        {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db["gcc"].bindings["g++"]["15.1.0"] = "15.1.0";
+    db["g++"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["g++"].bindings["gcc"]["15.1.0"] = "15.1.0";
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    ASSERT_EQ(table.size(), 1u);
+    EXPECT_EQ(table.begin()->second.origin, "root-manifest");
+}
+
+TEST(XvmGroupNormalize, LoneEdgeIsNotAGroup) {
+    xlings::xvm::VersionDB db;
+    db["solo"].versions["1"] = xlings::xvm::VData{};
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    EXPECT_TRUE(table.empty());
+}
+
+TEST(XvmGroupNormalize, FindLocatesMemberByExactVersion) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0",
+        {{"gcc", "15.1.0"}, {"g++", "15.1.0"}});
+    db["g++"].versions["15.1.0"] = xlings::xvm::VData{};
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    EXPECT_NE(xlings::xvm::find_binding_group(table, "g++", "15.1.0"), nullptr);
+    // A different version of a member name is not in the group.
+    EXPECT_EQ(xlings::xvm::find_binding_group(table, "g++", "14.0.0"), nullptr);
+}
+
+TEST(XvmGroupNormalize, TwoEntriesClaimingOneIdentityUnionRatherThanRace) {
+    // Drift the top-level table exists to expose: keeping only whichever the
+    // map iterated to first would hide half the evidence.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0", {{"g++", "15.1.0"}});
+    db["clang"].versions["20.0.0"] = make_group_root_(
+        "gcc", "15.1.0", "toolchain", "gcc", "15.1.0", {{"lld", "20.0.0"}});
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    ASSERT_EQ(table.size(), 1u);
+    const auto& m = table.begin()->second.members;
+    EXPECT_TRUE(m.contains("g++"));
+    EXPECT_TRUE(m.contains("lld"));
+}
+
+
+
+TEST(XvmGroupNormalize, TransposedEdgeNestingDoesNotFormAGroup) {
+    // Guard against the misreading that made all of the above pass while the
+    // walk was wrong: with the levels swapped, "g++" is read as a version and
+    // "15.1.0" as a peer target, so nothing real is reachable.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["g++"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["gcc"].bindings["15.1.0"]["g++"] = "15.1.0";   // transposed on purpose
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    for (const auto& [id, g] : table) {
+        EXPECT_FALSE(g.members.contains("g++"))
+            << "transposed nesting must not resolve g++ as a member (" << id << ")";
+    }
+}
+
 // live in the same translation unit as the function it calls.
 #ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {
