@@ -377,7 +377,12 @@ export int cmd_doctor(EventStream& stream, bool fix) {
     // is a decision the user should see spelled out before it happens.
     const auto bindingFindings = xvm::inspect_binding_state(db, ws);
     for (const auto& finding : bindingFindings) {
-        ++broken;
+        const bool notice =
+            finding.severity == xvm::BindingSeverity::Notice;
+        // A notice describes state the upgrade inherited rather than
+        // created, so it does not colour the run red -- same reasoning as
+        // the release anchors above. It still prints its remediation.
+        if (!notice) ++broken;
         std::string detail = finding.summary;
         if (!finding.target.empty()) {
             detail += std::format(" [{}{}{}]", finding.target,
@@ -388,7 +393,8 @@ export int cmd_doctor(EventStream& stream, bool fix) {
             detail += std::format(" at {}", finding.field);
         }
         detail += std::format(" — {} — {}", finding.code, finding.hint);
-        add_field("✗ binding state", std::move(detail));
+        add_field(notice ? "ⓘ binding state" : "✗ binding state",
+                  std::move(detail));
     }
 
     // --fix for the one binding problem that can be repaired without

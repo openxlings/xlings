@@ -17,7 +17,43 @@ import xlings.core.xvm.errors;
 // Deliberately a pure function over (db, workspace). It touches no Config, no
 // filesystem and no network, so every case below is reachable from a unit
 // test, and doctor stays a renderer.
+namespace xlings::xvm::detail_ {
+
+// Does the release this version belongs to declare any file asset?
+//
+// Asked of the release rather than the entry itself because a file asset is
+// registered as its own target (`<pkg>.files.<n>`) bound to the release, not
+// as a field on the package's own entry.
+bool release_declares_file_assets_(const VersionDB& db,
+                                   const std::string& target,
+                                   const std::string& version) {
+    auto selection = resolve_binding_selection(db, target, version);
+    if (!selection) return false;
+    for (const auto& [memberTarget, memberVersion] : selection->members) {
+        auto infoIt = db.find(memberTarget);
+        if (infoIt == db.end()) continue;
+        auto dataIt = infoIt->second.versions.find(memberVersion);
+        if (dataIt == infoIt->second.versions.end()) continue;
+        if (effective_kind(infoIt->second, dataIt->second) == "files") {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace xlings::xvm::detail_
+
 export namespace xlings::xvm {
+
+enum class BindingSeverity {
+    // Something is wrong now: a command will refuse, or has already done
+    // the wrong thing.
+    Broken,
+    // Legacy state that still behaves exactly as it always did, but is
+    // worth acting on. Reporting these as broken would paint an upgraded
+    // installation red for a condition the upgrade did not create.
+    Notice,
+};
 
 struct BindingFinding {
     std::string code;     // shares the XvmUserError code space
@@ -26,6 +62,7 @@ struct BindingFinding {
     std::string version;
     std::string field;    // JSON Pointer, when the problem is metadata-level
     std::string hint;
+    BindingSeverity severity { BindingSeverity::Broken };
 };
 
 // Invariants checked, in the order a user would want to hear about them:
@@ -145,6 +182,54 @@ std::vector<BindingFinding> inspect_binding_state(
                             "it names nothing and only blocks switching",
                 });
             }
+        }
+    }
+
+    // ── Sysroot assets placed before this client tracked them ────────
+    //
+    // Before 2026.7.27.0 a recipe put headers into the sysroot with plain
+    // Lua inside `config()` -- `os.cp`, or `sysroot.install_headers`.
+    // Nothing recorded it, so those files are invisible to the version
+    // database and `xlings use` cannot move them.
+    //
+    // On its own that is not new: such a version could never switch its
+    // headers. What upgrading changes is that it becomes *inconsistent* --
+    // one version of a package now switches its headers and another
+    // silently does not, and the failure surfaces as a build picking up the
+    // wrong header, long after the `use` that reported success.
+    //
+    // Hence the pairing requirement: reported only when another version of
+    // the same target does declare file assets. Without it, every package
+    // that simply ships no headers would be flagged.
+    for (const auto& [target, info] : db) {
+        if (info.versions.size() < 2) continue;
+        std::vector<std::string> untracked;
+        bool anyTracked = false;
+        for (const auto& [version, data] : info.versions) {
+            // Only the entry point users actually switch. Members of a
+            // release resolve to the same set, so checking them too would
+            // report one problem once per library in the toolchain.
+            if (effective_kind(info, data) != "program") continue;
+            if (detail_::release_declares_file_assets_(db, target, version)) {
+                anyTracked = true;
+            } else {
+                untracked.push_back(version);
+            }
+        }
+        if (!anyTracked || untracked.empty()) continue;
+        for (const auto& version : untracked) {
+            findings.push_back({
+                .code = "xvm-sysroot-untracked",
+                .summary = std::format(
+                    "installed before file tracking: sysroot files for {}@{} "
+                    "will not follow a version switch", target, version),
+                .target = target,
+                .version = version,
+                .hint = std::format(
+                    "run `xlings install {}@{}` to re-register them",
+                    target, version),
+                .severity = BindingSeverity::Notice,
+            });
         }
     }
 

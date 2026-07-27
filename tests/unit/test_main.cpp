@@ -12599,6 +12599,118 @@ TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
 }
 
 // ============================================================
+// Sysroot files placed before this client tracked them
+//
+// The upgrade case. Before 2026.7.27.0 a recipe copied headers into the
+// sysroot with plain Lua inside config(); nothing recorded it, so `use`
+// cannot move them. That was always true, but once one version of a package
+// declares file assets and another does not, switching between them is
+// silently partial -- and doctor could not see any of it.
+// ============================================================
+
+namespace {
+
+// One release of `demo` installed the old way: a program entry and nothing
+// describing what it put in the sysroot.
+void legacy_demo_release_(xlings::xvm::VersionDB& db,
+                          std::string_view version) {
+    auto& prog = db["demo"];
+    prog.type = "program";
+    auto& data = prog.versions[std::string(version)];
+    data.path = std::format("/pkg/demo/{}/bin", version);
+    data.kind = "program";
+}
+
+const xlings::xvm::BindingFinding* find_untracked_(
+        const std::vector<xlings::xvm::BindingFinding>& findings,
+        std::string_view version) {
+    for (const auto& f : findings) {
+        if (f.code == "xvm-sysroot-untracked" && f.version == version) {
+            return &f;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(XvmSysrootUntracked, ReportsTheVersionThatPredatesTracking) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "2.0.0");
+    legacy_demo_release_(db, "1.0.0");
+
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+    const auto* finding = find_untracked_(findings, "1.0.0");
+    ASSERT_NE(finding, nullptr)
+        << "a version whose sysroot files cannot follow a switch was "
+           "invisible to doctor";
+    EXPECT_EQ(finding->target, "demo");
+    // The remediation has to name the exact version: "reinstall the package"
+    // is what left the dangling-edge case a dead end.
+    EXPECT_NE(finding->hint.find("demo@1.0.0"), std::string::npos)
+        << "hint was: " << finding->hint;
+
+    // And the version that does track its files is not itself reported.
+    EXPECT_EQ(find_untracked_(findings, "2.0.0"), nullptr);
+}
+
+TEST(XvmSysrootUntracked, IsANoticeRatherThanABreak) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "2.0.0");
+    legacy_demo_release_(db, "1.0.0");
+
+    const auto* finding =
+        find_untracked_(xlings::xvm::inspect_binding_state(db, {}), "1.0.0");
+    ASSERT_NE(finding, nullptr);
+    // The upgrade inherited this state, it did not create it. Counting it as
+    // broken would paint every upgraded installation red.
+    EXPECT_EQ(finding->severity, xlings::xvm::BindingSeverity::Notice);
+}
+
+TEST(XvmSysrootUntracked, APackageThatShipsNoFilesIsNotFlagged) {
+    xlings::xvm::VersionDB db;
+    legacy_demo_release_(db, "1.0.0");
+    legacy_demo_release_(db, "2.0.0");
+
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+    // Without the pairing requirement this is where the check would fire on
+    // most of the index.
+    EXPECT_EQ(find_untracked_(findings, "1.0.0"), nullptr);
+    EXPECT_EQ(find_untracked_(findings, "2.0.0"), nullptr);
+}
+
+TEST(XvmSysrootUntracked, ASingleVersionIsNeverFlagged) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "2.0.0");
+
+    EXPECT_EQ(find_untracked_(xlings::xvm::inspect_binding_state(db, {}),
+                              "2.0.0"),
+              nullptr)
+        << "with nothing to be inconsistent with, there is nothing to say";
+}
+
+TEST(XvmSysrootUntracked, ReportedOncePerVersionNotOncePerMember) {
+    xlings::xvm::VersionDB db;
+    files_release_(db, "2.0.0");
+    legacy_demo_release_(db, "1.0.0");
+    // A library member of the same release resolves to the same set, so a
+    // naive pass would repeat the finding for every library in a toolchain.
+    auto& lib = db["libdemo.so.1"];
+    lib.type = "lib";
+    for (const auto* v : {"1.0.0", "2.0.0"}) {
+        auto& data = lib.versions[v];
+        data.kind = "lib";
+        data.path = std::format("/pkg/demo/{}/lib", v);
+    }
+
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+    const auto count = std::ranges::count_if(findings, [](const auto& f) {
+        return f.code == "xvm-sysroot-untracked";
+    });
+    EXPECT_EQ(count, 1);
+}
+
+// ============================================================
 // xpackage spec gate
 //
 // The defect these cover: `spec` used to be compared only against the
