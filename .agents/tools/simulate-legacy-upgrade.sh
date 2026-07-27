@@ -297,24 +297,45 @@ phase_snapshot() {
 }
 
 # ---------------------------------------------------------------- update
+binary_fingerprint() {
+  local b="$XHOME/bin/xlings$SIM_EXE"
+  [[ -f "$b" ]] || { printf 'absent'; return; }
+  # sha256sum on Linux, shasum on macOS; either is fine, we only compare.
+  { sha256sum "$b" 2>/dev/null || shasum -a 256 "$b" 2>/dev/null; } \
+    | awk '{print $1}'
+}
+
 phase_update() {
   head_ "update: xlings self update"
-  local before after
-  before="$(recorded_version)"
+  local binBefore binAfter recBefore recAfter
+  binBefore="$(binary_fingerprint)"
+  recBefore="$(recorded_version)"
   run_step self-update "self update to latest" -- xl self update
-  after="$(recorded_version)"
-  log "    version: $before -> $after"
-  # The whole point of `self update` is that this changes. It returning 0 is
-  # not evidence of anything -- that exact false pass was the field bug fixed
-  # in #424 -- so the recorded version is asserted separately.
-  if [[ "$before" == "$after" ]]; then
-    log "    => VERSION DID NOT CHANGE   <<< BLOCKER"
-    printf '%s\t%s\t%s\t%s\n' self-update-effective 1 0 \
-      "self update left the recorded version at $before" >> "$STEPS"
-  else
-    printf '%s\t%s\t%s\t%s\n' self-update-effective 0 0 \
-      "recorded version moved $before -> $after" >> "$STEPS"
-  fi
+  binAfter="$(binary_fingerprint)"
+  recAfter="$(recorded_version)"
+  log "    binary:   ${binBefore:0:12} -> ${binAfter:0:12}"
+  log "    recorded: $recBefore -> $recAfter"
+
+  # What `self update` is responsible for is REPLACING THE BINARY. Its exit
+  # code is not evidence of that -- a 0.4.69 client answered 404 from a CN
+  # mirror and still reported success (#424) -- so the binary itself is
+  # fingerprinted before and after.
+  [[ "$binBefore" != "$binAfter" && "$binAfter" != "absent" ]]
+  assert_step self-update-replaced-binary \
+    "self update replaced the client binary" $?
+
+  # The recorded version staying put is DESIGNED, not a defect, and asserting
+  # otherwise would file a blocker against correct behaviour -- a findings
+  # table with a known-false row in it is a table people learn to skip.
+  #
+  # `self update` runs the OLD binary. It cannot know whether the new one will
+  # find anything to migrate, so it does not claim the home is reconciled.
+  # `self doctor --fix` stamps the field when the migration actually happens,
+  # and the mismatch in between is what the new client reads to know it should
+  # say so. See .agents/docs/2026-07-28-self-repair-design.md §4.
+  [[ "$recBefore" == "$recAfter" ]]
+  assert_step self-update-leaves-marker \
+    "recorded version deliberately still $recAfter (only --fix stamps it)" $?
   mark_done update
 }
 
