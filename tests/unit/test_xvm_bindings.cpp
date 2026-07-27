@@ -7119,6 +7119,63 @@ TEST(XimXvmFileAssetEffect, StillRefusesWhenTheEntryIsNotAFileAsset) {
 }
 
 // ============================================================
+// A dangling edge must not make a package unremovable
+//
+// Reported from the field: on a real installation `use gcc 15` refused with
+// xvm-binding-version-missing, and `remove gcc 15` refused with the same
+// error from the removal path -- so the user could neither switch nor take
+// the package out. A dead end with no command that leads out of it.
+//
+// Removal does not need the release to resolve. Taking something out needs
+// no understanding of what put it in, which is the same reason removal sits
+// outside the xpackage spec gate.
+// ============================================================
+
+TEST(XvmRemovalDangling, RemovalFallsBackToTheNamedEntry) {
+    // gcc@15.1.0 bound to an anchor registered only at 16.1.0 -- the shape
+    // found on a real machine.
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["15.1.0"].path = "/pkg/gcc/15.1.0/bin";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["xim-gnu-gcc"].type = "program";
+    db["xim-gnu-gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0";
+    db["gcc"].bindings["xim-gnu-gcc"]["15.1.0"] = "15.1.0";   // dangling
+
+    // Precondition: the release genuinely does not resolve, so the fallback
+    // is what is under test rather than a happy path.
+    ASSERT_FALSE(
+        xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0")
+            .has_value());
+
+    auto context =
+        xlings::xvm::snapshot_removal_context(db, "gcc", "15.1.0");
+    ASSERT_TRUE(context.has_value())
+        << "removal refused, leaving the package unremovable: "
+        << context.error().message;
+    ASSERT_EQ(context->members.size(), 1u);
+    EXPECT_EQ(context->members.at("gcc"), "15.1.0");
+}
+
+TEST(XvmRemovalDangling, AResolvableReleaseStillRemovesEveryMember) {
+    // The fallback must not swallow the normal case: when the release does
+    // resolve, removal still takes the whole thing.
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["xim-gnu-gcc"].type = "program";
+    db["xim-gnu-gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0";
+    db["gcc"].bindings["xim-gnu-gcc"]["16.1.0"] = "16.1.0";
+    db["xim-gnu-gcc"].bindings["gcc"]["16.1.0"] = "16.1.0";
+
+    auto context =
+        xlings::xvm::snapshot_removal_context(db, "gcc", "16.1.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    EXPECT_EQ(context->members.size(), 2u);
+    EXPECT_EQ(context->members.at("xim-gnu-gcc"), "16.1.0");
+}
+
+// ============================================================
 
 // The production-path test re-executes this binary; the child mode has to
 // live in the same translation unit as the function it calls.

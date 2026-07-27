@@ -2,6 +2,7 @@ export module xlings.core.xvm.removal;
 
 import std;
 
+import xlings.core.log;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
@@ -77,7 +78,26 @@ snapshot_removal_context(const VersionDB& db,
 
     auto firstSelection = resolveSelection(target, *exactVersion);
     if (!firstSelection) {
-        return std::unexpected(std::move(firstSelection.error()));
+        // Removal must not depend on the release resolving.
+        //
+        // A state that cannot be resolved -- a legacy edge pointing at a
+        // version that no longer exists, say -- already blocks `use`. Letting
+        // it block `remove` as well leaves the user unable to switch *or* to
+        // take the package out: a dead end with no command that gets out of
+        // it. Reported from the field on a real installation, where
+        // `use gcc 15` and `remove gcc 15` both refused.
+        //
+        // Taking something out needs no understanding of what put it in.
+        // Fall back to the one member we are certain of -- the exact
+        // (target, version) the user named -- and let the rest of the
+        // release be whatever it is. The same reasoning keeps removal
+        // outside the xpackage spec gate in xim/installer.cppm.
+        log::warn("[xvm] {}@{} does not resolve as a release ({}); removing "
+                  "just this entry",
+                  target, *exactVersion, firstSelection.error().message);
+        BindingSelection single;
+        single.members.emplace(target, *exactVersion);
+        firstSelection = std::move(single);
     }
     if (!data.bindingGroup) {
         return RemovalContext{
