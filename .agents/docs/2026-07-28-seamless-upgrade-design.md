@@ -193,6 +193,69 @@ Fixing the notification without fixing this produces a notification that is
 wrong on upgraded machines (B1) about packages it thinks are not installed (B2).
 Order matters.
 
+### Should this be its own module?
+
+Yes — but **not an "upgrade" module.**
+
+The tempting shape is a module that owns the new behaviour: check for a newer
+release, print the notice, offer `xlings upgrade`. That shape fails, and it
+fails in a way that is easy to predict from the table above: it would become a
+**fourth** consumer of three stores that already disagree, and it would inherit
+every contradiction. A notification built on today's `installed` would announce
+upgrades for packages it simultaneously reports as not installed.
+
+The module worth building is the one that is *missing*, not the one that is
+requested: **a single authority for "what is installed, and what is current."**
+Today that question has 67 direct askers, each reaching for whichever store is
+nearest:
+
+| store | direct readers |
+|---|---|
+| `Config::versions()` (xvm DB) | 14 |
+| `match.installed` (catalog) | 23 |
+| `effective_workspace()` / `workspace_installed()` | 21 |
+| `get_active_version()` | 9 |
+
+Proposed: `xlings.core.state` — computed from all three stores, answering
+
+```
+installed(pkg)          -> which versions are present on disk
+active(pkg)             -> which version this sub-OS resolves
+resolved(bare_name)     -> what a bare name means, one rule (D4)
+available(pkg)          -> what the index offers, latest included
+client_version()        -> what the running binary is, not what a file says
+```
+
+Every finding in §2 is that module missing. B2 is `installed` computed
+against latest; B3/B5 are `resolved` having two definitions; B1 is
+`client_version` read from a file nobody updates. D2 (notification) and D5
+(`xlings upgrade`) then become **thin consumers** — a comparison and a plan —
+instead of new subsystems with their own view of the world.
+
+Two things stay outside it, deliberately:
+
+- **B7 (doctor's classification)** is not a state question. A headers-only
+  package misfiled as a broken payload is a classification bug in one file; it
+  is cheap, independent, and should not wait behind an architectural change.
+- **B6 (orphan shims)** belongs to removal, not to state.
+
+**How to land it without a big bang.** A new module that 67 call sites must
+migrate to, all at once, is a change nobody can review. Instead:
+
+1. Build the module as a **pure reader** over the existing three stores. No
+   behaviour change; nothing calls it yet. Fully unit-testable, because it is a
+   function of state.
+2. Point `info` and `list` at it first. That alone fixes B2, and it is visible
+   to the user immediately — a package that is installed stops claiming it is
+   not.
+3. Move `install` and `remove` onto its `resolved()` (D4). B3 and B5 go with it.
+4. Route the `self update` write through it (D1).
+5. Build D2 and D5 on top.
+
+Each step flips a specific assertion in the simulation, which is what keeps the
+migration honest: the module is not "done" because it exists, it is done when
+the blocker count goes to zero.
+
 ## 4. Design
 
 ### D1 — one writer for the recorded client version *(prerequisite)*
