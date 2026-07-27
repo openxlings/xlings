@@ -15,6 +15,10 @@
 #   5. Corrupt: registered program shim with no
 #      workspace entry                          → doctor reports orphan
 #   6. --fix removes the orphan                 → exit 0 after fix
+#   7. Corrupt: delete the payload dir           → doctor reports broken
+#   8. --fix --dry-run                           → prints plan, changes nothing
+#   8b. --fix                                    → repairs, verified by re-detect
+#   8c. second --fix                             → nothing left to do
 
 set -euo pipefail
 
@@ -193,49 +197,72 @@ echo "$out" | grep -q "active" \
 echo "$out" | grep -q "xlings install doctor-fixture@1.0.0" \
   || fail "S7: output should include the remediation command; got:\n$out"
 
-# ── S8: --fix MUST NOT touch broken-payload state (doctor never modifies
-#       payload metadata). Workspace + shim + DB entry must be unchanged
-#       compared to S7. The hint guides users to manual remove+install.
-log "S8: doctor --fix on broken payload → does NOT deregister; only re-prints hint"
+# ── S8: --fix --dry-run previews the repair and changes NOTHING ──────
+#
+# `--fix` used to refuse to repair broken payloads and only re-print the
+# remediation command. That refusal did not survive contact with an upgraded
+# home: 0.4.69 records a headers-only package as one program-typed entry with
+# no executable in it, so the new client reports every such package as a
+# broken payload -- 56 findings on a five-package home, each with a printed
+# command that WAS the correct cure. Handing the user 56 commands to paste is
+# not a diagnosis.
+#
+# The promise that replaced "never touches the network" is this flag, so it is
+# pinned first: the plan is printed, and the state is byte-for-byte untouched.
+log "S8: doctor --fix --dry-run → prints the plan, repairs nothing"
 rc=0
-out=$(RUN self doctor --fix 2>&1) || rc=$?
-[[ $rc -ne 0 ]] || fail "S8: --fix should still exit non-zero when broken remains (got 0)"
-echo "$out" | grep -q "broken payload" \
-  || fail "S8: --fix output should still report broken payload"
-echo "$out" | grep -q "xlings install doctor-fixture@1.0.0" \
-  || fail "S8: --fix output should still print remediation command"
+out=$(RUN self doctor --fix --dry-run 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "S8: --dry-run should still exit non-zero (nothing repaired)"
+echo "$out" | grep -q "would run" \
+  || fail "S8: --dry-run should print the planned command; got:\n$out"
+[[ ! -d "$PAYLOAD_DIR" ]] \
+  || fail "S8: --dry-run must NOT recreate the payload"
 
-# Confirm doctor preserved metadata (workspace + DB entry + shim file).
-python3 - "$HOME_DIR" <<'PY' || fail "S8: --fix must NOT modify versions DB"
+python3 - "$HOME_DIR" <<'PY' || fail "S8: --dry-run must NOT modify versions DB"
 import json, sys, pathlib
 home = sys.argv[1]
 data = json.loads(pathlib.Path(home, ".xlings.json").read_text())
 assert "doctor-fixture" in (data.get("versions") or {}), \
-    "S8: --fix must NOT remove doctor-fixture from versions DB"
+    "S8: --dry-run must NOT remove doctor-fixture from versions DB"
 ws = json.loads(pathlib.Path(home, "subos/default/.xlings.json").read_text())
 entry = (ws.get("workspace") or {}).get("doctor-fixture")
-# 0.4.19+: workspace value is {active, installed[]} dict; tolerate both forms.
 active = entry.get("active") if isinstance(entry, dict) else entry
 assert active == "1.0.0", \
-    f"S8: --fix must NOT clear workspace pointer; got active={active!r}"
+    f"S8: --dry-run must NOT clear workspace pointer; got active={active!r}"
 PY
-[[ -e "$SHIM" ]] || fail "S8: --fix must NOT remove shim file (only hints user to install)"
+[[ -e "$SHIM" ]] || fail "S8: --dry-run must NOT remove the shim file"
 
-# ── S8c: user follows the hint (`xlings install <pkg>@<ver>`)
-#         → installer detects payload missing, re-runs install hook,
-#         → next doctor reports OK
-#         (validates the installer-side trust-but-verify on the xvm-DB
-#          shortcut: a DB-registered version with no payload on disk
-#          must NOT be treated as "already installed".)
-log "S8c: user follows hint (xlings install) → installer self-heals → doctor OK"
-RUN install doctor-fixture@1.0.0 -y >/dev/null 2>&1 \
-  || fail "S8c: install (the hinted command) should succeed"
+# ── S8b: --fix repairs it, and the repair is VERIFIED, not claimed ────
+#
+# The rung that does the work here is re-register: `xlings install
+# <pkg>@<ver>`, which the installer turns into a real install because the
+# payload is gone. What makes this a test rather than a smoke check is that
+# doctor re-detects from a reloaded state file afterwards -- a rung reporting
+# success while the finding survives is the failure shape this codebase keeps
+# producing, and here it would turn a still-broken home into `status OK`.
+log "S8b: doctor --fix → repairs the broken payload → exit 0"
+rc=0
+out=$(RUN self doctor --fix 2>&1) || rc=$?
+[[ $rc -eq 0 ]] || fail "S8b: --fix should repair the payload and exit 0; got $rc:\n$out"
 [[ -d "$PAYLOAD_DIR/bin" ]] \
-  || fail "S8c: payload bin/ must be recreated by install hook"
+  || fail "S8b: --fix must recreate the payload bin/"
 [[ -f "$PAYLOAD_DIR/bin/doctor-fixture" ]] \
-  || fail "S8c: payload binary must be recreated by install hook"
+  || fail "S8b: --fix must recreate the payload binary"
+[[ -e "$SHIM" ]] || fail "S8b: --fix must leave the shim in place"
+
 RUN self doctor >/dev/null 2>&1 \
-  || fail "S8c: doctor should report OK after install self-heal"
+  || fail "S8b: doctor should report OK after --fix repaired the payload"
+
+# ── S8c: a second --fix finds nothing ────────────────────────────────
+#
+# A ladder that repairs the same thing on every run is looping, not
+# converging, and one pass cannot tell the difference.
+log "S8c: second doctor --fix → nothing left to repair"
+rc=0
+out=$(RUN self doctor --fix 2>&1) || rc=$?
+[[ $rc -eq 0 ]] || fail "S8c: second --fix should exit 0; got $rc:\n$out"
+echo "$out" | grep -q "repaired\|would run" \
+  && fail "S8c: second --fix should have had nothing to do; got:\n$out"
 
 # ── Setup for alias-mode scenarios: a fixture with vdata.alias set ──
 # Inject a new fixture file. The catalog cache was warm from the earlier
