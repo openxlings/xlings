@@ -672,3 +672,93 @@ TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
     EXPECT_EQ(xlings::xim::attach_legacy_header_dir(db, "gcc", "15.1.0", effects), 0u);
     EXPECT_TRUE(db.at("gcc").versions.at("15.1.0").includedir.empty());
 }
+
+// ============================================================
+// Sysroot ownership: what xlings put there vs what it found
+//
+// Derived rather than recorded. The 0.4.70 design asks for a persisted
+// ledger and in the same breath says it is derived data, kept only so the
+// reconciler can skip a full scan -- and there is no reconciler yet. For a
+// question that is *about* whether the filesystem matches the records, a
+// second record that can drift from both is the wrong thing to add.
+// ============================================================
+
+namespace {
+
+constexpr std::string_view kPayloadRoot = "/home/u/.xlings/data/xpkgs";
+
+xlings::xvm::VersionDB owned_db_() {
+    xlings::xvm::VersionDB db;
+    auto& files = db["demo.files.1"];
+    files.type = "files";
+    auto& data = files.versions["1.0.0"];
+    data.kind = "files";
+    data.path = "/home/u/.xlings/data/xpkgs/xim-x-demo/1.0.0";
+    data.fileSrc = "include/demo.h";
+    data.fileDst = "usr/include/demo.h";
+    return db;
+}
+
+}  // namespace
+
+TEST(XvmSysrootOwnership, ALinkIntoThePayloadStoreIsOurs) {
+    const std::vector<xlings::xvm::SysrootEntry> entries{
+        {.path = "usr/include/demo.h",
+         .linkTarget = "/home/u/.xlings/data/xpkgs/xim-x-demo/1.0.0/include/demo.h"},
+    };
+    const auto findings = xlings::xvm::inspect_sysroot_ownership(
+        owned_db_(), {{"demo.files.1", "1.0.0"}}, entries, kPayloadRoot);
+    EXPECT_TRUE(findings.empty())
+        << "a materialized asset was reported as someone else's";
+}
+
+TEST(XvmSysrootOwnership, ARealFileWhereALinkWasDeclaredIsDrift) {
+    // Declared, but what is on disk is not our link -- something replaced it.
+    const std::vector<xlings::xvm::SysrootEntry> entries{
+        {.path = "usr/include/demo.h", .linkTarget = ""},
+    };
+    const auto findings = xlings::xvm::inspect_sysroot_ownership(
+        owned_db_(), {{"demo.files.1", "1.0.0"}}, entries, kPayloadRoot);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-sysroot-drift");
+    // Drift is actionable and current, so it is not a mere notice.
+    EXPECT_EQ(findings[0].severity, xlings::xvm::BindingSeverity::Broken);
+    EXPECT_NE(findings[0].hint.find("xlings use demo.files.1"),
+              std::string::npos);
+}
+
+TEST(XvmSysrootOwnership, AnUnclaimedEntryIsANoticeNotABreak) {
+    const std::vector<xlings::xvm::SysrootEntry> entries{
+        {.path = "usr/include/stdio.h", .linkTarget = ""},
+    };
+    const auto findings = xlings::xvm::inspect_sysroot_ownership(
+        owned_db_(), {}, entries, kPayloadRoot);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-sysroot-unmanaged");
+    // The host image accounts for most of these. Counting them broken would
+    // paint every installation red.
+    EXPECT_EQ(findings[0].severity, xlings::xvm::BindingSeverity::Notice);
+}
+
+TEST(XvmSysrootOwnership, ALinkPointingOutsideTheStoreIsNotOurs) {
+    // Same shape as ours, different destination -- e.g. a hand-made alias.
+    const std::vector<xlings::xvm::SysrootEntry> entries{
+        {.path = "etc/ssl/cert.pem", .linkTarget = "/etc/ssl/certs/ca.crt"},
+    };
+    const auto findings = xlings::xvm::inspect_sysroot_ownership(
+        owned_db_(), {}, entries, kPayloadRoot);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-sysroot-unmanaged");
+}
+
+TEST(XvmSysrootOwnership, AnInactiveVersionDoesNotClaimTheDestination) {
+    // Only the active selection can be drifting: an inactive version's
+    // assets are not supposed to be materialized at all.
+    const std::vector<xlings::xvm::SysrootEntry> entries{
+        {.path = "usr/include/demo.h", .linkTarget = ""},
+    };
+    const auto findings = xlings::xvm::inspect_sysroot_ownership(
+        owned_db_(), {}, entries, kPayloadRoot);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-sysroot-unmanaged");
+}
