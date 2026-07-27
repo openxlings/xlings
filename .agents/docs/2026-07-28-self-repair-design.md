@@ -76,12 +76,21 @@ R3 is the fallback the whole design hangs on: *taking something out and putting
 it back is always available*. It is also the rung that can leave the user worse
 off if it half-completes, so:
 
-- **R3 is never entered silently.** Without `--yes` it asks, listing exactly
-  what will be removed and reinstalled.
+- **R3 is previewable, not interactive.** An earlier draft of this document
+  said it would prompt unless `--yes` was passed. That was dropped on
+  implementation: `--fix` is already an explicit request to repair, a prompt
+  in the middle of a multi-package pass cannot be answered in CI, and a
+  question the user cannot see (doctor renders through the event stream) is
+  worse than none. `--dry-run` is the preview instead — it prints the exact
+  commands, having already run the index probe, and stops.
 - **R3 is skipped for anything not in the index.** If the package cannot be
   reinstalled, removing it is destruction, not repair.
 - **R3 runs one package at a time**, verifying reinstall before moving on, so a
   failure leaves one package down rather than all of them.
+- **The remove-succeeded-then-install-failed case is reported specially.** It
+  is the one outcome that leaves the user worse off than before the repair, so
+  it is never folded into a generic failure: the report names it and hands back
+  the command that finishes the job.
 
 ### What is deliberately NOT on the ladder
 
@@ -201,9 +210,29 @@ mistake in §6.
 
 | # | step | gate |
 |---|---|---|
-| S1 | `repair.cppm` with the ladder + policy, unit-tested against a fake executor | unit tests |
-| S2 | `cmd_doctor` emits `RepairTask`s; `--fix` drives the ladder | existing doctor tests stay green |
-| S3 | stamp `.xlings.json:version` on successful `--fix` | simulation assertion flips |
-| S4 | one-line migration hint on version mismatch (TTY only, once per version) | e2e: hint appears once, then not |
-| S5 | `self update` prints the same hint last | e2e |
-| S6 | re-detect pass + "remaining" reporting | idempotence assertion |
+| S1 | `repair.cppm` with the ladder + policy, unit-tested against a fake executor | **done** — 17 unit tests |
+| S2 | `cmd_doctor` emits `RepairTask`s; `--fix` drives the ladder | **done** |
+| S3 | stamp `.xlings.json:version` on successful `--fix` | **done** — `heal-stamped` |
+| S4 | one-line migration hint on version mismatch (TTY only) | **done** — `install` / `use` / `list` |
+| S5 | `self update` prints the same hint last | **done** (helps the *next* upgrade, not this one — see §4) |
+| S6 | re-detect pass + "remaining" reporting | **done** — `heal-idempotent` |
+| S7 | `--dry-run` | **done** — added when the "never touches the network" promise had to be replaced |
+
+Three things the implementation added that the design did not anticipate,
+each found by running it rather than by reading it:
+
+- **A finding names an xvm target; the ladder installs a package.** A broken
+  llvm reports `ar@22.1.8`, `clang@22.1.8` and forty more, none installable,
+  and the binding *root* is not the package either (gcc's root target is
+  `xim-gnu-gcc`). The owner is now searched for in descending order of
+  confidence and confirmed against the index before use; findings collapse
+  onto their owner, one install per release.
+- **The re-detect must reload state from disk first.** The repairs run in
+  subprocesses; this process holds the copy it read at startup. Without the
+  reload a purely-metadata cure reads as a failure — measured as 55 healed and
+  one false failure on a real 0.4.69 home.
+- **The stamp is gated on the repair pass, not on doctor being clean.**
+  Active-group incoherence between two providers that both claim `cc` accounts
+  for ~190 findings on a real home by itself; requiring zero would mean the
+  marker never lands and the hint nags forever about a migration that already
+  happened.
