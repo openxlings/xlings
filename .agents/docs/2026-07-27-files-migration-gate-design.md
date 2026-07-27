@@ -73,6 +73,28 @@ else
 end
 ```
 
+### 这不是新发明 —— 索引里已经在这么做，只是做得很糟
+
+`xim-pkgindex/libs/sysroot.lua:6-10` 的注释：
+
+> Requires xlings >= 0.4.29 … Older xlings versions have no `xim.pkgindex.*`
+> resolver, so the import falls through to the unknown-module stub and any
+> callsite hits a nil error — **that's the right signal to bump xlings.**
+
+也就是说生态里**已经**在用能力探测做版本判断了，只不过形式是**崩溃**：
+`import()` 对未知模块返回一个宽容代理 stub（`prelude.lua:46-63`），调用点撞
+nil 才报错。本方案是同一个思路的**显式**写法 —— 探测点从崩溃现场提前到分支处，
+并且有 legacy 分支兜底而不是让用户去升级。
+
+### 一处必须实测、不能靠推理的地方
+
+`import()` 对**未知**模块返回宽容代理 stub，而代理 stub 的任意字段访问都可能是
+truthy —— 如果 `xvm` 走的是那条路，`xvm.files` 在老客户端上也会为真，探测彻底失效。
+
+推理上不会：`xvm` 由 C++ 注册进 `_LIBXPKG_MODULES`（`xpkg-executor.cppm:526-536`），
+在 0.0.46 里同样存在，拿到的是真表，缺字段返回 nil。**但这是整个方案的单点，
+必须用真实的 0.4.69 二进制实测**（验收 A1），不接受"读代码看起来对"。
+
 三条硬规则：
 
 1. **不要用 `xvm.add{type="files"}` 做迁移。** `xvm.add` 在老客户端上存在，

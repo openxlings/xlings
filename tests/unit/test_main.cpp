@@ -12599,6 +12599,59 @@ TEST(LegacyHeaderDir, IgnoresNonHeaderEffects) {
 }
 
 // ============================================================
+// xpackage spec gate
+//
+// The defect these cover: `spec` used to be compared only against the
+// literal "2", so every other value -- including a future revision -- fell
+// through to V1 semantics silently. For spec "2" that meant skipping the
+// fail-closed arch gate, i.e. installing the wrong architecture without a
+// word, which is worse than refusing.
+
+TEST(XpkgSpecGate, AbsentSpecIsV1AndSupported) {
+    const auto support = xlings::xim::xpkg_spec_support("");
+    EXPECT_TRUE(support.supported);
+    EXPECT_EQ(support.declared, 1);
+}
+
+TEST(XpkgSpecGate, ImplementedRevisionsAreSupported) {
+    for (const auto* spec : {"1", "2"}) {
+        const auto support = xlings::xim::xpkg_spec_support(spec);
+        EXPECT_TRUE(support.supported) << "spec " << spec;
+    }
+    EXPECT_EQ(xlings::xim::xpkg_spec_support("2").declared, 2);
+}
+
+TEST(XpkgSpecGate, NewerRevisionIsRefusedNotDowngraded) {
+    const auto support = xlings::xim::xpkg_spec_support("3");
+    EXPECT_FALSE(support.supported);
+    // Reported, not zero: the caller distinguishes "too new, go update" from
+    // "we could not read this at all".
+    EXPECT_EQ(support.declared, 3);
+}
+
+TEST(XpkgSpecGate, UnreadableSpecIsRefusedRatherThanAssumed) {
+    // A value we cannot parse is exactly the case where guessing V1 is
+    // unsafe -- "2.1" plainly asks for something, we just cannot tell what.
+    for (const auto* spec : {"2.1", "v2", "abc", "0", "-1", " 2", "2 "}) {
+        const auto support = xlings::xim::xpkg_spec_support(spec);
+        EXPECT_FALSE(support.supported) << "spec '" << spec << "'";
+        EXPECT_EQ(support.declared, 0) << "spec '" << spec << "'";
+    }
+}
+
+TEST(XpkgSpecGate, TheCapMatchesWhatIsActuallyImplemented) {
+    // A guard on the constant itself: bumping it without implementing the
+    // revision is the failure mode this whole gate exists to prevent, and
+    // the only mechanical trace of "implemented" is the arch enforcement
+    // that spec 2 introduced.
+    EXPECT_EQ(xlings::xim::max_supported_xpkg_spec, 2);
+    EXPECT_TRUE(xlings::xim::xpkg_spec_support("2").supported);
+    EXPECT_FALSE(
+        xlings::xim::xpkg_spec_support(
+            std::to_string(xlings::xim::max_supported_xpkg_spec + 1)).supported);
+}
+
+// ============================================================
 
 #ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {

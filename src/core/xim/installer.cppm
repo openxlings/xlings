@@ -81,6 +81,40 @@ struct XpkgRegistrationPlan {
     std::vector<XpkgFilesystemEffect> effects;
 };
 
+// The highest xpackage spec revision this build understands.
+//
+// Bump only together with the code that implements the new revision.
+inline constexpr int max_supported_xpkg_spec = 2;
+
+struct XpkgSpecSupport {
+    bool supported { true };
+    // 0 when the declared value could not be read as a revision at all.
+    int  declared { 1 };
+};
+
+// Decide whether a recipe's `spec` describes semantics this build implements.
+//
+// Reading a spec we do not implement is not a missing feature, it is a
+// different install than the author wrote. spec "2" is the case in point: it
+// made `archs` fail-closed, so a client that ignores the field does not skip
+// a nicety -- it installs the wrong architecture without a word. Refusing is
+// the only answer that cannot silently produce the wrong bytes.
+//
+// Absent is V1: the field predates being meaningful and "" has always meant
+// V1. Unreadable is refused rather than assumed -- a value we cannot parse
+// (say a future "2.1") is precisely the case where guessing is unsafe.
+XpkgSpecSupport xpkg_spec_support(std::string_view spec) {
+    if (spec.empty()) return {.supported = true, .declared = 1};
+    int value = 0;
+    const auto* first = spec.data();
+    const auto* last  = spec.data() + spec.size();
+    auto [ptr, ec] = std::from_chars(first, last, value);
+    if (ec != std::errc{} || ptr != last || value < 1) {
+        return {.supported = false, .declared = 0};
+    }
+    return {.supported = value <= max_supported_xpkg_spec, .declared = value};
+}
+
 std::optional<XpkgResolvedFilesystemEffect>
 resolve_xpkg_filesystem_effect(
         const xvm::VersionDB& db,
@@ -1754,6 +1788,26 @@ public:
                 continue;
             }
 
+            // Refuse a recipe written against a spec this build does not
+            // implement, rather than falling through to V1 semantics.
+            //
+            // Install only. An already-installed package whose recipe later
+            // moved past us must still be removable -- taking something out
+            // needs no understanding of the spec that put it in.
+            const auto specSupport = xpkg_spec_support(pkg->spec);
+            if (!specSupport.supported) {
+                if (specSupport.declared > 0) {
+                    log::error("{}: xpackage spec \"{}\" is newer than this "
+                               "xlings understands (max {})",
+                               node.name, pkg->spec, max_supported_xpkg_spec);
+                    log::info("try: xlings self update");
+                } else {
+                    log::error("{}: unreadable xpackage spec \"{}\"",
+                               node.name, pkg->spec);
+                }
+                continue;
+            }
+
             // Fail-closed arch gate: refuse a package whose declared `archs`
             // don't include the host arch. Gated on spec >= "2": in V1 the
             // `archs` field was never enforced and is frequently
@@ -1762,7 +1816,9 @@ public:
             // it would break installs that worked before. V2 authors opt into
             // correct per-arch declarations and want this enforced. Empty
             // `archs` is always exempt.
-            if (pkg->spec == "2" && !pkg->archs.empty()) {
+            // `>= 2` rather than `== "2"`: a spec revision we do implement
+            // keeps the enforcement its predecessor introduced.
+            if (specSupport.declared >= 2 && !pkg->archs.empty()) {
                 const std::string hostArchCheck =
                     mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
                 bool supported = false;
