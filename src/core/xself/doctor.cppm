@@ -401,6 +401,38 @@ export int cmd_doctor(EventStream& stream, bool fix) {
     // those means dropping stored metadata, which needs the user's explicit
     // consent rather than a flag they passed for shim repair.
     if (fix) {
+        // Dangling pairwise edges first: they are repairable without
+        // guessing, and leaving one in place keeps the release it names
+        // unresolvable, which would make the deactivation pass below see a
+        // problem that is really this one.
+        if (auto pruning = xvm::plan_dangling_edge_pruning(db);
+            !pruning.empty()) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                add_field("✗ binding state", std::format(
+                    "cannot drop dangling binding edges: {}", lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableDb = Config::versions_mut();
+                const auto replanned =
+                    xvm::plan_dangling_edge_pruning(mutableDb);
+                const auto dropped =
+                    xvm::apply_dangling_edge_pruning(mutableDb, replanned);
+                if (dropped > 0) {
+                    Config::save_versions();
+                    healed += static_cast<int>(dropped);
+                    for (const auto& edge : replanned.edges) {
+                        add_field("· edge dropped", std::format(
+                            "{}@{} no longer points at unregistered {}@{}",
+                            edge.target, edge.version,
+                            edge.peerTarget, edge.peerVersion));
+                    }
+                    // The database changed underneath the findings above.
+                    db = Config::versions();
+                }
+            }
+        }
+
         auto plan = xvm::plan_incoherent_deactivation(db, ws);
         if (!plan.targets.empty()) {
             auto lock = xvm::acquire_state_lock(Config::paths().homeDir);

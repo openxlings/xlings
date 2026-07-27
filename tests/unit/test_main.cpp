@@ -11692,6 +11692,127 @@ TEST(XvmDateVersioning, ADateVersionOutranksEverySemanticVersion) {
 }
 
 // ============================================================
+// Dangling legacy binding edges
+//
+// Found by finally running the real-toolchain check the plan had carried
+// since the start and never executed. On a real installation `gcc@15.1.0`
+// carries a pairwise edge to `xim-gnu-gcc@15.1.0`, an anchor registered only
+// at 16.1.0. `xlings use gcc 15.1.0` works on 0.4.68 and is refused on
+// 0.4.70 with "a member of this release is registered at no such version" --
+// and `doctor` did not report it, `--fix` could not repair it, so reinstall
+// was the only way out. For an upgrade sold as seamless, that is the
+// opposite.
+//
+// The edge names a version that does not exist, so it cannot describe a
+// member anyone could switch to. Dropping it is repair without guessing,
+// which is what separates it from an incoherent release.
+// ============================================================
+
+namespace {
+
+// gcc@15.1.0 bound to an anchor that only exists at 16.1.0 -- the shape
+// found on a real machine.
+xlings::xvm::VersionDB dangling_edge_db_() {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["15.1.0"].path = "/pkg/gcc/15.1.0/bin";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["xim-gnu-gcc"].type = "program";
+    db["xim-gnu-gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0";
+    // Legacy pairwise edges, as registration writes them.
+    db["gcc"].bindings["xim-gnu-gcc"]["15.1.0"] = "15.1.0";   // dangling
+    db["gcc"].bindings["xim-gnu-gcc"]["16.1.0"] = "16.1.0";   // fine
+    db["xim-gnu-gcc"].bindings["gcc"]["16.1.0"] = "16.1.0";   // fine
+    return db;
+}
+
+}  // namespace
+
+TEST(XvmDanglingEdge, TheRefusalIsReproducedBeforeAnythingIsFixed) {
+    const auto db = dangling_edge_db_();
+    // This is the user-visible symptom: a version that resolved on 0.4.68.
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    ASSERT_FALSE(plan.has_value())
+        << "the failing state under test no longer reproduces";
+    EXPECT_EQ(plan.error().code, "xvm-binding-version-missing");
+}
+
+TEST(XvmDanglingEdge, DoctorReportsIt) {
+    const auto db = dangling_edge_db_();
+    const auto findings = xlings::xvm::inspect_binding_state(db, {});
+
+    const auto it = std::ranges::find_if(findings, [](const auto& f) {
+        return f.code == "xvm-legacy-edge-dangling";
+    });
+    ASSERT_NE(it, findings.end())
+        << "a state that blocks `use` was invisible to doctor";
+    EXPECT_EQ(it->target, "gcc");
+    EXPECT_EQ(it->version, "15.1.0");
+    EXPECT_FALSE(it->hint.empty())
+        << "a finding the user cannot act on is not an improvement";
+}
+
+TEST(XvmDanglingEdge, PruningDropsOnlyTheEdgeThatNamesNothing) {
+    auto db = dangling_edge_db_();
+    const auto plan = xlings::xvm::plan_dangling_edge_pruning(db);
+    ASSERT_EQ(plan.edges.size(), 1u) << "healthy edges must not be touched";
+    EXPECT_EQ(plan.edges[0].target, "gcc");
+    EXPECT_EQ(plan.edges[0].version, "15.1.0");
+    EXPECT_EQ(plan.edges[0].peerTarget, "xim-gnu-gcc");
+    EXPECT_EQ(plan.edges[0].peerVersion, "15.1.0");
+
+    EXPECT_EQ(xlings::xvm::apply_dangling_edge_pruning(db, plan), 1u);
+    // The 16.1.0 edges survive in both directions.
+    EXPECT_EQ(db.at("gcc").bindings.at("xim-gnu-gcc").at("16.1.0"), "16.1.0");
+    EXPECT_EQ(db.at("xim-gnu-gcc").bindings.at("gcc").at("16.1.0"), "16.1.0");
+    EXPECT_FALSE(db.at("gcc").bindings.at("xim-gnu-gcc").contains("15.1.0"));
+}
+
+TEST(XvmDanglingEdge, AfterPruningTheSwitchWorksAgain) {
+    auto db = dangling_edge_db_();
+    xlings::xvm::apply_dangling_edge_pruning(
+        db, xlings::xvm::plan_dangling_edge_pruning(db));
+
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    // gcc@15.1.0 stands alone once the edge to the missing anchor is gone --
+    // which is what 0.4.68 did, and what the user expects.
+    EXPECT_EQ(plan->members.size(), 1u);
+    EXPECT_EQ(plan->members.at("gcc"), "15.1.0");
+    // 16.1.0 still resolves as a release, so pruning did not flatten
+    // everything into standalone entries.
+    auto still = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0");
+    ASSERT_TRUE(still.has_value()) << still.error().what;
+    EXPECT_EQ(still->members.size(), 2u);
+}
+
+// An edge recorded under a version that is not registered either can never be
+// reached: resolution always starts from a real (target, version). Leaving it
+// alone keeps the repair to what is demonstrably harmful.
+TEST(XvmDanglingEdge, UnreachableEdgesAreLeftAlone) {
+    auto db = dangling_edge_db_();
+    db["gcc"].bindings["ghost"]["9.9.9"] = "9.9.9";  // owner version absent
+
+    const auto plan = xlings::xvm::plan_dangling_edge_pruning(db);
+    for (const auto& edge : plan.edges) {
+        EXPECT_NE(edge.version, "9.9.9")
+            << "pruned an edge no resolution can reach";
+    }
+}
+
+TEST(XvmDanglingEdge, AHealthyDatabaseYieldsNoPruning) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["g++"].type = "program";
+    db["g++"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["gcc"].bindings["g++"]["16.1.0"] = "16.1.0";
+    db["g++"].bindings["gcc"]["16.1.0"] = "16.1.0";
+
+    EXPECT_TRUE(xlings::xvm::plan_dangling_edge_pruning(db).empty());
+}
+
+// ============================================================
 // State lock — install/remove/use must not overwrite each other
 
 namespace {

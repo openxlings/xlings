@@ -106,6 +106,48 @@ std::vector<BindingFinding> inspect_binding_state(
         }
     }
 
+    // ── Dangling legacy edges ────────────────────────────────────────
+    //
+    // The INV-4 pass above only looks at entries that carry a
+    // `bindingGroup`. Everything written before 0.4.70 does not, so its
+    // pairwise edges were never checked -- and a pairwise edge pointing at a
+    // version that no longer exists makes the whole release unresolvable.
+    //
+    // This is not hypothetical. On a real installation `gcc@15.1.0` carries
+    // an edge to `xim-gnu-gcc@15.1.0`, an anchor that only exists at 16.1.0,
+    // so `xlings use gcc 15.1.0` -- which worked on 0.4.68 -- is refused with
+    // "a member of this release is registered at no such version". Nothing
+    // reported it and `--fix` could not repair it, leaving reinstall as the
+    // only way out. That is the upgrade being anything but seamless.
+    //
+    // An edge whose destination does not exist carries no information: it
+    // cannot name a member to switch, it can only cause a refusal. Reporting
+    // it separately from INV-4 keeps the remedy separate too -- this one is
+    // repairable without guessing, and INV-4's is not.
+    for (const auto& [target, info] : db) {
+        for (const auto& [peerTarget, edges] : info.bindings) {
+            auto peerIt = db.find(peerTarget);
+            for (const auto& [ownVersion, peerVersion] : edges) {
+                if (!info.versions.contains(ownVersion)) continue;
+                if (peerIt != db.end()
+                    && peerIt->second.versions.contains(peerVersion)) {
+                    continue;
+                }
+                findings.push_back({
+                    .code = "xvm-legacy-edge-dangling",
+                    .summary = std::format(
+                        "a binding edge points at '{}@{}', which is not "
+                        "registered", peerTarget, peerVersion),
+                    .target = target,
+                    .version = ownVersion,
+                    .field = std::format("/bindings/{}", peerTarget),
+                    .hint = "run `xlings self doctor --fix` to drop the edge; "
+                            "it names nothing and only blocks switching",
+                });
+            }
+        }
+    }
+
     // ── INV-2: an active release is active as a whole ────────────────
     std::set<std::string> reportedIncoherent;
     for (const auto& [target, version] : workspace) {
@@ -198,6 +240,67 @@ DeactivationPlan plan_incoherent_deactivation(const VersionDB& db,
         plan.targets.emplace(target, label);
     }
     return plan;
+}
+
+// Edges to drop: (owner target, owner version, peer target, peer version).
+struct DanglingEdgePruning {
+    struct Edge {
+        std::string target;
+        std::string version;
+        std::string peerTarget;
+        std::string peerVersion;
+    };
+    std::vector<Edge> edges;
+
+    [[nodiscard]] bool empty() const { return edges.empty(); }
+};
+
+// Collect every pairwise binding edge whose destination is not registered.
+//
+// Safe to apply without guessing, which is what separates it from the
+// incoherent-release case: the edge names a version that does not exist, so
+// it cannot be describing a member anyone could switch to. Keeping it only
+// makes `resolve_binding_selection` refuse the release.
+//
+// Pure: returns the plan, applies nothing.
+DanglingEdgePruning plan_dangling_edge_pruning(const VersionDB& db) {
+    DanglingEdgePruning plan;
+    for (const auto& [target, info] : db) {
+        for (const auto& [peerTarget, edges] : info.bindings) {
+            auto peerIt = db.find(peerTarget);
+            for (const auto& [ownVersion, peerVersion] : edges) {
+                if (!info.versions.contains(ownVersion)) continue;
+                if (peerIt != db.end()
+                    && peerIt->second.versions.contains(peerVersion)) {
+                    continue;
+                }
+                plan.edges.push_back({target, ownVersion,
+                                      peerTarget, peerVersion});
+            }
+        }
+    }
+    return plan;
+}
+
+// Apply the pruning. Returns how many edges were dropped.
+std::size_t apply_dangling_edge_pruning(VersionDB& db,
+                                        const DanglingEdgePruning& plan) {
+    std::size_t dropped = 0;
+    for (const auto& edge : plan.edges) {
+        auto infoIt = db.find(edge.target);
+        if (infoIt == db.end()) continue;
+        auto peerIt = infoIt->second.bindings.find(edge.peerTarget);
+        if (peerIt == infoIt->second.bindings.end()) continue;
+        auto versionIt = peerIt->second.find(edge.version);
+        if (versionIt == peerIt->second.end()) continue;
+        if (versionIt->second != edge.peerVersion) continue;
+        peerIt->second.erase(versionIt);
+        ++dropped;
+        if (peerIt->second.empty()) {
+            infoIt->second.bindings.erase(peerIt);
+        }
+    }
+    return dropped;
 }
 
 }  // namespace xlings::xvm
