@@ -12,6 +12,10 @@ import xlings.core.semver;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.lock;
+import xlings.core.xvm.bindings;
+import xlings.core.xvm.errors;
+import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
 
 export namespace xlings::xvm {
@@ -38,6 +42,25 @@ void create_link_(const fs::path& src, const fs::path& dst) {
     if (ec) log::warn("[xvm] link failed: {} -> {}", dst.string(), src.string());
 }
 
+// Where a header asset lands: `<sysroot>/include/<destinationPrefix>`, or
+// `<sysroot>/include` when the asset declares no prefix.
+//
+// The prefix exists because a source directory's name is not always the name
+// the compiler looks under -- a toolchain's `include/c++/15.1.0` has to appear
+// as `c++/15.1.0`, not as a flattened pile of its contents. Every asset the
+// current recipe API can produce has an empty prefix (libxpkg's `xvm.setup`
+// takes a single `includedir` and no destination), so today this is always
+// the sysroot include root; it is honored anyway because the field is part of
+// the persisted model and round-trips through the version database. A
+// serialized field that materialization ignores is exactly the kind of state
+// this release is removing, not adding.
+fs::path header_destination_(const HeaderAsset& asset,
+                             const fs::path& sysroot_include) {
+    return asset.destinationPrefix.empty()
+        ? sysroot_include
+        : sysroot_include / fs::path(asset.destinationPrefix);
+}
+
 // Install header symlinks from source includedir into sysroot include/
 void install_headers(const std::string& includedir, const fs::path& sysroot_include) {
     fs::create_directories(sysroot_include);
@@ -46,6 +69,19 @@ void install_headers(const std::string& includedir, const fs::path& sysroot_incl
     if (!fs::exists(src, ec)) return;
     for (auto& entry : platform::dir_entries(src)) {
         auto target = sysroot_include / entry.path().filename();
+        // Already pointing at this exact source: leave it alone.
+        // `xlings use` now re-materializes the active release on every
+        // invocation so it can repair a sysroot that drifted, and
+        // remove-then-relink would open a window on every one of those
+        // calls where the header is simply absent -- long enough for a
+        // concurrent build to fail on it. equivalent() covers symlinks,
+        // Windows junctions and hard links alike; a copy fallback compares
+        // unequal and is relinked, which is correct.
+        std::error_code sameEc;
+        if (std::filesystem::equivalent(target, entry.path(), sameEc)
+            && !sameEc) {
+            continue;
+        }
         if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
             log::debug("[xvm] overwriting header: {}", entry.path().filename().string());
             fs::remove_all(target, ec);
@@ -73,50 +109,100 @@ void remove_headers(const std::string& includedir, const fs::path& sysroot_inclu
     }
 }
 
-// Install library symlinks from source libdir into sysroot lib/
-void install_libs(const std::string& libdir, const fs::path& sysroot_lib,
-                  const std::vector<std::string>& libs) {
-    fs::create_directories(sysroot_lib);
-    std::error_code ec;
-    for (auto& lib : libs) {
-        auto src = fs::path(libdir) / lib;
-        auto dst = sysroot_lib / lib;
-        if (fs::exists(dst, ec)) fs::remove(dst, ec);
-        if (fs::exists(src, ec)) create_link_(src, dst);
+// Same two operations, addressed by header asset rather than by bare source
+// directory, so the destination prefix is honored.
+void install_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
+    install_headers(asset.sourceDir, header_destination_(asset, sysroot_include));
+}
+
+void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
+    const auto destination = header_destination_(asset, sysroot_include);
+    remove_headers(asset.sourceDir, destination);
+    // A prefix directory that only ever held this release's links is litter
+    // once they are gone. remove() on a non-empty directory fails, so this
+    // cannot take anything else with it.
+    if (!asset.destinationPrefix.empty()) {
+        std::error_code ec;
+        fs::remove(destination, ec);
     }
 }
 
-// Install all library entries from source libdir into sysroot lib/
-void install_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    fs::create_directories(sysroot_lib);
+// Place one file at an exact destination, replacing whatever is there.
+//
+// Shared by libraries and by declared file assets: both are "this payload
+// file becomes that path in the subos", and both need the same replacement
+// discipline.
+//
+// Replaces by rename rather than remove-then-link. Two versions of a library
+// share a soname, so a switch overwrites the same name -- and `use`
+// re-materializes the active release on every invocation to repair a drifted
+// sysroot, so remove-then-link would open a window on every one of those
+// calls where the file is simply absent. Long enough for a concurrent build
+// step to fail on it. rename(2) replaces atomically; Windows has no
+// equivalent for every entry kind, so the staging file is cleaned up and the
+// direct path is taken there.
+void place_asset(const std::string& source, const fs::path& destination) {
+    if (source.empty() || destination.empty()) return;
     std::error_code ec;
-    fs::path src(libdir);
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
-            fs::remove_all(target, ec);
+    fs::path src(source);
+    if (!fs::exists(src, ec)) {
+        log::debug("[xvm] asset source missing, not placed: {}", source);
+        return;
+    }
+    fs::create_directories(destination.parent_path(), ec);
+
+    // Already pointing at this exact file: leave it alone. Keeps the repeated
+    // re-materialization that `use` performs down to a stat.
+    std::error_code sameEc;
+    if (fs::equivalent(destination, src, sameEc) && !sameEc) return;
+
+    const auto staging =
+        destination.parent_path()
+        / (destination.filename().string() + ".xlings-new");
+    fs::remove_all(staging, ec);
+    create_link_(src, staging);
+    if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
+        log::warn("[xvm] could not stage asset: {}", destination.string());
+        return;
+    }
+    ec.clear();
+    fs::rename(staging, destination, ec);
+    if (ec) {
+        // Platforms without an atomic replace for this entry kind. Accept the
+        // window rather than leave the staging file behind.
+        std::error_code rmEc;
+        fs::remove_all(destination, rmEc);
+        ec.clear();
+        fs::rename(staging, destination, ec);
+        if (ec) {
+            fs::remove_all(staging, rmEc);
+            log::warn("[xvm] could not place asset {}: {}",
+                      destination.string(), ec.message());
         }
-        create_link_(entry.path(), target);
     }
 }
 
-// Remove library symlinks that were installed from source libdir
-void remove_libdir(const std::string& libdir, const fs::path& sysroot_lib) {
-    if (libdir.empty()) return;
-    fs::path src(libdir);
+// Take one placed file back out.
+void remove_asset(const fs::path& destination) {
+    if (destination.empty()) return;
     std::error_code ec;
-    if (!fs::exists(src, ec)) return;
-    for (auto& entry : platform::dir_entries(src)) {
-        auto target = sysroot_lib / entry.path().filename();
-        if (fs::is_symlink(target, ec)) {
-            fs::remove(target, ec);
-#if defined(_WIN32)
-        } else if (fs::exists(target, ec)) {
-            fs::remove_all(target, ec);
-#endif
-        }
+    if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
+        fs::remove_all(destination, ec);
     }
+}
+
+// Library-shaped wrappers, kept because the sysroot lib directory is implied
+// rather than declared for libraries.
+void place_library(const std::string& source,
+                   const std::string& name,
+                   const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    place_asset(source, sysroot_lib / name);
+}
+
+void remove_library(const std::string& name, const fs::path& sysroot_lib) {
+    if (name.empty()) return;
+    remove_asset(sysroot_lib / name);
 }
 
 // Helper: filter a list of version keys (`ns:ver` or bare) down to those
@@ -149,6 +235,17 @@ filter_to_subos_installed_(const std::string& target,
 // xlings use <target> <version>
 // Updates the active subos workspace and creates/updates bin/ hardlinks
 int cmd_use(const std::string& target, const std::string& version, EventStream& stream) {
+    // Serialize against any other xlings mutating this home, then re-read
+    // state under the lock: Config loaded it at process start, outside the
+    // lock, so acting on that snapshot is how two commands lose each other's
+    // work. See xvm/lock.cppm.
+    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
+    if (!stateLock) {
+        log::error("{}", stateLock.error());
+        return 1;
+    }
+    Config::reload_state();
+
     auto db = Config::versions();
     auto& p  = Config::paths();
 
@@ -195,46 +292,70 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     log::debug("fuzzy version match: {} -> {}", version, resolved);
 
-    // Header & lib switching: remove old, install new
-    auto sysroot_include = p.subosDir / "usr" / "include";
-    auto sysroot_lib     = p.subosDir / "usr" / "lib";
+    // Resolve the whole release before touching anything.
+    //
+    // This used to walk the binding edges by hand, keyed by target rather
+    // than by (target, version), and without checking that what it reached
+    // actually existed. A stale edge would take it to a version with no
+    // VData, which it then wrote into the active workspace -- the shim
+    // failed later, far from the command that caused it. Header and library
+    // switching ran *before* that walk and only for the entry target, so a
+    // failure part-way through left the sysroot holding one release and the
+    // workspace claiming another.
+    //
+    // resolve_binding_selection validates the whole group and fails closed.
+    // Running it first means a bad group costs the user an error message
+    // instead of a half-switched toolchain.
     auto workspace = Config::effective_workspace();
-    auto old_active = get_active_version(workspace, target);
-    log::debug("switching headers: {} -> {}", old_active.empty() ? "(none)" : old_active, resolved);
-    if (!old_active.empty() && old_active != resolved) {
-        auto old_vdata = get_vdata(db, target, old_active);
-        if (old_vdata && !old_vdata->includedir.empty())
-            remove_headers(old_vdata->includedir, sysroot_include);
-        if (old_vdata && !old_vdata->libdir.empty())
-            remove_libdir(old_vdata->libdir, sysroot_lib);
+    auto plan = plan_use_switch(db, workspace, target, resolved);
+    if (!plan) {
+        log::error("{}", render(plan.error(), true));
+        return 1;
     }
-    auto new_vdata = get_vdata(db, target, resolved);
-    if (new_vdata && !new_vdata->includedir.empty())
-        install_headers(new_vdata->includedir, sysroot_include);
-    if (new_vdata && !new_vdata->libdir.empty())
-        install_libdir(new_vdata->libdir, sysroot_lib);
+    const auto& to_switch = plan->members;
 
-    // Collect all (target, version) pairs by traversing the binding tree
-    std::map<std::string, std::string> to_switch;
-    std::set<std::string> visited;
+    // Everything above this line is a decision; everything below changes the
+    // filesystem. Members that are already where they belong emit no change.
+    auto sysroot_include = p.subosDir / "usr" / "include";
+    // `<subos>/lib`, which is where the install path has always put
+    // libraries (`Config::paths().libDir`) and where they actually are: 94
+    // entries on a real installation, against one on `<subos>/usr/lib`.
+    // This line used to read `usr/lib`, and the disagreement was invisible
+    // because the switch side never emitted any library work at all --
+    // `VData::libdir` has no writer. Making libraries switch without fixing
+    // it would have started filling a second, unused directory.
+    auto sysroot_lib     = p.libDir;
+    // Headers first, and as two whole passes rather than per member: they are
+    // an asset of the release, not of any one member of it. Interleaving the
+    // passes -- remove one member's, install the next member's -- let the
+    // outgoing release's removal delete a link the incoming release had
+    // already put down, for every header name the two versions share. The
+    // plan has the two lists deduplicated and disjoint already.
+    for (const auto& asset : plan->removeHeaders) {
+        remove_headers(asset, sysroot_include);
+    }
+    for (const auto& asset : plan->installHeaders) {
+        install_headers(asset, sysroot_include);
+    }
 
-    std::function<void(const std::string&, const std::string&)> collect_bindings;
-    collect_bindings = [&](const std::string& node, const std::string& node_ver) {
-        if (visited.contains(node)) return;
-        visited.insert(node);
-        to_switch[node] = node_ver;
-
-        auto info = get_vinfo(db, node);
-        if (!info) return;
-        for (auto& [peer_name, vermap] : info->bindings) {
-            auto it = vermap.find(node_ver);
-            if (it != vermap.end()) {
-                collect_bindings(peer_name, it->second);
-            }
-        }
-    };
-
-    collect_bindings(target, resolved);
+    for (const auto& change : plan->switches) {
+        if (!change.removeLibName.empty())
+            remove_library(change.removeLibName, sysroot_lib);
+        if (!change.installLibSource.empty())
+            place_library(change.installLibSource, change.installLibName,
+                          sysroot_lib);
+        // File assets carry their own destination, relative to the subos
+        // root, so they are joined here rather than assumed into a fixed dir.
+        if (!change.removeFileDest.empty())
+            remove_asset(p.subosDir / change.removeFileDest);
+        if (!change.installFileSource.empty())
+            place_asset(change.installFileSource,
+                        p.subosDir / change.installFileDest);
+        log::debug("switching {}: {} -> {}", change.target,
+                   change.previousVersion.empty() ? "(none)"
+                                                  : change.previousVersion,
+                   change.version);
+    }
 
     // Update workspace for all nodes in the binding tree, and opt this
     // subos into the version's installed[] set if it wasn't already.

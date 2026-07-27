@@ -12,8 +12,11 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.xvm.types;
+import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.inspect;
+import xlings.core.xvm.lock;
 
 namespace xlings::xself {
 
@@ -292,6 +295,29 @@ export int cmd_doctor(EventStream& stream, bool fix) {
             if (!alias_mode) {
                 auto exe = xvm::resolve_executable(name, vdata.path, home_str);
                 if (!exe.empty()) continue;  // OK
+
+                // A name that exists only to anchor a release is not a
+                // broken payload. Library-only packages have no program of
+                // their own, so their recipe registers the package name with
+                // no bindir purely to have something for the libraries to
+                // bind to; with `type` unset that entry defaults to
+                // "program" and then fails this check forever. On a real
+                // installation 31 entries were reported this way, and
+                // `xlings install <pkg>@<ver>` -- the hint we printed --
+                // cannot fix any of them, because nothing is wrong.
+                //
+                // Reported, but as what it is. Staying silent would hide the
+                // rarer case of a genuine program whose payload directory
+                // survived while its executable did not; that entry is also
+                // a binding root, so it lands here too and the user still
+                // sees the line.
+                if (xvm::is_binding_root(db, name, version)) {
+                    add_field("ⓘ release anchor", std::format(
+                        "{}@{} registers no program of its own; it names the "
+                        "release its libraries belong to", name, version));
+                    continue;
+                }
+
                 report_broken_payload(name, version, std::format(
                     "{}@{} executable '{}' not found in {}",
                     name, version, name, expanded));
@@ -335,6 +361,100 @@ export int cmd_doctor(EventStream& stream, bool fix) {
                 "{}@{} alias '{}' not resolvable in {} (may be a system command)",
                 name, version, alias_prog, expanded);
             add_field("⚠ alias unresolved", std::move(detail));
+        }
+    }
+
+    // Check 4: the binding state itself.
+    //
+    // Everything above looks at shims and payloads. None of it can see a
+    // release whose members disagree about which release they are, or an
+    // active toolchain whose members drifted apart -- and those are exactly
+    // the states that make `xlings use` refuse. Without this, a user hitting
+    // that refusal has nowhere to look but versions.json.
+    //
+    // Read-only for now: reporting is what removes the dead end. Repair
+    // lands separately, because deactivating a group or dropping metadata
+    // is a decision the user should see spelled out before it happens.
+    const auto bindingFindings = xvm::inspect_binding_state(db, ws);
+    for (const auto& finding : bindingFindings) {
+        ++broken;
+        std::string detail = finding.summary;
+        if (!finding.target.empty()) {
+            detail += std::format(" [{}{}{}]", finding.target,
+                                  finding.version.empty() ? "" : "@",
+                                  finding.version);
+        }
+        if (!finding.field.empty()) {
+            detail += std::format(" at {}", finding.field);
+        }
+        detail += std::format(" — {} — {}", finding.code, finding.hint);
+        add_field("✗ binding state", std::move(detail));
+    }
+
+    // --fix for the one binding problem that can be repaired without
+    // guessing: an active release whose members disagree. Deactivate the
+    // whole release and let the user re-select. Choosing a survivor here
+    // would mean deciding which member was "right", which is exactly the
+    // silent decision that produces incoherent state to begin with.
+    //
+    // Unresolvable and corrupt entries are reported but not touched: fixing
+    // those means dropping stored metadata, which needs the user's explicit
+    // consent rather than a flag they passed for shim repair.
+    if (fix) {
+        // Dangling pairwise edges first: they are repairable without
+        // guessing, and leaving one in place keeps the release it names
+        // unresolvable, which would make the deactivation pass below see a
+        // problem that is really this one.
+        if (auto pruning = xvm::plan_dangling_edge_pruning(db);
+            !pruning.empty()) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                add_field("✗ binding state", std::format(
+                    "cannot drop dangling binding edges: {}", lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableDb = Config::versions_mut();
+                const auto replanned =
+                    xvm::plan_dangling_edge_pruning(mutableDb);
+                const auto dropped =
+                    xvm::apply_dangling_edge_pruning(mutableDb, replanned);
+                if (dropped > 0) {
+                    Config::save_versions();
+                    healed += static_cast<int>(dropped);
+                    for (const auto& edge : replanned.edges) {
+                        add_field("· edge dropped", std::format(
+                            "{}@{} no longer points at unregistered {}@{}",
+                            edge.target, edge.version,
+                            edge.peerTarget, edge.peerVersion));
+                    }
+                    // The database changed underneath the findings above.
+                    db = Config::versions();
+                }
+            }
+        }
+
+        auto plan = xvm::plan_incoherent_deactivation(db, ws);
+        if (!plan.targets.empty()) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                add_field("✗ binding state", std::format(
+                    "cannot deactivate incoherent releases: {}", lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableWs = Config::workspace_mut();
+                std::size_t dropped = 0;
+                for (const auto& [target, label] : plan.targets) {
+                    if (mutableWs.erase(target) == 0) continue;
+                    ++dropped;
+                    add_field("· deactivated", std::format(
+                        "{} (was part of {}) — run `xlings use {} <version>` "
+                        "to select a release", target, label, target));
+                }
+                if (dropped > 0) {
+                    Config::save_workspace();
+                    healed += static_cast<int>(dropped);
+                }
+            }
         }
     }
 

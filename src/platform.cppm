@@ -4,6 +4,10 @@ module;
 #include <cstdlib>
 #if !defined(_WIN32)
 #include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+#else
+#include <io.h>
 #endif
 
 export module xlings.platform;
@@ -259,13 +263,105 @@ namespace platform {
         return content;
     }
 
-    export void write_string_to_file(const std::string& filepath, const std::string& content) {
-        std::FILE* fp = std::fopen(filepath.c_str(), "w");
+    // ── Atomic state-file replace ────────────────────────────────────
+    //
+    // Every persisted xlings state file is written through here: the whole
+    // version database in ~/.xlings.json, each subos workspace, profile
+    // generations, and the shell rc files xself edits by read-modify-write.
+    // All of them are full-content rewrites, so a plain fopen("w") truncates
+    // the destination before the first new byte lands — an interruption at
+    // that point does not corrupt the file, it empties it.
+    //
+    // Write to a staging file in the same directory, flush it to stable
+    // storage, then rename over the destination. rename(2) within a
+    // directory is atomic, so a reader sees either the whole old file or
+    // the whole new one, and an interruption before the rename leaves the
+    // old content untouched.
+
+    // fsync the data we just wrote. Without it the rename can reach the disk
+    // before the staging file's contents do, which on a power loss yields an
+    // atomically-renamed *empty* file — the exact failure we are removing.
+    inline bool sync_file_handle_(std::FILE* fp) {
+#if defined(_WIN32)
+        return ::_commit(::_fileno(fp)) == 0;
+#else
+        return ::fsync(::fileno(fp)) == 0;
+#endif
+    }
+
+    // fsync the directory so the rename itself is durable. Best-effort: not
+    // all filesystems support it, and failing here does not make the result
+    // any less correct than the non-atomic write it replaces.
+    inline void sync_directory_(const std::filesystem::path& dir) {
+#if !defined(_WIN32)
+        int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
+        if (fd < 0) return;
+        ::fsync(fd);
+        ::close(fd);
+#else
+        (void)dir;  // no directory-handle fsync equivalent on Windows
+#endif
+    }
+
+    export void write_file_atomic(const std::string& filepath, const std::string& content) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+
+        // Resolve symlinks and write through to the real file. Shell rc files
+        // are commonly symlinks into a dotfiles repo; renaming over the link
+        // would replace it with a regular file and silently detach the user's
+        // dotfiles. The hop limit keeps a symlink cycle from spinning.
+        fs::path target(filepath);
+        for (int hops = 0; hops < 16; ++hops) {
+            ec.clear();
+            if (!fs::is_symlink(target, ec) || ec) break;
+            auto next = fs::read_symlink(target, ec);
+            if (ec) break;
+            target = next.is_absolute() ? next : target.parent_path() / next;
+        }
+
+        auto dir = target.parent_path();
+        if (dir.empty()) dir = fs::path(".");
+
+        auto staging = dir / ("." + target.filename().string() + ".xlings-tmp." +
+                              std::to_string(platform_impl::get_pid()));
+
+        std::FILE* fp = std::fopen(staging.string().c_str(), "wb");
         if (!fp) {
             throw std::runtime_error("Failed to write file: " + filepath);
         }
-        std::fwrite(content.data(), 1, content.size(), fp);
+        bool ok = std::fwrite(content.data(), 1, content.size(), fp) == content.size();
+        if (ok) ok = std::fflush(fp) == 0;
+        if (ok) ok = sync_file_handle_(fp);
         std::fclose(fp);
+        if (!ok) {
+            ec.clear();
+            fs::remove(staging, ec);
+            throw std::runtime_error("Failed to write file: " + filepath);
+        }
+
+        // Carry over the destination's mode. A fresh staging file is created
+        // under the current umask, so without this an overwrite would quietly
+        // drop an executable bit or widen the mode of the file it replaces.
+        ec.clear();
+        if (auto st = fs::status(target, ec); !ec && fs::exists(st)) {
+            std::error_code permEc;
+            fs::permissions(staging, st.permissions(),
+                            fs::perm_options::replace, permEc);
+        }
+
+        ec.clear();
+        fs::rename(staging, target, ec);
+        if (ec) {
+            std::error_code rmEc;
+            fs::remove(staging, rmEc);
+            throw std::runtime_error("Failed to write file: " + filepath);
+        }
+        sync_directory_(dir);
+    }
+
+    export void write_string_to_file(const std::string& filepath, const std::string& content) {
+        write_file_atomic(filepath, content);
     }
 
     // Wrap directory_iterator for range-for compatibility across compilers.

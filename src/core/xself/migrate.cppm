@@ -3,6 +3,7 @@ export module xlings.core.xself.migrate;
 import std;
 
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -53,20 +54,22 @@ export int cmd_migrate() {
     fs::create_directories(defaultDir / "usr");
     fs::create_directories(defaultDir / "generations");
 
-    auto configPath = p.homeDir / ".xlings.json";
-    nlohmann::json json;
-    if (fs::exists(configPath)) {
-        try {
-            auto content = platform::read_file_to_string(configPath.string());
-            json = nlohmann::json::parse(content, nullptr, false);
-            if (json.is_discarded()) json = nlohmann::json::object();
-        } catch (...) { json = nlohmann::json::object(); }
+    // The data-tree move above is the slow part; commit the config edit
+    // afterwards under the state lock rather than rewriting a document read
+    // before it. See core/home_config.cppm.
+    auto committed = update_home_config(p.homeDir, [](nlohmann::json& json) {
+        json["activeSubos"] = "default";
+        if (!json.contains("subos") || !json["subos"].is_object()) {
+            json["subos"] = nlohmann::json::object();
+        }
+        json["subos"]["default"] = {{"dir", ""}};
+        return true;
+    });
+    if (!committed) {
+        log::error("migration moved the data tree but could not update "
+                   "the config: {}", committed.error());
+        return 1;
     }
-
-    json["activeSubos"] = "default";
-    if (!json.contains("subos")) json["subos"] = nlohmann::json::object();
-    json["subos"]["default"] = {{"dir", ""}};
-    platform::write_string_to_file(configPath.string(), json.dump(2));
 
     auto currentLink = subosDir / "current";
     std::error_code lec;

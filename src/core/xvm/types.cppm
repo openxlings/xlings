@@ -4,12 +4,49 @@ import std;
 
 export namespace xlings::xvm {
 
+struct BindingGroupRef {
+    std::string provider;
+    std::string providerVersion;
+    std::string group;
+    std::string rootTarget;
+    std::string rootVersion;
+};
+
+struct HeaderAsset {
+    std::string sourceDir;
+    std::string destinationPrefix;
+};
+
+struct BindingIntegrityIssue {
+    std::string code;
+    std::string path;
+};
+
 struct VData {
     std::string path;
+    std::string kind;
+    std::string sourceName;
+    std::string destinationName;
     std::string includedir;  // source header directory (e.g., xpkgs/openssl/3.1.5/include)
     std::string libdir;      // source library directory (e.g., xpkgs/glibc/2.39/lib64)
+
+    // kind = "files": one asset the package places into the subos.
+    //
+    // Both ends are relative and must stay that way. A payload is shared
+    // between subos and reference-counted, so an absolute destination
+    // recorded against it would be right for the subos that installed it and
+    // wrong for every other one. `fileSrc` is relative to the payload root,
+    // `fileDst` to the subos root.
+    std::string fileSrc;
+    std::string fileDst;
     std::vector<std::string> alias;
     std::map<std::string, std::string> envs;
+    std::optional<BindingGroupRef> bindingGroup;
+    std::map<std::string, std::string> bindingMembers;
+    std::vector<HeaderAsset> bindingHeaders;
+    bool bindingMembersDeclared { false };
+    bool bindingHeadersDeclared { false };
+    std::vector<BindingIntegrityIssue> bindingIntegrityIssues;
 
 #if defined(_MSC_VER)
     VData() = default;
@@ -79,6 +116,47 @@ struct SubosWorkspace {
     Workspace active;
     WorkspaceInstalled installed;
 };
+
+// How an entry is actually materialized, once defaults are applied.
+//
+// Three fields decide it, and each has a fallback the entry may rely on:
+//
+//   kind             VData::kind, else the target-level VInfo::type. Entries
+//                    written before 0.4.70 have no per-version kind at all --
+//                    on a real installation every one of 372 entries was
+//                    missing it -- so the target-level fallback is not a
+//                    nicety, it is the only thing that types legacy state.
+//   sourceName       what to read out of the payload directory
+//   destinationName  what to call it in the sysroot
+//
+// These live here, next to the types they read, because two subsystems have
+// to agree on them exactly: registration writes entries and the switch
+// planner materializes them. They used to exist only inside registration's
+// detail namespace, so the planner could not see them -- which is part of why
+// libraries were registered correctly and then never switched.
+std::string effective_kind(const VInfo& info, const VData& data) {
+    return data.kind.empty() ? info.type : data.kind;
+}
+
+std::string effective_source_name(const std::string& target,
+                                  const VInfo& info,
+                                  const VData& data,
+                                  std::string_view kind) {
+    // `group` and `files` name no artifact to dispatch.
+    if (kind == "group" || kind == "files") return {};
+    if (!data.sourceName.empty()) return data.sourceName;
+    return info.filename.empty() ? target : info.filename;
+}
+
+std::string effective_destination_name(const std::string& target,
+                                       const VData& data,
+                                       std::string_view kind,
+                                       std::string_view sourceName) {
+    if (kind == "group" || kind == "files") return {};
+    if (!data.destinationName.empty()) return data.destinationName;
+    if (kind == "program") return target;
+    return std::string(sourceName);
+}
 
 } // namespace xlings::xvm
 

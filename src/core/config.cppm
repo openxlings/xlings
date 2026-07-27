@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "0.4.69";
+    static constexpr std::string_view VERSION = "2026.7.27.0";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -351,6 +351,15 @@ private:
         return {};
     }
 
+    [[nodiscard]] std::filesystem::path global_subos_dir_() const {
+        auto activeSubos = utils::get_env_or_default(
+            "XLINGS_ACTIVE_SUBOS");
+        if (activeSubos.empty()) {
+            activeSubos = globalActiveSubos_;
+        }
+        return paths_.homeDir / "subos" / activeSubos;
+    }
+
     [[nodiscard]] static std::vector<std::string>
     lookup_resource_servers_in_(const MirrorServerMap& source, std::string_view mirror) {
         auto key = effective_mirror_name_(mirror, "GLOBAL");
@@ -512,8 +521,7 @@ private:
                     if (json.contains("lang") && json["lang"].is_string())
                         lang_ = json["lang"].get<std::string>();
                     // Load global versions
-                    if (json.contains("versions") && json["versions"].is_object())
-                        globalVersions_ = xvm::versions_from_json(json["versions"]);
+                    load_global_versions_from_json_(json);
                     globalIndexRepos_ = parse_index_repos_json(json, mirror_);
                     load_resource_servers_from_json_(json, globalResourceServers_);
                     if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;
@@ -551,12 +559,7 @@ private:
         // subos's workspace whenever the user is in a spawned subos shell
         // with XLINGS_ACTIVE_SUBOS set, which then corrupts that subos
         // when `xvm use` writes back through save_workspace().
-        auto subosConfigPath = paths_.homeDir / "subos" / paths_.activeSubos / ".xlings.json";
-        {
-            auto sws = load_workspace_from_file_(subosConfigPath);
-            globalWorkspace_ = std::move(sws.active);
-            globalInstalled_ = std::move(sws.installed);
-        }
+        load_global_workspace_();
 
         // Load project-level config (walk up from cwd)
         load_project_config_();
@@ -761,6 +764,52 @@ private:
         }
     }
 
+    void load_global_versions_from_json_(const nlohmann::json& json) {
+        if (json.contains("versions") && json["versions"].is_object()) {
+            globalVersions_ = xvm::versions_from_json(json["versions"]);
+        } else {
+            globalVersions_.clear();
+        }
+    }
+
+    void load_global_workspace_() {
+        auto subosConfigPath =
+            paths_.homeDir / "subos" / paths_.activeSubos / ".xlings.json";
+        auto sws = load_workspace_from_file_(subosConfigPath);
+        globalWorkspace_ = std::move(sws.active);
+        globalInstalled_ = std::move(sws.installed);
+    }
+
+    // Re-read the mutable state layers from disk.
+    //
+    // Config loads state during construction, and main.cpp touches it before
+    // dispatching a command, so by the time a mutating command starts it is
+    // already holding a snapshot taken outside any lock. Serializing writes
+    // alone would not prevent a lost update: both processes would still have
+    // read the same old state and the second write would erase the first.
+    // Commands re-read through here *after* taking the state lock.
+    //
+    // Deliberately narrow: versions, workspace and project state only.
+    // Mirror, language and index-repo resolution stay as they were resolved
+    // at startup -- re-deriving those mid-command would change behavior
+    // under the user rather than protect it.
+    void reload_state_() {
+        namespace fs = std::filesystem;
+        auto configPath = paths_.homeDir / ".xlings.json";
+        if (fs::exists(configPath)) {
+            try {
+                auto content = platform::read_file_to_string(configPath.string());
+                auto json = nlohmann::json::parse(content, nullptr, false);
+                if (!json.is_discarded()) load_global_versions_from_json_(json);
+            } catch (...) {}
+        } else {
+            globalVersions_.clear();
+        }
+        load_global_workspace_();
+        if (hasProjectConfig_) load_project_config_();
+        update_effective_paths_();
+    }
+
     static Config& instance_() {
         static Config inst;
         return inst;
@@ -797,6 +846,11 @@ public:
 
         return globalWorkspace;
     }
+
+    // Re-read versions/workspace/project state from disk. Call after taking
+    // the state lock so a command operates on what is actually stored rather
+    // than on the snapshot taken at process start.
+    static void reload_state() { instance_().reload_state_(); }
 
     [[nodiscard]] static const PathInfo& paths() { return instance_().paths_; }
     [[nodiscard]] static const std::string& mirror() { return instance_().mirror_; }
@@ -971,9 +1025,27 @@ public:
         return instance_().paths_.homeDir / "subos" / name;
     }
 
+    [[nodiscard]] static std::filesystem::path global_subos_dir() {
+        return instance_().global_subos_dir_();
+    }
+
     [[nodiscard]] static std::filesystem::path global_subos_bin_dir() {
+        return global_subos_dir() / "bin";
+    }
+
+    [[nodiscard]] static std::filesystem::path
+    xvm_artifact_subos_dir() {
         auto& self = instance_();
-        return self.paths_.homeDir / "subos" / self.globalActiveSubos_ / "bin";
+        const bool useProject =
+            self.hasProjectConfig_ && !self.forceGlobalScope_;
+        if (useProject
+            && (self.projectSubosMode_
+                    == ProjectSubosMode::Named
+                || self.projectSubosMode_
+                    == ProjectSubosMode::Anonymous)) {
+            return self.project_subos_dir_();
+        }
+        return self.global_subos_dir_();
     }
 
     static std::vector<std::string> list_subos_names() {
@@ -1064,18 +1136,10 @@ public:
             // spawns `xlings install -g`) when the user happens to run
             // self install from inside an xlings repo / project tree.
             //
-            // Compose the global-scope path from XLINGS_ACTIVE_SUBOS env
-            // (per-shell override) or globalActiveSubos_ (~/.xlings.json
-            // snapshot) — both are valid global-scope subos names whose
-            // directories exist on disk.
-            std::string global_name;
-            if (auto env = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
-                !env.empty()) {
-                global_name = env;
-            } else {
-                global_name = self.globalActiveSubos_;
-            }
-            subosConfigPath = self.paths_.homeDir / "subos" / global_name / ".xlings.json";
+            // Resolve the same global-scope subos root used by XVM
+            // filesystem effects.
+            subosConfigPath =
+                self.global_subos_dir_() / ".xlings.json";
         }
 
         nlohmann::json json;

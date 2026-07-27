@@ -206,6 +206,12 @@ static void write_or_upgrade_profile_(const fs::path& path,
     platform::write_string_to_file(path.string(), std::string(content));
 }
 
+// Read-modify-writes `<home>/.xlings.json` without taking the state lock
+// itself. Both callers reach it through `ensure_home_layout`, and the only
+// caller of that is `xself::cmd_install`, which holds the lock for its whole
+// home-rewriting stretch. Acquiring here as well would be harmless (the lock
+// is re-entrant within a process) but would suggest this is safe to call
+// from somewhere unlocked, which it is not.
 static void ensure_home_config_defaults_(const fs::path& home_dir) {
     auto config_path = home_dir / ".xlings.json";
     nlohmann::json json = nlohmann::json::object();
