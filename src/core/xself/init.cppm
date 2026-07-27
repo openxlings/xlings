@@ -261,7 +261,8 @@ bool ensure_home_layout(const fs::path& home_dir) {
     for (auto& dir : dirs) {
         fs::create_directories(dir, ec);
         if (ec) {
-            log::error("[xlings:self]: failed to create {} - {}", dir.string(), ec.message());
+            log::error("[xlings:self]: failed to create {} - {}",
+                       Config::display_path(dir), ec.message());
             return false;
         }
     }

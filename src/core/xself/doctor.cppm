@@ -113,7 +113,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
         ++missing;
         std::string detail = std::format("workspace[{}]={} but {} missing",
-                                         name, version, shim_path.string());
+                                         name, version,
+                                         Config::display_path(shim_path));
         if (fix && fs::exists(xlings_bin)) {
             std::error_code ec;
             fs::create_directories(p.binDir, ec);
@@ -151,7 +152,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
             ++orphans;
             std::string detail = std::format(
                 "{} exists but workspace has no active version for {}",
-                entry.path().string(), base);
+                Config::display_path(entry.path()), base);
             if (fix) {
                 ec.clear();
                 fs::remove(entry.path(), ec);
@@ -187,7 +188,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
             std::string detail = std::format(
                 "{} is a leftover symlink from older xlings (alias `{}` "
                 "removed in 0.4.8)",
-                path.string(), alias);
+                Config::display_path(path), alias);
             if (fix) {
                 std::error_code ec;
                 fs::remove(path, ec);
@@ -242,8 +243,9 @@ export int cmd_doctor(EventStream& stream, bool fix,
             add_field("⚠ shim anchor", std::format(
                 "{} anchors to {} (expected this home); it will dispatch "
                 "against that home's versions DB",
-                entry.path().string(),
-                owner ? owner->string() : "no home (orphan)"));
+                Config::display_path(entry.path()),
+                owner ? Config::display_path(*owner)
+                      : std::string("no home (orphan)")));
         }
     }
 
@@ -291,7 +293,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
             // L4: payload directory must exist.
             if (!fs::is_directory(expanded, ec)) {
                 report_broken_payload(name, version, std::format(
-                    "{}@{} path {} missing", name, version, expanded));
+                    "{}@{} path {} missing", name, version,
+                    Config::display_path(expanded)));
                 continue;
             }
 
@@ -326,7 +329,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
                 report_broken_payload(name, version, std::format(
                     "{}@{} executable '{}' not found in {}",
-                    name, version, name, expanded));
+                    name, version, name, Config::display_path(expanded)));
                 continue;
             }
 
@@ -365,7 +368,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
             ++warnings;
             std::string detail = std::format(
                 "{}@{} alias '{}' not resolvable in {} (may be a system command)",
-                name, version, alias_prog, expanded);
+                name, version, alias_prog, Config::display_path(expanded));
             add_field("⚠ alias unresolved", std::move(detail));
         }
     }

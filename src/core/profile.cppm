@@ -45,18 +45,12 @@ int next_gen_number_(const fs::path& gensDir) {
     return maxNum + 1;
 }
 
-void sync_workspace_yaml_(const fs::path& envDir,
-                          const std::map<std::string, std::string>& packages) {
-    auto xvmDir = envDir / "xvm";
-    fs::create_directories(xvmDir);
-    auto yamlPath = xvmDir / ".workspace.xvm.yaml";
-
-    std::string yaml = "versions:\n";
-    for (auto& [name, ver] : packages) {
-        yaml += "  " + name + ": " + ver + "\n";
-    }
-    platform::write_string_to_file(yamlPath.string(), yaml);
-}
+// NOTE: `.workspace.xvm.yaml` used to be written here and by rollback().
+// Nothing in the tree ever read it -- which is what made `profile rollback`
+// a no-op with respect to version selection: it recorded an intent in a file
+// no reader consulted, and the live workspace kept whatever it had. Rollback
+// now returns the selection so the caller can apply it through the real
+// switch path, and the file is gone rather than left as a decoy.
 
 std::uintmax_t dir_size_(const fs::path& dir) {
     std::uintmax_t total = 0;
@@ -111,8 +105,6 @@ export int commit(const fs::path& envDir,
     platform::write_string_to_file((envDir / ".profile.json").string(),
                                 profileJson.dump(2));
 
-    sync_workspace_yaml_(envDir, packages);
-
     return 0;
 }
 
@@ -141,15 +133,28 @@ export std::vector<Generation> list_generations(const fs::path& envDir) {
     return result;
 }
 
-export int rollback(const fs::path& envDir, int targetGen) {
+// Roll the recorded selection back to a generation, and hand it to the
+// caller to apply.
+//
+// Applying is deliberately not done here. Putting a version back means
+// running the same switch `xlings use` runs -- resolving the release,
+// moving shims, libraries, headers and declared file assets -- and that
+// lives in xvm::commands, which imports xself, which imports this module.
+// Returning the selection keeps the cycle out of the module graph and keeps
+// one implementation of "make this version active" rather than two.
+//
+// This used to write the selection into `<envDir>/xvm/.workspace.xvm.yaml`
+// and stop. Nothing read that file, so rollback changed no version at all.
+export std::expected<std::map<std::string, std::string>, std::string>
+rollback(const fs::path& envDir, int targetGen) {
     std::map<std::string, std::string> packages;
 
     if (targetGen > 0) {
         auto gensDir = envDir / "generations";
         auto genFile = gensDir / (([](int n) { char b[8]; std::snprintf(b, sizeof(b), "%03d", n); return std::string(b); })(targetGen) + ".json");
         if (!fs::exists(genFile)) {
-            log::error("[xlings:profile] generation {} not found", targetGen);
-            return 1;
+            return std::unexpected(
+                std::format("generation {} not found", targetGen));
         }
         try {
             auto content = platform::read_file_to_string(genFile.string());
@@ -157,12 +162,10 @@ export int rollback(const fs::path& envDir, int targetGen) {
             for (auto it = json["packages"].begin(); it != json["packages"].end(); ++it)
                 packages[it.key()] = it.value().get<std::string>();
         } catch (...) {
-            log::error("[xlings:profile] failed to read generation {}", targetGen);
-            return 1;
+            return std::unexpected(
+                std::format("failed to read generation {}", targetGen));
         }
     }
-
-    sync_workspace_yaml_(envDir, packages);
 
     nlohmann::json profileJson = {
         {"current_generation", targetGen},
@@ -171,8 +174,7 @@ export int rollback(const fs::path& envDir, int targetGen) {
     platform::write_string_to_file((envDir / ".profile.json").string(),
                                 profileJson.dump(2));
 
-    std::println("[xlings:profile] rolled back to generation {}", targetGen);
-    return 0;
+    return packages;
 }
 
 // Build a set of referenced xpkg "dirname/version" keys from all subos workspaces

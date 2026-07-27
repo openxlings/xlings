@@ -122,7 +122,8 @@ bool home_knows_program(const std::filesystem::path& home,
     // invocation can't read its .xlings.json and would otherwise get a
     // misleading "<program>: not installed" instead of a permissions hint.
     if (std::ifstream probe(cfg, std::ios::binary); !probe.is_open()) {
-        log::warn("[xlings] cannot read {} (permission denied)", cfg.string());
+        log::warn("[xlings] cannot read {} (permission denied)",
+                  Config::display_path(cfg));
         log::warn("  this home may be owned by another user — avoid mixing "
                   "sudo and non-sudo xlings on the same home");
         return false;
@@ -504,7 +505,8 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
 #if defined(__linux__) || defined(__APPLE__)
     execvp(exe_path.c_str(), const_cast<char* const*>(new_argv.data()));
     // If execvp returns, it failed
-    log::error("xlings: failed to exec '{}'", exe_path.string());
+    log::error("xlings: failed to exec '{}'",
+               Config::display_path(exe_path));
     return 1;
 #else
     // Fallback for platforms without execvp

@@ -486,3 +486,54 @@ TEST(UiTest, PhaseLabels) {
     EXPECT_EQ(phase_label(Phase::Failed), "failed");
     EXPECT_EQ(phase_label(Phase::Downloading), "downloading");
 }
+
+// ============================================================
+// display_path — `@xlings` in place of the home prefix
+//
+// Output is full of these: doctor lists payload and shim paths, config
+// prints the layout, install and error hints quote destinations. An
+// absolute home path is noise, and in a pasted log it is the user's
+// account name.
+//
+// Display only. `${XLINGS_HOME}` stays the storage placeholder in the
+// version database; this one is never read back.
+// ============================================================
+
+TEST(DisplayPath, LeavesAPathOutsideTheHomeAlone) {
+    // Substituting a prefix that does not apply would misstate where the
+    // file is -- worse than the verbosity it saves. "Unchanged" includes the
+    // separators: an earlier version normalized them and turned /usr/lib
+    // into \usr\lib on Windows.
+    const auto outside = std::filesystem::path("/usr/lib/libc.so.6");
+    EXPECT_EQ(xlings::Config::display_path(outside), outside.string());
+}
+
+TEST(DisplayPath, DoesNotMatchOnAPartialComponent) {
+    // A sibling directory whose name merely starts with the home's is not
+    // inside it: ".xlings-backup" must not become "@xlings-backup".
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    const auto sibling =
+        std::filesystem::path(home.string() + "-backup") / "data";
+    EXPECT_EQ(xlings::Config::display_path(sibling), sibling.string());
+}
+
+TEST(DisplayPath, RewritesTheHomeAndItsChildren) {
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    EXPECT_EQ(xlings::Config::display_path(home), "@xlings");
+    // Build the expectation as a path: a literal "@xlings/data/xpkgs" is a
+    // Linux-only assertion, which is how the first version of these tests
+    // failed on Windows.
+    EXPECT_EQ(xlings::Config::display_path(home / "data" / "xpkgs"),
+              (std::filesystem::path("@xlings") / "data" / "xpkgs").string());
+}
+
+TEST(DisplayPath, NormalizesBeforeComparing) {
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    // A path that reaches the same place by a longer route still belongs to
+    // the home; saying otherwise would be inconsistent output for one place.
+    EXPECT_EQ(xlings::Config::display_path(home / "data" / ".." / "data"),
+              (std::filesystem::path("@xlings") / "data").string());
+}

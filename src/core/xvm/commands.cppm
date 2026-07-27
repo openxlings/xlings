@@ -39,7 +39,8 @@ void create_link_(const fs::path& src, const fs::path& dst) {
 #else
     fs::create_symlink(src, dst, ec);
 #endif
-    if (ec) log::warn("[xvm] link failed: {} -> {}", dst.string(), src.string());
+    if (ec) log::warn("[xvm] link failed: {} -> {}",
+                      Config::display_path(dst), Config::display_path(src));
 }
 
 // Where a header asset lands: `<sysroot>/include/<destinationPrefix>`, or
@@ -146,7 +147,8 @@ void place_asset(const std::string& source, const fs::path& destination) {
     std::error_code ec;
     fs::path src(source);
     if (!fs::exists(src, ec)) {
-        log::debug("[xvm] asset source missing, not placed: {}", source);
+        log::debug("[xvm] asset source missing, not placed: {}",
+                   Config::display_path(source));
         return;
     }
     fs::create_directories(destination.parent_path(), ec);
@@ -162,7 +164,8 @@ void place_asset(const std::string& source, const fs::path& destination) {
     fs::remove_all(staging, ec);
     create_link_(src, staging);
     if (!fs::exists(staging, ec) && !fs::is_symlink(staging, ec)) {
-        log::warn("[xvm] could not stage asset: {}", destination.string());
+        log::warn("[xvm] could not stage asset: {}",
+                  Config::display_path(destination));
         return;
     }
     ec.clear();
@@ -177,7 +180,7 @@ void place_asset(const std::string& source, const fs::path& destination) {
         if (ec) {
             fs::remove_all(staging, rmEc);
             log::warn("[xvm] could not place asset {}: {}",
-                      destination.string(), ec.message());
+                      Config::display_path(destination), ec.message());
         }
     }
 }

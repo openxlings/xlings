@@ -853,6 +853,43 @@ public:
     static void reload_state() { instance_().reload_state_(); }
 
     [[nodiscard]] static const PathInfo& paths() { return instance_().paths_; }
+
+    // Render a path for a human: anything under the xlings home shows as
+    // `@xlings/...` instead of its absolute form.
+    //
+    // Output is full of these -- doctor lists payload and shim paths, config
+    // prints the layout, install and error hints quote destinations -- and an
+    // absolute home path is both noise and, in shared logs or issue reports,
+    // the user's account name. `@xlings` says the one thing that matters
+    // about the prefix: it is inside the installation.
+    //
+    // Display only. `${XLINGS_HOME}` remains the *storage* placeholder in the
+    // version database (see expand_path in xvm/db.cppm); the two must not be
+    // confused -- one is expanded on read, this one is never read back.
+    //
+    // A path outside the home is returned unchanged: substituting a prefix
+    // that does not apply would be a lie about where the file is.
+    [[nodiscard]] static std::string display_path(
+            const std::filesystem::path& p) {
+        const auto& home = paths().homeDir;
+        if (home.empty()) return p.string();
+        // lexically_relative rather than a string prefix test: it compares
+        // whole components, so a sibling `.xlings-backup` cannot match, and
+        // it resolves `..` on the way. A prefix test needed both of those
+        // bolted on by hand, and the hand-rolled version also normalized the
+        // separators of paths it was supposed to return untouched -- on
+        // Windows `/usr/lib` came back as `\usr\lib`, breaking the one
+        // promise this function makes about paths outside the home.
+        const auto rel = p.lexically_normal()
+                          .lexically_relative(home.lexically_normal());
+        if (rel.empty() || *rel.begin() == "..") return p.string();
+        if (rel == std::filesystem::path(".")) return "@xlings";
+        return (std::filesystem::path("@xlings") / rel).string();
+    }
+
+    [[nodiscard]] static std::string display_path(const std::string& p) {
+        return display_path(std::filesystem::path{p});
+    }
     [[nodiscard]] static const std::string& mirror() { return instance_().mirror_; }
     [[nodiscard]] static const std::string& lang() { return instance_().lang_; }
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {}) {
@@ -1183,14 +1220,14 @@ public:
     static void print_paths() {
         auto& p = paths();
         std::println("XLINGS_HOME:     {}", p.homeDir.string());
-        std::println("XLINGS_DATA:     {}", p.dataDir.string());
+        std::println("XLINGS_DATA:     {}", display_path(p.dataDir));
         if (has_project_config() && !project_index_repos().empty()) {
-            std::println("XLINGS_DATA_PROJECT: {}", project_data_dir().string());
+            std::println("XLINGS_DATA_PROJECT: {}", display_path(project_data_dir()));
         }
-        std::println("XLINGS_SUBOS:    {}", p.subosDir.string());
+        std::println("XLINGS_SUBOS:    {}", display_path(p.subosDir));
         std::println("  activeSubos:   {}", p.activeSubos);
         std::println("  selfContained: {}", p.selfContained);
-        std::println("  bin:           {}", p.binDir.string());
+        std::println("  bin:           {}", display_path(p.binDir));
     }
 };
 
