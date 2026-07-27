@@ -501,34 +501,39 @@ TEST(UiTest, PhaseLabels) {
 
 TEST(DisplayPath, LeavesAPathOutsideTheHomeAlone) {
     // Substituting a prefix that does not apply would misstate where the
-    // file is -- worse than the verbosity it saves.
-    const std::string outside = "/usr/lib/libc.so.6";
-    EXPECT_EQ(xlings::Config::display_path(outside), outside);
+    // file is -- worse than the verbosity it saves. "Unchanged" includes the
+    // separators: an earlier version normalized them and turned /usr/lib
+    // into \usr\lib on Windows.
+    const auto outside = std::filesystem::path("/usr/lib/libc.so.6");
+    EXPECT_EQ(xlings::Config::display_path(outside), outside.string());
 }
 
 TEST(DisplayPath, DoesNotMatchOnAPartialComponent) {
     // A sibling directory whose name merely starts with the home's is not
-    // inside it: "/home/u/.xlings-backup" must not become "@xlings-backup".
+    // inside it: ".xlings-backup" must not become "@xlings-backup".
     const auto& home = xlings::Config::paths().homeDir;
     if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
-    const auto sibling = home.string() + "-backup/data";
-    EXPECT_EQ(xlings::Config::display_path(sibling), sibling);
+    const auto sibling =
+        std::filesystem::path(home.string() + "-backup") / "data";
+    EXPECT_EQ(xlings::Config::display_path(sibling), sibling.string());
 }
 
 TEST(DisplayPath, RewritesTheHomeAndItsChildren) {
     const auto& home = xlings::Config::paths().homeDir;
     if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
     EXPECT_EQ(xlings::Config::display_path(home), "@xlings");
+    // Build the expectation as a path: a literal "@xlings/data/xpkgs" is a
+    // Linux-only assertion, which is how the first version of these tests
+    // failed on Windows.
     EXPECT_EQ(xlings::Config::display_path(home / "data" / "xpkgs"),
-              "@xlings/data/xpkgs");
+              (std::filesystem::path("@xlings") / "data" / "xpkgs").string());
 }
 
 TEST(DisplayPath, NormalizesBeforeComparing) {
     const auto& home = xlings::Config::paths().homeDir;
     if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
     // A path that reaches the same place by a longer route still belongs to
-    // the home, and saying otherwise would be inconsistent output for one
-    // location.
+    // the home; saying otherwise would be inconsistent output for one place.
     EXPECT_EQ(xlings::Config::display_path(home / "data" / ".." / "data"),
-              "@xlings/data");
+              (std::filesystem::path("@xlings") / "data").string());
 }

@@ -873,19 +873,18 @@ public:
             const std::filesystem::path& p) {
         const auto& home = paths().homeDir;
         if (home.empty()) return p.string();
-        auto text = p.lexically_normal().string();
-        auto prefix = home.lexically_normal().string();
-        while (prefix.size() > 1
-               && (prefix.back() == '/' || prefix.back() == '\\')) {
-            prefix.pop_back();
-        }
-        if (text == prefix) return "@xlings";
-        if (text.size() > prefix.size()
-            && text.compare(0, prefix.size(), prefix) == 0
-            && (text[prefix.size()] == '/' || text[prefix.size()] == '\\')) {
-            return "@xlings" + text.substr(prefix.size());
-        }
-        return text;
+        // lexically_relative rather than a string prefix test: it compares
+        // whole components, so a sibling `.xlings-backup` cannot match, and
+        // it resolves `..` on the way. A prefix test needed both of those
+        // bolted on by hand, and the hand-rolled version also normalized the
+        // separators of paths it was supposed to return untouched -- on
+        // Windows `/usr/lib` came back as `\usr\lib`, breaking the one
+        // promise this function makes about paths outside the home.
+        const auto rel = p.lexically_normal()
+                          .lexically_relative(home.lexically_normal());
+        if (rel.empty() || *rel.begin() == "..") return p.string();
+        if (rel == std::filesystem::path(".")) return "@xlings";
+        return (std::filesystem::path("@xlings") / rel).string();
     }
 
     [[nodiscard]] static std::string display_path(const std::string& p) {
