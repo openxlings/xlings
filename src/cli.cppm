@@ -28,6 +28,7 @@ import xlings.core.xim.commands;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.commands;
+import xlings.core.profile;
 import xlings.core.utf8;
 
 namespace lua = mcpplibs::capi::lua;
@@ -551,10 +552,10 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     auto& p = Config::paths();
     std::vector<ui::InfoField> fields;
     fields.push_back({"XLINGS_HOME", p.homeDir.string()});
-    fields.push_back({"XLINGS_DATA", p.dataDir.string()});
-    fields.push_back({"XLINGS_SUBOS", p.subosDir.string()});
+    fields.push_back({"XLINGS_DATA", Config::display_path(p.dataDir)});
+    fields.push_back({"XLINGS_SUBOS", Config::display_path(p.subosDir)});
     fields.push_back({"active subos", p.activeSubos, true});
-    fields.push_back({"bin", p.binDir.string()});
+    fields.push_back({"bin", Config::display_path(p.binDir)});
 
     auto mirror = Config::mirror();
     if (!mirror.empty()) fields.push_back({"mirror", mirror});
@@ -576,6 +577,83 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
 
     ui::print_info_panel("xlings config", fields);
     return 0;
+}
+
+// `xlings profile list|commit|rollback` — generations of the active subos.
+//
+// The module had commit / list_generations / rollback and no way to reach
+// any of them: four exported functions, zero callers, no subcommand. So the
+// feature read as working and was not, and `rollback` in particular wrote a
+// YAML file nothing consulted.
+//
+// Commit is explicit rather than automatic. Recording a generation on every
+// install would change the hot path for everyone, and which mutations
+// deserve a generation is a product decision, not one to make on the way
+// past. Explicit commits make the feature usable now without deciding it.
+int run_profile_(int argc, char* argv[], EventStream& stream) {
+    const std::string action = (argc >= 3) ? argv[2] : "list";
+    auto& p = Config::paths();
+    const auto envDir = p.subosDir;
+
+    if (action == "list") {
+        auto gens = profile::list_generations(envDir);
+        auto current = profile::load_current(envDir);
+        if (gens.empty()) {
+            std::println("no generations yet — record one with "
+                         "`xlings profile commit [reason]`");
+            return 0;
+        }
+        for (const auto& gen : gens) {
+            std::println("{}{:>4}  {}  {} package(s)  {}",
+                         gen.number == current.number ? "*" : " ",
+                         gen.number, gen.created, gen.packages.size(),
+                         gen.reason);
+        }
+        return 0;
+    }
+
+    if (action == "commit") {
+        const std::string reason = (argc >= 4) ? argv[3] : "manual";
+        std::map<std::string, std::string> packages;
+        for (const auto& [target, version] : Config::effective_workspace()) {
+            packages[target] = version;
+        }
+        profile::commit(envDir, packages, reason);
+        auto current = profile::load_current(envDir);
+        std::println("[xlings:profile] recorded generation {} ({} package(s))",
+                     current.number, packages.size());
+        return 0;
+    }
+
+    if (action == "rollback") {
+        if (argc < 4) {
+            ui::print_usage("xlings profile rollback <generation>");
+            return 1;
+        }
+        int target = 0;
+        try { target = std::stoi(argv[3]); }
+        catch (...) {
+            log::error("not a generation number: {}", argv[3]);
+            return 1;
+        }
+        auto packages = profile::rollback(envDir, target);
+        if (!packages) {
+            log::error("[xlings:profile] {}", packages.error());
+            return 1;
+        }
+        // Apply through the same path `xlings use` takes. Recording the
+        // selection is not rolling back: the previous implementation stopped
+        // at the record and left every version where it was.
+        int failed = 0;
+        for (const auto& [name, version] : *packages) {
+            if (xvm::cmd_use(name, version, stream) != 0) ++failed;
+        }
+        std::println("[xlings:profile] rolled back to generation {}", target);
+        return failed == 0 ? 0 : 1;
+    }
+
+    ui::print_usage("xlings profile [list | commit [reason] | rollback <n>]");
+    return action == "-h" || action == "--help" ? 0 : 1;
 }
 
 export int run(int argc, char* argv[]) {
@@ -814,7 +892,7 @@ export int run(int argc, char* argv[]) {
             static constexpr std::string_view known_cmds[] = {
                 "install", "remove", "update", "search", "list",
                 "info", "use", "config", "subos", "self", "script",
-                "interface", "agent",
+                "interface", "agent", "profile",
             };
             bool known = false;
             for (auto& k : known_cmds) {
@@ -829,6 +907,7 @@ export int run(int argc, char* argv[]) {
 
         if (cmd == "subos") return subos::run(fargc, fargv.data(), stream);
         if (cmd == "self") return xself::run(fargc, fargv.data(), stream);
+        if (cmd == "profile") return run_profile_(fargc, fargv.data(), stream);
         if (cmd == "script") {
             if (fargc < 3) {
                 ui::print_usage("xlings script <script-file> [args...]");

@@ -194,8 +194,14 @@ TEST_F(ProfileTest, Rollback) {
     xlings::profile::commit(testDir_, p1, "install gcc");
     xlings::profile::commit(testDir_, p2, "add node");
 
-    int rc = xlings::profile::rollback(testDir_, 1);
-    EXPECT_EQ(rc, 0);
+    auto selection = xlings::profile::rollback(testDir_, 1);
+    ASSERT_TRUE(selection.has_value()) << selection.error();
+
+    // rollback hands the selection back so the caller can apply it through
+    // the real switch path. Returning it *is* the fix: this used to write a
+    // .workspace.xvm.yaml that nothing read, so no version ever moved.
+    ASSERT_EQ(selection->size(), 1u);
+    EXPECT_EQ(selection->at("gcc"), "15.1.0");
 
     auto gen = xlings::profile::load_current(testDir_);
     EXPECT_EQ(gen.number, 1);
@@ -203,9 +209,28 @@ TEST_F(ProfileTest, Rollback) {
     EXPECT_EQ(gen.packages["gcc"], "15.1.0");
 }
 
+TEST_F(ProfileTest, RollbackToGenerationZeroSelectsNothing) {
+    xlings::profile::commit(testDir_, {{"gcc", "15.1.0"}}, "install gcc");
+    auto selection = xlings::profile::rollback(testDir_, 0);
+    ASSERT_TRUE(selection.has_value()) << selection.error();
+    EXPECT_TRUE(selection->empty());
+    EXPECT_EQ(xlings::profile::load_current(testDir_).number, 0);
+}
+
+TEST_F(ProfileTest, RollbackNoLongerWritesTheUnreadWorkspaceYaml) {
+    // It recorded the intent here and stopped. Nothing in the tree read the
+    // file, which is exactly why `profile rollback` changed no versions.
+    xlings::profile::commit(testDir_, {{"gcc", "15.1.0"}}, "install gcc");
+    ASSERT_TRUE(xlings::profile::rollback(testDir_, 1).has_value());
+    EXPECT_FALSE(std::filesystem::exists(
+        testDir_ / "xvm" / ".workspace.xvm.yaml"));
+}
+
 TEST_F(ProfileTest, RollbackNonexistentFails) {
-    int rc = xlings::profile::rollback(testDir_, 99);
-    EXPECT_EQ(rc, 1);
+    auto selection = xlings::profile::rollback(testDir_, 99);
+    ASSERT_FALSE(selection.has_value());
+    EXPECT_NE(selection.error().find("99"), std::string::npos)
+        << "the error has to name the generation: " << selection.error();
 }
 
 TEST_F(ProfileTest, FindSubosReferencingEmpty) {

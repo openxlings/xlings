@@ -486,3 +486,49 @@ TEST(UiTest, PhaseLabels) {
     EXPECT_EQ(phase_label(Phase::Failed), "failed");
     EXPECT_EQ(phase_label(Phase::Downloading), "downloading");
 }
+
+// ============================================================
+// display_path — `@xlings` in place of the home prefix
+//
+// Output is full of these: doctor lists payload and shim paths, config
+// prints the layout, install and error hints quote destinations. An
+// absolute home path is noise, and in a pasted log it is the user's
+// account name.
+//
+// Display only. `${XLINGS_HOME}` stays the storage placeholder in the
+// version database; this one is never read back.
+// ============================================================
+
+TEST(DisplayPath, LeavesAPathOutsideTheHomeAlone) {
+    // Substituting a prefix that does not apply would misstate where the
+    // file is -- worse than the verbosity it saves.
+    const std::string outside = "/usr/lib/libc.so.6";
+    EXPECT_EQ(xlings::Config::display_path(outside), outside);
+}
+
+TEST(DisplayPath, DoesNotMatchOnAPartialComponent) {
+    // A sibling directory whose name merely starts with the home's is not
+    // inside it: "/home/u/.xlings-backup" must not become "@xlings-backup".
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    const auto sibling = home.string() + "-backup/data";
+    EXPECT_EQ(xlings::Config::display_path(sibling), sibling);
+}
+
+TEST(DisplayPath, RewritesTheHomeAndItsChildren) {
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    EXPECT_EQ(xlings::Config::display_path(home), "@xlings");
+    EXPECT_EQ(xlings::Config::display_path(home / "data" / "xpkgs"),
+              "@xlings/data/xpkgs");
+}
+
+TEST(DisplayPath, NormalizesBeforeComparing) {
+    const auto& home = xlings::Config::paths().homeDir;
+    if (home.empty()) GTEST_SKIP() << "no home resolved in this environment";
+    // A path that reaches the same place by a longer route still belongs to
+    // the home, and saying otherwise would be inconsistent output for one
+    // location.
+    EXPECT_EQ(xlings::Config::display_path(home / "data" / ".." / "data"),
+              "@xlings/data");
+}

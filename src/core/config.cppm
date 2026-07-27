@@ -853,6 +853,44 @@ public:
     static void reload_state() { instance_().reload_state_(); }
 
     [[nodiscard]] static const PathInfo& paths() { return instance_().paths_; }
+
+    // Render a path for a human: anything under the xlings home shows as
+    // `@xlings/...` instead of its absolute form.
+    //
+    // Output is full of these -- doctor lists payload and shim paths, config
+    // prints the layout, install and error hints quote destinations -- and an
+    // absolute home path is both noise and, in shared logs or issue reports,
+    // the user's account name. `@xlings` says the one thing that matters
+    // about the prefix: it is inside the installation.
+    //
+    // Display only. `${XLINGS_HOME}` remains the *storage* placeholder in the
+    // version database (see expand_path in xvm/db.cppm); the two must not be
+    // confused -- one is expanded on read, this one is never read back.
+    //
+    // A path outside the home is returned unchanged: substituting a prefix
+    // that does not apply would be a lie about where the file is.
+    [[nodiscard]] static std::string display_path(
+            const std::filesystem::path& p) {
+        const auto& home = paths().homeDir;
+        if (home.empty()) return p.string();
+        auto text = p.lexically_normal().string();
+        auto prefix = home.lexically_normal().string();
+        while (prefix.size() > 1
+               && (prefix.back() == '/' || prefix.back() == '\\')) {
+            prefix.pop_back();
+        }
+        if (text == prefix) return "@xlings";
+        if (text.size() > prefix.size()
+            && text.compare(0, prefix.size(), prefix) == 0
+            && (text[prefix.size()] == '/' || text[prefix.size()] == '\\')) {
+            return "@xlings" + text.substr(prefix.size());
+        }
+        return text;
+    }
+
+    [[nodiscard]] static std::string display_path(const std::string& p) {
+        return display_path(std::filesystem::path{p});
+    }
     [[nodiscard]] static const std::string& mirror() { return instance_().mirror_; }
     [[nodiscard]] static const std::string& lang() { return instance_().lang_; }
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {}) {
