@@ -1,0 +1,80 @@
+# Temporary workflow for the legacy-upgrade investigation (PR #434).
+#
+# This branch deliberately carries NO other workflow. The simulation installs
+# a real 0.4.69 release, populates it with real packages, upgrades it and then
+# drives the upgraded client -- several GB and many minutes per platform. The
+# usual build/test matrix running alongside it only adds noise and contention
+# to a PR that exists to produce one table.
+#
+# The job stays GREEN even when the simulation finds blockers. Blockers are
+# the output, not the failure: a run that is red by construction gets muted,
+# and then nobody reads the findings. The count and the full step table are
+# published to the job summary, and the transcript is uploaded as an artifact.
+name: upgrade-simulation
+
+on:
+  push:
+    branches: [test/legacy-upgrade-simulation]
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: "release to upgrade FROM"
+        default: "0.4.69"
+      packages:
+        description: "space-separated package specs (blank = per-platform default)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulate:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false          # one platform's blocker must not hide another's
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux-x86_64  }
+          - { os: macos-latest,   name: macosx-arm64  }
+          - { os: windows-latest, name: windows-x86_64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS runners ship python3; ubuntu and windows runners do too. The
+      # harness uses it only for a portable millisecond clock and for reading
+      # the recorded version out of .xlings.json.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run the upgrade simulation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_VERSION: ${{ github.event.inputs.old_version || '0.4.69' }}
+          SIM_PACKAGES: ${{ github.event.inputs.packages || '' }}
+          SIM_ROOT: ${{ runner.temp }}/legacy-upgrade-sim
+        run: |
+          chmod +x .agents/tools/simulate-legacy-upgrade.sh
+          ./.agents/tools/simulate-legacy-upgrade.sh
+
+      - name: Upload transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-sim-${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/legacy-upgrade-sim/transcript.log
+            ${{ runner.temp }}/legacy-upgrade-sim/steps.tsv
+            ${{ runner.temp }}/legacy-upgrade-sim/state-before.json
+            ${{ runner.temp }}/legacy-upgrade-sim/state-after.json
+            ${{ runner.temp }}/legacy-upgrade-sim/out/

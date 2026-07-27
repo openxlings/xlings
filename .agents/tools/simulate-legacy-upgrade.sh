@@ -41,7 +41,27 @@
 set -uo pipefail   # deliberately NOT -e: a failing step is the DATA
 
 OLD_VERSION="${OLD_VERSION:-0.4.69}"
-SIM_ROOT="${SIM_ROOT:-/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/d5d81c3c-1e86-4365-ad2b-a4873c7278a2/scratchpad/legacy-upgrade-sim}"
+SIM_ROOT="${SIM_ROOT:-${TMPDIR:-/tmp}/legacy-upgrade-sim}"
+
+# ---------------------------------------------------------------- platform
+#
+# The three release platforms differ in more than the asset name, so each
+# difference is named once here rather than sprinkled through the phases.
+case "$(uname -s)" in
+  Linux)                     SIM_OS=linux   ;;
+  Darwin)                    SIM_OS=macosx  ;;
+  MINGW*|MSYS*|CYGWIN*)      SIM_OS=windows ;;
+  *) echo "unsupported host: $(uname -s)" >&2; exit 2 ;;
+esac
+
+case "$SIM_OS" in
+  linux)   SIM_ARCH="$(uname -m)"; [[ "$SIM_ARCH" == aarch64 ]] || SIM_ARCH=x86_64 ;;
+  macosx)  SIM_ARCH=arm64  ;;   # the only macOS asset published
+  windows) SIM_ARCH=x86_64 ;;
+esac
+
+SIM_ASSET_EXT=$([[ "$SIM_OS" == windows ]] && echo zip || echo tar.gz)
+SIM_EXE=$([[ "$SIM_OS" == windows ]] && echo .exe || echo "")
 
 USER_HOME="$SIM_ROOT/user"
 XHOME="$USER_HOME/.xlings"
@@ -60,31 +80,45 @@ for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY ALL_PRO
   [[ -n "${!v:-}" ]] && PROXY_ENV+=("$v=${!v}")
 done
 
-SYSPATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+SYSPATH="${SIM_SYSPATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 
-# Every invocation of the simulated client. HOME points at the sim user and
-# XLINGS_HOME is deliberately absent: a real user does not set it, and passing
-# it would paper over any bug in home derivation.
-xl() {
-  ( cd "$SIM_ROOT" && env -i \
-      HOME="$USER_HOME" \
-      PATH="$XHOME/subos/current/bin:$XHOME/bin:$SYSPATH" \
-      TERM=dumb \
-      "${PROXY_ENV[@]}" \
-      "$XHOME/bin/xlings" "$@" )
+# Run something with the simulated user's environment.
+#
+# On POSIX the environment is wiped (`env -i`): the point is that the client
+# derives everything from HOME, and an inherited XLINGS_HOME or PATH entry
+# would paper over exactly the bugs being looked for. XLINGS_HOME is never
+# passed -- a real user does not set it.
+#
+# Windows cannot take that: a scrubbed environment loses SYSTEMROOT, COMSPEC
+# and the rest, and processes fail to start for reasons that have nothing to
+# do with xlings. There the environment is inherited and only the variables
+# that decide the home are overridden -- including USERPROFILE, which is what
+# the Windows build reads rather than HOME.
+run_isolated() {
+  if [[ "$SIM_OS" == windows ]]; then
+    ( cd "$SIM_ROOT" && env -u XLINGS_HOME -u XLINGS_BIN \
+        HOME="$USER_HOME" USERPROFILE="$USER_HOME" \
+        PATH="$XHOME/subos/current/bin:$XHOME/bin:$PATH" \
+        "$@" )
+  else
+    ( cd "$SIM_ROOT" && env -i \
+        HOME="$USER_HOME" \
+        PATH="$XHOME/subos/current/bin:$XHOME/bin:$SYSPATH" \
+        TERM=dumb \
+        "${PROXY_ENV[@]}" \
+        "$@" )
+  fi
 }
+
+# Every invocation of the simulated client.
+xl() { run_isolated "$XHOME/bin/xlings$SIM_EXE" "$@"; }
 
 # A shim the client installed, invoked the way a user's shell would invoke it
 # (through subos/current/bin) rather than through xlings. 0.4.69 has no `run`
 # subcommand, and going through the shim is what actually proves the switch.
 shim() {
   local prog="$1"; shift
-  ( cd "$SIM_ROOT" && env -i \
-      HOME="$USER_HOME" \
-      PATH="$XHOME/subos/current/bin:$XHOME/bin:$SYSPATH" \
-      TERM=dumb \
-      "${PROXY_ENV[@]}" \
-      "$XHOME/subos/current/bin/$prog" "$@" )
+  run_isolated "$XHOME/subos/current/bin/$prog$SIM_EXE" "$@"
 }
 
 # The client's own recorded version. `xlings version` did not exist in 0.4.69,
@@ -95,12 +129,15 @@ recorded_version() {
     "$XHOME/.xlings.json" 2>/dev/null || echo "?"
 }
 
-now_ms() { date +%s%3N; }
+# `date +%s%3N` is a GNU extension: on macOS it prints the literal "%3N" and
+# every duration comes out as a nonsense integer rather than failing.
+now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 
 # The CLI emits ANSI unconditionally (NO_COLOR is honoured only by the shell
-# profile), and a transcript full of escape codes is unreadable. Raw output is
-# still kept verbatim under out/.
-strip_ansi() { sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g; s/\x1B\[[0-9;]*m//g'; }
+# profile), and a transcript full of escape codes is unreadable. Progress bars
+# also redraw with CR, so those are unwrapped too or a whole install collapses
+# onto one unreadable line. Raw output is kept verbatim under out/.
+strip_ansi() { sed -E $'s/\x1B\\[[0-9;]*[A-Za-z]//g' | tr '\r' '\n'; }
 
 log()  { printf '%s\n' "$*" | tee -a "$TRANSCRIPT"; }
 head_() { log ""; log "=============== $* ==============="; }
@@ -139,41 +176,56 @@ mark_done()  { : > "$CKPT/$1"; }
 # ---------------------------------------------------------------- bootstrap
 phase_bootstrap() {
   head_ "bootstrap: xlings $OLD_VERSION into $XHOME"
-  local tarball="xlings-$OLD_VERSION-linux-x86_64.tar.gz"
+  local asset="xlings-$OLD_VERSION-$SIM_OS-$SIM_ARCH.$SIM_ASSET_EXT"
   mkdir -p "$STAGE" "$USER_HOME"
 
-  if [[ ! -f "$STAGE/$tarball" ]]; then
-    run_step bootstrap-download "fetch $tarball" -- \
+  if [[ ! -f "$STAGE/$asset" ]]; then
+    run_step bootstrap-download "fetch $asset" -- \
       gh release download "v$OLD_VERSION" --repo openxlings/xlings \
-        --pattern "$tarball" --dir "$STAGE"
+        --pattern "$asset" --dir "$STAGE"
   fi
-  [[ -f "$STAGE/$tarball" ]] || { log "FATAL: no $tarball"; return 1; }
+  [[ -f "$STAGE/$asset" ]] || { log "FATAL: no $asset"; return 1; }
 
   rm -rf "$STAGE/pkg"; mkdir -p "$STAGE/pkg"
-  run_step bootstrap-extract "extract release package" -- \
-    tar -xzf "$STAGE/$tarball" -C "$STAGE/pkg" --strip-components=1
+  if [[ "$SIM_OS" == windows ]]; then
+    # unzip has no --strip-components; extract then lift the single top dir.
+    run_step bootstrap-extract "extract release package" -- \
+      unzip -q "$STAGE/$asset" -d "$STAGE/raw"
+    local top
+    top="$(find "$STAGE/raw" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    [[ -n "$top" ]] && mv "$top"/* "$STAGE/pkg/"
+  else
+    run_step bootstrap-extract "extract release package" -- \
+      tar -xzf "$STAGE/$asset" -C "$STAGE/pkg" --strip-components=1
+  fi
 
   # `self install` derives the target home from HOME. XLINGS_HOME must stay
   # unset here: with it set, self install has historically written to one
   # place and recorded another.
   run_step bootstrap-self-install "self install (old client)" -- \
-    env -i HOME="$USER_HOME" PATH="$SYSPATH" TERM=dumb "${PROXY_ENV[@]}" \
-      "$STAGE/pkg/bin/xlings" self install
+    run_isolated "$STAGE/pkg/bin/xlings$SIM_EXE" self install
 
   log "    installed version: $(recorded_version)"
   mark_done bootstrap
 }
 
 # ---------------------------------------------------------------- populate
-# Two versions where the package has two, because the single-version case
-# cannot exercise `use` and hides every group/binding bug.
-POPULATE=(
-  "gcc@15.1.0"
-  "gcc@16.1.0"
-  "llvm@20.1.7"
-  "llvm@22.1.8"
-  "mcpp"
-)
+#
+# Two versions of at least one package on every platform: the single-version
+# case cannot exercise `use` and hides every group/binding bug. llvm is the
+# one package published for all three, so it carries that role everywhere.
+#
+# gcc is linux-only in the index (the windows table has one version that
+# delegates to mingw, and there is no macosx table at all), so asking for it
+# elsewhere would record an index gap as an upgrade blocker.
+case "$SIM_OS" in
+  linux)
+    POPULATE=(gcc@15.1.0 gcc@16.1.0 llvm@20.1.7 llvm@22.1.8 mcpp) ;;
+  macosx|windows)
+    POPULATE=(llvm@20.1.7 llvm@22.1.8 mcpp) ;;
+esac
+# Override for a quick run: SIM_PACKAGES="mcpp llvm@20.1.7"
+[[ -n "${SIM_PACKAGES:-}" ]] && read -r -a POPULATE <<< "$SIM_PACKAGES"
 
 phase_populate() {
   head_ "populate: install core packages with the OLD client"
@@ -215,42 +267,87 @@ phase_update() {
   mark_done update
 }
 
+# assert_step <id> <description> <condition-rc>
+#
+# A recorded finding that is not the exit code of a command.
+#
+# The first run of this harness trusted rc and reported 23/26 green. Three of
+# those greens were `xlings remove llvm` (rc=0, 166ms), `install llvm` after
+# it (rc=0, 333ms) and a reinstall (rc=0, 277ms) -- durations that cannot
+# contain the work they claim. rc=0 from this CLI means "nothing raised", not
+# "the thing happened", so every state change gets asserted separately.
+assert_step() {
+  local id="$1" desc="$2" ok="$3"
+  printf '%s\t%s\t%s\t%s\n' "$id" "$ok" 0 "$desc" >> "$STEPS"
+  if [[ "$ok" -eq 0 ]]; then log "    [assert] $id: ok"
+  else log "    [assert] $id: FAILED -- $desc   <<< BLOCKER"; fi
+}
+
+# Is <pkg>[@<version>] listed as installed right now?
+listed() {
+  local needle="$1"
+  xl list 2>/dev/null | strip_ansi | grep -qF "$needle"
+}
+
 # ---------------------------------------------------------------- exercise
 # What a user does the day after upgrading. Each is independent: a failure in
 # one must not stop the next, or the first blocker hides all the others.
 phase_exercise() {
   head_ "exercise: drive the pre-upgrade packages with the NEW client"
 
-  run_step ex-list        "list installed"        -- xl list
-  run_step ex-list-all    "list --all"            -- xl list --all
-  run_step ex-doctor      "doctor"                -- xl doctor
+  run_step ex-list        "list installed"  -- xl list
+  run_step ex-list-all    "list --all"      -- xl list --all
+  # `doctor` is a subcommand of `self`, not a top-level command.
+  run_step ex-doctor      "self doctor"     -- xl self doctor
 
-  # switching between the two installed versions, both directions
-  run_step ex-use-gcc-15  "use gcc 15.1.0"        -- xl use gcc 15.1.0
-  run_step ex-gcc-v-15    "gcc --version through the shim" -- shim gcc --version
-  run_step ex-use-gcc-16  "use gcc 16.1.0"        -- xl use gcc 16.1.0
-  run_step ex-gcc-v-16    "gcc --version through the shim" -- shim gcc --version
+  # Switching between two installed versions, both directions. The switch is
+  # confirmed through the shim's own --version output, not through `use`'s
+  # exit code: `use` reporting success while the shim still resolves the old
+  # payload is precisely the failure worth catching.
+  if [[ "$SIM_OS" == linux ]]; then
+    run_step ex-use-gcc-15 "use gcc 15.1.0" -- xl use gcc 15.1.0
+    run_step ex-gcc-v-15   "gcc --version through the shim" -- shim gcc --version
+    grep -q "15\.1\.0" "$SIM_ROOT/out/ex-gcc-v-15.log" 2>/dev/null
+    assert_step ex-gcc-is-15 "shim reports 15.1.0 after use gcc 15.1.0" $?
 
-  run_step ex-use-llvm-20 "use llvm 20.1.7"       -- xl use llvm 20.1.7
-  run_step ex-use-llvm-22 "use llvm 22.1.8"       -- xl use llvm 22.1.8
+    run_step ex-use-gcc-16 "use gcc 16.1.0" -- xl use gcc 16.1.0
+    run_step ex-gcc-v-16   "gcc --version through the shim" -- shim gcc --version
+    grep -q "16\.1\.0" "$SIM_ROOT/out/ex-gcc-v-16.log" 2>/dev/null
+    assert_step ex-gcc-is-16 "shim reports 16.1.0 after use gcc 16.1.0" $?
+  fi
 
-  # reinstall of something the OLD client registered: the field failure
-  run_step ex-reinstall-llvm "new client reinstalls llvm (already installed)" -- \
-    xl install llvm -y
-  run_step ex-reinstall-gcc  "new client reinstalls gcc (already installed)" -- \
-    xl install gcc -y
-  run_step ex-reinstall-mcpp "new client reinstalls mcpp (already installed)" -- \
-    xl install mcpp -y
+  run_step ex-use-llvm-20 "use llvm 20.1.7" -- xl use llvm 20.1.7
+  run_step ex-use-llvm-22 "use llvm 22.1.8" -- xl use llvm 22.1.8
 
-  # removal of something the OLD client registered: the other field failure
-  run_step ex-remove-llvm  "new client removes llvm"  -- xl remove llvm -y
-  run_step ex-remove-gcc15 "new client removes gcc@15.1.0" -- xl remove gcc@15.1.0 -y
+  # Reinstall of something the OLD client registered. Whether this re-runs the
+  # config hook or short-circuits on "already installed" is itself the finding.
+  run_step ex-reinstall-llvm "new client reinstalls llvm" -- xl install llvm -y
+  run_step ex-reinstall-mcpp "new client reinstalls mcpp" -- xl install mcpp -y
+  [[ "$SIM_OS" == linux ]] && \
+    run_step ex-reinstall-gcc "new client reinstalls gcc" -- xl install gcc -y
 
-  # and can it be put back afterwards
-  run_step ex-install-back-llvm "install llvm again after removal" -- \
-    xl install llvm -y
+  # Removal of something the OLD client registered, then putting it back.
+  # `remove <bare-name>` with two versions installed has to pick one; which
+  # one, and whether the other survives, is asserted rather than assumed.
+  run_step ex-remove-llvm "new client removes llvm" -- xl remove llvm -y
+  ! listed "llvm@22.1.8"
+  assert_step ex-llvm-22-gone "llvm@22.1.8 no longer listed after remove llvm" $?
+  listed "llvm@20.1.7"
+  assert_step ex-llvm-20-kept "llvm@20.1.7 still listed (remove took one version)" $?
 
-  run_step ex-doctor-after "doctor after the churn" -- xl doctor
+  run_step ex-install-back-llvm "install llvm again after removal" -- xl install llvm -y
+  listed "llvm@22.1.8"
+  assert_step ex-llvm-22-back "llvm@22.1.8 listed again after install llvm" $?
+
+  if [[ "$SIM_OS" == linux ]]; then
+    run_step ex-remove-gcc15 "new client removes gcc@15.1.0" -- xl remove gcc@15.1.0 -y
+    ! listed "gcc@15.1.0"
+    assert_step ex-gcc-15-gone "gcc@15.1.0 no longer listed after remove" $?
+    listed "gcc@16.1.0"
+    assert_step ex-gcc-16-kept "gcc@16.1.0 survives removal of the other version" $?
+  fi
+
+  run_step ex-doctor-after "self doctor after the churn" -- xl self doctor
   cp "$XHOME/.xlings.json" "$SIM_ROOT/state-after.json" 2>/dev/null \
     && log "    saved state-after.json"
   mark_done exercise
@@ -275,13 +372,26 @@ phase_report() {
     awk -F'\t' '$2 != 0 {printf "  [%s] rc=%s  %s\n", $1, $2, $4}' "$STEPS" \
       | tee -a "$TRANSCRIPT"
   fi
+
+  # A blocker is this harness's OUTPUT, not its failure: the job stays green
+  # and publishes the table, because a run that is red every time gets muted
+  # and then nobody reads the findings it exists to produce.
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      printf '## upgrade simulation — %s/%s\n\n' "$SIM_OS" "$SIM_ARCH"
+      printf '%s -> latest · %s steps · **%s blockers**\n\n' \
+        "$OLD_VERSION" "$total" "$fails"
+      printf '| step | rc | ms | what |\n|---|---:|---:|---|\n'
+      awk -F'\t' '{printf "| `%s` | %s | %s | %s |\n", $1, $2, $3, $4}' "$STEPS"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
 }
 
 main() {
   local phases=("$@")
   [[ ${#phases[@]} -eq 0 ]] && \
     phases=(bootstrap populate snapshot update exercise report)
-  log "### simulation start  $(date -Is)  root=$SIM_ROOT"
+  log "### simulation start  $SIM_OS/$SIM_ARCH  root=$SIM_ROOT"
   for p in "${phases[@]}"; do
     if [[ "$p" != report ]] && phase_done "$p"; then
       log ""
