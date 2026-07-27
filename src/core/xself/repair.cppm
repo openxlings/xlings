@@ -1,6 +1,8 @@
 export module xlings.core.xself.repair;
 
 import std;
+import xlings.core.log;
+import xlings.platform;
 
 // The repair ladder behind `xlings self doctor --fix`.
 //
@@ -189,6 +191,36 @@ RepairResult repair_one(const RepairTask& task,
                             task.target, task.version)};
     }
     return {true, "reinstall", {}};
+}
+
+// The nudge, emitted from the commands a user actually runs.
+//
+// `self doctor` already prints it, but that only reaches someone who suspects
+// something is wrong -- and the whole point of this work is that they should
+// not have to. `self update` cannot print it either: it runs the OLD binary,
+// which has never heard of any of this. So the only place the migration can
+// announce itself to the cohort being migrated is the new binary, on the next
+// ordinary command.
+//
+// Deliberately narrow, because a nag that shows up in the wrong place is
+// worse than no nag:
+//
+//   - once per process. Three call sites, one line of output.
+//   - TTY only. This must never land in a pipe, a log or a CI transcript --
+//     it is advice for a person, and `xlings list | grep` is not a person.
+//   - silent when the versions agree, which is what makes a successful
+//     `--fix` turn it off for good rather than merely quieten it.
+//
+// No network and no extra file read beyond the one the config already did.
+void print_migration_hint_once(std::string_view recorded,
+                               std::string_view running) {
+    static bool shown = false;
+    if (shown) return;
+    if (!platform::supports_rewrite_output()) return;  // not a terminal
+    auto hint = migration_hint(recorded, running);
+    if (!hint) return;
+    shown = true;
+    log::info("{}", *hint);
 }
 
 } // namespace xlings::xself

@@ -113,6 +113,12 @@ becomes the feature:
 - **`self update` prints the same line** as its last output, since it is the
   moment the mismatch is created.
 
+  Worth being explicit about what this does *not* buy: `self update` runs the
+  **old** binary, so this line does nothing for the cohort being migrated
+  right now — a 0.4.69 client will never print it. It starts working one
+  upgrade later. The users who need the hint today get it from §"Any command
+  may notice the mismatch", which is the new binary talking.
+
 Properties this has to keep, because axis 2 of 无感 currently holds and must
 not regress:
 

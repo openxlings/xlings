@@ -24,6 +24,10 @@ import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.profile;
 import xlings.runtime.cancellation;
+// Leaf module (std + log + platform only), so importing it here does not
+// recreate the xim.commands <-> xself cycle that keeps `self update` shelling
+// out to a subprocess.
+import xlings.core.xself.repair;
 
 namespace xpkg = mcpplibs::xpkg;
 
@@ -539,6 +543,8 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     // install` and `interface install_packages` would report exitCode=0
     // even when individual packages failed to install — see
     // .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
+    xself::print_migration_hint_once(Config::recorded_client_version(),
+                                     Info::VERSION);
     return failedCount > 0 ? 1 : 0;
 }
 
@@ -821,6 +827,13 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
             log::println("no packages installed in current subos");
             log::println("  hint: `xlings list --all` to see globally-installed packages");
         }
+        // The empty list is where the nudge matters MOST, not least: a home
+        // whose packages are still registered in the old client's format can
+        // report nothing installed while the payloads sit on disk and the
+        // shims work. Returning early without it would stay silent exactly
+        // when the user has the strongest reason to wonder.
+        xself::print_migration_hint_once(Config::recorded_client_version(),
+                                         Info::VERSION);
         return 0;
     }
 
@@ -837,6 +850,8 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
     listPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", listPayload.dump()});
     log::println("total: {} installed", installed.size());
+    xself::print_migration_hint_once(Config::recorded_client_version(),
+                                     Info::VERSION);
     return 0;
 }
 
