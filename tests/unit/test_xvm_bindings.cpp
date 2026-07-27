@@ -7351,6 +7351,65 @@ TEST(XvmGroupNormalize, TransposedEdgeNestingDoesNotFormAGroup) {
     }
 }
 
+
+
+TEST(XvmGroupNormalize, TableAndResolverDivergeOnAOneDirectionalEdge) {
+    // Documented divergence, not a fix. Shape from a real database on
+    // 2026-07-27:
+    //     xim-musl-gnu-gcc.bindings["gcc"]["15.1.0-musl"] = "15.1.0-musl"
+    //     gcc.bindings                                     -- no reverse edge
+    // Both versions exist. `xlings use gcc 15.1.0-musl` is refused with
+    // "legacy binding source version is missing".
+    //
+    // The component walk does not depend on which direction survived, so the
+    // table sees a group where the resolver sees nothing. It is deliberately
+    // NOT wired into resolution: a half-edge is equally readable as a stale
+    // remnant of a binding a later registration removed (registration does
+    // rewrite edges -- see ReplacesCurrentExactEdgesAndPreservesAnotherVersion),
+    // and accepting it would resurrect the removed relationship. Four tests
+    // in this file pin the refusal; they are the contract, and the state
+    // alone cannot distinguish the two readings.
+    //
+    // Pinned so that when P2.2 makes the table load-bearing, this divergence
+    // has to be decided rather than inherited.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0-musl"] = xlings::xvm::VData{};
+    db["xim-musl-gnu-gcc"].versions["15.1.0-musl"] = xlings::xvm::VData{};
+    db["xim-musl-gnu-gcc"].bindings["gcc"]["15.1.0-musl"] = "15.1.0-musl";
+
+    auto sel = xlings::xvm::resolve_binding_selection(db, "gcc", "15.1.0-musl");
+    EXPECT_FALSE(sel.has_value()) << "the resolver's refusal is the contract";
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    const auto* g = xlings::xvm::find_binding_group(table, "gcc", "15.1.0-musl");
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(g->members.size(), 2u);
+}
+
+TEST(XvmGroupNormalize, APeerAtAnUnregisteredVersionIsNotAMember) {
+    // The other shape that looks like a broken edge, and must NOT become a
+    // group: gcc@15.1.0 points at xim-gnu-gcc@15.1.0, which is registered
+    // only at 16.1.0. The edge names something nobody can switch to, so a
+    // group built around it would have a hole -- and a `use` that "succeeds"
+    // onto a version that does not exist is worse than the refusal. See
+    // XvmDanglingEdge in test_xvm_doctor.cpp, which pins the repair path.
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["15.1.0"] = xlings::xvm::VData{};
+    db["gcc"].versions["16.1.0"] = xlings::xvm::VData{};
+    db["xim-gnu-gcc"].versions["16.1.0"] = xlings::xvm::VData{};
+    db["gcc"].bindings["xim-gnu-gcc"]["15.1.0"] = "15.1.0";  // dangling
+    db["gcc"].bindings["xim-gnu-gcc"]["16.1.0"] = "16.1.0";  // fine
+    db["xim-gnu-gcc"].bindings["gcc"]["16.1.0"] = "16.1.0";
+
+    auto table = xlings::xvm::normalize_binding_groups(db);
+    EXPECT_EQ(xlings::xvm::find_binding_group(table, "gcc", "15.1.0"), nullptr)
+        << "a dangling edge must not produce a group";
+    const auto* good = xlings::xvm::find_binding_group(table, "gcc", "16.1.0");
+    ASSERT_NE(good, nullptr) << "the sound edge must still produce one";
+    EXPECT_EQ(good->members.size(), 2u);
+}
+
+
 // live in the same translation unit as the function it calls.
 #ifndef XLINGS_USE_GTEST_MAIN
 int main(int argc, char** argv) {
