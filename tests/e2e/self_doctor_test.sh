@@ -315,4 +315,36 @@ vers = (data.get("versions") or {}).get("alias-fixture", {}).get("versions", {})
 assert "1.0.0" in vers, "S10: alias-fixture@1.0.0 should remain registered (warning is non-actionable)"
 PY
 
-log "PASS: self doctor scenarios 1-10 (S8 split into S8 fix-noop + alias S9/S10)"
+# ── S12: a long report prints in full ──────────────────────────────
+# Regression: the panel renderer asked ftxui for Dimension::Fit(doc), whose
+# extend_beyond_screen parameter defaults to false -- the fitted height gets
+# clamped to the terminal's, and with stdout on a pipe ftxui reports a
+# default 80x24. Every row past 24 was dropped with no marker. Findings
+# print first and the totals last, so what got cut was exactly the summary
+# telling the user how bad it is.
+log "S12: report longer than a screen prints past row 24, summary included"
+python3 - "$HOME_DIR" <<'PY'
+import json, pathlib, sys
+home = sys.argv[1]
+p = pathlib.Path(home, ".xlings.json")
+data = json.loads(p.read_text())
+versions = data.setdefault("versions", {})
+# 30 registered versions whose payload directory does not exist -> 30
+# `broken payload` findings, comfortably past the old 24-row ceiling.
+entry = versions.setdefault("bulk-fixture", {"type": "program", "versions": {}})
+for i in range(30):
+    entry["versions"][f"1.0.{i}"] = {
+        "path": f"{home}/data/xpkgs/xim-x-bulk-fixture/1.0.{i}/bin",
+    }
+p.write_text(json.dumps(data))
+PY
+
+rc=0
+out=$(RUN self doctor 2>&1) || rc=$?
+lines=$(printf '%s\n' "$out" | wc -l)
+[[ $lines -gt 24 ]] \
+  || fail "S12: report was clamped to a screen — got $lines lines, expected > 24"
+printf '%s\n' "$out" | grep -q "broken payloads" \
+  || fail "S12: the summary line must survive a long report; got $lines lines:\n$out"
+
+log "PASS: self doctor scenarios 1-10 + S12 (long report not clamped)"

@@ -87,6 +87,7 @@ TESTS=(
     "E2E-35 |xpkg_spec_gate_test.sh||"
     "E2E-36 |xvm_metadata_reset_test.sh||"
     "E2E-37 |xvm_files_probe_compat_test.sh||"
+    "E2E-38 |self_update_failure_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

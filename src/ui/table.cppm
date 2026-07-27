@@ -31,7 +31,7 @@ void print_table(std::span<const std::string> headers,
     table.SelectRow(0).BorderBottom(LIGHT);
 
     auto doc = table.Render();
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -63,7 +63,7 @@ void print_search_results(
     }
 
     auto doc = table.Render();
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");

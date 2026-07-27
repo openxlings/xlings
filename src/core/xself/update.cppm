@@ -23,9 +23,27 @@ export int cmd_update() {
     log::info("installing xlings@latest...");
     rc = platform::exec("xlings install xlings@latest -y");
     if (rc != 0) {
-        log::warn("xlings package not available or install failed, skipping");
-    } else {
-        platform::exec("xlings use xlings latest");
+        // This used to warn and return 0. A failed upgrade then looked
+        // exactly like a successful one: the install error scrolled past
+        // under the progress bar, `self update` exited 0, and the user went
+        // on running the old binary believing they were current. Observed
+        // for real -- 0.4.69 against a CN mirror that had not been topped up
+        // yet answered 404, and the command still reported success.
+        //
+        // Whichever way it failed -- absent from the index, download error,
+        // hook failure -- the user asked to be upgraded and was not, so say
+        // so and exit non-zero.
+        log::error("could not install xlings@latest — you are still on the "
+                   "current version");
+        log::error("  hint: run `xlings install xlings@latest -y` to see why");
+        return rc;
+    }
+
+    rc = platform::exec("xlings use xlings latest");
+    if (rc != 0) {
+        log::error("installed xlings@latest but could not activate it");
+        log::error("  hint: run `xlings use xlings latest` to see why");
+        return rc;
     }
 
     return 0;

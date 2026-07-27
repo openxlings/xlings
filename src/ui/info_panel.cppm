@@ -79,7 +79,8 @@ void print_info_panel(std::string_view title,
     auto doc = vbox(std::move(rows));
     auto termDim = Dimension::Full();
     int width = std::max(termDim.dimx, minWidth);
-    auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Fixed(width),
+                                 theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -120,7 +121,7 @@ void print_styled_list(std::string_view title,
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -140,6 +141,10 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
     }));
     header.push_back(text(""));
 
+    // NOT fit_full_height: these lines are overwritten in place by the
+    // download progress renderer, which counts the rows it has to move the
+    // cursor back over. Printing more rows than the screen holds would put
+    // the cursor arithmetic and the visible output out of step.
     auto headerDoc = vbox(std::move(header));
     auto headerScreen = Screen::Create(Dimension::Full(), Dimension::Fit(headerDoc));
     Render(headerScreen, headerDoc);
@@ -190,7 +195,7 @@ void print_subos_list(
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -294,7 +299,7 @@ void print_install_summary(int success, int failed) {
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
@@ -330,7 +335,7 @@ void print_remove_plan(const std::string& subos,
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
 }
@@ -355,7 +360,7 @@ void print_remove_summary(const std::string& subos,
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
+    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
     Render(screen, doc);
     screen.Print();
     std::println("");
