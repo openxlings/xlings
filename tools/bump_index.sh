@@ -42,15 +42,39 @@ python3 .github/scripts/version-check.py --workspace "$PWD" --apply --only "$PRO
   echo "[bump] version-check failed:" >&2; cat "$WORK/report.json" >&2 2>/dev/null || true; exit 1;
 }
 
+current_ref() {
+  grep -oE 'ref = "[^"]+"' pkgs/*/"${PROJ}".lua 2>/dev/null \
+    | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true
+}
+
 if git diff --quiet; then
-  info "no change — index already tracks the latest $PROJ; nothing to PR"
-  exit 0
+  # "No change" has two causes that used to be indistinguishable, and the
+  # wrong one exits 0.
+  #
+  #   (a) the index already tracks VER          — genuinely nothing to do
+  #   (b) version-check.py could not do the work — it hashes each released
+  #       asset off xlings-res before writing, so if the binary mirror has
+  #       not finished there is nothing to hash and it edits nothing
+  #
+  # (b) happened on the 2026.7.27.0 release. `latest` stayed at 0.4.69, so
+  # no user could `self update`, and this script reported success.
+  GOT="$(current_ref)"
+  if [[ "$GOT" == "$VER" ]]; then
+    info "no change — index already tracks $PROJ $VER"
+    exit 0
+  fi
+  echo "[bump] FAIL: version-check.py changed nothing, and the index still" >&2
+  echo "[bump]       tracks '${GOT:-<none>}' rather than '$VER'." >&2
+  echo "[bump]       Usual cause: the xlings-res assets for $VER are not up" >&2
+  echo "[bump]       yet, so there was nothing to hash. Re-run after the" >&2
+  echo "[bump]       binary mirror completes." >&2
+  exit 3
 fi
 
 # Sanity: the resulting latest.ref should equal the released version. A
 # mismatch usually means GitHub's releases/latest hasn't caught up yet (API
 # lag) or a newer release exists — warn but still open the PR.
-GOT="$(grep -oE 'ref = "[^"]+"' pkgs/*/"${PROJ}".lua 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+GOT="$(current_ref)"
 if [[ -n "$GOT" && "$GOT" != "$VER" ]]; then
   echo "[bump] WARN: bumped latest.ref to '$GOT' but release version is '$VER' (upstream 'latest' differs?)"
 fi

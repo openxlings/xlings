@@ -511,23 +511,62 @@ jobs:
           else
             echo "version=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)" >> "$GITHUB_OUTPUT"
           fi
+      # See bump-index for why `|| echo` was replaced: on 2026.7.27.0 this
+      # step created the GitCode release, uploaded no assets, and reported
+      # success. Every CN download 404'd.
       - name: Mirror binaries to xlings-res/xlings (gh + gtc)
+        id: mirror
         if: ${{ env.XLINGS_RES_TOKEN != '' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
         run: |
           chmod +x tools/gtc tools/mirror_xlings_res.sh
           export PATH="$PWD/tools:$PATH"
-          bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}" \
-            || echo "binary mirror reported issues (non-blocking)"
+          bash tools/mirror_xlings_res.sh "${{ steps.version.outputs.version }}"
+
+      - name: Report mirror outcome
+        if: ${{ always() && env.XLINGS_RES_TOKEN != '' }}
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          if [[ "${{ steps.mirror.outcome }}" == "success" ]]; then
+            echo "✅ binary mirror: \`xlings-res/xlings@$VER\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ❌ binary mirror FAILED"
+              echo
+              echo "CN downloads for \`$VER\` may 404, and \`bump-index\` runs after"
+              echo "this job — check whether it also reported a failure."
+              echo
+              echo "Recover from any CN environment:"
+              echo
+              echo '```'
+              echo "tools/mirror-latest.sh xlings"
+              echo '```'
+              echo
+              echo "Verify with GET (HEAD returns 401 on GitCode):"
+              echo
+              echo '```'
+              echo "curl -sL -o /dev/null -w '%{http_code}\\n' \\"
+              echo "  https://gitcode.com/xlings-res/xlings/releases/download/$VER/xlings-$VER-linux-x86_64.tar.gz"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # Bump the xlings entry in the official index (openxlings/xim-pkgindex) and
-  # open a PR — a maintainer merges it. Independent of publish-index /
-  # mirror-binaries: the index git source is NOT on the release critical path
-  # (availability is guaranteed by the res mirror + index artifact above). On
-  # merge, the index repo republishes its artifact and gitee-sync mirrors it.
+  # open a PR — a maintainer merges it. On merge, the index repo republishes
+  # its artifact and gitee-sync mirrors it.
+  #
+  # needs mirror-binaries, NOT because the index is on the critical path for
+  # availability (it isn't — the res mirror + index artifact cover that), but
+  # because bump_index.sh cannot do its job until the mirror exists:
+  # version-check.py hashes each released asset off xlings-res before writing
+  # the entry. Running the two in parallel — which is what the 2026.7.27.0
+  # release did — leaves it nothing to hash, so it edits nothing, and `latest`
+  # stayed at 0.4.69 while the job reported success. No user could
+  # `self update` until it was re-run by hand.
   bump-index:
-    needs: [create-release]
+    needs: [create-release, mirror-binaries]
     runs-on: ubuntu-latest
     env:
       XIM_PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
@@ -542,12 +581,36 @@ jobs:
           else
             echo "version=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)" >> "$GITHUB_OUTPUT"
           fi
+      # continue-on-error rather than `|| echo`: still non-blocking for the
+      # release, but the step is marked failed and annotated instead of
+      # printing a line into a log nobody reads. `|| echo` is how a job that
+      # did nothing reported 7/7 success.
       - name: Open index bump PR (xim-pkgindex)
+        id: bump
         if: ${{ env.XIM_PKGINDEX_TOKEN != '' }}
+        continue-on-error: true
         env:
           PKGINDEX_TOKEN: ${{ secrets.XIM_PKGINDEX_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x tools/bump_index.sh
-          bash tools/bump_index.sh xlings "${{ steps.version.outputs.version }}" \
-            || echo "index bump reported issues (non-blocking)"
+          bash tools/bump_index.sh xlings "${{ steps.version.outputs.version }}"
+
+      - name: Report bump outcome
+        if: ${{ always() && env.XIM_PKGINDEX_TOKEN != '' }}
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          if [[ "${{ steps.bump.outcome }}" == "success" ]]; then
+            echo "✅ index bump: \`latest\` tracks \`$VER\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ❌ index bump FAILED — users cannot \`self update\`"
+              echo
+              echo "\`latest\` in xim-pkgindex may still point at the previous"
+              echo "version. Recover from a clone of the index repo:"
+              echo
+              echo '```'
+              echo "python3 .github/scripts/version-check.py --workspace \"\$PWD\" --apply --only xlings"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
