@@ -47,20 +47,32 @@ namespace fs = std::filesystem;
 //      so users get a heads-up before they `xlings use` an inactive
 //      version that is actually broken.
 //
-// `--fix` policy (deliberately conservative):
+// `--fix` policy:
 //   - missing shim   → recreate from the bootstrap binary  (safe, local)
 //   - orphan shim    → remove the file                     (safe, local)
-//   - broken payload → DO NOTHING.  Print an actionable hint
-//                      `xlings install <pkg>@<ver>` that the user can
-//                      run themselves.  doctor never deletes payload
-//                      metadata or pulls from the network.  Why: an
-//                      auto reinstall would silently touch the network
-//                      (failure-prone) and rerun install hooks (side
-//                      effects); the user is the right party to decide
-//                      to do that.  The recipe is just `install` —
-//                      installer's xvm-DB shortcut verifies payload
-//                      existence on disk now, so re-running the install
-//                      hook is automatic when the payload is missing.
+//   - broken payload → REPAIR, via the ladder in xself/repair.cppm:
+//                      re-register (`xlings install <pkg>@<ver>`), and if
+//                      that fails, remove-then-install.
+//
+//                      This used to print the command and refuse to run it,
+//                      on the grounds that touching the network and rerunning
+//                      install hooks were the user's decision. That reasoning
+//                      does not survive contact with an upgraded home: 0.4.69
+//                      records a headers-only package as ONE program-typed
+//                      entry with a payload path and no executable inside it,
+//                      so the new client cannot tell it from a program whose
+//                      binary vanished, and reports every such package.
+//                      Measured on the upgrade simulation: 56 findings on a
+//                      home with five packages in it, each with a printed
+//                      command that was in fact the correct cure. Handing a
+//                      user 56 commands to paste is not a diagnosis.
+//
+//                      The promise that replaces "never touches the network":
+//                      `--dry-run` shows exactly what would run and stops,
+//                      each (name, version) gets at most one pass, and the
+//                      result is verified by re-detecting from a reloaded
+//                      state file rather than by trusting a subprocess's
+//                      exit code.
 //   - alias warning  → not auto-fixed (could be intentional external).
 //   - corrupt binding metadata → --reset-metadata only.  Why: it is the one
 //                      repair that loses information (the release, its
@@ -68,7 +80,8 @@ namespace fs = std::filesystem;
 //                      entry becomes a standalone version), so it must be
 //                      asked for, not inherited from --fix.
 export int cmd_doctor(EventStream& stream, bool fix,
-                      bool resetMetadata = false) {
+                      bool resetMetadata = false,
+                      bool dryRun = false) {
     auto& p   = Config::paths();
     auto db   = Config::versions();
     auto ws   = Config::effective_workspace();
@@ -102,6 +115,13 @@ export int cmd_doctor(EventStream& stream, bool fix,
     int broken   = 0;
     int warnings = 0;
     int healed   = 0;
+    // Binding-state problems are counted apart from broken payloads.
+    // They used to share `broken`, and the summary then reported
+    // "broken payloads 1" on a home whose only finding was an unregistered
+    // active version -- a count with nothing in the list to explain it, and
+    // a --fix hint claiming payloads could not be repaired when the repair
+    // pass had never run. Two different defects need two different counters.
+    int bindingIssues = 0;
 
     // Check 1: every workspace program has its shim.
     for (auto& [name, version] : ws) {
@@ -440,7 +460,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         // A notice describes state the upgrade inherited rather than
         // created, so it does not colour the run red -- same reasoning as
         // the release anchors above. It still prints its remediation.
-        if (!notice) ++broken;
+        if (!notice) ++bindingIssues;
         std::string detail = finding.summary;
         if (!finding.target.empty()) {
             detail += std::format(" [{}{}{}]", finding.target,
@@ -653,6 +673,27 @@ export int cmd_doctor(EventStream& stream, bool fix,
                 task.target, task.version));
         }
 
+        // `--dry-run`: show the plan and stop.
+        //
+        // `--fix` used to be network-free and side-effect-free; the ladder
+        // ends that, so the promise is replaced with a narrower one rather
+        // than dropped -- you can always see exactly what it would do before
+        // it does it. The probe above has already run, so the plan shown is
+        // the plan that would execute, not a guess at one.
+        if (dryRun) {
+            for (const auto& [owner, covered] : byOwner) {
+                add_field("→ would run", std::format(
+                    "xlings install {}@{}   ({} entr{})",
+                    owner.first, owner.second, covered.size(),
+                    covered.size() == 1 ? "y" : "ies"));
+            }
+            add_field("dry run", std::format(
+                "{} package(s) would be repaired; nothing was changed",
+                byOwner.size()), true);
+            repairTasks.clear();
+            byOwner.clear();
+        }
+
         std::vector<std::pair<RepairTask, RepairResult>> outcomes;
         for (const auto& [owner, covered] : byOwner) {
             RepairTask task{
@@ -729,7 +770,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         }
     }
 
-    int issues = missing + orphans + broken;
+    int issues = missing + orphans + broken + bindingIssues;
     if (issues == 0 && warnings == 0) {
         add_field("status",
                   "OK — workspace, shims, and payloads are all consistent",
@@ -738,6 +779,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
         if (missing  > 0) add_field("missing shims",   std::to_string(missing));
         if (orphans  > 0) add_field("orphan shims",    std::to_string(orphans));
         if (broken   > 0) add_field("broken payloads", std::to_string(broken));
+        if (bindingIssues > 0)
+            add_field("binding state", std::to_string(bindingIssues));
         if (warnings > 0) add_field("warnings",        std::to_string(warnings));
         if (fix) {
             if (healed > 0) add_field("healed", std::to_string(healed), true);
@@ -774,7 +817,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // `c++` accounts for 190 findings on its own, measured. Requiring a
     // spotless home would mean the marker never lands and the hint nags
     // forever about a migration that already happened.
-    if (fix && repairFailed == 0) {
+    if (fix && !dryRun && repairFailed == 0) {
         Config::record_client_version(std::string(Info::VERSION));
     }
 
