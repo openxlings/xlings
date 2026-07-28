@@ -83,8 +83,24 @@ export void render_data_event(const DataEvent& e) {
     }
     else if (e.kind == "remove_summary") {
         auto name = json.value("name", json.value("target", ""));
-        std::println("Removed: {} {} (subos: {})",
-            name, json.value("version", ""), json.value("subos", ""));
+        // Same distinction the TUI makes: a detach is not a removal, and an
+        // agent reading this must not conclude the payload is gone (#443).
+        if (json.value("detached", false)) {
+            std::string others;
+            if (json.contains("pinned_by") && json["pinned_by"].is_array()) {
+                for (auto& n : json["pinned_by"]) {
+                    if (!n.is_string()) continue;
+                    if (!others.empty()) others += ", ";
+                    others += n.get<std::string>();
+                }
+            }
+            std::println("Detached: {} {} (subos: {}); payload kept, still used by {}",
+                name, json.value("version", ""), json.value("subos", ""),
+                others.empty() ? std::string("another subos") : others);
+        } else {
+            std::println("Removed: {} {} (subos: {})",
+                name, json.value("version", ""), json.value("subos", ""));
+        }
     }
     else if (e.kind == "styled_list") {
         auto title = json.value("title", "");
