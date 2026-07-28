@@ -112,7 +112,6 @@ struct Finding {
     // measured llvm, three for the measured virtualbox -- and printing each
     // one separately buries everything else.
     std::string  groupKey;
-    std::string  code;          // xvm code, for binding/subos findings
     bool         active { false };
     std::vector<std::string> subos;
     fs::path     shimPath;      // shim-layer findings only
@@ -609,7 +608,6 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             .target  = f.target,
             .version = f.version,
             .detail  = std::move(detail),
-            .code    = f.code,
         });
     }
 
@@ -655,7 +653,6 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             .target  = f.target,
             .version = f.version,
             .detail  = std::format("{} — {} — {}", f.summary, f.code, f.hint),
-            .code    = f.code,
         });
     }
 
@@ -1065,7 +1062,6 @@ struct Counts {
     int warnings { 0 };
     int foreignPayloads { 0 };
     int otherSubos { 0 };
-    int notices { 0 };
 
     [[nodiscard]] int issues() const {
         return missing + orphans + broken + binding;
@@ -1090,10 +1086,9 @@ Counts count_(const Scan& scan) {
             case FindingKind::AliasUnresolved:
                 if (aliasTargets.insert(f.target).second) ++c.warnings;
                 break;
-            case FindingKind::ReleaseAnchor:   ++c.notices; break;
+            case FindingKind::ReleaseAnchor:   break;
             case FindingKind::BindingState:
-                if (f.level == FindingLevel::Notice) ++c.notices;
-                else ++c.binding;
+                if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
             case FindingKind::OtherSubos:      ++c.otherSubos; break;
         }
