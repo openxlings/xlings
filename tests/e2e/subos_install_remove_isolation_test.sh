@@ -178,9 +178,13 @@ log "S2: remove a version another subos still uses"
 RUN_IN tmp install rm-fixture@1.0.0 -y >/dev/null 2>&1 \
   || fail "S2 setup: tmp install of the shared version failed"
 
-S2_OUT="$(RUN_IN tmp remove rm-fixture -y 2>&1)" || fail "S2: remove failed"
-# ftxui colours and pads; drop the escapes before matching.
-S2_TEXT="$(printf '%s' "$S2_OUT" | sed 's/\x1b\[[0-9;]*m//g')"
+# Through a file rather than a command substitution: ftxui pads with NUL
+# bytes, and `$(...)` drops them with a bash warning on every run. The file
+# also survives the assertions below, so a failure can be read back in full.
+S2_LOG="$RUNTIME_DIR/s2-remove.log"
+RUN_IN tmp remove rm-fixture -y >"$S2_LOG" 2>&1 || fail "S2: remove failed"
+# ftxui colours and pads; drop the escapes and the padding before matching.
+S2_TEXT="$(tr -d '\000' < "$S2_LOG" | sed 's/\x1b\[[0-9;]*m//g')"
 
 grep -q "detached" <<<"$S2_TEXT" \
   || fail "S2: remove reported no detach; output was: $S2_TEXT"
