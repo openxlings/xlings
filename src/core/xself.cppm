@@ -55,7 +55,7 @@ static int cmd_help(EventStream& stream) {
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
-        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --dry-run to preview the repairs, --verbose to list non-defect findings, --reset-metadata to discard unreadable release metadata)"}},
+        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --dry-run to preview the repairs, --all to list non-defect findings, --reset-metadata to discard unreadable release metadata)"}},
     });
     stream.emit(DataEvent{"help", payload.dump()});
     return 0;
@@ -106,7 +106,12 @@ export int run(int argc, char* argv[], EventStream& stream) {
             // the upgrade inherited. They are summarised to one counted line
             // by default because there are dozens of them on a real home and
             // they buried the handful that mattered.
-            if (arg == "--verbose" || arg == "-v") verbose = true;
+            //
+            // NOT `--verbose`: that one is a GLOBAL flag (cli.cppm raises the
+            // log level with it) and is STRIPPED from argv before this
+            // dispatch ever runs, so a `--verbose` here would be documented in
+            // the help text and silently do nothing.
+            if (arg == "--all") verbose = true;
         }
         return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose);
     }

@@ -1242,7 +1242,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         if (!summary.empty()) {
-            add("ⓘ nothing to do", summary + "  —  `--verbose` to list them");
+            add("ⓘ nothing to do", summary + "  —  `--all` to list them");
         }
     }
 

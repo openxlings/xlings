@@ -272,9 +272,14 @@ coordinate_from_payload_path(std::string_view path, std::string_view xpkgsRoot);
 
 - `ⓘ release anchor` / `BindingSeverity::Notice` 不再逐条打印，
   合并为汇总行 `ⓘ 正常但值得知道  release anchor 30 · sysroot 未跟踪 2`，
-  明细放到 `--verbose`（新增 flag）。
+  明细放到 `--all`（新增 flag）。
 
 - `⚠ alias unresolved` 同一 target 的多个版本合并为一行（`claude` 5 条 → 1 条）。
+
+> **flag 名不能叫 `--verbose`。** 那是个**全局** flag：`cli.cppm` 用它抬日志级别，
+> 并且在派发前把它从 argv 里**删掉**，所以 `self doctor --verbose` 里的解析永远
+> 收不到。第一版就是这么写的，help 里写了、实测输出一字不差 —— 一个被文档化
+> 的空操作。改名 `--all`：9 行 → 40 行，实测。
 
 ### F5 阶梯补第四级：R4 prune
 
