@@ -1163,27 +1163,47 @@ xvm::SubosWorkspace load_workspace_file_(const std::filesystem::path& path) {
     }
 }
 
+// Every workspace file that can pin a payload against deletion.
+//
+// The UNION of the project-side and home-side files, deliberately, and not
+// the scope's own side only. That is what it used to return, and the two sets
+// never met: a Global-scope package mapped into a project subos was invisible
+// to a `remove` run from the global subos, which then deleted a payload the
+// project was still pointing at. The project got an unregistered active
+// version out of a command it never ran.
+//
+// Erring toward the union can only over-retain -- a stale project subos file
+// keeps a payload on disk longer than needed, which `xlings self clean`'s GC
+// already sweeps (and which walks all of them too). The opposite error
+// deletes something in use, and cannot be undone from the subos it broke.
+//
+// `scope` is retained for callers that still describe what they are removing,
+// but no longer selects a side.
 std::vector<std::filesystem::path> workspace_config_paths_for_scope_(PackageScope scope) {
     namespace fs = std::filesystem;
+    (void)scope;
     std::vector<fs::path> paths;
+    auto push = [&](fs::path p) {
+        if (p.empty()) return;
+        if (std::ranges::find(paths, p) != paths.end()) return;
+        paths.push_back(std::move(p));
+    };
 
-    if (scope == PackageScope::Project && Config::has_project_config()) {
+    if (Config::has_project_config()) {
         auto projectRoot = Config::project_dir();
         if (!projectRoot.empty()) {
-            paths.push_back(Config::project_manifest_path());
-            auto projectStatePath = Config::project_state_path();
-            if (!projectStatePath.empty()) paths.push_back(projectStatePath);
+            push(Config::project_manifest_path());
+            push(Config::project_state_path());
             auto subosRoot = projectRoot / ".xlings" / "subos";
             std::error_code ec;
             if (fs::exists(subosRoot, ec) && fs::is_directory(subosRoot, ec)) {
                 for (auto& entry : platform::dir_entries(subosRoot)) {
                     if (entry.is_directory()) {
-                        paths.push_back(entry.path() / ".xlings.json");
+                        push(entry.path() / ".xlings.json");
                     }
                 }
             }
         }
-        return paths;
     }
 
     auto subosRoot = Config::paths().homeDir / "subos";
@@ -1193,7 +1213,7 @@ std::vector<std::filesystem::path> workspace_config_paths_for_scope_(PackageScop
             if (entry.is_directory()) {
                 auto name = entry.path().filename().string();
                 if (name != "current") {
-                    paths.push_back(entry.path() / ".xlings.json");
+                    push(entry.path() / ".xlings.json");
                 }
             }
         }

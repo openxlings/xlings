@@ -177,6 +177,60 @@ rollback(const fs::path& envDir, int targetGen) {
     return packages;
 }
 
+// One subos's workspace file, as read off disk.
+//
+// The unit every cross-subos question is answered in: "who else references
+// this version", "which subos owns this finding", "is any other subos still
+// pointing at something the DB no longer has". Those used to be three
+// separate walks of ~/.xlings/subos/*/.xlings.json with three slightly
+// different notions of what counts as a readable file; this is the one walk.
+export struct SubosSnapshot {
+    std::string         name;
+    // The subos root, so a caller can tell "the subos named x under this home"
+    // from "the project subos that happens to be named x" without guessing
+    // from the name.
+    fs::path            dir;
+    xvm::SubosWorkspace workspace;
+};
+
+// Every subos under a home, in name order.
+//
+// Unreadable and malformed files are SKIPPED, not reported: this feeds
+// read-only inspection and reference counting, and a subos whose config a
+// user hand-edited into invalid JSON must not take down an unrelated
+// `remove`. `current` is a symlink to the active one and would double-count.
+export std::vector<SubosSnapshot> load_subos_snapshots(const fs::path& xlingsHome) {
+    std::vector<SubosSnapshot> snapshots;
+    auto subosDir = xlingsHome / "subos";
+    std::error_code ec;
+    if (!fs::is_directory(subosDir, ec)) return snapshots;
+
+    for (auto& entry : platform::dir_entries(subosDir)) {
+        std::error_code dec;
+        if (!entry.is_directory(dec)) continue;
+        auto name = entry.path().filename().string();
+        if (name == "current") continue;
+        auto wsPath = entry.path() / ".xlings.json";
+        std::error_code fec;
+        if (!fs::exists(wsPath, fec)) continue;
+        try {
+            auto content = platform::read_file_to_string(wsPath.string());
+            auto json = nlohmann::json::parse(content, nullptr, false);
+            if (json.is_discarded() || !json.is_object()) continue;
+            if (!json.contains("workspace") || !json["workspace"].is_object()) continue;
+            snapshots.push_back({
+                .name = name,
+                .dir = entry.path(),
+                .workspace = xvm::subos_workspace_from_json(json["workspace"]),
+            });
+        } catch (...) {}
+    }
+    std::ranges::sort(snapshots, [](const auto& a, const auto& b) {
+        return a.name < b.name;
+    });
+    return snapshots;
+}
+
 // Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
 // by mapping workspace target names to xpkg directory paths via the versions DB.
 std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
@@ -233,21 +287,8 @@ std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
     };
 
     // Scan all subos workspace files
-    auto subosDir = xlingsHome / "subos";
-    if (fs::exists(subosDir)) {
-        for (auto& envEntry : platform::dir_entries(subosDir)) {
-            if (!envEntry.is_directory()) continue;
-            auto name = envEntry.path().filename().string();
-            if (name == "current") continue; // symlink
-            auto wsPath = envEntry.path() / ".xlings.json";
-            if (!fs::exists(wsPath)) continue;
-            try {
-                auto content = platform::read_file_to_string(wsPath.string());
-                auto json = nlohmann::json::parse(content, nullptr, false);
-                if (!json.is_discarded() && json.contains("workspace"))
-                    add_refs_from_subos_workspace(xvm::subos_workspace_from_json(json["workspace"]));
-            } catch (...) {}
-        }
+    for (auto& snapshot : load_subos_snapshots(xlingsHome)) {
+        add_refs_from_subos_workspace(snapshot.workspace);
     }
 
     return referenced;
@@ -257,23 +298,11 @@ std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
 export std::vector<std::string> find_subos_referencing(
         const fs::path& xlingsHome, const std::string& target) {
     std::vector<std::string> result;
-    auto subosDir = xlingsHome / "subos";
-    if (!fs::exists(subosDir)) return result;
-
-    for (auto& envEntry : platform::dir_entries(subosDir)) {
-        if (!envEntry.is_directory()) continue;
-        auto name = envEntry.path().filename().string();
-        if (name == "current") continue;
-        auto wsPath = envEntry.path() / ".xlings.json";
-        if (!fs::exists(wsPath)) continue;
-        try {
-            auto content = platform::read_file_to_string(wsPath.string());
-            auto json = nlohmann::json::parse(content, nullptr, false);
-            if (json.is_discarded() || !json.contains("workspace")) continue;
-            auto sws = xvm::subos_workspace_from_json(json["workspace"]);
-            if (sws.active.contains(target) || sws.installed.contains(target))
-                result.push_back(name);
-        } catch (...) {}
+    for (auto& snapshot : load_subos_snapshots(xlingsHome)) {
+        if (snapshot.workspace.active.contains(target)
+            || snapshot.workspace.installed.contains(target)) {
+            result.push_back(snapshot.name);
+        }
     }
     return result;
 }

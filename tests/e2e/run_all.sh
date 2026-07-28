@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-37)
+# tests/e2e/run_all.sh — run the release-artifact E2E block (E2E-02..E2E-42)
 # with per-test timing + a slowest-first summary, mirroring mcpp's runner.
 #
 # Usage:  bash tests/e2e/run_all.sh <release-tarball>
@@ -91,6 +91,7 @@ TESTS=(
     "E2E-39 |subos_profile_upgrade_test.sh||"
     "E2E-40 |subos_shell_level_test.sh||"
     "E2E-41 |index_artifact_update_test.sh||"
+    "E2E-42 |self_doctor_multi_subos_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0
