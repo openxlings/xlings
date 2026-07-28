@@ -114,7 +114,10 @@ export int cmd_doctor(EventStream& stream, bool fix,
             });
         }
     }
-    const auto& wsInstalled = Config::workspace_installed();
+    // A copy, not a reference into the config singleton: the repair pass
+    // below calls reload_state(), which reassigns the member this would
+    // otherwise be pointing at. `ws` and `db` are copies for the same reason.
+    const auto wsInstalled = Config::workspace_installed();
 
 #ifdef _WIN32
     constexpr std::string_view shim_ext = ".exe";
@@ -383,16 +386,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         // cohort is exactly who the repair ladder was built for.
         const auto owner = xvm::subos_ownership(ws, wsInstalled, otherSubos,
                                                 name, version);
-        const bool elsewhere = !owner.ownedHere && !owner.otherSubos.empty();
-        if (fix && !elsewhere) {
-            repairTasks.push_back(RepairTask{
-                .kind    = RepairKind::BrokenPayload,
-                .target  = name,
-                .version = version,
-                .detail  = detail,
-            });
-        }
-        if (elsewhere) {
+        if (!owner.ownedHere && !owner.otherSubos.empty()) {
             // Not counted in `broken`, and so not in the exit code: this
             // subos does not reference the payload, cannot repair it without
             // adopting the package, and would otherwise stay red until the
@@ -412,6 +406,14 @@ export int cmd_doctor(EventStream& stream, bool fix,
             return;
         }
         ++broken;
+        if (fix) {
+            repairTasks.push_back(RepairTask{
+                .kind    = RepairKind::BrokenPayload,
+                .target  = name,
+                .version = version,
+                .detail  = detail,
+            });
+        }
         auto wit = ws.find(name);
         bool is_active = (wit != ws.end() && wit->second == version);
         std::string label = is_active ? "✗ broken payload [active]"
