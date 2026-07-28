@@ -474,8 +474,14 @@ deactivation 之前（未注册的 active 会让后者误判）。
 | A13 | 报告行数 | 239 | **46（修复前）→ 9（修复后）** | ✅ |
 | A15 | 真实 `~/.xlings/data/xpkgs` 未被改写 | — | **`find -newer` 为空** | ✅ |
 
-A14（`xlings use gcc` 双向可切）未回归：gcc 系列不在本次修复触及的条目里，
-`--fix` 只对它做了 dangling-edge 清理；这一点是**未验证**的，如实记录。
+| A14 | 修复后 `xlings use gcc` 双向可切 | — | **15.1.0 ⇄ 16.1.0 均成功，shim 报告切换后的版本，doctor 仍退出 0** | ✅ |
+
+A14 在修复完成的切片上实测：`gcc` 有 4 个 version key
+（`15.1.0` / `15.1.0-musl` / `15.1.0-aarch64-musl` / `16.1.0`），来回切换后
+`gcc --version` 分别报 15.1.0 与 16.1.0，`self doctor` 退出码保持 0。
+两个 musl flavor 也回到了 versions 列表 —— 这是 §5.5 第 2 条（R3 不再把好包
+卸掉不装回去）之后的正确结果：它们现在是被重新注册的，而不是被当成
+collateral 清掉的。
 
 #### A10 的两次修正 —— 都是真问题
 
