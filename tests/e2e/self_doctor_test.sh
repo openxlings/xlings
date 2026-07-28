@@ -323,9 +323,21 @@ function install()
     local bindir = path.join(pkginfo.install_dir(), "bin")
     os.tryrm(pkginfo.install_dir())
     os.mkdir(bindir)
-    -- Real binary that the alias points to: alias-real
+    -- Real binary that the alias points to: alias-real.
+    --
+    -- It has to be EXECUTABLE, not merely present. doctor exempts a payload
+    -- that ships no executable at all ("this package has no program of its
+    -- own"), so a fixture whose only file is unreadable as a program takes
+    -- that exemption and every alias-mode assertion below passes for the
+    -- wrong reason -- verified by mutation: without the chmod, deleting the
+    -- alias branch under test left S11 green.
     io.writefile(path.join(bindir, "alias-real"),
                  "#!/bin/sh\necho alias-real\n")
+    if os.host() == "windows" then
+        io.writefile(path.join(bindir, "alias-real.bat"), "@echo alias-real\n")
+    else
+        os.exec("chmod +x " .. path.join(bindir, "alias-real"))
+    end
     return true
 end
 
@@ -372,6 +384,33 @@ vers = (data.get("versions") or {}).get("alias-fixture", {}).get("versions", {})
 assert "1.0.0" in vers, "S10: alias-fixture@1.0.0 should remain registered (warning is non-actionable)"
 PY
 
+# ── S11: repairing an alias-mode entry is reported as repaired ─────
+#
+# The re-detect that decides whether a repair worked used to ask only
+# `resolve_executable(<target>)` -- check 3's NON-alias branch. An alias-mode
+# entry has no executable of its own by construction, so every one of them came
+# back `✗ repair failed` after a repair that had in fact worked, and doctor
+# exited 1 on a home with nothing left to fix.
+#
+# Not a fixture-only shape: measured against the real index, `patchelf`
+# registers `elfpatch` with `alias = "patchelf"`, so deleting that payload and
+# running `--fix` restored it and then reported the restore as a failure.
+log "S11: --fix on an alias-mode entry → healed, not 'repair failed'"
+ALIAS_PAYLOAD_DIR="$HOME_DIR/data/xpkgs/xim-x-alias-fixture/1.0.0"
+rm -rf "$ALIAS_PAYLOAD_DIR"
+rc=0
+out=$(RUN self doctor 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "S11 setup: a missing payload directory must be an error"
+
+rc=0
+out=$(RUN self doctor --fix 2>&1) || rc=$?
+[[ -f "$ALIAS_PAYLOAD_DIR/bin/alias-real" ]] \
+  || fail "S11: --fix should have restored the payload; got:\n$out"
+echo "$out" | grep -q "repair failed" \
+  && fail "S11: the repair worked — reporting it as failed is the bug:\n$out"
+[[ $rc -eq 0 ]] \
+  || fail "S11: --fix repaired everything, so doctor must exit 0; got $rc:\n$out"
+
 # ── S12: a long report prints in full ──────────────────────────────
 # Regression: the panel renderer asked ftxui for Dimension::Fit(doc), whose
 # extend_beyond_screen parameter defaults to false -- the fitted height gets
@@ -404,4 +443,4 @@ lines=$(printf '%s\n' "$out" | wc -l)
 printf '%s\n' "$out" | grep -q "broken payloads" \
   || fail "S12: the summary line must survive a long report; got $lines lines:\n$out"
 
-log "PASS: self doctor scenarios 1-10 + S12 (long report not clamped)"
+log "PASS: self doctor scenarios 1-12 (alias repair reported honestly, long report not clamped)"

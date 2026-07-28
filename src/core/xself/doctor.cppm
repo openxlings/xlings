@@ -900,31 +900,53 @@ export int cmd_doctor(EventStream& stream, bool fix,
         // failure, the single entry whose cure was metadata-only.
         Config::reload_state();
         const auto after = Config::versions();
-        for (const auto& [task, result] : outcomes) {
-            const auto* vi = xvm::get_vinfo(after, task.target);
-            const xvm::VData* vd = nullptr;
-            if (vi) {
-                if (auto it = vi->versions.find(task.version);
-                    it != vi->versions.end()) {
-                    vd = &it->second;
-                }
-            }
+        // Cured means DETECTION WOULD NO LONGER REPORT IT. Anything narrower
+        // is a second opinion about the same entry, and the two then disagree
+        // -- which is what happened: this used to ask only
+        // `resolve_executable(target)`, the non-alias branch of check 3. An
+        // alias-mode entry has no executable of its own by construction, so
+        // every one of them came back "repair failed" after a repair that had
+        // in fact worked. Measured against the real index: `patchelf`
+        // registers `elfpatch` with `alias = "patchelf"`, so removing that
+        // payload and running `--fix` restored it, printed
+        // `✗ repair failed elfpatch@0.18.0`, and exited 1 on a home where
+        // nothing was left to fix. Same shape as the release-anchor case the
+        // previous release fixed, in the branch it did not reach.
+        const auto payload_finding_cleared = [&](const xvm::VersionDB& state,
+                                                 const std::string& name,
+                                                 const std::string& version) {
+            const auto* vi = xvm::get_vinfo(state, name);
+            if (!vi) return false;   // entry gone: never a cure, see below
+            auto it = vi->versions.find(version);
+            if (it == vi->versions.end()) return false;
+            const auto& vd = it->second;
+            if (vd.path.empty()) return true;   // type-only stub, never reported
 
-            bool cured = false;
-            if (vd) {
-                // Two ways to be cured, matching the two ways to be broken:
-                // the payload resolves again, or re-registration made the
-                // entry recognisable as a release anchor (a package that
-                // ships no program of its own was never broken).
-                cured = !xvm::resolve_executable(
-                             task.target, vd->path, home_str).empty()
-                     || xvm::is_binding_root(after, task.target, task.version);
-            } else {
-                // The entry is gone. Only a cure if the ladder took it out on
-                // purpose and could not put it back -- which it reports as a
-                // failure, not a cure.
-                cured = false;
+            const auto expanded = xvm::expand_path(vd.path, home_str);
+            std::error_code ec;
+            if (!fs::is_directory(expanded, ec)) return false;
+
+            // Alias mode: check 3 downgrades an unresolvable alias to a
+            // warning and never calls it a broken payload, so the payload
+            // directory being back is the whole of the cure.
+            if (!vd.alias.empty() && !vd.alias[0].empty()) return true;
+
+            if (!xvm::resolve_executable(name, vd.path, home_str).empty()) {
+                return true;
             }
+            // Re-registration can also make the entry recognisable as a
+            // release anchor -- a package that ships no program of its own
+            // was never broken. Both of check 3's exemptions, not one.
+            return xvm::is_binding_root(state, name, version)
+                || !payload_has_any_executable(expanded);
+        };
+
+        for (const auto& [task, result] : outcomes) {
+            // An entry that is gone is not cured: the only way the ladder
+            // takes one out is R3, which reports its own failure when it
+            // cannot put it back.
+            const bool cured =
+                payload_finding_cleared(after, task.target, task.version);
 
             if (cured) {
                 ++healed;
