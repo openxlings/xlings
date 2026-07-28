@@ -25,22 +25,27 @@ namespace fs = std::filesystem;
 namespace sp = xlings::xself::shell_profile;
 
 using sp::HookResult;
+using sp::ProbeStatus;
 
 namespace {
 
 // Answers each probe command from a scripted table and records what it was
-// asked. Anything not in the table is "host not installed" (nullopt), which
-// is what a real runner reports for a missing pwsh.
+// asked. Anything not in the table exits non-zero with the message cmd.exe
+// produces for a missing executable — what a real runner reports for a box
+// without pwsh.
 struct FakeRunner {
-    std::map<std::string, std::string>  replies;
-    mutable std::vector<std::string>    ran;
+    std::map<std::string, std::pair<int, std::string>> replies;
+    mutable std::vector<std::string>                   ran;
 
-    std::optional<std::string> operator()(const std::string& cmd) const {
+    std::pair<int, std::string> operator()(const std::string& cmd) const {
         ran.push_back(cmd);
         if (auto it = replies.find(cmd); it != replies.end()) return it->second;
-        return std::nullopt;
+        return {1, "'" + cmd.substr(0, cmd.find(' ')) +
+                       "' is not recognized as an internal or external command"};
     }
 };
+
+std::pair<int, std::string> ok(std::string out) { return {0, std::move(out)}; }
 
 // A scratch directory per test, removed on teardown.
 class ShellProfileFileTest : public ::testing::Test {
@@ -94,6 +99,23 @@ TEST(ShellProfileProbe, ProbeCommandTagsTheAnswer) {
               std::string::npos);
 }
 
+// The command reaches powershell.exe through _popen -> cmd.exe, and each
+// layer re-parses quotes by its own rules — powershell.exe 5.1 does not even
+// use argv for -Command, it takes the rest of the line and strips quotes.
+// So the command carries NO quote of either kind: PowerShell's argument mode
+// expands `XLINGS_PROFILE=$PROFILE` as a bare word, which removes the whole
+// class of quoting bugs instead of working around one of them.
+TEST(ShellProfileProbe, ProbeCommandHasNoQuotesForAShellToReparse) {
+    for (auto host : sp::kPowerShellHosts) {
+        auto cmd = sp::probe_command(host);
+        EXPECT_EQ(cmd.find('"'), std::string::npos) << cmd;
+        EXPECT_EQ(cmd.find('\''), std::string::npos) << cmd;
+        // …and the tag stays glued to $PROFILE, so it survives argument mode.
+        EXPECT_NE(cmd.find(std::string(sp::kProbePrefix) + "$PROFILE"),
+                  std::string::npos) << cmd;
+    }
+}
+
 // ─── parse_probe_output ─────────────────────────────────────────────
 
 TEST(ShellProfileParse, ReadsTheTaggedPath) {
@@ -134,87 +156,113 @@ TEST(ShellProfileParse, RejectsBlankTaggedValue) {
     EXPECT_FALSE(sp::parse_probe_output("XLINGS_PROFILE=   \r\n").has_value());
 }
 
-// ─── resolve_targets ────────────────────────────────────────────────
+// ─── probe_hosts ────────────────────────────────────────────────────
 
-TEST(ShellProfileResolve, ReturnsOneTargetPerHostThatAnswers) {
+TEST(ShellProfileProbeHosts, ReportsThePathEachHostAnswered) {
     FakeRunner run {{
-        {sp::probe_command("powershell"), "XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n"},
-        {sp::probe_command("pwsh"),       "XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n"},
+        {sp::probe_command("powershell"), ok("XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n")},
+        {sp::probe_command("pwsh"),       ok("XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n")},
     }};
 
-    auto targets = sp::resolve_targets(kHosts, std::ref(run));
+    auto probes = sp::probe_hosts(kHosts, std::ref(run));
 
-    ASSERT_EQ(targets.size(), 2u);
-    EXPECT_EQ(targets[0].host, "powershell");
-    EXPECT_EQ(targets[0].path.string(), "C:\\ps5\\profile.ps1");
-    EXPECT_EQ(targets[1].host, "pwsh");
-    EXPECT_EQ(targets[1].path.string(), "C:\\ps7\\profile.ps1");
+    ASSERT_EQ(probes.size(), 2u);
+    EXPECT_EQ(probes[0].host, "powershell");
+    EXPECT_EQ(probes[0].status, ProbeStatus::Answered);
+    EXPECT_EQ(probes[0].path.string(), "C:\\ps5\\profile.ps1");
+    EXPECT_EQ(probes[1].host, "pwsh");
+    EXPECT_EQ(probes[1].status, ProbeStatus::Answered);
+    EXPECT_EQ(probes[1].path.string(), "C:\\ps7\\profile.ps1");
 }
 
 // The regression under test, from the other side: a machine WITH pwsh must
 // yield a pwsh target. Before the fix there was no pwsh entry to yield.
-TEST(ShellProfileResolve, HooksPwshEvenWhenItsProfileDiffersFromPowerShell5) {
+TEST(ShellProfileProbeHosts, HooksPwshEvenWhenItsProfileDiffersFromPowerShell5) {
     FakeRunner run {{
         {sp::probe_command("powershell"),
-         "XLINGS_PROFILE=C:\\U\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\r\n"},
+         ok("XLINGS_PROFILE=C:\\U\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\r\n")},
         {sp::probe_command("pwsh"),
-         "XLINGS_PROFILE=C:\\U\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1\r\n"},
+         ok("XLINGS_PROFILE=C:\\U\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1\r\n")},
     }};
 
-    auto targets = sp::resolve_targets(kHosts, std::ref(run));
+    auto probes = sp::probe_hosts(kHosts, std::ref(run));
 
-    ASSERT_EQ(targets.size(), 2u);
-    EXPECT_NE(targets[0].path, targets[1].path);
+    ASSERT_EQ(probes.size(), 2u);
+    EXPECT_NE(probes[0].path, probes[1].path);
 }
 
-TEST(ShellProfileResolve, SkipsHostThatIsNotInstalled) {
+// A host that never started is a different fact from a host that started and
+// said something unusable: the first is the ordinary 5.1-only machine, the
+// second is a bug worth showing the user. They used to be the same silent
+// `continue`, which is how a whole missing host went unnoticed for a release.
+TEST(ShellProfileProbeHosts, DistinguishesNotInstalledFromUnusableAnswer) {
     FakeRunner run {{
-        {sp::probe_command("powershell"), "XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n"},
+        // pwsh absent -> FakeRunner's default: non-zero + cmd.exe's message.
+        {sp::probe_command("powershell"), ok("WARNING: something odd\r\n")},
     }};
 
-    auto targets = sp::resolve_targets(kHosts, std::ref(run));
+    auto probes = sp::probe_hosts(kHosts, std::ref(run));
 
-    ASSERT_EQ(targets.size(), 1u);
-    EXPECT_EQ(targets[0].host, "powershell");
+    ASSERT_EQ(probes.size(), 2u);
+    EXPECT_EQ(probes[0].status, ProbeStatus::Unusable);
+    EXPECT_EQ(probes[1].status, ProbeStatus::NotInstalled);
 }
 
-TEST(ShellProfileResolve, SkipsHostWhoseAnswerIsUnusable) {
+// The raw text is what a maintainer needs to see when a host answers
+// something unexpected — without it the report is "it did not work".
+TEST(ShellProfileProbeHosts, KeepsTheUnusableAnswerForTheReport) {
     FakeRunner run {{
-        {sp::probe_command("powershell"), "XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n"},
-        {sp::probe_command("pwsh"),       "pwsh: command not found\r\n"},
+        {sp::probe_command("powershell"), ok("Missing expression after unary operator\r\n")},
     }};
 
-    auto targets = sp::resolve_targets(kHosts, std::ref(run));
+    auto probes = sp::probe_hosts(kHosts, std::ref(run));
 
-    ASSERT_EQ(targets.size(), 1u);
-    EXPECT_EQ(targets[0].host, "powershell");
+    ASSERT_FALSE(probes.empty());
+    EXPECT_EQ(probes[0].status, ProbeStatus::Unusable);
+    EXPECT_NE(probes[0].output.find("Missing expression"), std::string::npos);
+}
+
+// Every host gets an entry whatever happens. A host that vanishes from the
+// result cannot be reported on, and an unreported host is how #387 looked
+// from the outside: `self install` printed success and hooked nothing.
+TEST(ShellProfileProbeHosts, ReturnsOneEntryPerHostEvenWhenNoneAnswer) {
+    FakeRunner run {};
+
+    auto probes = sp::probe_hosts(kHosts, std::ref(run));
+
+    ASSERT_EQ(probes.size(), 2u);
+    EXPECT_EQ(probes[0].host, "powershell");
+    EXPECT_EQ(probes[1].host, "pwsh");
+    for (const auto& p : probes) EXPECT_EQ(p.status, ProbeStatus::NotInstalled);
 }
 
 // The shipped host list is the thing install.cppm actually passes, so assert
 // on it rather than only on the hand-rolled list the other cases use. pwsh
 // missing from it is the whole of #387.
-TEST(ShellProfileResolve, TheShippedHostListCoversBothWindowsPowerShellHosts) {
+TEST(ShellProfileProbeHosts, TheShippedHostListCoversBothWindowsPowerShellHosts) {
     FakeRunner run {{
-        {sp::probe_command("powershell"), "XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n"},
-        {sp::probe_command("pwsh"),       "XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n"},
+        {sp::probe_command("powershell"), ok("XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n")},
+        {sp::probe_command("pwsh"),       ok("XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n")},
     }};
 
-    auto targets = sp::resolve_targets(sp::kPowerShellHosts, std::ref(run));
+    auto probes = sp::probe_hosts(sp::kPowerShellHosts, std::ref(run));
 
-    ASSERT_EQ(targets.size(), 2u);
-    EXPECT_EQ(targets[0].host, "powershell");
-    EXPECT_EQ(targets[1].host, "pwsh");
+    ASSERT_EQ(probes.size(), 2u);
+    EXPECT_EQ(probes[0].host, "powershell");
+    EXPECT_EQ(probes[0].status, ProbeStatus::Answered);
+    EXPECT_EQ(probes[1].host, "pwsh");
+    EXPECT_EQ(probes[1].status, ProbeStatus::Answered);
 }
 
 // Each host is started once. Probing pwsh twice would double a ~1s startup
 // on every `self install` / `self update`.
-TEST(ShellProfileResolve, StartsEachHostExactlyOnce) {
+TEST(ShellProfileProbeHosts, StartsEachHostExactlyOnce) {
     FakeRunner run {{
-        {sp::probe_command("powershell"), "XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n"},
-        {sp::probe_command("pwsh"),       "XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n"},
+        {sp::probe_command("powershell"), ok("XLINGS_PROFILE=C:\\ps5\\profile.ps1\r\n")},
+        {sp::probe_command("pwsh"),       ok("XLINGS_PROFILE=C:\\ps7\\profile.ps1\r\n")},
     }};
 
-    sp::resolve_targets(kHosts, std::ref(run));
+    sp::probe_hosts(kHosts, std::ref(run));
 
     ASSERT_EQ(run.ran.size(), 2u);
     EXPECT_EQ(run.ran[0], sp::probe_command("powershell"));

@@ -49,10 +49,21 @@ inline constexpr std::string_view kProbePrefix = "XLINGS_PROFILE=";
 // only correct answer is "whichever starts, xlings is there".
 inline constexpr std::string_view kPowerShellHosts[] = { "powershell", "pwsh" };
 
-// A shell startup file to hook, and the host that reads it.
-struct Target {
+enum class ProbeStatus {
+    Answered,      // reported a usable $PROFILE
+    NotInstalled,  // the host could not be started at all
+    Unusable,      // it started, but said nothing we can hook
+};
+
+// What one host answered. There is one of these per host, always — a host
+// that quietly disappears from the result cannot be reported on, and an
+// unreported host is precisely how #387 looked from the outside: `self
+// install` printed success and hooked nothing.
+struct Probe {
     std::string host;
-    fs::path    path;
+    ProbeStatus status { ProbeStatus::NotInstalled };
+    fs::path    path;    // set only when Answered
+    std::string output;  // raw reply, kept so Unusable can be reported usefully
 };
 
 enum class HookResult {
@@ -61,11 +72,10 @@ enum class HookResult {
     Failed,         // the profile could not be read or written
 };
 
-// Runs a probe command and returns its combined output, or nullopt when the
-// command could not be run at all (host not installed). Injected: this module
-// owns the policy and does no process spawning of its own, which is what lets
-// the Windows-only rules be tested on any platform.
-using CommandRunner = std::function<std::optional<std::string>(const std::string&)>;
+// Runs a probe command and returns {exit code, combined output}. Injected:
+// this module owns the policy and does no process spawning of its own, which
+// is what lets the Windows-only rules be tested on any platform.
+using CommandRunner = std::function<std::pair<int, std::string>(const std::string&)>;
 
 // Ask a host where ITS OWN startup file is, rather than composing the path
 // from a known-folder guess. The path differs per host, and both are subject
@@ -75,10 +85,17 @@ using CommandRunner = std::function<std::optional<std::string>(const std::string
 // -NoProfile: the probe must not source the profile it is about to edit.
 // -NonInteractive: a misconfigured profile must not park `self install` on a
 // prompt.
+//
+// The script carries NO quote of either kind. It travels through _popen ->
+// cmd.exe -> powershell.exe, and every layer re-parses quotes by its own
+// rules -- powershell.exe 5.1 does not even use argv for -Command, it takes
+// the rest of the line and strips quotes itself. Rather than find the one
+// spelling all three agree on, the script is written so none of them has
+// anything to re-parse: PowerShell's argument mode expands the bare word
+// `XLINGS_PROFILE=$PROFILE` into the tagged answer.
 inline std::string probe_command(std::string_view host) {
-    return std::string(host) +
-           " -NoProfile -NonInteractive -Command \"Write-Output ('" +
-           std::string(kProbePrefix) + "' + $PROFILE)\"";
+    return std::string(host) + " -NoProfile -NonInteractive -Command Write-Output " +
+           std::string(kProbePrefix) + "$PROFILE";
 }
 
 // Pull the tagged path out of a probe's output. Untagged lines are noise by
@@ -106,20 +123,29 @@ inline std::optional<fs::path> parse_probe_output(std::string_view raw) {
     return std::nullopt;
 }
 
-// One probe per host; hosts that do not answer usably are simply absent from
-// the result. An empty result is itself meaningful to the caller -- it means
-// no shell was hooked, and the user needs the manual hint.
-inline std::vector<Target> resolve_targets(std::span<const std::string_view> hosts,
-                                           const CommandRunner& run) {
-    std::vector<Target> targets;
+// One probe per host, one result per host. Nothing is filtered here: the
+// caller decides what to say about each outcome, and can only do that if it
+// is told about every host.
+inline std::vector<Probe> probe_hosts(std::span<const std::string_view> hosts,
+                                      const CommandRunner& run) {
+    std::vector<Probe> probes;
     for (auto host : hosts) {
-        auto out = run(probe_command(host));
-        if (!out) continue;
-        auto path = parse_probe_output(*out);
-        if (!path) continue;
-        targets.push_back(Target{std::string(host), *path});
+        auto [rc, out] = run(probe_command(host));
+        Probe p{std::string(host), ProbeStatus::NotInstalled, {}, std::move(out)};
+        if (rc == 0) {
+            if (auto path = parse_probe_output(p.output)) {
+                p.status = ProbeStatus::Answered;
+                p.path   = *path;
+            } else {
+                // It ran and said something we cannot use. Distinct from "not
+                // installed" because it is a defect rather than a normal
+                // machine shape, and the caller should surface it.
+                p.status = ProbeStatus::Unusable;
+            }
+        }
+        probes.push_back(std::move(p));
     }
-    return targets;
+    return probes;
 }
 
 // The line appended to a PowerShell startup file.

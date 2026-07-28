@@ -198,14 +198,12 @@ static std::vector<fs::path> hooked_startup_files_(const fs::path& userHome) {
     // Not a fixed path under the home: each PowerShell host reports its own
     // $PROFILE, and OneDrive folder redirection can move both. Same probe
     // install used to find them.
-    for (const auto& t : shell_profile::resolve_targets(
+    for (const auto& p : shell_profile::probe_hosts(
              shell_profile::kPowerShellHosts,
-             [](const std::string& cmd) -> std::optional<std::string> {
-                 auto [rc, out] = platform::run_command_capture(cmd);
-                 if (rc != 0) return std::nullopt;
-                 return out;
+             [](const std::string& cmd) {
+                 return platform::run_command_capture(cmd);
              })) {
-        files.push_back(t.path);
+        if (p.status == shell_profile::ProbeStatus::Answered) files.push_back(p.path);
     }
 #endif
     return files;

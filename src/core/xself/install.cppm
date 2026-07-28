@@ -384,37 +384,51 @@ static void setup_shell_profiles(const fs::path& homeDir) {
     auto profilePs1 = homeDir / "config" / "shell" / "xlings-profile.ps1";
     auto snippet = shell_profile::powershell_snippet(profilePs1);
 
-    auto targets = shell_profile::resolve_targets(
+    auto probes = shell_profile::probe_hosts(
         shell_profile::kPowerShellHosts,
-        [](const std::string& cmd) -> std::optional<std::string> {
-            // A host that is not installed cannot answer: cmd fails to resolve
-            // the executable and exits non-zero, which is the probe.
-            auto [rc, out] = platform::run_command_capture(cmd);
-            if (rc != 0) return std::nullopt;
-            return out;
+        [](const std::string& cmd) {
+            auto result = platform::run_command_capture(cmd);
+            log::debug("[xlings:self] probe: {} -> rc={} out={}",
+                       cmd, result.first, result.second);
+            return result;
         });
 
-    for (const auto& t : targets) {
-        switch (shell_profile::hook(t.path, snippet)) {
+    int hooked = 0;
+    for (const auto& p : probes) {
+        if (p.status == shell_profile::ProbeStatus::NotInstalled) {
+            // The ordinary shape of a machine without PowerShell 7. Not news.
+            log::debug("[xlings:self] {} not installed", p.host);
+            continue;
+        }
+        if (p.status == shell_profile::ProbeStatus::Unusable) {
+            // It started and said something we cannot hook. That is a defect,
+            // not a machine shape, so it is shown with what it actually said.
+            log::warn("[xlings:self] {} did not report $PROFILE: {}",
+                      p.host, p.output);
+            continue;
+        }
+        switch (shell_profile::hook(p.path, snippet)) {
         case shell_profile::HookResult::Added:
-            log::println("[xlings:self] added profile ({})", t.host);
-            log::debug("[xlings:self]   {}", t.path.string());
+            ++hooked;
+            log::println("[xlings:self] added profile ({})", p.host);
+            log::debug("[xlings:self]   {}", p.path.string());
             break;
         case shell_profile::HookResult::AlreadyHooked:
-            log::debug("[xlings:self] profile ok ({})", t.host);
+            ++hooked;
+            log::debug("[xlings:self] profile ok ({})", p.host);
             break;
         case shell_profile::HookResult::Failed:
             // Reported rather than swallowed: the old one-liner discarded its
             // exit code, so a profile that was never written looked exactly
             // like one that was.
             log::warn("[xlings:self] could not write {} profile: {}",
-                      t.host, t.path.string());
+                      p.host, p.path.string());
             break;
         }
     }
 
-    if (targets.empty()) {
-        std::println("[xlings:self] no PowerShell host answered, add manually to $PROFILE:");
+    if (hooked == 0) {
+        std::println("[xlings:self] no PowerShell host was configured, add manually to $PROFILE:");
         std::println("  {}", snippet);
     }
 #endif

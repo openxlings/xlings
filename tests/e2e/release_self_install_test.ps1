@@ -69,7 +69,10 @@ try {
     $env:Path = "$hostDirs;$(Get-MinimalSystemPath)"
     Remove-Item Env:XLINGS_HOME -ErrorAction SilentlyContinue
     try {
-        & "$PKG_DIR\bin\xlings.exe" self install
+        # --verbose so the per-host probe (command, exit code, raw reply) is in
+        # the log. When a host silently fails to be hooked, that line is the
+        # difference between a diagnosis and another CI round-trip.
+        & "$PKG_DIR\bin\xlings.exe" self install --verbose
         if ($LASTEXITCODE -ne 0) { Fail "self install exited with code $LASTEXITCODE" }
 
         # The regression: EVERY host that was reachable must now source
