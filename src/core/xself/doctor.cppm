@@ -563,13 +563,39 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                                std::make_move_iterator(ownership.end()));
     }
 
+    // One line per (code, entry), not per field.
+    //
+    // A single legacy anchor carries one dangling edge per program it bound --
+    // five for each of the two gcc flavours on the measured home -- and they
+    // are one problem with one cure. Fourteen lines saying the same thing
+    // about five entries is the noise this collapse exists for; the fields are
+    // still named, on the one line.
+    std::map<std::tuple<std::string, std::string, std::string>,
+             std::vector<const xvm::BindingFinding*>> bindingGroups;
+    std::vector<std::tuple<std::string, std::string, std::string>> bindingOrder;
     for (const auto& f : bindingFindings) {
+        const auto key = std::tuple{f.code, f.target, f.version};
+        auto [it, inserted] = bindingGroups.try_emplace(key);
+        if (inserted) bindingOrder.push_back(key);
+        it->second.push_back(&f);
+    }
+    for (const auto& key : bindingOrder) {
+        const auto& group = bindingGroups.at(key);
+        const auto& f = *group.front();
         std::string detail = f.summary;
         if (!f.target.empty()) {
             detail += std::format(
                 " [{}]", xvm::display_coordinate(f.target, f.version));
         }
-        if (!f.field.empty()) detail += std::format(" at {}", f.field);
+        std::string fields;
+        for (const auto* member : group) {
+            if (member->field.empty()) continue;
+            if (!fields.empty()) fields += ", ";
+            fields += member->field;
+        }
+        if (!fields.empty()) {
+            detail += std::format(" at {}", fields);
+        }
         // The code stays in the line. It is the only greppable handle a user
         // or a bug report has on which invariant broke, and the hint alone is
         // prose.
@@ -1048,6 +1074,7 @@ struct Counts {
 
 Counts count_(const Scan& scan) {
     Counts c;
+    std::set<std::string> aliasTargets;
     for (const auto& f : scan.findings) {
         switch (f.kind) {
             case FindingKind::MissingShim:     ++c.missing; break;
@@ -1055,8 +1082,14 @@ Counts count_(const Scan& scan) {
             case FindingKind::LegacyAliasShim: ++c.orphans; break;
             case FindingKind::BrokenPayload:   ++c.broken;  break;
             case FindingKind::ForeignPayload:  ++c.foreignPayloads; break;
-            case FindingKind::ShimAnchor:
-            case FindingKind::AliasUnresolved: ++c.warnings; break;
+            case FindingKind::ShimAnchor: ++c.warnings; break;
+            // Counted per TARGET, because that is how they are printed. A
+            // count that does not match the list is the shape the old summary
+            // had -- "broken payloads 1" with nothing in the list to explain
+            // it -- and it sends people looking for a line that is not there.
+            case FindingKind::AliasUnresolved:
+                if (aliasTargets.insert(f.target).second) ++c.warnings;
+                break;
             case FindingKind::ReleaseAnchor:   ++c.notices; break;
             case FindingKind::BindingState:
                 if (f.level == FindingLevel::Notice) ++c.notices;
@@ -1261,28 +1294,19 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         add("hint", "run `xlings self doctor --fix` to repair", true);
     }
 
+    // The nudge, for a home an older client set up. Last field of the same
+    // panel rather than a panel of its own: a second panel renders its own
+    // (empty) header, which reads as a broken frame rather than a footnote.
+    // Gated on the recorded version differing from the running one, which is
+    // what makes a successful `--fix` turn it off rather than merely quieten
+    // it.
+    if (auto hint = migration_hint(Config::recorded_client_version(),
+                                   Info::VERSION)) {
+        add("ⓘ migration", *hint);
+    }
+
     nlohmann::json payload;
     payload["title"]  = "xlings self doctor";
-    payload["fields"] = std::move(fields);
-    stream.emit(DataEvent{"info_panel", payload.dump()});
-}
-
-// The nudge, for a home an older client set up.
-//
-// Emitted as its own field after the panel is built so it survives every early
-// return, and gated on the recorded version differing from the running one --
-// which is what makes a successful `--fix` turn it off rather than merely
-// quieten it.
-void emit_migration_hint_(EventStream& stream) {
-    auto hint = migration_hint(Config::recorded_client_version(),
-                               Info::VERSION);
-    if (!hint) return;
-    nlohmann::json fields = nlohmann::json::array();
-    fields.push_back({{"label", "ⓘ migration"},
-                      {"value", *hint},
-                      {"highlight", false}});
-    nlohmann::json payload;
-    payload["title"]  = "";
     payload["fields"] = std::move(fields);
     stream.emit(DataEvent{"info_panel", payload.dump()});
 }
@@ -1363,8 +1387,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     if (!fix) {
         render_(scan, repair, fix, dryRun, verbose, stream);
-        emit_migration_hint_(stream);
-        return count_(scan).issues() == 0 ? 0 : 1;
+            return count_(scan).issues() == 0 ? 0 : 1;
     }
 
     const int before = count_(scan).issues();
@@ -1372,8 +1395,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     if (dryRun) {
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
         render_(scan, repair, fix, dryRun, verbose, stream);
-        emit_migration_hint_(stream);
-        return count_(scan).issues() == 0 ? 0 : 1;
+            return count_(scan).issues() == 0 ? 0 : 1;
     }
 
     // Re-read and re-detect between phases.
@@ -1468,7 +1490,6 @@ export int cmd_doctor(EventStream& stream, bool fix,
     if (outstanding == 0 && after.foreignPayloads == 0) {
         Config::record_client_version(std::string(Info::VERSION));
     }
-    emit_migration_hint_(stream);
 
     return (after.issues() == 0 && outstanding == 0) ? 0 : 1;
 }
