@@ -2,6 +2,7 @@ export module xlings.core.xself.install;
 
 import std;
 import xlings.core.xself.init;
+import xlings.core.xself.shell_profile;
 
 import xlings.core.config;
 import xlings.core.xvm.lock;
@@ -373,19 +374,63 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         "}else{Write-Host 'PATH already set'}\"";
     platform::exec(checkCmd);
 
+    // Hook every PowerShell host on the box, not just the one xlings happens
+    // to shell out to. Windows PowerShell 5.1 and PowerShell 7+ read different
+    // startup files, and `xlings subos use` spawns pwsh.exe first -- so the
+    // 5.1-only hook this used to be left the shell xlings itself launches
+    // without XLINGS_BIN on PATH (#387). Policy and mechanics live in
+    // xlings.core.xself.shell_profile, which is unit-tested; what stays here
+    // is the process spawning and the reporting.
     auto profilePs1 = homeDir / "config" / "shell" / "xlings-profile.ps1";
-    std::string psCmd = "powershell -NoProfile -Command \""
-        "$prof=$PROFILE;"
-        "$dir=Split-Path $prof;"
-        "if(!(Test-Path $dir)){New-Item -ItemType Directory -Force $dir|Out-Null};"
-        "if(!(Test-Path $prof)){New-Item -ItemType File -Force $prof|Out-Null};"
-        "$c=Get-Content $prof -Raw -ErrorAction SilentlyContinue;"
-        "if(!$c -or $c -notlike '*xlings-profile*'){"
-        "Add-Content $prof \\\"`n# xlings`nif(Test-Path '" + profilePs1.string() +
-        "'){. '" + profilePs1.string() + "'}\\\""
-        ";Write-Host 'PS profile added'"
-        "}else{Write-Host 'PS profile already set'}\"";
-    platform::exec(psCmd);
+    auto snippet = shell_profile::powershell_snippet(profilePs1);
+
+    auto probes = shell_profile::probe_hosts(
+        shell_profile::kPowerShellHosts,
+        [](const std::string& cmd) {
+            auto result = platform::run_command_capture(cmd);
+            log::debug("[xlings:self] probe: {} -> rc={} out={}",
+                       cmd, result.first, result.second);
+            return result;
+        });
+
+    int hooked = 0;
+    for (const auto& p : probes) {
+        if (p.status == shell_profile::ProbeStatus::NotInstalled) {
+            // The ordinary shape of a machine without PowerShell 7. Not news.
+            log::debug("[xlings:self] {} not installed", p.host);
+            continue;
+        }
+        if (p.status == shell_profile::ProbeStatus::Unusable) {
+            // It started and said something we cannot hook. That is a defect,
+            // not a machine shape, so it is shown with what it actually said.
+            log::warn("[xlings:self] {} did not report $PROFILE: {}",
+                      p.host, p.output);
+            continue;
+        }
+        switch (shell_profile::hook(p.path, snippet)) {
+        case shell_profile::HookResult::Added:
+            ++hooked;
+            log::println("[xlings:self] added profile ({})", p.host);
+            log::debug("[xlings:self]   {}", p.path.string());
+            break;
+        case shell_profile::HookResult::AlreadyHooked:
+            ++hooked;
+            log::debug("[xlings:self] profile ok ({})", p.host);
+            break;
+        case shell_profile::HookResult::Failed:
+            // Reported rather than swallowed: the old one-liner discarded its
+            // exit code, so a profile that was never written looked exactly
+            // like one that was.
+            log::warn("[xlings:self] could not write {} profile: {}",
+                      p.host, p.path.string());
+            break;
+        }
+    }
+
+    if (hooked == 0) {
+        std::println("[xlings:self] no PowerShell host was configured, add manually to $PROFILE:");
+        std::println("  {}", snippet);
+    }
 #endif
 }
 
