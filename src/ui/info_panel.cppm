@@ -341,22 +341,69 @@ void print_remove_plan(const std::string& subos,
 }
 
 // Print uninstall summary
+// `detached` distinguishes the two outcomes `remove` can have. They used to
+// render identically, so a run that kept the registration and the payload in
+// full looked exactly like one that deleted both (#443). `pinnedBy` names the
+// other subos still holding this version — that list is the remedy, not
+// decoration: removing it from each in turn lets the last one delete for real.
 void print_remove_summary(const std::string& subos,
                           const std::string& name,
-                          const std::string& version) {
+                          const std::string& version,
+                          bool detached,
+                          const std::vector<std::string>& pinnedBy) {
     using namespace ftxui;
 
     auto label = remove_target_label_(name, version);
 
     Elements rows;
     rows.push_back(text(""));
-    rows.push_back(hbox({
-        text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
-        text(label + " removed") | color(theme::green()) | bold,
-        subos.empty()
-            ? text("")
-            : (text("  (subos: " + subos + ")") | color(theme::dim_color())),
-    }));
+    if (detached) {
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
+            text(label + " detached") | color(theme::green()) | bold,
+            subos.empty()
+                ? text("")
+                : (text("  (subos: " + subos + ")") | color(theme::dim_color())),
+        }));
+        // Say how many, and name them only while the line still fits.
+        //
+        // ftxui clips at the screen edge, and on a pipe that is 80 columns:
+        // a home with 20 referencing subos rendered four names and a
+        // half-word, which reads as a complete list and is not. That is the
+        // same "looks finished, isn't" failure this whole change removes, so
+        // the cap is applied here where the count is known rather than left
+        // to the terminal. The COUNT is the load-bearing fact — it tells the
+        // user this is not one more `remove` away — and it always fits.
+        constexpr std::size_t kMaxNamed = 2;
+        if (pinnedBy.empty()) {
+            // Pinned by something the subos scan cannot name (a project-local
+            // subos, say). Still say the payload stayed.
+            rows.push_back(text("    payload kept — another subos still uses it")
+                           | color(theme::dim_color()));
+        } else {
+            std::string line = std::format("    payload kept — {} other subos still use it",
+                                           pinnedBy.size());
+            if (pinnedBy.size() <= kMaxNamed) {
+                std::string names;
+                for (const auto& n : pinnedBy) {
+                    if (!names.empty()) names += ", ";
+                    names += n;
+                }
+                line = std::format("    payload kept — still used by {}", names);
+            }
+            rows.push_back(text(line) | color(theme::dim_color()));
+            rows.push_back(text("    remove it there too to delete it for good")
+                           | color(theme::dim_color()));
+        }
+    } else {
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
+            text(label + " removed") | color(theme::green()) | bold,
+            subos.empty()
+                ? text("")
+                : (text("  (subos: " + subos + ")") | color(theme::dim_color())),
+        }));
+    }
     rows.push_back(text(""));
 
     auto doc = vbox(std::move(rows));

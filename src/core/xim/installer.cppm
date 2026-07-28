@@ -1709,6 +1709,19 @@ bool process_xvm_operations_(const PlanNode& node,
         scopedInstalled,
         metadata->removal);
 
+    // Announce any owner-less entry this install took over.
+    //
+    // Adoption replaces the contents recorded for a name@version that an
+    // older client wrote without ownership (xvm/registration.cppm). It is the
+    // right thing to do — the refusal it replaced left the user with no exit
+    // (#422) — but it is still a payload changing behind a name, so it is
+    // said out loud rather than applied silently.
+    for (const auto& member : metadata->registered) {
+        if (!member.adoptedLegacy) continue;
+        log::warn("[xvm] adopted a pre-ownership registration: {}@{} ('{}' changed)",
+                  member.target, member.version, member.adoptedLegacyField);
+    }
+
     if (!metadata->removal.removed.empty()
         || !metadata->registered.empty()) {
         Config::save_versions();
@@ -2396,8 +2409,24 @@ public:
         return {};
     }
 
+    // What `uninstall` actually did.
+    //
+    // Two very different things share this entry point, and they used to be
+    // indistinguishable to the caller — which is how `xlings remove glibc`
+    // came to print the same "✓ removed" whether the payload and its
+    // registration were deleted or left fully intact (#443). A removal that
+    // only detaches the current subos is the CORRECT behaviour when another
+    // subos still uses the version; reporting it as a full removal is not.
+    struct UninstallOutcome {
+        // True when the version survived because another subos still pins it:
+        // the current subos was detached, the registration and payload stayed.
+        bool        detachedOnly { false };
+        std::string target;   // resolved name, as stored in the version DB
+        std::string version;  // resolved version, as stored (may be namespaced)
+    };
+
     // Uninstall a package
-    std::expected<void, std::string>
+    std::expected<UninstallOutcome, std::string>
     uninstall(const std::string& name) {
         auto platform = detect_platform_();
         auto currentWorkspacePath = detail_::current_workspace_config_path_();
@@ -2497,7 +2526,13 @@ public:
             detail_::detach_current_subos_(detachTarget, detachVersion);
             log::debug("{}@{} detached from current subos; payload retained",
                       detachTarget, detachVersion);
-            return {};
+            // Reported, not just logged at debug: this is the branch whose
+            // silence made a no-op look like a removal (#443).
+            return UninstallOutcome{
+                .detachedOnly = true,
+                .target       = detachTarget,
+                .version      = detachVersion,
+            };
         }
 
         auto executorPkgFile = detail_::uninstall_xpkg_file_(pkgFile, installDir);
@@ -2669,7 +2704,11 @@ public:
         }
 
         log::debug("{} uninstalled", resolvedTarget);
-        return {};
+        return UninstallOutcome{
+            .detachedOnly = false,
+            .target       = detachTarget,
+            .version      = detachVersion,
+        };
     }
 
 private:

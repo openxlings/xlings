@@ -759,10 +759,34 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
         return 1;
     }
 
+    // Say which of the two things actually happened.
+    //
+    // When another subos still pins this exact version, `remove` detaches the
+    // current subos and deliberately keeps the registration and the payload —
+    // deleting them would break every other subos that is using them. That is
+    // right. Printing "✓ removed" for it was not: the user is told the package
+    // is gone while ~/.xlings/.xlings.json and data/xpkgs/ still hold it in
+    // full, and the reinstall they try next tells them to uninstall first
+    // (#443, and the closed loop in #422).
+    //
+    // The subos are named rather than merely counted because that is the whole
+    // remedy: removing it from each of them in turn lets the last one delete
+    // the payload for real.
+    std::vector<std::string> pinnedBy;
+    if (result->detachedOnly) {
+        pinnedBy = xlings::profile::find_subos_pinning_version(
+            Config::paths().homeDir,
+            result->target.empty() ? displayName : result->target,
+            result->version.empty() ? displayVersion : result->version);
+        std::erase(pinnedBy, subos);
+    }
+
     nlohmann::json summaryPayload;
     summaryPayload["subos"] = subos;
     summaryPayload["name"] = displayName;
     summaryPayload["version"] = displayVersion;
+    summaryPayload["detached"] = result->detachedOnly;
+    summaryPayload["pinned_by"] = pinnedBy;
     stream.emit(DataEvent{"remove_summary", summaryPayload.dump()});
     return 0;
 }

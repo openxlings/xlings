@@ -307,6 +307,52 @@ export std::vector<std::string> find_subos_referencing(
     return result;
 }
 
+// Which subos still pin an EXACT version of a target.
+//
+// The version-exact counterpart to find_subos_referencing(). `remove` keeps a
+// payload alive when any OTHER subos still references the exact version being
+// removed (installer.cppm's stillReferenced branch); naming those subos is
+// what turns "✓ removed" from a claim the state contradicts into a next step.
+//
+// Version-exact and not name-only, because on a multi-version home the
+// name-only answer names subos that pin a different version and therefore
+// cannot explain why this payload was kept.
+//
+// Namespace handling mirrors is_version_referenced_anywhere_: stored values
+// are namespaced for non-primary index repos (`local:0.0.1`), and the two must
+// agree or this would omit a subos that really is holding the payload down.
+export std::vector<std::string> find_subos_pinning_version(
+        const fs::path& xlingsHome,
+        const std::string& target,
+        const std::string& version) {
+    auto matches = [&](std::string_view stored) {
+        return stored == version
+            || xvm::strip_namespace(std::string(stored)) == version;
+    };
+
+    std::vector<std::string> result;
+    for (auto& snapshot : load_subos_snapshots(xlingsHome)) {
+        const auto& ws = snapshot.workspace;
+        bool pinned = false;
+        if (auto it = ws.active.find(target);
+            it != ws.active.end() && matches(it->second)) {
+            pinned = true;
+        }
+        if (!pinned) {
+            // installed[] pins the payload just as hard as active does — a
+            // subos that opted into the version but is not currently using it
+            // still breaks if the payload goes.
+            if (auto it = ws.installed.find(target); it != ws.installed.end()) {
+                for (auto& v : it->second) {
+                    if (matches(v)) { pinned = true; break; }
+                }
+            }
+        }
+        if (pinned) result.push_back(snapshot.name);
+    }
+    return result;
+}
+
 export int gc(const fs::path& xlingsHome, bool dryRun = false) {
     auto referenced = collect_subos_references_(xlingsHome);
 

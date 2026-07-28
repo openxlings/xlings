@@ -131,10 +131,18 @@ static void dispatch_data_event(const DataEvent& e) {
         // Tolerate the legacy "target" key (older interface clients) by
         // falling back when name/version were not provided.
         auto name = json.value("name", json.value("target", ""));
+        std::vector<std::string> pinnedBy;
+        if (json.contains("pinned_by") && json["pinned_by"].is_array()) {
+            for (auto& n : json["pinned_by"]) {
+                if (n.is_string()) pinnedBy.push_back(n.get<std::string>());
+            }
+        }
         ui::print_remove_summary(
             json.value("subos", ""),
             name,
-            json.value("version", ""));
+            json.value("version", ""),
+            json.value("detached", false),
+            pinnedBy);
     }
     else if (e.kind == "subos_list") {
         std::vector<std::tuple<std::string, std::string, int, bool>> entries;

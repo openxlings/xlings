@@ -161,4 +161,59 @@ print(','.join(sorted(v.keys())))
   || fail "global versions DB should only have 1.0.0, got: '$DB_VERS'"
 log "  ✓ global versions DB: only 1.0.0 remains"
 
+# ── S2: removing a version ANOTHER subos still uses is a detach, and says so
+#
+# The case above has each subos on a different version, so the removal is a
+# real removal. When two subos share the SAME version, `remove` deliberately
+# keeps the registration and the payload -- deleting them would break the
+# other subos. That is correct. Reporting it as "removed" was not: the user
+# was told the package was gone while the version DB and data/xpkgs/ still
+# held it in full, and the reinstall they tried next told them to uninstall
+# first -- a loop with no exit (openxlings/xlings#443, #422).
+#
+# Falsifiable by construction: before the fix this printed the same
+# "✓ rm-fixture@1.0.0 removed" as the real removal above, so the grep below
+# is what fails on a regression.
+log "S2: remove a version another subos still uses"
+RUN_IN tmp install rm-fixture@1.0.0 -y >/dev/null 2>&1 \
+  || fail "S2 setup: tmp install of the shared version failed"
+
+# Through a file rather than a command substitution: ftxui pads with NUL
+# bytes, and `$(...)` drops them with a bash warning on every run. The file
+# also survives the assertions below, so a failure can be read back in full.
+S2_LOG="$RUNTIME_DIR/s2-remove.log"
+RUN_IN tmp remove rm-fixture -y >"$S2_LOG" 2>&1 || fail "S2: remove failed"
+# ftxui colours and pads; drop the escapes and the padding before matching.
+S2_TEXT="$(tr -d '\000' < "$S2_LOG" | sed 's/\x1b\[[0-9;]*m//g')"
+
+grep -q "detached" <<<"$S2_TEXT" \
+  || fail "S2: remove reported no detach; output was: $S2_TEXT"
+log "  ✓ reported as a detach, not a removal"
+
+grep -q "payload kept" <<<"$S2_TEXT" \
+  || fail "S2: the retained payload was not mentioned; output was: $S2_TEXT"
+log "  ✓ said the payload was kept"
+
+# The state the message now matches. These held BEFORE the fix too -- they are
+# what made the old "removed" wording false, so they belong in the assertion.
+[[ -d "$HOME_DIR/data/xpkgs/xim-x-rm-fixture/1.0.0" ]] \
+  || fail "S2: payload should be retained (default still uses 1.0.0)"
+S2_DB="$(python3 -c "
+import json
+d = json.load(open('$HOME_DIR/.xlings.json'))
+v = d.get('versions',{}).get('rm-fixture',{}).get('versions',{})
+print(','.join(sorted(v.keys())))
+")"
+[[ "$S2_DB" == "1.0.0" ]] \
+  || fail "S2: version DB should still carry 1.0.0, got: '$S2_DB'"
+[[ "$(read_active "$HOME_DIR/subos/default/.xlings.json" rm-fixture)" == "1.0.0" ]] \
+  || fail "S2: default should still be on 1.0.0"
+log "  ✓ payload, version DB and the other subos are intact"
+
+# And the current subos really was detached -- otherwise "detached" would be
+# just as false as "removed" was.
+[[ "$(read_active "$HOME_DIR/subos/tmp/.xlings.json" rm-fixture)" == "<none>" ]] \
+  || fail "S2: tmp should have been detached from rm-fixture"
+log "  ✓ tmp detached"
+
 log "PASS: subos_install_remove_isolation"

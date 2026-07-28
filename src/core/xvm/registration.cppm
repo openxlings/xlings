@@ -52,6 +52,12 @@ struct RegisteredMember {
     std::string target;
     std::string version;
     std::string kind;
+    // Set when this member took over an OWNER-LESS entry whose contents
+    // differed -- a registration written by a client that predates ownership.
+    // Reported rather than applied silently: the payload behind a name just
+    // changed, and the user is entitled to know which field moved.
+    bool        adoptedLegacy { false };
+    std::string adoptedLegacyField;
 };
 
 enum class RegistrationErrorKind {
@@ -65,6 +71,10 @@ enum class RegistrationErrorKind {
     GroupConflict,
     TargetVersionConflict,
     OwnershipConflict,
+    // Unreachable since the owner-less adoption change: an entry nobody owns
+    // is now taken over in place rather than refused (#422). Kept so the code
+    // and its message stay decodable in older logs -- do not reintroduce it as
+    // a refusal without an exit the user can actually take.
     LegacyPayloadMismatch,
     IncompleteLegacyComponent,
     IncompleteOwnedGroup,
@@ -657,6 +667,11 @@ apply_registration_batch(
             group.headers.end());
     }
 
+    // Owner-less entries this batch takes over, and the field that differed.
+    // Collected during validation and reported with the result; see the
+    // adoption comment below.
+    std::map<detail_::RegistrationExactKey, std::string> adoptedLegacy;
+
     for (std::size_t index = 0; index < batch.nodes.size(); ++index) {
         const auto& node = batch.nodes[index];
         const auto infoIt = db.find(node.target);
@@ -717,15 +732,31 @@ apply_registration_batch(
             continue;
         }
 
+        // Owner-less entry with different contents: ADOPT it, do not refuse.
+        //
+        // This used to be RegistrationErrorKind::LegacyPayloadMismatch, whose
+        // hint told the user to uninstall the package first. Nothing owns an
+        // owner-less entry, so there is no claim to protect -- and `remove`
+        // keeps exactly these entries when another subos still references the
+        // version (#443), so the hint pointed at a door that does not open.
+        // The two ends met and the only remaining exit was hand-editing the
+        // state file (#422).
+        //
+        // Adoption is also a repair, not just an escape: the entry comes out
+        // of it OWNED (the group pass below assigns bindingGroup), so the next
+        // provider that tries to take the same name@version meets
+        // OwnershipConflict -- a protection the owner-less entry could never
+        // raise. The refusal preserved damage it could not fix; the measured
+        // case is an llvm@20.1.7 whose recorded path used Windows backslashes
+        // on Linux.
+        //
+        // The group-integrity checks below are NOT relaxed: a batch that would
+        // rewrite part of a bound group is still rejected.
         if (auto field = detail_::legacy_payload_mismatch_(
                 node, infoIt->second, data)) {
-            return std::unexpected(detail_::registration_error_(
-                RegistrationErrorKind::LegacyPayloadMismatch,
-                nodePath + "/" + *field,
-                node.target, node.version,
-                std::format(
-                    "owner-less legacy payload field '{}' is incompatible",
-                    *field)));
+            adoptedLegacy.insert_or_assign(
+                detail_::RegistrationExactKey{node.target, node.version},
+                *field);
         }
         auto selection = resolve_binding_selection(
             db, node.target, node.version);
@@ -818,10 +849,15 @@ apply_registration_batch(
             data.bindingMembersDeclared = false;
             data.bindingHeaders.clear();
             data.bindingHeadersDeclared = false;
+            const auto adoptedIt = adoptedLegacy.find(
+                detail_::RegistrationExactKey{target, version});
             registered.push_back({
                 .target = target,
                 .version = version,
                 .kind = data.kind,
+                .adoptedLegacy = adoptedIt != adoptedLegacy.end(),
+                .adoptedLegacyField = adoptedIt != adoptedLegacy.end()
+                    ? adoptedIt->second : std::string{},
             });
             auto& versions = candidateInstalled[target];
             bool foundVersion = false;

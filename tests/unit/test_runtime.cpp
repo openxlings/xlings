@@ -239,6 +239,75 @@ TEST_F(ProfileTest, FindSubosReferencingEmpty) {
     EXPECT_TRUE(refs.empty());
 }
 
+// ── who still pins a specific version ───────────────────────────────
+//
+// `remove` keeps a payload alive when ANY other subos still references the
+// exact version being removed (installer.cppm's stillReferenced branch), and
+// then reports the same "removed" as a real removal. Naming those subos is
+// what turns that message from a lie into a next step — but only if the
+// answer is version-exact: find_subos_referencing() matches the target name
+// alone, so on a multi-version home it names subos that pin a DIFFERENT
+// version and cannot explain why this one was kept.
+namespace {
+
+void write_subos_ws_(const std::filesystem::path& home,
+                     const std::string& name,
+                     const std::string& json) {
+    auto dir = home / "subos" / name;
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / ".xlings.json") << json;
+}
+
+} // namespace
+
+TEST_F(ProfileTest, FindSubosPinningVersionNamesOnlyTheMatchingVersion) {
+    write_subos_ws_(testDir_, "dev",
+        R"({"workspace":{"glibc":{"active":"2.39","installed":["2.39"]}}})");
+    write_subos_ws_(testDir_, "old",
+        R"({"workspace":{"glibc":{"active":"2.35","installed":["2.35"]}}})");
+
+    auto refs = xlings::profile::find_subos_pinning_version(
+        testDir_, "glibc", "2.39");
+
+    ASSERT_EQ(refs.size(), 1u);
+    EXPECT_EQ(refs[0], "dev");
+}
+
+// A subos that merely has the version in installed[] (opted in, not active)
+// pins the payload just as hard — the removal path counts both.
+TEST_F(ProfileTest, FindSubosPinningVersionCountsInstalledNotJustActive) {
+    write_subos_ws_(testDir_, "dev",
+        R"({"workspace":{"glibc":{"active":"2.35","installed":["2.35","2.39"]}}})");
+
+    auto refs = xlings::profile::find_subos_pinning_version(
+        testDir_, "glibc", "2.39");
+
+    ASSERT_EQ(refs.size(), 1u);
+    EXPECT_EQ(refs[0], "dev");
+}
+
+// Stored values are namespaced for non-primary index repos; the removal path
+// strips the namespace before comparing, so this must agree with it or the
+// message would omit a subos that really is holding the payload.
+TEST_F(ProfileTest, FindSubosPinningVersionMatchesNamespacedStoredValues) {
+    write_subos_ws_(testDir_, "dev",
+        R"({"workspace":{"mcpp":{"active":"local:0.0.1","installed":["local:0.0.1"]}}})");
+
+    auto refs = xlings::profile::find_subos_pinning_version(
+        testDir_, "mcpp", "0.0.1");
+
+    ASSERT_EQ(refs.size(), 1u);
+    EXPECT_EQ(refs[0], "dev");
+}
+
+TEST_F(ProfileTest, FindSubosPinningVersionIsEmptyWhenNobodyPinsIt) {
+    write_subos_ws_(testDir_, "dev",
+        R"({"workspace":{"glibc":{"active":"2.35","installed":["2.35"]}}})");
+
+    EXPECT_TRUE(xlings::profile::find_subos_pinning_version(
+        testDir_, "glibc", "2.39").empty());
+}
+
 // ============================================================
 // Log system extended tests
 // ============================================================
