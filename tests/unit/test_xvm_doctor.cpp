@@ -762,3 +762,189 @@ TEST(XvmSysrootOwnership, AnInactiveVersionDoesNotClaimTheDestination) {
     ASSERT_EQ(findings.size(), 1u);
     EXPECT_EQ(findings[0].code, "xvm-sysroot-unmanaged");
 }
+
+// ============================================================
+// Cross-subos: whose finding is this, and what are the others pointing at
+//
+// The versions DB and the payload store are shared by every subos of a home;
+// workspace, shims and sysroot are not. doctor checks both sides but repairs
+// only the second, so the first question a broken-payload finding has to
+// answer is whose it is -- a repair is an `xlings install`, and that
+// registers into whichever subos is current.
+// ============================================================
+
+namespace {
+
+xlings::xvm::VersionDB shared_db_() {
+    xlings::xvm::VersionDB db;
+    auto& gcc = db["gcc"];
+    gcc.type = "program";
+    gcc.versions["15.1.0"].path = "/home/u/.xlings/data/xpkgs/xim-x-gcc/15.1.0/bin";
+    auto& node = db["node"];
+    node.type = "program";
+    node.versions["22.17.1"].path = "/home/u/.xlings/data/xpkgs/xim-x-node/22.17.1/bin";
+    return db;
+}
+
+}  // namespace
+
+TEST(XvmSubosOwnership, ActiveHereIsOwnedHere) {
+    const xlings::xvm::Workspace here{{"gcc", "15.1.0"}};
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "build", .active = {{"gcc", "15.1.0"}}},
+    };
+    const auto v = xlings::xvm::subos_ownership(here, {}, others,
+                                                "gcc", "15.1.0");
+    EXPECT_TRUE(v.ownedHere);
+    EXPECT_EQ(v.otherSubos, std::vector<std::string>{"build"});
+}
+
+// installed[] is the per-subos opt-in list. A version stays this subos's
+// business while some *other* version of the same target is the active one --
+// otherwise `--fix` would decline to repair anything a user had switched away
+// from.
+TEST(XvmSubosOwnership, InstalledButInactiveIsStillOwnedHere) {
+    const xlings::xvm::Workspace here{{"gcc", "16.1.0"}};
+    const xlings::xvm::WorkspaceInstalled hereInstalled{
+        {"gcc", {"15.1.0", "16.1.0"}}};
+    const auto v = xlings::xvm::subos_ownership(here, hereInstalled, {},
+                                                "gcc", "15.1.0");
+    EXPECT_TRUE(v.ownedHere);
+}
+
+TEST(XvmSubosOwnership, AnotherSubosOwnsItAndThisOneDoesNot) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "web", .installed = {{"node", {"22.17.1"}}}},
+        {.subos = "api", .active = {{"node", "22.17.1"}}},
+    };
+    const auto v = xlings::xvm::subos_ownership({}, {}, others,
+                                                "node", "22.17.1");
+    EXPECT_FALSE(v.ownedHere);
+    // Sorted, so the reported "go fix it there" command is stable across runs.
+    EXPECT_EQ(v.otherSubos, (std::vector<std::string>{"api", "web"}));
+}
+
+// The compatibility case, and the reason "unclaimed" is not "not mine".
+//
+// A home written before installed[] existed has no installed[] at all, so
+// every version that is not currently active comes back unclaimed by
+// everyone. That cohort is precisely who the migration repair exists for; a
+// judgment of "belongs to nobody, so leave it alone" would switch the whole
+// feature off for them.
+TEST(XvmSubosOwnership, NobodyClaimsALegacyInactiveVersion) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "build", .active = {{"gcc", "16.1.0"}}},
+    };
+    const auto v = xlings::xvm::subos_ownership({{"gcc", "16.1.0"}}, {}, others,
+                                                "gcc", "15.1.0");
+    EXPECT_FALSE(v.ownedHere);
+    EXPECT_TRUE(v.otherSubos.empty())
+        << "an unclaimed version must not be attributed to another subos";
+}
+
+TEST(XvmSubosReferences, AnotherSubosPointingAtAnUnregisteredVersionIsReported) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "build", .active = {{"gcc", "14.2.0"}}},
+    };
+    const auto findings =
+        xlings::xvm::inspect_subos_references(shared_db_(), others);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-subos-active-missing");
+    EXPECT_EQ(findings[0].severity, xlings::xvm::BindingSeverity::Broken);
+    // Naming the subos is the whole point: the user is standing in a
+    // different one and has no other way to learn where to go.
+    EXPECT_NE(findings[0].summary.find("build"), std::string::npos);
+    EXPECT_NE(findings[0].hint.find("xlings subos use build"),
+              std::string::npos);
+}
+
+// Nothing dispatches through installed[], so a stale entry there does not
+// break that subos. It does keep a payload pinned against removal, which is
+// worth saying once and not worth painting the run red for.
+TEST(XvmSubosReferences, ADanglingInstalledEntryIsANoticeNotABreak) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "web", .installed = {{"node", {"22.17.1", "18.0.0"}}}},
+    };
+    const auto findings =
+        xlings::xvm::inspect_subos_references(shared_db_(), others);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings[0].code, "xvm-subos-installed-dangling");
+    EXPECT_EQ(findings[0].severity, xlings::xvm::BindingSeverity::Notice);
+    EXPECT_EQ(findings[0].version, "18.0.0");
+}
+
+TEST(XvmSubosReferences, ConsistentSubosProduceNothing) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "build",
+         .active = {{"gcc", "15.1.0"}},
+         .installed = {{"gcc", {"15.1.0"}}}},
+        {.subos = "web",
+         .active = {{"node", "22.17.1"}},
+         .installed = {{"node", {"22.17.1"}}}},
+    };
+    EXPECT_TRUE(
+        xlings::xvm::inspect_subos_references(shared_db_(), others).empty());
+}
+
+// An empty active pointer is how a subos records "nothing selected". It is
+// not a dangling reference, and reporting it would fire on every subos that
+// has ever had a package removed.
+TEST(XvmSubosReferences, AnEmptyActivePointerIsNotADanglingReference) {
+    const std::vector<xlings::xvm::SubosRef> others{
+        {.subos = "build", .active = {{"gcc", ""}}},
+    };
+    EXPECT_TRUE(
+        xlings::xvm::inspect_subos_references(shared_db_(), others).empty());
+}
+
+// ------------------------------------------------- reading them off disk
+
+// The one walk of ~/.xlings/subos/*/.xlings.json. It used to be three, with
+// three slightly different notions of what counts as readable, which is how a
+// subos could pin a payload for the GC and be invisible to the reference
+// count in the same run.
+TEST(SubosSnapshots, ReadsEverySubosAndSkipsWhatIsNotOne) {
+    namespace fs = std::filesystem;
+    auto home = fs::temp_directory_path() / "xlings_subos_snapshot_test";
+    std::error_code ec;
+    fs::remove_all(home, ec);
+
+    auto write_subos = [&](const std::string& name, std::string_view body) {
+        fs::create_directories(home / "subos" / name);
+        xlings::platform::write_string_to_file(
+            (home / "subos" / name / ".xlings.json").string(), std::string(body));
+    };
+
+    write_subos("default", R"({"workspace":{"gcc":{"active":"15.1.0","installed":["15.1.0"]}}})");
+    write_subos("build",   R"({"workspace":{"node":"22.17.1"}})");
+    // Legacy string form: still a workspace, still must be read.
+    write_subos("broken",  R"({not json at all)");
+    // A directory with no config is not a subos yet.
+    fs::create_directories(home / "subos" / "empty");
+    // `current` is a pointer to the active one; counting it would double every
+    // reference the active subos holds.
+    write_subos("current", R"({"workspace":{"gcc":"15.1.0"}})");
+
+    const auto snapshots = xlings::profile::load_subos_snapshots(home);
+    ASSERT_EQ(snapshots.size(), 2u);
+    EXPECT_EQ(snapshots[0].name, "build");
+    EXPECT_EQ(snapshots[1].name, "default");
+    EXPECT_EQ(snapshots[0].workspace.active.at("node"), "22.17.1");
+    EXPECT_EQ(snapshots[1].workspace.installed.at("gcc").front(), "15.1.0");
+    EXPECT_EQ(snapshots[1].dir, home / "subos" / "default");
+
+    // Both users of the walk agree, which is the property that was missing.
+    const auto referencing =
+        xlings::profile::find_subos_referencing(home, "gcc");
+    EXPECT_EQ(referencing, std::vector<std::string>{"default"});
+
+    fs::remove_all(home, ec);
+}
+
+TEST(SubosSnapshots, AHomeWithNoSubosDirectoryIsEmptyNotAnError) {
+    namespace fs = std::filesystem;
+    auto home = fs::temp_directory_path() / "xlings_subos_snapshot_absent";
+    std::error_code ec;
+    fs::remove_all(home, ec);
+    EXPECT_TRUE(xlings::profile::load_subos_snapshots(home).empty());
+}

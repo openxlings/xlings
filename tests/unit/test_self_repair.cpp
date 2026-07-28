@@ -139,6 +139,63 @@ TEST(SelfRepairLadder, ALocalOnlyPassRunsNothing) {
     EXPECT_TRUE(f.ran.empty());
 }
 
+// ------------------------------------------- R3 removal actually removed
+//
+// `xlings remove` exits 0 on a multi-subos home while leaving the record in
+// place: it detaches the current subos and keeps the version whenever another
+// subos still references it. R3 read that zero as "the entry is gone" and
+// reported the version REMOVED -- a claim about the user's disk that was not
+// true, made in the one message they are most likely to act on.
+
+TEST(SelfRepairLadder, DoesNotClaimRemovalWhenTheRecordSurvives) {
+    FakeRunner f{.codes = {1, 0}};      // install fails, remove "succeeds"
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
+                        [](const std::string&, const std::string&) {
+                            return false;   // still registered
+                        });
+
+    EXPECT_FALSE(r.healed);
+    EXPECT_EQ(r.rung, "none") << "nothing was removed, so no rung did damage";
+    EXPECT_EQ(r.note.find("REMOVED"), std::string::npos)
+        << "must not claim a removal that did not happen: " << r.note;
+    EXPECT_NE(r.note.find("still registered"), std::string::npos);
+    EXPECT_NE(r.note.find("another subos"), std::string::npos);
+    // No second install: it would fail against the record that is still there.
+    ASSERT_EQ(f.ran.size(), 2u);
+    EXPECT_EQ(f.ran[1], "xlings remove linux-headers@5.11.1 -y");
+}
+
+TEST(SelfRepairLadder, ProceedsWhenTheVerifierConfirmsTheRemoval) {
+    FakeRunner f{.codes = {1, 0, 0}};
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
+                        [](const std::string& t, const std::string& v) {
+                            EXPECT_EQ(t, "linux-headers");
+                            EXPECT_EQ(v, "5.11.1");
+                            return true;    // really gone
+                        });
+
+    EXPECT_TRUE(r.healed);
+    EXPECT_EQ(r.rung, "reinstall");
+    ASSERT_EQ(f.ran.size(), 3u);
+}
+
+// The verifier only ever runs after a removal, so a repair that never reaches
+// R3 must not pay for it -- and, more importantly, a caller passing one must
+// not change what R2 does.
+TEST(SelfRepairLadder, VerifierIsNotConsultedWhenReRegisterSucceeds) {
+    FakeRunner f{.codes = {0}};
+    bool consulted = false;
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
+                        [&](const std::string&, const std::string&) {
+                            consulted = true;
+                            return true;
+                        });
+
+    EXPECT_TRUE(r.healed);
+    EXPECT_EQ(r.rung, "re-register");
+    EXPECT_FALSE(consulted);
+}
+
 // ---------------------------------------------------------------- shell safety
 
 // Names come from the versions DB, which recipes write, and the ladder builds

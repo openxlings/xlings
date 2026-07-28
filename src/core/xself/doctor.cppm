@@ -18,6 +18,7 @@ import xlings.core.xvm.shim;
 import xlings.core.xvm.inspect;
 import xlings.core.xvm.lock;
 import xlings.core.xself.repair;
+import xlings.core.profile;
 
 namespace xlings::xself {
 
@@ -85,6 +86,38 @@ export int cmd_doctor(EventStream& stream, bool fix,
     auto& p   = Config::paths();
     auto db   = Config::versions();
     auto ws   = Config::effective_workspace();
+
+    // The other subos of this home.
+    //
+    // Everything doctor checks above the DB layer is scoped to the subos it
+    // runs in -- its binDir, its sysroot, its workspace. The versions DB and
+    // the payload store below are shared by every subos. That split is why
+    // this list is needed twice: to keep `--fix` from repairing (and thereby
+    // pulling into THIS subos) an entry that belongs to another one, and to
+    // report the state of the others rather than leave the user to guess that
+    // per-subos runs are required.
+    //
+    // Identified by directory, not by name: a project subos may be named the
+    // same as one under the home, and excluding the wrong one would make this
+    // subos audit itself as a foreigner.
+    std::vector<xvm::SubosRef> otherSubos;
+    {
+        std::error_code cec;
+        const auto here = fs::weakly_canonical(p.subosDir, cec);
+        for (auto& snapshot : profile::load_subos_snapshots(p.homeDir)) {
+            std::error_code sec;
+            if (fs::weakly_canonical(snapshot.dir, sec) == here) continue;
+            otherSubos.push_back(xvm::SubosRef{
+                .subos     = snapshot.name,
+                .active    = snapshot.workspace.active,
+                .installed = snapshot.workspace.installed,
+            });
+        }
+    }
+    // A copy, not a reference into the config singleton: the repair pass
+    // below calls reload_state(), which reassigns the member this would
+    // otherwise be pointing at. `ws` and `db` are copies for the same reason.
+    const auto wsInstalled = Config::workspace_installed();
 
 #ifdef _WIN32
     constexpr std::string_view shim_ext = ".exe";
@@ -331,10 +364,47 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // Findings the repair pass owned and could not resolve. Distinct from
     // `issues`, which also counts things --fix is not responsible for.
     int repairFailed = 0;
+    // Broken payloads another subos owns and this one does not. Not repaired
+    // here (see below), and the gate on the migration stamp.
+    int deferredToOtherSubos = 0;
 
     auto report_broken_payload = [&](const std::string& name,
                                      const std::string& version,
                                      std::string detail) {
+        // Whose entry is this?
+        //
+        // The finding is home-wide -- the loop below walks the shared DB --
+        // but the repair is not: `xlings install` re-runs config(), and
+        // config() registers into whichever subos is current. So repairing an
+        // entry that only another subos uses does two things the user did not
+        // ask for: it adds the package to THIS subos's workspace, shims and
+        // sysroot, and it does so while they were trying to fix something
+        // else.
+        //
+        // Unclaimed entries are still repaired here. On a home written before
+        // installed[] existed, every inactive version is unclaimed, and that
+        // cohort is exactly who the repair ladder was built for.
+        const auto owner = xvm::subos_ownership(ws, wsInstalled, otherSubos,
+                                                name, version);
+        if (!owner.ownedHere && !owner.otherSubos.empty()) {
+            // Not counted in `broken`, and so not in the exit code: this
+            // subos does not reference the payload, cannot repair it without
+            // adopting the package, and would otherwise stay red until the
+            // user visited another subos. It is still printed, and it still
+            // holds back the migration stamp.
+            ++deferredToOtherSubos;
+            std::string list;
+            for (const auto& other : owner.otherSubos) {
+                if (!list.empty()) list += ", ";
+                list += other;
+            }
+            add_field(std::format("✗ broken payload [subos: {}]", list),
+                      std::move(detail));
+            add_field("  → run", std::format(
+                "xlings subos use {} && xlings self doctor --fix",
+                owner.otherSubos.front()));
+            return;
+        }
         ++broken;
         if (fix) {
             repairTasks.push_back(RepairTask{
@@ -517,6 +587,27 @@ export int cmd_doctor(EventStream& stream, bool fix,
                   std::move(detail));
     }
 
+    // Check 5: what the OTHER subos of this home point at.
+    //
+    // Reported, never counted toward the exit code. The exit code answers "is
+    // the subos I am in healthy", and it has to stay answerable: a broken
+    // pointer in another subos cannot be repaired from here (that is `xlings
+    // use` deciding what that subos should point at), so folding it in would
+    // leave every subos of the home permanently red with no command that
+    // clears it -- the shape that made the 0.4.69 migration hint nag forever.
+    //
+    // Printing it is the point. Before this, a subos whose active version was
+    // taken out from under it had no command that mentioned it: doctor finds
+    // it when run THERE, and nothing anywhere told you to go there.
+    int otherSubosFindings = 0;
+    for (const auto& finding : xvm::inspect_subos_references(db, otherSubos)) {
+        ++otherSubosFindings;
+        add_field(finding.severity == xvm::BindingSeverity::Notice
+                      ? "ⓘ other subos" : "⚠ other subos",
+                  std::format("{} — {} — {}", finding.summary,
+                              finding.code, finding.hint));
+    }
+
     // --fix for the one binding problem that can be repaired without
     // guessing: an active release whose members disagree. Deactivate the
     // whole release and let the user re-select. Choosing a survivor here
@@ -643,6 +734,28 @@ export int cmd_doctor(EventStream& stream, bool fix,
             return platform::exec(cmd);
         };
 
+        // R3's remove exited 0 — did the records actually go?
+        //
+        // Asked of the FINDINGS the repair covers, not of the package name it
+        // ran the command with. Those differ: a finding names an xvm target
+        // (`ms-shared`, `gcc`, `cc`), while the ladder installs and removes a
+        // package (`xim:ms-shared`), and a package name is not a key in the
+        // versions DB. Looking the package name up there finds nothing and
+        // reads it as "removed" — the failure this check exists to prevent,
+        // reproduced by the check itself.
+        //
+        // Read back from disk: the remove ran in a subprocess, so the copy
+        // this process is holding cannot answer.
+        const auto records_gone = [&](const std::vector<RepairTask>& covered) {
+            Config::reload_state();
+            const auto current = Config::versions();
+            for (const auto& c : covered) {
+                const auto* vi = xvm::get_vinfo(current, c.target);
+                if (vi && vi->versions.contains(c.version)) return false;
+            }
+            return true;
+        };
+
         // Repair with the client that is running, not with whatever `xlings`
         // resolves to on PATH. Normally they are the same binary; they are
         // not when doctor was started by absolute path, and then the repair
@@ -758,7 +871,11 @@ export int cmd_doctor(EventStream& stream, bool fix,
                                              covered.size() == 1 ? "y" : "ies"),
                 .reinstallable = true,   // confirmed by the probe above
             };
-            auto result = repair_one(task, policy, run);
+            const RemovalVerifier removalDone =
+                [&](const std::string&, const std::string&) {
+                    return records_gone(covered);
+                };
+            auto result = repair_one(task, policy, run, removalDone);
             // Attribute the outcome to every finding the owner covers, so the
             // re-detect below checks the entries the user was shown.
             for (const auto& c : covered) outcomes.emplace_back(c, result);
@@ -824,7 +941,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
     }
 
     int issues = missing + orphans + broken + bindingIssues;
-    if (issues == 0 && warnings == 0) {
+    if (issues == 0 && warnings == 0
+        && deferredToOtherSubos == 0 && otherSubosFindings == 0) {
         add_field("status",
                   "OK — workspace, shims, and payloads are all consistent",
                   true);
@@ -835,6 +953,14 @@ export int cmd_doctor(EventStream& stream, bool fix,
         if (bindingIssues > 0)
             add_field("binding state", std::to_string(bindingIssues));
         if (warnings > 0) add_field("warnings",        std::to_string(warnings));
+        // Reported apart from the counts above because they are apart from
+        // the exit code: they belong to a subos this run is not in.
+        if (deferredToOtherSubos > 0)
+            add_field("owned by another subos",
+                      std::format("{} — repair them there", deferredToOtherSubos));
+        if (otherSubosFindings > 0)
+            add_field("other subos findings",
+                      std::to_string(otherSubosFindings));
         if (fix) {
             if (healed > 0) add_field("healed", std::to_string(healed), true);
             if (broken > healed) add_field("hint",
@@ -870,7 +996,16 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // `c++` accounts for 190 findings on its own, measured. Requiring a
     // spotless home would mean the marker never lands and the hint nags
     // forever about a migration that already happened.
-    if (fix && !dryRun && repairFailed == 0) {
+    //
+    // `deferredToOtherSubos` is in the gate because the marker is written to
+    // the HOME config while the repair happens in one SUBOS. Without it,
+    // fixing the first subos stamps the whole home as migrated and the other
+    // subos never get the hint again -- the same failure as the nag-forever
+    // case, inverted: the promise is kept for one subos and silently dropped
+    // for the rest. Only payloads another subos owns count; a broken pointer
+    // over there is not something any `--fix` can clear, and gating on it
+    // would put the marker permanently out of reach.
+    if (fix && !dryRun && repairFailed == 0 && deferredToOtherSubos == 0) {
         Config::record_client_version(std::string(Info::VERSION));
     }
 

@@ -84,6 +84,23 @@ bool is_shell_safe_token(std::string_view s) {
 // as the pure decision table it is.
 using CommandRunner = std::function<int(const std::string&)>;
 
+// Did the removal actually drop the records this repair is about?
+//
+// R3 reads `xlings remove` exiting 0 as "the entry is gone". Zero does not
+// mean that. It is also what removal returns when it merely detaches the
+// current subos, because another subos still references the version
+// (installer.cppm's `stillReferenced` branch); when the package is not in
+// this subos at all; and when the payload is already missing, which is
+// exactly the state a broken-payload repair starts from. In every one of
+// those the record survives, the install that follows fails against the same
+// record that made R2 fail, and R3 reports the package REMOVED.
+//
+// Injected rather than read here: this module owns the decision table and has
+// no state file access by design. A caller that supplies nothing keeps the old
+// behaviour, which is what the unit tests of the other rungs rely on.
+using RemovalVerifier =
+    std::function<bool(const std::string& target, const std::string& version)>;
+
 // Silences a probe. The probe's output is not part of doctor's report and
 // would interleave with it.
 std::string quiet_suffix() {
@@ -156,9 +173,16 @@ std::optional<std::string> migration_hint(std::string_view recorded,
 //                   specially when it removes successfully and then fails to
 //                   install -- that is the one outcome that leaves the user
 //                   worse off than before, and it must never be silent.
+//
+//                   `removalDone` is what makes "removes successfully" mean
+//                   the record is gone rather than the command exited 0. See
+//                   RemovalVerifier: on a multi-subos home those are different
+//                   statements, and reporting REMOVED for a version that is
+//                   still installed is a worse lie than any failure message.
 RepairResult repair_one(const RepairTask& task,
                         const RepairPolicy& policy,
-                        const CommandRunner& run) {
+                        const CommandRunner& run,
+                        const RemovalVerifier& removalDone = nullptr) {
     if (!is_shell_safe_token(task.target)
         || !is_shell_safe_token(task.version)) {
         return {false, "none",
@@ -191,6 +215,20 @@ RepairResult repair_one(const RepairTask& task,
     if (run(remove) != 0) {
         return {false, "none",
                 "re-register failed and the entry could not be removed"};
+    }
+    // The command exited 0. Whether anything left is a separate question.
+    if (removalDone && !removalDone(task.target, task.version)) {
+        return {false, "none",
+                std::format(
+                    "re-register failed, and `remove` exited 0 without "
+                    "dropping {}@{} — it is still registered. Removal exits 0 "
+                    "when it only detaches this subos (another subos still "
+                    "references the version) and when it declines a package "
+                    "whose payload is already gone; neither clears the record "
+                    "this repair needs cleared. Take it out where it lives "
+                    "(`xlings subos use <name>` then `xlings remove {}@{}`) "
+                    "and rerun",
+                    task.target, task.version, task.target, task.version)};
     }
     if (run(install) != 0) {
         // The bad outcome. Say it plainly and hand back the exact command.

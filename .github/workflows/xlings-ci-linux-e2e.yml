@@ -3,7 +3,7 @@ name: xlings-ci-linux-e2e
 # The Linux E2E suite, split out of xlings-ci-linux.yml so it runs in PARALLEL
 # with the build + unit-test job instead of after it. Shares the same cache
 # lineage, so it restores a warm sandbox; the only added wall-clock vs. the
-# inline version is one extra release build. The E2E-02..E2E-28 block runs via
+# inline version is one extra release build. The E2E-02..E2E-42 block runs via
 # tests/e2e/run_all.sh, which times each test and prints a slowest-first
 # summary (mirrors mcpp's runner). E2E-00 / E2E-01 stay discrete steps here
 # because they're interleaved with the release build.
@@ -133,7 +133,7 @@ jobs:
           [[ -z "$tarball" ]] && { echo "No release tarball found"; exit 1; }
           cp "$tarball" build/release.tar.gz
 
-      # ── E2E-02..E2E-28 via the timed runner (slowest-first summary) ─
-      - name: "E2E suite (E2E-02..E2E-28, timed)"
+      # ── E2E-02..E2E-42 via the timed runner (slowest-first summary) ─
+      - name: "E2E suite (E2E-02..E2E-42, timed)"
         run: |
           bash tests/e2e/run_all.sh build/release.tar.gz

@@ -278,6 +278,138 @@ std::vector<BindingFinding> inspect_binding_state(
     return findings;
 }
 
+// One other subos's workspace, as the caller read it off disk.
+//
+// `active` and `installed` are that subos's own maps; the versions DB they
+// refer to is shared by every subos in the home, which is the whole reason
+// this type exists.
+struct SubosRef {
+    std::string        subos;
+    Workspace          active;
+    WorkspaceInstalled installed;
+};
+
+// Who owns a (target, version), from the point of view of the subos asking.
+struct OwnershipVerdict {
+    // The asking subos has it active or in its installed[] set.
+    bool ownedHere { false };
+    // Other subos that do, in name order. Empty AND !ownedHere means nobody
+    // claims it -- see the note on `subos_ownership`.
+    std::vector<std::string> otherSubos;
+};
+
+// Does this subos claim (target, version)?
+//
+// Either half counts: `active` is what the shims dispatch through, and
+// `installed[]` is the per-subos opt-in list, which keeps a version claimed
+// while some other version of the same target is the active one.
+bool subos_claims(const Workspace& active,
+                  const WorkspaceInstalled& installed,
+                  const std::string& target,
+                  const std::string& version) {
+    if (auto it = active.find(target);
+        it != active.end() && it->second == version) {
+        return true;
+    }
+    if (auto it = installed.find(target); it != installed.end()) {
+        return std::ranges::find(it->second, version) != it->second.end();
+    }
+    return false;
+}
+
+// Ownership of a (target, version) across the home.
+//
+// Callers use this to decide whether a repair belongs to them. Note what
+// "nobody claims it" means and does NOT mean: a home written by a client
+// older than 0.4.19 has no `installed[]` at all, so every version that is not
+// currently active comes back unclaimed. Treating unclaimed as "not mine to
+// repair" would therefore disable the migration repair on exactly the cohort
+// it was built for. Unclaimed is shared, and the subos asking may repair it.
+OwnershipVerdict subos_ownership(const Workspace& active,
+                                 const WorkspaceInstalled& installed,
+                                 const std::vector<SubosRef>& others,
+                                 const std::string& target,
+                                 const std::string& version) {
+    OwnershipVerdict verdict;
+    verdict.ownedHere = subos_claims(active, installed, target, version);
+    for (const auto& other : others) {
+        if (subos_claims(other.active, other.installed, target, version)) {
+            verdict.otherSubos.push_back(other.subos);
+        }
+    }
+    std::ranges::sort(verdict.otherSubos);
+    auto dup = std::ranges::unique(verdict.otherSubos);
+    verdict.otherSubos.erase(dup.begin(), dup.end());
+    return verdict;
+}
+
+// What the OTHER subos of this home point at that the shared DB no longer has.
+//
+// Nothing else looks here. doctor's checks are scoped to the subos it runs in
+// -- its binDir, its sysroot, its workspace -- while the versions DB and the
+// payload store underneath are shared by all of them. So a subos whose active
+// version was taken out from under it (by a removal in a third subos, or by a
+// hand-edited state file) has no command that reports it: running doctor there
+// finds it, but nothing tells you to go there.
+//
+// Read-only and never repaired from here. Fixing another subos's workspace
+// means deciding what that subos should be pointing at, which is `xlings use`
+// deciding, not `doctor` deciding. See §5 of
+// .agents/docs/2026-07-28-multi-subos-repair-design.md.
+//
+// Pure over (db, others): the caller reads the files.
+std::vector<BindingFinding> inspect_subos_references(
+        const VersionDB& db,
+        const std::vector<SubosRef>& others) {
+    std::vector<BindingFinding> findings;
+
+    const auto registered = [&](const std::string& target,
+                                const std::string& version) {
+        auto it = db.find(target);
+        return it != db.end() && it->second.versions.contains(version);
+    };
+
+    for (const auto& other : others) {
+        for (const auto& [target, version] : other.active) {
+            if (version.empty() || registered(target, version)) continue;
+            findings.push_back({
+                .code = "xvm-subos-active-missing",
+                .summary = std::format(
+                    "subos '{}' has '{}' active at {}, which is not registered",
+                    other.subos, target, version),
+                .target = target,
+                .version = version,
+                .hint = std::format(
+                    "run `xlings subos use {}` then `xlings install {}@{}` to "
+                    "restore it, or `xlings use {} <other-version>` there",
+                    other.subos, target, version, target),
+            });
+        }
+        for (const auto& [target, versions] : other.installed) {
+            for (const auto& version : versions) {
+                if (version.empty() || registered(target, version)) continue;
+                // Notice, not Broken: nothing dispatches through installed[],
+                // so this subos still works. It matters because removal counts
+                // references through this set -- a dangling entry keeps a
+                // payload pinned against a version that no longer exists.
+                findings.push_back({
+                    .code = "xvm-subos-installed-dangling",
+                    .summary = std::format(
+                        "subos '{}' lists '{}@{}' as installed, but it is not "
+                        "registered", other.subos, target, version),
+                    .target = target,
+                    .version = version,
+                    .hint = std::format(
+                        "run `xlings subos use {}` then `xlings remove {}@{}` "
+                        "to drop the stale entry", other.subos, target, version),
+                    .severity = BindingSeverity::Notice,
+                });
+            }
+        }
+    }
+    return findings;
+}
+
 // One entry found in the subos, as the caller read it off disk.
 struct SysrootEntry {
     // Relative to the subos root, e.g. "usr/include/openssl".
