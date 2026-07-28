@@ -159,7 +159,7 @@ reintroducing #387, fails that test.
 
 `tests/e2e/release_self_install_test.ps1` — after `self install`, every
 PowerShell host reachable on the runner must have a profile that sources the
-installed home's `xlings-profile.ps1`. Four details make it real rather than
+installed home's `xlings-profile.ps1`. Five details make it real rather than
 decorative:
 
 - The install runs with the host directories explicitly on `PATH`
@@ -172,6 +172,13 @@ decorative:
   runner's real Documents folder. Resolving before the redirect measured the
   install's work against the wrong path for whichever host follows
   `USERPROFILE`.
+- The sandbox home is given a `Documents` folder before anything is probed.
+  Windows PowerShell 5.1 answers an **empty** `$PROFILE` when that folder is
+  missing — .NET Framework's `GetFolderPath` returns `""` for a folder that
+  does not exist, while .NET Core (pwsh 7) returns the path regardless. A real
+  user profile always has one, so without this the sandbox stops being a
+  stand-in for a user's home and 5.1 drops out of the test for a reason that
+  cannot happen on a real machine.
 - The profiles are **deleted** before the install: the CI job installs a
   bootstrap xlings into the runner's own home first, and hooking is correctly
   idempotent, so an already-hooked profile would be left alone and the

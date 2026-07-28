@@ -64,10 +64,21 @@ try {
         # expand a bare word in argument mode (see shell_profile.cppm), and a
         # probe that silently answers "" would make this test agree with a
         # broken install instead of catching it.
+        # A real user profile has a Documents folder; this throwaway one does
+        # not, and Windows PowerShell 5.1 answers an empty $PROFILE when it is
+        # missing (.NET Framework's GetFolderPath returns "" for a folder that
+        # does not exist; .NET Core, i.e. pwsh 7, returns the path regardless).
+        # Without this the sandbox is not a stand-in for a user's home, and
+        # 5.1 drops out of the test for a reason that cannot happen on a real
+        # machine.
+        New-Item -ItemType Directory -Force (Join-Path $INSTALL_USER 'Documents') | Out-Null
+
         foreach ($h in $psHosts) {
             $reported = & $h.Exe -NoProfile -NonInteractive -Command '$PROFILE' 2>$null |
                         Select-Object -First 1
-            if (-not $reported) { Fail "$($h.Exe) did not report a `$PROFILE path" }
+            if (-not $reported) {
+                Fail "$($h.Exe) reported an empty `$PROFILE under USERPROFILE=$INSTALL_USER"
+            }
             $h.Path = $reported.Trim()
             # Snapshot anything outside the sandbox so later CI steps do not
             # end up sourcing this throwaway home; restored in the finally.
