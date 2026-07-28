@@ -3,6 +3,7 @@ export module xlings.core.xself.uninstall;
 import std;
 import xlings.core.config;
 import xlings.core.log;
+import xlings.core.xself.shell_profile;
 import xlings.platform;
 
 // `xlings self uninstall [-y] [--keep-data] [--dry-run]`
@@ -182,20 +183,48 @@ static bool prompt_yes_no_(const std::string& question) {
     return line[0] == 'y' || line[0] == 'Y';
 }
 
+// Every startup file `self install` may have hooked, so the advisory covers
+// the same set the install wrote to. The list used to be POSIX-only, which on
+// Windows meant uninstall reported nothing at all while leaving a source line
+// behind in one or two PowerShell profiles.
+static std::vector<fs::path> hooked_startup_files_(const fs::path& userHome) {
+    static const std::vector<std::string> rc_files = {
+        ".bashrc", ".zshrc", ".profile", ".config/fish/config.fish"
+    };
+    std::vector<fs::path> files;
+    for (auto& rel : rc_files) files.push_back(userHome / rel);
+
+#ifdef _WIN32
+    // Not a fixed path under the home: each PowerShell host reports its own
+    // $PROFILE, and OneDrive folder redirection can move both. Same probe
+    // install used to find them.
+    for (const auto& t : shell_profile::resolve_targets(
+             shell_profile::kPowerShellHosts,
+             [](const std::string& cmd) -> std::optional<std::string> {
+                 auto [rc, out] = platform::run_command_capture(cmd);
+                 if (rc != 0) return std::nullopt;
+                 return out;
+             })) {
+        files.push_back(t.path);
+    }
+#endif
+    return files;
+}
+
 static void emit_shell_advisory_(const fs::path& home) {
-    // Detect rc-file lines that source xlings's shell init scripts and
+    // Detect startup-file lines that source xlings's shell init scripts and
     // print them so the user can clean up manually.
     auto userHome = fs::path(platform::get_home_dir());
     if (userHome.empty()) return;
 
-    static const std::vector<std::string> rc_files = {
-        ".bashrc", ".zshrc", ".profile", ".config/fish/config.fish"
-    };
-    auto homeStr = home.generic_string();
+    // Both spellings: POSIX rc files carry the generic form, PowerShell
+    // profiles carry the native backslash form. On POSIX the two are equal
+    // and the second check costs nothing.
+    const auto homeGeneric = home.generic_string();
+    const auto homeNative  = home.string();
     bool found_any = false;
     std::error_code ec;
-    for (auto& rel : rc_files) {
-        auto rc = userHome / rel;
+    for (auto& rc : hooked_startup_files_(userHome)) {
         if (!fs::exists(rc, ec) || !fs::is_regular_file(rc, ec)) continue;
         std::ifstream in(rc);
         if (!in) continue;
@@ -204,10 +233,11 @@ static void emit_shell_advisory_(const fs::path& home) {
             // Match lines that reference our XLINGS_HOME path (source / export PATH /
             // env XLINGS_HOME=...). Substring match is enough — false positives are
             // rare and the consequence is just a manual-cleanup hint.
-            if (line.find(homeStr) != std::string::npos) {
+            if (line.find(homeGeneric) != std::string::npos ||
+                line.find(homeNative) != std::string::npos) {
                 if (!found_any) {
                     log::println("");
-                    log::println("[info] shell rc files reference XLINGS_HOME — you may want to remove these lines manually:");
+                    log::println("[info] shell startup files reference XLINGS_HOME — you may want to remove these lines manually:");
                     found_any = true;
                 }
                 log::println("  {}: {}", rc.string(), line);

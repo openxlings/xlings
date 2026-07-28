@@ -2,6 +2,7 @@ export module xlings.core.xself.install;
 
 import std;
 import xlings.core.xself.init;
+import xlings.core.xself.shell_profile;
 
 import xlings.core.config;
 import xlings.core.xvm.lock;
@@ -373,36 +374,48 @@ static void setup_shell_profiles(const fs::path& homeDir) {
         "}else{Write-Host 'PATH already set'}\"";
     platform::exec(checkCmd);
 
+    // Hook every PowerShell host on the box, not just the one xlings happens
+    // to shell out to. Windows PowerShell 5.1 and PowerShell 7+ read different
+    // startup files, and `xlings subos use` spawns pwsh.exe first -- so the
+    // 5.1-only hook this used to be left the shell xlings itself launches
+    // without XLINGS_BIN on PATH (#387). Policy and mechanics live in
+    // xlings.core.xself.shell_profile, which is unit-tested; what stays here
+    // is the process spawning and the reporting.
     auto profilePs1 = homeDir / "config" / "shell" / "xlings-profile.ps1";
+    auto snippet = shell_profile::powershell_snippet(profilePs1);
 
-    std::string profileSnippet = "`n# xlings`nif(Test-Path '" + profilePs1.string() +
-                                 "'){. '" + profilePs1.string() + "'}";
+    auto targets = shell_profile::resolve_targets(
+        shell_profile::kPowerShellHosts,
+        [](const std::string& cmd) -> std::optional<std::string> {
+            // A host that is not installed cannot answer: cmd fails to resolve
+            // the executable and exits non-zero, which is the probe.
+            auto [rc, out] = platform::run_command_capture(cmd);
+            if (rc != 0) return std::nullopt;
+            return out;
+        });
 
-    std::string psCmd = "powershell -NoProfile -Command \""
-        "$prof=$PROFILE;"
-        "$dir=Split-Path $prof;"
-        "if(!(Test-Path $dir)){New-Item -ItemType Directory -Force $dir|Out-Null};"
-        "if(!(Test-Path $prof)){New-Item -ItemType File -Force $prof|Out-Null};"
-        "$c=Get-Content $prof -Raw -ErrorAction SilentlyContinue;"
-        "if(!$c -or $c -notlike '*xlings-profile*'){"
-        "Add-Content $prof \\\"" + profileSnippet + "\\\""
-        ";Write-Host 'PS profile added'"
-        "}else{Write-Host 'PS profile already set'}\"";
-    platform::exec(psCmd);
+    for (const auto& t : targets) {
+        switch (shell_profile::hook(t.path, snippet)) {
+        case shell_profile::HookResult::Added:
+            log::println("[xlings:self] added profile ({})", t.host);
+            log::debug("[xlings:self]   {}", t.path.string());
+            break;
+        case shell_profile::HookResult::AlreadyHooked:
+            log::debug("[xlings:self] profile ok ({})", t.host);
+            break;
+        case shell_profile::HookResult::Failed:
+            // Reported rather than swallowed: the old one-liner discarded its
+            // exit code, so a profile that was never written looked exactly
+            // like one that was.
+            log::warn("[xlings:self] could not write {} profile: {}",
+                      t.host, t.path.string());
+            break;
+        }
+    }
 
-    std::string checkPwsh = "where pwsh >nul 2>&1";
-    if (platform::exec(checkPwsh) == 0) {
-        std::string pwshProfileCmd = "pwsh -NoProfile -Command \""
-            "$prof=$PROFILE;"
-            "$dir=Split-Path $prof;"
-            "if(!(Test-Path $dir)){New-Item -ItemType Directory -Force $dir|Out-Null};"
-            "if(!(Test-Path $prof)){New-Item -ItemType File -Force $prof|Out-Null};"
-            "$c=Get-Content $prof -Raw -ErrorAction SilentlyContinue;"
-            "if(!$c -or $c -notlike '*xlings-profile*'){"
-            "Add-Content $prof \\\"" + profileSnippet + "\\\""
-            ";Write-Host 'PS profile (pwsh) added'"
-            "}else{Write-Host 'PS profile (pwsh) already set'}\"";
-        platform::exec(pwshProfileCmd);
+    if (targets.empty()) {
+        std::println("[xlings:self] no PowerShell host answered, add manually to $PROFILE:");
+        std::println("  {}", snippet);
     }
 #endif
 }

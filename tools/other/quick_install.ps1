@@ -14,30 +14,6 @@ function Log-Info  { param([string]$Msg) Write-Host "[xlings]: $Msg" -Foreground
 function Log-Warn  { param([string]$Msg) Write-Host "[xlings]: $Msg" -ForegroundColor Yellow }
 function Log-Error { param([string]$Msg) Write-Host "[xlings]: $Msg" -ForegroundColor Red }
 
-function Ensure-XlingsProfile {
-    param(
-        [string]$ShellExe,
-        [string]$SourceLine,
-        [string]$Label
-    )
-    $prof = & $ShellExe -NoProfile -Command '$PROFILE' 2>$null
-    if (-not $prof) { return }
-    $dir = Split-Path $prof -Parent
-    if (!(Test-Path $dir)) {
-        New-Item -ItemType Directory -Force $dir | Out-Null
-    }
-    if (!(Test-Path $prof)) {
-        New-Item -ItemType File -Force $prof | Out-Null
-    }
-    $existing = Get-Content $prof -Raw -ErrorAction SilentlyContinue
-    if (!$existing -or $existing -notlike '*xlings-profile*') {
-        Add-Content $prof $SourceLine
-        Log-Info "$Label profile configured"
-    } else {
-        Log-Info "$Label profile already set"
-    }
-}
-
 $OFFICIAL_REPO = "openxlings/xlings"
 $RESOURCE_REPO = "xlings-res/xlings"
 $GITHUB_MIRROR = $env:XLINGS_GITHUB_MIRROR
@@ -384,22 +360,6 @@ try {
         }
     } finally {
         Pop-Location
-    }
-
-    try {
-        $xlHome = [System.Environment]::GetEnvironmentVariable('XLINGS_HOME', 'User')
-        if ($xlHome) {
-            $sourceLine = "`n# xlings`nif(Test-Path '$xlHome\config\shell\xlings-profile.ps1'){. '$xlHome\config\shell\xlings-profile.ps1'}"
-
-            Ensure-XlingsProfile -ShellExe powershell -SourceLine $sourceLine -Label "Windows PowerShell"
-
-            $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-            if ($pwshCmd) {
-                Ensure-XlingsProfile -ShellExe pwsh -SourceLine $sourceLine -Label "pwsh 7+"
-            }
-        }
-    } catch {
-        Log-Warn "shell profile setup skipped: $($_.Exception.Message)"
     }
 } catch {
     Log-Error "Installation failed: $($_.Exception.Message)"
