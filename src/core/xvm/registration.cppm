@@ -94,12 +94,20 @@ struct RegistrationError {
     std::string message;
 };
 
+// A legacy component member this batch left behind rather than refused over.
+// See the IncompleteLegacyComponent comment in the implementation.
+struct DetachedLegacyMember {
+    std::string target;
+    std::string version;
+};
+
 std::expected<std::vector<RegisteredMember>, RegistrationError>
 apply_registration_batch(
     VersionDB& db,
     Workspace& workspace,
     WorkspaceInstalled& installed,
-    const RegistrationBatch& batch);
+    const RegistrationBatch& batch,
+    std::vector<DetachedLegacyMember>* detached = nullptr);
 
 }  // namespace xlings::xvm
 
@@ -225,6 +233,29 @@ std::string registration_path_token_(std::string_view token) {
     return escaped;
 }
 
+// Path comparison that survives a record written on another platform.
+//
+// Not a filesystem question: `db` holds whatever string the client that wrote
+// it produced, and a home carried over from Windows holds
+// `C:\…` / `/home/you/.xlings\data\xpkgs\…` on a machine where those separators
+// mean nothing. Normalising to '/' is what lets a Linux client recognise the
+// record as its own.
+std::string normalized_payload_path_(std::string_view path) {
+    std::string out{path};
+    std::ranges::replace(out, '\\', '/');
+    while (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
+// Is `candidate` the same payload as `root`, or something inside it?
+bool payload_path_covers_(std::string_view root, std::string_view candidate) {
+    if (root.empty() || candidate.empty()) return false;
+    if (candidate == root) return true;
+    return candidate.size() > root.size()
+        && candidate.starts_with(root)
+        && candidate[root.size()] == '/';
+}
+
 void erase_exact_registration_edges_(
     VersionDB& db,
     const std::set<RegistrationExactKey>& exactNodes) {
@@ -261,7 +292,8 @@ apply_registration_batch(
     VersionDB& db,
     Workspace& workspace,
     WorkspaceInstalled& installed,
-    const RegistrationBatch& batch) {
+    const RegistrationBatch& batch,
+    std::vector<DetachedLegacyMember>* detached) {
     if (batch.provider.empty()) {
         return std::unexpected(detail_::registration_error_(
             RegistrationErrorKind::InvalidBatchIdentity,
@@ -770,6 +802,64 @@ apply_registration_batch(
         for (const auto& [target, version] : selection->members) {
             if (nodeIndexes.contains(
                     detail_::RegistrationExactKey{target, version})) {
+                continue;
+            }
+            // The batch does not cover the whole legacy component.
+            //
+            // Refusing outright is right when the missing member could belong
+            // to somebody else. It is wrong when the member is plainly this
+            // package's own leftover, and then it is a trap: the component was
+            // recorded by a client on ANOTHER PLATFORM, which registered names
+            // this platform's recipe never produces. Measured on a real home,
+            // an llvm@20.1.7 registered on Windows leaves `cl`, `lib`, `link`
+            // and `rc` bound to it; on Linux the recipe emits no such nodes, so
+            // every install refused -- and `remove` refused too, for its own
+            // reasons, so nothing could move.
+            //
+            // Three conditions make the member safe to detach instead:
+            //   1. it is OWNER-LESS. Nothing claims it, so no provider's
+            //      selection is being rewritten behind its back.
+            //   2. its payload lies inside a payload this batch is
+            //      registering. That is the evidence it belongs to this
+            //      package rather than merely resembling it.
+            //
+            // Being ACTIVE is deliberately NOT a third condition. It was one at
+            // first, and it turned out to veto exactly the case this exists
+            // for: on the measured home `cl`, `lib`, `link` and `rc` are all
+            // active, so the refusal survived the fix. It also protects
+            // nothing. Detaching does not deregister the entry and does not
+            // deactivate it -- the shim still dispatches to the same place. All
+            // that changes is that the entry stops claiming membership in a
+            // release that no longer registers it, which is simply true.
+            //
+            // Detach, not delete: the entry stays in the database, only its
+            // edges to this batch go (erase_exact_registration_edges_ below
+            // drops them, since the peer side IS in the batch). What is left
+            // is a standalone owner-less record with a payload that does not
+            // resolve -- which `self doctor` already knows how to see and, at
+            // the end of its ladder, to prune. Deleting it here would make a
+            // registration silently destroy state on behalf of a repair that
+            // has its own preview and its own reporting.
+            const VData* memberData = nullptr;
+            if (const auto memberInfoIt = db.find(target);
+                memberInfoIt != db.end()) {
+                const auto memberDataIt =
+                    memberInfoIt->second.versions.find(version);
+                if (memberDataIt != memberInfoIt->second.versions.end()) {
+                    memberData = &memberDataIt->second;
+                }
+            }
+            const bool ownerLess = memberData && !memberData->bindingGroup;
+            const auto memberPath = memberData
+                ? detail_::normalized_payload_path_(memberData->path)
+                : std::string{};
+            const bool insideBatchPayload = !memberPath.empty()
+                && std::ranges::any_of(batch.nodes, [&](const auto& n) {
+                    return detail_::payload_path_covers_(
+                        detail_::normalized_payload_path_(n.path), memberPath);
+                });
+            if (ownerLess && insideBatchPayload) {
+                if (detached) detached->push_back({target, version});
                 continue;
             }
             return std::unexpected(detail_::registration_error_(

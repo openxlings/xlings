@@ -231,6 +231,50 @@ export std::vector<SubosSnapshot> load_subos_snapshots(const fs::path& xlingsHom
     return snapshots;
 }
 
+// Write one other subos's workspace back, preserving everything else in its
+// state file.
+//
+// The counterpart to load_subos_snapshots, and it exists for one caller:
+// `self doctor --fix` repairing a subos it is not currently in. Those repairs
+// are pure deletions from `active` / `installed[]` -- a pointer at a version
+// the shared database no longer has -- so nothing here needs to understand
+// what the subos is for.
+//
+// Read-modify-write of the whole document rather than a targeted edit: the
+// file carries fields this process does not model, and rewriting it from a
+// SubosWorkspace alone would silently drop them. Callers hold the home's state
+// lock; this does not take it, because it has no way to know whether the
+// caller is mid-transaction over several files.
+export bool save_subos_workspace(const fs::path& subosRoot,
+                                 const xvm::SubosWorkspace& workspace) {
+    const auto wsPath = subosRoot / ".xlings.json";
+    nlohmann::json json = nlohmann::json::object();
+    std::error_code ec;
+    if (fs::exists(wsPath, ec)) {
+        try {
+            auto content = platform::read_file_to_string(wsPath.string());
+            auto parsed = nlohmann::json::parse(content, nullptr, false);
+            if (!parsed.is_discarded() && parsed.is_object()) {
+                json = std::move(parsed);
+            } else {
+                // Refuse rather than replace: an unreadable file is not an
+                // empty one, and overwriting it would turn "we could not read
+                // your subos" into "your subos is now blank".
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+    }
+    json["workspace"] = xvm::subos_workspace_to_json(workspace);
+    try {
+        platform::write_string_to_file(wsPath.string(), json.dump(2));
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
 // Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
 // by mapping workspace target names to xpkg directory paths via the versions DB.
 std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {

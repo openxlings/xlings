@@ -31,6 +31,27 @@ std::string get_namespace(const std::string& s) {
     return parse_ns_version(s).first;
 }
 
+// How a (target, version-key) pair is written for a human, and for a shell.
+//
+// The two forms are REVERSED and that is the whole reason this exists. The
+// database keys a version as "ns:ver" -- the namespace rides on the version.
+// Everything a user types keys it as "ns:target@ver" -- the namespace rides on
+// the front of the coordinate. Code that formats a finding as "{}@{}" produces
+// `mcpp@local:0.0.27`, which reads like a version called `local:0.0.27` and
+// parses as one too: `xlings install mcpp@local:0.0.27` looks up a version that
+// does not exist. Every renderer goes through here instead.
+//
+//   ("mcpp", "local:0.0.27")  -> "local:mcpp@0.0.27"
+//   ("llvm", "20.1.7")        -> "llvm@20.1.7"
+//   ("gcc",  "")              -> "gcc"
+std::string display_coordinate(std::string_view target,
+                               std::string_view versionKey) {
+    if (versionKey.empty()) return std::string(target);
+    const auto [ns, version] = parse_ns_version(std::string(versionKey));
+    if (ns.empty()) return std::format("{}@{}", target, version);
+    return std::format("{}:{}@{}", ns, target, version);
+}
+
 // Add or update a version entry in the database.
 // If ns is non-empty, the version key becomes "ns:version".
 void add_version(VersionDB& db,

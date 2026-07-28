@@ -194,7 +194,10 @@ echo "$out" | grep -q "broken payload" \
   || fail "S7: output should mention 'broken payload'; got:\n$out"
 echo "$out" | grep -q "active" \
   || fail "S7: output should mark active version with [active] tag"
-echo "$out" | grep -q "xlings install doctor-fixture@1.0.0" \
+# The remedy names the PACKAGE, with its namespace, because that is what
+# `xlings install` takes -- a finding names an xvm target and those are not the
+# same thing (`nm@20.1.7` is a program llvm registers, not a package).
+echo "$out" | grep -qE "xlings install (xim:)?doctor-fixture@1\.0\.0" \
   || fail "S7: output should include the remediation command; got:\n$out"
 
 # ── S8: --fix --dry-run previews the repair and changes NOTHING ──────

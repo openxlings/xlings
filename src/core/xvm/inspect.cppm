@@ -5,6 +5,7 @@ import std;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.errors;
+import xlings.core.xvm.db;   // display_coordinate
 
 // Read-only inspection of the stored binding state.
 //
@@ -170,16 +171,37 @@ std::vector<BindingFinding> inspect_binding_state(
         for (const auto& [peerTarget, edges] : info.bindings) {
             auto peerIt = db.find(peerTarget);
             for (const auto& [ownVersion, peerVersion] : edges) {
-                if (!info.versions.contains(ownVersion)) continue;
-                if (peerIt != db.end()
-                    && peerIt->second.versions.contains(peerVersion)) {
-                    continue;
-                }
+                // Two ways an edge can name nothing, and both were treated
+                // very differently for no reason.
+                //
+                // The peer side was reported and repaired. The SOURCE side --
+                // an edge keyed by a version of the owner that is not itself
+                // registered -- was skipped by this loop and by the pruning
+                // plan, so it was invisible AND permanent. It is not
+                // harmless: resolve_binding_selection walks it and fails with
+                // "legacy binding source version is missing", which makes
+                // every future registration of that target refuse. Measured
+                // on a real home, `xim-musl-gnu-gcc` carries five such edges
+                // keyed at `15.1.0-musl` while only `15.1.0` is registered,
+                // and `xlings install musl-gcc@15.1.0` had been failing on it
+                // with no finding anywhere that named the cause.
+                const bool sourceMissing =
+                    !info.versions.contains(ownVersion);
+                const bool peerMissing =
+                    peerIt == db.end()
+                    || !peerIt->second.versions.contains(peerVersion);
+                if (!sourceMissing && !peerMissing) continue;
                 findings.push_back({
                     .code = "xvm-legacy-edge-dangling",
-                    .summary = std::format(
-                        "a binding edge points at '{}@{}', which is not "
-                        "registered", peerTarget, peerVersion),
+                    .summary = sourceMissing
+                        ? std::format(
+                            "a binding edge is keyed at '{}', which is not "
+                            "registered",
+                            display_coordinate(target, ownVersion))
+                        : std::format(
+                            "a binding edge points at '{}', which is not "
+                            "registered",
+                            display_coordinate(peerTarget, peerVersion)),
                     .target = target,
                     .version = ownVersion,
                     .field = std::format("/bindings/{}", peerTarget),
@@ -231,8 +253,8 @@ std::vector<BindingFinding> inspect_binding_state(
                 .target = target,
                 .version = version,
                 .hint = std::format(
-                    "run `xlings install {}@{}` to re-register them",
-                    target, version),
+                    "run `xlings install {}` to re-register them",
+                    display_coordinate(target, version)),
                 .severity = BindingSeverity::Notice,
             });
         }
@@ -380,9 +402,9 @@ std::vector<BindingFinding> inspect_subos_references(
                 .target = target,
                 .version = version,
                 .hint = std::format(
-                    "run `xlings subos use {}` then `xlings install {}@{}` to "
+                    "run `xlings subos use {}` then `xlings install {}` to "
                     "restore it, or `xlings use {} <other-version>` there",
-                    other.subos, target, version, target),
+                    other.subos, display_coordinate(target, version), target),
             });
         }
         for (const auto& [target, versions] : other.installed) {
@@ -395,13 +417,15 @@ std::vector<BindingFinding> inspect_subos_references(
                 findings.push_back({
                     .code = "xvm-subos-installed-dangling",
                     .summary = std::format(
-                        "subos '{}' lists '{}@{}' as installed, but it is not "
-                        "registered", other.subos, target, version),
+                        "subos '{}' lists '{}' as installed, but it is not "
+                        "registered", other.subos,
+                        display_coordinate(target, version)),
                     .target = target,
                     .version = version,
                     .hint = std::format(
-                        "run `xlings subos use {}` then `xlings remove {}@{}` "
-                        "to drop the stale entry", other.subos, target, version),
+                        "run `xlings subos use {}` then `xlings remove {}` "
+                        "to drop the stale entry", other.subos,
+                        display_coordinate(target, version)),
                     .severity = BindingSeverity::Notice,
                 });
             }
@@ -491,6 +515,111 @@ std::vector<BindingFinding> inspect_sysroot_ownership(
         });
     }
     return findings;
+}
+
+// What another subos's state file has to lose to stop pointing at nothing.
+//
+// Both repairs are pure deletions of a reference to a version the shared
+// database does not have, which is why they can be carried out from a subos
+// the user is not in: nothing is installed, nothing is chosen on their behalf,
+// and no package is pulled into the current subos. That boundary is the one
+// from 2026-07-28-multi-subos-repair-design.md §5 and it still holds -- what
+// changes is only that a deletion doctor could already describe exactly is now
+// performed instead of dictated.
+//
+// `deactivate` is deliberately not "re-point at some surviving version".
+// Picking one would be deciding what that subos should use, which is `xlings
+// use` deciding. An inactive target is a visible problem with a one-command
+// cure; a silently re-pointed one is a build that fails much later.
+struct SubosMetadataRepair {
+    struct Entry {
+        std::string subos;
+        // Targets to drop from `active`: they name a version nothing has.
+        std::vector<std::string> deactivate;
+        // (target, version) pairs to drop from `installed[]`: they pin a
+        // payload against a version that no longer exists.
+        std::vector<std::pair<std::string, std::string>> dropInstalled;
+    };
+    std::vector<Entry> entries;
+
+    [[nodiscard]] bool empty() const { return entries.empty(); }
+    [[nodiscard]] std::size_t size() const {
+        std::size_t n = 0;
+        for (const auto& e : entries) {
+            n += e.deactivate.size() + e.dropInstalled.size();
+        }
+        return n;
+    }
+};
+
+// Pure: returns the plan, applies nothing. Mirrors inspect_subos_references
+// one-for-one, so anything reported is repairable and anything repaired was
+// reported.
+SubosMetadataRepair plan_subos_metadata_repair(
+        const VersionDB& db,
+        const std::vector<SubosRef>& others) {
+    const auto registered = [&](const std::string& target,
+                                const std::string& version) {
+        auto it = db.find(target);
+        return it != db.end() && it->second.versions.contains(version);
+    };
+
+    SubosMetadataRepair plan;
+    for (const auto& other : others) {
+        SubosMetadataRepair::Entry entry{.subos = other.subos};
+        for (const auto& [target, version] : other.active) {
+            if (version.empty() || registered(target, version)) continue;
+            entry.deactivate.push_back(target);
+        }
+        for (const auto& [target, versions] : other.installed) {
+            for (const auto& version : versions) {
+                if (version.empty() || registered(target, version)) continue;
+                entry.dropInstalled.emplace_back(target, version);
+            }
+        }
+        if (entry.deactivate.empty() && entry.dropInstalled.empty()) continue;
+        plan.entries.push_back(std::move(entry));
+    }
+    return plan;
+}
+
+// Apply one subos's share of the plan to its own workspace maps.
+// Returns how many references were dropped.
+std::size_t apply_subos_metadata_repair(
+        SubosWorkspace& workspace,
+        const SubosMetadataRepair::Entry& entry) {
+    std::size_t dropped = 0;
+    for (const auto& target : entry.deactivate) {
+        dropped += workspace.active.erase(target);
+    }
+    for (const auto& [target, version] : entry.dropInstalled) {
+        auto it = workspace.installed.find(target);
+        if (it == workspace.installed.end()) continue;
+        const auto before = it->second.size();
+        std::erase(it->second, version);
+        dropped += before - it->second.size();
+        if (it->second.empty()) workspace.installed.erase(it);
+    }
+    return dropped;
+}
+
+// Targets whose ACTIVE version this subos no longer has registered.
+//
+// The current-subos twin of `xvm-subos-active-missing`, and the one INV-1 case
+// `--fix` never had an answer for. Same remedy for the same reason: an active
+// pointer into nothing cannot dispatch, and choosing a replacement would be
+// choosing for the user.
+std::vector<std::string> plan_unregistered_active_deactivation(
+        const VersionDB& db,
+        const Workspace& workspace) {
+    std::vector<std::string> targets;
+    for (const auto& [target, version] : workspace) {
+        if (version.empty()) continue;
+        auto it = db.find(target);
+        if (it != db.end() && it->second.versions.contains(version)) continue;
+        targets.push_back(target);
+    }
+    return targets;
 }
 
 struct DeactivationPlan {
@@ -642,11 +771,16 @@ DanglingEdgePruning plan_dangling_edge_pruning(const VersionDB& db) {
         for (const auto& [peerTarget, edges] : info.bindings) {
             auto peerIt = db.find(peerTarget);
             for (const auto& [ownVersion, peerVersion] : edges) {
-                if (!info.versions.contains(ownVersion)) continue;
-                if (peerIt != db.end()
-                    && peerIt->second.versions.contains(peerVersion)) {
-                    continue;
-                }
+                // Source side as well as peer side -- see the matching note in
+                // inspect_binding_state. Skipping the source side left an edge
+                // that no command could remove and that made every
+                // registration of its owner refuse.
+                const bool sourceMissing =
+                    !info.versions.contains(ownVersion);
+                const bool peerMissing =
+                    peerIt == db.end()
+                    || !peerIt->second.versions.contains(peerVersion);
+                if (!sourceMissing && !peerMissing) continue;
                 plan.edges.push_back({target, ownVersion,
                                       peerTarget, peerVersion});
             }

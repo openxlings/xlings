@@ -62,6 +62,22 @@ std::string package_scope_label(PackageScope scope) {
     return scope == PackageScope::Project ? "project" : "global";
 }
 
+// The parsed shape of a command-line coordinate: `[ns:]name[@version]`.
+//
+// Exported because the coordinate is now produced in more than one place --
+// `self doctor` synthesises remedies -- and a renderer that cannot be checked
+// against the parser is a renderer that drifts from it. Round-tripping is a
+// unit test, not a hope.
+struct ParsedPackageTarget {
+    std::string raw;
+    std::string name;
+    std::string version;
+    std::string namespaceName;
+    bool explicitNamespace { false };
+};
+
+ParsedPackageTarget parse_package_target(std::string target);
+
 std::string format_ambiguous_candidates(std::string_view target,
                                         std::span<const PackageMatch> matches) {
     std::string msg = std::format("package '{}' is ambiguous, candidates:\n", target);
@@ -113,6 +129,24 @@ ParsedTarget_ parse_target_(std::string target) {
     }
     return parsed;
 }
+
+}  // namespace detail_
+
+// Definition sits here rather than beside the declaration: it delegates to
+// detail_::parse_target_, which is what every other resolution path uses, so
+// the exported form cannot drift from the internal one.
+ParsedPackageTarget parse_package_target(std::string target) {
+    const auto parsed = detail_::parse_target_(std::move(target));
+    return {
+        .raw = parsed.raw,
+        .name = parsed.name,
+        .version = parsed.version,
+        .namespaceName = parsed.namespaceName,
+        .explicitNamespace = parsed.explicitNamespace,
+    };
+}
+
+namespace detail_ {
 
 std::string select_version_(const xpkg::Package& pkg,
                             const std::string& platform,

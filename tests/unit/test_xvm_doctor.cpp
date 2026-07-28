@@ -34,6 +34,7 @@ import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.inspect;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.lock;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
@@ -217,18 +218,55 @@ TEST(XvmDanglingEdge, AfterPruningTheSwitchWorksAgain) {
     EXPECT_EQ(still->members.size(), 2u);
 }
 
-// An edge recorded under a version that is not registered either can never be
-// reached: resolution always starts from a real (target, version). Leaving it
-// alone keeps the repair to what is demonstrably harmful.
-TEST(XvmDanglingEdge, UnreachableEdgesAreLeftAlone) {
+// An edge recorded under a version that is not registered is pruned too.
+//
+// This used to assert the opposite, on the reasoning that resolution always
+// starts from a real (target, version) so such an edge can never be reached.
+// The reasoning is wrong, and the way it is wrong is expensive: the owner
+// version becomes real the moment an install registers it, and the edge is
+// then walked during the batch's own validation -- which fails with "legacy
+// binding source version is missing" and refuses the whole registration.
+//
+// Measured by differential on a real home: `xim-musl-gnu-gcc` carried five
+// edges keyed at `15.1.0-musl` while only `15.1.0` was registered. Same slice,
+// same command -- `xlings install xim:musl-gcc@15.1.0` failed with the edges
+// present and succeeded with them removed. Nothing reported them, no repair
+// touched them, and `--fix` reacted to the failing install by removing the
+// package.
+TEST(XvmDanglingEdge, EdgesKeyedAtAnUnregisteredOwnerVersionArePruned) {
     auto db = dangling_edge_db_();
     db["gcc"].bindings["ghost"]["9.9.9"] = "9.9.9";  // owner version absent
 
     const auto plan = xlings::xvm::plan_dangling_edge_pruning(db);
-    for (const auto& edge : plan.edges) {
-        EXPECT_NE(edge.version, "9.9.9")
-            << "pruned an edge no resolution can reach";
-    }
+    const auto pruned = std::ranges::any_of(plan.edges, [](const auto& edge) {
+        return edge.target == "gcc" && edge.version == "9.9.9"
+            && edge.peerTarget == "ghost";
+    });
+    EXPECT_TRUE(pruned) << "left an edge that blocks every future install of "
+                           "its owner";
+
+    xlings::xvm::apply_dangling_edge_pruning(db, plan);
+    const auto edgeIt = db.at("gcc").bindings.find("ghost");
+    EXPECT_TRUE(edgeIt == db.at("gcc").bindings.end()
+                || !edgeIt->second.contains("9.9.9"));
+}
+
+// ...and a healthy edge under a registered owner version is untouched, so the
+// widened rule cannot start eating live releases.
+TEST(XvmDanglingEdge, EdgesUnderARegisteredOwnerVersionSurvive) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["g++"].type = "program";
+    db["g++"].versions["16.1.0"].path = "/pkg/gcc/16.1.0/bin";
+    db["gcc"].bindings["g++"]["16.1.0"] = "16.1.0";
+    db["g++"].bindings["gcc"]["16.1.0"] = "16.1.0";
+    db["gcc"].versions["15.1.0"].path = "/pkg/gcc/15.1.0/bin";
+    db["g++"].versions["15.1.0"].path = "/pkg/gcc/15.1.0/bin";
+    db["gcc"].bindings["g++"]["15.1.0"] = "15.1.0";
+    db["g++"].bindings["gcc"]["15.1.0"] = "15.1.0";
+
+    EXPECT_TRUE(xlings::xvm::plan_dangling_edge_pruning(db).empty());
 }
 
 TEST(XvmDanglingEdge, AHealthyDatabaseYieldsNoPruning) {
@@ -947,4 +985,106 @@ TEST(SubosSnapshots, AHomeWithNoSubosDirectoryIsEmptyNotAnError) {
     std::error_code ec;
     fs::remove_all(home, ec);
     EXPECT_TRUE(xlings::profile::load_subos_snapshots(home).empty());
+}
+
+// ============================================================
+// xvm/owner — which PACKAGE does a versions-DB entry belong to
+//
+// A finding names an xvm target; every remedy names a package. `xlings install
+// nm@20.1.7` is a command that cannot succeed -- `nm` is a program llvm
+// registers. The payload path is the only candidate that answers this for the
+// hard cases, because the installer wrote it.
+
+namespace {
+
+using xlings::xvm::coordinate_from_payload_path;
+
+std::string coord_or_empty_(std::string_view path) {
+    auto c = coordinate_from_payload_path(path);
+    return c ? c->canonical() : std::string{};
+}
+
+}  // namespace
+
+TEST(XvmOwner, RecoversThePackageFromTheStoreLayout) {
+    // Every one of these is a real entry from the home this was measured on.
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs/xim-x-llvm/20.1.7"),
+              "xim:llvm@20.1.7");
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs/config-x-virtualbox/7.2.8"),
+              "config:virtualbox@7.2.8");
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs/local-x-mcpp/0.0.27/bin"),
+              "local:mcpp@0.0.27");
+    EXPECT_EQ(coord_or_empty_(
+                  "/h/.xlings/data/xpkgs/fromsource-x-freetype/2.13.2"),
+              "fromsource:freetype@2.13.2");
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs/xim-x-musl-gcc/15.1.0"),
+              "xim:musl-gcc@15.1.0");
+    EXPECT_EQ(coord_or_empty_(
+                  "/h/.xlings/data/xpkgs/xim-x-aarch64-linux-musl-gcc/15.1.0"),
+              "xim:aarch64-linux-musl-gcc@15.1.0");
+}
+
+// The record that nothing else can identify: written on Windows, read here.
+TEST(XvmOwner, ReadsAPathRecordedWithForeignSeparators) {
+    EXPECT_EQ(coord_or_empty_("/h/.xlings\\data\\xpkgs\\xim-x-llvm\\20.1.7/bin"),
+              "xim:llvm@20.1.7");
+    EXPECT_EQ(coord_or_empty_("C:\\Users\\me\\.xlings\\data\\xpkgs\\xim-x-gcc\\16.1.0"),
+              "xim:gcc@16.1.0");
+}
+
+// A home that itself lives under a directory called `xpkgs` must not confuse
+// the outer name for the store.
+TEST(XvmOwner, UsesTheInnermostStoreComponent) {
+    EXPECT_EQ(coord_or_empty_("/srv/xpkgs/home/.xlings/data/xpkgs/xim-x-cmake/3.29.0"),
+              "xim:cmake@3.29.0");
+}
+
+TEST(XvmOwner, RefusesPathsThatAreNotStorePayloads) {
+    EXPECT_EQ(coord_or_empty_(""), "");
+    EXPECT_EQ(coord_or_empty_("/usr/local/bin"), "");
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs"), "");
+    // No version component after the store dir.
+    EXPECT_EQ(coord_or_empty_("/h/.xlings/data/xpkgs/xim-x-llvm"), "");
+}
+
+TEST(XvmOwner, CandidatesPreferTheRecordedProviderThenThePayloadPath) {
+    xlings::xvm::VersionDB db;
+    auto& info = db["nm"];
+    info.type = "program";
+    auto& data = info.versions["20.1.7"];
+    data.path = "/h/.xlings/data/xpkgs/xim-x-llvm/20.1.7/bin";
+
+    // Owner-less: the payload path is the only thing that knows the package.
+    auto candidates = xlings::xvm::owner_candidates(db, "nm", "20.1.7");
+    ASSERT_FALSE(candidates.empty());
+    EXPECT_EQ(candidates.front().canonical(), "xim:llvm@20.1.7");
+
+    // With a provider recorded, that wins -- it is authoritative.
+    data.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "xim:llvm-tools",
+        .providerVersion = "20.1.7",
+        .group = "llvm-tools",
+        .rootTarget = "llvm-tools",
+        .rootVersion = "20.1.7",
+    };
+    candidates = xlings::xvm::owner_candidates(db, "nm", "20.1.7");
+    ASSERT_FALSE(candidates.empty());
+    EXPECT_EQ(candidates.front().canonical(), "xim:llvm-tools@20.1.7");
+}
+
+// The namespace rides on the version key in the DB and on the front of a
+// coordinate on the command line. A candidate built from the entry itself has
+// to move it.
+TEST(XvmOwner, MovesTheNamespaceOffTheVersionKey) {
+    xlings::xvm::VersionDB db;
+    db["mcpp"].type = "program";
+    db["mcpp"].versions["local:0.0.27"].path = "/somewhere/else";
+
+    const auto candidates =
+        xlings::xvm::owner_candidates(db, "mcpp", "local:0.0.27");
+    const auto found = std::ranges::any_of(candidates, [](const auto& c) {
+        return c.canonical() == "local:mcpp@0.0.27";
+    });
+    EXPECT_TRUE(found) << "the entry-derived candidate kept the namespace on "
+                          "the version, which parses as a version nothing has";
 }

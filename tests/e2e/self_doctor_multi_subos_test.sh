@@ -254,7 +254,7 @@ rm -rf "$PAYLOAD_SHARED"
 : > "$FAIL_MARKER"
 
 run_capture default self doctor --fix
-[[ $rc -ne 0 ]] || fail "S6: the repair could not succeed, so doctor must not exit 0"
+[[ $rc -ne 0 ]] || fail "S6: the repair could not succeed, so doctor must not exit 0; got:\n$out"
 grep -q "REMOVED" <<<"$out" \
   && fail "S6: reported a removal that did not happen; got:\n$out"
 grep -q "still registered" <<<"$out" \
