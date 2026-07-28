@@ -33,7 +33,12 @@ rc_after=$(run "$OUT/after.txt" self doctor)
 echo "=== 4. doctor --fix again (idempotence)"
 rc_fix2=$(run "$OUT/fix2.txt" self doctor --fix)
 
-count() { strip "$1" | grep -cF "$2" || true; }
+# `grep -a` is load-bearing, not defensive. The rendered panel contains a NUL
+# byte, and without -a GNU grep treats the stream as binary and prints NOTHING
+# -- so every count reads as empty/0 and every assertion passes whether or not
+# it should. Caught by running the A9 grep against the OLD report, which must
+# be non-zero: it came back empty too.
+count() { strip "$1" | grep -acF "$2" || true; }
 field() { strip "$1" | sed -n -r "s/^ *$2 +([0-9]+).*/\1/p" | head -1; }
 
 echo
@@ -60,15 +65,15 @@ printf 'A8  other subos       before/after      : %s / %s   (want ?/0)\n' \
 
 # A9: a coordinate must never render as target@ns:version.
 bad_coord_before=$(strip "$OUT/before.txt" \
-    | grep -cE '[A-Za-z0-9_.+-]+@[a-z][a-z0-9-]*:' || true)
+    | grep -acE '[A-Za-z0-9_.+-]+@[a-z][a-z0-9-]*:' || true)
 bad_coord_after=$(strip "$OUT/after.txt" \
-    | grep -cE '[A-Za-z0-9_.+-]+@[a-z][a-z0-9-]*:' || true)
+    | grep -acE '[A-Za-z0-9_.+-]+@[a-z][a-z0-9-]*:' || true)
 printf 'A9  "name@ns:ver" occurrences bef/aft   : %s / %s   (want ?/0)\n' \
     "$bad_coord_before" "$bad_coord_after"
 
 printf 'A12 claude alias warnings  before/after : %s / %s   (want ?/0)\n' \
-    "$(strip "$OUT/before.txt" | grep -c 'alias unresolved.*claude' || true)" \
-    "$(strip "$OUT/after.txt"  | grep -c 'alias unresolved.*claude' || true)"
+    "$(strip "$OUT/before.txt" | grep -ac 'alias unresolved.*claude' || true)" \
+    "$(strip "$OUT/after.txt"  | grep -ac 'alias unresolved.*claude' || true)"
 printf 'A13 report lines      before/after      : %s / %s\n' \
     "$(wc -l < "$OUT/before.txt")" "$(wc -l < "$OUT/after.txt")"
 printf 'A11 recorded client version             : %s\n' \
@@ -85,7 +90,7 @@ printf '    running version                     : %s\n' \
 echo
 echo "---------------- A10: printed remedies (from before.txt) ----------------"
 mapfile -t cmds < <(strip "$OUT/before.txt" \
-    | sed -n -r 's/^ *→ run +(xlings .*)$/\1/p' | sort -u)
+    | grep -a . | sed -n -r 's/^ *→ run +(xlings .*)$/\1/p' | sort -u)
 if [[ ${#cmds[@]} -eq 0 ]]; then
     echo "  (no remedy commands printed)"
 else

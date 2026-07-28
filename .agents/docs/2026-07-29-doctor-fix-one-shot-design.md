@@ -483,6 +483,28 @@ A14 在修复完成的切片上实测：`gcc` 有 4 个 version key
 卸掉不装回去）之后的正确结果：它们现在是被重新注册的，而不是被当成
 collateral 清掉的。
 
+#### 一个差点让整张表变成"不可证伪"的坑
+
+`grep` 在这份报告上**什么都不输出**，因为渲染出来的面板里有一个 NUL 字节，
+GNU grep 于是把整个流当二进制，`-c` 连计数都不打印。后果是每一条断言都读成
+空/0 —— **无论真实值是多少都会"通过"**。
+
+发现方式是给每个"应该为 0"的断言配一个**必须非 0 的对照**：
+把 A9 的 grep 拿去跑旧二进制的报告，预期 19，结果也是空 —— 说明坏的是 grep，
+不是 bug 修好了。加 `grep -a` 之后：
+
+| 断言 | 对照（必须非 0） | 断言值（必须 0） |
+|---|---|---|
+| A4/A5 on `fix.txt` | `· dropped` = 19、`other subos repaired` = 18 | `repair failed` = 0、`repair skipped` = 0 |
+| A6 on `after.txt` | `nothing to do` = 1 | `broken payload` = 0 |
+| A9 | 旧二进制 = 19 | 新二进制 = 0 |
+
+规矩沿用 [[reference-isolated-home-test-traps]]：**先证明这条检查能报出非 0，
+再相信它报出的 0。**
+
+（面板里那个 NUL 字节本身是个小瑕疵 —— e2e 里 `command substitution: ignored
+null byte in input` 的警告也是它。不影响正确性，另开。）
+
 #### A10 的两次修正 —— 都是真问题
 
 1. 第一次跑 A10 时三条命令全失败，原因是 TUI 面板行尾带 `\r`，被当成一个空
