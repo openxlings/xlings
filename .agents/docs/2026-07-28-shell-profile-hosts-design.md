@@ -63,24 +63,34 @@ hooks and how*. Four separable pieces:
 1. **Hosts are data.** `kPowerShellHosts = { "powershell", "pwsh" }`. Adding a
    host is one array entry, not a second copy of a code block.
 2. **Location is asked, not computed.** `probe_command(host)` builds
-   `<host> -NoProfile -NonInteractive -Command Write-Output XLINGS_PROFILE=$PROFILE`.
+   `<host> -NoProfile -NonInteractive -Command 'XLINGS_PROFILE='+$PROFILE`.
    Each host reports its own startup file, which is correct under OneDrive
    redirection by construction, and the same call doubles as the
    is-it-installed probe — a host that is not installed cannot answer.
    The answer is **tagged** because `run_command_capture()` merges stderr into
    stdout: untagged, a warning banner would be adopted as a path and written to.
 
-   The script carries **no quote of either kind**, which is not cosmetic. It
-   travels `_popen` → `cmd.exe` → `powershell.exe`, and each layer re-parses
-   quotes by its own rules — powershell.exe 5.1 does not even use argv for
-   `-Command`, it takes the rest of the line and strips quotes itself. The
-   first version of this fix used
-   `-Command "Write-Output ('XLINGS_PROFILE=' + $PROFILE)"`; on the CI runner
-   `pwsh` answered it and `powershell` did not, which is the failure mode the
-   whole redesign exists to stop guessing about. Writing the script so that no
-   layer has anything to re-parse — PowerShell's argument mode expands the
-   bare word `XLINGS_PROFILE=$PROFILE` — removes the class rather than one
-   member of it.
+   The exact shape of that script cost two CI rounds and is worth recording,
+   because the two hosts disagree about more than their profile paths:
+
+   | script passed to `-Command` | pwsh 7 | Windows PowerShell 5.1 |
+   | --- | --- | --- |
+   | `"Write-Output ('XLINGS_PROFILE=' + $PROFILE)"` | answers | **no answer** |
+   | `Write-Output XLINGS_PROFILE=$PROFILE` (bare word) | answers | **`XLINGS_PROFILE=`**, path missing |
+   | `'XLINGS_PROFILE='+$PROFILE` | answers | answers |
+
+   Two independent rules fall out, and the unit test
+   `ProbeCommandIsASingleUnquotedExpression` holds both:
+
+   - **No double quote.** The command travels `_popen` → `cmd.exe` →
+     `powershell.exe`, and 5.1 does not use argv for `-Command` — it takes the
+     rest of the line and strips double quotes itself. Single quotes pass all
+     three layers untouched, so the script can still quote its own literal.
+   - **An expression, not a command with arguments.** The bare-word form
+     relies on argument-mode expansion, which pwsh 7 does and 5.1 does not.
+     5.1's reply was the tag with an empty value — indistinguishable from a
+     host that has no profile, which is exactly why round two still missed it
+     and why `Unusable` (below) exists.
 3. **Every host gets a verdict.** `probe_hosts()` returns one `Probe` per host
    with `Answered` / `NotInstalled` / `Unusable`, and the raw reply. A host
    that quietly drops out of the result cannot be reported on, and an
@@ -149,21 +159,32 @@ reintroducing #387, fails that test.
 
 `tests/e2e/release_self_install_test.ps1` — after `self install`, every
 PowerShell host reachable on the runner must have a profile that sources the
-installed home's `xlings-profile.ps1`. Three details make it real rather than
+installed home's `xlings-profile.ps1`. Four details make it real rather than
 decorative:
 
 - The install runs with the host directories explicitly on `PATH`
-  (`Get-MinimalSystemPath` omits `C:\Program Files\PowerShell\7`) — a pwsh
-  xlings cannot start is one it is *right* to skip, which would make the
-  assertion vacuous.
-- The runner's profiles are **deleted** before the install: the CI job
-  installs a bootstrap xlings into the runner's own home first, and hooking is
-  correctly idempotent, so an already-hooked profile would be left alone and
-  the assertion would measure nothing.
-- They are snapshotted and restored in a `finally`. `$PROFILE` resolves from
-  the real Documents folder — no environment variable redirects it — so
-  without the restore every later CI step would start by sourcing a throwaway
-  home.
+  (`Get-MinimalSystemPath` omits both `System32\WindowsPowerShell\v1.0` and
+  `C:\Program Files\PowerShell\7`) — a host xlings cannot start is one it is
+  *right* to skip, which would make the assertion vacuous.
+- Each host's `$PROFILE` is resolved **inside** the redirected environment,
+  because it is not environment-independent: pwsh 7 derives it from
+  `USERPROFILE` and lands inside the sandbox, while 5.1 may answer with the
+  runner's real Documents folder. Resolving before the redirect measured the
+  install's work against the wrong path for whichever host follows
+  `USERPROFILE`.
+- The profiles are **deleted** before the install: the CI job installs a
+  bootstrap xlings into the runner's own home first, and hooking is correctly
+  idempotent, so an already-hooked profile would be left alone and the
+  assertion would measure nothing.
+- Anything found is snapshotted and restored in a `finally`, so a profile that
+  did land outside the sandbox does not leave later CI steps sourcing a
+  throwaway home.
+
+The test resolves `$PROFILE` with `-Command '$PROFILE'` rather than reusing
+`probe_command()`'s spelling. That is deliberate: a test that asks the question
+the same way the production code does agrees with it when it is wrong — with
+the bare-word form, both would have read an empty answer and the test would
+have passed against an install that hooked nothing.
 
 Idempotency is *not* re-asserted in the e2e: a second `self install` of the
 same version stops at an interactive confirmation that CI answers "no", so the

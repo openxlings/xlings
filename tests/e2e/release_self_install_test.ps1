@@ -24,51 +24,61 @@ if (-not (Test-Path "$PKG_DIR\bin\xlings.exe")) { Fail "bootstrap binary missing
 # spawns pwsh.exe first — hooking only 5.1 left the shell xlings itself
 # launches without XLINGS_BIN on PATH (#387).
 #
-# $PROFILE resolves from the user's real Documents folder; no environment
-# variable redirects it, so this test necessarily touches the runner's own
-# profiles. Snapshot them here and put them back below, or every later CI
-# step would start by sourcing this throwaway home.
+# Locate the host executables under the FULL path first — the install below
+# runs on a deliberately minimal one, and Get-MinimalSystemPath carries
+# System32 but neither System32\WindowsPowerShell\v1.0 nor
+# C:\Program Files\PowerShell\7. A host xlings cannot start is a host it is
+# right to skip, which would make the assertions vacuous.
 $psHosts = @()
 foreach ($exe in @('powershell', 'pwsh')) {
     $found = Get-Command $exe -ErrorAction SilentlyContinue
     if (-not $found) { continue }
-    $reported = & $exe -NoProfile -NonInteractive -Command '$PROFILE' 2>$null | Select-Object -First 1
-    if (-not $reported) { Fail "$exe did not report a `$PROFILE path" }
-    $reported = $reported.Trim()
-    $backup = $null
-    if (Test-Path $reported) { $backup = Get-Content $reported -Raw }
     $psHosts += [pscustomobject]@{
         Exe    = $exe
-        Path   = $reported
         Dir    = (Split-Path $found.Source -Parent)
-        Backup = $backup
+        Path   = $null   # resolved below, under the install's own environment
+        Backup = $null
     }
 }
 if ($psHosts.Count -eq 0) { Fail "no PowerShell host found on this machine" }
 
-# Install with minimal env. The host directories are added explicitly:
-# Get-MinimalSystemPath carries System32 (Windows PowerShell) but not
-# C:\Program Files\PowerShell\7, and a pwsh xlings cannot start is a pwsh it
-# is right to skip — which would make the assertion below vacuous.
 $hostDirs = ($psHosts | ForEach-Object { $_.Dir }) -join ';'
 $INSTALLED_HOME = Join-Path $INSTALL_USER '.xlings'
 $XLINGS_PS_PROFILE = Join-Path $INSTALLED_HOME 'config\shell\xlings-profile.ps1'
 
 try {
-    # Start from an unhooked profile. The CI job installs a bootstrap xlings
-    # into the runner's own home before this test runs, and hooking is
-    # idempotent on a marker — so an already-hooked profile would correctly
-    # be left alone, and the assertions below would be measuring nothing.
-    foreach ($h in $psHosts) {
-        Remove-Item -Force $h.Path -ErrorAction SilentlyContinue
-    }
-
     $origProfile = $env:USERPROFILE
     $origPath = $env:Path
     $env:USERPROFILE = $INSTALL_USER
     $env:Path = "$hostDirs;$(Get-MinimalSystemPath)"
     Remove-Item Env:XLINGS_HOME -ErrorAction SilentlyContinue
     try {
+        # Resolve $PROFILE per host INSIDE the redirected environment, because
+        # it is not environment-independent: pwsh 7 derives it from
+        # USERPROFILE and lands inside this sandbox, while Windows PowerShell
+        # 5.1 may answer with the runner's real Documents folder. Resolving
+        # before the redirect compared the install's work against the wrong
+        # path for whichever host follows USERPROFILE.
+        #
+        # `-Command '$PROFILE'` and not the bare-word form: 5.1 does not
+        # expand a bare word in argument mode (see shell_profile.cppm), and a
+        # probe that silently answers "" would make this test agree with a
+        # broken install instead of catching it.
+        foreach ($h in $psHosts) {
+            $reported = & $h.Exe -NoProfile -NonInteractive -Command '$PROFILE' 2>$null |
+                        Select-Object -First 1
+            if (-not $reported) { Fail "$($h.Exe) did not report a `$PROFILE path" }
+            $h.Path = $reported.Trim()
+            # Snapshot anything outside the sandbox so later CI steps do not
+            # end up sourcing this throwaway home; restored in the finally.
+            if (Test-Path $h.Path) { $h.Backup = Get-Content $h.Path -Raw }
+            # Start unhooked. The CI job installs a bootstrap xlings into the
+            # runner's own home first, and hooking is idempotent on a marker —
+            # an already-hooked profile would correctly be left alone, and the
+            # assertions would be measuring nothing.
+            Remove-Item -Force $h.Path -ErrorAction SilentlyContinue
+        }
+
         # --verbose so the per-host probe (command, exit code, raw reply) is in
         # the log. When a host silently fails to be hooked, that line is the
         # difference between a diagnosis and another CI round-trip.
@@ -98,6 +108,9 @@ try {
     }
 } finally {
     foreach ($h in $psHosts) {
+        # Path is null for hosts we never got to resolve (an earlier one
+        # failed); there is nothing of theirs to put back.
+        if (-not $h.Path) { continue }
         if ($null -eq $h.Backup) {
             Remove-Item -Force $h.Path -ErrorAction SilentlyContinue
         } else {

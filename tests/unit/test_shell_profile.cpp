@@ -99,20 +99,26 @@ TEST(ShellProfileProbe, ProbeCommandTagsTheAnswer) {
               std::string::npos);
 }
 
-// The command reaches powershell.exe through _popen -> cmd.exe, and each
-// layer re-parses quotes by its own rules — powershell.exe 5.1 does not even
-// use argv for -Command, it takes the rest of the line and strips quotes.
-// So the command carries NO quote of either kind: PowerShell's argument mode
-// expands `XLINGS_PROFILE=$PROFILE` as a bare word, which removes the whole
-// class of quoting bugs instead of working around one of them.
-TEST(ShellProfileProbe, ProbeCommandHasNoQuotesForAShellToReparse) {
+// Two properties, both established the hard way on a real Windows runner.
+//
+// No DOUBLE quote: the command reaches powershell.exe through _popen ->
+// cmd.exe, and powershell.exe 5.1 does not use argv for -Command — it takes
+// the rest of the line and strips double quotes itself. Single quotes pass
+// all three layers untouched, so the script can still quote its own literal.
+//
+// One whitespace-free token: the script must be an EXPRESSION, not a command
+// with arguments. `Write-Output XLINGS_PROFILE=$PROFILE` relies on argument
+// mode expanding a bare word, which pwsh 7 does and Windows PowerShell 5.1
+// does not — 5.1 answered a literal `XLINGS_PROFILE=` with the path missing,
+// which is indistinguishable from a host with no profile at all.
+TEST(ShellProfileProbe, ProbeCommandIsASingleUnquotedExpression) {
     for (auto host : sp::kPowerShellHosts) {
         auto cmd = sp::probe_command(host);
         EXPECT_EQ(cmd.find('"'), std::string::npos) << cmd;
-        EXPECT_EQ(cmd.find('\''), std::string::npos) << cmd;
-        // …and the tag stays glued to $PROFILE, so it survives argument mode.
-        EXPECT_NE(cmd.find(std::string(sp::kProbePrefix) + "$PROFILE"),
-                  std::string::npos) << cmd;
+
+        auto script = cmd.substr(cmd.rfind(' ') + 1);
+        EXPECT_NE(script.find(sp::kProbePrefix), std::string::npos) << cmd;
+        EXPECT_NE(script.find("$PROFILE"), std::string::npos) << cmd;
     }
 }
 

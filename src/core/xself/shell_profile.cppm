@@ -86,16 +86,22 @@ using CommandRunner = std::function<std::pair<int, std::string>(const std::strin
 // -NonInteractive: a misconfigured profile must not park `self install` on a
 // prompt.
 //
-// The script carries NO quote of either kind. It travels through _popen ->
-// cmd.exe -> powershell.exe, and every layer re-parses quotes by its own
-// rules -- powershell.exe 5.1 does not even use argv for -Command, it takes
-// the rest of the line and strips quotes itself. Rather than find the one
-// spelling all three agree on, the script is written so none of them has
-// anything to re-parse: PowerShell's argument mode expands the bare word
-// `XLINGS_PROFILE=$PROFILE` into the tagged answer.
+// The script is one whitespace-free token with no DOUBLE quote in it. Both
+// properties were established on a real Windows runner, and both matter:
+//
+//   * The command travels _popen -> cmd.exe -> powershell.exe. Windows
+//     PowerShell 5.1 does not use argv for -Command; it takes the rest of the
+//     line and strips double quotes itself. Single quotes pass all three
+//     layers untouched, so the script quotes its own literal with those and
+//     no layer has a quote left to re-parse.
+//   * It is an EXPRESSION (`'TAG='+$PROFILE`), not a command with arguments.
+//     `Write-Output TAG=$PROFILE` relies on argument mode expanding a bare
+//     word: pwsh 7 does, 5.1 does not. 5.1 answered a bare `XLINGS_PROFILE=`
+//     with the path missing -- which looks exactly like a host that has no
+//     profile, and is how the second round of this fix still missed 5.1.
 inline std::string probe_command(std::string_view host) {
-    return std::string(host) + " -NoProfile -NonInteractive -Command Write-Output " +
-           std::string(kProbePrefix) + "$PROFILE";
+    return std::string(host) + " -NoProfile -NonInteractive -Command '" +
+           std::string(kProbePrefix) + "'+$PROFILE";
 }
 
 // Pull the tagged path out of a probe's output. Untagged lines are noise by
