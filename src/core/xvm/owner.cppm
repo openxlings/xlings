@@ -85,10 +85,7 @@ coordinate_from_payload_path(std::string_view payloadPath) {
         if (parts[i] == "xpkgs") { storeIndex = i; break; }
     }
     if (storeIndex == parts.size()) return std::nullopt;
-    if (storeIndex + 2 >= parts.size() + 0) {
-        // Need at least `<store>/<version>` after it.
-        if (storeIndex + 2 > parts.size() - 1 + 1) return std::nullopt;
-    }
+    // `<store>/<version>` must both follow it; anything deeper is a bindir.
     if (parts.size() < storeIndex + 3) return std::nullopt;
 
     const auto& store   = parts[storeIndex + 1];
