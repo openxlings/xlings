@@ -465,13 +465,13 @@ deactivation 之前（未注册的 active 会让后者误判）。
 | A4 | `✗ repair failed` 行数 | 9 | **0** | ✅ |
 | A5 | `✗ repair skipped` 行数 | 11 | **0** | ✅ |
 | A6 | `broken payloads` | 20 | **0** | ✅ |
-| A7 | `binding state` | 134 | **0** | ✅ |
+| A7 | `binding state` | 134 | **0**（`--fix` 前 6 行，折叠后） | ✅ |
 | A8 | `other subos findings` | 18 | **0** | ✅ |
 | A9 | `name@ns:ver` 形式的坐标 | 19 | **0** | ✅ |
 | A10 | 每条 `→ run` 命令粘贴执行的退出码 | 3 条中 2 条失败 | **1 条，0 失败** | ✅ |
 | A11 | `.xlings.json:version` | `v2026.7.27.2` | **2026.7.29.0** | ✅ |
 | A12 | `claude` 相关 alias 误报 | 5 | **0** | ✅ |
-| A13 | 报告行数 | 239 | **58 →（修复后）9** | ✅ |
+| A13 | 报告行数 | 239 | **46（修复前）→ 9（修复后）** | ✅ |
 | A15 | 真实 `~/.xlings/data/xpkgs` 未被改写 | — | **`find -newer` 为空** | ✅ |
 
 A14（`xlings use gcc` 双向可切）未回归：gcc 系列不在本次修复触及的条目里，
@@ -520,7 +520,22 @@ A14（`xlings use gcc` 双向可切）未回归：gcc 系列不在本次修复�
    典型的 silent success。现在按 (target, version) 记录失败条目，只要它在最终
    扫描里还以任何形式存在，就计入退出码。
 
-### 5.6 原始断言表（保留，作为设计时的预期）
+### 5.6 折叠规则（实现时补的，设计只写了 payload 一种）
+
+同一个问题不能占 N 行。三处：
+
+- **broken payload 按 payload 分组** —— 设计里就有。
+- **binding state 按 (code, 条目) 分组** —— 一个遗留 anchor 每绑定一个程序就有
+  一条 dangling edge，两个 gcc flavor 各五条，于是 14 行描述 5 个条目。
+  字段名仍然全部列在那一行上。
+- **alias unresolved 按 target 分组**，且 `warnings` 计数按 target 计 ——
+  计数和列表必须对得上，否则就是上个版本刚修掉的
+  "broken payloads 1 但列表里没有对应行"那个形状。
+
+`ⓘ migration` 从独立 panel 改为主 panel 的最后一个字段：独立 panel 会渲染出
+一个空标题栏，读起来像画坏了的框而不是脚注。
+
+### 5.7 原始断言表（保留，作为设计时的预期）
 
 | # | 断言 | 修复前（今天实测） | 修复后要求 |
 |---|---|---|---|
