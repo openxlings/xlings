@@ -55,7 +55,7 @@ static int cmd_help(EventStream& stream) {
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
-        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --dry-run to preview the repairs, --reset-metadata to discard unreadable release metadata)"}},
+        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --dry-run to preview the repairs, --verbose to list non-defect findings, --reset-metadata to discard unreadable release metadata)"}},
     });
     stream.emit(DataEvent{"help", payload.dump()});
     return 0;
@@ -91,6 +91,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
         bool fix = false;
         bool resetMetadata = false;
         bool dryRun = false;
+        bool verbose = false;
         for (int i = 3; i < argc; ++i) {
             const auto arg = std::string(argv[i]);
             if (arg == "--fix") fix = true;
@@ -100,8 +101,14 @@ export int run(int argc, char* argv[], EventStream& stream) {
             // Show the repair plan without running it. Only meaningful
             // with --fix, which is the flag that can now touch the network.
             if (arg == "--dry-run") dryRun = true;
+            // List the findings that are not defects -- release anchors,
+            // aliases that are probably system commands, notices about state
+            // the upgrade inherited. They are summarised to one counted line
+            // by default because there are dozens of them on a real home and
+            // they buried the handful that mattered.
+            if (arg == "--verbose" || arg == "-v") verbose = true;
         }
-        return cmd_doctor(stream, fix, resetMetadata, dryRun);
+        return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose);
     }
     // help / unknown-action handling. Distinguish a deliberate help
     // request (no action / -h / --help) from a typo / made-up action so

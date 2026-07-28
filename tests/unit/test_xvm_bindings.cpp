@@ -211,6 +211,40 @@ TEST(XvmDbTest, AddAndRemoveVersion) {
     EXPECT_FALSE(xlings::xvm::has_target(db, "gcc"));
 }
 
+// The version key and the command-line coordinate put the namespace on
+// OPPOSITE sides, and every renderer used to format the key form. `xlings
+// install mcpp@local:0.0.27` is not a typo the user can fix -- it parses as a
+// version named `local:0.0.27`, which no package has.
+TEST(XvmDbTest, DisplayCoordinatePutsTheNamespaceInFront) {
+    EXPECT_EQ(xlings::xvm::display_coordinate("mcpp", "local:0.0.27"),
+              "local:mcpp@0.0.27");
+    EXPECT_EQ(xlings::xvm::display_coordinate("VBoxHeadless", "config:7.2.8"),
+              "config:VBoxHeadless@7.2.8");
+    EXPECT_EQ(xlings::xvm::display_coordinate("llvm", "20.1.7"),
+              "llvm@20.1.7");
+    EXPECT_EQ(xlings::xvm::display_coordinate("gcc", ""), "gcc");
+}
+
+// The rendered form has to be the form the catalog accepts, or the printed
+// remedy is a string that only looks like a command.
+TEST(XvmDbTest, DisplayCoordinateRoundTripsThroughTheCatalogParser) {
+    struct Case { const char* target; const char* versionKey;
+                  const char* ns; const char* version; };
+    const Case cases[] = {
+        {"mcpp", "local:0.0.27", "local", "0.0.27"},
+        {"freetype", "fromsource:2.13.2", "fromsource", "2.13.2"},
+        {"llvm", "20.1.7", "", "20.1.7"},
+    };
+    for (const auto& c : cases) {
+        const auto rendered =
+            xlings::xvm::display_coordinate(c.target, c.versionKey);
+        const auto parsed = xlings::xim::parse_package_target(rendered);
+        EXPECT_EQ(parsed.namespaceName, c.ns) << rendered;
+        EXPECT_EQ(parsed.name, c.target) << rendered;
+        EXPECT_EQ(parsed.version, c.version) << rendered;
+    }
+}
+
 TEST(XvmDbTest, FuzzyVersionMatch) {
     xlings::xvm::VersionDB db;
     xlings::xvm::add_version(db, "gcc", "15.1.0", "/usr/bin");
@@ -2532,10 +2566,72 @@ TEST(XvmRegistrationOwnershipTest, UnchangedLegacyEntryIsNotReportedAdopted) {
     }
 }
 
+// An omitted member that is plainly this package's own leftover is DETACHED,
+// not refused over.
+//
+// The refusal that used to live here could not tell "the recipe on this
+// platform does not produce that name" from "the batch is wrong", and the
+// first is real: a home carried over from Windows records `cl`, `lib`, `link`
+// and `rc` against an llvm payload that a Linux recipe never registers. With
+// the refusal in place neither install nor remove could touch the package
+// again. Detaching keeps the record (so nothing is destroyed here) and drops
+// only its edge into this release; `self doctor` is what decides whether the
+// leftover is prunable.
 TEST(XvmRegistrationOwnershipTest,
-     RejectsIncompleteLegacyComponentWithoutMutation) {
+     DetachesOwnerLessLegacyMemberSharingThePayload) {
     xlings::xvm::VersionDB db;
     seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes.erase(batch.nodes.begin());   // drop `tool`
+    std::vector<xlings::xvm::DetachedLegacyMember> detached;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch, &detached);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(detached.size(), 1u);
+    EXPECT_EQ(detached[0].target, "tool");
+    EXPECT_EQ(detached[0].version, "repo:tool-1.0.0");
+    // The record survives -- detaching is not deleting.
+    ASSERT_TRUE(db.contains("tool"));
+    EXPECT_TRUE(db.at("tool").versions.contains("repo:tool-1.0.0"));
+    // ...but it no longer claims to be part of the release.
+    EXPECT_TRUE(db.at("tool").bindings.empty());
+    EXPECT_FALSE(db.at("legacy-root").bindings.contains("tool"));
+}
+
+// A Windows-style record must be recognised as the same payload on Linux;
+// otherwise the exact case this exists for -- separators from another
+// platform -- falls through to the refusal.
+TEST(XvmRegistrationOwnershipTest,
+     DetachesLegacyMemberRecordedWithForeignSeparators) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    db.at("tool").versions.at("repo:tool-1.0.0").path =
+        "\\pkg\\provider\\1.0.0";
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes.erase(batch.nodes.begin());
+    std::vector<xlings::xvm::DetachedLegacyMember> detached;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch, &detached);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(detached.size(), 1u);
+    EXPECT_EQ(detached[0].target, "tool");
+}
+
+// Evidence, not resemblance: a member whose payload is somewhere else is not
+// this package's leftover, so the batch is still refused whole.
+TEST(XvmRegistrationOwnershipTest,
+     RejectsIncompleteLegacyComponentFromAnotherPayload) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    db.at("tool").versions.at("repo:tool-1.0.0").path = "/pkg/elsewhere/1.0.0";
     xlings::xvm::Workspace workspace;
     xlings::xvm::WorkspaceInstalled installed;
     auto batch = complete_legacy_adoption_batch();
@@ -2552,6 +2648,35 @@ TEST(XvmRegistrationOwnershipTest,
     EXPECT_EQ(xlings::xvm::versions_to_json(db), dbBefore);
     EXPECT_TRUE(workspace.empty());
     EXPECT_TRUE(installed.empty());
+}
+
+// An ACTIVE member is detached too, and stays active.
+//
+// Requiring the member to be inactive was the first shape of this and it
+// vetoed the case the change exists for: on the measured home `cl`, `lib`,
+// `link` and `rc` are all active, so the refusal survived intact. Detaching
+// does not deregister and does not deactivate -- the shim dispatches exactly
+// where it did before. Only the claim of membership in a release that no
+// longer registers the name goes away.
+TEST(XvmRegistrationOwnershipTest,
+     DetachesAnActiveOwnerLessLegacyMemberWithoutDeactivatingIt) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace{{"tool", "repo:tool-1.0.0"}};
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes.erase(batch.nodes.begin());
+    std::vector<xlings::xvm::DetachedLegacyMember> detached;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch, &detached);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    ASSERT_EQ(detached.size(), 1u);
+    EXPECT_EQ(detached[0].target, "tool");
+    EXPECT_TRUE(db.at("tool").versions.contains("repo:tool-1.0.0"));
+    ASSERT_TRUE(workspace.contains("tool"));
+    EXPECT_EQ(workspace.at("tool"), "repo:tool-1.0.0");
 }
 
 TEST(XvmRegistrationOwnershipTest,
@@ -4399,6 +4524,61 @@ void add_provider_group_(xlings::xvm::VersionDB& db,
 }
 
 }  // namespace
+
+// A recipe's removal list is derived from the payload on disk, and the payload
+// does not have to have been produced on this platform. A Windows llvm payload
+// sitting in a Linux home makes `uninstall()` ask for `clang++.exe`; nothing
+// registered that name here, and refusing it used to take the whole batch down
+// -- so the package could be neither installed nor removed.
+TEST(XvmRemovalSelectionTest, UnregisteredRecipeTargetIsANoOp) {
+    xlings::xvm::VersionDB db;
+    add_provider_group_(db, "pkgindex:llvm", "20.1.7", "llvm",
+                        {{"llvm", "20.1.7"}, {"clang", "20.1.7"}});
+    xlings::xvm::Workspace workspace{{"llvm", "20.1.7"}, {"clang", "20.1.7"}};
+    xlings::xvm::WorkspaceInstalled installed{
+        {"llvm", {"20.1.7"}}, {"clang", {"20.1.7"}}};
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "llvm", .version = "20.1.7"},
+        {.op = "remove", .name = "clang++.exe", .version = ""},
+    };
+    auto context = xlings::xvm::snapshot_removal_context(db, "llvm", "20.1.7");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_FALSE(db.contains("llvm"));
+    EXPECT_FALSE(db.contains("clang"));
+}
+
+// The protection that matters is that another package's entry SURVIVES, and
+// the selection filter is what delivers it -- not the refusal. llvm's recipe
+// names `cc` unconditionally; gcc registered it. Skipping the op leaves gcc
+// intact and lets llvm come out, which refusing did not.
+TEST(XvmRemovalSelectionTest, RegisteredOutOfSelectionTargetIsSkipped) {
+    xlings::xvm::VersionDB db;
+    add_provider_group_(db, "pkgindex:llvm", "20.1.7", "llvm",
+                        {{"llvm", "20.1.7"}, {"clang", "20.1.7"}});
+    add_provider_group_(db, "pkgindex:gcc", "15.1.0", "gcc",
+                        {{"gcc", "15.1.0"}});
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        {.op = "remove", .name = "llvm", .version = "20.1.7"},
+        {.op = "remove", .name = "gcc", .version = "15.1.0"},
+    };
+    auto context = xlings::xvm::snapshot_removal_context(db, "llvm", "20.1.7");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, *context);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_FALSE(db.contains("llvm")) << "the release being removed survived";
+    EXPECT_TRUE(db.contains("gcc")) << "another package's entry was deleted";
+    EXPECT_TRUE(db.at("gcc").versions.contains("15.1.0"));
+}
 
 TEST(XvmRemovalFallbackTest, IncoherentSurvivorDeactivatesTheWholeGroup) {
     xlings::xvm::VersionDB db;

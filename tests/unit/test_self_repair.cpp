@@ -148,21 +148,54 @@ TEST(SelfRepairLadder, ALocalOnlyPassRunsNothing) {
 // true, made in the one message they are most likely to act on.
 
 TEST(SelfRepairLadder, DoesNotClaimRemovalWhenTheRecordSurvives) {
-    FakeRunner f{.codes = {1, 0}};      // install fails, remove "succeeds"
+    FakeRunner f{.codes = {1, 0, 0}};   // install fails, remove 0, reinstall 0
     auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
                         [](const std::string&, const std::string&) {
                             return false;   // still registered
                         });
 
     EXPECT_FALSE(r.healed);
-    EXPECT_EQ(r.rung, "none") << "nothing was removed, so no rung did damage";
     EXPECT_EQ(r.note.find("REMOVED"), std::string::npos)
         << "must not claim a removal that did not happen: " << r.note;
     EXPECT_NE(r.note.find("still registered"), std::string::npos);
     EXPECT_NE(r.note.find("another subos"), std::string::npos);
-    // No second install: it would fail against the record that is still there.
-    ASSERT_EQ(f.ran.size(), 2u);
+}
+
+// A remove that exited 0 must ALWAYS be followed by the install, whatever the
+// verifier says.
+//
+// The verifier used to short-circuit here, and that made the ladder perform
+// the destructive half of remove-and-reinstall and skip the half that puts it
+// back. On a real home it uninstalled a working `musl-gcc`: the recipe names
+// targets the release does not own, those are skipped, so the finding's entry
+// outlived the removal -- and the ladder read "records survived" as a reason
+// not to reinstall the package it had just taken out.
+TEST(SelfRepairLadder, ReinstallsEvenWhenTheRecordSurvivedRemoval) {
+    FakeRunner f{.codes = {1, 0, 0}};
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
+                        [](const std::string&, const std::string&) {
+                            return false;   // still registered
+                        });
+
+    ASSERT_EQ(f.ran.size(), 3u) << "the package was removed and left out";
     EXPECT_EQ(f.ran[1], "xlings remove linux-headers@5.11.1 -y");
+    EXPECT_EQ(f.ran[2], "xlings install linux-headers@5.11.1 -y");
+    EXPECT_EQ(r.rung, "reinstall");
+}
+
+// ...and when that reinstall fails, the message is the one that says the user
+// is now worse off, not the survivor diagnosis.
+TEST(SelfRepairLadder, ReportsRemovedWhenTheFollowUpInstallFails) {
+    FakeRunner f{.codes = {1, 0, 1}};
+    auto r = repair_one(task(), RepairPolicy{}, runner_of(f),
+                        [](const std::string&, const std::string&) {
+                            return true;
+                        });
+
+    EXPECT_FALSE(r.healed);
+    EXPECT_EQ(r.rung, "reinstall");
+    EXPECT_NE(r.note.find("REMOVED but could not reinstall"),
+              std::string::npos) << r.note;
 }
 
 TEST(SelfRepairLadder, ProceedsWhenTheVerifierConfirmsTheRemoval) {

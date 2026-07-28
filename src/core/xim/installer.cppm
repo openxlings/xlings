@@ -194,6 +194,9 @@ using XpkgXvmMetadataError = std::variant<
 struct XpkgXvmMetadataResult {
     xvm::RemovalBatchResult removal;
     std::vector<xvm::RegisteredMember> registered;
+    // Legacy component members this batch could not re-register and detached
+    // instead of refusing over. See apply_registration_batch.
+    std::vector<xvm::DetachedLegacyMember> detachedLegacy;
     std::vector<XpkgFilesystemEffect> effects;
 };
 
@@ -640,13 +643,15 @@ apply_xpkg_xvm_metadata_batch(
     }
 
     std::vector<xvm::RegisteredMember> registered;
+    std::vector<xvm::DetachedLegacyMember> detachedLegacy;
     if (!registration.batch.nodes.empty()
         || !registration.batch.headers.empty()) {
         auto registrationResult = xvm::apply_registration_batch(
             candidateDb,
             candidateWorkspace,
             candidateInstalled,
-            registration.batch);
+            registration.batch,
+            &detachedLegacy);
         if (!registrationResult) {
             return std::unexpected(XpkgXvmMetadataError{
                 std::in_place_type<xvm::RegistrationError>,
@@ -662,6 +667,7 @@ apply_xpkg_xvm_metadata_batch(
     return XpkgXvmMetadataResult{
         .removal = std::move(*removal),
         .registered = std::move(registered),
+        .detachedLegacy = std::move(detachedLegacy),
         .effects = registration.effects,
     };
 }
@@ -1720,6 +1726,19 @@ bool process_xvm_operations_(const PlanNode& node,
         if (!member.adoptedLegacy) continue;
         log::warn("[xvm] adopted a pre-ownership registration: {}@{} ('{}' changed)",
                   member.target, member.version, member.adoptedLegacyField);
+    }
+
+    // Announce anything the batch left behind rather than refused over.
+    //
+    // These are names an older client registered for this same payload on a
+    // platform whose recipe produces them and this one's does not (a Windows
+    // llvm leaves `cl`, `lib`, `link`, `rc`). They keep their record and lose
+    // their edge to this release; `self doctor` reports them and can prune
+    // them. Silence here would make a release quietly shed members.
+    for (const auto& member : metadata->detachedLegacy) {
+        log::warn("[xvm] detached a legacy entry this platform no longer "
+                  "registers: {} (run `xlings self doctor --fix` to clear it)",
+                  xvm::display_coordinate(member.target, member.version));
     }
 
     if (!metadata->removal.removed.empty()

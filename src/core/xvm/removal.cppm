@@ -208,13 +208,34 @@ apply_removal_batch(VersionDB& db,
         if (context.hasSelection) {
             auto memberIt = context.members.find(operation.name);
             if (memberIt == context.members.end()) {
-                return std::unexpected(RemovalError{
-                    .kind = RemovalErrorKind::SelectionInvalid,
-                    .target = operation.name,
-                    .version = operation.version,
-                    .message =
-                        "recipe removal target is outside the owned selection",
-                });
+                // A name this release does not own is skipped, not fatal.
+                //
+                // Recipes name their removal targets unconditionally, from a
+                // static list or from whatever the payload happens to contain,
+                // and neither has to match what this platform registered.
+                // Measured on a real home: a Windows llvm payload under Linux
+                // makes `uninstall()` ask for `clang++.exe` (never registered
+                // here) and for `cc` (registered, but by gcc). Refusing either
+                // aborted the whole batch, so the package could not be removed
+                // at all -- and the install side was refusing the same records
+                // for its own reasons, which left no command that got the user
+                // out.
+                //
+                // Skipping protects strictly more than refusing did. The
+                // selection is already the authority on what may be deleted:
+                // had the release actually owned this name, it would be IN the
+                // selection and removed below. So there is no entry that
+                // refusing saved and skipping loses -- refusing only turned
+                // "one op does nothing" into "nothing happens at all".
+                //
+                // Said out loud: a recipe naming something it does not own is
+                // worth knowing about, it is just not worth stopping for.
+                if (db.contains(operation.name)) {
+                    log::warn("[xvm] recipe asked to remove '{}', which this "
+                              "release does not own — skipped",
+                              operation.name);
+                }
+                continue;
             }
             auto selectedVersion = resolve_exact_version_key(
                 db, operation.name, memberIt->second);
