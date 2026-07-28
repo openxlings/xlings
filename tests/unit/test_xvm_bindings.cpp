@@ -2442,8 +2442,18 @@ TEST(XvmRegistrationOwnershipTest,
     EXPECT_EQ(adopted.bindingGroup->group, "virtual");
 }
 
-TEST(XvmRegistrationOwnershipTest,
-     RejectsIncompatibleLegacyPayloadWithoutMutation) {
+// An owner-less entry is one an OLD client wrote, before registrations
+// recorded who owns them. Refusing to overwrite it protected a claim that
+// does not exist: nobody owns it, so nobody can be asked to release it. The
+// refusal's own hint said "uninstall it before reinstalling", and for exactly
+// these entries `remove` keeps them (#443) -- so the two ends met and the
+// user's only exit was hand-editing the state file (#422).
+//
+// Adopting the entry in place is that exit. Measured shape from a real home:
+// an llvm@20.1.7 whose recorded path used Windows backslashes ON LINUX, i.e.
+// a registration that is not merely different but wrong. Refusing to replace
+// it preserves the damage.
+TEST(XvmRegistrationOwnershipTest, AdoptsIncompatibleLegacyPayloadInPlace) {
     xlings::xvm::VersionDB db;
     seed_complete_legacy_registration_group(db);
     xlings::xvm::Workspace workspace{{"tool", "repo:tool-1.0.0"}};
@@ -2452,19 +2462,74 @@ TEST(XvmRegistrationOwnershipTest,
     };
     auto batch = complete_legacy_adoption_batch();
     batch.nodes[0].path = "/different/payload";
-    const auto dbBefore = xlings::xvm::versions_to_json(db);
-    const auto workspaceBefore = workspace;
-    const auto installedBefore = installed;
 
     auto result = xlings::xvm::apply_registration_batch(
         db, workspace, installed, batch);
 
-    expect_registration_error(
-        result, xlings::xvm::RegistrationErrorKind::LegacyPayloadMismatch,
-        "/nodes/0/path", "tool", "repo:tool-1.0.0");
-    expect_registration_state_unchanged(
-        db, workspace, installed,
-        dbBefore, workspaceBefore, installedBefore);
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    const auto& adopted = db.at("tool").versions.at("repo:tool-1.0.0");
+    EXPECT_EQ(adopted.path, "/different/payload");
+}
+
+// Adoption must leave the entry OWNED. That is what makes this a repair
+// rather than a hole: the next provider that tries to take the same
+// name@version now meets OwnershipConflict, which the owner-less entry could
+// never raise.
+TEST(XvmRegistrationOwnershipTest, AdoptedLegacyEntryBecomesOwned) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes[0].path = "/different/payload";
+
+    ASSERT_TRUE(xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch).has_value());
+
+    const auto& adopted = db.at("tool").versions.at("repo:tool-1.0.0");
+    ASSERT_TRUE(adopted.bindingGroup.has_value());
+    EXPECT_EQ(adopted.bindingGroup->provider, "repo:provider");
+    EXPECT_EQ(adopted.bindingGroup->providerVersion, "1.0.0");
+}
+
+// Silent adoption would be its own defect -- the payload behind a name
+// changed and nothing said so. The batch reports which members it took over
+// and on which field they differed, so the installer can print it.
+TEST(XvmRegistrationOwnershipTest, ReportsWhichLegacyEntriesWereAdopted) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto batch = complete_legacy_adoption_batch();
+    batch.nodes[0].path = "/different/payload";
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    auto adopted = std::ranges::find_if(*result, [](const auto& member) {
+        return member.target == "tool";
+    });
+    ASSERT_NE(adopted, result->end());
+    EXPECT_TRUE(adopted->adoptedLegacy);
+    EXPECT_EQ(adopted->adoptedLegacyField, "path");
+}
+
+// A re-registration that changes nothing is not an adoption, and must not be
+// announced as one.
+TEST(XvmRegistrationOwnershipTest, UnchangedLegacyEntryIsNotReportedAdopted) {
+    xlings::xvm::VersionDB db;
+    seed_complete_legacy_registration_group(db);
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto result = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, complete_legacy_adoption_batch());
+
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    for (const auto& member : *result) {
+        EXPECT_FALSE(member.adoptedLegacy) << member.target;
+    }
 }
 
 TEST(XvmRegistrationOwnershipTest,

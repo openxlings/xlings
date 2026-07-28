@@ -1709,6 +1709,19 @@ bool process_xvm_operations_(const PlanNode& node,
         scopedInstalled,
         metadata->removal);
 
+    // Announce any owner-less entry this install took over.
+    //
+    // Adoption replaces the contents recorded for a name@version that an
+    // older client wrote without ownership (xvm/registration.cppm). It is the
+    // right thing to do — the refusal it replaced left the user with no exit
+    // (#422) — but it is still a payload changing behind a name, so it is
+    // said out loud rather than applied silently.
+    for (const auto& member : metadata->registered) {
+        if (!member.adoptedLegacy) continue;
+        log::warn("[xvm] adopted a pre-ownership registration: {}@{} ('{}' changed)",
+                  member.target, member.version, member.adoptedLegacyField);
+    }
+
     if (!metadata->removal.removed.empty()
         || !metadata->registered.empty()) {
         Config::save_versions();
