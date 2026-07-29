@@ -170,15 +170,15 @@ stack works on a 2.17 host is unproven today.
 
 ## Triggers
 
-Two stages, as requested.
+Two stages, as requested. **Both are now done.**
 
-**Stage 1 (this PR)** — `pull_request` included so the workflow can be validated
-before it is trusted:
+**Stage 1** — `pull_request` was included so the workflow could be validated
+before it was trusted. Four runs on #446 exercised all four platforms.
+
+**Stage 2** — the `pull_request:` block is removed. Final state:
 
 ```yaml
 on:
-  pull_request:          # STAGE 1 ONLY — remove once green
-    branches: [main, master, 'release/**']
   workflow_dispatch:
   workflow_run:
     workflows: [release]
@@ -187,8 +187,12 @@ on:
     - cron: '0 6 * * *'
 ```
 
-**Stage 2** — delete the `pull_request:` block. The other three triggers are
-already correct and are inert on a PR, so stage 2 is a pure deletion.
+Removing it is not only the agreed sequence, it is the right steady state. The
+workflow tests the *released* binary, so on a PR it validates the workflow
+rather than the change — near-zero signal, at the cost of four platforms and
+eleven cold toolchain installs. And the defects it currently reports live in
+xim-pkgindex; gating unrelated PRs on another repository's release state would
+train people to ignore it.
 
 `release: published` is deliberately **not** used. `release.yml` creates the
 release with `GITHUB_TOKEN`, and GitHub suppresses workflow triggers from
@@ -208,13 +212,27 @@ is a weak result, not a red build — so the added complexity is not yet paid fo
 Worth revisiting if the post-release run needs to be a hard gate on the new
 version, which would also mean introducing a pin to bump each release.
 
-## Results of the first run (PR #446)
+## Results, and where each defect belongs
 
 | Cell | Linux | CentOS 7 | Windows | macOS |
 | --- | --- | --- | --- | --- |
 | `core` | pass | pass | pass | pass |
-| `gcc` | pass | pass | *was a test bug, fixed* | n/a |
+| `gcc` | pass | pass | **fail** | n/a |
 | `llvm` | **fail** | **fail** | **fail** | **fail** |
+
+Every failure was traced to a specific layer and filed:
+
+| Defect | Layer | Issue |
+| --- | --- | --- |
+| `mingw-w64` config hook uses xvm node kind `binding`; xlings accepts only `program`/`lib`/`group`/`files`, so the hook aborts and **no C++ compiler is obtainable on Windows at all** | xim-pkgindex | [#442](https://github.com/openxlings/xim-pkgindex/issues/442) |
+| `gcc.lua`'s windows entry declares no payload and no deps despite its "deps mingw64" comment | xim-pkgindex | [#442](https://github.com/openxlings/xim-pkgindex/issues/442) (comment) |
+| `llvm@22.1.8` does not carry its C++ runtime — missing `libstdc++.so.6` on Linux/CentOS 7, `__ZdaPv` on macOS | xim-pkgindex | [#443](https://github.com/openxlings/xim-pkgindex/issues/443) |
+| `llvm`'s `collect_bin_apps` registers zero programs on Windows although `clang.exe` is on disk, and logs nothing | xim-pkgindex | [#444](https://github.com/openxlings/xim-pkgindex/issues/444) |
+| `install` prints `✓ N package(s) installed` without checking the package's own declared `programs` registered | **xlings** | [#447](https://github.com/openxlings/xlings/issues/447) |
+
+Only the last is an xlings defect, and it is the one that turns the other four
+from "install failed, here is the missing program" into "everything said OK and
+nothing works".
 
 `core` green on all four platforms is the headline: bootstrap, index refresh,
 install, run, multi-version switch, project mode, doctor and uninstall all work
@@ -278,28 +296,60 @@ $ clang --version
 [error] xlings: 'clang' is not installed
 ```
 
-Install reports success, `use` reports success, and there is no compiler. The
-`llvm` shim itself exists — that is what `use` switched — but `llvm.lua`'s
-`config()` populates `clang`/`clang++` from `collect_bin_apps(bindir)`, and on
-Windows that found nothing. No `skip xvm add alias` warning was emitted either,
-so the bin directory was empty rather than merely differently named. Affects
-both 20.1.7 and 22.1.8.
+Install reports success, `use` reports success, and there is no compiler.
+Affects both 20.1.7 and 22.1.8. The failure-state dump proves the payload
+landed correctly:
+
+```
+...\xim-x-llvm\20.1.7\bin\clang.exe
+...\xim-x-llvm\20.1.7\bin\clang++.exe
+...\xim-x-llvm\20.1.7\bin\lld-link.exe
+```
+
+So this is registration, not extraction. `xvm.add(package.name)` — `config()`'s
+first line — clearly worked, since `use` resolves. Everything after it
+registered nothing, and **nothing was logged**: no error, not even the
+`skip xvm add alias (not found)` warning the recipe emits per missing alias.
+
+`llvm.lua` populates the per-program shims by shelling out —
+`io.popen('dir /b "<bindir>"')` on Windows, `ls -1` on Linux, where it works.
+A likely contributor is that libxpkg's `path.join` hardcodes `sep = "/"`
+regardless of host, so `bindir` is `C:\...\20.1.7/bin` and `cmd.exe`'s `dir`
+is unreliable with forward slashes. That mechanism is a lead, not a conclusion;
+the confirmed facts are the four above. If it is `path.join`, the fix belongs in
+libxpkg rather than the index.
 
 This is the silent-success pattern in its purest form: two consecutive success
 messages and a completely unusable install.
 
-### Not a finding — the Windows `gcc` cell was wrong
+### Finding 4 — the Windows `gcc` cell: one test bug hiding one real bug
 
-`xlings install gcc@15.1.0` on Windows "succeeds" and registers nothing, so
-`xlings use gcc@15.1.0` then fails with `'gcc' not found in version database`.
-That is because `gcc.lua`'s `config()` returns early on Windows
-("config in mingw-w64.lua") and its lone windows entry declares no payload —
-**`mingw-w64` is the package that registers the gcc/g++/c++ shims**.
+The first run failed with `'gcc' not found in version database`, which was
+**this suite's** bug: `gcc.lua`'s `config()` returns early on Windows
+("config in mingw-w64.lua") and its lone windows entry declares no payload, so
+**`mingw-w64` is the package that registers the gcc/g++/c++ shims**. The suite
+now installs `mingw-w64` there, and asserts group *consistency* rather than a
+switch since only one version exists.
 
-The suite now installs `mingw-w64` on Windows. Worth noting separately that
-`xlings install gcc` on Windows reporting `✓ 1 package(s) installed` while
-installing nothing usable is itself a defect, just not one this suite should
-encode as its Windows gcc coverage.
+The corrected test then failed on a real defect:
+
+```
+$ xlings install mingw-w64@13.0.0 -y -g
+[error] unsupported registration node kind 'binding'
+[error] [mingw-w64] failed: config hook failed
+```
+
+`mingw-w64.lua` registers an umbrella placeholder with `type = "binding"`, and
+`registration.cppm` accepts only `program` / `lib` / `group` / `files` — on
+`main` too, so this is not release lag. The whole hook aborts, taking the
+earlier `gcc`/`g++`/`c++` registrations with it.
+
+Net effect: **there is currently no working way to get a C++ compiler on
+Windows through xlings.** `gcc` installs nothing, `mingw-w64` aborts, and `llvm`
+registers no `clang`.
+
+That is worth stating plainly as the single most valuable thing this CI found,
+and it was invisible to every existing workflow.
 
 ### Why the llvm suite is not being softened
 

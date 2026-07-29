@@ -19,16 +19,19 @@ name: xlings-ci-fresh-install
 #
 #   HOME=$(mktemp -d) bash tests/fresh-install/smoke.sh gcc
 
+# Deliberately NOT on `pull_request`. It ran on PRs while it was being
+# validated (openxlings/xlings#446, four runs across all four platforms) and
+# that trigger is now removed, for two reasons:
+#
+#   1. It tests the *released* binary, so on a PR it validates the workflow
+#      rather than the change — near-zero signal per run, at four platforms
+#      and eleven cold toolchain installs of cost.
+#   2. The defects it currently reports live in xim-pkgindex, not here
+#      (openxlings/xim-pkgindex#442, #443, #444). Gating unrelated PRs on
+#      another repository's release state would train people to ignore it.
+#
+# Run it by hand from the Actions tab when you want an answer now.
 on:
-  # ── STAGE 1 ONLY ────────────────────────────────────────────────────
-  # Present so this workflow can be validated on the PR that introduces it.
-  # Once it is green, delete this `pull_request:` block — the three triggers
-  # below are already correct and are inert on a PR, so stage 2 is a pure
-  # deletion with nothing to rewrite.
-  pull_request:
-    branches: [main, master, 'release/**']
-  # ────────────────────────────────────────────────────────────────────
-
   workflow_dispatch:
 
   # `release: published` is deliberately NOT used. release.yml creates the
