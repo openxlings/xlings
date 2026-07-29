@@ -76,6 +76,37 @@ bootstrap() {
     # The release tarball carries an index snapshot frozen at build time;
     # refresh it so recently added package versions resolve.
     run "index update"   xlings update
+
+    overlay_index
+}
+
+# overlay_index — swap in a candidate xim-pkgindex, if one was requested.
+#
+# Recipe bugs are only ever caught on a real install, and a recipe fix
+# therefore cannot be validated until it is already published. This lets an
+# unmerged xim-pkgindex branch be run through the whole suite, on every
+# platform, before it lands.
+#
+# Only `pkgs/` is replaced: the rest of the index directory is metadata the
+# fetch wrote (cache manifests, sub-index state) and swapping that out would
+# test a state no user is ever in. The directory is replaced in place rather
+# than symlinked, because a symlinked index turns later differentials into
+# unfalsifiable passes.
+overlay_index() {
+    [ -n "${XIM_PKGINDEX_REF:-}" ] || return 0
+
+    section "Index override — xim-pkgindex@$XIM_PKGINDEX_REF"
+    local dst="$XLINGS_HOME_DIR/data/xim-pkgindex"
+    [ -d "$dst/pkgs" ] || fail "no published index at $dst/pkgs to override"
+
+    local tmp; tmp="$(mktemp -d)"
+    git clone -q --depth 1 --branch "$XIM_PKGINDEX_REF" \
+        https://github.com/openxlings/xim-pkgindex.git "$tmp/idx" \
+        || fail "cannot clone xim-pkgindex@$XIM_PKGINDEX_REF"
+
+    rm -rf "$dst/pkgs"
+    cp -R "$tmp/idx/pkgs" "$dst/pkgs" || fail "failed to overlay pkgs/"
+    ok "pkgs/ replaced from xim-pkgindex@$XIM_PKGINDEX_REF ($(git -C "$tmp/idx" rev-parse --short HEAD))"
 }
 
 # ── core: lifecycle + multi-version switch on mcpp ────────────────────

@@ -33,6 +33,15 @@ name: xlings-ci-fresh-install
 # Run it by hand from the Actions tab when you want an answer now.
 on:
   workflow_dispatch:
+    inputs:
+      index_ref:
+        # Recipe bugs are only ever caught on a real install, so a recipe fix
+        # cannot be validated until it is already published. This runs the
+        # whole suite, on every platform, against an unmerged xim-pkgindex
+        # branch — replacing only pkgs/ in the fetched index.
+        description: 'xim-pkgindex branch/tag to test against (blank = the published index)'
+        required: false
+        default: ''
 
   # `release: published` is deliberately NOT used. release.yml creates the
   # release with GITHUB_TOKEN, and GitHub suppresses workflow triggers from
@@ -54,6 +63,8 @@ concurrency:
 
 env:
   XLINGS_NON_INTERACTIVE: '1'
+  # Blank on every trigger except a manual run that named a candidate index.
+  XIM_PKGINDEX_REF: ${{ inputs.index_ref }}
   # Runners reach github.com but not the gitee/gitcode endpoints, which need
   # auth — force GLOBAL rather than letting region detection guess.
   XLINGS_RELEASE_MIRROR: GLOBAL
@@ -118,6 +129,7 @@ jobs:
             -e XLINGS_NON_INTERACTIVE=1 \
             -e XLINGS_RELEASE_MIRROR=GLOBAL \
             -e GIT_TERMINAL_PROMPT=0 \
+            -e XIM_PKGINDEX_REF="$XIM_PKGINDEX_REF" \
             centos:7 \
             bash -euo pipefail -c '
               # CentOS 7 is EOL and mirrorlist.centos.org no longer resolves,
@@ -162,6 +174,69 @@ jobs:
       - name: Run ${{ matrix.suite }} suite
         shell: pwsh
         run: pwsh -File tests/fresh-install/smoke.ps1 -Suite ${{ matrix.suite }}
+
+  # ────────────────────────────────────────────────────────────────────
+  # TEMPORARY — diagnosing xim-pkgindex#443's macOS half.
+  #
+  # `clang h.c -o h` dies because Apple's own linker is made to load OUR
+  # bundled libc++ and aborts on __ZdaPv. Ruled out already: the dep list,
+  # a missing libc++abi (both versions ship identical dylib sets), and
+  # clang's link commands (clang-20 and clang-22 have identical
+  # LC_LOAD_DYLIB/LC_RPATH). This runs the differentials that need a real
+  # macOS host. Delete once the cause is known.
+  # ────────────────────────────────────────────────────────────────────
+  macos-llvm-probe:
+    name: TEMP macOS llvm probe
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xlings + llvm@22.1.8
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+          export PATH="$HOME/.xlings/subos/current/bin:$PATH"
+          xlings config --mirror GLOBAL
+          xlings update
+          xlings install llvm@22.1.8 -y -g
+          xlings use llvm@22.1.8
+
+      - name: "Probe 1 — does anything register DYLD envs?"
+        run: |
+          for f in "$HOME/.xlings/.xlings.json" "$HOME/.xlings/subos/default/.xlings.json"; do
+            echo "== $f"
+            grep -oE '"(envs|DYLD[A-Z_]*)"[^,}]*' "$f" 2>/dev/null || echo "   (no envs / DYLD keys)"
+          done
+
+      - name: "Probe 2 — clang.cfg written by __install_macosx_cfg"
+        run: |
+          for f in "$HOME"/.xlings/data/xpkgs/xim-x-llvm/22.1.8/bin/*.cfg; do
+            [ -e "$f" ] || continue
+            echo "== $f"; cat "$f"
+          done
+
+      # The decisive differential. If the real binary links fine and only the
+      # shimmed one fails, the shim is injecting something; if both fail, it is
+      # the payload and the shim is innocent.
+      - name: "Probe 3 — shimmed clang vs the real binary"
+        run: |
+          printf '#include <stdio.h>\nint main(void){printf("ok\\n");return 0;}\n' > /tmp/h.c
+          real="$HOME/.xlings/data/xpkgs/xim-x-llvm/22.1.8/bin/clang"
+          echo "=== via shim ==="
+          ( export PATH="$HOME/.xlings/subos/current/bin:$PATH"; cd /tmp && clang h.c -o h_shim && ./h_shim ) \
+            && echo "SHIM: ok" || echo "SHIM: FAILED"
+          echo "=== direct, no shim ==="
+          ( cd /tmp && "$real" h.c -o h_real && ./h_real ) \
+            && echo "DIRECT: ok" || echo "DIRECT: FAILED"
+
+      - name: "Probe 4 — which libc++ does the linker actually load?"
+        run: |
+          export PATH="$HOME/.xlings/subos/current/bin:$PATH"
+          cd /tmp
+          echo "--- env seen here ---"; env | grep -iE 'dyld|ld_library' || echo "   (none in parent env)"
+          echo "--- DYLD_PRINT_LIBRARIES during link ---"
+          DYLD_PRINT_LIBRARIES=1 clang h.c -o h_probe 2>&1 | grep -iE 'libc\+\+|xim-x-llvm|/usr/lib' | head -20 || true
 
   # ────────────────────────────────────────────────────────────────────
   # macOS — no gcc cell: the package index ships no macOS gcc.

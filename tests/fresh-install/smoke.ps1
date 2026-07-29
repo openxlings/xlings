@@ -80,6 +80,35 @@ function Invoke-Bootstrap {
     # The release archive carries an index snapshot frozen at build time;
     # refresh it so recently added package versions resolve.
     Invoke-Step 'index update'  @('xlings', 'update')
+
+    Invoke-IndexOverlay
+}
+
+# Invoke-IndexOverlay — swap in a candidate xim-pkgindex, if one was requested.
+#
+# Recipe bugs are only ever caught on a real install, and a recipe fix
+# therefore cannot be validated until it is already published. This lets an
+# unmerged xim-pkgindex branch be run through the whole suite before it lands.
+# Only pkgs/ is replaced; the rest of the directory is metadata the fetch wrote.
+function Invoke-IndexOverlay {
+    $ref = Get-EnvOr 'XIM_PKGINDEX_REF' ''
+    if (-not $ref) { return }
+
+    Write-Section "Index override - xim-pkgindex@$ref"
+    $dst = Join-Path $XlingsHome 'data\xim-pkgindex'
+    if (-not (Test-Path (Join-Path $dst 'pkgs'))) {
+        Fail "no published index at $dst\pkgs to override"
+    }
+
+    $tmp = New-TempDir
+    Invoke-Step "clone xim-pkgindex@$ref" @(
+        'git', 'clone', '-q', '--depth', '1', '--branch', $ref,
+        'https://github.com/openxlings/xim-pkgindex.git', (Join-Path $tmp 'idx')
+    )
+
+    Remove-Item -Recurse -Force (Join-Path $dst 'pkgs')
+    Copy-Item -Recurse -Force (Join-Path $tmp 'idx\pkgs') (Join-Path $dst 'pkgs')
+    Write-Ok "pkgs/ replaced from xim-pkgindex@$ref"
 }
 
 # ── core: lifecycle + multi-version switch on mcpp ────────────────────
