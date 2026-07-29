@@ -94,6 +94,7 @@ TESTS=(
     "E2E-42 |self_doctor_multi_subos_test.sh||"
     "E2E-43 |declared_programs_verified_test.sh||"
     "E2E-44 |tui_output_contract_test.sh||"
+    "E2E-45 |self_doctor_anchor_shim_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

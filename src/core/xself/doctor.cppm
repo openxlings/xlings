@@ -56,6 +56,8 @@ namespace fs = std::filesystem;
 // `--fix` policy:
 //   - missing shim   → recreate from the bootstrap binary  (safe, local)
 //   - orphan shim    → remove the file                     (safe, local)
+//     (a binding root's shim is reported as a notice, not an error -- it is
+//      equally useless, but no user action produced it; --fix removes it too)
 //   - dangling binding edge / incoherent release / active version that is not
 //     registered → drop the reference. Never re-point it at a survivor:
 //     choosing which version was meant is the user's call.
@@ -298,6 +300,22 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         });
     }
 
+    // Does this name exist only to anchor releases? Check 3 asks the same
+    // question per (name, version) and answers it with a `release anchor`
+    // notice; Check 2 has no version to ask about -- nothing is active, that
+    // is the finding -- so it asks about every registered version instead.
+    //
+    // All of them, not any: a name with one real program version and one
+    // anchor version is a program whose shim genuinely has no active version.
+    const auto anchor_only_target_ = [&](const std::string& name,
+                                         const xvm::VInfo& vi) {
+        if (vi.versions.empty()) return false;
+        return std::ranges::all_of(
+            vi.versions, [&](const auto& entry) {
+                return xvm::is_binding_root(st.db, name, entry.first);
+            });
+    };
+
     // Check 2: orphan shims (program shim file present, workspace doesn't know
     // about it). Only names registered as type "program" count -- random files
     // under binDir aren't ours.
@@ -315,13 +333,27 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
 
             auto wit = st.ws.find(base);
             if (wit != st.ws.end() && !wit->second.empty()) continue;
+
+            // A binding root is not a program anyone runs -- it names the
+            // release its members belong to. Installs before 2026.7.29.2
+            // wrote a shim for one whenever registration withheld activation
+            // from the release (installer.cppm, the ProgramShim effect), so
+            // this file is on existing homes through no act of the user's.
+            // `--fix` still removes it; it is no longer an error that it is
+            // there.
+            const bool anchor = anchor_only_target_(base, *vi);
             add({
                 .kind   = FindingKind::OrphanShim,
-                .level  = FindingLevel::Error,
+                .level  = anchor ? FindingLevel::Notice : FindingLevel::Error,
                 .target = base,
-                .detail = std::format(
-                    "{} exists but workspace has no active version for {}",
-                    Config::display_path(entry.path()), base),
+                .detail = anchor
+                    ? std::format(
+                        "{} anchors a release and has no active version; "
+                        "nothing dispatches through it",
+                        Config::display_path(entry.path()))
+                    : std::format(
+                        "{} exists but workspace has no active version for {}",
+                        Config::display_path(entry.path()), base),
                 .shimPath = entry.path(),
             });
         }
@@ -1076,6 +1108,11 @@ Counts count_(const Scan& scan) {
         switch (f.kind) {
             case FindingKind::MissingShim:     ++c.missing; break;
             case FindingKind::OrphanShim:
+                // An anchor shim is Notice-level: the file is useless but
+                // its presence is not the user's doing, and it must not set
+                // the exit code. --fix still removes it.
+                if (f.level != FindingLevel::Notice) ++c.orphans;
+                break;
             case FindingKind::LegacyAliasShim: ++c.orphans; break;
             case FindingKind::BrokenPayload:   ++c.broken;  break;
             case FindingKind::ForeignPayload:  ++c.foreignPayloads; break;
@@ -1179,7 +1216,12 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             case FindingKind::MissingShim:
                 add(glyph::mark(glyph::failed, "missing shim"), f.detail); break;
             case FindingKind::OrphanShim:
-                add(glyph::mark(glyph::failed, "orphan shim"), f.detail); break;
+                if (f.level == FindingLevel::Notice) {
+                    if (verbose) add(glyph::mark(glyph::note, "anchor shim"), f.detail);
+                } else {
+                    add(glyph::mark(glyph::failed, "orphan shim"), f.detail);
+                }
+                break;
             case FindingKind::LegacyAliasShim:
                 add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
             case FindingKind::ShimAnchor:
@@ -1226,9 +1268,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // Thirty `release anchor` lines saying "nothing is wrong here" is how the
     // four lines that matter got lost.
     if (!verbose) {
-        int anchors = 0, bindingNotices = 0, subosNotices = 0;
+        int anchors = 0, anchorShims = 0, bindingNotices = 0, subosNotices = 0;
         for (const auto& f : scan.findings) {
             if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
+            else if (f.kind == FindingKind::OrphanShim
+                     && f.level == FindingLevel::Notice) ++anchorShims;
             else if (f.kind == FindingKind::BindingState
                      && f.level == FindingLevel::Notice) ++bindingNotices;
             else if (f.kind == FindingKind::OtherSubos
@@ -1241,6 +1285,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             summary += std::format("{} {}", n, what);
         };
         part(anchors, "release anchor");
+        part(anchorShims, "anchor shim");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         if (!summary.empty()) {

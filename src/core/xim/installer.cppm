@@ -1609,6 +1609,35 @@ bool process_xvm_operations_(const PlanNode& node,
         }
         if (resolved->kind
             == XpkgFilesystemEffectKind::ProgramShim) {
+            // A shim is only meaningful for a name that has an active
+            // version -- that is what shim_dispatch resolves against, and
+            // without one the file can only ever print "no active version
+            // of 'X' in current subos". Writing it anyway is what produced
+            // doctor's `orphan shim`, an error the user could not fix:
+            // `--fix` deleted the file and the next install recreated it.
+            //
+            // Registration deliberately withholds activation from a release
+            // whose group already has an active member (see
+            // registration.cppm, `activateGroup`), so every name that is new
+            // in that release lands here. The sibling effects below already
+            // guard on activation; this one did not.
+            //
+            // The question is about the NAME, not this version: a second
+            // version of an active program must not delete or skip the shim
+            // its active sibling needs. And a name activated later still
+            // gets its file -- `cmd_use` creates shims for every member of
+            // the release it switches to (xvm/commands.cppm).
+            const auto activeIt = scopedWorkspace.find(resolved->target);
+            const bool nameHasActiveVersion =
+                activeIt != scopedWorkspace.end()
+                && !activeIt->second.empty();
+            if (!nameHasActiveVersion) {
+                log::debug(
+                    "[xim] shim for {}@{} not created: no active version of "
+                    "'{}' in this subos",
+                    resolved->target, effect.version, resolved->target);
+                continue;
+            }
             if (std::filesystem::exists(xlings_bin)) {
                 std::string shimName = resolved->target;
                 if (!shim_ext.empty() && !shimName.ends_with(shim_ext)) {
