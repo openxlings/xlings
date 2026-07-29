@@ -31,7 +31,7 @@ $QuickInstallUrl = Get-EnvOr 'QUICK_INSTALL_URL' 'https://raw.githubusercontent.
 $NinjaVersion    = Get-EnvOr 'NINJA_VERSION' '1.12.1'
 $McppOld         = Get-EnvOr 'MCPP_OLD'      '2026.7.28.2'
 $McppNew         = Get-EnvOr 'MCPP_NEW'      '2026.7.29.1'
-$GccWin          = Get-EnvOr 'GCC_WIN'       '15.1.0'
+$MingwVersion    = Get-EnvOr 'MINGW_VERSION' '13.0.0'
 $LlvmOld         = Get-EnvOr 'LLVM_OLD'      '20.1.7'
 $LlvmNew         = Get-EnvOr 'LLVM_NEW'      '22.1.8'
 
@@ -152,15 +152,20 @@ function Invoke-SuiteCore {
 # ── gcc: group registration (no switch available on Windows) ──────────
 
 function Invoke-SuiteGcc {
-    Write-Section "Install gcc $GccWin (mingw64)"
-    Invoke-Step "install gcc $GccWin" @('xlings', 'install', "gcc@$GccWin", '-y', '-g')
+    # `mingw-w64`, NOT `gcc`. On Windows gcc.lua registers nothing — its
+    # config() returns early with "config in mingw-w64.lua", and its lone
+    # windows entry declares no payload. mingw-w64.lua is what actually
+    # registers the gcc/g++/c++ shims, so that is the package a Windows user
+    # installs to get a C++ compiler.
+    Write-Section "Install mingw-w64 $MingwVersion (provides gcc/g++/c++)"
+    Invoke-Step "install mingw-w64 $MingwVersion" @('xlings', 'install', "mingw-w64@$MingwVersion", '-y', '-g')
 
     Write-Section 'Release group - gcc/g++/c++ must agree'
-    # Only one Windows gcc exists in the index, so there is nothing to switch
-    # BETWEEN. What is still worth asserting is that `use` registers the whole
-    # group consistently: a registration that wires up `gcc` but leaves `g++`
-    # pointing elsewhere is the same defect the Linux switch test catches.
-    Assert-Switch gcc $GccWin @('gcc', 'g++', 'c++')
+    # Only one mingw-w64 version exists in the index, so there is nothing to
+    # switch BETWEEN — hence consistency rather than a switch. A registration
+    # that wires up `gcc` but leaves `g++` pointing elsewhere is the same
+    # defect the Linux switch test catches.
+    Assert-GroupConsistent 'mingw-w64' @('gcc', 'g++', 'c++')
 
     Write-Section 'The toolchain compiles and runs'
     $work = New-TempDir
@@ -178,7 +183,7 @@ int main() {
     Push-Location $work
     try { Invoke-Step 'g++ compile' @('g++', '-std=c++20', 'hello.cpp', '-o', 'hello.exe') }
     finally { Pop-Location }
-    Assert-Runs "g++ $GccWin binary" (Join-Path $work 'hello.exe') 'fresh install ok'
+    Assert-Runs "mingw-w64 $MingwVersion g++ binary" (Join-Path $work 'hello.exe') 'fresh install ok'
 }
 
 # ── llvm: version switch ──────────────────────────────────────────────

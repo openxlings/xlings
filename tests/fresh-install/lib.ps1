@@ -114,6 +114,25 @@ function Assert-Switch {
     Write-Ok "$Pkg@$Version - [$($Tools -join ', ')] switched as a unit"
 }
 
+# Assert-GroupConsistent — assert every listed command reports the SAME
+# version, without switching.
+#
+# For a single-version package there is nothing to switch between, but the
+# group can still be mis-registered: wiring up `gcc` while leaving `g++`
+# pointing at some other toolchain is the same defect Assert-Switch catches on
+# platforms that do have two versions.
+function Assert-GroupConsistent {
+    param([string]$Label, [string[]]$Tools)
+    $seen = @{}
+    foreach ($t in $Tools) { $seen[$t] = Get-ToolVersion $t; Write-Log "  $t -> $($seen[$t])" }
+    $distinct = $seen.Values | Sort-Object -Unique
+    if ($distinct.Count -ne 1) {
+        $detail = ($seen.GetEnumerator() | ForEach-Object { "     $($_.Key) reports $($_.Value)" }) -join "`n"
+        Fail "${Label}: release group members disagree on version:`n$detail"
+    }
+    Write-Ok "$Label - [$($Tools -join ', ')] all report $($distinct[0])"
+}
+
 # Assert-Runs — execute a freshly compiled binary and check its output.
 function Assert-Runs {
     param([string]$Desc, [string]$Path, [string]$Expected)

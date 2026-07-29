@@ -208,12 +208,24 @@ is a weak result, not a red build — so the added complexity is not yet paid fo
 Worth revisiting if the post-release run needs to be a hard gate on the new
 version, which would also mean introducing a pin to bump each release.
 
-## First finding — `llvm@22.1.8` is unusable on a clean machine
+## Results of the first run (PR #446)
 
-Found by running the `llvm` suite locally before the workflow ever ran, which is
-a decent sign the design points at the right gap.
+| Cell | Linux | CentOS 7 | Windows | macOS |
+| --- | --- | --- | --- | --- |
+| `core` | pass | pass | pass | pass |
+| `gcc` | pass | pass | *was a test bug, fixed* | n/a |
+| `llvm` | **fail** | **fail** | **fail** | **fail** |
 
-On a fresh home containing only llvm and its declared deps:
+`core` green on all four platforms is the headline: bootstrap, index refresh,
+install, run, multi-version switch, project mode, doctor and uninstall all work
+from cold everywhere — **including CentOS 7**, which also passes the full gcc
+release-group switch on glibc 2.17. That was the leg most likely to be
+unsupportable, and it is not.
+
+Every `llvm` cell fails, on all four platforms, for three distinct reasons.
+None of them is a test artefact.
+
+### Finding 1 — `llvm@22.1.8` cannot start on Linux / CentOS 7
 
 ```
 $ xlings install llvm@22.1.8 -y -g && clang --version
@@ -228,7 +240,7 @@ Root cause, confirmed against the installed payloads:
 - `clang-22` (22.1.8) **does** link `libstdc++.so.6`.
 - Both get the same baked RPATH — llvm's own `lib`, plus `glibc`, `zlib`,
   `libxml2`, and `subos/default/lib` — and **none of them ships libstdc++**.
-- `llvm.lua`'s linux `deps` list (`xim:glibc`, `xim:linux-headers`, `xim:zlib`,
+- `llvm.lua`'s linux `deps` (`xim:glibc`, `xim:linux-headers`, `xim:zlib`,
   `xim:libxml2`) never gained `xim:gcc-runtime` when the 22.1.8 payload started
   linking libstdc++ dynamically.
 
@@ -242,9 +254,59 @@ Impact is wider than this test: `latest` resolves to 22.1.8, so plain
 have a libstdc++ around. That is why it went unnoticed — dev machines and CI
 images all have gcc installed.
 
-The suite is deliberately **not** softened to work around this. A test adjusted
-until it passes against a broken package is the silent-success pattern this
-repo keeps getting bitten by.
+### Finding 2 — `llvm@22.1.8` cannot link on macOS
+
+The version switch itself passes (`clang` and `clang++` both move to 22.1.8),
+then compilation dies at the linker:
+
+```
+dyld[2263]: Symbol not found: __ZdaPv
+```
+
+`__ZdaPv` is `operator delete[](void*)` — the same shape of defect as finding 1,
+a C++ runtime the 22.1.8 payload expects and does not carry, surfacing on macOS
+as a missing libc++/libc++abi rather than a missing libstdc++.
+
+### Finding 3 — `xlings install llvm` registers no `clang` on Windows
+
+```
+$ xlings install llvm@20.1.7 -y -g
+  ✓ 1 package(s) installed
+$ xlings use llvm@20.1.7
+[xlings] llvm -> 20.1.7
+$ clang --version
+[error] xlings: 'clang' is not installed
+```
+
+Install reports success, `use` reports success, and there is no compiler. The
+`llvm` shim itself exists — that is what `use` switched — but `llvm.lua`'s
+`config()` populates `clang`/`clang++` from `collect_bin_apps(bindir)`, and on
+Windows that found nothing. No `skip xvm add alias` warning was emitted either,
+so the bin directory was empty rather than merely differently named. Affects
+both 20.1.7 and 22.1.8.
+
+This is the silent-success pattern in its purest form: two consecutive success
+messages and a completely unusable install.
+
+### Not a finding — the Windows `gcc` cell was wrong
+
+`xlings install gcc@15.1.0` on Windows "succeeds" and registers nothing, so
+`xlings use gcc@15.1.0` then fails with `'gcc' not found in version database`.
+That is because `gcc.lua`'s `config()` returns early on Windows
+("config in mingw-w64.lua") and its lone windows entry declares no payload —
+**`mingw-w64` is the package that registers the gcc/g++/c++ shims**.
+
+The suite now installs `mingw-w64` on Windows. Worth noting separately that
+`xlings install gcc` on Windows reporting `✓ 1 package(s) installed` while
+installing nothing usable is itself a defect, just not one this suite should
+encode as its Windows gcc coverage.
+
+### Why the llvm suite is not being softened
+
+A test adjusted until it passes against a broken package is exactly the
+silent-success pattern this repo keeps getting bitten by. Findings 1–3 are real
+user-facing breakage in the current release; the suite reports them, and the
+`llvm` cells stay red until the recipes are fixed in `xim-pkgindex`.
 
 ## Failure modes this cannot catch
 
