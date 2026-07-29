@@ -3078,6 +3078,52 @@ TEST(XvmRegistrationTest, InstallDoesNotSplitTheWorkspaceAcrossReleases) {
            "15.1.0 — the workspace now spans two releases";
 }
 
+// The precondition installer.cppm's ProgramShim guard is built on, pinned
+// here so a future change to `activateGroup` cannot quietly turn that guard
+// into dead code.
+//
+// A release that publishes an alternate flavor of an already-active name
+// anchors it on a root of its own -- `xim-musl-gnu-gcc` for musl-gcc's
+// gcc-flavor group. Nothing contests that root, but it is a member of the
+// group that lost the activation vote, so it is registered as installed and
+// never activated. Writing a shim for it was issue #452: the file can only
+// print "no active version", `self doctor` called it an orphan, and `--fix`
+// deleted a file the next install put straight back.
+TEST(XvmRegistrationTest, AnUncontestedRootStillLosesWithItsGroup) {
+    auto glibcGcc = make_registration_node("gcc", "15.1.0");
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, make_registration_batch({glibcGcc}));
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    ASSERT_EQ(workspace.at("gcc"), "15.1.0");
+
+    // The flavor release: a virtual root plus the same `gcc` name at a
+    // suffixed version.
+    auto root = make_registration_node("xim-musl-gnu-gcc", "15.1.0-musl");
+    auto flavorGcc = make_registration_node("gcc", "15.1.0-musl");
+    flavorGcc.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "xim-musl-gnu-gcc", .rootVersion = "15.1.0-musl"};
+    auto batch = make_registration_batch({root, flavorGcc});
+    batch.providerVersion = "15.1.0-musl";
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, batch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0")
+        << "the flavor took a name the glibc release still owns";
+    EXPECT_FALSE(workspace.contains("xim-musl-gnu-gcc"))
+        << "the root was activated on its own, splitting the release";
+    const auto& rootVersions = installed.at("xim-musl-gnu-gcc");
+    EXPECT_EQ(rootVersions.size(), 1u);
+    EXPECT_EQ(rootVersions.front(), "15.1.0-musl")
+        << "the root must still be registered — it is what the members bind to";
+    EXPECT_TRUE(xlings::xvm::is_binding_root(
+        db, "xim-musl-gnu-gcc", "15.1.0-musl"));
+}
+
 TEST(XvmRegistrationHeaderTest, UngroupedHeaderFallsBackToThePrimaryTarget) {
     auto program = make_registration_node("openssl", "repo:3.1.5");
     auto library = make_registration_node("libssl", "repo:3.1.5");
