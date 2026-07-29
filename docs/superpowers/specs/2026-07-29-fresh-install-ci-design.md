@@ -358,6 +358,25 @@ silent-success pattern this repo keeps getting bitten by. Findings 1–3 are rea
 user-facing breakage in the current release; the suite reports them, and the
 `llvm` cells stay red until the recipes are fixed in `xim-pkgindex`.
 
+## Two traps that cost time
+
+**The index is published, not pushed.** Merging to xim-pkgindex does not change
+what `xlings update` fetches until the `Publish Index Artifact` workflow runs
+*and propagates* — and runs started after that workflow reported success were
+still getting the previous artifact. The resulting failures look exactly like
+recipe bugs and cascade through dependencies: `local:rust` failed with
+`rustup-init: not found` purely because `rustup` came from a stale index where
+its config hook still aborted. Always check which artifact a run used —
+`[index] updated from artifact xim-index-<sha>.tar.gz` — against
+xim-pkgindex's main before diagnosing anything.
+
+**The pkgindex install/uninstall suite only covers CHANGED packages**, and it
+skips past packages whose install failed. Six packages had therefore never had
+their uninstall path exercised: they could not install, so the assertion never
+ran. Fixing the install surfaced a latent uninstall leak on the pinned client
+the moment they became testable. A recipe PR that touches nothing is a green
+that proves nothing there.
+
 ## Failure modes this cannot catch
 
 Stated so the green check is not over-read:
@@ -367,3 +386,8 @@ Stated so the green check is not over-read:
 - aarch64 Linux and Windows ARM — no runners in the matrix.
 - Anything about the PR's own code. This workflow tests the *released* binary;
   on a PR it therefore validates the workflow itself, not the change.
+- **Uninstall of individual packages.** The `core` suite ends with
+  `self uninstall`, which removes the whole home — it never asserts that
+  removing one package cleans up that package's shims. That gap is why the
+  xim-pkgindex regression in #445 reached main with this suite green; the
+  per-package lifecycle assertion lives in xim-pkgindex's own CI.
