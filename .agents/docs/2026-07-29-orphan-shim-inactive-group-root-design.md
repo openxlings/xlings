@@ -149,37 +149,53 @@ Three layers, independently shippable, deliberately overlapping.
 
 ### P1 — `ProgramShim` respects activation (installer)
 
-A shim is meaningful only if its name has an active version; that is exactly
+A shim is meaningful only if its name has an active version. That is exactly
 the invariant doctor Check 1 and Check 2 already encode, and the runtime proves
 it — an inactive shim can only print `no active version`. Install now obeys the
-same invariant that `remove` already does (`remove_target_shims_` has been
+same invariant `remove` already does (`remove_target_shims_` has been
 active-aware since 0.4.19).
 
-Scoped to **binding roots**, not to every inactive program:
+The condition is about the **name**, not this version:
 
 ```cpp
-if (!resolved->active
-    && xvm::is_binding_root(scopedDb, resolved->target, effect.version)) {
-    // a virtual anchor with no active pointer can only ever print
-    // "no active version" — writing the file creates doctor's orphan
-    continue;
-}
+const auto activeIt = scopedWorkspace.find(resolved->target);
+const bool nameHasActiveVersion =
+    activeIt != scopedWorkspace.end() && !activeIt->second.empty();
+if (!nameHasActiveVersion) continue;
 ```
 
-Why not "skip every inactive program": a real program that is registered but
-not active gives a *useful* error today —
+`!resolved->active` would be wrong. Installing a second version of an active
+program leaves `resolved->active` false for the new version while the name
+still needs the shim its active sibling dispatches through — and since the
+branch only ever *creates*, skipping there would be a silent no-op today and a
+missing shim the moment the file did not already exist.
+
+**Not scoped to binding roots**, though that was the first draft. Two reasons
+the general rule is the right one:
+
+- it covers the whole class, including the non-root members that produced the
+  29 orphan shims doctor's comment records — a root-only guard would leave
+  that case exactly as it is;
+- anything activated later still gets its file. `activate_requested_targets`
+  (`commands.cppm:365`) runs after the effects loop and calls `cmd_use`, which
+  resolves the *whole* release (`plan_use_switch`) and creates a shim for every
+  member (`commands.cppm:433`). Traced through llvm, whose group root is its
+  own package name: install while gcc owns `cc` leaves the group inactive, the
+  effects loop now writes nothing, and `cmd_use` immediately writes all of it.
+  Same end state as before.
+
+What is lost: a name that has *never* had an active version no longer gets a
+shim that would have printed
 
 ```
 [error] xlings: no active version of 'gcc-ar' in current subos
 [error]   hint: xlings use gcc-ar <version>
 ```
 
-— and dropping its shim downgrades that to the shell's `command not found`.
-A binding root has no such value: nobody types `xim-musl-gnu-gcc`.
-
-Safe against later activation: `activate_requested_targets`
-(`commands.cppm:365`) runs after the effects loop and calls `cmd_use`, which
-creates shims for every switched target (`commands.cppm:433`).
+and now gets the shell's `command not found` instead. That only reaches a
+package whose own name is not a registered target *and* whose group lost the
+vote — nothing in the index today — and in that state the command never worked
+either way.
 
 ### P2 — Check 2 exempts binding roots (doctor)
 
@@ -228,10 +244,33 @@ declared where it belongs.
 
 | level | test | what it pins |
 | --- | --- | --- |
-| unit | `test_xvm_bindings.cpp` — extend `InstallDoesNotSplitTheWorkspaceAcrossReleases` | the batch produces no `ProgramShim` effect for a root left inactive |
-| unit | `test_xvm_doctor.cpp` | an all-versions-are-anchors target with a shim is a notice, not an orphan |
-| e2e | `self_doctor_orphan_shim_test.sh` | **convergence**: `install → doctor --fix → install → doctor` is clean |
+| unit | `test_xvm_bindings.cpp::AnUncontestedRootStillLosesWithItsGroup` | the precondition the installer guard is built on — a private root is registered, not activated, and *is* a binding root |
+| e2e | `self_doctor_anchor_shim_test.sh` (E2E-45) | S1 no shim for an inactive root · S2 doctor clean · S3 anchor shim is a notice **and a genuine orphan is still an error** · S4 `--fix` removes it · S5 **convergence** |
 
-The e2e one is the property that actually matters. Every previous fix in this
-area made a single `--fix` converge; none of them checked that the install
-after it stays clean.
+doctor's `detect_` is not exported (only `cmd_doctor` is), so the Check 2 half
+is pinned at e2e level rather than in `test_xvm_doctor.cpp`.
+
+S5 is the property that actually matters. Every previous fix in this area made
+a single `--fix` converge; none checked that the install after it stays clean.
+
+Both halves were confirmed load-bearing by reverting them one at a time and
+rebuilding — pre-fix fails S1, installer-only fails S3, both pass.
+
+## Verified on the reported home
+
+Built with `.agents/tools/slice-real-home.sh`, same slice, two binaries:
+
+| | released 2026.7.29.1 | this change |
+| --- | --- | --- |
+| `self doctor` on the reported state | `orphan shims 1`, **exit 1**, "run --fix to repair" | `1 anchor shim` in the nothing-to-do line, **exit 0** |
+| `--fix` | removes the file | removes the file |
+| `remove musl-gcc@15` + `install musl-gcc@15` after that | shim back, exit 1 | **no shim, exit 0** |
+| `musl-gcc t.c -o t.out` after the reinstall | compiles | compiles |
+
+`verify-untouched` confirms the real `~/.xlings/data/xpkgs` was not written to.
+
+One pre-existing defect surfaced and was filed rather than folded in:
+`xlings use gcc 15.1.0-musl` leaves `gcc-ar`/`gcc-nm`/`gcc-ranlib` on the
+glibc release, because the musl flavor publishes only the five frontends —
+`xvm-active-group-incoherent` ×5, on both binaries
+(openxlings/xim-pkgindex#451).
