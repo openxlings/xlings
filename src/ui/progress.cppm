@@ -8,6 +8,7 @@ export module xlings.ui:progress;
 
 import std;
 import :theme;
+import :layout;
 
 export namespace xlings::ui {
 
@@ -64,23 +65,31 @@ std::string phase_label(Phase p) {
 // The frontier character (at splitPos) blinks in orange as active download indicator.
 // Progress maps only to the actual name characters; trailing padding is always dim.
 // nameWidth: total padded width for alignment.
-ftxui::Element name_as_progress(const std::string& name, float progress,
+ftxui::Element name_as_progress(const std::string& shownName, float progress,
                                 ftxui::Color litColor, ftxui::Color dimColor,
                                 std::size_t nameWidth, bool isBold,
                                 bool showCursor = false) {
     using namespace ftxui;
 
+    // The column may have been narrowed to keep the row inside the terminal.
+    // Elide visibly rather than letting ftxui clip at the column edge.
+    const std::string name =
+        layout::truncate_to_width(shownName, static_cast<int>(nameWidth));
+
     // Clamp progress
     if (progress < 0.0f) progress = 0.0f;
     if (progress > 1.0f) progress = 1.0f;
 
-    // Split only on actual name length (not padding)
-    auto nameLen = name.size();
-    auto splitPos = static_cast<std::size_t>(progress * static_cast<float>(nameLen));
-    if (splitPos > nameLen) splitPos = nameLen;
+    // Split by display columns, not bytes: the split used to be
+    // `progress * name.size()`, which cuts a multi-byte name mid-sequence
+    // and mis-measures how much of it is "lit".
+    const int nameCols = layout::display_width(name);
+    auto splitPos = layout::split_at_width(
+        name, static_cast<int>(progress * static_cast<float>(nameCols)));
 
     // Padding spaces always in dimColor
-    std::size_t padCount = (nameWidth > nameLen) ? (nameWidth - nameLen) : 0;
+    std::size_t padCount = (static_cast<int>(nameWidth) > nameCols)
+        ? static_cast<std::size_t>(static_cast<int>(nameWidth) - nameCols) : 0;
     std::string padding(padCount, ' ');
 
     // Three parts: lit | cursor (orange+blink) | dim
@@ -88,9 +97,10 @@ ftxui::Element name_as_progress(const std::string& name, float progress,
     std::string cursorPart;
     std::string dimNamePart;
 
-    if (showCursor && splitPos < nameLen) {
-        cursorPart = name.substr(splitPos, 1);
-        dimNamePart = name.substr(splitPos + 1);
+    if (showCursor && splitPos < name.size()) {
+        auto cursorEnd = splitPos + layout::glyph_len(name, splitPos);
+        cursorPart = name.substr(splitPos, cursorEnd - splitPos);
+        dimNamePart = name.substr(cursorEnd);
     } else {
         dimNamePart = name.substr(splitPos);
     }
@@ -114,19 +124,42 @@ ftxui::Element name_as_progress(const std::string& name, float progress,
     return result | size(WIDTH, EQUAL, static_cast<int>(nameWidth));
 }
 
+// Columns a progress row occupies: " <icon> " + name + " " + status.
+inline int row_width_(std::size_t nameWidth, int iconW, int statusWidth) {
+    return iconW + static_cast<int>(nameWidth) + 1 + statusWidth;
+}
+
+// Shrink the name column until the row fits the terminal.
+//
+// The rows are redrawn in place by moving the cursor up by the number of
+// rows rendered. A row wider than the terminal wraps, so the terminal holds
+// more physical lines than the renderer counted, the cursor lands in the
+// middle of the previous frame, and every redraw smears another copy down
+// the screen. Fitting the row is what keeps that arithmetic true.
+inline std::size_t fit_name_width_(std::size_t nameWidth, int iconW, int statusWidth) {
+    auto term = layout::term_width();
+    if (!term) return nameWidth;
+    int budget = *term - iconW - 1 - statusWidth;
+    if (budget < 4) budget = 4;
+    return std::min(nameWidth, static_cast<std::size_t>(budget));
+}
+
 // Render a static snapshot of install progress to stdout
 void print_progress(std::span<const StatusEntry> entries) {
     using namespace ftxui;
 
+    // Status label width for alignment
+    constexpr std::size_t statusWidth = 8;
+    constexpr int iconW = 3;   // " <icon> "
+
     // Compute max name width for alignment
     std::size_t nameWidth = 20;
     for (auto& e : entries) {
-        if (e.name.size() > nameWidth) nameWidth = e.name.size();
+        nameWidth = std::max(nameWidth,
+                             static_cast<std::size_t>(layout::display_width(e.name)));
     }
     nameWidth += 2; // padding
-
-    // Status label width for alignment
-    constexpr std::size_t statusWidth = 8;
+    nameWidth = fit_name_width_(nameWidth, iconW, static_cast<int>(statusWidth));
 
     Elements rows;
     for (auto& e : entries) {
@@ -174,10 +207,9 @@ void print_progress(std::span<const StatusEntry> entries) {
 
         rows.push_back(hbox({ icon, nameEl, statusEl }));
     }
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
-    Render(screen, doc);
-    screen.Print();
+    layout::print_rows(std::move(rows),
+                       layout::fit_width(row_width_(nameWidth, iconW,
+                                                    static_cast<int>(statusWidth))));
     std::println("");
 }
 
@@ -223,6 +255,16 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState,
                              int prevLines = 0) {
     using namespace ftxui;
     constexpr std::size_t statusWidth = 8;
+    constexpr int iconW = 6;   // "    <icon> "
+
+    // The caller measures the name column in bytes (core has no display-width
+    // table). Re-measure it here in columns, then fit it to the terminal.
+    std::size_t measured = 20;
+    for (auto& p : progState) {
+        measured = std::max(measured,
+                            static_cast<std::size_t>(layout::display_width(p.name)));
+    }
+    nameWidth = fit_name_width_(measured + 2, iconW, static_cast<int>(statusWidth));
 
     Elements rows;
     double totalBytes = 0.0;
@@ -326,30 +368,47 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState,
     int pctFrac = static_cast<int>(overallPct * 1000.0f) % 10;
     std::string pctStr = std::to_string(pctWhole) + "." + std::to_string(pctFrac) + "%";
 
+    // The bar shares its line with the percentage, speed and ETA, so it gives
+    // ground first rather than pushing the line past the edge.
+    constexpr int kGaugeMax = 30;
+    const int gaugeTail = 4
+        + layout::display_width("  " + pctStr)
+        + layout::display_width(speedStr)
+        + layout::display_width(etaStr);
+
+    int width = layout::fit_width(
+        std::max(row_width_(nameWidth, iconW, static_cast<int>(statusWidth)),
+                 gaugeTail + kGaugeMax));
+    int gaugeW = std::clamp(width - gaugeTail, 8, kGaugeMax);
+
     rows.push_back(text(""));
     rows.push_back(hbox({
         text("  " + std::string(theme::icon::arrow) + " ") | color(theme::cyan()),
-        gauge(overallPct) | size(WIDTH, EQUAL, 30) | color(theme::cyan()),
+        gauge(overallPct) | size(WIDTH, EQUAL, gaugeW) | color(theme::cyan()),
         text("  " + pctStr) | bold | color(theme::text_color()),
         text(speedStr) | color(theme::cyan()),
         text(etaStr) | color(theme::dim_color()),
     }));
+    // erase_eol rather than padding: the frame is drawn over the previous
+    // one, and a trimmed line that is shorter than its predecessor would
+    // otherwise leave the old tail behind.
+    auto body = layout::render_to_string(vbox(std::move(rows)), width,
+                                         /*erase_eol=*/true);
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), Dimension::Fit(doc));
-    Render(screen, doc);
-
-    // Build single output buffer: cursor-up + content + clear trailing + newline
+    // Build single output buffer: cursor-up + content + clear trailing.
     std::string output;
     if (prevLines > 0) {
         output += "\033[" + std::to_string(prevLines) + "A\r";
     }
-    output += screen.ToString();
-    output += "\033[J\n";  // clear any leftover lines below, then newline
+    output += body;
+    output += "\033[J";  // clear any leftover lines below
 
     std::cout << output << std::flush;
 
-    return screen.dimy();
+    // Every row fits the terminal (fit_name_width_ above), so rendered rows
+    // and physical lines are the same number and the cursor-up on the next
+    // frame lands where this frame started.
+    return static_cast<int>(std::ranges::count(body, '\n'));
 }
 
 } // namespace xlings::ui

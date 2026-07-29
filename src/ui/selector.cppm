@@ -8,13 +8,17 @@ module;
 export module xlings.ui:selector;
 
 import std;
+import xlings.core.palette;
 import :theme;
+import :layout;
 
 export namespace xlings::ui {
 
-// Interactive version selector -- returns chosen version or nullopt if cancelled
+// Interactive version selector -- returns chosen version or nullopt if
+// cancelled. `title` is shown as-is (the caller phrases the question).
 std::optional<std::string>
-select_version(std::string_view pkgName, std::span<const std::string> versions) {
+select_version(std::string_view title, std::span<const std::string> versions,
+               std::string_view active = {}) {
     using namespace ftxui;
 
     if (versions.empty()) return std::nullopt;
@@ -24,9 +28,18 @@ select_version(std::string_view pkgName, std::span<const std::string> versions) 
     bool confirmed { false };
     bool cancelled { false };
 
+    // Start on the version that is already active, and say which one that is
+    // in words rather than by color alone.
     std::vector<std::string> labels;
     labels.reserve(versions.size());
-    for (auto& v : versions) labels.push_back(v);
+    for (std::size_t i = 0; i < versions.size(); ++i) {
+        if (!active.empty() && versions[i] == active) {
+            selected = static_cast<int>(i);
+            labels.push_back(versions[i] + "  (active)");
+        } else {
+            labels.push_back(versions[i]);
+        }
+    }
 
     auto menu = Menu(&labels, &selected);
 
@@ -48,7 +61,7 @@ select_version(std::string_view pkgName, std::span<const std::string> versions) 
 
     auto renderer = Renderer(component, [&] {
         return vbox({
-            text(std::format(" Select version for {}:", pkgName)) | theme::title(),
+            text(" " + std::string(title) + ":") | theme::title(),
             separator() | color(theme::border_color()),
             component->Render() | vscroll_indicator | frame
                 | size(HEIGHT, LESS_THAN, 15),
@@ -78,11 +91,12 @@ select_package(std::span<const std::pair<std::string, std::string>> items) {
 
     std::vector<std::string> labels;
     labels.reserve(items.size());
+    int nameW = 20;
     for (auto& [name, desc] : items) {
-        // Avoid {:<20s} -- GCC 15 modules crash on width specifiers
-        std::string padded = name;
-        while (padded.size() < 20) padded += ' ';
-        labels.push_back(padded + " " + desc);
+        nameW = std::max(nameW, layout::display_width(name));
+    }
+    for (auto& [name, desc] : items) {
+        labels.push_back(layout::pad_to_width(name, nameW) + " " + desc);
     }
 
     auto menu = Menu(&labels, &selected);
@@ -137,10 +151,12 @@ select_option(std::string_view title,
     // Build labels: "name   description"
     std::vector<std::string> labels;
     labels.reserve(items.size() + (done_label.empty() ? 0 : 1));
+    int nameW = 24;
     for (auto& [name, desc] : items) {
-        std::string padded = name;
-        while (padded.size() < 24) padded += ' ';
-        labels.push_back(padded + desc);
+        nameW = std::max(nameW, layout::display_width(name));
+    }
+    for (auto& [name, desc] : items) {
+        labels.push_back(layout::pad_to_width(name, nameW) + desc);
     }
     if (!done_label.empty()) {
         labels.push_back(std::string(done_label));
@@ -199,9 +215,13 @@ select_option(std::string_view title,
     return std::nullopt;
 }
 
-// Read a line from stdin with ANSI-colored prompt
+// Read a line from stdin with ANSI-colored prompt.
+//
+// Colors come from the shared palette rather than a dark-palette literal, so
+// the prompt follows the terminal background and goes quiet under NO_COLOR —
+// it is the one line the user has to read before they can answer it.
 std::string read_line(std::string_view prompt) {
-    std::print("\033[38;2;34;211;238m  {} \033[0m", prompt);
+    std::print("{}  {} {}", palette::fg(palette::cyan()), prompt, palette::off());
     std::cout.flush();
     std::string line;
     std::getline(std::cin, line);
@@ -212,12 +232,19 @@ std::string read_line(std::string_view prompt) {
     return line;
 }
 
-// Simple yes/no confirmation with styled prompt
+// Simple yes/no confirmation with styled prompt.
+//
+// Indented two columns like every panel above it. It used to start at column
+// 0, so the question sat outside the block it was asking about.
 bool confirm(std::string_view message, bool defaultYes) {
     std::string prompt = defaultYes ? "[Y/n] " : "[y/N] ";
-    // Use ANSI colors for inline prompt (not ftxui rendered)
-    std::print("\033[38;2;34;211;238m{}\033[0m{}\033[38;2;148;163;184m{}\033[0m",
-               std::string(theme::icon::arrow) + " ", message, prompt);
+    // Inline prompt (not an ftxui-rendered document), so it writes SGR
+    // directly — from the shared palette, which also turns it off under
+    // NO_COLOR / a pipe.
+    std::print("{}  {} {}{}{}{}{}",
+               palette::fg(palette::cyan()), theme::icon::arrow, palette::off(),
+               message,
+               palette::fg(palette::dim()), prompt, palette::off());
     std::cout.flush();
 
     std::string input;

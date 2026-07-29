@@ -92,6 +92,9 @@ static void dispatch_data_event(const DataEvent& e) {
         }
         ui::print_subcommand_help(name, desc, args, opts);
     }
+    else if (e.kind == "tip") {
+        ui::print_tip(json.value("message", ""));
+    }
     else if (e.kind == "styled_list") {
         std::string title = json.value("title", "");
         bool numbered = json.value("numbered", false);
@@ -247,7 +250,17 @@ static void handle_prompt(EventStream& stream, const PromptEvent& p) {
         return;
     }
 
-    // Multiple options → package/version selector
+    // A version choice has its own picker — titled with the target, and
+    // without the description column a version list has nothing to put in.
+    // It existed in ui:: from the start and was never reachable, because
+    // every multi-option prompt landed in select_package below.
+    if (p.id == "select_version" && !p.options.empty()) {
+        auto result = ui::select_version(p.question, p.options, p.defaultValue);
+        stream.respond(p.id, result.value_or(""));
+        return;
+    }
+
+    // Multiple options → package selector
     if (!p.options.empty()) {
         std::vector<std::pair<std::string, std::string>> items;
         for (auto& opt : p.options) {
@@ -722,6 +735,8 @@ export int run(int argc, char* argv[]) {
     if (agent_mode) {
         stream.set_enabled(tui_listener, false);
         log::enable_color(false);
+        // One switch for every writer, not just log's own prefixes.
+        ui::layout::set_plain(true);
         stream.on_event([&stream](const Event& e) {
             if (auto* d = std::get_if<DataEvent>(&e)) {
                 agent::render_data_event(*d);

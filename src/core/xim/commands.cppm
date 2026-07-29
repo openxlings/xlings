@@ -943,13 +943,25 @@ int cmd_info(const std::string& target, EventStream& stream) {
     auto platform = detect_platform();
     auto platformIt = pkg->xpm.entries.find(platform);
     if (platformIt != pkg->xpm.entries.end()) {
+        // Concrete versions and aliases used to share one comma-joined
+        // `versions` row, so `latest` and the version it points at appeared
+        // side by side — `latest -> 16.1.0, 16.1.0` reads as the list
+        // repeating itself. They are two different facts; they get two rows.
         std::string verStr;
+        std::string aliasStr;
         for (auto& [ver, res] : platformIt->second) {
+            if (!res.ref.empty()) {
+                if (!aliasStr.empty()) aliasStr += ", ";
+                aliasStr += ver + " -> " + res.ref;
+                continue;
+            }
             if (!verStr.empty()) verStr += ", ";
             verStr += ver;
-            if (!res.ref.empty()) verStr += " -> " + res.ref;
         }
-        addField(fieldsJson, "versions", verStr);
+        // `available` rather than `versions`: the panel's second half also
+        // had a row called `versions`, meaning the locally installed ones.
+        if (!verStr.empty())   addField(fieldsJson, "available", verStr);
+        if (!aliasStr.empty()) addField(fieldsJson, "aliases", aliasStr);
     }
 
     auto join_deps = [](const std::vector<std::string>& v) {
@@ -978,7 +990,11 @@ int cmd_info(const std::string& target, EventStream& stream) {
         }
     }
 
-    addField(fieldsJson, "installed", match->installed ? "yes" : "no", match->installed);
+    // Only when the answer is "no". When it is installed the second half of
+    // the panel says so in detail — `active`, `installed`, the payload path —
+    // and a bare `installed  yes` above it is a third label competing to mean
+    // the same thing.
+    if (!match->installed) addField(fieldsJson, "installed", "no");
 
     nlohmann::json extraJson = nlohmann::json::array();
     if (match->installed) {
@@ -997,19 +1013,21 @@ int cmd_info(const std::string& target, EventStream& stream) {
             for (auto& v : allVers) {
                 if (!verList.empty()) verList += ", ";
                 verList += v;
-                if (v == activeVer) verList += " *";
+                // Spelled out rather than a bare `*`, which needed a legend
+                // the panel never printed.
+                if (v == activeVer) verList += " (active)";
             }
-            addField(extraJson, "versions", verList);
+            addField(extraJson, "installed", verList);
         }
 
         auto storeName = package_store_name(match->namespaceName, match->name);
         auto storePath = match->storeRoot / storeName;
-        addField(extraJson, "xpkg path", storePath.string());
+        addField(extraJson, "xpkg path", Config::display_path(storePath));
 
         auto binDir = Config::global_subos_bin_dir();
         auto shimPath = binDir / target;
         if (std::filesystem::exists(shimPath)) {
-            addField(extraJson, "shim", shimPath.string());
+            addField(extraJson, "shim", Config::display_path(shimPath));
         }
 
         auto* vinfo = xvm::get_vinfo(db, target);

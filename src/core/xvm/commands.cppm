@@ -5,6 +5,7 @@ import std;
 import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
+import xlings.core.palette;
 import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;
@@ -528,11 +529,43 @@ int cmd_list_versions(const std::string& target, EventStream& stream, bool all =
         title = target + " versions (current subos)";
     }
 
+    // With a person at the keyboard, `xlings use <target>` offers the
+    // versions instead of only listing them. The picker has been implemented
+    // in ui::select_version since the panel was written and had no caller —
+    // the command printed a list and left the user to retype one of the rows.
+    //
+    // Off a terminal, in `--agent`, or under the NDJSON interface it still
+    // prints the panel: a prompt that auto-answers with a default would
+    // switch versions in a script that only asked to see them.
+    const bool interactive = versions.size() > 1
+        && platform::stdin_is_terminal()
+        && platform::supports_rewrite_output()
+        && !platform::is_tui_mode()
+        && !palette::plain_forced();
+
+    if (interactive) {
+        PromptEvent req;
+        req.id = "select_version";
+        req.question = "Select version for " + target;
+        req.options = versions;
+        req.defaultValue = active;
+        auto chosen = stream.prompt(std::move(req));
+        if (chosen.empty()) {
+            log::println("cancelled");
+            return 0;
+        }
+        return cmd_use(target, chosen, stream);
+    }
+
     nlohmann::json fieldsJson = nlohmann::json::array();
     for (auto& ver : versions) {
         auto vdata = get_vdata(db, target, ver);
         std::string path_info;
-        if (vdata && !vdata->path.empty()) path_info = vdata->path;
+        // `@xlings/...` rather than the absolute path. `self config` and
+        // `self doctor` already abbreviate; this panel did not, and it is the
+        // one whose rows are payload paths — the ~20 columns the prefix costs
+        // are exactly what pushed it past the terminal.
+        if (vdata && !vdata->path.empty()) path_info = Config::display_path(vdata->path);
         bool highlight = (ver == active);
         fieldsJson.push_back({{"label", ver}, {"value", path_info}, {"highlight", highlight}});
     }
@@ -540,6 +573,19 @@ int cmd_list_versions(const std::string& target, EventStream& stream, bool all =
     payload["title"] = title;
     payload["fields"] = std::move(fieldsJson);
     stream.emit(DataEvent{"info_panel", payload.dump()});
+
+    // Say what to do with the list. The failure path above already spells the
+    // next command out; the path where the user got exactly what they asked
+    // for and still has to guess did not.
+    //
+    // As a `tip` event rather than a bare println so it goes through the same
+    // width contract as the panel it follows — a hint that runs off the edge
+    // of a narrow terminal is the problem it was added to solve.
+    if (versions.size() > 1) {
+        nlohmann::json tip;
+        tip["message"] = std::format("xlings use {} <version>", target);
+        stream.emit(DataEvent{"tip", tip.dump()});
+    }
 
     return 0;
 }

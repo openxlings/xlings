@@ -7,6 +7,7 @@ import xlings.core.xself.init;   // create_shim, LinkResult
 import xlings.core.xself.compat;
 
 import xlings.core.config;
+import xlings.core.glyph;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -696,9 +697,9 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             std::error_code ec;
             fs::create_directories(p.binDir, ec);
             if (create_shim(st.xlingsBin, f.shimPath) != LinkResult::Failed) {
-                note("· shim recreated", Config::display_path(f.shimPath));
+                note(glyph::mark(glyph::bullet, "shim recreated"), Config::display_path(f.shimPath));
             } else {
-                note("✗ shim repair failed", std::format(
+                note(glyph::mark(glyph::failed, "shim repair failed"), std::format(
                     "could not recreate {}",
                     Config::display_path(f.shimPath)));
             }
@@ -707,9 +708,9 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             std::error_code ec;
             fs::remove(f.shimPath, ec);
             if (!ec) {
-                note("· shim removed", Config::display_path(f.shimPath));
+                note(glyph::mark(glyph::bullet, "shim removed"), Config::display_path(f.shimPath));
             } else {
-                note("✗ shim repair failed", std::format(
+                note(glyph::mark(glyph::failed, "shim repair failed"), std::format(
                     "could not remove {}", Config::display_path(f.shimPath)));
             }
         }
@@ -732,7 +733,7 @@ void repair_state_(RepairReport& out) {
     if (auto pruning = xvm::plan_dangling_edge_pruning(db); !pruning.empty()) {
         auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
         if (!lock) {
-            note("✗ binding state", std::format(
+            note(glyph::mark(glyph::failed, "binding state"), std::format(
                 "cannot drop dangling binding edges: {}", lock.error()));
         } else {
             Config::reload_state();
@@ -741,7 +742,7 @@ void repair_state_(RepairReport& out) {
             if (xvm::apply_dangling_edge_pruning(mutableDb, replanned) > 0) {
                 Config::save_versions();
                 for (const auto& e : replanned.edges) {
-                    note("· edge dropped", std::format(
+                    note(glyph::mark(glyph::bullet, "edge dropped"), std::format(
                         "{} no longer points at unregistered {}",
                         xvm::display_coordinate(e.target, e.version),
                         xvm::display_coordinate(e.peerTarget, e.peerVersion)));
@@ -756,7 +757,7 @@ void repair_state_(RepairReport& out) {
         !stale.empty()) {
         auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
         if (!lock) {
-            note("✗ binding state", std::format(
+            note(glyph::mark(glyph::failed, "binding state"), std::format(
                 "cannot deactivate unregistered versions: {}", lock.error()));
         } else {
             Config::reload_state();
@@ -765,7 +766,7 @@ void repair_state_(RepairReport& out) {
             for (const auto& target : stale) {
                 const auto it = mutableWs.find(target);
                 if (it == mutableWs.end()) continue;
-                note("· deactivated", std::format(
+                note(glyph::mark(glyph::bullet, "deactivated"), std::format(
                     "{} was active at a version that is not registered — run "
                     "`xlings use {} <version>` to select one",
                     xvm::display_coordinate(target, it->second), target));
@@ -782,7 +783,7 @@ void repair_state_(RepairReport& out) {
         !plan.targets.empty()) {
         auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
         if (!lock) {
-            note("✗ binding state", std::format(
+            note(glyph::mark(glyph::failed, "binding state"), std::format(
                 "cannot deactivate incoherent releases: {}", lock.error()));
         } else {
             Config::reload_state();
@@ -791,7 +792,7 @@ void repair_state_(RepairReport& out) {
             for (const auto& [target, label] : plan.targets) {
                 if (mutableWs.erase(target) == 0) continue;
                 ++dropped;
-                note("· deactivated", std::format(
+                note(glyph::mark(glyph::bullet, "deactivated"), std::format(
                     "{} (was part of {}) — run `xlings use {} <version>` to "
                     "select a release", target, label, target));
             }
@@ -814,7 +815,7 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
 
     auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
     if (!lock) {
-        out.notes.emplace_back("✗ other subos", std::format(
+        out.notes.emplace_back(glyph::mark(glyph::failed, "other subos"), std::format(
             "cannot repair other subos state: {}", lock.error()));
         return;
     }
@@ -837,19 +838,19 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
             xvm::apply_subos_metadata_repair(workspace, entry);
         if (dropped == 0) continue;
         if (!profile::save_subos_workspace(snapshotIt->dir, workspace)) {
-            out.notes.emplace_back("✗ other subos", std::format(
+            out.notes.emplace_back(glyph::mark(glyph::failed, "other subos"), std::format(
                 "could not write the state file of subos '{}'", entry.subos));
             continue;
         }
         for (const auto& target : entry.deactivate) {
-            out.notes.emplace_back("· other subos repaired", std::format(
+            out.notes.emplace_back(glyph::mark(glyph::bullet, "other subos repaired"), std::format(
                 "{}: deactivated '{}' — it named a version that is not "
                 "registered; run `xlings subos use {}` then `xlings use {} "
                 "<version>` to choose one", entry.subos, target,
                 entry.subos, target));
         }
         for (const auto& [target, version] : entry.dropInstalled) {
-            out.notes.emplace_back("· other subos repaired", std::format(
+            out.notes.emplace_back(glyph::mark(glyph::bullet, "other subos repaired"), std::format(
                 "{}: dropped stale installed entry {}", entry.subos,
                 xvm::display_coordinate(target, version)));
         }
@@ -933,7 +934,7 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
             for (const auto* c : covered) {
                 out.failedEntries.emplace_back(c->target, c->version);
             }
-            out.notes.emplace_back("✗ repair failed", std::format(
+            out.notes.emplace_back(glyph::mark(glyph::failed, "repair failed"), std::format(
                 "{} — {}", coord.canonical(),
                 result.note.empty() ? "the finding it covers is still there"
                                     : result.note));
@@ -983,7 +984,7 @@ void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
                 if (!list.empty()) list += ", ";
                 list += other;
             }
-            out.notes.emplace_back("✗ kept", std::format(
+            out.notes.emplace_back(glyph::mark(glyph::failed, "kept"), std::format(
                 "{} could not be restored, but subos {} still uses it — "
                 "repair or remove it there",
                 xvm::display_coordinate(f.target, f.version), list));
@@ -996,7 +997,7 @@ void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
 
     auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
     if (!lock) {
-        out.notes.emplace_back("✗ prune", std::format(
+        out.notes.emplace_back(glyph::mark(glyph::failed, "prune"), std::format(
             "cannot drop dead registrations: {}", lock.error()));
         for (const auto& victim : victims) out.failedEntries.push_back(victim);
         return;
@@ -1012,7 +1013,7 @@ void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
         if (infoIt == db.end()) continue;
         if (infoIt->second.versions.erase(version) == 0) continue;
         ++dropped;
-        out.notes.emplace_back("· dropped", std::format(
+        out.notes.emplace_back(glyph::mark(glyph::bullet, "dropped"), std::format(
             "{} — its payload is gone and nothing can restore it",
             xvm::display_coordinate(target, version)));
 
@@ -1128,7 +1129,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         const auto* head = group.front();
         const bool foreign = head->kind == FindingKind::ForeignPayload;
         std::string label = foreign
-            ? std::format("✗ broken payload [subos: {}]",
+            ? glyph::mark(glyph::failed,
+                          std::format("broken payload [subos: {}]",
                           [&] {
                               std::string list;
                               for (const auto& s : head->subos) {
@@ -1136,11 +1138,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                                   list += s;
                               }
                               return list;
-                          }())
+                          }()))
             : (std::ranges::any_of(group, [](const Finding* f) {
                    return f->active;
-               }) ? std::string("✗ broken payload [active]")
-                  : std::string("✗ broken payload"));
+               }) ? glyph::mark(glyph::failed, "broken payload [active]")
+                  : glyph::mark(glyph::failed, "broken payload"));
 
         std::string detail = head->detail;
         if (group.size() > 1) {
@@ -1154,11 +1156,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         }
         add(label, std::move(detail));
         if (!head->remedy.empty()) {
-            add("  → run", head->remedy);
+            add("  " + glyph::mark(glyph::remedy, "run"), head->remedy);
         } else {
             // No command would help. Saying that is the useful output; a
             // plausible-looking `xlings install <target>` is not.
-            add("  ⓘ no remedy", fix
+            add("  " + glyph::mark(glyph::note, "no remedy"), fix
                 ? std::string("no package provides this entry — the "
                               "registration was dropped")
                 : std::string("no package in any index provides this entry; "
@@ -1175,13 +1177,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     for (const auto& f : scan.findings) {
         switch (f.kind) {
             case FindingKind::MissingShim:
-                add("✗ missing shim", f.detail); break;
+                add(glyph::mark(glyph::failed, "missing shim"), f.detail); break;
             case FindingKind::OrphanShim:
-                add("✗ orphan shim", f.detail); break;
+                add(glyph::mark(glyph::failed, "orphan shim"), f.detail); break;
             case FindingKind::LegacyAliasShim:
-                add("✗ legacy alias shim", f.detail); break;
+                add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
             case FindingKind::ShimAnchor:
-                add("⚠ shim anchor", f.detail); break;
+                add(glyph::mark(glyph::warn, "shim anchor"), f.detail); break;
             case FindingKind::AliasUnresolved:
                 // One line per TARGET, not per version. The alias is a
                 // property of the recipe, so every version of a package
@@ -1191,7 +1193,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 // a genuinely missing alias binary is the only signal there
                 // is.
                 if (verbose || aliasTargetsShown.insert(f.target).second) {
-                    add("⚠ alias unresolved", verbose ? f.detail
+                    add(glyph::mark(glyph::warn, "alias unresolved"), verbose ? f.detail
                         : std::format("{}{}", f.detail,
                             aliasVersionCount.at(f.target) > 1
                                 ? std::format("  (+{} other version(s))",
@@ -1201,20 +1203,20 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::BindingState:
                 if (f.level == FindingLevel::Notice) {
-                    if (verbose) add("ⓘ binding state", f.detail);
+                    if (verbose) add(glyph::mark(glyph::note, "binding state"), f.detail);
                 } else {
-                    add("✗ binding state", f.detail);
+                    add(glyph::mark(glyph::failed, "binding state"), f.detail);
                 }
                 break;
             case FindingKind::OtherSubos:
                 if (verbose || f.level != FindingLevel::Notice) {
-                    add(f.level == FindingLevel::Notice ? "ⓘ other subos"
-                                                        : "⚠ other subos",
+                    add(f.level == FindingLevel::Notice ? glyph::mark(glyph::note, "other subos")
+                                                        : glyph::mark(glyph::warn, "other subos"),
                         f.detail);
                 }
                 break;
             case FindingKind::ReleaseAnchor:
-                if (verbose) add("ⓘ release anchor", f.detail);
+                if (verbose) add(glyph::mark(glyph::note, "release anchor"), f.detail);
                 break;
             default: break;
         }
@@ -1235,19 +1237,19 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         std::string summary;
         const auto part = [&](int n, std::string_view what) {
             if (n == 0) return;
-            if (!summary.empty()) summary += " · ";
+            if (!summary.empty()) summary += std::format(" {} ", glyph::bullet);
             summary += std::format("{} {}", n, what);
         };
         part(anchors, "release anchor");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         if (!summary.empty()) {
-            add("ⓘ nothing to do", summary + "  —  `--all` to list them");
+            add(glyph::mark(glyph::note, "nothing to do"), summary + "  —  `--all` to list them");
         }
     }
 
     for (const auto& [label, text] : repair.notes) add(label, text);
-    for (const auto& planned : repair.planned) add("→ would run", planned);
+    for (const auto& planned : repair.planned) add(glyph::mark(glyph::remedy, "would run"), planned);
     if (dryRun) {
         add("dry run", std::format(
             "{} action(s) planned; nothing was changed",
@@ -1297,7 +1299,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // it.
     if (auto hint = migration_hint(Config::recorded_client_version(),
                                    Info::VERSION)) {
-        add("ⓘ migration", *hint);
+        add(glyph::mark(glyph::note, "migration"), *hint);
     }
 
     nlohmann::json payload;
@@ -1346,7 +1348,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         if (auto reset = xvm::plan_metadata_reset(state.db); !reset.empty()) {
             auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
             if (!lock) {
-                repair.notes.emplace_back("✗ binding state", std::format(
+                repair.notes.emplace_back(glyph::mark(glyph::failed, "binding state"), std::format(
                     "cannot reset binding metadata: {}", lock.error()));
             } else {
                 Config::reload_state();
@@ -1363,7 +1365,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
                         // Name what was discarded. This is the one repair that
                         // loses information, so a bare count would be the
                         // wrong report.
-                        repair.notes.emplace_back("· metadata reset",
+                        repair.notes.emplace_back(glyph::mark(glyph::bullet, "metadata reset"),
                             std::format(
                                 "{} dropped its release metadata ({}) and is "
                                 "now switchable on its own — reinstall it to "

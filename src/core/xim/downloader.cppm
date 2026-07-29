@@ -870,7 +870,9 @@ download_all(std::span<const DownloadTask> tasks,
     std::atomic<bool> allDone { false };
     std::atomic<bool> sizesReady { false };
 
-    // Compute max name width for alignment
+    // A byte-count floor for the name column. The renderer re-measures it in
+    // display columns and fits it to the terminal — measuring here would
+    // mean pulling the UI's width table into core.
     std::size_t nameWidth = 20;
     for (auto& t : tasks) {
         if (t.name.size() > nameWidth) nameWidth = t.name.size();
