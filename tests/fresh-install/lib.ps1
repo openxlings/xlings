@@ -12,9 +12,31 @@ function Write-Section { param([string]$Text) Write-Host "`n== $Text" -Foregroun
 function Write-Log     { param([string]$Text) Write-Host "   $Text" -ForegroundColor DarkGray }
 function Write-Ok      { param([string]$Text) Write-Host "   OK  $Text" -ForegroundColor Green }
 
+# Write-State — what was actually on disk when an assertion failed.
+#
+# The distinction this exists to settle: when a package installs "successfully"
+# but its shims do not resolve, did the payload never land, or did it land and
+# the recipe fail to register it? Those are bugs in different repositories.
+function Write-State {
+    $home_dir = Join-Path $env:USERPROFILE '.xlings'
+    Write-Host "`n-- state at failure" -ForegroundColor Yellow
+    if (-not (Test-Path $home_dir)) {
+        Write-Host "   (no xlings home at $home_dir)"
+        return
+    }
+    Write-Host "   payload tree ($home_dir\data\xpkgs):"
+    Get-ChildItem -Path (Join-Path $home_dir 'data\xpkgs') -Depth 2 -ErrorAction SilentlyContinue |
+        Select-Object -First 40 -ExpandProperty FullName |
+        ForEach-Object { Write-Host "     $_" }
+    Write-Host '   xlings list:'
+    & (Join-Path $home_dir 'subos\current\bin\xlings.exe') list 2>&1 |
+        ForEach-Object { Write-Host "     $_" }
+}
+
 function Fail {
     param([string]$Text)
     Write-Host "`nFAIL $Text" -ForegroundColor Red
+    Write-State
     exit 1
 }
 

@@ -15,7 +15,35 @@ fi
 section() { printf '\n%s══ %s%s\n' "$YLW" "$*" "$RST"; }
 log()     { printf '   %s%s%s\n' "$DIM" "$*" "$RST"; }
 ok()      { printf '   %sOK%s  %s\n' "$GRN" "$RST" "$*"; }
-fail()    { printf '\n%sFAIL%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
+
+# dump_state — what was actually on disk when an assertion failed.
+#
+# Attached to every failure rather than left to a separate `if: failure()`
+# workflow step, because the CentOS 7 leg runs in a `docker run --rm` container
+# whose filesystem is gone by the time a later step could look at it.
+#
+# The distinction this exists to settle: when a package installs "successfully"
+# but its shims do not resolve, did the payload never land, or did it land and
+# the recipe fail to register it? Those are bugs in different repositories.
+dump_state() {
+    local home_dir="${XLINGS_HOME_DIR:-$HOME/.xlings}"
+    printf '\n%s── state at failure %s\n' "$YLW" "$RST" >&2
+    if [ ! -d "$home_dir" ]; then
+        printf '   (no xlings home at %s)\n' "$home_dir" >&2
+        return 0
+    fi
+    printf '   payload tree (%s/data/xpkgs):\n' "$home_dir" >&2
+    find "$home_dir/data/xpkgs" -maxdepth 3 2>/dev/null | head -40 | sed 's/^/     /' >&2 \
+        || printf '     (none)\n' >&2
+    printf '   xlings list:\n' >&2
+    "$home_dir/subos/current/bin/xlings" list 2>&1 | tr -d '\0' | sed 's/^/     /' >&2 || true
+}
+
+fail() {
+    printf '\n%sFAIL%s %s\n' "$RED" "$RST" "$*" >&2
+    dump_state
+    exit 1
+}
 
 # run <description> <cmd...> — echo the command, then run it, failing loudly.
 run() {
