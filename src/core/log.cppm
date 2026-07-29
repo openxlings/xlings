@@ -6,6 +6,7 @@ export module xlings.core.log;
 
 import std;
 import xlings.platform;
+import xlings.core.palette;
 
 namespace xlings::log {
 
@@ -64,22 +65,23 @@ export void enable_color(bool enabled) {
     gColor_ = enabled;
 }
 
-// ANSI color helpers (matching theme palette)
-namespace ansi_ {
-    constexpr auto reset   = "\033[0m";
-    constexpr auto bold    = "\033[1m";
-    constexpr auto dim     = "\033[2m";
-    // Theme colors as RGB ANSI sequences
-    constexpr auto cyan    = "\033[38;2;34;211;238m";   // #22D3EE
-    constexpr auto green   = "\033[38;2;34;197;94m";    // #22C55E
-    constexpr auto amber   = "\033[38;2;245;158;11m";   // #F59E0B
-    constexpr auto red     = "\033[38;2;239;68;68m";    // #EF4444
-    constexpr auto gray    = "\033[38;2;148;163;184m";  // #94A3B8
-} // namespace ansi_
+// Colors come from xlings.core.palette, so these prefixes follow the
+// terminal background like the rendered panels do and go quiet under
+// NO_COLOR / TERM=dumb / a pipe. They used to be dark-palette SGR literals
+// spelled out here, which is why a light terminal kept getting the
+// low-contrast text the palette exists to avoid.
+bool color_on_()     { return gColor_ && palette::colors_enabled(); }
+bool color_on_err_() { return gColor_ && palette::colors_enabled_err(); }
 
-std::string colored_(const char* color, const char* text) {
-    if (!gColor_) return text;
-    return std::string(color) + text + ansi_::reset;
+std::string colored_(palette::Rgb c, const char* text) {
+    if (!color_on_()) return text;
+    return palette::sgr_fg(c) + text + palette::reset;
+}
+
+// warn/error write to stderr, which can be a terminal when stdout is not.
+std::string colored_err_(palette::Rgb c, const char* text) {
+    if (!color_on_err_()) return text;
+    return palette::sgr_fg(c) + text + palette::reset;
 }
 
 std::string timestamp_() {
@@ -114,8 +116,8 @@ void debug(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Debug) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print("{} ", colored_(ansi_::gray, "[debug]"));
-            if (!gContext_.empty()) std::print("{} ", colored_(ansi_::gray, std::format("[{}]", gContext_).c_str()));
+            std::print("{} ", colored_(palette::dim(), "[debug]"));
+            if (!gContext_.empty()) std::print("{} ", colored_(palette::dim(), std::format("[{}]", gContext_).c_str()));
             std::println("{}", msg);
         }
         write_to_file_("[debug] ", msg);
@@ -127,8 +129,8 @@ void info(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print("{} ", colored_(ansi_::cyan, "[xlings]"));
-            if (!gContext_.empty()) std::print("{} ", colored_(ansi_::cyan, std::format("[{}]", gContext_).c_str()));
+            std::print("{} ", colored_(palette::cyan(), "[xlings]"));
+            if (!gContext_.empty()) std::print("{} ", colored_(palette::cyan(), std::format("[{}]", gContext_).c_str()));
             std::println("{}", msg);
         }
         write_to_file_("[xlings] ", msg);
@@ -140,8 +142,8 @@ void warn(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Warn) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print(stderr, "{} ", colored_(ansi_::amber, "[warn]"));
-            if (!gContext_.empty()) std::print(stderr, "{} ", colored_(ansi_::amber, std::format("[{}]", gContext_).c_str()));
+            std::print(stderr, "{} ", colored_err_(palette::amber(), "[warn]"));
+            if (!gContext_.empty()) std::print(stderr, "{} ", colored_err_(palette::amber(), std::format("[{}]", gContext_).c_str()));
             std::println(stderr, "{}", msg);
         }
         write_to_file_("[warn] ", msg);
@@ -152,12 +154,13 @@ export template<typename... Args>
 void error(std::format_string<Args...> fmt, Args&&... args) {
     auto msg = std::format(fmt, std::forward<Args>(args)...);
     if (!platform::is_tui_mode()) {
-        if (gColor_) {
-            std::print(stderr, "{}{}[error]{} ", ansi_::bold, ansi_::red, ansi_::reset);
+        if (color_on_err_()) {
+            std::print(stderr, "{}{}[error]{} ",
+                       palette::bold, palette::sgr_fg(palette::red()), palette::reset);
         } else {
             std::print(stderr, "[error] ");
         }
-        if (!gContext_.empty()) std::print(stderr, "{} ", colored_(ansi_::red, std::format("[{}]", gContext_).c_str()));
+        if (!gContext_.empty()) std::print(stderr, "{} ", colored_err_(palette::red(), std::format("[{}]", gContext_).c_str()));
         std::println(stderr, "{}", msg);
     }
     write_to_file_("[error] ", msg);

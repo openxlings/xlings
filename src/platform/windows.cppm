@@ -247,12 +247,17 @@ namespace platform_impl {
         ::SetConsoleOutputCP(CP_UTF8);
         ::SetConsoleCP(CP_UTF8);
 
-        HANDLE hOut = ::GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hOut != INVALID_HANDLE_VALUE) {
+        // Both handles. Only stdout used to be switched into VT mode, but
+        // `log::warn` and `log::error` write to stderr — so on a console
+        // their SGR was emitted to a handle that does not interpret it, and
+        // the user read the escape bytes instead of a colored `[warn]`.
+        for (DWORD which : { STD_OUTPUT_HANDLE, STD_ERROR_HANDLE }) {
+            HANDLE h = ::GetStdHandle(which);
+            if (h == INVALID_HANDLE_VALUE) continue;
             DWORD mode = 0;
-            if (::GetConsoleMode(hOut, &mode)) {
+            if (::GetConsoleMode(h, &mode)) {
                 mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-                ::SetConsoleMode(hOut, mode);
+                ::SetConsoleMode(h, mode);
             }
         }
     }
@@ -264,6 +269,26 @@ namespace platform_impl {
         DWORD mode = 0;
         if (!::GetConsoleMode(hOut, &mode)) return false;
         return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+    }
+
+    // Check if stderr is a console. Separate from stdout because warnings
+    // and errors go to stderr: `xlings install > log` still has an
+    // interactive stderr, and `2>&1 | cat` has neither.
+    export bool stderr_is_terminal() {
+        HANDLE hErr = ::GetStdHandle(STD_ERROR_HANDLE);
+        if (hErr == INVALID_HANDLE_VALUE) return false;
+        DWORD mode = 0;
+        if (!::GetConsoleMode(hErr, &mode)) return false;
+        return (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) != 0;
+    }
+
+    // Check if stdin is a console — i.e. whether there is someone there to
+    // answer an interactive prompt.
+    export bool stdin_is_terminal() {
+        HANDLE hIn = ::GetStdHandle(STD_INPUT_HANDLE);
+        if (hIn == INVALID_HANDLE_VALUE) return false;
+        DWORD mode = 0;
+        return ::GetConsoleMode(hIn, &mode) != 0;
     }
 
     export template<typename... Args>
@@ -311,24 +336,6 @@ namespace platform_impl {
         return {};
     }
 
-    export struct Icon {
-        static constexpr auto pending    = "o";
-        static constexpr auto running    = "*";
-        static constexpr auto done       = "+";
-        static constexpr auto failed     = "x";
-        static constexpr auto skipped    = "-";
-        static constexpr auto turn       = ">";
-        static constexpr auto reply      = "#";
-        static constexpr auto exec       = "*";
-        static constexpr auto thinking   = "~";
-        static constexpr auto approval   = "!";
-        static constexpr auto download   = "v";
-        static constexpr auto upload     = "^";
-        static constexpr auto extracting = ">";
-        static constexpr auto arrow      = ">";
-        static constexpr auto package    = "#";
-        static constexpr auto info       = ">";
-    };
 
     // Atomically replace `dst` with the contents of `src`, even when `dst`
     // is a currently running executable.

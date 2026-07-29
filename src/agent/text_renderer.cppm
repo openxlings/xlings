@@ -31,6 +31,9 @@ export void render_data_event(const DataEvent& e) {
         if (json.contains("fields")) print_fields(json["fields"]);
         if (json.contains("extra_fields")) print_fields(json["extra_fields"]);
     }
+    else if (e.kind == "tip") {
+        std::println("hint: {}", json.value("message", ""));
+    }
     else if (e.kind == "search_results") {
         if (json.contains("results") && json["results"].is_array()) {
             for (auto& r : json["results"]) {

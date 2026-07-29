@@ -7,7 +7,9 @@ module;
 export module xlings.ui:info_panel;
 
 import std;
+import xlings.core.palette;
 import :theme;
+import :layout;
 
 export namespace xlings::ui {
 
@@ -18,23 +20,125 @@ struct InfoField {
     bool is_highlight { false }; // Use green+bold for value
 };
 
-// Render info fields into rows with right-padded labels
-void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields) {
-    using namespace ftxui;
-    for (auto& f : fields) {
-        std::string padded = f.label;
-        while (padded.size() < 14) padded += ' ';
+// How a panel lays its rows out at the width it actually has.
+//
+// The old renderer had one shape — label padded to 14, value on the same
+// line — and one response to not fitting, which was to widen the canvas past
+// the terminal (`max(term, minWidth)`) and let the terminal hard-wrap every
+// line. It also mis-measured that width: `render_fields_` padded labels up to
+// 14 but never truncated them, while the width formula assumed 14 flat, so a
+// 19-column label under-reserved by 5 and the value lost its tail with no
+// marker at all. `xlings use gcc` dropped the `bin` off a toolchain path
+// that way.
+//
+// Now the panel measures itself honestly, never exceeds the terminal, and
+// when a value does not fit it *wraps* rather than eliding: for a payload
+// path or a `self doctor` remedy the whole string is the point.
+struct PanelLayout {
+    int width { 0 };       // canvas width, never wider than the terminal
+    int labelW { 0 };      // label column, in display columns
+    int markerW { 0 };     // 2 when any row is highlighted, else 0
+    int lead { 0 };        // columns before the value on a shared line
+    int valueW { 0 };      // columns available to the value
+    bool stacked { false };// label on its own line, value indented below
+};
 
-        auto val = f.is_highlight
-            ? (text(f.value) | color(theme::green()) | bold)
-            : (text(f.value) | color(theme::text_color()));
+// Below this a value column carries too little to be worth the label column
+// sitting next to it; the panel switches to stacked rows instead.
+inline constexpr int kMinValueW = 20;
+inline constexpr int kStackIndent = 6;
+
+inline int field_value_width_(const InfoField& f) {
+    return layout::max_line_width(f.value);
+}
+
+PanelLayout measure_panel_(std::string_view title,
+                           std::span<const InfoField> fields,
+                           std::span<const InfoField> extra) {
+    PanelLayout L;
+
+    auto scan = [&](std::span<const InfoField> fs) {
+        for (auto& f : fs) {
+            L.labelW = std::max(L.labelW, layout::display_width(f.label));
+            if (f.is_highlight) L.markerW = 2;
+        }
+    };
+    scan(fields);
+    scan(extra);
+    L.labelW = std::max(L.labelW, 12);  // keeps short panels looking like a column
+
+    int valueMax = 0;
+    auto widest = [&](std::span<const InfoField> fs) {
+        for (auto& f : fs) valueMax = std::max(valueMax, field_value_width_(f));
+    };
+    widest(fields);
+    widest(extra);
+
+    L.lead = 2 + L.markerW + L.labelW + 2;
+    int titleW = 2 + 2 + layout::display_width(title);
+    int natural = std::max({ L.lead + valueMax, titleW, 42 });
+
+    L.width = layout::fit_width(natural);
+    L.valueW = L.width - L.lead;
+    L.stacked = (L.valueW < kMinValueW) || (L.labelW > L.width / 2);
+    if (L.stacked) L.valueW = std::max(1, L.width - kStackIndent);
+    return L;
+}
+
+// Render info fields into rows, wrapping values that do not fit.
+void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
+                    const PanelLayout& L) {
+    using namespace ftxui;
+
+    for (auto& f : fields) {
+        // The active/notable marker is a glyph, not a color. `xlings use`
+        // used to say "this version is the active one" in green and nothing
+        // else, so NO_COLOR, a pipe, or a colorblind reader lost the one
+        // fact the command exists to report.
+        auto marker = L.markerW == 0
+            ? text("")
+            : (f.is_highlight
+                   ? (text(std::string(theme::icon::active) + " ") | color(theme::green()))
+                   : text("  "));
+
+        auto value_style = [&](Element e) {
+            return f.is_highlight ? (e | color(theme::green()) | bold)
+                                  : (e | color(theme::text_color()));
+        };
+
+        auto lines = layout::wrap_to_width(f.value, L.valueW);
+
+        if (L.stacked) {
+            rows.push_back(hbox({
+                text("  "),
+                marker,
+                text(f.label) | color(theme::dim_color()),
+            }));
+            for (auto& line : lines) {
+                if (line.empty()) continue;
+                rows.push_back(hbox({
+                    text(std::string(kStackIndent, ' ')),
+                    value_style(text(line)),
+                }));
+            }
+            continue;
+        }
 
         rows.push_back(hbox({
             text("  "),
-            text(padded) | color(theme::dim_color()),
+            marker,
+            text(layout::pad_to_width(f.label, L.labelW)) | color(theme::dim_color()),
             text("  "),
-            val,
+            value_style(text(lines.front())),
         }));
+        // Continuation lines sit under the value column, so the label column
+        // still reads as a column.
+        for (std::size_t i = 1; i < lines.size(); ++i) {
+            rows.push_back(hbox({
+                text(std::string(static_cast<std::size_t>(L.lead), ' ')),
+                value_style(text(lines[i])),
+            }));
+        }
     }
 }
 
@@ -45,52 +149,55 @@ void print_info_panel(std::string_view title,
                       std::span<const InfoField> extra = {}) {
     using namespace ftxui;
 
+    auto L = measure_panel_(title, fields, extra);
+
+    // The divider spans the panel. It used to be forty hardcoded box glyphs
+    // whatever the panel measured, so a 230-column `self doctor` header sat
+    // on a forty-column rule and read as a frame that failed to draw.
+    auto divider = [&] {
+        return text("  " + layout::repeat(theme::icon::divider, L.width - 4))
+               | color(theme::border_color());
+    };
+
     Elements rows;
     rows.push_back(hbox({
         text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
         text(std::string(title)) | theme::highlight(),
     }));
-    rows.push_back(
-        text("  ────────────────────────────────────────") | color(theme::border_color())
-    );
+    rows.push_back(divider());
 
-    // Calculate minimum width needed to avoid truncation
-    int minWidth = 40; // separator width
-    auto measure = [&](std::span<const InfoField> fs) {
-        for (auto& f : fs) {
-            int w = 2 + 14 + 2 + static_cast<int>(f.value.size()) + 2;
-            if (w > minWidth) minWidth = w;
-        }
-    };
-    measure(fields);
-    if (!extra.empty()) measure(extra);
-
-    render_fields_(rows, fields);
+    render_fields_(rows, fields, L);
 
     if (!extra.empty()) {
-        rows.push_back(
-            text("  ────────────────────────────────────────") | color(theme::border_color())
-        );
-        render_fields_(rows, extra);
+        rows.push_back(divider());
+        render_fields_(rows, extra, L);
     }
 
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto termDim = Dimension::Full();
-    int width = std::max(termDim.dimx, minWidth);
-    auto screen = Screen::Create(Dimension::Fixed(width),
-                                 theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
-    std::println("");
+    layout::print_rows(std::move(rows), L.width);
 }
 
-// Print a styled list of items with a title
+// Print a styled list of items with a title.
+//
+// `xlings search` and `xlings list` both land here. The package name is the
+// column the user acts on — it goes into the next `xlings install` — so it is
+// never elided; the description is.
 void print_styled_list(std::string_view title,
                        std::span<const std::pair<std::string, std::string>> items,
                        bool show_marker) {
     using namespace ftxui;
+
+    constexpr int kMarkerW = 4;   // "  ◆ " or four spaces
+    constexpr int kGap = 2;
+
+    int nameMax = 0, descMax = 0;
+    for (auto& [name, desc] : items) {
+        nameMax = std::max(nameMax, layout::display_width(name));
+        descMax = std::max(descMax, layout::display_width(desc));
+    }
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, descMax,
+                                     2 + layout::display_width(title));
 
     Elements rows;
     if (!title.empty()) {
@@ -103,34 +210,57 @@ void print_styled_list(std::string_view title,
             ? (text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()))
             : text("    ");
 
-        auto nameEl = text(name) | bold | color(theme::magenta());
-
-        Element row;
-        if (desc.empty()) {
-            row = hbox({ marker, nameEl });
-        } else {
-            row = hbox({
-                marker,
-                nameEl,
-                text("  ") ,
-                text(desc) | color(theme::dim_color()),
-            });
+        if (P.stacked) {
+            // The name is wider than the terminal. It still does not get cut:
+            // it wraps. A package name that does not round-trip into the next
+            // `xlings install` is worse than a taller list.
+            auto nameLines = layout::wrap_to_width(
+                name, std::max(1, P.width - kMarkerW));
+            for (std::size_t i = 0; i < nameLines.size(); ++i) {
+                rows.push_back(hbox({
+                    i == 0 ? marker : text(std::string(kMarkerW, ' ')),
+                    text(nameLines[i]) | bold | color(theme::magenta()),
+                }));
+            }
+            if (P.descW > 0 && !desc.empty()) {
+                rows.push_back(hbox({
+                    text(std::string(kMarkerW + kGap, ' ')),
+                    text(layout::truncate_to_width(desc, P.descW)) | color(theme::dim_color()),
+                }));
+            }
+            continue;
         }
-        rows.push_back(row);
+
+        Elements cells;
+        cells.push_back(marker);
+        cells.push_back(text(layout::pad_to_width(name, P.nameW))
+                        | bold | color(theme::magenta()));
+        if (P.descW > 0 && !desc.empty()) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::truncate_to_width(desc, P.descW))
+                            | color(theme::dim_color()));
+        }
+        rows.push_back(hbox(std::move(cells)));
     }
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
-    std::println("");
+    layout::print_rows(std::move(rows), P.width);
 }
 
 // Print install plan display.
 // Saves cursor position before package lines so download progress can replace them.
 void print_install_plan(std::span<const std::pair<std::string, std::string>> packages) {
     using namespace ftxui;
+
+    constexpr int kMarkerW = 6;   // "    ◆ "
+    constexpr int kGap = 2;
+
+    int nameMax = 0, descMax = 0;
+    for (auto& [nameVer, desc] : packages) {
+        nameMax = std::max(nameMax, layout::display_width(nameVer));
+        descMax = std::max(descMax, layout::display_width(desc));
+    }
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, descMax);
 
     // Print header
     Elements header;
@@ -140,32 +270,37 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
         text("):") | color(theme::text_color()),
     }));
     header.push_back(text(""));
+    // The blank row above is the spacing. print_rows terminates every row,
+    // including that one, so a further "\n" here would double it.
+    layout::print_rows(std::move(header), P.width);
 
-    // NOT fit_full_height: these lines are overwritten in place by the
-    // download progress renderer, which counts the rows it has to move the
-    // cursor back over. Printing more rows than the screen holds would put
-    // the cursor arithmetic and the visible output out of step.
-    auto headerDoc = vbox(std::move(header));
-    auto headerScreen = Screen::Create(Dimension::Full(), Dimension::Fit(headerDoc));
-    Render(headerScreen, headerDoc);
-    headerScreen.Print();
-    std::print("\n");
-
-    // Print package lines (will be replaced by download progress via cursor-up)
+    // Print package lines (will be replaced by download progress via
+    // cursor-up). One row per package, always — the progress renderer counts
+    // the rows it has to move back over, so this list truncates rather than
+    // wraps whatever the width.
     Elements pkgRows;
     for (auto& [nameVer, desc] : packages) {
-        pkgRows.push_back(hbox({
-            text("    " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
-            text(nameVer) | bold | color(theme::magenta()),
-            desc.empty() ? text("") : (text("  " + desc) | color(theme::dim_color())),
-        }));
+        Elements cells;
+        cells.push_back(text("    " + std::string(theme::icon::package) + " ")
+                        | color(theme::magenta()));
+        // The one place a package name may be elided: this list is
+        // overwritten row-for-row and cannot grow a second line. It is
+        // elided visibly, with an ellipsis, rather than clipped at the
+        // screen edge.
+        auto shown = P.stacked
+            ? layout::truncate_to_width(nameVer, std::max(1, P.width - kMarkerW))
+            : layout::pad_to_width(nameVer, P.nameW);
+        cells.push_back(text(shown) | bold | color(theme::magenta()));
+        if (!P.stacked && P.descW > 0 && !desc.empty()) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::truncate_to_width(desc, P.descW))
+                            | color(theme::dim_color()));
+        }
+        pkgRows.push_back(hbox(std::move(cells)));
     }
     pkgRows.push_back(text(""));
 
-    auto pkgDoc = vbox(std::move(pkgRows));
-    auto pkgScreen = Screen::Create(Dimension::Full(), Dimension::Fit(pkgDoc));
-    Render(pkgScreen, pkgDoc);
-    pkgScreen.Print();
+    layout::print_rows(std::move(pkgRows), P.width);
 }
 
 // Print subos list
@@ -173,53 +308,70 @@ void print_subos_list(
     std::span<const std::tuple<std::string, std::string, int, bool>> entries) {
     using namespace ftxui;
 
+    constexpr int kMarkerW = 4;
+    constexpr int kGap = 2;
+
+    auto detail_of = [](const std::string& dir, int tools) {
+        return "(" + dir + "  tools: " + std::to_string(tools) + ")";
+    };
+
+    int nameMax = 0, detailMax = 0;
+    for (auto& [name, dir, tools, active] : entries) {
+        nameMax = std::max(nameMax, layout::display_width(name));
+        detailMax = std::max(detailMax, layout::display_width(detail_of(dir, tools)));
+    }
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, detailMax);
+
     Elements rows;
     rows.push_back(text("  Sub-OS environments:") | bold | color(theme::text_color()));
     rows.push_back(text(""));
 
     for (auto& [name, dir, tools, active] : entries) {
         auto marker = active
-            ? (text("  " + std::string(theme::icon::arrow) + " ") | color(theme::cyan()))
+            ? (text("  " + std::string(theme::icon::active) + " ") | color(theme::cyan()))
             : text("    ");
         auto nameEl = active
-            ? (text(name) | bold | color(theme::cyan()))
-            : (text(name) | color(theme::text_color()));
+            ? (text(layout::pad_to_width(name, P.nameW)) | bold | color(theme::cyan()))
+            : (text(layout::pad_to_width(name, P.nameW)) | color(theme::text_color()));
 
-        rows.push_back(hbox({
-            marker,
-            nameEl,
-            text("  (" + dir + "  tools: " + std::to_string(tools) + ")")
-                | color(theme::dim_color()),
-        }));
+        Elements cells { marker, nameEl };
+        if (P.descW > 0) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(
+                text(layout::truncate_to_width(detail_of(dir, tools), P.descW))
+                | color(theme::dim_color()));
+        }
+        rows.push_back(hbox(std::move(cells)));
     }
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
-    std::println("");
+    layout::print_rows(std::move(rows), P.width);
 }
 
-// Subos status messages are single-line with a possibly-long path. ftxui
-// hbox layout truncates them to the detected terminal width (80 cols when
-// TERM is unset), so use plain std::print + raw ANSI here instead — the
-// content has to stay readable in CI / pipes / non-TTY contexts.
+// Subos status messages are single-line with a possibly-long path, and they
+// stay plain `std::print` rather than going through a rendered document: the
+// content has to survive CI / pipes / non-TTY contexts unchanged.
+//
+// The colors come from the shared palette, so these lines follow the
+// terminal background and fall silent under NO_COLOR / a pipe like every
+// other writer. They used to be dark-palette SGR literals spelled out here,
+// which left them low-contrast on a light terminal and leaking escapes into
+// a redirect.
 namespace subos_ansi_ {
-    constexpr auto reset  = "\033[0m";
-    constexpr auto bold   = "\033[1m";
-    constexpr auto cyan   = "\033[38;2;34;211;238m";       // switched (--global)
-    constexpr auto green  = "\033[38;2;34;197;94m";        // created / removed
-    constexpr auto gray   = "\033[38;2;148;163;184m";      // dim / "already in"
-    constexpr auto magenta= "\033[38;2;217;70;239m";       // entering (spawn) — distinct from switched
-    constexpr auto amber  = "\033[38;2;245;158;11m";       // nesting (caution-ish)
+    inline std::string reset()   { return palette::off(); }
+    inline std::string bold()    { return palette::strong(); }
+    inline std::string cyan()    { return palette::fg(palette::cyan()); }     // switched (--global)
+    inline std::string green()   { return palette::fg(palette::green()); }    // created / removed
+    inline std::string gray()    { return palette::fg(palette::dim()); }      // dim / "already in"
+    inline std::string magenta() { return palette::fg(palette::magenta()); }  // entering (spawn)
+    inline std::string amber()   { return palette::fg(palette::amber()); }    // nesting (caution-ish)
 }
 
 void print_subos_created(const std::string& name, const std::string& dir) {
     using namespace subos_ansi_;
-    std::println("{}  ✓ subos created: {}{}{}{}", green, bold, name, reset, reset);
+    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
     if (!dir.empty()) {
-        std::println("{}    dir:{} {}", gray, reset, dir);
+        std::println("{}    dir:{} {}", gray(), reset(), dir);
     }
 }
 
@@ -228,17 +380,17 @@ void print_subos_switched(const std::string& name, const std::string& dir) {
     // [global] tag distinguishes the persistent "--global" action from the
     // per-shell spawn (which is the default `xlings subos use NAME`).
     if (dir.empty()) {
-        std::println("{}  ▸ switched to subos {}{}{}{}  [global]{}",
-                     cyan, bold, name, reset, cyan, reset);
+        std::println("{}  {} switched to subos {}{}{}{}  [global]{}",
+                     cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), reset());
     } else {
-        std::println("{}  ▸ switched to subos {}{}{}{}  [global]  ({}){}",
-                     cyan, bold, name, reset, cyan, dir, reset);
+        std::println("{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
+                     cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), dir, reset());
     }
 }
 
 void print_subos_removed(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  ✓ subos removed: {}{}{}", green, bold, name, reset);
+    std::println("{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
 }
 
 // `xlings subos use <name>` (default spawn mode): user is entering a fresh
@@ -252,17 +404,17 @@ void print_subos_removed(const std::string& name) {
 // the magenta accent that distinguishes "spawn" from "switched" (cyan).
 void print_subos_entering(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  \xe2\x96\xb8 entering subos {}{}{}{}{}  (exit to leave){}",
-                 magenta, green, bold, name, reset, magenta, reset);
+    std::println("{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
+                 magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), reset());
 }
 
 // `xlings subos use <same>` while already in <same>: nothing happens, but
 // we tell the user so they know the command was received and acknowledged.
 void print_subos_already_in(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  \xe2\x80\xba already in subos {}{}{}{}",
-                 gray, bold, name, reset, gray);
-    std::print("{}", reset);
+    std::println("{}  {} already in subos {}{}{}{}",
+                 gray(), theme::icon::info, bold(), name, reset(), gray());
+    std::print("{}", reset());
 }
 
 // `xlings subos use <other>` while in <current>: the spawn will create a
@@ -270,11 +422,20 @@ void print_subos_already_in(const std::string& name) {
 // gives the destination, no need to repeat the layer count separately.
 void print_subos_nesting(const std::string& from, const std::string& to) {
     using namespace subos_ansi_;
-    std::println("{}  \xe2\x96\xbe nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
-                 amber,
-                 bold, from, reset, amber,
-                 bold, to, reset, amber,
-                 bold, from, reset, amber, reset);
+    std::println("{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
+                 amber(), theme::icon::extracting,
+                 bold(), from, reset(), amber(),
+                 bold(), to, reset(), amber(),
+                 bold(), from, reset(), amber(), reset());
+}
+
+// Width for a short message block: the widest line it will draw, clamped to
+// the terminal. These blocks are a couple of lines of prose, so there is no
+// column to plan — they just must not exceed the screen.
+inline int message_width_(std::span<const std::string> lines) {
+    int w = 0;
+    for (auto& l : lines) w = std::max(w, layout::display_width(l) + 4);
+    return layout::fit_width(w);
 }
 
 // Print install summary with success/fail counts
@@ -282,27 +443,28 @@ void print_install_summary(int success, int failed) {
     using namespace ftxui;
 
     Elements rows;
+    std::vector<std::string> measured;
     rows.push_back(text(""));
 
     if (success > 0) {
+        auto msg = std::to_string(success) + " package(s) installed";
+        measured.push_back(msg);
         rows.push_back(hbox({
             text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
-            text(std::to_string(success) + " package(s) installed") | color(theme::green()) | bold,
+            text(msg) | color(theme::green()) | bold,
         }));
     }
     if (failed > 0) {
+        auto msg = std::to_string(failed) + " package(s) failed";
+        measured.push_back(msg);
         rows.push_back(hbox({
             text("  " + std::string(theme::icon::failed) + " ") | color(theme::red()),
-            text(std::to_string(failed) + " package(s) failed") | color(theme::red()) | bold,
+            text(msg) | color(theme::red()) | bold,
         }));
     }
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
-    std::println("");
+    layout::print_rows(std::move(rows), message_width_(measured));
 }
 
 // Format "<name>[@<version>]" for display. Centralized so the plan and
@@ -327,17 +489,16 @@ void print_remove_plan(const std::string& subos,
         text("  Package to remove:") | color(theme::text_color()),
     }));
     rows.push_back(text(""));
+    auto suffix = "  (subos: " + subos + ")";
     rows.push_back(hbox({
         text("    " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
         text(label) | bold | color(theme::magenta()),
-        text("  (subos: " + subos + ")") | color(theme::dim_color()),
+        text(suffix) | color(theme::dim_color()),
     }));
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
+    std::vector<std::string> measured { "Package to remove:", label + suffix + "  " };
+    layout::print_rows(std::move(rows), message_width_(measured));
 }
 
 // Print uninstall summary
@@ -355,15 +516,18 @@ void print_remove_summary(const std::string& subos,
 
     auto label = remove_target_label_(name, version);
 
+    auto suffix = subos.empty() ? std::string{} : "  (subos: " + subos + ")";
+
     Elements rows;
+    std::vector<std::string> measured;
     rows.push_back(text(""));
     if (detached) {
+        measured.push_back(label + " detached" + suffix);
         rows.push_back(hbox({
             text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
             text(label + " detached") | color(theme::green()) | bold,
-            subos.empty()
-                ? text("")
-                : (text("  (subos: " + subos + ")") | color(theme::dim_color())),
+            suffix.empty() ? text("")
+                           : (text(suffix) | color(theme::dim_color())),
         }));
         // Say how many, and name them only while the line still fits.
         //
@@ -378,6 +542,7 @@ void print_remove_summary(const std::string& subos,
         if (pinnedBy.empty()) {
             // Pinned by something the subos scan cannot name (a project-local
             // subos, say). Still say the payload stayed.
+            measured.emplace_back("payload kept — another subos still uses it");
             rows.push_back(text("    payload kept — another subos still uses it")
                            | color(theme::dim_color()));
         } else {
@@ -391,26 +556,23 @@ void print_remove_summary(const std::string& subos,
                 }
                 line = std::format("    payload kept — still used by {}", names);
             }
+            measured.push_back(line);
             rows.push_back(text(line) | color(theme::dim_color()));
             rows.push_back(text("    remove it there too to delete it for good")
                            | color(theme::dim_color()));
         }
     } else {
+        measured.push_back(label + " removed" + suffix);
         rows.push_back(hbox({
             text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
             text(label + " removed") | color(theme::green()) | bold,
-            subos.empty()
-                ? text("")
-                : (text("  (subos: " + subos + ")") | color(theme::dim_color())),
+            suffix.empty() ? text("")
+                           : (text(suffix) | color(theme::dim_color())),
         }));
     }
     rows.push_back(text(""));
 
-    auto doc = vbox(std::move(rows));
-    auto screen = Screen::Create(Dimension::Full(), theme::fit_full_height(doc));
-    Render(screen, doc);
-    screen.Print();
-    std::println("");
+    layout::print_rows(std::move(rows), message_width_(measured));
 }
 
 } // namespace xlings::ui

@@ -201,6 +201,19 @@ namespace platform_impl {
         return ::isatty(STDOUT_FILENO) != 0;
     }
 
+    // Check if stderr is a TTY. Separate from stdout because warnings and
+    // errors go to stderr: `xlings install > log` still has an interactive
+    // stderr, and `2>&1 | cat` has neither.
+    export bool stderr_is_terminal() {
+        return ::isatty(STDERR_FILENO) != 0;
+    }
+
+    // Check if stdin is a TTY — i.e. whether there is someone there to answer
+    // an interactive prompt.
+    export bool stdin_is_terminal() {
+        return ::isatty(STDIN_FILENO) != 0;
+    }
+
     export template<typename... Args>
     void println(std::format_string<Args...> fmt, Args&&... args) {
         std::println(fmt, std::forward<Args>(args)...);
@@ -223,24 +236,6 @@ namespace platform_impl {
 
     // query_terminal_is_light() lives in :unix — shared with macOS.
 
-    export struct Icon {
-        static constexpr auto pending    = "\xe2\x97\x8b";   // ○
-        static constexpr auto running    = "\xe2\x9f\xb3";   // ⟳
-        static constexpr auto done       = "\xe2\x9c\x93";   // ✓
-        static constexpr auto failed     = "\xe2\x9c\x97";   // ✗
-        static constexpr auto skipped    = "\xe2\x96\xb7";   // ▷
-        static constexpr auto turn       = "\xe2\x8f\xb5";   // ⏵
-        static constexpr auto reply      = "\xe2\x97\x86";   // ◆
-        static constexpr auto exec       = "\xe2\x9a\x99";   // ⚙
-        static constexpr auto thinking   = "\xe2\x97\x87";   // ◇
-        static constexpr auto approval   = "\xe2\x9a\xa0";   // ⚠
-        static constexpr auto download   = "\xe2\x86\x93";   // ↓
-        static constexpr auto upload     = "\xe2\x86\x91";   // ↑
-        static constexpr auto extracting = "\xe2\x9f\x90";   // ⟐
-        static constexpr auto arrow      = "\xe2\x96\xb8";   // ▸
-        static constexpr auto package    = "\xe2\x97\x86";   // ◆
-        static constexpr auto info       = "\xe2\x80\xba";   // ›
-    };
 
 } // namespace platform_impl
 }

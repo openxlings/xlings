@@ -36,6 +36,8 @@ namespace platform {
     export using platform_impl::println;
     export using platform_impl::init_console_output;
     export using platform_impl::supports_rewrite_output;
+    export using platform_impl::stderr_is_terminal;
+    export using platform_impl::stdin_is_terminal;
     export using platform_impl::get_pid;
     export using platform_impl::is_process_alive;
     export using platform_impl::query_terminal_is_light;
@@ -49,7 +51,6 @@ namespace platform {
     export using platform_impl::ProcessHandle;
     export using platform_impl::spawn_command;
     export using platform_impl::wait_or_kill;
-    export using platform_impl::Icon;
     export using platform_impl::atomic_replace_executable;
     export using platform_impl::atomic_swap_paths;
     export using platform_impl::FileLock;
