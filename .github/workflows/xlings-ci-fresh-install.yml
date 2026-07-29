@@ -1,0 +1,259 @@
+name: xlings-ci-fresh-install
+
+# Fresh-install CI — validates the RELEASED xlings on a clean machine.
+#
+# Every other workflow here builds xlings from the PR and tests that binary
+# against a warm, cached environment. This one tests the path a real first-time
+# user takes: land on a bare host, run quick_install, use the tool. That path
+# has failure modes the rest of the matrix structurally cannot see — a broken
+# release artifact, a quick_install regression, an index that cannot resolve on
+# a cold home, a shim that does not resolve, a version switch that silently
+# no-ops, or a binary that will not start on an old glibc.
+#
+# Modelled on mcpp-community/mcpp's ci-fresh-install.yml.
+#
+# The suites live in tests/fresh-install/ rather than inline here: the CentOS 7
+# leg runs them under `docker run`, where a mounted script beats escaping a long
+# heredoc through two shell layers, and it means a failure reproduces locally
+# with one command:
+#
+#   HOME=$(mktemp -d) bash tests/fresh-install/smoke.sh gcc
+
+# Deliberately NOT on `pull_request`. It ran on PRs while it was being
+# validated (openxlings/xlings#446, four runs across all four platforms) and
+# that trigger is now removed, for two reasons:
+#
+#   1. It tests the *released* binary, so on a PR it validates the workflow
+#      rather than the change — near-zero signal per run, at four platforms
+#      and eleven cold toolchain installs of cost.
+#   2. The defects it currently reports live in xim-pkgindex, not here
+#      (openxlings/xim-pkgindex#442, #443, #444). Gating unrelated PRs on
+#      another repository's release state would train people to ignore it.
+#
+# Run it by hand from the Actions tab when you want an answer now.
+on:
+  workflow_dispatch:
+    inputs:
+      index_ref:
+        # Recipe bugs are only ever caught on a real install, so a recipe fix
+        # cannot be validated until it is already published. This runs the
+        # whole suite, on every platform, against an unmerged xim-pkgindex
+        # branch — replacing only pkgs/ in the fetched index.
+        description: 'xim-pkgindex branch/tag to test against (blank = the published index)'
+        required: false
+        default: ''
+
+  # `release: published` is deliberately NOT used. release.yml creates the
+  # release with GITHUB_TOKEN, and GitHub suppresses workflow triggers from
+  # GITHUB_TOKEN-generated events, so it would never fire from the pipeline.
+  # workflow_run is a platform-generated event, exempt from that suppression,
+  # and needs no cross-repo PAT.
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+
+  # Daily, to catch breakage that arrives from outside the repo: a runner image
+  # update, an index change, a package host going away.
+  schedule:
+    - cron: '0 6 * * *'
+
+concurrency:
+  group: xlings-ci-fresh-install-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XLINGS_NON_INTERACTIVE: '1'
+  # Blank on every trigger except a manual run that named a candidate index.
+  XIM_PKGINDEX_REF: ${{ inputs.index_ref }}
+  # Runners reach github.com but not the gitee/gitcode endpoints, which need
+  # auth — force GLOBAL rather than letting region detection guess.
+  XLINGS_RELEASE_MIRROR: GLOBAL
+  GIT_TERMINAL_PROMPT: '0'
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # Linux — the reference leg. All three suites.
+  # ────────────────────────────────────────────────────────────────────
+  linux-fresh:
+    name: Linux fresh (${{ matrix.suite }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each cell does its OWN fresh install — no shared warm state, which is
+        # the entire point. They run in parallel, so wall-clock is one
+        # bootstrap plus one toolchain, not the sum.
+        suite: [core, gcc, llvm]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately no actions/cache anywhere in this workflow: a warm cache
+      # would defeat the thing being tested.
+      - name: Run ${{ matrix.suite }} suite
+        run: bash tests/fresh-install/smoke.sh ${{ matrix.suite }}
+
+  # ────────────────────────────────────────────────────────────────────
+  # CentOS 7 — the old-glibc proof (glibc 2.17, EOL).
+  #
+  # A `container:` job cannot work here: actions/checkout, actions/cache and
+  # every other JS action need Node 20, which needs glibc 2.28. So the JS
+  # actions run on the ubuntu host, the repo is bind-mounted in, and only the
+  # smoke script executes inside the container.
+  #
+  # This leg is load-bearing, not decorative. The xlings Linux binary is
+  # static-musl so it *should* start on 2.17, and gcc/llvm pull in a
+  # self-contained xim:glibc@2.39 rather than the host's — but whether that
+  # whole stack works on a 2.17 host is otherwise unproven.
+  # ────────────────────────────────────────────────────────────────────
+  centos7-fresh:
+    name: CentOS 7 fresh (${{ matrix.suite }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, gcc, llvm]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.suite }} suite in centos:7
+        run: |
+          # If docker.io/centos:7 is ever pulled from Docker Hub, the drop-in
+          # replacement is quay.io/centos/centos:centos7 (same contents).
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/w" -w /w \
+            -e HOME=/root \
+            -e XLINGS_NON_INTERACTIVE=1 \
+            -e XLINGS_RELEASE_MIRROR=GLOBAL \
+            -e GIT_TERMINAL_PROMPT=0 \
+            -e XIM_PKGINDEX_REF="$XIM_PKGINDEX_REF" \
+            centos:7 \
+            bash -euo pipefail -c '
+              # CentOS 7 is EOL and mirrorlist.centos.org no longer resolves,
+              # so every yum call 404s until the repos point at the vault.
+              sed -i -e "s|^mirrorlist=|#mirrorlist=|g" \
+                     -e "s|^#\?baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g" \
+                     /etc/yum.repos.d/CentOS-*.repo
+
+              # curl and tar are hard requirements of quick_install.sh; it also
+              # locates the extracted directory with a glob, so findutils/which
+              # are installed explicitly rather than assumed present.
+              yum -y install curl tar gzip xz git which findutils ca-certificates
+
+              # The stock CA bundle predates the roots the GitHub asset CDN
+              # serves; without this, downloads fail at TLS handshake.
+              update-ca-trust force-enable
+              update-ca-trust extract
+
+              echo "host glibc: $(ldd --version | head -1)"
+              bash /w/tests/fresh-install/smoke.sh ${{ matrix.suite }}
+            '
+
+  # ────────────────────────────────────────────────────────────────────
+  # Windows.
+  #
+  # The gcc cell asserts group *registration*, not group switching: the index
+  # ships exactly one Windows gcc (15.1.0, via mingw64), so there is nothing to
+  # switch between. Real group switching is covered on Linux and CentOS 7.
+  # ────────────────────────────────────────────────────────────────────
+  windows-fresh:
+    name: Windows fresh (${{ matrix.suite }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, gcc, llvm]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.suite }} suite
+        shell: pwsh
+        run: pwsh -File tests/fresh-install/smoke.ps1 -Suite ${{ matrix.suite }}
+
+  # ────────────────────────────────────────────────────────────────────
+  # TEMPORARY — diagnosing xim-pkgindex#443's macOS half.
+  #
+  # `clang h.c -o h` dies because Apple's own linker is made to load OUR
+  # bundled libc++ and aborts on __ZdaPv. Ruled out already: the dep list,
+  # a missing libc++abi (both versions ship identical dylib sets), and
+  # clang's link commands (clang-20 and clang-22 have identical
+  # LC_LOAD_DYLIB/LC_RPATH). This runs the differentials that need a real
+  # macOS host. Delete once the cause is known.
+  # ────────────────────────────────────────────────────────────────────
+  macos-llvm-probe:
+    name: TEMP macOS llvm probe
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xlings + llvm@22.1.8
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+          export PATH="$HOME/.xlings/subos/current/bin:$PATH"
+          xlings config --mirror GLOBAL
+          xlings update
+          xlings install llvm@22.1.8 -y -g
+          xlings use llvm@22.1.8
+
+      - name: "Probe 1 — does anything register DYLD envs?"
+        run: |
+          for f in "$HOME/.xlings/.xlings.json" "$HOME/.xlings/subos/default/.xlings.json"; do
+            echo "== $f"
+            grep -oE '"(envs|DYLD[A-Z_]*)"[^,}]*' "$f" 2>/dev/null || echo "   (no envs / DYLD keys)"
+          done
+
+      - name: "Probe 2 — clang.cfg written by __install_macosx_cfg"
+        run: |
+          for f in "$HOME"/.xlings/data/xpkgs/xim-x-llvm/22.1.8/bin/*.cfg; do
+            [ -e "$f" ] || continue
+            echo "== $f"; cat "$f"
+          done
+
+      # The decisive differential. If the real binary links fine and only the
+      # shimmed one fails, the shim is injecting something; if both fail, it is
+      # the payload and the shim is innocent.
+      - name: "Probe 3 — shimmed clang vs the real binary"
+        run: |
+          printf '#include <stdio.h>\nint main(void){printf("ok\\n");return 0;}\n' > /tmp/h.c
+          real="$HOME/.xlings/data/xpkgs/xim-x-llvm/22.1.8/bin/clang"
+          echo "=== via shim ==="
+          ( export PATH="$HOME/.xlings/subos/current/bin:$PATH"; cd /tmp && clang h.c -o h_shim && ./h_shim ) \
+            && echo "SHIM: ok" || echo "SHIM: FAILED"
+          echo "=== direct, no shim ==="
+          ( cd /tmp && "$real" h.c -o h_real && ./h_real ) \
+            && echo "DIRECT: ok" || echo "DIRECT: FAILED"
+
+      - name: "Probe 4 — which libc++ does the linker actually load?"
+        run: |
+          export PATH="$HOME/.xlings/subos/current/bin:$PATH"
+          cd /tmp
+          echo "--- env seen here ---"; env | grep -iE 'dyld|ld_library' || echo "   (none in parent env)"
+          echo "--- DYLD_PRINT_LIBRARIES during link ---"
+          DYLD_PRINT_LIBRARIES=1 clang h.c -o h_probe 2>&1 | grep -iE 'libc\+\+|xim-x-llvm|/usr/lib' | head -20 || true
+
+  # ────────────────────────────────────────────────────────────────────
+  # macOS — no gcc cell: the package index ships no macOS gcc.
+  # ────────────────────────────────────────────────────────────────────
+  macos-fresh:
+    name: macOS fresh (${{ matrix.suite }})
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    # macos-14 is the support floor — xlings ships minos=14.0 binaries, so a
+    # fresh install passing here is the continuous proof of that floor.
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [core, llvm]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ${{ matrix.suite }} suite
+        run: bash tests/fresh-install/smoke.sh ${{ matrix.suite }}
