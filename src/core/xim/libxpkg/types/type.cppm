@@ -73,6 +73,12 @@ struct PlanNode {
     // provider"; predicate-driven elfpatch trigger reads this + dep nodes'
     // exports to decide whether and how to patch.
     ExportsRuntime exports;
+    // The program names the recipe promises this package provides
+    // (`package.programs`). Carried so the installer can check, after
+    // everything has run, that the promise was kept -- see
+    // verify_declared_programs_. Empty means the recipe made no promise and
+    // nothing is verified.
+    std::vector<std::string> programs;
     bool alreadyInstalled { false };
     bool isSystemPM { false };
     PackageScope scope { PackageScope::Global };
