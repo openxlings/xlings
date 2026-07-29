@@ -92,6 +92,7 @@ TESTS=(
     "E2E-40 |subos_shell_level_test.sh||"
     "E2E-41 |index_artifact_update_test.sh||"
     "E2E-42 |self_doctor_multi_subos_test.sh||"
+    "E2E-43 |declared_programs_verified_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

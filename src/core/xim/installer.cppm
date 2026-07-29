@@ -1769,6 +1769,56 @@ bool run_config_hook_(const PlanNode& node,
         node, dataDir, executor, useAfterInstall);
 }
 
+// A package that promised programs and delivered none of them.
+//
+// `✓ N package(s) installed` counts recipes that did not raise, which is not
+// the same as packages that work. Two real installs printed that checkmark and
+// left the user with nothing: llvm on Windows registered no `clang` because
+// its recipe's directory listing came back empty, and gcc on Windows
+// registered nothing because the toolchain it delegates to aborted. Neither
+// emitted a single diagnostic (openxlings/xlings#447).
+//
+// Recipes state what they provide in `package.programs`, so that promise can
+// simply be checked against the version database.
+//
+// Deliberately checked after the WHOLE plan has run, not per node: a package
+// may legitimately register nothing itself and delegate to a deferred install
+// -- gcc on Windows hands off to mingw-w64 -- and that dep has not been
+// installed yet at the moment its consumer's config hook returns.
+//
+// Only total absence is reported. Partial registration is normal and correct:
+// recipes routinely declare one cross-platform program list and register the
+// subset that exists on this host. Zero out of N is what never has a benign
+// reading -- the package cannot do the thing it exists to do.
+std::vector<std::string> unfulfilled_program_promises_(const InstallPlan& plan) {
+    std::vector<std::string> broken;
+    // By value, per Config::versions()'s contract -- it merges global and
+    // project state into a fresh map, so a reference into the temporary would
+    // dangle at the end of the full expression.
+    const auto db = Config::versions();
+
+    for (const auto& node : plan.nodes) {
+        // Build-only deps are intentionally never registered or shimmed.
+        if (node.kind == DepKind::Build) continue;
+        if (node.programs.empty()) continue;
+
+        const bool anyRegistered = std::ranges::any_of(
+            node.programs,
+            [&](const std::string& prog) { return xvm::has_target(db, prog); });
+        if (anyRegistered) continue;
+
+        std::string names;
+        for (const auto& prog : node.programs) {
+            if (!names.empty()) names += ", ";
+            names += prog;
+        }
+        log::error("{} installed but registered none of the programs it "
+                   "declares: {}", node.name, names);
+        broken.push_back(node.name);
+    }
+    return broken;
+}
+
 }  // namespace detail_
 
 using InstallRequestHandler = std::function<void(const std::vector<mcpplibs::xpkg::InstallRequest>&)>;
@@ -2423,6 +2473,22 @@ public:
             } else {
                 log::debug("{}@{} installed successfully", node.name, node.version);
             }
+        }
+
+        // Every hook returned success; that is not the same as the packages
+        // being usable. Fail the install rather than let a checkmark stand for
+        // a package that registered none of the programs it promised.
+        if (auto broken = detail_::unfulfilled_program_promises_(plan);
+            !broken.empty()) {
+            for (const auto& name : broken) {
+                if (onStatus) {
+                    onStatus({ name, InstallPhase::Failed, 0.0f,
+                               "declared programs were not registered" });
+                }
+            }
+            return std::unexpected(std::format(
+                "{} installed but registered none of its declared programs",
+                broken.front()));
         }
 
         return {};

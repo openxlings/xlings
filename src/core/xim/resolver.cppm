@@ -184,6 +184,12 @@ resolve(IndexManager& index,
                 node.exports.abi     = exIt->second.runtime.abi;
             }
 
+            // What the recipe promises this package provides. Verified after
+            // the whole install completes -- not here -- because a package may
+            // legitimately delegate its registration to a deferred install
+            // (gcc on Windows hands off to mingw-w64).
+            node.programs = pkg->programs;
+
             // Walk the two kinds. Build subtrees stay Build (the dep is
             // only being installed to satisfy an upstream consumer's
             // install hook); Runtime parents fork their build_deps to
@@ -349,6 +355,12 @@ resolve(PackageCatalog& catalog,
                 node.exports.libdirs = exIt->second.runtime.libdirs;
                 node.exports.abi     = exIt->second.runtime.abi;
             }
+
+            // What the recipe promises this package provides. Verified after
+            // the whole install completes -- not here -- because a package may
+            // legitimately delegate its registration to a deferred install
+            // (gcc on Windows hands off to mingw-w64).
+            node.programs = pkg->programs;
 
             DepKind rt_kind = (kind == DepKind::Build) ? DepKind::Build
                                                        : DepKind::Runtime;
