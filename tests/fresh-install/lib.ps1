@@ -24,9 +24,12 @@ function Write-State {
         Write-Host "   (no xlings home at $home_dir)"
         return
     }
+    # Depth 3 reaches <pkg>/<version>/bin/<exe>. Anything shallower cannot
+    # distinguish "the payload never landed" from "it landed and the recipe
+    # registered nothing from it" — which is the whole point of this dump.
     Write-Host "   payload tree ($home_dir\data\xpkgs):"
-    Get-ChildItem -Path (Join-Path $home_dir 'data\xpkgs') -Depth 2 -ErrorAction SilentlyContinue |
-        Select-Object -First 40 -ExpandProperty FullName |
+    Get-ChildItem -Path (Join-Path $home_dir 'data\xpkgs') -Depth 3 -ErrorAction SilentlyContinue |
+        Select-Object -First 60 -ExpandProperty FullName |
         ForEach-Object { Write-Host "     $_" }
     Write-Host '   xlings list:'
     & (Join-Path $home_dir 'subos\current\bin\xlings.exe') list 2>&1 |
