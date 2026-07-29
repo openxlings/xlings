@@ -230,13 +230,31 @@ jobs:
           ( cd /tmp && "$real" h.c -o h_real && ./h_real ) \
             && echo "DIRECT: ok" || echo "DIRECT: FAILED"
 
-      - name: "Probe 4 — which libc++ does the linker actually load?"
+      # Both the shim and the real binary failed identically and nothing
+      # registers DYLD envs, so the remaining question is narrow: how does
+      # Apple's `ld` come to resolve libc++ to OUR copy at all? Our
+      # libc++.1.0.dylib has install_name @rpath/libc++.1.dylib and does NOT
+      # export __ZdaPv -- in BOTH 20.1.7 and 22.1.8. So the symbol is not the
+      # difference; whether our copy gets loaded is.
+      - name: "Probe 4 — how does ld reach our libc++?"
         run: |
           export PATH="$HOME/.xlings/subos/current/bin:$PATH"
-          cd /tmp
-          echo "--- env seen here ---"; env | grep -iE 'dyld|ld_library' || echo "   (none in parent env)"
-          echo "--- DYLD_PRINT_LIBRARIES during link ---"
-          DYLD_PRINT_LIBRARIES=1 clang h.c -o h_probe 2>&1 | grep -iE 'libc\+\+|xim-x-llvm|/usr/lib' | head -20 || true
+          LD=/Applications/Xcode_15.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+          LIB="$HOME/.xlings/data/xpkgs/xim-x-llvm/22.1.8/lib"
+
+          echo "--- does ld reference libc++ by @rpath or absolute path? ---"
+          otool -L "$LD" 2>/dev/null | grep -i 'libc++' || echo "   (ld links no libc++)"
+          echo "--- ld's own LC_RPATH entries ---"
+          otool -l "$LD" 2>/dev/null | grep -A2 LC_RPATH | grep 'path ' || echo "   (none)"
+
+          echo "--- ld standalone (clean env) ---"
+          "$LD" -v 2>&1 | head -3 && echo "LD_ALONE: ok" || echo "LD_ALONE: FAILED"
+
+          echo "--- ld with our lib dir on DYLD_LIBRARY_PATH ---"
+          DYLD_LIBRARY_PATH="$LIB" "$LD" -v 2>&1 | head -3 && echo "LD_DYLD: ok" || echo "LD_DYLD: FAILED"
+
+          echo "--- the exact ld invocation clang makes (and any env it sets) ---"
+          cd /tmp && clang -v h.c -o h_v 2>&1 | tail -25 || true
 
   # ────────────────────────────────────────────────────────────────────
   # macOS — no gcc cell: the package index ships no macOS gcc.
