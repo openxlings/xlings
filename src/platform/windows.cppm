@@ -247,12 +247,17 @@ namespace platform_impl {
         ::SetConsoleOutputCP(CP_UTF8);
         ::SetConsoleCP(CP_UTF8);
 
-        HANDLE hOut = ::GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hOut != INVALID_HANDLE_VALUE) {
+        // Both handles. Only stdout used to be switched into VT mode, but
+        // `log::warn` and `log::error` write to stderr — so on a console
+        // their SGR was emitted to a handle that does not interpret it, and
+        // the user read the escape bytes instead of a colored `[warn]`.
+        for (DWORD which : { STD_OUTPUT_HANDLE, STD_ERROR_HANDLE }) {
+            HANDLE h = ::GetStdHandle(which);
+            if (h == INVALID_HANDLE_VALUE) continue;
             DWORD mode = 0;
-            if (::GetConsoleMode(hOut, &mode)) {
+            if (::GetConsoleMode(h, &mode)) {
                 mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-                ::SetConsoleMode(hOut, mode);
+                ::SetConsoleMode(h, mode);
             }
         }
     }
