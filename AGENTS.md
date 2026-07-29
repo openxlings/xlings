@@ -117,6 +117,31 @@ xpkg = "0.0.42"
 ```
 For joint development, use mcpp's local dependency override/workspace mechanism.
 
+## Version numbering
+
+Releases are date-based: `YYYY.M.D.N`, e.g. `2026.7.29.1`.
+
+**`N` starts at `1`. `.0` is reserved.** A `.0` means a formal / stable /
+milestone release for that date, and is only used when someone deliberately
+intends one. Every ordinary fix or feature release is `.1`, then `.2`, and so
+on. If you are not sure, it is not a formal release — use `.1`.
+
+```
+2026.7.29.1   ← first release of the day (the normal case)
+2026.7.29.2   ← second release of the day
+2026.7.29.0   ← reserved: formal/stable release only
+```
+
+This rule already lived in `.agents/skills/xlings-contributing/SKILL.md`, and
+`2026.7.29.0` still shipped as an ordinary bugfix release because that skill was
+never opened — the release was cut from this file's instructions alone. It is
+repeated here for that reason: **the version is chosen before any skill is
+read**, so the rule has to be where the release decision is made.
+
+`semver::parse` rejects a four-component version, so resolution falls back to
+lexicographic ordering. Always publish and reference releases through an
+explicit `latest` ref rather than relying on version comparison.
+
 ## Agent Skills
 
 | Skill | Purpose |
@@ -135,5 +160,8 @@ For joint development, use mcpp's local dependency override/workspace mechanism.
 3. **Test isolation**: every e2e test uses temp XLINGS_HOME, never touches real user env
 4. **Commit convention**: `<type>(<scope>): <description>` — feat/fix/chore/docs/test
 5. **Squash merge**: PRs are squash-merged to main, one clean commit per feature
+6. **Version numbering**: releases are `YYYY.M.D.N` and **N starts at 1**.
+   `.0` is reserved for a formal/stable release and must never be used for a
+   routine one. See below.
 6. **CI must pass**: Linux + macOS + Windows; don't bypass with `--no-verify`
 7. **No unnecessary changes**: don't add comments/docstrings/refactors beyond what's asked

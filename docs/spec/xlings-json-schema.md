@@ -23,9 +23,58 @@
 | `mirror` | `string` | 镜像标识，影响默认 index 仓库 URL 及资源服务器选择 |
 | `lang` | `string` | 界面语言（如 `"zh"`、`"en"`） |
 | `activeSubos` | `string` | 当前激活的全局 SubOS 名称 |
-| `versions` | `object` | 全局版本数据库，键为包名，值为版本信息对象 |
+| `versions` | `object` | 全局版本数据库，键为**目标名**（不一定是包名），值见下方"versions 条目格式" |
+| `version` | `string` | 建立/最后体检这个 home 的 xlings 版本。`self doctor --fix` 成功后写入，用来判断包记录是否还是旧客户端的格式 |
 | `index_repos` | `array` | 包索引仓库列表，每项含 `name` 和 `url` |
 | `XLINGS_RES` | `object \| string \| array` | 资源服务器配置（见下方说明） |
+
+### versions 条目格式
+
+`versions` 的键是 **xvm 目标名**，也就是可以被 `xlings use` 切换的名字 —— 它不一定
+等于包名。一个包可以注册多个目标：llvm 注册出 `clang`、`lld`、`llvm-ar` 等等，
+它们都是目标，但索引里只有 `llvm` 这一个包。
+
+```json
+"versions": {
+  "python": {
+    "type": "program",
+    "filename": "python3",
+    "versions": {
+      "3.12.0":       { "path": ".../xim-x-python/3.12.0/bin" },
+      "local:3.11.0": { "path": ".../local-x-python/3.11.0/bin" }
+    }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `type` | `program` / `lib` / `files` / `group` |
+| `filename` | payload 里真实的文件名，和目标名不同时使用 |
+| `versions` | 键是**版本键**，值是该版本的记录 |
+| `bindings` | 遗留的成对绑定边（旧客户端写的），新客户端写 `bindingGroup` |
+
+**版本键里带命名空间。** 键写作 `<namespace>:<version>`（如 `local:3.11.0`），
+没有命名空间就是裸版本号。注意它和命令行坐标的顺序是**相反的**：
+
+| 场合 | 写法 | 例子 |
+|------|------|------|
+| 版本键（本文件内） | `ns:version` | `local:0.0.27` |
+| 命令行坐标 | `ns:package@version` | `local:mcpp@0.0.27` |
+| `xlings use` 的版本参数 | `ns:version` | `xlings use mcpp local:0.0.27` |
+
+版本记录里常见的字段：
+
+| 字段 | 说明 |
+|------|------|
+| `path` | payload 目录，布局是 `data/xpkgs/<ns>-x-<package>/<version>/...` |
+| `alias` | 转发到的真实命令；绝对路径表示指向 payload 之外 |
+| `envs` | 该版本激活时注入的环境变量 |
+| `bindingGroup` | 所属发布组：`provider` / `providerVersion` / `rootTarget` 等 |
+| `bindingMembers` | 组根上记录的成员列表 |
+
+`xlings self doctor` 检查的就是这些记录与磁盘是否一致，
+`--fix` 会修复不一致的部分 —— 详见[自我管理与修复](../quick-start/self-management.md)。
 
 ### index_repos 格式
 
@@ -142,8 +191,14 @@ SubOS 工作区中每个工具支持三种值形式：
   "mirror": "cn",
   "lang": "zh",
   "activeSubos": "dev",
+  "version": "2026.7.29.0",
   "versions": {
-    "python": { "version": "3.12.0" }
+    "python": {
+      "type": "program",
+      "versions": {
+        "3.12.0": { "path": "/home/me/.xlings/data/xpkgs/xim-x-python/3.12.0/bin" }
+      }
+    }
   },
   "index_repos": [
     { "name": "ros2", "url": "https://github.com/example/ros2-pkgindex" }

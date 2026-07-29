@@ -33,6 +33,7 @@
 3. **三级 SubOS 隔离** —— shell(env 切换)/ FS(bwrap/proot,无需 root)/ image(ext4,需 root)
 4. **去中心化包索引** —— 官方 + 第三方 + 自建仓库;资源服务器做二进制镜像分发
 5. **JSON 事件接口** —— `xlings interface`(NDJSON 协议)面向 AI Agent、CI 和第三方工具
+6. **自我诊断** —— `xlings self doctor --fix` 检查四层状态并一次修完
 
 ## 快速开始
 
@@ -119,13 +120,27 @@ xlings subos use agent-ws --sandbox --cmd "python run.py" # 或一次性执行
 
 → [SubOS 与 Agent](docs/quick-start/subos-and-agent.md)
 
+### 🩺 升级与修复，不用手改状态文件
+
+升级客户端之后，让 xlings 自己检查四层状态 —— workspace、版本数据库、shim、payload
+—— 并把能修的一次修完。你读到的报告是**修复之后**的状态，打印出来的命令都可以直接粘贴执行。
+
+```bash
+xlings self update                     # 升级 xlings 自己
+xlings self doctor                     # 只读体检(退出码 0 表示健康)
+xlings self doctor --fix --dry-run     # 先看会做什么
+xlings self doctor --fix               # 修复
+```
+
+→ [自我管理与修复](docs/quick-start/self-management.md)
+
 ## 文档
 
 详细的使用指南、设计文档与规范都在 [`docs/`](docs/)。
 
 | 分类 | 文档 |
 |------|------|
-| **快速上手** | [多版本管理](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [从源码构建](docs/build-from-source.md) |
+| **快速上手** | [多版本管理](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [自我管理与修复](docs/quick-start/self-management.md) · [从源码构建](docs/build-from-source.md) |
 | **架构** | [系统架构概览](docs/architecture/overview.md) |
 | **设计** | [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm 版本管理](docs/design/xvm-version-management.md) · [SubOS 隔离机制](docs/design/subos-isolation.md) · [包索引生态](docs/design/package-index-ecosystem.md) · [Interface 协议](docs/design/interface-protocol.md) |
 | **规范** | [xpkg 包描述格式 v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json 字段](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) |

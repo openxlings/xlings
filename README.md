@@ -33,6 +33,7 @@ One tool to install any version of anything, run it rootless, and isolate it OS-
 3. **3-level SubOS isolation** — shell (env switch) / FS (bwrap/proot, rootless) / image (ext4, root)
 4. **Decentralized package index** — official + 3rd-party + self-hosted; resource servers for binary mirrors
 5. **JSON event interface** — `xlings interface` (NDJSON) for AI agents, CI, and 3rd-party tooling
+6. **Self-diagnosing** — `xlings self doctor --fix` checks the four state layers and repairs them in one run
 
 ## Quick Start
 
@@ -119,13 +120,29 @@ xlings subos use agent-ws --sandbox --cmd "python run.py" # or one-shot exec
 
 → [SubOS & Agent guide](docs/quick-start/subos-and-agent.md)
 
+### 🩺 Upgrade and repair, without hand-editing state
+
+Upgrade the client, then let xlings check its own four state layers — workspace,
+version database, shims, payloads — and repair what it finds. One run; the report
+you read is the state *after* the repairs, and every command it prints is one you
+can paste.
+
+```bash
+xlings self update                     # upgrade xlings itself
+xlings self doctor                     # read-only check (exit 0 = healthy)
+xlings self doctor --fix --dry-run     # preview the repairs
+xlings self doctor --fix               # repair
+```
+
+→ [Self-management guide](docs/quick-start/self-management.md)
+
 ## Documentation
 
 Guides, design notes, and specs live in [`docs/`](docs/).
 
 | Area | Docs |
 |------|------|
-| **Get started** | [Multi-version](docs/quick-start/multi-version.md) · [Project env](docs/quick-start/project-env.md) · [SubOS & Agent](docs/quick-start/subos-and-agent.md) · [Custom index](docs/quick-start/custom-index.md) · [Build from source](docs/build-from-source.md) |
+| **Get started** | [Multi-version](docs/quick-start/multi-version.md) · [Project env](docs/quick-start/project-env.md) · [SubOS & Agent](docs/quick-start/subos-and-agent.md) · [Custom index](docs/quick-start/custom-index.md) · [Self-management](docs/quick-start/self-management.md) · [Build from source](docs/build-from-source.md) |
 | **Architecture** | [System overview](docs/architecture/overview.md) |
 | **Design** | [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm versioning](docs/design/xvm-version-management.md) · [SubOS isolation](docs/design/subos-isolation.md) · [Index ecosystem](docs/design/package-index-ecosystem.md) · [Interface protocol](docs/design/interface-protocol.md) |
 | **Spec** | [xpkg manifest v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json schema](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) |

@@ -227,6 +227,17 @@ doubt, it is not a formal release — use `.1`.
 2026.7.28.0   ← reserved: formal release, only when explicitly intended
 ```
 
+**This has been broken once.** `2026.7.29.0` shipped as an ordinary bugfix
+release. The rule was already written here; the release was cut by following
+`AGENTS.md`, which did not mention it, and this skill was never opened. The
+version is picked at the very start of a release — before anyone goes looking
+for process docs — so the rule now also lives in `AGENTS.md`. Keep both in
+sync; if you change the scheme, change it in both places.
+
+`2026.7.29.0` was left as-is rather than re-cut: the release was already
+published, mirrored, and indexed, and renaming a published version costs more
+than the wrong digit does.
+
 Note that `semver::parse` rejects a four-component version, so resolution
 falls back to lexicographic ordering — always publish and reference these
 through an explicit `latest` ref rather than relying on version comparison.

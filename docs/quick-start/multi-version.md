@@ -1,4 +1,4 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 编写日期: 2026-05-17 | 更新: 2026-07-29 | 版本: 2026.7.29.0
 
 # 多版本管理
 
@@ -13,15 +13,45 @@ xlings install gcc@14.2.0
 xlings install gcc@16.1.0
 ```
 
-多个版本并行安装，互不冲突。安装路径为 `~/.xlings/data/xpkgs/<name>/<version>/`。
+多个版本并行安装，互不冲突。安装路径为：
+
+```
+~/.xlings/data/xpkgs/<namespace>-x-<package>/<version>/
+```
+
+例如 `xim-x-gcc/16.1.0/`、`local-x-mcpp/0.0.27/`。命名空间是包所属的索引仓库
+（官方索引为 `xim`），它同时出现在目录名里和命令行坐标里 —— 见下面的"坐标写法"。
 
 ### 切换活跃版本
 
 ```bash
-xlings use gcc@14.2.0
+xlings use gcc 14.2.0
+xlings use gcc@14.2.0     # 等价写法
 ```
 
 切换后，当前环境中 `gcc` 命令即指向 14.2.0 版本。
+
+如果一个包属于一个"发布组"（例如 gcc 同时提供 `gcc` / `g++` / `cpp`），
+`use` 会整组一起切换，不会只切一个而让其余留在旧版本。
+
+### 坐标写法：命名空间在最前面
+
+带命名空间的包，完整坐标是 `<namespace>:<package>@<version>`：
+
+```bash
+xlings install local:mcpp@0.0.27
+xlings install fromsource:freetype@2.13.2
+```
+
+注意顺序。版本数据库内部把命名空间记在版本号那一侧（`local:0.0.27`），
+但命令行接受的是命名空间在最前面的形式。写成 `mcpp@local:0.0.27` 会被解析成
+一个叫 `local:0.0.27` 的版本号，任何包都没有这个版本，命令必然失败。
+
+`xlings use` 的版本参数则用数据库里的写法：
+
+```bash
+xlings use freetype fromsource:2.13.2
+```
 
 ### 查看已安装包
 
@@ -54,8 +84,8 @@ graph TD
         B2["bin/gcc → xlings"]
     end
     subgraph 物理存储
-        P1["~/.xlings/data/xpkgs/gcc/14.2.0/"]
-        P2["~/.xlings/data/xpkgs/gcc/16.1.0/"]
+        P1["data/xpkgs/xim-x-gcc/14.2.0/"]
+        P2["data/xpkgs/xim-x-gcc/16.1.0/"]
     end
 
     A2 -->|shim dispatch| P1

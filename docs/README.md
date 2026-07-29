@@ -15,6 +15,7 @@ xlings 是一个通用包管理基础设施,支持多版本共存、OS-like SubO
   - [2.2 项目环境](quick-start/project-env.md)
   - [2.3 SubOS 与 Agent](quick-start/subos-and-agent.md)
   - [2.4 自定义包索引](quick-start/custom-index.md)
+  - [2.5 自我管理与修复](quick-start/self-management.md)
 - **[三、高级主题](#三高级主题)**
   - [3.1 架构](#31-架构)
   - [3.2 设计](#32-设计)
@@ -53,6 +54,8 @@ xlings remove gcc                       # 卸载
 | 为 Agent 创建隔离环境 | `xlings subos new agent-ws --from subos:dev-env@latest` |
 | 进入隔离的 SubOS | `xlings subos use agent-ws --sandbox` |
 | 在 SubOS 中执行命令 | `xlings subos use agent-ws --sandbox --cmd "python run.py"` |
+| 升级 xlings 自己 | `xlings self update` |
+| 环境出问题、命令报错 | `xlings self doctor` 体检，`xlings self doctor --fix` 一键修复 |
 
 ### 1.4 SubOS 环境隔离
 
@@ -84,6 +87,7 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 | [项目环境](quick-start/project-env.md) | .xlings.json 配置、一键安装、项目级 SubOS |
 | [SubOS 与 Agent](quick-start/subos-and-agent.md) | 创建隔离环境、运行 Agent、多实例 |
 | [自定义包索引](quick-start/custom-index.md) | 搭建私有仓库、添加第三方索引 |
+| [自我管理与修复](quick-start/self-management.md) | `self update` 升级、`self doctor` 体检与一键修复、清理 |
 | [从源码构建](build-from-source.md) | 用 mcpp 构建 xlings 本身 |
 | [与其他工具对比](comparison.md) | xlings vs apt / nix / docker |
 

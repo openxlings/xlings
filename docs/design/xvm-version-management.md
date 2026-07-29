@@ -53,7 +53,7 @@ sequenceDiagram
     Shim->>Shim: extract_program_name(argv[0]) → "gcc"
     Shim->>DB: effective_workspace["gcc"] → "15.1.0"
     Shim->>DB: match_version("gcc", "15.1.0") → 精确匹配
-    Shim->>DB: get_vdata → path = "${XLINGS_HOME}/xpkgs/gcc/15.1.0"
+    Shim->>DB: get_vdata → path = "${XLINGS_HOME}/data/xpkgs/xim-x-gcc/15.1.0"
     Shim->>Shim: resolve_executable("gcc", path)
     Shim->>Exe: execvp(real_gcc, argv)
     Exe-->>User: 编译输出
