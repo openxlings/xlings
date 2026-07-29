@@ -1,0 +1,257 @@
+# Fresh-install CI — design
+
+> 2026-07-29 | status: approved
+
+## Problem
+
+Every existing xlings workflow builds xlings from the PR and tests *that* binary
+against a warm, cached environment. Nothing verifies the path a real first-time
+user takes: land on a clean machine, run `quick_install`, and use the tool.
+
+That path has its own failure modes, none of which the current matrix can see:
+
+- the published release artifact is broken or missing for a platform
+- `quick_install.sh` / `.ps1` regresses against a bare host
+- the bundled package index cannot resolve a package on a cold home
+- a package installs but its shim does not resolve
+- a version switch silently no-ops
+- the static-musl binary fails to start on an old-glibc host
+
+Modelled on `mcpp-community/mcpp`'s `ci-fresh-install.yml`.
+
+## Scope
+
+Verify **released** xlings, floating at latest — the exact thing a new user
+gets — from bootstrap through the mainstream feature set, on a cold machine
+with no caches, on Linux / CentOS 7 / Windows / macOS.
+
+Explicitly out of scope: building xlings from source (covered by
+`xlings-ci-*.yml`), and the E2E suite (covered by `xlings-ci-linux-e2e.yml`).
+
+## Structure
+
+The test body lives in the repo as scripts rather than inline YAML. The CentOS 7
+leg executes inside `docker run`, where a mounted script beats escaping a long
+heredoc through two shell layers; it also makes local reproduction a single
+command.
+
+```
+tests/fresh-install/
+  lib.sh      # assertion helpers (POSIX bash)
+  smoke.sh    # Linux / CentOS 7 / macOS body
+  lib.ps1     # assertion helpers (PowerShell)
+  smoke.ps1   # Windows body
+.github/workflows/xlings-ci-fresh-install.yml
+```
+
+Each script takes one argument — the suite name — so a red cell names the
+subsystem instead of "fresh-install is broken":
+
+```bash
+bash tests/fresh-install/smoke.sh core   # lifecycle + mcpp version switch
+bash tests/fresh-install/smoke.sh gcc    # gcc release-group switch
+bash tests/fresh-install/smoke.sh llvm   # llvm version switch
+```
+
+The scripts bootstrap xlings themselves (they run `quick_install` as their first
+phase) rather than relying on the workflow to do it. That keeps the Linux and
+CentOS 7 legs byte-identical and lets the whole thing run under `docker run`
+with no `$GITHUB_PATH` involvement.
+
+## Job matrix
+
+`suite` × platform, each cell doing its **own** fresh install — no shared warm
+state, which is the entire point. Cells run in parallel, so wall-clock is one
+bootstrap plus one toolchain, not the sum.
+
+| Platform | Runner | Suites |
+| --- | --- | --- |
+| Linux | `ubuntu-24.04` | core, gcc, llvm |
+| CentOS 7 | `ubuntu-24.04` + `docker run centos:7` | core, gcc, llvm |
+| Windows | `windows-latest` | core, gcc\*, llvm |
+| macOS | `macos-14` | core, llvm |
+
+Two constraints come from the package index, not from a choice:
+
+- **`gcc` on Windows has exactly one version** (`15.1.0`, via mingw64). That
+  cell therefore cannot test a *switch*; it installs 15.1.0 and asserts the
+  group members are present and mutually consistent — group registration, not
+  group switching. Real switching is Linux/CentOS 7, where `9.4.0` … `16.1.0`
+  are all available.
+- **`gcc` does not exist on macOS** in the index, so macOS has no gcc cell.
+
+## Suites
+
+### `core` — lifecycle, with the multi-version switch on `mcpp`
+
+```
+quick_install (no version arg → floating latest)
+xlings --version                        → non-empty
+xlings config --mirror GLOBAL
+xlings update                           → index refresh on a cold home
+xlings search mcpp                      → finds it
+xlings install ninja -y -g              → ninja --version == 1.12.1
+xlings install mcpp@<A> mcpp@<B> -y -g
+xlings use mcpp@<A>                     → mcpp --version reports A
+xlings use mcpp@<B>                     → mcpp --version reports B   (must CHANGE)
+xlings list                             → contains ninja and mcpp
+<tmpdir>/.xlings.json + xlings -y install
+                                        → .xlings/subos/_/bin/ninja resolves
+xlings self doctor                      → exit 0
+xlings self uninstall -y                → $XLINGS_HOME gone
+```
+
+`ninja` is the install-and-run probe because it is tiny, statically linked, and
+present on all four platforms. `mcpp` is the version-switch probe because it
+ships many versions on all four platforms.
+
+### `gcc` — release-group switch (Linux / CentOS 7)
+
+`gcc` registers a *group* of shims — `gcc`, `g++`, `c++`, `cpp`, `gcc-ar`,
+`gcov`, … — and `xlings use` is specified to move the whole group together.
+
+```
+xlings install gcc@15.1.0 gcc@16.1.0 -y -g
+xlings use gcc@15.1.0   → gcc AND g++ AND c++ AND cpp all report 15.1.0
+xlings use gcc@16.1.0   → all four report 16.1.0
+g++ hello.cpp && ./a.out                → the switched toolchain actually compiles
+```
+
+Asserting all four members move *together* is the point. A group switch that
+moves `gcc` but strands `g++` on the previous version passes any check that only
+looks at `gcc --version`.
+
+On Windows the same suite degrades to a presence-and-consistency check, since
+only one version exists.
+
+### `llvm` — version switch (all platforms)
+
+Same shape on `20.1.7 ↔ 22.1.8`, asserting `clang` and `clang++` move in sync,
+then compiling and running a **C** file with the switched clang. C rather than
+C++ on purpose: that asserts the driver and its runtime work end to end without
+also betting on libc++ wiring, which is a separate concern from the version
+switch under test.
+
+**Known red as of 2026-07-29.** On a fresh home this suite fails on Linux, and
+correctly so — see "First finding" below.
+
+## Differential assertions
+
+Every switch assertion captures the reported version **before and after** and
+fails if it did not move. This is deliberate: xlings has a recurring bug class
+where "never happened" and "succeeded" produce identical output, and a `use`
+that silently no-ops would otherwise pass a check that merely confirms
+`mcpp --version` still runs.
+
+`assert_switch` therefore takes the expected version *and* refuses a result
+equal to the pre-switch value.
+
+## CentOS 7 mechanics
+
+`docker run` inside a normal `ubuntu-24.04` job. A `container:` job cannot work:
+`actions/checkout`, `actions/cache` and every other JS action need Node 20,
+which needs glibc 2.28; CentOS 7 ships 2.17.
+
+So JS actions run on the host, the repo is bind-mounted, and only the smoke
+script runs in the container. Three fixups that leg needs and no other does:
+
+1. **Dead yum mirrors.** CentOS 7 is EOL and `mirrorlist.centos.org` is gone;
+   the repo files are rewritten to `vault.centos.org` before any `yum install`.
+2. **Stale CA bundle.** `ca-certificates` must be reinstalled and
+   `update-ca-trust` run, or TLS against the GitHub asset CDN fails.
+3. **`quick_install.sh` prerequisites.** It hard-requires `curl` and `tar`, and
+   locates the extracted directory with a glob; `which`, `findutils`, `gzip`,
+   `xz` and `git` are installed explicitly rather than assumed.
+
+This leg is load-bearing, not decorative. The xlings Linux binary is
+static-musl so it *should* start on glibc 2.17, and gcc/llvm pull in a
+self-contained `xim:glibc@2.39` rather than the host's — but whether that whole
+stack works on a 2.17 host is unproven today.
+
+## Triggers
+
+Two stages, as requested.
+
+**Stage 1 (this PR)** — `pull_request` included so the workflow can be validated
+before it is trusted:
+
+```yaml
+on:
+  pull_request:          # STAGE 1 ONLY — remove once green
+    branches: [main, master, 'release/**']
+  workflow_dispatch:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  schedule:
+    - cron: '0 6 * * *'
+```
+
+**Stage 2** — delete the `pull_request:` block. The other three triggers are
+already correct and are inert on a PR, so stage 2 is a pure deletion.
+
+`release: published` is deliberately **not** used. `release.yml` creates the
+release with `GITHUB_TOKEN`, and GitHub suppresses workflow triggers from
+`GITHUB_TOKEN`-generated events, so that trigger would never fire from the
+pipeline. `workflow_run` is a platform-generated event, exempt from the
+suppression, and needs no cross-repo PAT.
+
+## Deliberate omission: no `wait-index` job
+
+mcpp's workflow polls xim-pkgindex until it carries the just-released version,
+because mcpp pins an exact version and would otherwise fail with
+`version not found`.
+
+We install floating-latest, so the same race degrades differently: a
+post-release run that beats the index bump re-tests the *previous* release. That
+is a weak result, not a red build — so the added complexity is not yet paid for.
+Worth revisiting if the post-release run needs to be a hard gate on the new
+version, which would also mean introducing a pin to bump each release.
+
+## First finding — `llvm@22.1.8` is unusable on a clean machine
+
+Found by running the `llvm` suite locally before the workflow ever ran, which is
+a decent sign the design points at the right gap.
+
+On a fresh home containing only llvm and its declared deps:
+
+```
+$ xlings install llvm@22.1.8 -y -g && clang --version
+.../xpkgs/xim-x-llvm/22.1.8/bin/clang: error while loading shared libraries:
+libstdc++.so.6: cannot open shared object file: No such file or directory
+```
+
+Root cause, confirmed against the installed payloads:
+
+- `clang-20` (20.1.7) does **not** link `libstdc++.so.6` — its C++ runtime is
+  static, so it runs anywhere.
+- `clang-22` (22.1.8) **does** link `libstdc++.so.6`.
+- Both get the same baked RPATH — llvm's own `lib`, plus `glibc`, `zlib`,
+  `libxml2`, and `subos/default/lib` — and **none of them ships libstdc++**.
+- `llvm.lua`'s linux `deps` list (`xim:glibc`, `xim:linux-headers`, `xim:zlib`,
+  `xim:libxml2`) never gained `xim:gcc-runtime` when the 22.1.8 payload started
+  linking libstdc++ dynamically.
+
+Installing `gcc-runtime` afterwards does **not** repair it: the RPATH is baked
+at llvm install time, so a later arrival is invisible to the loader. The fix
+belongs in `xim-pkgindex`'s `llvm.lua` — declare the dep so its lib directory is
+in the RPATH from the start.
+
+Impact is wider than this test: `latest` resolves to 22.1.8, so plain
+`xlings install llvm` is broken on any machine that does not already happen to
+have a libstdc++ around. That is why it went unnoticed — dev machines and CI
+images all have gcc installed.
+
+The suite is deliberately **not** softened to work around this. A test adjusted
+until it passes against a broken package is the silent-success pattern this
+repo keeps getting bitten by.
+
+## Failure modes this cannot catch
+
+Stated so the green check is not over-read:
+
+- CN mirror paths — every leg forces `GLOBAL`, since gitee/gitcode endpoints are
+  not reachable from GitHub runners.
+- aarch64 Linux and Windows ARM — no runners in the matrix.
+- Anything about the PR's own code. This workflow tests the *released* binary;
+  on a PR it therefore validates the workflow itself, not the change.
