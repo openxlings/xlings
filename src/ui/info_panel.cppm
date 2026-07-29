@@ -270,8 +270,9 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
         text("):") | color(theme::text_color()),
     }));
     header.push_back(text(""));
+    // The blank row above is the spacing. print_rows terminates every row,
+    // including that one, so a further "\n" here would double it.
     layout::print_rows(std::move(header), P.width);
-    std::print("\n");
 
     // Print package lines (will be replaced by download progress via
     // cursor-up). One row per package, always — the progress renderer counts
