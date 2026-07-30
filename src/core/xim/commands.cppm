@@ -377,6 +377,16 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                     log::warn("failed to activate {}@{} in current subos",
                               match.name, match.version);
                 }
+            } else if (!active.empty() && active != match.version) {
+                // Declining to switch is a decision, and it used to be a
+                // silent one: `install llvm@20.1.7` printed nothing but
+                // success while `clang++` stayed on 22.1.8, so the version
+                // the user asked for was installed and unreachable.
+                log::println(
+                    "{}@{} installed, but '{}' still resolves to {} "
+                    "— `xlings use {} {}` to switch",
+                    match.canonicalName, match.version, match.name, active,
+                    match.name, match.version);
             }
             log::debug("version: {}", match.version);
             if (requestedAlreadyInstalled[plan_key(match)]) {

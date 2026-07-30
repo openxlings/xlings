@@ -68,6 +68,11 @@ namespace fs = std::filesystem;
 //     remove-and-reinstall, then -- when the entry is provably dead and the
 //     ladder could not revive it -- prune the registration.
 //   - alias warning  → not auto-fixed (could be intentional external).
+//   - baked subos path in an alias/env → rewritten to the active subos.
+//     This is NOT the exception above: `alias unresolved` might be a system
+//     command someone meant to call, so guessing is wrong. A baked subos path
+//     has one correct value, computed by the same resolution point the shim
+//     uses, so there is nothing to guess.
 //   - corrupt binding metadata → --reset-metadata only. Why: it is the one
 //     repair that loses information (the release, its members and its header
 //     assets are discarded), so it must be asked for, not inherited from
@@ -90,6 +95,18 @@ enum class FindingKind {
     // name exists purely to anchor the release its libraries belong to.
     ReleaseAnchor,
     AliasUnresolved,
+    // An alias or env value that recorded the ABSOLUTE path of whichever
+    // subos was active when the package was installed. The shim re-points it
+    // at the active subos when it executes, so this is stale bookkeeping
+    // rather than a live breakage -- but the DB still says something untrue,
+    // and it is the only trace left of the homes that shipped with it.
+    SubosPathBaked,
+    // A symlink in the subos sysroot whose target no longer exists. It fails
+    // every `[ -e ]` test, which is exactly why it survived: code that asked
+    // "does it exist" read a dangling link as "already cleaned up", and the
+    // compiler that follows it reports a missing header from a directory the
+    // user can see in the error message.
+    SysrootDangling,
     BindingState,
     OtherSubos,
 };
@@ -494,6 +511,44 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 continue;
             }
 
+            // An install-time subos path recorded in the alias or an env
+            // value. Detected before the alias/no-alias split because envs
+            // carry it too, and a package with no alias at all still can.
+            if (const auto activeSubos =
+                    Config::xvm_artifact_subos_dir().string();
+                !activeSubos.empty()) {
+                std::vector<std::string> baked;
+                const auto note_if_baked = [&](std::string_view what,
+                                               const std::string& value) {
+                    if (xvm::normalize_subos_paths(value, st.homeStr,
+                                                   activeSubos) != value) {
+                        baked.push_back(std::format("{} '{}'", what, value));
+                    }
+                };
+                if (!vdata.alias.empty()) note_if_baked("alias", vdata.alias[0]);
+                for (const auto& [key, value] : vdata.envs) {
+                    note_if_baked(std::format("env {}", key), value);
+                }
+                if (!baked.empty()) {
+                    std::string list;
+                    for (const auto& b : baked) {
+                        if (!list.empty()) list += ", ";
+                        list += b;
+                    }
+                    add({
+                        .kind    = FindingKind::SubosPathBaked,
+                        .level   = FindingLevel::Warning,
+                        .target  = name,
+                        .version = version,
+                        .detail  = std::format(
+                            "{} records an install-time subos path: {} — "
+                            "execution already follows the active subos; "
+                            "`--fix` rewrites the record",
+                            xvm::display_coordinate(name, version), list),
+                    });
+                }
+            }
+
             const bool aliasMode =
                 !vdata.alias.empty() && !vdata.alias[0].empty();
             if (!aliasMode) {
@@ -588,6 +643,42 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             }
             entries.push_back(std::move(entry));
         }
+        // Dangling links, scanned rather than derived from the workspace.
+        //
+        // The loop above only visits destinations the ACTIVE selection
+        // declares, and the links that matter here are precisely the ones
+        // nothing declares any more: the package was removed, or was
+        // installed by a run whose payload store is gone. Scanning is cheap
+        // (the header farm is one link per top-level entry) and it is the
+        // only way to see them at all.
+        for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
+                                "usr/bin"}) {
+            const auto dir = p.subosDir / sub;
+            std::error_code dec;
+            if (!fs::is_directory(dir, dec)) continue;
+            for (const auto& entry : platform::dir_entries(dir)) {
+                std::error_code lec;
+                // Both halves are required. A dangling link IS a symlink and
+                // is NOT `exists()`; testing only existence reads it as
+                // "already gone" -- the mistake that let #423's test pass
+                // while the links were still on disk.
+                if (!fs::is_symlink(entry.path(), lec)) continue;
+                if (fs::exists(entry.path(), lec)) continue;
+                auto target = fs::read_symlink(entry.path(), lec);
+                add({
+                    .kind    = FindingKind::SysrootDangling,
+                    .level   = FindingLevel::Warning,
+                    .detail  = std::format(
+                        "{} points at {}, which does not exist",
+                        Config::display_path(entry.path()),
+                        lec ? std::string("(unreadable)")
+                            : Config::display_path(target)),
+                    .remedy  = "xlings self doctor --fix",
+                    .shimPath = entry.path(),
+                });
+            }
+        }
+
         auto ownership = xvm::inspect_sysroot_ownership(
             st.db, st.ws, entries, (p.dataDir / "xpkgs").string());
         bindingFindings.insert(bindingFindings.end(),
@@ -735,6 +826,20 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     "could not recreate {}",
                     Config::display_path(f.shimPath)));
             }
+        } else if (f.kind == FindingKind::SysrootDangling) {
+            std::error_code ec;
+            // remove(), not remove_all(): the link is being deleted, and if
+            // it were somehow followable, remove_all would delete the
+            // package payload behind it.
+            fs::remove(f.shimPath, ec);
+            if (!ec) {
+                note(glyph::mark(glyph::bullet, "dangling link removed"),
+                     Config::display_path(f.shimPath));
+            } else {
+                note(glyph::mark(glyph::failed, "sysroot repair failed"),
+                     std::format("could not remove {}",
+                                 Config::display_path(f.shimPath)));
+            }
         } else if (f.kind == FindingKind::OrphanShim
                 || f.kind == FindingKind::LegacyAliasShim) {
             std::error_code ec;
@@ -779,6 +884,69 @@ void repair_state_(RepairReport& out) {
                         xvm::display_coordinate(e.target, e.version),
                         xvm::display_coordinate(e.peerTarget, e.peerVersion)));
                 }
+            }
+        }
+    }
+
+    // Baked subos paths. Rewritten to the subos this run resolves to -- the
+    // same value the shim would substitute at exec time, so the record stops
+    // disagreeing with the behaviour.
+    {
+        const auto homeStr = Config::paths().homeDir.string();
+        const auto activeSubos = Config::xvm_artifact_subos_dir().string();
+        const auto has_baked = [&](const xvm::VersionDB& src) {
+            if (activeSubos.empty()) return false;
+            for (const auto& [name, vinfo] : src) {
+                for (const auto& [version, vdata] : vinfo.versions) {
+                    if (!vdata.alias.empty()
+                        && xvm::normalize_subos_paths(vdata.alias[0], homeStr,
+                                                      activeSubos)
+                               != vdata.alias[0]) {
+                        return true;
+                    }
+                    for (const auto& [k, v] : vdata.envs) {
+                        if (xvm::normalize_subos_paths(v, homeStr, activeSubos)
+                            != v) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        };
+        if (has_baked(Config::versions())) {
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                note(glyph::mark(glyph::failed, "subos path"), std::format(
+                    "cannot rewrite install-time subos paths: {}",
+                    lock.error()));
+            } else {
+                Config::reload_state();
+                auto& mutableDb = Config::versions_mut();
+                std::size_t rewritten = 0;
+                for (auto& [name, vinfo] : mutableDb) {
+                    for (auto& [version, vdata] : vinfo.versions) {
+                        bool touched = false;
+                        for (auto& a : vdata.alias) {
+                            auto fixed = xvm::normalize_subos_paths(
+                                a, homeStr, activeSubos);
+                            if (fixed != a) { a = std::move(fixed); touched = true; }
+                        }
+                        for (auto& [k, v] : vdata.envs) {
+                            auto fixed = xvm::normalize_subos_paths(
+                                v, homeStr, activeSubos);
+                            if (fixed != v) { v = std::move(fixed); touched = true; }
+                        }
+                        if (touched) {
+                            ++rewritten;
+                            note(glyph::mark(glyph::bullet, "subos path"),
+                                 std::format(
+                                     "{} now records the active subos",
+                                     xvm::display_coordinate(name, version)));
+                        }
+                    }
+                }
+                if (rewritten > 0) Config::save_versions();
             }
         }
     }
@@ -1104,6 +1272,7 @@ struct Counts {
 Counts count_(const Scan& scan) {
     Counts c;
     std::set<std::string> aliasTargets;
+    std::set<std::string> bakedTargets;
     for (const auto& f : scan.findings) {
         switch (f.kind) {
             case FindingKind::MissingShim:     ++c.missing; break;
@@ -1125,6 +1294,11 @@ Counts count_(const Scan& scan) {
                 if (aliasTargets.insert(f.target).second) ++c.warnings;
                 break;
             case FindingKind::ReleaseAnchor:   break;
+            // Per TARGET, matching how they are printed (see render_).
+            case FindingKind::SubosPathBaked:
+                if (bakedTargets.insert(f.target).second) ++c.warnings;
+                break;
+            case FindingKind::SysrootDangling: ++c.warnings; break;
             case FindingKind::BindingState:
                 if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
@@ -1208,8 +1382,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // Everything else, in a stable order.
     std::set<std::string> aliasTargetsShown;
     std::map<std::string, int> aliasVersionCount;
+    std::set<std::string> bakedTargetsShown;
+    std::map<std::string, int> bakedVersionCount;
     for (const auto& f : scan.findings) {
         if (f.kind == FindingKind::AliasUnresolved) ++aliasVersionCount[f.target];
+        else if (f.kind == FindingKind::SubosPathBaked) ++bakedVersionCount[f.target];
     }
     for (const auto& f : scan.findings) {
         switch (f.kind) {
@@ -1240,6 +1417,25 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                             aliasVersionCount.at(f.target) > 1
                                 ? std::format("  (+{} other version(s))",
                                               aliasVersionCount.at(f.target) - 1)
+                                : std::string{}));
+                }
+                break;
+            case FindingKind::SysrootDangling:
+                add(glyph::mark(glyph::warn, "dangling sysroot link"), f.detail);
+                break;
+            case FindingKind::SubosPathBaked:
+                // One line per TARGET. A single gcc install bakes the path
+                // into fourteen registrations (gcc, g++, cc, c++ and the
+                // triple-prefixed spellings, times two versions), and
+                // fourteen identical lines bury everything else -- the same
+                // reason `alias unresolved` collapses.
+                if (verbose || bakedTargetsShown.insert(f.target).second) {
+                    add(glyph::mark(glyph::warn, "subos path"), verbose
+                        ? f.detail
+                        : std::format("{}{}", f.detail,
+                            bakedVersionCount.at(f.target) > 1
+                                ? std::format("  (+{} other registration(s))",
+                                              bakedVersionCount.at(f.target) - 1)
                                 : std::string{}));
                 }
                 break;

@@ -22,6 +22,7 @@ import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
+import xlings.core.xim.payload;
 import xlings.core.xim.installer;
 import xlings.core.xim.commands;
 import xlings.core.xim.repo;
@@ -507,4 +508,163 @@ TEST(XimAddXpkgTest, FlatPkgsDirNotIndexed) {
     EXPECT_EQ(mgr.size(), 0u);  // flat file not picked up
 
     fs::remove_all(testDir);
+}
+
+// ── payload platform identity (2026-07-30) ───────────────────────────
+//
+// "Already installed" used to mean "the directory exists and is not empty",
+// which a payload built for another platform passes perfectly. The measured
+// case was a Windows llvm@20.1.7 sitting in a Linux store: the install hook
+// was skipped, the config hook ran anyway, and `libomp.dll` was registered as
+// a program while `cc -> clang` warned six times and the command reported
+// success.
+
+namespace {
+
+namespace pp = xlings::xim;
+namespace fs = std::filesystem;
+
+fs::path make_payload_dir(const std::string& name) {
+    auto dir = fs::temp_directory_path() / ("xlings-payload-" + name);
+    fs::remove_all(dir);
+    fs::create_directories(dir / "bin");
+    return dir;
+}
+
+void write_bytes(const fs::path& file, std::initializer_list<unsigned char> b) {
+    std::ofstream out(file, std::ios::binary);
+    for (auto c : b) out.put(static_cast<char>(c));
+    // Pad so the file is a plausible executable, not a 4-byte curiosity.
+    for (int i = 0; i < 64; ++i) out.put('\0');
+}
+
+// A magic number that is NOT this host's, whatever this host is.
+void write_foreign_executable(const fs::path& file) {
+    if (pp::host_platform_tag() == "windows") {
+        write_bytes(file, {0x7F, 'E', 'L', 'F'});          // an ELF on Windows
+    } else {
+        write_bytes(file, {'M', 'Z', 0x90, 0x00});         // a PE anywhere else
+    }
+}
+
+void write_host_executable(const fs::path& file) {
+    if (pp::host_platform_tag() == "windows") {
+        write_bytes(file, {'M', 'Z', 0x90, 0x00});
+    } else if (pp::host_platform_tag() == "macosx") {
+        write_bytes(file, {0xCF, 0xFA, 0xED, 0xFE});
+    } else {
+        write_bytes(file, {0x7F, 'E', 'L', 'F'});
+    }
+}
+
+}  // namespace
+
+TEST(PayloadPlatformTest, ForeignExecutablesAreDetected) {
+    auto dir = make_payload_dir("foreign");
+    write_foreign_executable(dir / "bin" / "clang.exe");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Foreign);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, HostExecutablesAreAccepted) {
+    auto dir = make_payload_dir("host");
+    write_host_executable(dir / "bin" / "clang");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Host);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, OneHostBinaryOutweighsForeignCompanions) {
+    // Cross-compilers legitimately ship the other platform's artifacts. A
+    // false Foreign costs a needless reinstall, so any host-format file
+    // settles it.
+    auto dir = make_payload_dir("mixed");
+    write_foreign_executable(dir / "bin" / "target-tool.exe");
+    write_host_executable(dir / "bin" / "driver");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Host);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, ScriptsAreInconclusive) {
+    // A payload of shell scripts says nothing about its platform, and must
+    // NOT be reinstalled on that basis.
+    auto dir = make_payload_dir("scripts");
+    xlings::platform::write_string_to_file(
+        (dir / "bin" / "tool").string(), "#!/bin/sh\necho hi\n");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Unknown);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, MissingDirectoryIsInconclusive) {
+    EXPECT_EQ(pp::classify_payload_platform(
+                  fs::temp_directory_path() / "xlings-payload-absent"),
+              pp::PayloadPlatform::Unknown);
+}
+
+TEST(PayloadPlatformTest, StampBeatsTheHeuristic) {
+    // The stamp is what the payload's own install wrote. A host-format file
+    // that arrived some other way must not overrule it.
+    auto dir = make_payload_dir("stamped-foreign");
+    write_host_executable(dir / "bin" / "tool");
+    xlings::platform::write_string_to_file(
+        (dir / ".xpkg-install.json").string(),
+        "{\n  \"os\": \"plan9\",\n  \"version\": \"1.0.0\"\n}\n");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Foreign);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, WrittenStampRoundTrips) {
+    auto dir = make_payload_dir("roundtrip");
+    write_foreign_executable(dir / "bin" / "tool.exe");
+    ASSERT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Foreign);
+    // Self-heal: once this platform installs it, the heuristic is never
+    // consulted again.
+    pp::write_payload_stamp(dir, "1.0.0");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Host);
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, StampIsNotWrittenIntoAnEmptyPayload) {
+    // Wrapper packages (linux-headers, fromsource:* aliases) legitimately
+    // leave install_dir empty; a stamp would make the emptiness probe read
+    // "installed".
+    auto dir = fs::temp_directory_path() / "xlings-payload-empty";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    pp::write_payload_stamp(dir, "1.0.0");
+    EXPECT_TRUE(fs::is_empty(dir));
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, AStampAloneIsNotAPayload) {
+    // The emptiness probe is what lets a broken payload be reinstalled. If a
+    // stamp satisfied it on its own, the record of an install would become
+    // evidence of one -- measured: a hook that began with
+    // os.tryrm(install_dir), found no artifact to unpack, and left a
+    // directory containing nothing but this platform's stamp.
+    auto dir = fs::temp_directory_path() / "xlings-payload-stamp-only";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    xlings::platform::write_string_to_file(
+        (dir / ".xpkg-install.json").string(), "{\n  \"os\": \"linux\"\n}\n");
+    EXPECT_FALSE(pp::payload_has_content(dir));
+
+    // The legacy wrapper marker means the opposite and must still count.
+    xlings::platform::write_string_to_file((dir / ".xim-installed").string(), "");
+    EXPECT_TRUE(pp::payload_has_content(dir));
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, ContentClassificationIgnoresTheStamp) {
+    // "Should this payload be stamped" must never be answered by reading the
+    // stamp, or a run that wrote one over a payload it did not install would
+    // confirm its own claim forever.
+    auto dir = make_payload_dir("content-vs-stamp");
+    write_foreign_executable(dir / "bin" / "tool.exe");
+    xlings::platform::write_string_to_file(
+        (dir / ".xpkg-install.json").string(),
+        std::string("{\n  \"os\": \"") + std::string(pp::host_platform_tag())
+            + "\"\n}\n");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Host);
+    EXPECT_EQ(pp::classify_payload_content(dir), pp::PayloadPlatform::Foreign);
+    fs::remove_all(dir);
 }

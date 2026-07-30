@@ -65,12 +65,53 @@ fs::path header_destination_(const HeaderAsset& asset,
         : sysroot_include / fs::path(asset.destinationPrefix);
 }
 
+// Whether a payload directory may be linked into a sysroot.
+//
+// Everything xlings materializes lives in the home it materializes into --
+// under `data/`, or elsewhere inside the home. A source outside both means the
+// run's payload store and its sysroot belong to DIFFERENT homes, and the link
+// it would leave behind outlives the run that made it: the measured case is an
+// isolated run whose store was a temp dir and whose sysroot was the user's
+// real `~/.xlings/subos/dev-hello`, leaving three header links pointing into a
+// `/tmp` path that no longer exists. Every later `remove` and `install` of the
+// package repaired the OTHER subos and reported success, because nothing was
+// ever wrong there.
+bool sysroot_source_is_local_(const fs::path& src) {
+    std::error_code ec;
+    const auto canon = fs::weakly_canonical(src, ec);
+    const auto& probe = ec ? src : canon;
+    const auto under = [&](const fs::path& root) {
+        if (root.empty()) return false;
+        std::error_code rec;
+        auto canonRoot = fs::weakly_canonical(root, rec);
+        const auto& r = rec ? root : canonRoot;
+        auto a = probe.string(), b = r.string();
+        return a == b || a.starts_with(b + static_cast<char>(fs::path::preferred_separator))
+            || a.starts_with(b + "/");
+    };
+    const auto& p = Config::paths();
+    return under(p.dataDir) || under(p.homeDir);
+}
+
 // Install header symlinks from source includedir into sysroot include/
 void install_headers(const std::string& includedir, const fs::path& sysroot_include) {
     fs::create_directories(sysroot_include);
     std::error_code ec;
     fs::path src(includedir);
     if (!fs::exists(src, ec)) return;
+    if (!sysroot_source_is_local_(src)) {
+        // Warned, not refused. A recipe may legitimately expose headers from
+        // outside the store (a wrapper around system headers is the obvious
+        // one), and refusing would break packages that work today. What is
+        // NOT legitimate is the run that produced the measured damage, and
+        // this is the moment it becomes visible instead of surfacing weeks
+        // later as a missing header from a subos the user is not even in.
+        log::warn("[xvm] linking headers from outside this home: {}",
+                  Config::display_path(src));
+        log::warn("  into sysroot: {}", Config::display_path(sysroot_include));
+        log::warn("  these links outlive the run that made them; "
+                  "`xlings self doctor --fix` removes them once they dangle");
+    }
     for (auto& entry : platform::dir_entries(src)) {
         auto target = sysroot_include / entry.path().filename();
         // Already pointing at this exact source: leave it alone.

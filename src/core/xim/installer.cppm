@@ -6,6 +6,7 @@ import mcpplibs.xpkg.loader;
 import mcpplibs.xpkg.compat;
 import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
+import xlings.core.xim.payload;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
@@ -2210,10 +2211,29 @@ public:
                 }
             }
 
-            bool payloadInstalled = node.alreadyInstalled;
+            // A payload that belongs to another platform is not installed,
+            // whatever the records say. Only a PROVABLE mismatch overrides
+            // them: Unknown (scripts, data, a type-only package) keeps the
+            // fast path, so nothing that works today starts reinstalling.
+            const auto payloadVerdict =
+                classify_payload_platform(ctx.install_dir);
+            const bool foreignPayload =
+                payloadVerdict == PayloadPlatform::Foreign;
+            if (foreignPayload) {
+                log::warn("{}: installed payload is not for {} — reinstalling",
+                          node.name, host_platform_tag());
+                log::warn("  payload: {}",
+                          Config::display_path(ctx.install_dir));
+            }
+
+            bool payloadInstalled = node.alreadyInstalled && !foreignPayload;
 
             // Check if already installed via hook
-            if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Installed)) {
+            if (foreignPayload) {
+                // The hooks below all answer "is it installed", and every one
+                // of them would say yes about the wrong platform's files.
+            }
+            else if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Installed)) {
                 auto hookResult = executor.check_installed(ctx);
                 if (hookResult.success && !hookResult.version.empty()) {
                     log::debug("{} already installed (version {})",
@@ -2242,7 +2262,7 @@ public:
                             vdata->path, Config::paths().homeDir.string());
                         std::error_code ec;
                         payload_ok = std::filesystem::is_directory(expanded, ec)
-                                  && !std::filesystem::is_empty(expanded, ec);
+                                  && payload_has_content(expanded);
                     }
                     if (payload_ok) {
                         log::debug("{} already installed in xvm (version {})",
@@ -2395,6 +2415,24 @@ public:
                 // would make an otherwise empty config directory look
                 // installed.
                 executor.apply_install_stamp_if_empty(ctx);
+            }
+
+            // Record which platform produced this payload. Written on every
+            // path that just installed one, and also when the fast path was
+            // taken and the heuristic had to be consulted -- that second case
+            // is the self-heal: a pre-stamp payload is classified once and
+            // never again.
+            // Record which platform produced this payload -- but ONLY after a
+            // path that actually installed one, and only if the files on disk
+            // agree. Stamping unconditionally is worse than not stamping at
+            // all: an install hook that started with os.tryrm(install_dir) and
+            // then had no artifact to unpack (the shape a foreign payload
+            // reaches here in) would leave an empty directory carrying this
+            // platform's stamp, and every later run would believe it.
+            if (!payloadInstalled && node.pkgType != 3 /* Config */
+                && classify_payload_content(ctx.install_dir)
+                       != PayloadPlatform::Foreign) {
+                write_payload_stamp(ctx.install_dir, node.version);
             }
 
             // Apply elfpatch auto-patching if the install hook enabled it
