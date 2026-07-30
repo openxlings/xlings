@@ -72,6 +72,24 @@ env:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────
+  # The suite installs whatever `latest` resolves to, on purpose — that is
+  # the entire reason it exists. A pinned xlings version would turn it into a
+  # test of a snapshot nobody installs, and it would go stale silently, one
+  # release at a time, with every cell still green.
+  #
+  # The rule is written down in AGENTS.md and the contributing skill; this is
+  # what makes it a guarantee. It needs no runner image, no network and no
+  # build, so it is cheap enough to gate the rest.
+  # ────────────────────────────────────────────────────────────────────
+  no-version-pin:
+    name: fresh-install tracks latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/fresh-install/no_xlings_version_pin_check.sh
+
+  # ────────────────────────────────────────────────────────────────────
   # Linux — the reference leg. All three suites.
   # ────────────────────────────────────────────────────────────────────
   linux-fresh:

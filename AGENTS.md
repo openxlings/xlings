@@ -175,6 +175,12 @@ testing something else (`MCPP_OLD` / `MCPP_NEW` pin the two ends of an
 *upgrade*, which needs two known versions); the xlings version under test is
 never one of them.
 
+This is enforced, not merely written down —
+`tests/fresh-install/no_xlings_version_pin_check.sh`, run from
+`xlings-ci-linux.yml` because that workflow has a `pull_request` trigger and
+the fresh-install workflow deliberately does not. A rule enforced only after
+merge is a rule that gets merged.
+
 ## Agent Skills
 
 | Skill | Purpose |
