@@ -811,3 +811,39 @@ TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
     const std::string cmd = "tool --dir=/h/.xlings/subos/";
     EXPECT_EQ(norm(cmd, "/h/.xlings", "/h/.xlings/subos/b"), cmd);
 }
+
+// ── The portable spelling: `<home>/subos/current` ────────────────────
+//
+// `self init` creates that symlink and `subos use --global` maintains it, so a
+// recipe that writes `<home>/subos/current/...` has recorded a path that
+// already follows the user: an old client (no exec-time normalization)
+// follows the link instead of freezing at install time, and a current client
+// normalizes it exactly like any other subos path.
+//
+// `xlings self doctor` tells the two spellings apart by normalizing TOWARDS
+// `current` -- a value that pins a concrete subos changes, one already spelled
+// `current` does not. Normalizing towards the *active* subos cannot: it
+// rewrites both, which is why every gcc install carried a standing
+// `subos path` warning it could do nothing about.
+
+TEST(SubosPathNormalizeTest, TheCurrentSpellingStillNormalizesAtExecTime) {
+    // It has to. `current` tracks the GLOBAL selection only, so under
+    // XLINGS_ACTIVE_SUBOS or a project subos it is the wrong directory.
+    EXPECT_EQ(norm("g++ --sysroot=/home/u/.xlings/subos/current/usr",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/dev"),
+              "g++ --sysroot=/home/u/.xlings/subos/dev/usr");
+}
+
+TEST(SubosPathNormalizeTest, NormalizingTowardsCurrentLeavesTheCurrentSpelling) {
+    // The doctor probe: unchanged => nothing is pinned => no finding.
+    const std::string cmd = "g++ --sysroot=/home/u/.xlings/subos/current/usr";
+    EXPECT_EQ(norm(cmd, "/home/u/.xlings", "/home/u/.xlings/subos/current"),
+              cmd);
+}
+
+TEST(SubosPathNormalizeTest, NormalizingTowardsCurrentStillMovesAPinnedSubos) {
+    // ...and the same probe still catches the spelling that froze.
+    EXPECT_EQ(norm("g++ --sysroot=/home/u/.xlings/subos/dev-hello/usr",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/current"),
+              "g++ --sysroot=/home/u/.xlings/subos/current/usr");
+}

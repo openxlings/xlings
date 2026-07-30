@@ -518,10 +518,28 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                     Config::xvm_artifact_subos_dir().string();
                 !activeSubos.empty()) {
                 std::vector<std::string> baked;
+                // Detected against the PORTABLE spelling, not the active
+                // subos.
+                //
+                // `<home>/subos/current` is the symlink `self init` creates
+                // and `subos use --global` maintains, so a recipe that writes
+                // it has recorded something that already follows the user
+                // instead of freezing at install time -- an old client
+                // follows the link, a current one normalizes it like any
+                // other subos path. That is not stale bookkeeping and must
+                // not be reported as such, or the recipes that do the right
+                // thing keep a standing warning against their name.
+                //
+                // Normalizing *towards* `current` is what separates the two:
+                // a value that pins a concrete subos changes, and one already
+                // spelled `current` does not. Comparing against the active
+                // subos cannot tell them apart -- it rewrites both.
+                const auto portableSubos =
+                    (fs::path(st.homeStr) / "subos" / "current").string();
                 const auto note_if_baked = [&](std::string_view what,
                                                const std::string& value) {
                     if (xvm::normalize_subos_paths(value, st.homeStr,
-                                                   activeSubos) != value) {
+                                                   portableSubos) != value) {
                         baked.push_back(std::format("{} '{}'", what, value));
                     }
                 };
@@ -933,14 +951,23 @@ void repair_state_(RepairReport& out) {
         }
     }
 
-    // Baked subos paths. Rewritten to the subos this run resolves to -- the
-    // same value the shim would substitute at exec time, so the record stops
-    // disagreeing with the behaviour.
+    // Baked subos paths. Rewritten to `<home>/subos/current`, NOT to the
+    // subos this run happens to resolve to.
+    //
+    // Rewriting to the active subos only moved the pin: the record went on
+    // naming one concrete subos, so the very next `doctor` in a different one
+    // reported it again, and `--fix` could never clear its own finding.
+    // `current` is the symlink `self init` creates and `subos use --global`
+    // maintains, so the repaired record is correct from every subos at once --
+    // and exec-time normalization still substitutes the truly active
+    // directory, including under XLINGS_ACTIVE_SUBOS and project subos, where
+    // a symlink cannot follow.
     {
         const auto homeStr = Config::paths().homeDir.string();
-        const auto activeSubos = Config::xvm_artifact_subos_dir().string();
+        const auto activeSubos =
+            (Config::paths().homeDir / "subos" / "current").string();
         const auto has_baked = [&](const xvm::VersionDB& src) {
-            if (activeSubos.empty()) return false;
+            if (homeStr.empty()) return false;
             for (const auto& [name, vinfo] : src) {
                 for (const auto& [version, vdata] : vinfo.versions) {
                     if (!vdata.alias.empty()
@@ -986,7 +1013,7 @@ void repair_state_(RepairReport& out) {
                             ++rewritten;
                             note(glyph::mark(glyph::bullet, "subos path"),
                                  std::format(
-                                     "{} now records the active subos",
+                                     "{} now records subos/current",
                                      xvm::display_coordinate(name, version)));
                         }
                     }

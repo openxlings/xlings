@@ -92,11 +92,18 @@ void update_current_symlink_(EventStream& stream,
     auto linkPath = homeDir / "subos" / "current";
     std::error_code ec;
     fs::remove(linkPath, ec);
-    fs::create_directory_symlink(targetDir, linkPath, ec);
-    if (ec) {
+    // The same helper `self init` uses to create this link, rather than
+    // `fs::create_directory_symlink` directly. On Windows a symlink needs
+    // developer mode or elevation and a junction does not, so the two spellings
+    // disagree exactly there: init would lay down a junction and every later
+    // switch would fail to replace it, leaving `subos/current` pointing at
+    // whatever was active the day the home was created -- while `subos list`
+    // reported the switch as done.
+    if (!platform::create_directory_link(linkPath, targetDir)) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::Permission,
-            .message = "failed to update current symlink: " + ec.message(),
+            .message = std::format("failed to update current symlink: {}",
+                                   Config::display_path(linkPath)),
             .recoverable = true,
         });
     }

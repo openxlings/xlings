@@ -619,3 +619,125 @@ mcpplibs/libxpkg           不需要改动             ← 方案 2 相对方案
 - **不在 `subos use` 时批量重写 DB**（方案 3）。env-spawn 与 project 模式从不写 DB，做了也不对，还多一个整文档重写窗口。
 - **不动 `subos/current` 的现有用途**（`XLINGS_BIN`、shim 发现）。本方案不引入第二套 subos 解析路径 —— 恰恰相反，它把 alias 收拢到已有的唯一解析点 `Config::xvm_artifact_subos_dir()`。
 - **不自动删除异平台载荷目录**。B-1 只是重跑 install 钩子（钩子自己会 `os.tryrm(install_dir())`）；直接 `rm -rf` store 目录属于卸载语义，不该由"已装判定"顺手做。
+
+---
+
+## 9. 评估报告：subos 路径的记录形式（2026-07-31）
+
+**起因**：`2026.7.30.1` 之后我一直主张"recipe 不用改，执行期已纠正"，并把改
+recipe 的成本估成"跨仓 + capability probe"。被追问后重查，**这个成本估算是错的**，
+下面是重估的完整过程和结论。
+
+### 9.1 先纠正一处事实错误
+
+我先前说"改 recipe 需要 capability probe，否则老客户端拿到不认识的
+`${XLINGS_SUBOS}` 占位符"。这只对 **`${XLINGS_SUBOS}` 这一种方案**成立 —— 那是
+§3.2 里被否掉的方案 1，我把它的成本当成了"改 recipe"的成本。
+
+实际上仓库里**早就有**一个不需要任何协议的动态路径：
+
+```
+~/.xlings/subos/current -> default          # symlink
+```
+
+`xself/init.cppm:270` 建立它，`subos.cppm:865`（`subos use --global`）维护它，
+`Config::list_subos_names()` 显式把 `current` 排除在 subos 列表之外。它是**已经
+存在、已经维护、老客户端天然认识**的东西 —— 因为它就是一个路径。
+
+### 9.2 四个角度的评估
+
+#### 架构
+
+| | 烧绝对 subos 路径（现状） | 写 `subos/current` |
+|---|---|---|
+| 记录的含义 | "安装那一刻活动的是谁" —— **一个与包无关的事实** | "跟着用户走" |
+| 谁负责纠正 | 只有新客户端的执行期归一化 | 路径自己 + 执行期归一化 |
+| 老客户端 | **冻结在安装时**的 subos | 跟随全局切换 |
+| 层次 | 状态里混进了一次性上下文 | 状态里只有意图 |
+
+关键判断：**`sysroot` 是"当前环境"的属性，不是"这个包版本"的属性**，把它固化进
+按 (target, version) 存储的记录本身就是层次错配。`current` 不解决全部（见稳定性），
+但它把记录从"一次性事实"降级成"一个可解引用的引用"，方向是对的。
+
+#### 稳定性
+
+`current` **只跟踪全局持久选择**，跟不上另外两种选择模式：
+
+| 选择模式 | `current` 能跟上吗 | 执行期归一化能吗 |
+|---|:---:|:---:|
+| 持久 `activeSubos`（`subos use --global`） | ✅ | ✅ |
+| `XLINGS_ACTIVE_SUBOS` 环境变量（每 shell） | ❌ | ✅ |
+| 项目 subos（`<project>/.xlings/subos/<n>`） | ❌ | ✅ |
+
+所以 **`current` 不是执行期归一化的替代品，是它的下位兜底**：新客户端两者都有，
+老客户端至少从"冻结"升级成"跟随全局"。**不存在回退风险** —— 今天老客户端拿到的
+是一个更差的固定值。
+
+另一处稳定性问题是这次顺带查出来的：`update_current_symlink_` 用
+`fs::create_directory_symlink`，而 `self init` 用 `platform::create_directory_link`。
+**两者在 Windows 上不等价**（符号链接要开发者模式/提权，junction 不要），也就是
+init 铺下一个 junction、之后每次切换都更新失败，而 `subos list` 照常报告切换成功
+—— 又一例"没发生和成功了输出一致"。已统一为 `platform::create_directory_link`。
+
+#### 简洁实现
+
+不需要新 API、不需要 probe、不需要 libxpkg 改动。recipe 侧就是一次字符串替换：
+
+```lua
+local function portable_sysroot()
+    local dir = system.subos_sysrootdir()
+    return (dir:gsub("([/\\])subos([/\\])[^/\\]+", "%1subos%2current", 1))
+end
+```
+
+xlings 侧的配套改动只有两处，都复用了已有函数：
+
+1. **doctor 的检测基准从"活动 subos"换成"`current`"**。判据不变（"归一化会不会
+   改变这个字符串"），只是归一化的目标换了：写死具体 subos 的会变，已经写
+   `current` 的不会变。**两行**。
+2. **`--fix` 也改写成 `current`**，而不是活动 subos。
+
+#### 跨平台
+
+- symlink/junction 差异见上，已统一。
+- recipe 的替换同时处理 `/` 和 `\`。
+- `current` 在 Windows 上是目录 junction，编译器沿着它解析 `--sysroot` 没有问题。
+- 执行期归一化本来就同时认两种分隔符（`SubosPathNormalizeTest.HandlesWindowsSeparators`）。
+
+### 9.3 评估中发现的真正缺陷：`--fix` 修不掉自己报的问题
+
+改完检测基准后 E2E-46 的 A5 立刻失败，暴露出一个**现状就存在**的缺陷：
+
+> `--fix` 把记录改写成**当前活动 subos 的绝对路径** —— 也就是**把钉子从一个
+> subos 挪到另一个**。在另一个 subos 里跑 `doctor`，同一条告警原样再报一次。
+
+也就是说这条 finding 的 remedy 在多 subos 的 home 上**永远无法清零**，而它的
+文案是"`--fix` rewrites the record"。这不是我引入的，是原本就在那儿、只有把检测
+基准挪到 `current` 才会暴露出来的。
+
+修法与上面的方案收敛到同一点：**`--fix` 改写成 `<home>/subos/current`**。于是
+
+- 检测与修复用同一个基准，`--fix` 幂等且真的能清零；
+- 修好的记录对**所有** subos 同时正确，不再需要逐个 subos 跑一遍 `--fix`；
+- 执行期行为完全不变（`current` 照样被归一化成真正活动的目录）。
+
+### 9.4 结论与修正后的决策
+
+| 项 | 先前决策 | 修正后 |
+|---|---|---|
+| 改 recipe 的成本 | 跨仓 + capability probe | **跨仓，不需要 probe** |
+| 收益 | 只有"doctor 少一条常驻告警" | 加上"老客户端不再冻结"+"`--fix` 能清零" |
+| 结论 | 不做 | **xlings 侧先做**（检测基准 + `--fix` 目标 + Windows 链接一致性），recipe 侧随后独立 PR |
+
+xlings 侧已在 `2026.7.31.1` 分支实现，测试：
+`SubosPathNormalizeTest.TheCurrentSpellingStillNormalizesAtExecTime` /
+`.NormalizingTowardsCurrentLeavesTheCurrentSpelling` /
+`.NormalizingTowardsCurrentStillMovesAPinnedSubos`，以及 E2E-46 **A7**
+（recipe 写 `current` → doctor 不报 + shim 仍然到达活动 subos）。
+
+**顺序不敏感**：xlings 侧先落地是安全的（老 recipe 照旧被检测和修复），recipe 侧
+先落地也不会坏（只是那条告警继续在旧 xlings 上出现）。这正是它不需要 probe 的
+另一种说法。
+
+**仍然不做的**：`${XLINGS_SUBOS}` 占位符方案（§3.2 方案 1）。它需要新协议、需要
+probe，而 `current` 已经把同一个问题解决到"新客户端完全正确、老客户端明显更好"。
