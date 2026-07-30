@@ -1,0 +1,20 @@
+{
+  "index_repos": [
+    {
+      "name": "projectrepo",
+      "url": "../../fixtures/project_index"
+    }
+  ],
+  "mirror": "CN",
+  "XLINGS_RES": {
+    "GLOBAL": [
+      "https://github.com/xlings-res"
+    ],
+    "CN": [
+      "https://127.0.0.1:9/xlings-res"
+    ]
+  },
+  "workspace": {
+    "projectrepo:ninja": "1.12.1"
+  }
+}

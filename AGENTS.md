@@ -142,6 +142,39 @@ read**, so the rule has to be where the release decision is made.
 lexicographic ordering. Always publish and reference releases through an
 explicit `latest` ref rather than relying on version comparison.
 
+### A release is not finished when `release.yml` goes green
+
+Two steps run outside the workflow, and skipping either leaves a release that
+looks published and is not installable:
+
+1. **Top up the CN mirror from a CN machine**: `bash tools/mirror-latest.sh xlings`.
+   The GitHub runner cannot push large assets to GitCode (the upload stalls on
+   the cross-border OBS wall and the job says so, in a green step), so the four
+   tarballs have to be pushed with a local `gtc`. Verify with **GET, not HEAD** —
+   GitCode answers `401` to HEAD and `302 → CDN 200` to GET.
+2. **Bump `xim-pkgindex/pkgs/x/xlings.lua`**, all platform blocks plus the
+   `["latest"]` ref, with the sha256 of each asset.
+
+`2026.7.30.1` skipped step 1 and CN users got a flat `HTTP 404` for three
+hours. `2026.7.30.2` added a cross-region download fallback so a gap in one
+region's mirror is no longer fatal — that makes the manual step an
+accelerator again, not a correctness requirement, but it is still expected on
+every release.
+
+### Never pin a released xlings version into CI
+
+`tests/fresh-install/` installs whatever the published `latest` resolves to,
+on purpose: it is the only workflow that tests what a first-time user
+actually gets — the release artifact, `quick_install`, and the index that
+resolves it. A pinned version turns that into a test of a snapshot nobody
+installs, and it goes stale silently, one release at a time.
+
+So a release does **not** come with a follow-up "pin the new version in CI"
+commit. Pins in that suite are for things it deliberately holds still while
+testing something else (`MCPP_OLD` / `MCPP_NEW` pin the two ends of an
+*upgrade*, which needs two known versions); the xlings version under test is
+never one of them.
+
 ## Agent Skills
 
 | Skill | Purpose |

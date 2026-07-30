@@ -47,6 +47,24 @@ gcc --version                  # reflects active version
 
 Mechanism: version-view + reference-counting. N environments share one copy of xpkg payloads.
 
+### `xlings use <name>` without a version (scripts and agents)
+
+It never blocks and never pretends:
+
+| installed versions | behaviour | exit |
+|---|---|:---:|
+| 1 | switches to it | 0 |
+| >1 | changes nothing, lists them, names the exact command | **2** |
+| 0 in this subos | error with what to install | 1 |
+
+Add `--pick` (`-i`) for the arrow-key picker — opt-in, and it fails loudly
+rather than silently doing nothing when there is no terminal. `--all` widens
+the candidates to every subos.
+
+Switching a release only moves the programs that release has. Any program the
+new release has no version of keeps resolving to the old one and is **named in
+the output**; `--strict` refuses such a switch instead.
+
 ## SubOS — Environment Isolation
 
 ### Three levels

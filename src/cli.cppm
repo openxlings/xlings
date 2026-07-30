@@ -703,8 +703,24 @@ export int run(int argc, char* argv[]) {
             handle_prompt(stream, *p);
         }
         else if (auto* er = std::get_if<ErrorEvent>(&e)) {
-            log::error("{}", er->message);
-            if (!er->hint.empty()) log::error("  {}", er->hint);
+            // Wrapped here, not at the call sites. An ErrorEvent's message is
+            // composed by whichever command raised it, and some of them carry
+            // a list of candidates or a full command line -- the width
+            // contract has to be a property of the renderer, or every command
+            // re-derives it and one of them gets it wrong. log:: itself
+            // cannot do this: core does not depend on ui.
+            auto emit = [](std::string_view text, std::string_view indent) {
+                const int prefix = 8  // "[error] "
+                    + ui::layout::display_width(indent);
+                const int width = std::max(1,
+                    ui::layout::fit_width(
+                        prefix + ui::layout::display_width(text)) - prefix);
+                for (auto& line : ui::layout::wrap_to_width(text, width)) {
+                    log::error("{}{}", indent, line);
+                }
+            };
+            emit(er->message, "");
+            if (!er->hint.empty()) emit(er->hint, "  ");
         }
         else if (auto* l = std::get_if<LogEvent>(&e)) {
             switch (l->level) {
@@ -865,8 +881,12 @@ export int run(int argc, char* argv[]) {
                 "use", "Switch tool version",
                 {
                     {"target",  "Tool name (or name@ver one-shot)", true},
-                    {"version", "Version to switch to (omit to list)"},
-                }, {},
+                    {"version", "Version to switch to (omit: switch when only one is installed, else exit 2)"},
+                },
+                {
+                    {"--all, -a",  "Consider versions from every subos, not just this one"},
+                    {"--pick, -i", "Choose the version interactively (needs a terminal)"},
+                },
             };
             else if (match("config")) h = SubHelp{
                 "config", "Show or modify xlings configuration", {},
@@ -1092,12 +1112,17 @@ export int run(int argc, char* argv[]) {
             }))
 
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`
-        // (one-shot form, matching install/remove). Bare `<name>` lists
-        // installed versions in the current subos; pass `--all` to widen
-        // to the global view (every version every subos has ever installed).
+        // (one-shot form, matching install/remove). Bare `<name>` switches
+        // when exactly one version is installed and refuses (exit 2) when
+        // several are, rather than blocking on a picker — see
+        // xvm::cmd_use_by_name. `--all` widens the candidate set to the
+        // global view (every version every subos has ever installed);
+        // `--pick` asks for the interactive picker explicitly.
         .subcommand("use")
             .description("Switch tool version")
             .option(cmdline::Option("all").short_name('a').help("Show versions across all subos (default: current subos only)"))
+            .option(cmdline::Option("pick").short_name('i').help("Choose the version interactively (needs a terminal)"))
+            .option(cmdline::Option("strict").help("Refuse the switch if any program of the current release has no version in the new one"))
             .arg("target").required().help("Tool name (or name@ver one-shot)")
             .arg("version").help("Version to switch to (omit to list installed versions)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
@@ -1113,13 +1138,16 @@ export int run(int argc, char* argv[]) {
                     return 1;
                 }
                 bool show_all = args.is_flag_set("all");
+                bool pick = args.is_flag_set("pick");
+                bool strict = args.is_flag_set("strict");
                 auto first = std::string(args.positional(0));
                 if (n == 1) {
                     auto at = first.find('@');
                     if (at == std::string::npos)
-                        return xvm::cmd_list_versions(first, stream, show_all);
+                        return xvm::cmd_use_by_name(first, stream, show_all,
+                                                    pick, strict);
                     return xvm::cmd_use(first.substr(0, at),
-                                        first.substr(at + 1), stream);
+                                        first.substr(at + 1), stream, strict);
                 }
                 // n == 2: must be `<name> <version>`
                 if (first.find('@') != std::string::npos) {
@@ -1132,8 +1160,8 @@ export int run(int argc, char* argv[]) {
                                first, bare, std::string(args.positional(1)));
                     return 1;
                 }
-                return xvm::cmd_use(first,
-                                    std::string(args.positional(1)), stream);
+                return xvm::cmd_use(first, std::string(args.positional(1)),
+                                    stream, strict);
             }))
 
         // config

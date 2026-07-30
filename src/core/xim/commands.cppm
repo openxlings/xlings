@@ -359,7 +359,8 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 
     std::unordered_map<std::string, bool> requestedAlreadyInstalled;
     for (auto& match : requestedMatches) {
-        requestedAlreadyInstalled[plan_key(match)] = match.installed;
+        requestedAlreadyInstalled[plan_key(match)] =
+            match.installed && !match.payloadForeign;
     }
 
     auto activate_requested_targets = [&]() {

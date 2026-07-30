@@ -334,7 +334,9 @@ resolve(PackageCatalog& catalog,
         node.pkgFile = match.pkgFile;
         node.storeRoot = match.storeRoot;
         node.scope = match.scope;
-        node.alreadyInstalled = match.installed;
+        // Foreign payloads plan as NOT installed, so the artifact is
+        // downloaded and the install hook has something to unpack.
+        node.alreadyInstalled = match.installed && !match.payloadForeign;
         node.kind = kind;
 
         auto pkg = catalog.load_package(match);

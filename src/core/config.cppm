@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.7.30.1";
+    static constexpr std::string_view VERSION = "2026.7.30.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -388,6 +388,48 @@ private:
         auto fallback = lookup_resource_servers_in_(default_resource_servers_(), "GLOBAL");
         if (!fallback.empty()) return fallback;
         return {};
+    }
+
+    // Every resource server worth trying: this region's candidates first, then
+    // every other region's, deduplicated.
+    //
+    // The regional buckets are a routing preference, not a partition of the
+    // content -- both hosts mirror the same releases. Treating them as a
+    // partition is what turned a mirroring gap into an outage: `xlings-res`
+    // publishes to GitHub and then mirrors to GitCode, that second step is
+    // manual for large assets (the GitHub runner cannot push them across the
+    // border), and until it runs a CN client's candidate list is
+    // `{gitcode}` -- one host, no alternative. `2026.7.30.1` shipped with the
+    // four tarballs missing from GitCode and CN users got a flat HTTP 404
+    // while the same files sat on GitHub, reachable, unlisted.
+    //
+    // Ordering keeps the preference intact: the cross-region entries are only
+    // ever tried after every same-region one has failed, so nobody in CN
+    // starts pulling from GitHub while GitCode is serving.
+    [[nodiscard]] std::vector<std::string>
+    all_resource_servers_for_(std::string_view mirror) const {
+        auto servers = candidate_resource_servers_for_(mirror);
+        auto key = effective_mirror_name_(mirror, mirror_);
+
+        std::set<std::string> seen(servers.begin(), servers.end());
+        auto append_other_regions = [&](const MirrorServerMap& source) {
+            // unordered_map: sort the keys so the fallback order is the same
+            // on every run and every machine.
+            std::vector<std::string> regions;
+            for (const auto& [region, _] : source) {
+                if (region != key) regions.push_back(region);
+            }
+            std::ranges::sort(regions);
+            for (const auto& region : regions) {
+                for (const auto& server : source.at(region)) {
+                    if (seen.insert(server).second) servers.push_back(server);
+                }
+            }
+        };
+        append_other_regions(projectResourceServers_);
+        append_other_regions(globalResourceServers_);
+        append_other_regions(default_resource_servers_());
+        return servers;
     }
 
     static double probe_resource_server_latency_(const std::string& server) {
@@ -894,6 +936,13 @@ public:
     [[nodiscard]] static const std::string& lang() { return instance_().lang_; }
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {}) {
         return instance_().candidate_resource_servers_for_(mirror);
+    }
+    // Same list, extended with the other regions' servers as a last resort.
+    // Use this for download fallbacks; `resource_servers()` remains the
+    // "where should this region be pointed" answer used for selection.
+    [[nodiscard]] static std::vector<std::string>
+    resource_servers_with_cross_region(std::string_view mirror = {}) {
+        return instance_().all_resource_servers_for_(mirror);
     }
     [[nodiscard]] static std::string resource_server(std::string_view mirror = {}) {
         return instance_().selected_resource_server_for_(mirror);
