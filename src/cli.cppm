@@ -886,6 +886,7 @@ export int run(int argc, char* argv[]) {
                 {
                     {"--all, -a",  "Consider versions from every subos, not just this one"},
                     {"--pick, -i", "Choose the version interactively (needs a terminal)"},
+                    {"--strict",   "Refuse if a program of the current release has no version in the new one"},
                 },
             };
             else if (match("config")) h = SubHelp{
