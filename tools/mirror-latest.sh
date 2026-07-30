@@ -15,11 +15,23 @@
 # only the assets CI could not.
 #
 # Not automated on a schedule on purpose: correctness does not depend on it —
-# CN clients already fall back to the GitHub asset URLs (see
+# CN clients fall back to the GitHub asset URLs (see
 # build_xlings_res_fallback_urls_ in src/core/xim/installer.cppm); the GitCode
 # copy is only a CN-acceleration convenience, needed for ~2-4 big files per
 # release. Standing infra (CN cron/VM/self-hosted runner) is an option if
 # releases ever get frequent enough to make the manual step tiresome.
+#
+# THAT SENTENCE WAS FALSE UNTIL 2026.7.30.2, and it cost three hours of
+# downtime. The fallback list was built from the CURRENT REGION's resource
+# servers minus the selected one, and the shipped CN bucket holds exactly one
+# host — so for a CN client the list was always empty and a missing GitCode
+# asset was a flat HTTP 404 with a working copy on GitHub, unlisted.
+# `2026.7.30.1` shipped with all four tarballs missing here because this
+# script was not run. Config::all_resource_servers_for_ now appends the other
+# regions' servers after every same-region candidate, which is what makes the
+# claim above true. Do not delete this paragraph to "clean up" the comment:
+# the claim and the mechanism that backs it have to be readable together, or
+# the next person skips this step on the strength of a sentence again.
 #
 # Token handling: GITCODE_TOKEN is loaded from ~/.config/gitcode-tool/config.json
 # when unset. The GitHub mirror side uses XLINGS_RES_TOKEN or `gh auth` and is

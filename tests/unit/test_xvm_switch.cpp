@@ -445,6 +445,92 @@ TEST(XvmGroupHeaders, AnUnknownEntryResolvesToNothing) {
     EXPECT_TRUE(xlings::xvm::group_header_assets(db, "gcc", "9.9.9").empty());
 }
 
+// ── Members the incoming release does not have ──────────────────────
+//
+// `use` writes the members of the release it switches TO and nothing else, so
+// a program the new release has no version of stays exactly where it was --
+// active, and pointing into the release the user just left. Measured with
+// llvm: `xlings use llvm 20.1.7` printed one line, and `clang++` went on
+// answering for a different release entirely. The switch is still correct;
+// what was missing is that anyone was told.
+
+TEST(XvmSwitchPlan, ReportsProgramsTheIncomingReleaseDoesNotHave) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "gcc-ar"}, "15.1.0");
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    ASSERT_EQ(plan->stranded.size(), 1u);
+    EXPECT_EQ(plan->stranded.front().target, "gcc-ar");
+    // What it still resolves to, not what it "should" be: the report has to
+    // name the version the user will actually get.
+    EXPECT_EQ(plan->stranded.front().version, "15.1.0");
+}
+
+TEST(XvmSwitchPlan, AReleaseWithTheSameMembersStrandsNothing) {
+    xlings::xvm::VersionDB db;
+    const std::vector<std::string> members{"gcc", "g++", "gcc-ar"};
+    switch_group_(db, "15.1.0", members, "15.1.0");
+    switch_group_(db, "16.1.0", members, "16.1.0");
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_TRUE(plan->stranded.empty());
+}
+
+TEST(XvmSwitchPlan, AProgramTheUserAlreadyMovedIsNotReported) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "gcc-ar"}, "15.1.0");
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+    switch_group_(db, "14.1.0", {"gcc-ar"}, "14.1.0");
+    // gcc-ar is not on the outgoing release's version, so it is not something
+    // this switch is leaving behind -- it is a choice already made.
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "14.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_TRUE(plan->stranded.empty());
+}
+
+TEST(XvmSwitchPlan, NothingIsStrandedWhenNoReleaseIsBeingLeft) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+
+    // A first switch, with an empty workspace: there is no outgoing release
+    // to compare against, and inventing one would report every program the
+    // user has never installed.
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_TRUE(plan->stranded.empty());
+}
+
+TEST(XvmSwitchPlan, AnUnresolvableOutgoingReleaseDoesNotFailTheSwitch) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "gcc-ar"}, "15.1.0");
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+    // The release being left no longer resolves. Reporting is best effort by
+    // construction: failing here would block the command that repairs it.
+    db.at("gcc").versions.at("15.1.0").bindingMembers.clear();
+    db.at("gcc").versions.at("15.1.0").bindingGroup = {};
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_EQ(plan->members.size(), 2u);
+}
+
 TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");

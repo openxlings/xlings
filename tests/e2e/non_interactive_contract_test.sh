@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# non_interactive_contract_test.sh — no xlings command may block waiting for a
+# keypress, and none may report success without having done anything.
+#
+# `xlings use <name>` (no version) decided what to do by asking whether a
+# terminal was attached. With one it opened an arrow-key picker and blocked
+# until somebody pressed a key; without one it printed the version list and
+# returned 0 having changed nothing. Both halves are unusable to anything
+# driving xlings, and the TTY gate does not even separate the two populations
+# it was meant to -- agents and terminal-automation tools routinely allocate a
+# pty, so they took the *blocking* branch.
+#
+# The contract this locks down:
+#
+#   * whether a human is at the keyboard is not detectable, so it must not
+#     decide semantics -- only presentation;
+#   * a command with a single correct outcome performs it (exit 0);
+#   * an ambiguous one changes nothing and says so with exit 2;
+#   * nothing waits for input that was never promised a way to arrive.
+#
+# Every case runs under `timeout`, so a regression that reintroduces a blocking
+# prompt fails here instead of hanging CI for its full budget.
+#
+# Refs: .agents/docs/2026-07-30-cli-determinism-and-followup-plan.md §2
+set -euo pipefail
+
+# shellcheck source=./project_test_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
+
+require_fixture_index
+
+RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/non_interactive_contract"
+HOME_DIR="$RUNTIME_DIR/home"
+LOCAL_INDEX_DIR="$RUNTIME_DIR/xim-pkgindex"
+
+cleanup() {
+  chmod -R u+w "$RUNTIME_DIR" 2>/dev/null || true
+  rm -rf "$RUNTIME_DIR"
+}
+trap cleanup EXIT
+cleanup
+
+XLINGS_BIN="$(find_xlings_bin)"
+
+# stdin is closed for every run: a command that reads it here is a command
+# that would have hung.
+RUN() {
+  ( cd /tmp && timeout 30 env -i HOME="$HOME" PATH=/usr/bin:/bin \
+      XLINGS_HOME="$HOME_DIR" XLINGS_ACTIVE_SUBOS=default \
+      "$XLINGS_BIN" "$@" </dev/null )
+}
+
+# The same, wrapped in a pseudo-terminal. This is the case the old TTY gate
+# got wrong: `stdin_is_terminal()` is true in here, so this is exactly what an
+# agent that allocates a pty was hitting.
+HAVE_PTY=0
+if command -v script >/dev/null 2>&1; then HAVE_PTY=1; fi
+
+RUN_PTY() {
+  local cmd
+  cmd="$(printf '%q ' env -i HOME="$HOME" PATH=/usr/bin:/bin \
+           XLINGS_HOME="$HOME_DIR" XLINGS_ACTIVE_SUBOS=default \
+           "$XLINGS_BIN" "$@")"
+  case "$(uname -s)" in
+    Darwin|FreeBSD) ( cd /tmp && timeout 30 script -q /dev/null /bin/sh -c "$cmd" </dev/null ) ;;
+    *)              ( cd /tmp && timeout 30 script -qec "$cmd" /dev/null </dev/null ) ;;
+  esac
+}
+
+# `timeout` exits 124 on expiry; that is the failure this whole file exists to
+# catch, so it gets its own message rather than being lumped in with "wrong
+# exit code".
+rc_of() {
+  local rc=0
+  "$@" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -eq 124 ]]; then
+    fail "command blocked until the 30s timeout: $*"
+  fi
+  printf '%s\n' "$rc"
+}
+
+mkdir -p "$HOME_DIR/subos/default/bin" "$RUNTIME_DIR"
+cp -r "$FIXTURE_INDEX_DIR" "$LOCAL_INDEX_DIR"
+printf 'xim_indexrepos = {}\n' > "$LOCAL_INDEX_DIR/xim-indexrepos.lua"
+rm -f "$LOCAL_INDEX_DIR/.xlings-index-cache.json"
+mkdir -p "$LOCAL_INDEX_DIR/pkgs/n"
+
+# Two fixtures: one that ships a single version (unambiguous) and one that
+# ships two (ambiguous). Both print their own version so a switch is provable
+# by running the shim, not only by reading state.
+write_probe() {
+  local name="$1"; shift
+  local versions=("$@")
+  {
+    printf 'package = {\n'
+    printf '    spec = "1", name = "%s",\n' "$name"
+    printf '    description = "non-interactive contract fixture",\n'
+    printf '    authors = {"xlings-ci"}, licenses = {"MIT"}, type = "package",\n'
+    printf '    archs = {"x86_64"}, status = "stable", categories = {"test-fixture"},\n'
+    printf '    xpm = {\n'
+    for os in linux macosx windows; do
+      printf '        %s = { ' "$os"
+      for v in "${versions[@]}"; do printf '["%s"] = {}, ' "$v"; done
+      printf '},\n'
+    done
+    printf '    },\n}\n'
+    cat <<'LUA'
+import("xim.libxpkg.pkginfo")
+import("xim.libxpkg.xvm")
+function install()
+    local bindir = path.join(pkginfo.install_dir(), "bin")
+    os.tryrm(pkginfo.install_dir())
+    os.mkdir(bindir)
+    io.writefile(path.join(bindir, pkginfo.name()),
+                 "#!/bin/sh\necho \"probe " .. pkginfo.version() .. "\"\n")
+    return true
+end
+function config()
+    xvm.add(pkginfo.name(), { bindir = path.join(pkginfo.install_dir(), "bin") })
+    return true
+end
+function uninstall() xvm.remove(pkginfo.name()) return true end
+LUA
+  } > "$LOCAL_INDEX_DIR/pkgs/n/$name.lua"
+}
+
+write_probe ni-one 1.0.0
+write_probe ni-two 1.0.0 2.0.0
+
+cp "$XLINGS_BIN" "$HOME_DIR/xlings"
+cat > "$HOME_DIR/.xlings.json" <<JSON
+{ "mirror": "GLOBAL",
+  "index_repos": [{ "name": "xim", "url": "$LOCAL_INDEX_DIR" }] }
+JSON
+
+log "init sandbox"
+RUN self init >/dev/null 2>&1 || fail "self init failed"
+RUN install ni-one >/dev/null 2>&1 || fail "install ni-one failed"
+RUN install ni-two@1.0.0 >/dev/null 2>&1 || fail "install ni-two@1.0.0 failed"
+RUN install ni-two@2.0.0 >/dev/null 2>&1 || fail "install ni-two@2.0.0 failed"
+
+probe_says() {
+  ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      XLINGS_ACTIVE_SUBOS=default "$HOME_DIR/subos/default/bin/$1" 2>&1 || true )
+}
+# io.writefile leaves the payload non-executable; the recipe is a fixture, not
+# a real package, so the bit is set here rather than pretending in Lua.
+find "$HOME_DIR/data/xpkgs" -type f -name 'ni-*' -exec chmod +x {} +
+
+# ── N1: one candidate → switch, exit 0 ───────────────────────────────
+log "N1: a single installed version switches without asking"
+rc="$(rc_of RUN use ni-one)"
+[[ "$rc" == "0" ]] || fail "N1: expected exit 0, got $rc"
+out="$(probe_says ni-one)"
+grep -q "probe 1.0.0" <<<"$out" || fail "N1: shim does not run the version; got:\n$out"
+# It must actually *switch*, not print the list and shrug. The old path took
+# the same non-interactive branch here as it did for N2, so without this the
+# case passes for the wrong reason.
+out="$(RUN use ni-one 2>&1 || true)"
+grep -q -- "ni-one -> 1.0.0" <<<"$out" \
+  || fail "N1: no switch was performed, only a listing; got:\n$out"
+
+# ── N2: several candidates → refuse, exit 2, nothing changed ─────────
+#
+# The exit code is the whole point. The old path printed this same list and
+# returned 0, so a caller had no way to tell "switched" from "did nothing".
+log "N2: several installed versions refuse with exit 2"
+before="$(probe_says ni-two)"
+rc="$(rc_of RUN use ni-two)"
+[[ "$rc" == "2" ]] || fail "N2: expected exit 2 for an ambiguous switch, got $rc"
+out="$(RUN use ni-two 2>&1 || true)"
+grep -q "1.0.0" <<<"$out" || fail "N2: the candidates were not listed; got:\n$out"
+grep -q "2.0.0" <<<"$out" || fail "N2: the candidates were not listed; got:\n$out"
+after="$(probe_says ni-two)"
+[[ "$before" == "$after" ]] \
+  || fail "N2: a refused switch changed the active version: '$before' -> '$after'"
+
+# ── N3: the same, inside a pseudo-terminal ───────────────────────────
+#
+# The branch an agent actually reaches. Before this change it opened a picker
+# and waited forever; `timeout 30` is what proves it no longer does.
+if [[ "$HAVE_PTY" == "1" ]]; then
+  log "N3: a pty does not turn the refusal back into a blocking prompt"
+  rc="$(rc_of RUN_PTY use ni-two)"
+  [[ "$rc" == "2" ]] || fail "N3: expected exit 2 under a pty, got $rc"
+else
+  log "N3: SKIP (no \`script\` binary to allocate a pty)"
+fi
+
+# ── N4: --pick without a terminal fails loudly ───────────────────────
+#
+# Opt-in interactivity that cannot run must say so. Falling back to the panel
+# and exit 0 would be the original defect wearing a flag.
+log "N4: --pick off a terminal refuses instead of doing nothing"
+rc="$(rc_of RUN use ni-two --pick)"
+[[ "$rc" == "2" ]] || fail "N4: expected exit 2 for --pick with no tty, got $rc"
+out="$(RUN use ni-two --pick 2>&1 || true)"
+grep -qi "interactive terminal" <<<"$out" \
+  || fail "N4: no explanation of why --pick could not run; got:\n$out"
+
+# ── N5: naming the version still works ───────────────────────────────
+log "N5: an explicit version switches"
+rc="$(rc_of RUN use ni-two 1.0.0)"
+[[ "$rc" == "0" ]] || fail "N5: expected exit 0, got $rc"
+grep -q "probe 1.0.0" <<<"$(probe_says ni-two)" \
+  || fail "N5: the explicit switch did not take effect"
+rc="$(rc_of RUN use ni-two@2.0.0)"
+[[ "$rc" == "0" ]] || fail "N5: expected exit 0 for name@ver, got $rc"
+grep -q "probe 2.0.0" <<<"$(probe_says ni-two)" \
+  || fail "N5: the name@ver switch did not take effect"
+
+# ── N6: install / remove never wait for a confirmation ───────────────
+#
+# These already have `-y`, but `-y` is only half the contract: without it they
+# must still terminate rather than sit on a prompt nobody can answer.
+log "N6: install and remove terminate with stdin closed"
+rc="$(rc_of RUN install ni-one)"        # already installed: nothing to confirm
+[[ "$rc" == "0" ]] || fail "N6: repeat install exited $rc"
+rc="$(rc_of RUN remove ni-one -y)"
+[[ "$rc" == "0" ]] || fail "N6: remove -y exited $rc"
+if [[ "$HAVE_PTY" == "1" ]]; then
+  rc="$(rc_of RUN_PTY install ni-one -y)"
+  [[ "$rc" == "0" ]] || fail "N6: install -y under a pty exited $rc"
+fi
+
+# ── N7: listing is a listing ─────────────────────────────────────────
+#
+# `list_installed_versions` is served by the same code that `use` used to
+# reach. A caller asking to *see* the versions must not come back to a
+# different active toolchain.
+log "N7: the listing capability does not switch anything"
+before="$(probe_says ni-two)"
+rc="$(rc_of RUN list ni-two)"
+after="$(probe_says ni-two)"
+[[ "$before" == "$after" ]] \
+  || fail "N7: listing changed the active version: '$before' -> '$after'"
+
+log "PASS: non_interactive_contract"

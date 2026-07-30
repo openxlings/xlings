@@ -949,12 +949,20 @@ std::string build_xlings_res_url_(std::string_view pkgName,
     return build_xlings_res_url_with_server_(default_res_server_(), pkgName, version, platform);
 }
 
-// Build fallback URLs from all candidate resource servers (excluding the selected one)
+// Build fallback URLs from all candidate resource servers (excluding the
+// selected one).
+//
+// Deliberately the cross-region list: the same release is published to every
+// xlings-res host, and the regional buckets only say which one to *prefer*.
+// Reading `resource_servers()` here made the fallback list empty for any
+// region configured with a single host -- CN, in the shipped defaults -- so a
+// host that was merely missing an asset produced a hard 404 with a working
+// copy one hop away. See Config::all_resource_servers_for_.
 std::vector<std::string> build_xlings_res_fallback_urls_(std::string_view pkgName,
                                                          std::string_view version,
                                                          std::string_view platform) {
     auto selected = default_res_server_();
-    auto candidates = Config::resource_servers();
+    auto candidates = Config::resource_servers_with_cross_region();
     std::vector<std::string> fallbacks;
     for (auto& server : candidates) {
         if (server != selected) {

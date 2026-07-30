@@ -34,6 +34,39 @@ xlings use gcc@14.2.0     # 等价写法
 如果一个包属于一个"发布组"（例如 gcc 同时提供 `gcc` / `g++` / `cpp`），
 `use` 会整组一起切换，不会只切一个而让其余留在旧版本。
 
+**新版本没有的程序会被点名。** 组是按 release 定义的：如果旧 release 注册了
+`gcc-ar` 而新 release 没有，它不会跟着切走，也不会消失 —— 它继续指向你刚离开
+的那个 release。这种情况下 `use` 会逐个列出来：
+
+```
+[xlings] gcc -> 16.1.0
+[warn] 1 program(s) are not part of gcc@16.1.0 and still resolve to the release you switched away from:
+[warn]     gcc-ar (still 14.2.0)
+```
+
+如果不接受这种混合状态，用 `--strict`：有任何程序会被留下时直接拒绝切换，
+不做任何改动。
+
+### 省略版本号：确定就执行，有歧义就拒绝
+
+`xlings use <name>` 不带版本时**不会**弹出需要上下键选择的交互框，也不会
+"打印一个列表然后什么都不做"：
+
+| 当前 subos 里已安装的版本数 | 行为 | 退出码 |
+|---|---|:---:|
+| 1 | 直接切换到它 | 0 |
+| \>1 | 不做任何改动，列出候选并给出确切命令 | **2** |
+| 0 | 报错，并给出安装命令 | 1 |
+
+```bash
+xlings use gcc            # 只装了一个版本 → 直接切；装了多个 → 退出码 2
+xlings use gcc --pick     # 显式要交互选择（需要终端）
+xlings use gcc --all      # 候选范围放宽到所有 subos
+```
+
+这条规则对脚本和 agent 是硬约定：**"有没有人在键盘前"是探测不出来的**
+（很多 agent 会分配 pty），所以它不参与决定命令做什么，只决定怎么显示。
+
 ### 坐标写法：命名空间在最前面
 
 带命名空间的包，完整坐标是 `<namespace>:<package>@<version>`：

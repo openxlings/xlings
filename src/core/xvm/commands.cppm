@@ -281,7 +281,8 @@ filter_to_subos_installed_(const std::string& target,
 
 // xlings use <target> <version>
 // Updates the active subos workspace and creates/updates bin/ hardlinks
-int cmd_use(const std::string& target, const std::string& version, EventStream& stream) {
+int cmd_use(const std::string& target, const std::string& version,
+            EventStream& stream, bool strict = false) {
     // Serialize against any other xlings mutating this home, then re-read
     // state under the lock: Config loaded it at process start, outside the
     // lock, so acting on that snapshot is how two commands lose each other's
@@ -385,6 +386,22 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         return 1;
     }
     const auto& to_switch = plan->members;
+
+    // A program the outgoing release had and this one does not keeps
+    // resolving to the release being left -- see StrandedMember. `--strict`
+    // is for callers that would rather not switch at all than end up holding
+    // two releases, and it has to refuse HERE, while nothing has moved yet.
+    if (strict && !plan->stranded.empty()) {
+        log::error("[xlings:use] --strict: not switching {} to {}",
+                   target, resolved);
+        log::error("  {} program(s) would stay on the old release:",
+                   plan->stranded.size());
+        for (const auto& member : plan->stranded) {
+            log::error("    {} (still {})", member.target, member.version);
+        }
+        log::error("  hint: drop --strict, or move each one first");
+        return 1;
+    }
 
     // Everything above this line is a decision; everything below changes the
     // filesystem. Members that are already where they belong emit no change.
@@ -510,96 +527,101 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     }
 
     log::info("{} -> {}", target, resolved);
+
+    // Say what the switch did NOT cover.
+    //
+    // The single `llvm -> 20.1.7` line above was the entire output of a
+    // command that left `clang` answering 22.1.8, and the user found out from
+    // their compiler, not from xlings. Naming each one and what it still
+    // resolves to is the difference between a mixed toolchain the user chose
+    // and one they were handed.
+    if (!plan->stranded.empty()) {
+        // Kept to short lines on purpose: core cannot wrap (it does not
+        // depend on ui, which owns the width contract), so the only way these
+        // stay inside a narrow terminal is to be written that way.
+        log::warn("{} program(s) not in {}@{}, still on the old release:",
+                  plan->stranded.size(), target, resolved);
+        for (const auto& member : plan->stranded) {
+            log::warn("    {} (still {})", member.target, member.version);
+        }
+        log::warn("  move: xlings use {} <version>",
+                  plan->stranded.front().target);
+        log::warn("  drop: xlings remove {}@{}",
+                  plan->stranded.front().target,
+                  plan->stranded.front().version);
+    }
+
     xself::print_migration_hint_once(Config::recorded_client_version(),
                                      Info::VERSION);
     return 0;
 }
 
-// List versions for a target.
+// The versions `xlings use <target>` / the listing panel may choose from.
 //
-// Used by `xlings use <target>` (no version) — output drives the
-// interactive picker / info panel. 0.4.19+: defaults to **current
-// subos scope** (only versions in `installed[]`), so a fresh subos
-// shows an empty / minimal list rather than every version every other
-// subos has ever installed. Pass `all=true` to opt back into the
-// pre-0.4.19 global view (CLI exposes this via `--all`).
-//
-// When `all=false` and the current subos has no installed[] entries
-// for the target, we fall back to global with an explanatory hint —
-// otherwise the user would just see an empty panel and not know what
-// to do next.
-int cmd_list_versions(const std::string& target, EventStream& stream, bool all = false) {
+// 0.4.19+: defaults to **current subos scope** (only versions in
+// `installed[]`), so a fresh subos shows an empty / minimal list rather than
+// every version every other subos has ever installed. Pass `all=true` to opt
+// back into the pre-0.4.19 global view (CLI exposes this via `--all`).
+struct VersionCandidates {
+    std::vector<std::string> versions;
+    std::string active;   // empty when nothing is active in this subos
+    std::string title;
+};
+
+// Errors are reported here (they already carry a next command) and returned
+// as the exit code the caller should use, so both callers below fail the same
+// way.
+std::expected<VersionCandidates, int>
+collect_version_candidates_(const std::string& target, bool all) {
     auto db = Config::versions();
 
     if (!has_target(db, target)) {
         log::error("'{}' not found in version database", target);
-        return 1;
+        return std::unexpected(1);
     }
 
     auto workspace = Config::effective_workspace();
-    auto active = get_active_version(workspace, target);
+    VersionCandidates out;
+    out.active = get_active_version(workspace, target);
     auto global_all = get_all_versions(db, target);
 
-    std::vector<std::string> versions;
-    std::string title;
     if (all) {
-        versions = global_all;
-        title = target + " versions (all subos)";
-    } else {
-        versions = filter_to_subos_installed_(target, global_all);
-        if (versions.empty()) {
-            // Empty subos installed[] for this target — show a hint
-            // instead of an empty panel. The global list is informational
-            // so the user can pick a version to install.
-            log::error("'{}' is not installed in current subos", target);
-            if (!global_all.empty()) {
-                std::string avail;
-                for (auto& v : global_all) {
-                    if (!avail.empty()) avail += " ";
-                    avail += v;
-                }
-                log::error("  globally available: {}", avail);
-                log::error("  hint: xlings install {}@<version>"
-                           " (or `xlings use {} --all` to see global view)",
-                           target, target);
-            } else {
-                log::error("  hint: xlings install {}", target);
+        out.versions = global_all;
+        out.title = target + " versions (all subos)";
+        return out;
+    }
+
+    out.versions = filter_to_subos_installed_(target, global_all);
+    if (out.versions.empty()) {
+        // Empty subos installed[] for this target — show a hint instead of an
+        // empty panel. The global list is informational so the user can pick
+        // a version to install.
+        log::error("'{}' is not installed in current subos", target);
+        if (!global_all.empty()) {
+            std::string avail;
+            for (auto& v : global_all) {
+                if (!avail.empty()) avail += " ";
+                avail += v;
             }
-            return 1;
+            log::error("  globally available: {}", avail);
+            log::error("  hint: xlings install {}@<version>"
+                       " (or `xlings use {} --all` to see global view)",
+                       target, target);
+        } else {
+            log::error("  hint: xlings install {}", target);
         }
-        title = target + " versions (current subos)";
+        return std::unexpected(1);
     }
+    out.title = target + " versions (current subos)";
+    return out;
+}
 
-    // With a person at the keyboard, `xlings use <target>` offers the
-    // versions instead of only listing them. The picker has been implemented
-    // in ui::select_version since the panel was written and had no caller —
-    // the command printed a list and left the user to retype one of the rows.
-    //
-    // Off a terminal, in `--agent`, or under the NDJSON interface it still
-    // prints the panel: a prompt that auto-answers with a default would
-    // switch versions in a script that only asked to see them.
-    const bool interactive = versions.size() > 1
-        && platform::stdin_is_terminal()
-        && platform::supports_rewrite_output()
-        && !platform::is_tui_mode()
-        && !palette::plain_forced();
-
-    if (interactive) {
-        PromptEvent req;
-        req.id = "select_version";
-        req.question = "Select version for " + target;
-        req.options = versions;
-        req.defaultValue = active;
-        auto chosen = stream.prompt(std::move(req));
-        if (chosen.empty()) {
-            log::println("cancelled");
-            return 0;
-        }
-        return cmd_use(target, chosen, stream);
-    }
-
+void emit_version_panel_(const std::string& target,
+                         const VersionCandidates& candidates,
+                         EventStream& stream) {
+    auto db = Config::versions();
     nlohmann::json fieldsJson = nlohmann::json::array();
-    for (auto& ver : versions) {
+    for (auto& ver : candidates.versions) {
         auto vdata = get_vdata(db, target, ver);
         std::string path_info;
         // `@xlings/...` rather than the absolute path. `self config` and
@@ -607,28 +629,121 @@ int cmd_list_versions(const std::string& target, EventStream& stream, bool all =
         // one whose rows are payload paths — the ~20 columns the prefix costs
         // are exactly what pushed it past the terminal.
         if (vdata && !vdata->path.empty()) path_info = Config::display_path(vdata->path);
-        bool highlight = (ver == active);
+        bool highlight = (ver == candidates.active);
         fieldsJson.push_back({{"label", ver}, {"value", path_info}, {"highlight", highlight}});
     }
     nlohmann::json payload;
-    payload["title"] = title;
+    payload["title"] = candidates.title;
     payload["fields"] = std::move(fieldsJson);
     stream.emit(DataEvent{"info_panel", payload.dump()});
+}
 
-    // Say what to do with the list. The failure path above already spells the
-    // next command out; the path where the user got exactly what they asked
-    // for and still has to guess did not.
-    //
-    // As a `tip` event rather than a bare println so it goes through the same
-    // width contract as the panel it follows — a hint that runs off the edge
-    // of a narrow terminal is the problem it was added to solve.
-    if (versions.size() > 1) {
+// List versions for a target. Never switches anything.
+//
+// This is what the `list_installed_versions` capability runs, and the name is
+// the whole contract: a caller that asked to *see* the versions must not come
+// back to a different active toolchain. `use <target>` is below.
+int cmd_list_versions(const std::string& target, EventStream& stream, bool all = false) {
+    auto candidates = collect_version_candidates_(target, all);
+    if (!candidates) return candidates.error();
+    emit_version_panel_(target, *candidates, stream);
+    if (candidates->versions.size() > 1) {
         nlohmann::json tip;
         tip["message"] = std::format("xlings use {} <version>", target);
         stream.emit(DataEvent{"tip", tip.dump()});
     }
-
     return 0;
+}
+
+// `xlings use <target>` with no version — deterministic, or it refuses.
+//
+// It used to decide by asking whether a terminal was attached: with a TTY it
+// opened an arrow-key picker and blocked until somebody pressed a key,
+// without one it printed the list and `return 0`. Both are unusable to
+// anything driving xlings.
+//
+// The TTY gate does not even separate the two populations it was meant to:
+// agents and terminal-automation tools routinely allocate a pty, so
+// `stdin_is_terminal()` is true for them and they hang with no timeout. And
+// the non-TTY branch is the worse half — it changed nothing, said nothing
+// about that, and exited 0, so a script had every reason to believe the
+// switch happened.
+//
+// **Whether a human is at the keyboard is not detectable; whether this
+// command has a single correct outcome is.** So that is what decides:
+//
+//   1 candidate   → switch to it                                  (exit 0)
+//   >1 candidates → change nothing, show them, name the exact
+//                   command, and fail so a caller can tell        (exit 2)
+//   0 candidates  → error, as before                              (exit 1)
+//
+// The picker is not gone, it is opt-in: `--pick` (`-i`) asks for it
+// explicitly, and if it cannot run it says so instead of falling back to
+// doing nothing.
+int cmd_use_by_name(const std::string& target, EventStream& stream,
+                    bool all = false, bool pick = false, bool strict = false) {
+    auto candidates = collect_version_candidates_(target, all);
+    if (!candidates) return candidates.error();
+
+    // Unambiguous: there is nothing to ask about. This also covers the
+    // documented sysroot-repair use of `use` -- switching to the version that
+    // is already active re-materializes headers and libraries.
+    if (candidates->versions.size() == 1) {
+        return cmd_use(target, candidates->versions.front(), stream, strict);
+    }
+
+    if (pick) {
+        const bool canPrompt = platform::stdin_is_terminal()
+            && platform::supports_rewrite_output()
+            && !platform::is_tui_mode()
+            && !palette::plain_forced();
+        if (!canPrompt) {
+            emit_version_panel_(target, *candidates, stream);
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = "--pick needs an interactive terminal; "
+                           "nothing was changed",
+                .recoverable = true,
+                .hint = std::format("xlings use {} <version>", target),
+            });
+            return 2;
+        }
+        PromptEvent req;
+        req.id = "select_version";
+        req.question = "Select version for " + target;
+        req.options = candidates->versions;
+        req.defaultValue = candidates->active;
+        auto chosen = stream.prompt(std::move(req));
+        if (chosen.empty()) {
+            // Cancelled: nothing changed, and the exit code has to say so --
+            // the same rule the non-interactive path follows.
+            log::println("cancelled");
+            return 2;
+        }
+        return cmd_use(target, chosen, stream, strict);
+    }
+
+    emit_version_panel_(target, *candidates, stream);
+
+    std::string joined;
+    for (auto& v : candidates->versions) {
+        if (!joined.empty()) joined += " ";
+        joined += v;
+    }
+    std::string current = candidates->active.empty()
+        ? std::string("none active in this subos")
+        : std::format("currently active: {}", candidates->active);
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = std::format(
+            "'{}' has {} installed versions ({}); name the one you want",
+            target, candidates->versions.size(), current),
+        .recoverable = true,
+        .hint = std::format("xlings use {} <version>   (versions: {})"
+                            "   |   xlings use {} --pick   to choose "
+                            "interactively", target, joined, target),
+    });
+    return 2;
 }
 
 // Register a version in the global database (called after xim install)

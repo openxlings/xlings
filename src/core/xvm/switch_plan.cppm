@@ -57,9 +57,31 @@ struct MemberSwitch {
     std::string removeLibName;
 };
 
+// A program the outgoing release had and the incoming one does not.
+//
+// `use` only ever writes the members of the release it switches TO, so a name
+// that release has no version of is left exactly where it was -- still
+// active, still pointing into the release the user just left. The result is a
+// silently mixed toolchain: `xlings use llvm 20.1.7` prints one line about
+// llvm, and `clang` keeps answering 22.1.8.
+//
+// That is not a corner case. Two releases of the same package routinely
+// register different program sets -- a tool added between versions, a
+// platform-specific name, or (measured) a payload whose members were
+// registered under the wrong names entirely. Nothing reported it.
+struct StrandedMember {
+    std::string target;
+    std::string version;   // what it still resolves to
+};
+
 struct UseSwitchPlan {
     std::map<std::string, std::string> members;  // target -> version
     std::vector<MemberSwitch> switches;          // only members that move
+
+    // Reported, never acted on: deactivating them would be a guess about
+    // intent, and picking a replacement version even more so. `use --strict`
+    // turns the report into a refusal for callers that want neither.
+    std::vector<StrandedMember> stranded;
 
     // Header assets for the whole release, deduplicated, with the two lists
     // already disjoint.
@@ -222,6 +244,32 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
 
     plan.installHeaders = std::move(incoming);
     plan.removeHeaders = std::move(outgoing);
+
+    // What the release being left had, that this one does not.
+    //
+    // Best effort by construction: an outgoing release that no longer
+    // resolves cannot be enumerated, and failing the switch over that would
+    // block the very command that repairs it. Only a name whose *current*
+    // active version is the outgoing member's is reported -- anything else
+    // was already pointing somewhere of the user's own choosing.
+    if (const auto previousIt = workspace.find(target);
+        previousIt != workspace.end()
+        && !previousIt->second.empty()
+        && previousIt->second != resolvedVersion) {
+        if (auto outgoingSelection =
+                resolve_binding_selection(db, target, previousIt->second)) {
+            for (const auto& [memberTarget, memberVersion] :
+                     outgoingSelection->members) {
+                if (plan.members.contains(memberTarget)) continue;
+                const auto activeIt = workspace.find(memberTarget);
+                if (activeIt == workspace.end()
+                    || activeIt->second != memberVersion) {
+                    continue;
+                }
+                plan.stranded.push_back({memberTarget, memberVersion});
+            }
+        }
+    }
 
     return plan;
 }

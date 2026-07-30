@@ -121,4 +121,23 @@ grep -q "already installed" <<<"$out" \
 [[ -f "$PAYLOAD/keep-me" ]] \
   || fail "F3: the install hook re-ran and wiped the payload"
 
+# ── F4: a foreign payload is still removable ─────────────────────────
+#
+# The platform check answers "should this be downloaded again". It must not
+# also answer "does this exist": 2026.7.30.1 folded the two into one
+# `PackageMatch::installed` field, and since `remove` gates on that field it
+# started refusing the very package its own recovery instructions told the
+# user to remove -- with 29 Windows .exe files sitting in the payload
+# directory, `xlings remove llvm@20` said `is not installed`.
+log "F4: remove still works on a foreign payload"
+rm -f "$PKG_DIR/.xpkg-install.json"
+rm -f "$PAYLOAD/fp-tool"
+printf 'MZ\220\0\0\0\0\0\0\0\0\0\0\0\0\0' > "$PAYLOAD/fp-tool.exe"
+
+out="$(RUN remove fp-probe -y 2>&1 || true)"
+if grep -q "is not installed" <<<"$out"; then
+  fail "F4: remove refused a payload that is on disk; got:\n$out"
+fi
+[[ ! -d "$PKG_DIR" ]] || fail "F4: the payload survived remove; got:\n$out"
+
 log "PASS: foreign_payload_reinstall"

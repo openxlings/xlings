@@ -248,7 +248,10 @@ After feature PRs merge, if a release is planned:
 
 ```bash
 # On main:
-# Edit src/core/config.cppm VERSION
+# Edit BOTH: mcpp.toml `version` and src/core/config.cppm VERSION.
+# (mcpp's target fingerprint includes the package version, so a bump moves
+#  the build output to a new target/<triple>/<fp>/bin/xlings — check
+#  `./that/binary --version` before concluding anything from a manual test.)
 git commit -m "chore(2026.7.28.1): bump version for release"
 git push origin main
 
@@ -259,8 +262,62 @@ gh workflow run release.yml --ref main
 gh run list --workflow=release.yml --limit 1
 ```
 
+**Then two steps that `release.yml` cannot do for you.** A green workflow is
+not a finished release:
+
+```bash
+# 1. Top up the CN mirror — from a CN machine, with a local gtc.
+#    The GitHub runner cannot push large assets to GitCode: the upload stalls
+#    on the cross-border OBS wall, the job logs it and moves on green.
+bash tools/mirror-latest.sh xlings
+
+#    Verify with GET, never HEAD: GitCode answers 401 to HEAD and
+#    302 -> CDN 200 to GET, so a HEAD check reports a healthy asset missing
+#    and a curl -I sweep "proves" the opposite of the truth.
+curl -sSL -o /dev/null -w '%{http_code}\n' \
+  https://gitcode.com/xlings-res/xlings/releases/download/<ver>/xlings-<ver>-linux-x86_64.tar.gz
+
+# 2. Bump xim-pkgindex/pkgs/x/xlings.lua — every platform block AND the
+#    ["latest"] ref, each with its sha256.
+```
+
+`2026.7.30.1` skipped step 1. CN users got `HTTP 404` for three hours while
+the same files sat on GitHub, reachable and unlisted. `2026.7.30.2` added a
+cross-region fallback (`Config::all_resource_servers_for_`) so one region's
+gap is no longer fatal — the manual mirror is an accelerator again, not a
+correctness requirement, but it is still expected every time.
+
+### Do not pin the released version into CI
+
+`tests/fresh-install/` deliberately installs whatever the published `latest`
+resolves to. It is the only suite that tests what a first-time user actually
+gets: the release artifact, `quick_install`, and the index that has to resolve
+it on a cold home. Pinning the version turns it into a test of a snapshot
+nobody installs, and it rots silently — one release at a time, with everything
+still green.
+
+So a release is **not** followed by a "pin the new version in CI" commit. The
+pins that do exist there (`MCPP_OLD` / `MCPP_NEW`) hold the two ends of an
+*upgrade* still so an assertion can name an exact expected version; the xlings
+version under test is never one of them.
+
 ## Key conventions
 
+- **No command may block on a prompt, and none may report success having done
+  nothing.** Whether a human is at the keyboard is *not* detectable — agents
+  and terminal tooling routinely allocate a pty, so `stdin_is_terminal()` is
+  true for them. What is detectable is whether the command has a single
+  correct outcome, and that is what decides:
+  - unambiguous → do it, exit `0`;
+  - ambiguous → change nothing, print the candidates and the exact command,
+    exit `2`;
+  - interactive selection is **opt-in** (`--pick`), never the default path,
+    and when it cannot run it says so rather than falling back to a no-op.
+
+  A TTY may decide *presentation* (picker vs panel), never semantics.
+  `tests/e2e/non_interactive_contract_test.sh` runs every prompting command
+  under `stdin=/dev/null`, `XLINGS_NON_INTERACTIVE=1` **and a pseudo-TTY**,
+  each under `timeout`, so a reintroduced prompt fails instead of hanging CI.
 - **Build with xlings**: always use `xlings install` + `xlings use gcc@16.1.0` for dev env
 - **No manual apt/brew**: use `xlings install <tool>` (dogfood the project)
 - **Test isolation**: every e2e test uses a temp `XLINGS_HOME` (never touches real user env)

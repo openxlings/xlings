@@ -35,7 +35,16 @@ struct PackageMatch {
     std::filesystem::path pkgFile;
     std::filesystem::path storeRoot;
     PackageScope scope { PackageScope::Global };
+    // The payload directory exists and holds something. Says nothing about
+    // WHOSE platform built it -- see payloadForeign.
     bool installed { false };
+    // The payload provably belongs to another platform. Kept separate from
+    // `installed` because the two answer different questions: install must
+    // treat this as "not installed" (so the artifact is downloaded again),
+    // while remove, list and everything else must still see the payload that
+    // is sitting on disk. Folding it into `installed` made `xlings remove`
+    // refuse the very package the user was told to remove.
+    bool payloadForeign { false };
 };
 
 // #374: a single index repo that could not be loaded during rebuild
@@ -368,17 +377,18 @@ class PackageCatalog {
                 match.installed = std::filesystem::exists(installDir, ec)
                     && std::filesystem::is_directory(installDir, ec)
                     && payload_has_content(installDir);
-                // A payload built for another platform is not installed,
-                // whatever the directory looks like. This has to be decided
-                // HERE and not only at install time: `installed` is what
-                // makes the plan empty, and an empty plan downloads nothing,
-                // so a later "reinstall this" has no artifact to install
-                // from. Only a PROVABLE mismatch counts -- Unknown keeps the
+                // Whether the payload belongs to THIS platform. Recorded,
+                // not folded into `installed`: the install planner needs it
+                // (an empty plan downloads nothing, so a reinstall would have
+                // no artifact to install from -- and llvm.lua's
+                // os.tryrm(install_dir) then deletes the payload that WAS
+                // there), while remove and list must still see what is on
+                // disk. Only a PROVABLE mismatch counts -- Unknown keeps the
                 // fast path, so nothing that works today starts reinstalling.
-                if (match.installed
-                    && classify_payload_platform(installDir)
-                           == PayloadPlatform::Foreign) {
-                    match.installed = false;
+                if (match.installed) {
+                    match.payloadForeign =
+                        classify_payload_platform(installDir)
+                            == PayloadPlatform::Foreign;
                 }
             }
             matches.push_back(std::move(match));
