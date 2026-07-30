@@ -22,6 +22,7 @@ import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
+import xlings.core.xim.payload;
 import xlings.core.xim.installer;
 import xlings.core.xim.commands;
 import xlings.core.xim.repo;
@@ -631,5 +632,39 @@ TEST(PayloadPlatformTest, StampIsNotWrittenIntoAnEmptyPayload) {
     fs::create_directories(dir);
     pp::write_payload_stamp(dir, "1.0.0");
     EXPECT_TRUE(fs::is_empty(dir));
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, AStampAloneIsNotAPayload) {
+    // The emptiness probe is what lets a broken payload be reinstalled. If a
+    // stamp satisfied it on its own, the record of an install would become
+    // evidence of one -- measured: a hook that began with
+    // os.tryrm(install_dir), found no artifact to unpack, and left a
+    // directory containing nothing but this platform's stamp.
+    auto dir = fs::temp_directory_path() / "xlings-payload-stamp-only";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    xlings::platform::write_string_to_file(
+        (dir / ".xpkg-install.json").string(), "{\n  \"os\": \"linux\"\n}\n");
+    EXPECT_FALSE(pp::payload_has_content(dir));
+
+    // The legacy wrapper marker means the opposite and must still count.
+    xlings::platform::write_string_to_file((dir / ".xim-installed").string(), "");
+    EXPECT_TRUE(pp::payload_has_content(dir));
+    fs::remove_all(dir);
+}
+
+TEST(PayloadPlatformTest, ContentClassificationIgnoresTheStamp) {
+    // "Should this payload be stamped" must never be answered by reading the
+    // stamp, or a run that wrote one over a payload it did not install would
+    // confirm its own claim forever.
+    auto dir = make_payload_dir("content-vs-stamp");
+    write_foreign_executable(dir / "bin" / "tool.exe");
+    xlings::platform::write_string_to_file(
+        (dir / ".xpkg-install.json").string(),
+        std::string("{\n  \"os\": \"") + std::string(pp::host_platform_tag())
+            + "\"\n}\n");
+    EXPECT_EQ(pp::classify_payload_platform(dir), pp::PayloadPlatform::Host);
+    EXPECT_EQ(pp::classify_payload_content(dir), pp::PayloadPlatform::Foreign);
     fs::remove_all(dir);
 }

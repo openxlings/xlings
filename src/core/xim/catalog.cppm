@@ -5,6 +5,7 @@ import mcpplibs.xpkg;
 
 import xlings.core.config;
 import xlings.core.log;
+import xlings.core.xim.payload;
 import xlings.core.xim.index;
 import xlings.core.xim.repo;
 import xlings.core.xim.libxpkg.types.type;
@@ -366,7 +367,19 @@ class PackageCatalog {
                 std::error_code ec;
                 match.installed = std::filesystem::exists(installDir, ec)
                     && std::filesystem::is_directory(installDir, ec)
-                    && !std::filesystem::is_empty(installDir, ec);
+                    && payload_has_content(installDir);
+                // A payload built for another platform is not installed,
+                // whatever the directory looks like. This has to be decided
+                // HERE and not only at install time: `installed` is what
+                // makes the plan empty, and an empty plan downloads nothing,
+                // so a later "reinstall this" has no artifact to install
+                // from. Only a PROVABLE mismatch counts -- Unknown keeps the
+                // fast path, so nothing that works today starts reinstalling.
+                if (match.installed
+                    && classify_payload_platform(installDir)
+                           == PayloadPlatform::Foreign) {
+                    match.installed = false;
+                }
             }
             matches.push_back(std::move(match));
         }
