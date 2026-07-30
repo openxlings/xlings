@@ -374,7 +374,17 @@ normalize_xpkg_registration_plan(
         }
         registrationNode.version = std::move(*exactVersion);
         if (!operation.alias.empty()) {
-            registrationNode.alias.push_back(operation.alias);
+            // Lift `--sysroot=<a subos of this home>` out before it is
+            // stored. `xvm.add` can only express the flag with a concrete
+            // path, and this database is shared by every subos -- so what
+            // gets recorded is the intent, and the shim supplies the answer
+            // for whichever subos is actually active. See VData::sysroot.
+            auto lifted = xvm::lift_subos_sysroot(
+                operation.alias, Config::paths().homeDir.string());
+            if (lifted.found) registrationNode.sysroot = true;
+            if (!lifted.alias.empty()) {
+                registrationNode.alias.push_back(std::move(lifted.alias));
+            }
         }
         for (const auto& [key, value] : operation.envs) {
             auto [environmentIt, inserted] =

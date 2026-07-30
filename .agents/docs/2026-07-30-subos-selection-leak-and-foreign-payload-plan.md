@@ -619,3 +619,268 @@ mcpplibs/libxpkg           不需要改动             ← 方案 2 相对方案
 - **不在 `subos use` 时批量重写 DB**（方案 3）。env-spawn 与 project 模式从不写 DB，做了也不对，还多一个整文档重写窗口。
 - **不动 `subos/current` 的现有用途**（`XLINGS_BIN`、shim 发现）。本方案不引入第二套 subos 解析路径 —— 恰恰相反，它把 alias 收拢到已有的唯一解析点 `Config::xvm_artifact_subos_dir()`。
 - **不自动删除异平台载荷目录**。B-1 只是重跑 install 钩子（钩子自己会 `os.tryrm(install_dir())`）；直接 `rm -rf` store 目录属于卸载语义，不该由"已装判定"顺手做。
+
+---
+
+## 9. 评估报告：subos 路径的记录形式（2026-07-31）
+
+**起因**：`2026.7.30.1` 之后我一直主张"recipe 不用改，执行期已纠正"，并把改
+recipe 的成本估成"跨仓 + capability probe"。被追问后重查，**这个成本估算是错的**，
+下面是重估的完整过程和结论。
+
+### 9.1 先纠正一处事实错误
+
+我先前说"改 recipe 需要 capability probe，否则老客户端拿到不认识的
+`${XLINGS_SUBOS}` 占位符"。这只对 **`${XLINGS_SUBOS}` 这一种方案**成立 —— 那是
+§3.2 里被否掉的方案 1，我把它的成本当成了"改 recipe"的成本。
+
+实际上仓库里**早就有**一个不需要任何协议的动态路径：
+
+```
+~/.xlings/subos/current -> default          # symlink
+```
+
+`xself/init.cppm:270` 建立它，`subos.cppm:865`（`subos use --global`）维护它，
+`Config::list_subos_names()` 显式把 `current` 排除在 subos 列表之外。它是**已经
+存在、已经维护、老客户端天然认识**的东西 —— 因为它就是一个路径。
+
+### 9.2 四个角度的评估
+
+#### 架构
+
+| | 烧绝对 subos 路径（现状） | 写 `subos/current` |
+|---|---|---|
+| 记录的含义 | "安装那一刻活动的是谁" —— **一个与包无关的事实** | "跟着用户走" |
+| 谁负责纠正 | 只有新客户端的执行期归一化 | 路径自己 + 执行期归一化 |
+| 老客户端 | **冻结在安装时**的 subos | 跟随全局切换 |
+| 层次 | 状态里混进了一次性上下文 | 状态里只有意图 |
+
+关键判断：**`sysroot` 是"当前环境"的属性，不是"这个包版本"的属性**，把它固化进
+按 (target, version) 存储的记录本身就是层次错配。`current` 不解决全部（见稳定性），
+但它把记录从"一次性事实"降级成"一个可解引用的引用"，方向是对的。
+
+#### 稳定性
+
+`current` **只跟踪全局持久选择**，跟不上另外两种选择模式：
+
+| 选择模式 | `current` 能跟上吗 | 执行期归一化能吗 |
+|---|:---:|:---:|
+| 持久 `activeSubos`（`subos use --global`） | ✅ | ✅ |
+| `XLINGS_ACTIVE_SUBOS` 环境变量（每 shell） | ❌ | ✅ |
+| 项目 subos（`<project>/.xlings/subos/<n>`） | ❌ | ✅ |
+
+所以 **`current` 不是执行期归一化的替代品，是它的下位兜底**：新客户端两者都有，
+老客户端至少从"冻结"升级成"跟随全局"。**不存在回退风险** —— 今天老客户端拿到的
+是一个更差的固定值。
+
+另一处稳定性问题是这次顺带查出来的：`update_current_symlink_` 用
+`fs::create_directory_symlink`，而 `self init` 用 `platform::create_directory_link`。
+**两者在 Windows 上不等价**（符号链接要开发者模式/提权，junction 不要），也就是
+init 铺下一个 junction、之后每次切换都更新失败，而 `subos list` 照常报告切换成功
+—— 又一例"没发生和成功了输出一致"。已统一为 `platform::create_directory_link`。
+
+#### 简洁实现
+
+不需要新 API、不需要 probe、不需要 libxpkg 改动。recipe 侧就是一次字符串替换：
+
+```lua
+local function portable_sysroot()
+    local dir = system.subos_sysrootdir()
+    return (dir:gsub("([/\\])subos([/\\])[^/\\]+", "%1subos%2current", 1))
+end
+```
+
+xlings 侧的配套改动只有两处，都复用了已有函数：
+
+1. **doctor 的检测基准从"活动 subos"换成"`current`"**。判据不变（"归一化会不会
+   改变这个字符串"），只是归一化的目标换了：写死具体 subos 的会变，已经写
+   `current` 的不会变。**两行**。
+2. **`--fix` 也改写成 `current`**，而不是活动 subos。
+
+#### 跨平台
+
+- symlink/junction 差异见上，已统一。
+- recipe 的替换同时处理 `/` 和 `\`。
+- `current` 在 Windows 上是目录 junction，编译器沿着它解析 `--sysroot` 没有问题。
+- 执行期归一化本来就同时认两种分隔符（`SubosPathNormalizeTest.HandlesWindowsSeparators`）。
+
+### 9.3 评估中发现的真正缺陷：`--fix` 修不掉自己报的问题
+
+改完检测基准后 E2E-46 的 A5 立刻失败，暴露出一个**现状就存在**的缺陷：
+
+> `--fix` 把记录改写成**当前活动 subos 的绝对路径** —— 也就是**把钉子从一个
+> subos 挪到另一个**。在另一个 subos 里跑 `doctor`，同一条告警原样再报一次。
+
+也就是说这条 finding 的 remedy 在多 subos 的 home 上**永远无法清零**，而它的
+文案是"`--fix` rewrites the record"。这不是我引入的，是原本就在那儿、只有把检测
+基准挪到 `current` 才会暴露出来的。
+
+修法与上面的方案收敛到同一点：**`--fix` 改写成 `<home>/subos/current`**。于是
+
+- 检测与修复用同一个基准，`--fix` 幂等且真的能清零；
+- 修好的记录对**所有** subos 同时正确，不再需要逐个 subos 跑一遍 `--fix`；
+- 执行期行为完全不变（`current` 照样被归一化成真正活动的目录）。
+
+### 9.4 结论与修正后的决策
+
+| 项 | 先前决策 | 修正后 |
+|---|---|---|
+| 改 recipe 的成本 | 跨仓 + capability probe | **跨仓，不需要 probe** |
+| 收益 | 只有"doctor 少一条常驻告警" | 加上"老客户端不再冻结"+"`--fix` 能清零" |
+| 结论 | 不做 | **xlings 侧先做**（检测基准 + `--fix` 目标 + Windows 链接一致性），recipe 侧随后独立 PR |
+
+xlings 侧已在 `2026.7.31.1` 分支实现，测试：
+`SubosPathNormalizeTest.TheCurrentSpellingStillNormalizesAtExecTime` /
+`.NormalizingTowardsCurrentLeavesTheCurrentSpelling` /
+`.NormalizingTowardsCurrentStillMovesAPinnedSubos`，以及 E2E-46 **A7**
+（recipe 写 `current` → doctor 不报 + shim 仍然到达活动 subos）。
+
+**顺序不敏感**：xlings 侧先落地是安全的（老 recipe 照旧被检测和修复），recipe 侧
+先落地也不会坏（只是那条告警继续在旧 xlings 上出现）。这正是它不需要 probe 的
+另一种说法。
+
+**仍然不做的**：`${XLINGS_SUBOS}` 占位符方案（§3.2 方案 1）。它需要新协议、需要
+probe，而 `current` 已经把同一个问题解决到"新客户端完全正确、老客户端明显更好"。
+
+### 9.5 用"共享 vs per-subos"这条原则复审整个方案
+
+原则（用户提出）：**payload 里的一切应尽量通用（与 subos 无关）；subos / sysroot / xvm
+这一层才允许与 subos 相关。**
+
+先把"哪一层是共享的"查实（读真实 home，不是推断）：
+
+| 层 | 物理位置 | 存什么 | **是否 per-subos** |
+|---|---|---|:---:|
+| payload | `data/xpkgs/<ns>-x-<pkg>/<ver>/` | 二进制 + 自带配置（gcc 的 `specs`） | **共享** |
+| **版本库 (versions DB)** | `~/.xlings/.xlings.json` → `versions.*` | `path` / **`alias`** / `envs` / `bindings` | **共享** |
+| workspace | `subos/<n>/.xlings.json` | 只有 `{name: {active, installed[]}}` | per-subos |
+| sysroot / shim | `subos/<n>/{usr,lib,bin}` | 物化出来的视图 | per-subos |
+
+实测值：
+
+```
+~/.xlings/.xlings.json      versions."g++"."15.1.0".alias
+    = ["g++ --sysroot=/home/speak/.xlings/subos/default"]     ← per-subos 的值
+
+~/.xlings/subos/default/.xlings.json
+    = {"workspace": {...}}          ← 只有"哪个版本是活的"，没有 alias/envs/path
+```
+
+**关键结论：版本库和 payload 在原则的同一侧 —— 都是共享的。** 所以
+`--sysroot=<某个具体 subos>` 写进 `alias`，与把 subos 路径写进 `specs`
+**是同一个违反，只是高了一层**。"xvm 层可以与 subos 相关"这句话对
+**workspace/shim/sysroot** 成立，对**版本库不成立**。
+
+#### 逐项复审
+
+| 项 | 值在哪一层 | 符合原则 |
+|---|---|:---:|
+| LINK（loader/rpath）→ payload `specs` payload-direct | 共享 | ✅ 新 recipe 符合；旧安装的数据违反 → [#458](https://github.com/openxlings/xlings/issues/458) |
+| 载荷平台身份 `.xpkg-install.json` | 共享 | ✅ 记的是 os/arch，与 subos 无关 |
+| `payloadForeign` / `installed` 拆分 | 共享 | ✅ |
+| **HEADER（`--sysroot`）→ 版本库 `alias`** | **共享** | ❌ **仍然违反** |
+| workspace 的 `active/installed[]` | per-subos | ✅ |
+| 悬空链接扫描 / shim / sysroot 物化 | per-subos | ✅ |
+| `use` 确定性、group 遗留成员报告 | per-subos（workspace） | ✅ |
+
+#### 那一处违反的性质
+
+已做的两步都是**绕过**，不是**消除**：
+
+- **执行期归一化**（`2026.7.30.1`）：让*行为*正确 —— 但记录里仍然是一个 per-subos 的值，
+  躺在共享库里。所以才需要 doctor 有一条检查、需要 `--fix`、需要老客户端讨论。
+- **改写成 `subos/current`**（本轮）：把"钉死一个 subos"降级成"一个可解引用的引用"，
+  **减轻**了违反（记录不再断言"是 default"），但**没有消除** —— 共享库里仍然存着一个
+  只在某个 subos 语境下才有意义的字符串。
+
+**判据很简单：如果这条记录是完全通用的，那么 doctor 就不需要为它设一条检查。**
+它需要，就说明它不通用。
+
+#### 真正符合原则的形态（第三个选项，之前没考虑过）
+
+不存路径，存**意图**——让本来就知道活动 subos 的那一层去合成：
+
+```lua
+xvm.add(prog, { bindir = ..., alias = prog, sysroot = true })   -- 声明"我要 subos sysroot"
+```
+
+shim dispatch 时由 xlings 拼出 `--sysroot=<活动 subos>`。于是：
+
+- 共享库里**一个 subos 相关的字符串都没有** → 原则完全成立；
+- `normalize_subos_paths` 对这条不再需要，`SubosPathBaked` 这条 finding **整条消失**，
+  连同它的 `--fix`、它的收敛问题、它的多 subos 讨论；
+- 三种选择模式天然正确（合成时才决定）。
+
+代价是**老客户端不认识 `sysroot` 字段 → 直接丢掉 `--sysroot` → 头文件搜索坏掉**，
+这比路径不对更糟。所以它需要一个兼容故事 —— 但**不需要 probe**，双写即可：
+
+```lua
+xvm.add(prog, {
+    alias   = prog .. " --sysroot=" .. portable_sysroot(),  -- 老客户端沿着 current 走
+    sysroot = true,                                          -- 新客户端优先用这个，忽略上面的文本
+})
+```
+
+新客户端读 `sysroot=true` 就自己合成，压根不看 alias 里那段；老客户端不认识该字段，
+沿用 `current`，行为比今天好。**两边都不坏，且不需要探测对方版本** —— 因为回退路径
+本身已经够好。
+
+#### 修正后的路线
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 1 | 执行期归一化（让行为先正确） | 已发 `2026.7.30.1` |
+| 2 | 记录降级为 `subos/current` + `--fix` 可收敛 + doctor 基准对齐 | PR #457，未合 |
+| 3 | recipe 写 `current`（HEADER 轴） | 待提，xim-pkgindex |
+| 4 | payload 内烧死路径的可见性 | [#458](https://github.com/openxlings/xlings/issues/458) |
+| **5** | **`sysroot = true` 声明式注册 + 双写，删除 `SubosPathBaked` 整条链路** | **本节新增，未排期** |
+
+阶段 5 才是"符合原则"，1–3 是让它在到达那里之前不再咬人。把它写在这里，是为了
+**不要把阶段 2 当成终点** —— 它是一个刻意接受的、有理由的中间态。
+
+### 9.6 阶段 5 的实现：不加协议字段，改为在注册时**提取意图**
+
+§9.5 里给的阶段 5 形态是"recipe 显式声明 `sysroot = true`"。查证后**换了实现**，
+结论不变但代价低一个数量级。
+
+**为什么不能走声明式字段**：`xvm.add` 的表由 libxpkg 的 `XvmOp` 结构体承载
+（`mcpplibs/libxpkg/src/xpkg-executor.cppm:54`，字段固定：`op/name/version/bindir/
+alias/type/filename/binding/includedir/envs`）。加一个 `sysroot` 字段 = **libxpkg
+发版 → xlings 升依赖 → pkgindex 改 recipe** 的四仓链条，而双写状态下新客户端的行为
+与 `current` + 归一化**完全相同** —— 付出协议成本，换零行为变化。
+
+**实际做法**：意图不需要 recipe 声明，因为它可以从 recipe 已经写下的东西**推断**，
+而且推断规则由 xlings 自己定义、自己拥有：
+
+```
+注册时   lift_subos_sysroot(alias, home)
+         "sr-real --sysroot=<home>/subos/dev"  →  alias="sr-real", sysroot=true
+执行时   shim 拼回  " --sysroot=" + <本进程解析到的 subos>
+```
+
+- **共享库里一个 subos 字符串都不剩** —— 原则真正满足，不是减轻。
+- **只动一个仓**，libxpkg 和 recipe 都不用改。
+- **recipe 无需改动**也能受益；写 `current` 仍然更好（老客户端），但不再是必需。
+- 只提取**本 home 的** subos 路径，判据直接复用 `normalize_subos_paths`
+  —— 指向 payload 目录或 `/opt/...` 的 `--sysroot` 原样保留，因为那些**本来就**
+  对所有 subos 正确。
+
+**doctor 随之收敛到真正的迁移**：
+
+| | 之前（§9.4） | 现在 |
+|---|---|---|
+| 检测 alias | "归一化到 `current` 会不会变" | **"能不能被提取"**（与修复同一个函数，不可能漂移） |
+| `--fix` | 改写成 `subos/current` | **提取** —— 路径消失，意图落库 |
+| 结果 | 记录里仍有 subos 路径 | 这条 finding **永久消失**，不是搬家 |
+
+envs 里的 subos 路径没有对应的意图字段，仍然只能改写成 `current` —— 这是**已知的
+部分解**，写在这里以免被当成完整。
+
+**兼容**：老记录一个字不用改也继续正确，执行期归一化照旧兜住它们；`--fix` 是可选的
+迁移而不是必需的修复。老客户端读到新记录会**丢掉 `--sysroot`**，这是真实代价 ——
+但它和"老客户端读不懂新字段"是同一件事，且只影响升级后又降级的场景。
+
+**测试**：`AliasSysrootLiftTest.*` 10 项（提取、保留其余参数、空格写法、`current`
+写法、项目 subos、payload 路径不动、外部路径不动、相似 flag 不误伤、无 sysroot 不变、
+幂等）；E2E-46 重构为**新装记录无路径有意图** + **注入一条升级前的老记录**验证
+执行仍正确、doctor 报告、`--fix` 真正迁移。

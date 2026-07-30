@@ -40,6 +40,24 @@ struct VData {
     std::string fileSrc;
     std::string fileDst;
     std::vector<std::string> alias;
+
+    // This entry wants `--sysroot=<the active subos>` on every invocation.
+    //
+    // The same rule as fileSrc/fileDst above, finally applied to the alias:
+    // **this database is shared by every subos in the home**, so a subos path
+    // stored in it is right for the subos that installed the package and
+    // wrong for all the others. A recipe writes the flag with a concrete path
+    // because that is all `xvm.add` can express; registration lifts it out of
+    // the alias into this boolean, and the shim -- which is the layer that
+    // actually knows which subos is active -- puts it back at exec time.
+    //
+    // What is stored is therefore the INTENT ("this compiler needs the FHS
+    // view") rather than one subos's answer to it, and the record is correct
+    // read from anywhere. Legacy entries that still carry the path keep
+    // working: normalize_subos_paths rewrites them on the way out, and
+    // `self doctor --fix` migrates them to this form.
+    bool sysroot { false };
+
     std::map<std::string, std::string> envs;
     std::optional<BindingGroupRef> bindingGroup;
     std::map<std::string, std::string> bindingMembers;

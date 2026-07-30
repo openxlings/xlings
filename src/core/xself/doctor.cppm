@@ -518,14 +518,39 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                     Config::xvm_artifact_subos_dir().string();
                 !activeSubos.empty()) {
                 std::vector<std::string> baked;
+                // A subos path stored in a database every subos shares.
+                //
+                // The alias and the envs fail for the same reason but have
+                // different fixes, so they are asked different questions:
+                //
+                //   alias -- "can the sysroot be lifted out of it?"
+                //            `lift_subos_sysroot` answers exactly that, and
+                //            answering it with the same function the repair
+                //            uses means detection and repair cannot drift.
+                //            A lifted record needs no path at all, so this is
+                //            a finding that goes away permanently.
+                //
+                //   envs  -- there is no intent flag for an arbitrary
+                //            environment variable, so the best available fix
+                //            is the portable `subos/current` spelling.
+                //            Normalizing *towards* it is what separates a
+                //            value that pins one subos (changes) from one
+                //            already portable (does not); comparing against
+                //            the active subos cannot -- it rewrites both.
+                const auto portableSubos =
+                    (fs::path(st.homeStr) / "subos" / "current").string();
                 const auto note_if_baked = [&](std::string_view what,
                                                const std::string& value) {
                     if (xvm::normalize_subos_paths(value, st.homeStr,
-                                                   activeSubos) != value) {
+                                                   portableSubos) != value) {
                         baked.push_back(std::format("{} '{}'", what, value));
                     }
                 };
-                if (!vdata.alias.empty()) note_if_baked("alias", vdata.alias[0]);
+                if (!vdata.alias.empty()
+                    && xvm::lift_subos_sysroot(vdata.alias[0],
+                                               st.homeStr).found) {
+                    baked.push_back(std::format("alias '{}'", vdata.alias[0]));
+                }
                 for (const auto& [key, value] : vdata.envs) {
                     note_if_baked(std::format("env {}", key), value);
                 }
@@ -651,31 +676,71 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // installed by a run whose payload store is gone. Scanning is cheap
         // (the header farm is one link per top-level entry) and it is the
         // only way to see them at all.
-        for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
-                                "usr/bin"}) {
-            const auto dir = p.subosDir / sub;
-            std::error_code dec;
-            if (!fs::is_directory(dir, dec)) continue;
-            for (const auto& entry : platform::dir_entries(dir)) {
-                std::error_code lec;
-                // Both halves are required. A dangling link IS a symlink and
-                // is NOT `exists()`; testing only existence reads it as
-                // "already gone" -- the mistake that let #423's test pass
-                // while the links were still on disk.
-                if (!fs::is_symlink(entry.path(), lec)) continue;
-                if (fs::exists(entry.path(), lec)) continue;
-                auto target = fs::read_symlink(entry.path(), lec);
-                add({
-                    .kind    = FindingKind::SysrootDangling,
-                    .level   = FindingLevel::Warning,
-                    .detail  = std::format(
-                        "{} points at {}, which does not exist",
-                        Config::display_path(entry.path()),
-                        lec ? std::string("(unreadable)")
-                            : Config::display_path(target)),
-                    .remedy  = "xlings self doctor --fix",
-                    .shimPath = entry.path(),
-                });
+        //
+        // Every subos, not just the active one. The damage that produces
+        // these links is not something the user does from inside the subos it
+        // lands in -- the measured case was an isolated run that materialized
+        // headers into the real home's `dev-hello` while the user was working
+        // in `default` -- so "only look where you happen to be standing"
+        // guarantees the report misses it. Repair still only touches the
+        // active subos (the multi-subos boundary: another subos may be live
+        // in another shell); the others get named, with the command that
+        // fixes them.
+        struct SysrootScanRoot {
+            std::string name;      // empty => the active selection
+            fs::path    root;
+        };
+        std::vector<SysrootScanRoot> sysrootRoots{{{}, p.subosDir}};
+        {
+            std::error_code sec;
+            const auto activeRoot = fs::weakly_canonical(p.subosDir, sec);
+            for (const auto& name : Config::list_subos_names()) {
+                auto root = p.homeDir / "subos" / name;
+                std::error_code rec;
+                if (fs::weakly_canonical(root, rec) == activeRoot) continue;
+                sysrootRoots.push_back({name, std::move(root)});
+            }
+        }
+
+        for (const auto& scanRoot : sysrootRoots) {
+            const bool isActive = scanRoot.name.empty();
+            for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
+                                    "usr/bin"}) {
+                const auto dir = scanRoot.root / sub;
+                std::error_code dec;
+                if (!fs::is_directory(dir, dec)) continue;
+                for (const auto& entry : platform::dir_entries(dir)) {
+                    std::error_code lec;
+                    // Both halves are required. A dangling link IS a symlink
+                    // and is NOT `exists()`; testing only existence reads it
+                    // as "already gone" -- the mistake that let #423's test
+                    // pass while the links were still on disk.
+                    if (!fs::is_symlink(entry.path(), lec)) continue;
+                    if (fs::exists(entry.path(), lec)) continue;
+                    auto target = fs::read_symlink(entry.path(), lec);
+                    add({
+                        .kind    = FindingKind::SysrootDangling,
+                        .level   = FindingLevel::Warning,
+                        .detail  = std::format(
+                            "{}{} points at {}, which does not exist",
+                            isActive ? std::string{}
+                                     : std::format("[{}] ", scanRoot.name),
+                            Config::display_path(entry.path()),
+                            lec ? std::string("(unreadable)")
+                                : Config::display_path(target)),
+                        .remedy  = isActive
+                            ? "xlings self doctor --fix"
+                            : std::format("XLINGS_ACTIVE_SUBOS={} xlings "
+                                          "self doctor --fix", scanRoot.name),
+                        // Empty for the active subos -- that is what `--fix`
+                        // keys on, so a finding from elsewhere cannot be
+                        // repaired by accident.
+                        .subos = isActive
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{scanRoot.name},
+                        .shimPath = entry.path(),
+                    });
+                }
             }
         }
 
@@ -827,6 +892,11 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     Config::display_path(f.shimPath)));
             }
         } else if (f.kind == FindingKind::SysrootDangling) {
+            // Another subos's link is reported, not removed. A second shell
+            // can have that subos active right now, and repairing state out
+            // from under it is the multi-subos boundary this codebase keeps
+            // everywhere else. The finding carries the exact command.
+            if (!f.subos.empty()) continue;
             std::error_code ec;
             // remove(), not remove_all(): the link is being deleted, and if
             // it were somehow followable, remove_all would delete the
@@ -888,20 +958,28 @@ void repair_state_(RepairReport& out) {
         }
     }
 
-    // Baked subos paths. Rewritten to the subos this run resolves to -- the
-    // same value the shim would substitute at exec time, so the record stops
-    // disagreeing with the behaviour.
+    // Baked subos paths. Rewritten to `<home>/subos/current`, NOT to the
+    // subos this run happens to resolve to.
+    //
+    // Rewriting to the active subos only moved the pin: the record went on
+    // naming one concrete subos, so the very next `doctor` in a different one
+    // reported it again, and `--fix` could never clear its own finding.
+    // `current` is the symlink `self init` creates and `subos use --global`
+    // maintains, so the repaired record is correct from every subos at once --
+    // and exec-time normalization still substitutes the truly active
+    // directory, including under XLINGS_ACTIVE_SUBOS and project subos, where
+    // a symlink cannot follow.
     {
         const auto homeStr = Config::paths().homeDir.string();
-        const auto activeSubos = Config::xvm_artifact_subos_dir().string();
+        const auto activeSubos =
+            (Config::paths().homeDir / "subos" / "current").string();
         const auto has_baked = [&](const xvm::VersionDB& src) {
-            if (activeSubos.empty()) return false;
+            if (homeStr.empty()) return false;
             for (const auto& [name, vinfo] : src) {
                 for (const auto& [version, vdata] : vinfo.versions) {
                     if (!vdata.alias.empty()
-                        && xvm::normalize_subos_paths(vdata.alias[0], homeStr,
-                                                      activeSubos)
-                               != vdata.alias[0]) {
+                        && xvm::lift_subos_sysroot(vdata.alias[0],
+                                                   homeStr).found) {
                         return true;
                     }
                     for (const auto& [k, v] : vdata.envs) {
@@ -928,11 +1006,24 @@ void repair_state_(RepairReport& out) {
                     for (auto& [version, vdata] : vinfo.versions) {
                         bool touched = false;
                         for (auto& a : vdata.alias) {
-                            auto fixed = xvm::normalize_subos_paths(
-                                a, homeStr, activeSubos);
-                            if (fixed != a) { a = std::move(fixed); touched = true; }
+                            // The real migration: take the path out and set
+                            // the intent, which is what makes the finding
+                            // disappear rather than move. Rewriting it to
+                            // another subos -- including `current` -- would
+                            // leave a subos path in a shared database, and
+                            // the next `doctor` would be right to say so.
+                            auto lifted = xvm::lift_subos_sysroot(a, homeStr);
+                            if (lifted.found) {
+                                a = std::move(lifted.alias);
+                                vdata.sysroot = true;
+                                touched = true;
+                            }
                         }
                         for (auto& [k, v] : vdata.envs) {
+                            // No intent flag exists for an arbitrary env
+                            // value, so the portable spelling is the best
+                            // available: it stops naming one subos, and
+                            // exec-time normalization still resolves it.
                             auto fixed = xvm::normalize_subos_paths(
                                 v, homeStr, activeSubos);
                             if (fixed != v) { v = std::move(fixed); touched = true; }
@@ -941,7 +1032,7 @@ void repair_state_(RepairReport& out) {
                             ++rewritten;
                             note(glyph::mark(glyph::bullet, "subos path"),
                                  std::format(
-                                     "{} now records the active subos",
+                                     "{} no longer records a subos",
                                      xvm::display_coordinate(name, version)));
                         }
                     }
@@ -1422,6 +1513,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::SysrootDangling:
                 add(glyph::mark(glyph::warn, "dangling sysroot link"), f.detail);
+                // A link in ANOTHER subos is reported here and repaired
+                // there, so the generic "run `xlings self doctor --fix`"
+                // footer is wrong for it -- that command, from here, will
+                // leave it exactly where it is. Name the one that works.
+                if (!f.subos.empty() && !f.remedy.empty()) {
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                }
                 break;
             case FindingKind::SubosPathBaked:
                 // One line per TARGET. A single gcc install bakes the path

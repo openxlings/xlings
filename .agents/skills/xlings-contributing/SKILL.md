@@ -297,9 +297,59 @@ nobody installs, and it rots silently — one release at a time, with everything
 still green.
 
 So a release is **not** followed by a "pin the new version in CI" commit. The
-pins that do exist there (`MCPP_OLD` / `MCPP_NEW`) hold the two ends of an
-*upgrade* still so an assertion can name an exact expected version; the xlings
-version under test is never one of them.
+pins that do exist there (`MCPP_OLD` / `MCPP_NEW`, `GCC_*`, `LLVM_*`,
+`NINJA_VERSION`) hold the two ends of an *upgrade* still so an assertion can
+name an exact expected version — those pin the **packages under test**, which
+is the point. The xlings **binary doing the installing** is never one of them.
+
+Enforced, not just written down:
+
+```bash
+bash tests/fresh-install/no_xlings_version_pin_check.sh
+```
+
+It runs in `xlings-ci-linux.yml` (which has a `pull_request` trigger) rather
+than in `xlings-ci-fresh-install.yml` (which deliberately does not) — a rule
+enforced only after merge is a rule that gets merged. It catches three shapes:
+an xlings-named version variable, an `xlings@<number>` coordinate, and a
+`QUICK_INSTALL_URL` pointing at a release tag instead of a branch.
+
+### Recipes: where a subos path may and may not appear
+
+Two axes, and **the correct answer is opposite for each**. `gcc.lua` is the
+worked example.
+
+| axis | value belongs in | may it name a subos |
+|---|---|---|
+| **LINK** (ELF interpreter, rpath) | the payload's own config (gcc's `specs`) | **No** — payload-direct |
+| **HEADER** (`--sysroot`) | the xvm registration (`alias`) | **Yes** — that is what a sysroot is |
+
+*Why LINK must not:* one payload is shared by every subos in the home, and a
+direct `<install_dir>/bin/gcc` (mcpp, downstream tools) never goes through a
+shim at all. A subos path there points the shared copy at one subos and cannot
+be repaired by anything — exec-time normalization only rewrites the xvm
+record, and `self doctor` never reads payload file contents. The only fix is a
+reinstall, which is why the specs stamp carries a schema suffix
+(`.specs-rewritten-<ver>-payload.stamp`): it forces one.
+
+*Why HEADER must:* gcc's header search needs an FHS-shaped tree and the subos
+*is* that composite view.
+
+For the HEADER axis, write the **portable spelling**, not the install-time
+subos:
+
+```lua
+local dir = system.subos_sysrootdir()
+return (dir:gsub("([/\\])subos([/\\])[^/\\]+", "%1subos%2current", 1))
+```
+
+`<home>/subos/current` is the symlink `self init` creates and
+`subos use --global` maintains. It needs no placeholder, no capability probe
+and no libxpkg change; an old client follows it instead of freezing at install
+time, and a current client normalizes it like any other subos path (which is
+what keeps `XLINGS_ACTIVE_SUBOS` and project subos correct — a symlink cannot
+follow those). `self doctor` keys its baked-path check on this spelling, so a
+recipe that writes it carries no standing warning.
 
 ## Key conventions
 

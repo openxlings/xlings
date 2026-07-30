@@ -427,6 +427,41 @@ TEST_F(XvmHeaderSymlinkTest, InstallAndRemoveHeaders) {
     EXPECT_FALSE(fs::exists(sysrootInclude / "bits"));
 }
 
+// The out-of-home guard warns; it does NOT refuse.
+//
+// Deliberate, and easy to mistake for an unfinished change. What it exists to
+// catch is a run whose payload store and whose sysroot belong to DIFFERENT
+// homes -- measured: an isolated run with a `/tmp` store materialized headers
+// into the user's real `subos/dev-hello`, and when the run's store went away
+// the links stayed, pointing at nothing. But a recipe may legitimately expose
+// headers from outside the store (a wrapper around system headers is the
+// obvious one), so refusing would break packages that work today.
+//
+// This test pins BOTH halves. Without the second EXPECT it would pass on a
+// version that started refusing, and the packages that break would only be
+// discovered by their users.
+TEST_F(XvmHeaderSymlinkTest, AnOutOfHomeSourceWarnsAndStillLinks) {
+    namespace fs = std::filesystem;
+
+    // testDir_ is under the system temp dir, which is outside any xlings
+    // home -- exactly the shape the guard reports.
+    auto srcInclude = testDir_ / "foreign" / "include";
+    fs::create_directories(srcInclude);
+    xlings::platform::write_string_to_file(
+        (srcInclude / "outside.h").string(), "/* outside */");
+    auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
+
+    testing::internal::CaptureStderr();
+    xlings::xvm::install_headers(srcInclude.string(), sysrootInclude);
+    const auto warnings = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(warnings.find("outside this home"), std::string::npos)
+        << "the guard said nothing; stderr was:\n" << warnings;
+    EXPECT_TRUE(fs::exists(sysrootInclude / "outside.h"))
+        << "the guard refused instead of warning -- that breaks every recipe "
+           "that legitimately exposes headers from outside the store";
+}
+
 TEST_F(XvmHeaderSymlinkTest, InstallHeadersOverwrite) {
     namespace fs = std::filesystem;
 
@@ -775,4 +810,135 @@ TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
     // A path that ends at the marker has no name segment to replace.
     const std::string cmd = "tool --dir=/h/.xlings/subos/";
     EXPECT_EQ(norm(cmd, "/h/.xlings", "/h/.xlings/subos/b"), cmd);
+}
+
+// ── The portable spelling: `<home>/subos/current` ────────────────────
+//
+// `self init` creates that symlink and `subos use --global` maintains it, so a
+// recipe that writes `<home>/subos/current/...` has recorded a path that
+// already follows the user: an old client (no exec-time normalization)
+// follows the link instead of freezing at install time, and a current client
+// normalizes it exactly like any other subos path.
+//
+// `xlings self doctor` tells the two spellings apart by normalizing TOWARDS
+// `current` -- a value that pins a concrete subos changes, one already spelled
+// `current` does not. Normalizing towards the *active* subos cannot: it
+// rewrites both, which is why every gcc install carried a standing
+// `subos path` warning it could do nothing about.
+
+// ── Lifting the sysroot out of the alias ─────────────────────────────
+//
+// The versions database is shared by every subos in the home -- the same rule
+// VData::fileSrc/fileDst has carried since the `files` kind was added, never
+// applied to the alias. A recipe can only express `--sysroot` with a concrete
+// path, so registration takes the path out and records the INTENT; the shim,
+// which is the only layer that knows which subos this process resolved to,
+// puts the flag back at exec time.
+
+namespace {
+xlings::xvm::AliasSysroot lift(std::string_view alias, std::string_view home) {
+    return xlings::xvm::lift_subos_sysroot(std::string(alias),
+                                           std::string(home));
+}
+}  // namespace
+
+TEST(AliasSysrootLiftTest, TakesTheFlagAndLeavesTheCommand) {
+    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/default", "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, KeepsEveryOtherArgument) {
+    auto r = lift("gcc -O2 --sysroot=/home/u/.xlings/subos/dev -pipe",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "gcc -O2 -pipe");
+}
+
+TEST(AliasSysrootLiftTest, RecognisesTheSpaceSeparatedSpelling) {
+    // Both are valid GCC spellings and a recipe may write either.
+    auto r = lift("g++ --sysroot /home/u/.xlings/subos/default",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, TakesThePortableSpellingToo) {
+    // `subos/current` is better than a pinned subos and still a subos path in
+    // a shared store. The intent is the same; lift it.
+    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/current",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, AProjectSubosCounts) {
+    // <projectDir>/.xlings/subos/<n> is not under the home at all, and is
+    // still ours -- the same test normalize_subos_paths applies.
+    auto r = lift("g++ --sysroot=/w/proj/.xlings/subos/pa", "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, APayloadSysrootIsNotOurs) {
+    // Pointing --sysroot at a payload expresses something else entirely, and
+    // that path is correct from every subos. Byte-identical passthrough.
+    const std::string cmd =
+        "g++ --sysroot=/home/u/.xlings/data/xpkgs/xim-x-gcc/15.1.0";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, AForeignSysrootIsLeftAlone) {
+    const std::string cmd = "g++ --sysroot=/opt/toolchain/sysroot";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, ASimilarlyNamedFlagIsNotTouched) {
+    // `--no-sysroot-suffix` starts with the same letters and is not this.
+    const std::string cmd =
+        "g++ --no-sysroot-suffix=/home/u/.xlings/subos/default";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, AnAliasWithoutOneIsUnchanged) {
+    const std::string cmd = "clang++ -stdlib=libc++";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, IsIdempotent) {
+    auto once = lift("g++ --sysroot=/home/u/.xlings/subos/default",
+                     "/home/u/.xlings");
+    auto twice = lift(once.alias, "/home/u/.xlings");
+    EXPECT_FALSE(twice.found);
+    EXPECT_EQ(twice.alias, once.alias);
+}
+
+TEST(SubosPathNormalizeTest, TheCurrentSpellingStillNormalizesAtExecTime) {
+    // It has to. `current` tracks the GLOBAL selection only, so under
+    // XLINGS_ACTIVE_SUBOS or a project subos it is the wrong directory.
+    EXPECT_EQ(norm("g++ --sysroot=/home/u/.xlings/subos/current/usr",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/dev"),
+              "g++ --sysroot=/home/u/.xlings/subos/dev/usr");
+}
+
+TEST(SubosPathNormalizeTest, NormalizingTowardsCurrentLeavesTheCurrentSpelling) {
+    // The doctor probe: unchanged => nothing is pinned => no finding.
+    const std::string cmd = "g++ --sysroot=/home/u/.xlings/subos/current/usr";
+    EXPECT_EQ(norm(cmd, "/home/u/.xlings", "/home/u/.xlings/subos/current"),
+              cmd);
+}
+
+TEST(SubosPathNormalizeTest, NormalizingTowardsCurrentStillMovesAPinnedSubos) {
+    // ...and the same probe still catches the spelling that froze.
+    EXPECT_EQ(norm("g++ --sysroot=/home/u/.xlings/subos/dev-hello/usr",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/current"),
+              "g++ --sysroot=/home/u/.xlings/subos/current/usr");
 }

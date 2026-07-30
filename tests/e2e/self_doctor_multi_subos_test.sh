@@ -319,4 +319,43 @@ has_ws_entry "$PROJ_DIR/.xlings/subos/pb/.xlings.json" "ms-proj" \
 has_ws_entry "$PROJ_DIR/.xlings/subos/pa/.xlings.json" "ms-proj" \
   && fail "S7: pa should have detached from ms-proj"
 
+# ── S8: a dangling sysroot link in another subos is visible from here ──
+#
+# These links are not produced from inside the subos they land in -- the
+# measured case was an isolated run that materialized headers into the real
+# home's `dev-hello` while the user was working in `default`, then deleted its
+# own payload store. Scanning only the active subos therefore guarantees the
+# report misses exactly the case the scan exists for.
+#
+# Repair keeps the multi-subos boundary: reported everywhere, removed only
+# where it is active, because another shell can have that subos live.
+log "S8: dangling sysroot link in 'other' is reported from 'default'"
+mkdir -p "$HOME_DIR/subos/other/usr/include"
+DANGLER="$HOME_DIR/subos/other/usr/include/ghost.h"
+ln -sf "$RUNTIME_DIR/gone/ghost.h" "$DANGLER"
+[[ -L "$DANGLER" ]] || fail "S8 setup: fixture link not created"
+if [[ -e "$DANGLER" ]]; then fail "S8 setup: fixture link must dangle"; fi
+
+out="$(RUN_IN default self doctor 2>&1 || true)"
+grep -q "dangling sysroot link" <<<"$out" \
+  || fail "S8: default's doctor missed the link in 'other'; got:\n$out"
+grep -q "\[other\]" <<<"$out" \
+  || fail "S8: the finding does not say which subos it is in; got:\n$out"
+grep -q "XLINGS_ACTIVE_SUBOS=other" <<<"$out" \
+  || fail "S8: no command for repairing it where it lives; got:\n$out"
+
+log "S8b: --fix in 'default' reports it but does not touch it"
+RUN_IN default self doctor --fix >/dev/null 2>&1 \
+  || fail "S8b: another subos's dangling link must not fail this subos's --fix"
+[[ -L "$DANGLER" ]] \
+  || fail "S8b: default's --fix removed a link owned by another subos"
+
+log "S8c: --fix in 'other' removes it"
+RUN_IN other self doctor --fix >/dev/null 2>&1 || fail "S8c: other's --fix failed"
+if [[ -L "$DANGLER" ]]; then fail "S8c: --fix left the dangling link on disk"; fi
+out="$(RUN_IN default self doctor 2>&1 || true)"
+if grep -q "dangling sysroot link" <<<"$out"; then
+  fail "S8c: the finding survived the repair; got:\n$out"
+fi
+
 log "PASS: multi-subos doctor scoping, attribution, stamping, R3 honesty, refcount union"

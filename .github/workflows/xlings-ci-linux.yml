@@ -28,6 +28,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Runs HERE, not in xlings-ci-fresh-install.yml, because that workflow
+      # deliberately has no `pull_request` trigger — a rule enforced only after
+      # merge is a rule that gets merged. Milliseconds, no build, no network.
+      - name: fresh-install must track the published latest
+        run: bash tests/fresh-install/no_xlings_version_pin_check.sh
+
       # ── Phase 1: Configure Environment via xlings ─────────────────
 
       - name: Install system deps

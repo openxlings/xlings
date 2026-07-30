@@ -13,7 +13,13 @@ struct DownloadFileResult {
     std::string error;
     std::int64_t bytesWritten { 0 };
     std::optional<std::int64_t> expectedBytes;
+    // Where the client ended up after redirects — for a release asset this is
+    // usually a CDN host, not anything the caller listed.
     std::string finalUrl;
+    // The CANDIDATE this transfer used, verbatim as passed in `urls`. The
+    // caller listed those; `finalUrl` it did not, so only this one can answer
+    // "which of my mirrors served this".
+    std::string sourceUrl;
     std::string etag;
     std::string lastModified;
 };
@@ -340,11 +346,31 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
     auto [lowSpeedBytes, lowSpeedSecs] = detail_::effective_low_speed_(
         opts.lowSpeedLimitBytes, opts.lowSpeedTimeSec);
 
+    // Breadth first: every candidate gets its first attempt before any
+    // candidate gets its second.
+    //
+    // This used to be the other way round -- `for url { for attempt { } }` --
+    // which meant one bad host could consume the entire download before the
+    // next URL was ever contacted. With the shipped settings that is
+    // `retryCount` 3 + 1 attempts x `maxTimeSec` 600 = **40 minutes on the
+    // first candidate**, while a healthy mirror sat untried. The stall
+    // watchdog does not help: it only fires below ~10 KB/s, and the measured
+    // case was a source holding a steady ~105 KB/s -- slow enough to take
+    // half an hour for a 36 MB package, fast enough to never look stalled.
+    //
+    // The per-candidate attempt budget is unchanged, and so is every
+    // give-up-on-this-host rule; only the order changes. A host that failed
+    // for a transient reason is still worth a second try, just not before the
+    // alternatives have had a first one.
     std::string lastErr;
-    for (auto& url : opts.urls) {
-        if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
-        for (int att = 0; att <= opts.retryCount; ++att) {
+    std::vector<bool> exhausted(opts.urls.size(), false);
+    for (int round = 0; round <= opts.retryCount; ++round) {
+        bool anyLive = false;
+        for (std::size_t i = 0; i < opts.urls.size(); ++i) {
+            if (exhausted[i]) continue;
+            const auto& url = opts.urls[i];
             if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
+            anyLive = true;
             auto r = opts.transferOverride
                 ? opts.transferOverride(url, opts.destFile)
                 : detail_::download_once(url, opts.destFile,
@@ -357,23 +383,29 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                 // the next URL rather than failing the whole download.
                 std::string verdict =
                     opts.onVerify ? opts.onVerify(url) : std::string{};
-                if (verdict.empty()) return r;
+                if (verdict.empty()) {
+                    r.sourceUrl = url;
+                    return r;
+                }
                 lastErr = verdict;
                 if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, verdict);
                 std::filesystem::remove(opts.destFile, ec);
-                break;  // same bytes would fail again — next candidate
+                // The same bytes would fail again: this source is out for
+                // good, not just for this round.
+                exhausted[i] = true;
+                continue;
             }
             lastErr = r.error;
             if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, r.error);
             std::filesystem::remove(opts.destFile, ec);
             // A stalled attempt means this host is throttled for us right
-            // now — retrying the same URL would burn another full window.
-            // Move straight to the next candidate.
-            if (r.error.rfind("stalled:", 0) == 0) break;
-            if (att < opts.retryCount) {
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(500 * (att + 1)));
-            }
+            // now — retrying it would burn another full window.
+            if (r.error.rfind("stalled:", 0) == 0) exhausted[i] = true;
+        }
+        if (!anyLive) break;
+        if (round < opts.retryCount) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(500 * (round + 1)));
         }
     }
     return {false, lastErr};
