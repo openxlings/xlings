@@ -701,8 +701,8 @@ int cmd_use_by_name(const std::string& target, EventStream& stream,
             emit_version_panel_(target, *candidates, stream);
             stream.emit(ErrorEvent{
                 .code = ErrorCode::InvalidInput,
-                .message = std::format(
-                    "--pick needs an interactive terminal; nothing was changed"),
+                .message = "--pick needs an interactive terminal; "
+                           "nothing was changed",
                 .recoverable = true,
                 .hint = std::format("xlings use {} <version>", target),
             });
