@@ -592,6 +592,20 @@ mcpplibs/libxpkg           不需要改动             ← 方案 2 相对方案
 | **B-1 载荷戳的读写** | 用 `nlohmann::json` | 手写/手读三个字段 | 在 `installer.cppm` 顶部实例化 JSON 解析器触发 GCC 16 modules 故障：`failed to load pendings for 'std::map'`，且报错指名的是**另一个**模块（`xlings.core.xvm.commands`）。同 memory `reference_gcc16_modules_map_ide` 的形状。戳只有三个字符串字段、无用户输入，手写是完备的 |
 | **A-1 归一化规则** | 只处理 `/subos/` 前缀判定 | 追加两条边界修正 | ① Windows 盘符：`:` 是 token 边界，会把 `C:` 切掉并拼出第二个盘符 → 回退两个字符；② 紧贴路径的 flag：`-B/h/.xlings/subos/a` 会把 `-B` 一起吞掉 → 向右推进到路径真正开始处。两条都有单测 |
 
+### 真实环境验证暴露的两个追加问题（B-1 的两次返工）
+
+拿实测 home 的切片跑真实 `install llvm@20.1.7`，第一版 B-1 **判对了却修不好**，而且比原来更糟：
+
+1. **判定层次错了。** 平台校验放在 installer 里，可那时 plan 已经按"已安装"建好 —— **没有下载任何产物**。install 钩子于是空手运行，而 `llvm.lua` 的 `os.tryrm(install_dir)` 把原本还在的载荷删了。
+   → 判定**上移到 catalog 的 `exists && !is_empty` 探针**（`catalog.cppm:368`）—— 正是它让 `installed` 为真、让 plan 为空。异平台载荷现在从计划阶段就不算已装，于是像任何缺失包一样下载重装。分类器因此拆成独立模块 `xim/payload.cppm`（catalog 不能 import installer）。
+2. **戳写早了。** 戳是在 install 块之后**无条件**写的，包括什么都没装的情况。于是上一条那个被清空的目录带上了**本平台的戳**，之后每次运行都信它 —— 自愈变成了自我欺骗。
+   → 只在**确实走过安装路径**（`!payloadInstalled`）且**文件内容不矛盾**时才写；内容判定用 `classify_payload_content`（不读戳），否则一次运行可以自证自话。
+3. **戳本身骗过了空目录探针。** 只含一个戳的目录 `!is_empty` 为真 = "已安装"。
+   → `payload_has_content()` 忽略我方 bookkeeping 文件；`.xim-installed` **故意仍然计入** —— 对 wrapper 包它的含义正是"已装，这里本就没东西"。
+
+**验证结果**（切片，真实 store + 真实网络）：`install llvm@20.1.7` 真的重新下载并安装了 Linux 载荷（`bin/clang -> clang-20`、`clang.cfg` 出现），`.exe/.dll` 注册数 **29 → 0**，`clang`/`clang++`/`cc`/`c++`/`llvm-ar` 都在 20.1.7 上注册，`xlings use clang 20.1.7` 后 `clang --version` 输出 **clang version 20.1.7**。
+首次 install 会在 config 阶段停在既有的 `xvm-owned-group-incomplete` 门禁（旧的 29 条 `.exe` 注册属于同一个 owned group），提示"先 uninstall 再 install"——**这是既有守卫，不是本次引入**；`remove` → `install` 走通全流程。
+
 **交付清单**（xlings 侧 11 个文件）：`db.cppm`(+归一化纯函数) / `shim.cppm`(alias+envs 接入) / `doctor.cppm`(2 个新 finding + 2 条修复) / `installer.cppm`(载荷平台判定+戳) / `xim/commands.cppm`(未激活提示) / `xvm/commands.cppm`(越界告警) / 2 个新 e2e + `run_all.sh` 注册 / 2 个单测文件 +18 个断言 / 版本号。
 
 **测试**：单测 25 文件全绿（新增 `SubosPathNormalizeTest` 10 例、`PayloadPlatformTest` 8 例）；新增 2 个 e2e 均已确认是**真差分**（对 `2026.7.29.2` 的二进制运行会失败，且失败在正确的断言上）；另跑通 10 个回归敏感的既有 e2e。pkgindex 侧 613 个 static 测试全绿，2 个新断言同样确认差分。
