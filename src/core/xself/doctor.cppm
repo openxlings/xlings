@@ -651,31 +651,71 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // installed by a run whose payload store is gone. Scanning is cheap
         // (the header farm is one link per top-level entry) and it is the
         // only way to see them at all.
-        for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
-                                "usr/bin"}) {
-            const auto dir = p.subosDir / sub;
-            std::error_code dec;
-            if (!fs::is_directory(dir, dec)) continue;
-            for (const auto& entry : platform::dir_entries(dir)) {
-                std::error_code lec;
-                // Both halves are required. A dangling link IS a symlink and
-                // is NOT `exists()`; testing only existence reads it as
-                // "already gone" -- the mistake that let #423's test pass
-                // while the links were still on disk.
-                if (!fs::is_symlink(entry.path(), lec)) continue;
-                if (fs::exists(entry.path(), lec)) continue;
-                auto target = fs::read_symlink(entry.path(), lec);
-                add({
-                    .kind    = FindingKind::SysrootDangling,
-                    .level   = FindingLevel::Warning,
-                    .detail  = std::format(
-                        "{} points at {}, which does not exist",
-                        Config::display_path(entry.path()),
-                        lec ? std::string("(unreadable)")
-                            : Config::display_path(target)),
-                    .remedy  = "xlings self doctor --fix",
-                    .shimPath = entry.path(),
-                });
+        //
+        // Every subos, not just the active one. The damage that produces
+        // these links is not something the user does from inside the subos it
+        // lands in -- the measured case was an isolated run that materialized
+        // headers into the real home's `dev-hello` while the user was working
+        // in `default` -- so "only look where you happen to be standing"
+        // guarantees the report misses it. Repair still only touches the
+        // active subos (the multi-subos boundary: another subos may be live
+        // in another shell); the others get named, with the command that
+        // fixes them.
+        struct SysrootScanRoot {
+            std::string name;      // empty => the active selection
+            fs::path    root;
+        };
+        std::vector<SysrootScanRoot> sysrootRoots{{{}, p.subosDir}};
+        {
+            std::error_code sec;
+            const auto activeRoot = fs::weakly_canonical(p.subosDir, sec);
+            for (const auto& name : Config::list_subos_names()) {
+                auto root = p.homeDir / "subos" / name;
+                std::error_code rec;
+                if (fs::weakly_canonical(root, rec) == activeRoot) continue;
+                sysrootRoots.push_back({name, std::move(root)});
+            }
+        }
+
+        for (const auto& scanRoot : sysrootRoots) {
+            const bool isActive = scanRoot.name.empty();
+            for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
+                                    "usr/bin"}) {
+                const auto dir = scanRoot.root / sub;
+                std::error_code dec;
+                if (!fs::is_directory(dir, dec)) continue;
+                for (const auto& entry : platform::dir_entries(dir)) {
+                    std::error_code lec;
+                    // Both halves are required. A dangling link IS a symlink
+                    // and is NOT `exists()`; testing only existence reads it
+                    // as "already gone" -- the mistake that let #423's test
+                    // pass while the links were still on disk.
+                    if (!fs::is_symlink(entry.path(), lec)) continue;
+                    if (fs::exists(entry.path(), lec)) continue;
+                    auto target = fs::read_symlink(entry.path(), lec);
+                    add({
+                        .kind    = FindingKind::SysrootDangling,
+                        .level   = FindingLevel::Warning,
+                        .detail  = std::format(
+                            "{}{} points at {}, which does not exist",
+                            isActive ? std::string{}
+                                     : std::format("[{}] ", scanRoot.name),
+                            Config::display_path(entry.path()),
+                            lec ? std::string("(unreadable)")
+                                : Config::display_path(target)),
+                        .remedy  = isActive
+                            ? "xlings self doctor --fix"
+                            : std::format("XLINGS_ACTIVE_SUBOS={} xlings "
+                                          "self doctor --fix", scanRoot.name),
+                        // Empty for the active subos -- that is what `--fix`
+                        // keys on, so a finding from elsewhere cannot be
+                        // repaired by accident.
+                        .subos = isActive
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{scanRoot.name},
+                        .shimPath = entry.path(),
+                    });
+                }
             }
         }
 
@@ -827,6 +867,11 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     Config::display_path(f.shimPath)));
             }
         } else if (f.kind == FindingKind::SysrootDangling) {
+            // Another subos's link is reported, not removed. A second shell
+            // can have that subos active right now, and repairing state out
+            // from under it is the multi-subos boundary this codebase keeps
+            // everywhere else. The finding carries the exact command.
+            if (!f.subos.empty()) continue;
             std::error_code ec;
             // remove(), not remove_all(): the link is being deleted, and if
             // it were somehow followable, remove_all would delete the
@@ -1422,6 +1467,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::SysrootDangling:
                 add(glyph::mark(glyph::warn, "dangling sysroot link"), f.detail);
+                // A link in ANOTHER subos is reported here and repaired
+                // there, so the generic "run `xlings self doctor --fix`"
+                // footer is wrong for it -- that command, from here, will
+                // leave it exactly where it is. Name the one that works.
+                if (!f.subos.empty() && !f.remedy.empty()) {
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                }
                 break;
             case FindingKind::SubosPathBaked:
                 // One line per TARGET. A single gcc install bakes the path

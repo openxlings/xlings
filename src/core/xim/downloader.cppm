@@ -687,6 +687,22 @@ DownloadResult download_one(const DownloadTask& task,
     // .agents/docs/2026-06-04-github-asset-adaptive-mirror.md.
     urls = mirror::adaptive::reorder(std::move(urls), !task.sha256.empty());
 
+    // Which sources are in play, in the order they will be tried. When a
+    // download is slow or 404s, the first question is always "where is it
+    // even pulling from, and what else could it have used" -- and until now
+    // nothing answered it, so a CN outage looked like a dead package rather
+    // than a mirror with a gap.
+    if (urls.size() > 1) {
+        std::string candidates;
+        for (const auto& u : urls) {
+            if (!candidates.empty()) candidates += "\n    ";
+            candidates += u;
+        }
+        log::debug("[download] {} candidates ({}):\n    {}",
+                   task.name, urls.size(), candidates);
+    }
+    const std::string primaryUrl = urls.front();
+
     auto stagingFile = unique_sibling_path_(destFile, "part");
     tinyhttps::DownloadFileResult transferResult;
 
@@ -734,6 +750,15 @@ DownloadResult download_one(const DownloadTask& task,
             fs::remove(stagingFile, ec);
             result.error = transferResult.error;
             return result;
+        }
+        // Say so when the bytes did not come from where the plan said they
+        // would. A fallback that works silently is indistinguishable from a
+        // primary that works, right up until the day the fallback is the only
+        // thing holding the install together and nobody knew.
+        if (!transferResult.sourceUrl.empty()
+            && transferResult.sourceUrl != primaryUrl) {
+            log::info("[mirror] {} served by {}", task.name,
+                      transferResult.sourceUrl);
         }
     }
 

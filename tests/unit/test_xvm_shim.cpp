@@ -427,6 +427,41 @@ TEST_F(XvmHeaderSymlinkTest, InstallAndRemoveHeaders) {
     EXPECT_FALSE(fs::exists(sysrootInclude / "bits"));
 }
 
+// The out-of-home guard warns; it does NOT refuse.
+//
+// Deliberate, and easy to mistake for an unfinished change. What it exists to
+// catch is a run whose payload store and whose sysroot belong to DIFFERENT
+// homes -- measured: an isolated run with a `/tmp` store materialized headers
+// into the user's real `subos/dev-hello`, and when the run's store went away
+// the links stayed, pointing at nothing. But a recipe may legitimately expose
+// headers from outside the store (a wrapper around system headers is the
+// obvious one), so refusing would break packages that work today.
+//
+// This test pins BOTH halves. Without the second EXPECT it would pass on a
+// version that started refusing, and the packages that break would only be
+// discovered by their users.
+TEST_F(XvmHeaderSymlinkTest, AnOutOfHomeSourceWarnsAndStillLinks) {
+    namespace fs = std::filesystem;
+
+    // testDir_ is under the system temp dir, which is outside any xlings
+    // home -- exactly the shape the guard reports.
+    auto srcInclude = testDir_ / "foreign" / "include";
+    fs::create_directories(srcInclude);
+    xlings::platform::write_string_to_file(
+        (srcInclude / "outside.h").string(), "/* outside */");
+    auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
+
+    testing::internal::CaptureStderr();
+    xlings::xvm::install_headers(srcInclude.string(), sysrootInclude);
+    const auto warnings = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(warnings.find("outside this home"), std::string::npos)
+        << "the guard said nothing; stderr was:\n" << warnings;
+    EXPECT_TRUE(fs::exists(sysrootInclude / "outside.h"))
+        << "the guard refused instead of warning -- that breaks every recipe "
+           "that legitimately exposes headers from outside the store";
+}
+
 TEST_F(XvmHeaderSymlinkTest, InstallHeadersOverwrite) {
     namespace fs = std::filesystem;
 
