@@ -478,6 +478,123 @@ std::string get_binding(const VersionDB& db,
     return vit->second;
 }
 
+// ── subos-relative alias/env normalization ───────────────────────────
+//
+// `gcc.lua` bakes `--sysroot=<subos_sysrootdir()>` -- the ABSOLUTE path of
+// whichever subos was active at install time -- into the alias. The versions
+// DB is shared by the entire home and `subos use` rewrites nothing, so that
+// path outlives every switch: the user switches to `default` and their g++
+// keeps compiling against `dev-hello`, against a sysroot that may not even
+// exist any more. Re-point such paths at the subos THIS process resolves to,
+// at the moment the alias is executed. Doing it here rather than at install
+// time is what makes existing homes correct without a reinstall.
+//
+// Only provably-ours paths are touched: the segment before /subos/ must be the
+// home itself, or end in `.xlings` (which is how a PROJECT subos --
+// <projectDir>/.xlings/subos/<name>, not under homeDir at all -- is caught).
+// A user's own /opt/subos/foo, the flags around the path, and all quoting come
+// through byte-identical.
+std::string normalize_subos_paths(const std::string& text,
+                                  const std::string& xlings_home,
+                                  const std::string& active_subos_dir) {
+    if (active_subos_dir.empty() || text.empty()) return text;
+
+    static constexpr std::string_view kPosix = "/subos/";
+    static constexpr std::string_view kWin   = "\\subos\\";
+
+    auto is_sep = [](char c) { return c == '/' || c == '\\'; };
+    // Where a path token can start: whitespace, plus the punctuation that
+    // glues a path onto a flag (`--sysroot=`, `PATH=a:b`, quotes).
+    auto is_boundary = [](char c) {
+        return c == ' ' || c == '\t' || c == '=' || c == ':' || c == ';'
+            || c == ',' || c == '"' || c == '\'';
+    };
+    auto is_alpha = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
+    auto path_equal = [](std::string_view a, std::string_view b) {
+#if defined(_WIN32)
+        // Windows compares paths case-insensitively and treats / and \ alike.
+        if (a.size() != b.size()) return false;
+        auto fold = [](char c) -> char {
+            if (c == '\\') return '/';
+            if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+            return c;
+        };
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (fold(a[i]) != fold(b[i])) return false;
+        }
+        return true;
+#else
+        return a == b;
+#endif
+    };
+
+    std::string out;
+    out.reserve(text.size());
+    std::size_t cursor = 0;
+
+    while (cursor < text.size()) {
+        auto p1 = text.find(kPosix, cursor);
+        auto p2 = text.find(kWin, cursor);
+        auto hit = std::min(p1, p2);   // npos is max, so min() picks the real one
+        if (hit == std::string::npos) break;
+
+        // Widen left to the start of the path token.
+        std::size_t start = hit;
+        while (start > cursor && !is_boundary(text[start - 1])) --start;
+        // ':' is a boundary (PATH=a:b), which would cut the drive letter off
+        // `--sysroot=C:\Users\...`: the prefix becomes `\Users\u\.xlings` and
+        // the replacement splices a second drive spec onto the surviving `C:`.
+        // Step back over a drive letter that is itself token-initial.
+        if (start >= cursor + 2 && text[start - 1] == ':'
+            && is_alpha(text[start - 2])
+            && (start < cursor + 3 || is_boundary(text[start - 3]))) {
+            start -= 2;
+        }
+        // A flag can sit flush against the path with no boundary between them
+        // (`-B/h/.xlings/subos/a`), and the walk above happily swallows it.
+        // Skip forward to where the path actually begins -- a separator, or a
+        // drive letter -- so the replacement never eats the flag.
+        const bool drive =
+            start + 1 < hit && is_alpha(text[start]) && text[start + 1] == ':';
+        if (!drive) {
+            while (start < hit && !is_sep(text[start])) {
+                if (start + 1 < hit && is_alpha(text[start])
+                    && text[start + 1] == ':') {
+                    break;   // `-BC:\...`
+                }
+                ++start;
+            }
+        }
+        std::string_view prefix(text.data() + start, hit - start);
+
+        // Right: the subos NAME segment only. Everything after it (`/usr/
+        // include`, …) is the caller's business and is preserved.
+        std::size_t nameStart = hit + kPosix.size();
+        std::size_t nameEnd = nameStart;
+        while (nameEnd < text.size()
+               && !is_sep(text[nameEnd]) && !is_boundary(text[nameEnd])) {
+            ++nameEnd;
+        }
+
+        const bool ours =
+            path_equal(prefix, xlings_home)
+            || (prefix.size() >= 7
+                && path_equal(prefix.substr(prefix.size() - 7), ".xlings"));
+
+        if (!ours || nameEnd == nameStart) {
+            out.append(text, cursor, nameEnd - cursor);   // passthrough
+        } else {
+            out.append(text, cursor, start - cursor);
+            out.append(active_subos_dir);
+        }
+        cursor = nameEnd;
+    }
+    out.append(text, cursor, std::string::npos);
+    return out;
+}
+
 // Expand ${XLINGS_HOME} in a path string
 std::string expand_path(const std::string& path, const std::string& xlings_home) {
     std::string result = path;

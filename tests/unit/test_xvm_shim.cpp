@@ -690,3 +690,89 @@ TEST_F(ShimCreateTest, CleanupLegacyAliasShimsRemovesOnlyMatchingSymlinks) {
     }
 #endif
 }
+
+// ── subos path normalization (2026-07-30) ────────────────────────────
+//
+// An install-time absolute subos path baked into an alias survives every
+// `subos use`, because the versions DB is shared by the whole home and nothing
+// rewrites it: the user switches to `default` and their g++ keeps compiling
+// against `dev-hello`. These pin the rewrite that happens at exec time.
+
+namespace {
+std::string norm(const std::string& text,
+                 const std::string& home,
+                 const std::string& active) {
+    return xlings::xvm::normalize_subos_paths(text, home, active);
+}
+}  // namespace
+
+TEST(SubosPathNormalizeTest, RewritesBakedSysrootToActiveSubos) {
+    EXPECT_EQ(norm("g++ --sysroot=/home/u/.xlings/subos/dev-hello",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/default"),
+              "g++ --sysroot=/home/u/.xlings/subos/default");
+}
+
+TEST(SubosPathNormalizeTest, KeepsSuffixAfterSubosName) {
+    EXPECT_EQ(norm("cc -I/home/u/.xlings/subos/dev/usr/include -O2",
+                   "/home/u/.xlings", "/home/u/.xlings/subos/default"),
+              "cc -I/home/u/.xlings/subos/default/usr/include -O2");
+}
+
+TEST(SubosPathNormalizeTest, LeavesForeignSubosPathsAlone) {
+    // A user's own /opt/subos/... is not ours. Byte-identical passthrough.
+    const std::string cmd = "tool --root=/opt/subos/foo/bar";
+    EXPECT_EQ(norm(cmd, "/home/u/.xlings", "/home/u/.xlings/subos/default"),
+              cmd);
+}
+
+TEST(SubosPathNormalizeTest, AcceptsProjectSubosByDotXlingsSuffix) {
+    // Project mode bakes <projectDir>/.xlings/subos/<name>, which is not under
+    // homeDir at all -- the `.xlings` suffix rule is what catches it.
+    EXPECT_EQ(norm("g++ --sysroot=/w/proj/.xlings/subos/anon",
+                   "/home/u/.xlings", "/w/proj/.xlings/subos/dev"),
+              "g++ --sysroot=/w/proj/.xlings/subos/dev");
+}
+
+TEST(SubosPathNormalizeTest, IsIdempotent) {
+    const std::string cmd = "g++ --sysroot=/home/u/.xlings/subos/default";
+    auto once = norm(cmd, "/home/u/.xlings", "/home/u/.xlings/subos/default");
+    EXPECT_EQ(once, cmd);
+    EXPECT_EQ(norm(once, "/home/u/.xlings", "/home/u/.xlings/subos/default"),
+              cmd);
+}
+
+TEST(SubosPathNormalizeTest, RewritesEveryOccurrence) {
+    EXPECT_EQ(norm("g++ --sysroot=/h/.xlings/subos/a -B/h/.xlings/subos/a/usr/lib",
+                   "/h/.xlings", "/h/.xlings/subos/b"),
+              "g++ --sysroot=/h/.xlings/subos/b -B/h/.xlings/subos/b/usr/lib");
+}
+
+TEST(SubosPathNormalizeTest, EmptyActiveDirIsNoOp) {
+    // Never rewrite to nothing: an unresolvable active subos must leave the
+    // alias as it was, so any failure names the real path.
+    const std::string cmd = "g++ --sysroot=/h/.xlings/subos/a";
+    EXPECT_EQ(norm(cmd, "/h/.xlings", ""), cmd);
+}
+
+TEST(SubosPathNormalizeTest, HandlesPathListSeparators) {
+    // A colon-separated list is two tokens, and only the ours-prefixed one
+    // may move.
+    EXPECT_EQ(norm("/h/.xlings/subos/a/bin:/opt/subos/x/bin",
+                   "/h/.xlings", "/h/.xlings/subos/b"),
+              "/h/.xlings/subos/b/bin:/opt/subos/x/bin");
+}
+
+TEST(SubosPathNormalizeTest, HandlesWindowsSeparators) {
+    // The drive letter must survive: ':' is a token boundary, so without the
+    // drive-letter step-back the prefix would be `\Users\u\.xlings` and the
+    // result would splice a second drive spec onto the surviving `C:`.
+    EXPECT_EQ(norm("g++ --sysroot=C:\\Users\\u\\.xlings\\subos\\dev",
+                   "C:\\Users\\u\\.xlings", "C:\\Users\\u\\.xlings\\subos\\default"),
+              "g++ --sysroot=C:\\Users\\u\\.xlings\\subos\\default");
+}
+
+TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
+    // A path that ends at the marker has no name segment to replace.
+    const std::string cmd = "tool --dir=/h/.xlings/subos/";
+    EXPECT_EQ(norm(cmd, "/h/.xlings", "/h/.xlings/subos/b"), cmd);
+}

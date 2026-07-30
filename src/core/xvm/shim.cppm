@@ -294,10 +294,14 @@ std::optional<std::string> merge_shim_env_value(const std::string& expanded,
 // Set environment variables for a program before exec
 void setup_envs(const VData& vdata,
                 const std::string& resolved_path,
-                const std::string& xlings_home) {
+                const std::string& xlings_home,
+                const std::string& active_subos_dir) {
     // Set envs from VData
     for (auto& [key, value] : vdata.envs) {
-        auto expanded = expand_path(value, xlings_home);
+        // Same hazard as the alias: an env value recorded at install time can
+        // name that install's subos. Re-point it at the active one.
+        auto expanded = normalize_subos_paths(
+            expand_path(value, xlings_home), xlings_home, active_subos_dir);
         auto existing = std::string(std::getenv(key.c_str()) ? std::getenv(key.c_str()) : "");
         if (auto merged = merge_shim_env_value(expanded, existing))
             platform::set_env_variable(key, *merged);
@@ -339,6 +343,9 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
 
     auto& cfg = Config::paths();
     auto xlings_home = cfg.homeDir.string();
+    // The one resolution point that is correct in all three selection modes
+    // (project subos > XLINGS_ACTIVE_SUBOS > the home's activeSubos field).
+    auto active_subos_dir = Config::xvm_artifact_subos_dir().string();
 
     // Get effective workspace (project > subos > global)
     auto workspace = Config::effective_workspace();
@@ -438,9 +445,14 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         platform::set_env_variable("PATH", new_path);
 
         // Setup custom envs
-        setup_envs(*vdata, "", xlings_home);
+        setup_envs(*vdata, "", xlings_home, active_subos_dir);
 
-        std::string alias_cmd = vdata->alias[0];
+        // The alias may carry the absolute path of whatever subos was active
+        // when the package was installed (gcc.lua bakes `--sysroot=<subos>`).
+        // Re-point it at the subos THIS process resolves to -- project, env
+        // and global selection all land on xvm_artifact_subos_dir().
+        std::string alias_cmd = normalize_subos_paths(
+            vdata->alias[0], xlings_home, active_subos_dir);
 
         if (depth >= MAX_SHIM_DEPTH) {
             // Fallback: resolve alias command to full path to break recursion
@@ -488,7 +500,7 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     log::debug("exe path: {}", exe_path.string());
 
     // Setup environment
-    setup_envs(*vdata, exe_path.string(), xlings_home);
+    setup_envs(*vdata, exe_path.string(), xlings_home, active_subos_dir);
 
     // Build argv for execvp
     auto exe_str = exe_path.string();
