@@ -393,6 +393,30 @@ release 里那个版本**的成员 —— 用户自己已经挪走的不算。�
 
 全部 e2e 都在旧构建上跑过一遍确认会失败 —— 差分成立，不是"顺便通过"。
 
+### 发布与真实验证（`2026.7.30.2`）
+
+- xlings#455 合入 `bd0ac7f`（7 项 CI 全绿）；`release.yml` 全绿；本地 `gtc`
+  跑 `tools/mirror-latest.sh xlings` 校验 **16 个 URL 全 200**（GitHub 8 + GitCode 8，
+  用 GET 不用 HEAD）；xim-pkgindex#458 sha256 与已发布 sidecar 逐一比对后合入。
+- **在隔离 home 里用已发布的 linux-x86_64 产物实测**（不是本地构建）：
+
+  | 检查 | 结果 |
+  |---|---|
+  | 产物 sha256 = 已发布 sidecar | ✅ |
+  | 冷 home 解析索引、`self install`、`--version` | ✅ 2026.7.30.2 |
+  | `use mcpp`（两个版本，有歧义） | ✅ 退出码 **2**，两个候选都列出，状态未变 |
+  | 同上，**伪 TTY** 内 | ✅ 30s 内退出码 2 —— 正是以前 agent 卡死的那条路径 |
+  | `use mcpp --pick`（无终端） | ✅ 退出码 2 并说明原因 |
+  | 指名切换 + shim 实跑 | ✅ `mcpp 2026.7.30.2` |
+  | `remove mcpp@…` | ✅ |
+  | 只剩一个版本后 `use mcpp` | ✅ 退出码 0，真的切了 |
+  | `subos new` / `self doctor` | ✅ |
+
+- `xlings-ci-fresh-install`（跟随 release 自动触发）：**gcc / llvm 8 个单元全绿**
+  （上一轮 llvm 还是红的），4 个 `core` 单元仍红，是同一条既有断言
+  `FAIL xlings list omits mcpp`，在 `518e525` 和 `2026.7.30.1` 上同样红 ——
+  **与本次无关**，已立 [#456](https://github.com/openxlings/xlings/issues/456)。
+
 ### 本次没做
 
 P2-2（慢源再评估）、P3-1..P3-4 全部留到下一轮：它们互相独立，且都不在"用户当下
