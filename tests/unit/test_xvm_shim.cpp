@@ -826,6 +826,101 @@ TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
 // rewrites both, which is why every gcc install carried a standing
 // `subos path` warning it could do nothing about.
 
+// ── Lifting the sysroot out of the alias ─────────────────────────────
+//
+// The versions database is shared by every subos in the home -- the same rule
+// VData::fileSrc/fileDst has carried since the `files` kind was added, never
+// applied to the alias. A recipe can only express `--sysroot` with a concrete
+// path, so registration takes the path out and records the INTENT; the shim,
+// which is the only layer that knows which subos this process resolved to,
+// puts the flag back at exec time.
+
+namespace {
+xlings::xvm::AliasSysroot lift(std::string_view alias, std::string_view home) {
+    return xlings::xvm::lift_subos_sysroot(std::string(alias),
+                                           std::string(home));
+}
+}  // namespace
+
+TEST(AliasSysrootLiftTest, TakesTheFlagAndLeavesTheCommand) {
+    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/default", "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, KeepsEveryOtherArgument) {
+    auto r = lift("gcc -O2 --sysroot=/home/u/.xlings/subos/dev -pipe",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "gcc -O2 -pipe");
+}
+
+TEST(AliasSysrootLiftTest, RecognisesTheSpaceSeparatedSpelling) {
+    // Both are valid GCC spellings and a recipe may write either.
+    auto r = lift("g++ --sysroot /home/u/.xlings/subos/default",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, TakesThePortableSpellingToo) {
+    // `subos/current` is better than a pinned subos and still a subos path in
+    // a shared store. The intent is the same; lift it.
+    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/current",
+                  "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, AProjectSubosCounts) {
+    // <projectDir>/.xlings/subos/<n> is not under the home at all, and is
+    // still ours -- the same test normalize_subos_paths applies.
+    auto r = lift("g++ --sysroot=/w/proj/.xlings/subos/pa", "/home/u/.xlings");
+    EXPECT_TRUE(r.found);
+    EXPECT_EQ(r.alias, "g++");
+}
+
+TEST(AliasSysrootLiftTest, APayloadSysrootIsNotOurs) {
+    // Pointing --sysroot at a payload expresses something else entirely, and
+    // that path is correct from every subos. Byte-identical passthrough.
+    const std::string cmd =
+        "g++ --sysroot=/home/u/.xlings/data/xpkgs/xim-x-gcc/15.1.0";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, AForeignSysrootIsLeftAlone) {
+    const std::string cmd = "g++ --sysroot=/opt/toolchain/sysroot";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, ASimilarlyNamedFlagIsNotTouched) {
+    // `--no-sysroot-suffix` starts with the same letters and is not this.
+    const std::string cmd =
+        "g++ --no-sysroot-suffix=/home/u/.xlings/subos/default";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, AnAliasWithoutOneIsUnchanged) {
+    const std::string cmd = "clang++ -stdlib=libc++";
+    auto r = lift(cmd, "/home/u/.xlings");
+    EXPECT_FALSE(r.found);
+    EXPECT_EQ(r.alias, cmd);
+}
+
+TEST(AliasSysrootLiftTest, IsIdempotent) {
+    auto once = lift("g++ --sysroot=/home/u/.xlings/subos/default",
+                     "/home/u/.xlings");
+    auto twice = lift(once.alias, "/home/u/.xlings");
+    EXPECT_FALSE(twice.found);
+    EXPECT_EQ(twice.alias, once.alias);
+}
+
 TEST(SubosPathNormalizeTest, TheCurrentSpellingStillNormalizesAtExecTime) {
     // It has to. `current` tracks the GLOBAL selection only, so under
     // XLINGS_ACTIVE_SUBOS or a project subos it is the wrong directory.

@@ -518,22 +518,25 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                     Config::xvm_artifact_subos_dir().string();
                 !activeSubos.empty()) {
                 std::vector<std::string> baked;
-                // Detected against the PORTABLE spelling, not the active
-                // subos.
+                // A subos path stored in a database every subos shares.
                 //
-                // `<home>/subos/current` is the symlink `self init` creates
-                // and `subos use --global` maintains, so a recipe that writes
-                // it has recorded something that already follows the user
-                // instead of freezing at install time -- an old client
-                // follows the link, a current one normalizes it like any
-                // other subos path. That is not stale bookkeeping and must
-                // not be reported as such, or the recipes that do the right
-                // thing keep a standing warning against their name.
+                // The alias and the envs fail for the same reason but have
+                // different fixes, so they are asked different questions:
                 //
-                // Normalizing *towards* `current` is what separates the two:
-                // a value that pins a concrete subos changes, and one already
-                // spelled `current` does not. Comparing against the active
-                // subos cannot tell them apart -- it rewrites both.
+                //   alias -- "can the sysroot be lifted out of it?"
+                //            `lift_subos_sysroot` answers exactly that, and
+                //            answering it with the same function the repair
+                //            uses means detection and repair cannot drift.
+                //            A lifted record needs no path at all, so this is
+                //            a finding that goes away permanently.
+                //
+                //   envs  -- there is no intent flag for an arbitrary
+                //            environment variable, so the best available fix
+                //            is the portable `subos/current` spelling.
+                //            Normalizing *towards* it is what separates a
+                //            value that pins one subos (changes) from one
+                //            already portable (does not); comparing against
+                //            the active subos cannot -- it rewrites both.
                 const auto portableSubos =
                     (fs::path(st.homeStr) / "subos" / "current").string();
                 const auto note_if_baked = [&](std::string_view what,
@@ -543,7 +546,11 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                         baked.push_back(std::format("{} '{}'", what, value));
                     }
                 };
-                if (!vdata.alias.empty()) note_if_baked("alias", vdata.alias[0]);
+                if (!vdata.alias.empty()
+                    && xvm::lift_subos_sysroot(vdata.alias[0],
+                                               st.homeStr).found) {
+                    baked.push_back(std::format("alias '{}'", vdata.alias[0]));
+                }
                 for (const auto& [key, value] : vdata.envs) {
                     note_if_baked(std::format("env {}", key), value);
                 }
@@ -971,9 +978,8 @@ void repair_state_(RepairReport& out) {
             for (const auto& [name, vinfo] : src) {
                 for (const auto& [version, vdata] : vinfo.versions) {
                     if (!vdata.alias.empty()
-                        && xvm::normalize_subos_paths(vdata.alias[0], homeStr,
-                                                      activeSubos)
-                               != vdata.alias[0]) {
+                        && xvm::lift_subos_sysroot(vdata.alias[0],
+                                                   homeStr).found) {
                         return true;
                     }
                     for (const auto& [k, v] : vdata.envs) {
@@ -1000,11 +1006,24 @@ void repair_state_(RepairReport& out) {
                     for (auto& [version, vdata] : vinfo.versions) {
                         bool touched = false;
                         for (auto& a : vdata.alias) {
-                            auto fixed = xvm::normalize_subos_paths(
-                                a, homeStr, activeSubos);
-                            if (fixed != a) { a = std::move(fixed); touched = true; }
+                            // The real migration: take the path out and set
+                            // the intent, which is what makes the finding
+                            // disappear rather than move. Rewriting it to
+                            // another subos -- including `current` -- would
+                            // leave a subos path in a shared database, and
+                            // the next `doctor` would be right to say so.
+                            auto lifted = xvm::lift_subos_sysroot(a, homeStr);
+                            if (lifted.found) {
+                                a = std::move(lifted.alias);
+                                vdata.sysroot = true;
+                                touched = true;
+                            }
                         }
                         for (auto& [k, v] : vdata.envs) {
+                            // No intent flag exists for an arbitrary env
+                            // value, so the portable spelling is the best
+                            // available: it stops naming one subos, and
+                            // exec-time normalization still resolves it.
                             auto fixed = xvm::normalize_subos_paths(
                                 v, homeStr, activeSubos);
                             if (fixed != v) { v = std::move(fixed); touched = true; }
@@ -1013,7 +1032,7 @@ void repair_state_(RepairReport& out) {
                             ++rewritten;
                             note(glyph::mark(glyph::bullet, "subos path"),
                                  std::format(
-                                     "{} now records subos/current",
+                                     "{} no longer records a subos",
                                      xvm::display_coordinate(name, version)));
                         }
                     }

@@ -451,8 +451,20 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // when the package was installed (gcc.lua bakes `--sysroot=<subos>`).
         // Re-point it at the subos THIS process resolves to -- project, env
         // and global selection all land on xvm_artifact_subos_dir().
+        //
+        // Kept for records written before the flag below existed, and for any
+        // subos path an alias carries for some other reason. New records have
+        // nothing here to rewrite.
         std::string alias_cmd = normalize_subos_paths(
             vdata->alias[0], xlings_home, active_subos_dir);
+
+        // The entry asked for the active subos's sysroot rather than storing
+        // one. This is where that request is answered -- the shim is the only
+        // layer that knows which subos this process resolved to, which is
+        // exactly why the answer is not in the database. See VData::sysroot.
+        if (vdata->sysroot && !active_subos_dir.empty()) {
+            alias_cmd += " --sysroot=" + active_subos_dir;
+        }
 
         if (depth >= MAX_SHIM_DEPTH) {
             // Fallback: resolve alias command to full path to break recursion

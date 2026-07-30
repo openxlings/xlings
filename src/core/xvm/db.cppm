@@ -595,6 +595,74 @@ std::string normalize_subos_paths(const std::string& text,
     return out;
 }
 
+// Lift `--sysroot=<a subos of this home>` out of an alias.
+//
+// Returns the alias without that argument, and whether one was found. The
+// caller records the boolean instead of the path -- see VData::sysroot for
+// why a subos path may not live in a home-wide database at all.
+//
+// Only OUR subos paths are lifted, decided by the same test
+// normalize_subos_paths uses: a recipe pointing --sysroot at a payload
+// directory, or at anything outside this home, is expressing something else
+// and is left byte-identical. Both `--sysroot=<p>` and `--sysroot <p>` are
+// recognised because both are valid GCC/Clang spellings and a recipe may
+// write either.
+struct AliasSysroot {
+    std::string alias;
+    bool found { false };
+};
+
+AliasSysroot lift_subos_sysroot(const std::string& alias,
+                                const std::string& xlings_home) {
+    AliasSysroot out{.alias = alias};
+    if (alias.empty() || xlings_home.empty()) return out;
+
+    static constexpr std::string_view kFlag = "--sysroot";
+    std::size_t search = 0;
+    while (true) {
+        const auto at = out.alias.find(kFlag, search);
+        if (at == std::string::npos) return out;
+        // Must start a token: `--no-sysroot` and `-Wl,--sysroot` are not this.
+        if (at > 0 && out.alias[at - 1] != ' ' && out.alias[at - 1] != '\t') {
+            search = at + kFlag.size();
+            continue;
+        }
+        auto valueStart = at + kFlag.size();
+        if (valueStart < out.alias.size()
+            && (out.alias[valueStart] == '=' || out.alias[valueStart] == ' ')) {
+            ++valueStart;
+        } else {
+            search = at + kFlag.size();
+            continue;   // `--sysrootfoo`
+        }
+        auto valueEnd = out.alias.find_first_of(" \t", valueStart);
+        if (valueEnd == std::string::npos) valueEnd = out.alias.size();
+        const auto value = out.alias.substr(valueStart, valueEnd - valueStart);
+
+        // Ours only. normalize_subos_paths changes a subos path of this home
+        // and passes anything else through untouched, so "it would be
+        // rewritten" is exactly the question being asked -- and asking it
+        // this way means the two functions can never disagree about what
+        // counts as ours.
+        const auto probe = (std::filesystem::path(xlings_home)
+                            / "subos" / "current").string();
+        if (normalize_subos_paths(value, xlings_home, probe) == value
+            && value != probe) {
+            search = valueEnd;
+            continue;
+        }
+
+        // Take the flag, its value, and exactly one separating space.
+        auto cut = at;
+        while (cut > 0 && (out.alias[cut - 1] == ' ' || out.alias[cut - 1] == '\t')) {
+            --cut;
+        }
+        out.alias.erase(cut, valueEnd - cut);
+        out.found = true;
+        search = cut;
+    }
+}
+
 // Expand ${XLINGS_HOME} in a path string
 std::string expand_path(const std::string& path, const std::string& xlings_home) {
     std::string result = path;
@@ -623,6 +691,7 @@ nlohmann::json vdata_to_json(const VData& vdata) {
     if (!vdata.alias.empty()) {
         j["alias"] = vdata.alias;
     }
+    if (vdata.sysroot) j["sysroot"] = true;
     if (!vdata.envs.empty()) {
         nlohmann::json envs_j = nlohmann::json::object();
         for (auto it = vdata.envs.begin(); it != vdata.envs.end(); ++it) {
@@ -730,6 +799,8 @@ VData vdata_from_json(const nlohmann::json& j) {
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())
         vdata.libdir = j["libdir"].get<std::string>();
+    if (j.contains("sysroot") && j["sysroot"].is_boolean())
+        vdata.sysroot = j["sysroot"].get<bool>();
     if (j.contains("alias") && j["alias"].is_array()) {
         for (auto& a : j["alias"]) {
             if (a.is_string()) vdata.alias.push_back(a.get<std::string>());

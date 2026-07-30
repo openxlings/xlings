@@ -837,3 +837,50 @@ xvm.add(prog, {
 
 阶段 5 才是"符合原则"，1–3 是让它在到达那里之前不再咬人。把它写在这里，是为了
 **不要把阶段 2 当成终点** —— 它是一个刻意接受的、有理由的中间态。
+
+### 9.6 阶段 5 的实现：不加协议字段，改为在注册时**提取意图**
+
+§9.5 里给的阶段 5 形态是"recipe 显式声明 `sysroot = true`"。查证后**换了实现**，
+结论不变但代价低一个数量级。
+
+**为什么不能走声明式字段**：`xvm.add` 的表由 libxpkg 的 `XvmOp` 结构体承载
+（`mcpplibs/libxpkg/src/xpkg-executor.cppm:54`，字段固定：`op/name/version/bindir/
+alias/type/filename/binding/includedir/envs`）。加一个 `sysroot` 字段 = **libxpkg
+发版 → xlings 升依赖 → pkgindex 改 recipe** 的四仓链条，而双写状态下新客户端的行为
+与 `current` + 归一化**完全相同** —— 付出协议成本，换零行为变化。
+
+**实际做法**：意图不需要 recipe 声明，因为它可以从 recipe 已经写下的东西**推断**，
+而且推断规则由 xlings 自己定义、自己拥有：
+
+```
+注册时   lift_subos_sysroot(alias, home)
+         "sr-real --sysroot=<home>/subos/dev"  →  alias="sr-real", sysroot=true
+执行时   shim 拼回  " --sysroot=" + <本进程解析到的 subos>
+```
+
+- **共享库里一个 subos 字符串都不剩** —— 原则真正满足，不是减轻。
+- **只动一个仓**，libxpkg 和 recipe 都不用改。
+- **recipe 无需改动**也能受益；写 `current` 仍然更好（老客户端），但不再是必需。
+- 只提取**本 home 的** subos 路径，判据直接复用 `normalize_subos_paths`
+  —— 指向 payload 目录或 `/opt/...` 的 `--sysroot` 原样保留，因为那些**本来就**
+  对所有 subos 正确。
+
+**doctor 随之收敛到真正的迁移**：
+
+| | 之前（§9.4） | 现在 |
+|---|---|---|
+| 检测 alias | "归一化到 `current` 会不会变" | **"能不能被提取"**（与修复同一个函数，不可能漂移） |
+| `--fix` | 改写成 `subos/current` | **提取** —— 路径消失，意图落库 |
+| 结果 | 记录里仍有 subos 路径 | 这条 finding **永久消失**，不是搬家 |
+
+envs 里的 subos 路径没有对应的意图字段，仍然只能改写成 `current` —— 这是**已知的
+部分解**，写在这里以免被当成完整。
+
+**兼容**：老记录一个字不用改也继续正确，执行期归一化照旧兜住它们；`--fix` 是可选的
+迁移而不是必需的修复。老客户端读到新记录会**丢掉 `--sysroot`**，这是真实代价 ——
+但它和"老客户端读不懂新字段"是同一件事，且只影响升级后又降级的场景。
+
+**测试**：`AliasSysrootLiftTest.*` 10 项（提取、保留其余参数、空格写法、`current`
+写法、项目 subos、payload 路径不动、外部路径不动、相似 flag 不误伤、无 sysroot 不变、
+幂等）；E2E-46 重构为**新装记录无路径有意图** + **注入一条升级前的老记录**验证
+执行仍正确、doctor 报告、`--fix` 真正迁移。
