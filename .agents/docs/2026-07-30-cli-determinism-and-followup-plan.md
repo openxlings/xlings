@@ -7,6 +7,16 @@
 **涉及仓库**: `openxlings/xlings`（全部）；`openxlings/xim-pkgindex`（仅 P3-4 清洁化，可选）
 **相关 issue**: [#408](https://github.com/openxlings/xlings/issues/408)、[#419](https://github.com/openxlings/xlings/issues/419)、[#423](https://github.com/openxlings/xlings/issues/423)、[#447](https://github.com/openxlings/xlings/issues/447)
 
+> **P1-1 的两个结论已被 `2026.7.31.3` 修订**（见
+> `.agents/docs/2026-07-31-install-use-semantics-plan.md` §P3）：
+>
+> - "多候选 → 退出 2" 改为 **退出 0**。这里把"什么都没做就必须非零"套用过头了：
+>   那条契约管的是**一个动作**失败或空转，而 `use <name>` 不带版本是一次**查询**，
+>   它完整地回答了。真正被禁止的是"只有一个候选却打印列表"，那一条仍然成立。
+> - **`--pick` 已删除**。默认路径确定之后，它解决的问题不复存在。
+>
+> 本文其余部分（P0-1、P1-2 及后续批次）未变。
+
 ---
 
 ## 0. 摘要与分批
