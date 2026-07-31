@@ -894,9 +894,28 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
     // failure through whatever tried to run it, in an error message that names
     // the missing command and never names xlings.
     const auto& ws = Config::effective_workspace();
-    const auto has_active = [&](std::string_view name) {
-        auto it = ws.find(std::string(name));
-        return it != ws.end() && !it->second.empty();
+    const auto& db = Config::versions();
+
+    // Does this ROW's version serve the name, or does some other version?
+    //
+    // A row is a (package, version) pair, so "is the name active" is the wrong
+    // question whenever more than one version is installed: llvm 20.1.7 and
+    // 22.1.8 both register `llvm`, and asking only whether `llvm` is active
+    // leaves the 22.1.8 row looking exactly like the 20.1.7 one that is
+    // actually serving. Compare against the release the active version belongs
+    // to, not against the member version, because a member of a release
+    // carries its own version string (node's `npm` is at `node-24.15.0`).
+    const auto served_by_this_row = [&](std::string_view program,
+                                        const std::string& rowVersion) {
+        const auto it = ws.find(std::string(program));
+        if (it == ws.end() || it->second.empty()) return false;
+        std::string release = it->second;
+        if (const auto* vd = xvm::get_vdata(db, std::string(program), release);
+            vd && vd->bindingGroup) {
+            release = vd->bindingGroup->rootVersion;
+        }
+        return release == rowVersion
+            || xvm::strip_namespace(release) == rowVersion;
     };
 
     nlohmann::json listItems = nlohmann::json::array();
@@ -909,9 +928,20 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         // that declares nothing runnable (a library, a release anchor) has no
         // active version to lack, so it is never flagged — the same
         // `package.programs` promise installer.cppm:1847 verifies.
+        //
+        // LIMIT: a recipe that declares no `programs` is never marked, because
+        // nothing records which xvm targets a package version registered —
+        // that mapping exists only in the recipe. Measured: `binutils` and
+        // `gcc` declare theirs and are marked; `llvm` declares none and is
+        // not, though `self doctor` reports it by release. This is a floor,
+        // not full coverage, and the fix is in the recipe.
         std::string status;
         if (pkg && !pkg->programs.empty()
-            && std::ranges::none_of(pkg->programs, has_active)) {
+            && std::ranges::none_of(pkg->programs,
+                                    [&](std::string_view program) {
+                                        return served_by_this_row(
+                                            program, match.version);
+                                    })) {
             status = "inactive";
         }
         listItems.push_back({match.canonicalName + "@" + match.version,
