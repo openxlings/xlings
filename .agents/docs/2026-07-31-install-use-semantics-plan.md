@@ -10,15 +10,16 @@
 
 | # | 问题 | 类型 | 规模 |
 |---|---|---|---|
-| **P1** | 模糊约束不支持；且依赖已满足仍装最新版 | **真缺陷** ×2 | 中 |
+| **P1** | 依赖展开绕开了已有的版本语义；且已满足仍装最新版 | **真缺陷** ×2 | 小-中 |
 | **P2** | `use` 在未安装该包的 subos 里静默给出半可用工具链 | **真缺陷**（静默成功） | 小 |
 | **P3a** | `--pick` 该删 | 多余表面 | 小 |
 | **P3** | `use <pkg>` 列版本却打印 `[error]` | 语义/表达 | 小 |
 | **P4** | 测试里的"假 PASS" | 方法问题 | — |
+| **P5** | 提议新建已存在的能力（两次） | 方法问题 | — |
 
 ---
 
-## P1. 依赖解析：模糊约束不支持，且已满足也照装最新版
+## P1. 依赖解析没有接上已有的版本语义，且已满足也照装最新版
 
 ### 现场
 
@@ -32,28 +33,50 @@ $ mcpp --version
 mcpp 2026.7.30.2          ← 本地已有，且 mcpp-short-cmd 的 deps 没有指定版本
 ```
 
-### 查证：模糊匹配存在，但只在一侧
+### 查证：版本语义**已经完整实现**，只是没接到依赖那条路
 
-| | 前缀/模糊匹配 | 匹配的对象 | 使用者 |
-|---|:---:|---|---|
-| `match_version`（`src/core/xvm/db.cppm:305`） | ✅ **有** | **已安装**的版本库 | `xlings use gcc 16` → 16.1.0 |
-| libxpkg `resolve_resource` | ❌ **只有精确查找**（`versions.find(ctx.version)`，仅跟随 `ref` 链） | **索引** | install / deps 解析 |
+`src/core/semver.cppm`（344 行，28 个单测）已有完整的 range 支持：
 
-也就是说 `deps = {"xim:python@3"}` 今天走到索引侧会得到 `unknown version: 3`
-—— **语义已经实现过一次，只是没有被依赖解析这条路用上。**
+```
+"15"              → Gte{15.0.0} Lt{16.0.0}     ← 裸前缀自动展开成区间
+"15.1"            → Gte{15.1.0} Lt{15.2.0}
+">=1.0.0 <2.0.0"  → 区间
+"^1.2.3"  "~1.2.3"  "1.2.*"  "1.*"             ← 全都有
+select_best(available, range_expr)             ← 取满足约束的最高版本
+```
 
-### 两个独立的缺陷
+**而且索引侧已经在用它**：`catalog.cppm:179` 的 `select_version_()` 对 `versionHint`
+调用 `semver::select_best`，所以 `xlings install python@3` 能正常解析。
 
-**P1-a 索引侧不支持模糊约束。** `python@3` 应当匹配索引里的 `3.x.x` 并取最高。
-现在只能写死精确版本，这也解释了为什么索引里 `deps` 几乎全是 `@2.39` 这种锁定形式
-—— 不是作者想锁死，是**只能锁死**。
+问题在于**有两条版本解析路径，只有一条接了它**：
 
-**P1-b 已满足仍装最新版**（`src/core/xim/resolver.cppm:134`）：
+| 路径 | 怎么解析版本 | 支持 range |
+|---|---|:---:|
+| **catalog**（顶层目标） | `select_version_()` → `semver::select_best` | ✅ |
+| **resolver**（依赖展开，`resolver.cppm:83` / `:134`） | `if (!versionHint.empty()) return versionHint;` **原样当版本号用** | ❌ |
 
 ```cpp
-if (!versionHint.empty()) node.version = versionHint;   // 有约束 → 用它（但只支持精确）
-else                      node.version = latest;         // 无约束 → 直接 latest
+// resolver.cppm:83   算 key 时
+if (!versionHint.empty()) return versionHint;
+// resolver.cppm:134  定 node.version 时
+if (!versionHint.empty()) node.version = versionHint;
 ```
+
+于是 `deps = {"xim:python@3"}` 带着字面量 `"3"` 一路走到 libxpkg 的精确
+`versions.find("3")` → `unknown version: 3`。
+
+顺带一个佐证：`semver::select_highest` **零调用者** —— 这个能力写好了，接了一半。
+
+**这也解释了为什么索引里 `deps` 几乎全是 `@2.39` 这种锁死写法** —— 不是作者想锁，
+是写 `@3` 会坏。修完之后 recipe 才有理由改用宽松约束。
+
+### 两个缺陷
+
+**P1-a 依赖展开绕开了版本语义。** 修法不是"实现 range"（已经有了），而是让
+resolver 的两处走 catalog 已有的解析（`select_version_` / `semver::select_best`），
+两条路径口径合一。
+
+**P1-b 无约束时直接取 latest，不看本地已装什么**（`resolver.cppm:134` 的 `else` 分支）：
 
 **"没有指定版本"被实现成了"要最新版本"，而它的意思是"任意满足的版本都行"。**
 
@@ -62,13 +85,13 @@ else                      node.version = latest;         // 无约束 → 直接
 | deps 写法 | 现在 | 应当 |
 |---|---|---|
 | `xim:pkg@2.39` | 装 2.39 | 不变（精确锁定就是锁定） |
-| **`xim:pkg@3`** | ❌ `unknown version: 3` | 本 subos 已装 `3.x` → **用它**；否则装索引里最高的 `3.x` |
-| **`xim:pkg`** | 装 latest | 本 subos 已装**任意**版本 → **用它**；否则装 latest |
+| **`xim:pkg@3`** | ❌ `unknown version: 3` | 已装满足 `3` 的 → **用它**；否则装索引里满足 `3` 的最高版 |
+| **`xim:pkg@^1.2`** | ❌ 同上 | 同上（`semver` 已支持这些运算符） |
+| **`xim:pkg`** | 装 latest | 已装**任意**版本 → **用它**；否则 latest |
 
 "用它"的优先级：**本 subos 的活动版本** > `installed[]` 里满足约束的最高版本。
 
-**复用现成逻辑**：满足性判断用 `match_version` 的前缀语义（对已装版本），索引侧
-用同一套前缀规则（对索引版本）—— 两边口径一致，不是两套。
+满足性判断用 `semver::satisfies` / `select_best`（已有），**不新建任何版本语义**。
 
 ### 为什么 P1-b 是缺陷而不是偏好
 
@@ -78,8 +101,7 @@ else                      node.version = latest;         // 无约束 → 直接
 
 ### 边界
 
-- **不实现区间运算符**（`>=` / `^` / `~`）—— 前缀匹配已覆盖 `python@3` / `gcc@15` 这类
-  真实需求，运算符要维护一个求解器，等有真实写法再说；
+- **不新增版本语法** —— `semver.cppm` 已覆盖前缀、`^`、`~`、`*`、区间；
 - **不自动降级** —— 已装版本高于约束上界时保持已装，不回退；
 - **不改精确锁定的语义**。
 
@@ -87,7 +109,7 @@ else                      node.version = latest;         // 无约束 → 直接
 
 - 本地有 `mcpp@A`，装 `deps = {"xim:mcpp"}` 的包 → 计划里**不出现** mcpp；
 - 本地有 `python@3.11`，`deps = {"xim:python@3"}` → **不出现** python；
-- 本地有 `python@2.7`，`deps = {"xim:python@3"}` → 出现索引里最高的 `3.x`；
+- 本地无 python，`deps = {"xim:python@3"}` → 出现索引里满足 `3` 的最高版（不是 `unknown version`）；
 - `deps = {"xim:glibc@2.39"}` 且本地 2.38 → 仍装 2.39；
 - 差分：以上前三条在 `2026.7.31.2` 构建上必须失败。
 
@@ -255,6 +277,28 @@ $ echo $?
 
 ---
 
+## P5. 方法：提议新增能力之前，先 grep 这个能力的名字
+
+本轮我**两次**提议新建一个已经存在的东西：
+
+| 我提议的 | 实际已有 | 应该做的检查 |
+|---|---|---|
+| "recipe 需要一个可移植的 subos 写法" | `subos/current`（`self init` 建、`subos use --global` 维护） | `grep -rn '"current"' src/` |
+| "索引侧不支持模糊约束，要实现 range" | `semver.cppm` 完整 range + 28 单测 + `catalog.cppm` 已在用 | `grep -rn "select_best\|parse_range" src/` |
+
+两次的形状一样：**从一个真现象出发，直接跳到"需要造一个新机制"，没有先问"这个机制
+是不是已经有了、只是没接上"。**
+
+代价不只是白写代码 —— 它会把方案的形状带偏：P1 因此被写成"要实现 range 求解"，
+边界里还专门写了"不实现区间运算符"，而 `^`/`~`/`>=` 早就在那儿。
+
+规则：**提议新增任何能力之前，用它的领域词汇 grep 一遍**（`range`、`satisfies`、
+`current`、`marker`…）。这比读架构便宜得多，而且这轮两次都能立刻命中。
+
+与 §P4 是同一类：**先量、先查，再动结论。**
+
+---
+
 ## 落地顺序
 
 ```
@@ -265,7 +309,8 @@ P4              —— 写进测试约定，无代码
 ```
 
 P3 最小（纯呈现 + 删 `--pick`），P2 次之（一个判据 + 一段提示 + 不动作），
-P1 最大（索引侧前缀匹配 + resolver 接入"本 subos 已装什么"）。
+P1 也不大（resolver 两处改调已有的解析 + 接入"本 subos 已装什么"），**不需要新建
+版本语义**。
 
 ---
 
@@ -273,6 +318,6 @@ P1 最大（索引侧前缀匹配 + resolver 接入"本 subos 已装什么"）�
 
 - **不在版本库里记依赖关系** —— P2 用现成的 `installed[]` 就够；记依赖是更大的改动，
   应当由真正需要它的需求驱动（例如"`use` 自动激活依赖"），而不是为一条警告；
-- **不实现区间运算符**（`>=` / `^` / `~`）—— 前缀匹配覆盖了 `python@3` 这类真实需求；
+- **不新增版本语法** —— `semver.cppm` 已经有前缀 / `^` / `~` / `*` / 区间，还有 28 个单测；
 - **不在 `use` 里自动安装** —— 提示即可，安装是 `install` 的事；
 - **不保留 `--pick`** —— 它解决的问题已经不存在。
