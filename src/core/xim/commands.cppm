@@ -883,11 +883,39 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         return 0;
     }
 
+    // Installed is not the same question as usable.
+    //
+    // `installed[]` and the active selection are two different tables, and a
+    // package can sit in the first without appearing in the second — a group
+    // whose activation was withheld at install time, or a `remove` that took
+    // out the active version and found no coherent replacement. Such a package
+    // has no shim, so its commands are not on PATH, and until now this list
+    // rendered it identically to a working one. The user then meets the
+    // failure through whatever tried to run it, in an error message that names
+    // the missing command and never names xlings.
+    const auto& ws = Config::effective_workspace();
+    const auto has_active = [&](std::string_view name) {
+        auto it = ws.find(std::string(name));
+        return it != ws.end() && !it->second.empty();
+    };
+
     nlohmann::json listItems = nlohmann::json::array();
     for (auto& match : installed) {
         auto pkg = catalog.load_package(match);
         std::string desc = pkg ? std::string(pkg->description) : std::string{};
-        listItems.push_back({match.canonicalName + "@" + match.version, desc});
+        // Asked of the programs the recipe declares, not of the package name:
+        // the package is `mcpp-short-cmd`, the xvm targets are `madd`,
+        // `mbuild`, … and the package name is never one of them. A package
+        // that declares nothing runnable (a library, a release anchor) has no
+        // active version to lack, so it is never flagged — the same
+        // `package.programs` promise installer.cppm:1847 verifies.
+        std::string status;
+        if (pkg && !pkg->programs.empty()
+            && std::ranges::none_of(pkg->programs, has_active)) {
+            status = "inactive";
+        }
+        listItems.push_back({match.canonicalName + "@" + match.version,
+                             desc, status});
     }
     nlohmann::json listPayload;
     listPayload["title"] = all ? "Installed packages (all subos):"

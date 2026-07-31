@@ -268,6 +268,109 @@ std::filesystem::path resolve_executable(const std::string& program_name,
     return {};
 }
 
+// Where an alias's program was found, in the order the runtime looks.
+//
+// The alias path below does not call resolve_executable at all in the normal
+// case: it PREPENDS `<payload>`, `<payload>/bin` and the subos bin dir to
+// PATH and hands the command to a shell (see the alias branch of
+// shim_dispatch). So an alias naming a sibling xlings command -- thirty of
+// mcpp's short commands name `mcpp`, which lives in a different package --
+// resolves at the third position, and one naming a host tool resolves at the
+// fourth.
+//
+// This mattered because `self doctor` was asking resolve_executable, which
+// only knows the first two, and reporting everything past them as
+// unresolvable. Thirty-four such warnings on one measured home, every one of
+// them a command that runs correctly. The point of the enum is that the
+// caller can tell those apart from an alias that really has nothing to run:
+// they were a single warning level before, so a genuine break was
+// indistinguishable from the noise around it.
+enum class AliasOrigin {
+    Absolute,     // the alias named a full path and it is there
+    Payload,      // <payload>/ or <payload>/bin -- the package's own
+    SubosBin,     // a sibling shim in the active subos: still xlings's
+    SystemPath,   // inherited PATH: works, but the host is providing it
+    Nowhere,      // nothing to exec
+};
+
+struct AliasResolution {
+    AliasOrigin origin { AliasOrigin::Nowhere };
+    std::filesystem::path path;
+};
+
+// Resolve an alias program the way the alias branch of shim_dispatch will.
+//
+// `searchPath` is the PATH to search at the fourth position; callers pass the
+// live environment, tests pass their own. Empty means "do not look" -- which
+// is not the same as "found nothing", so a caller that cannot see a
+// representative PATH gets Nowhere and should say so rather than claim the
+// alias is broken.
+AliasResolution resolve_alias_program(const std::string& program_name,
+                                      const std::string& path,
+                                      const std::string& xlings_home,
+                                      const std::filesystem::path& subos_bin,
+                                      std::string_view searchPath) {
+    namespace fs = std::filesystem;
+
+    if (program_name.empty()) return {};
+
+    // An absolute alias is not searched for; it either exists or it does not.
+    // It is NOT a host command -- a recipe that pins a full path into its own
+    // payload store writes one, and calling that "satisfied by the host" gets
+    // the portability question exactly backwards.
+    if (fs::path(program_name).is_absolute()) {
+        std::error_code ec;
+        if (fs::exists(program_name, ec)) {
+            return {AliasOrigin::Absolute, fs::path(program_name)};
+        }
+        return {};
+    }
+
+    if (auto own = resolve_executable(program_name, path, xlings_home);
+        !own.empty()) {
+        return {AliasOrigin::Payload, std::move(own)};
+    }
+
+#if defined(_WIN32)
+    constexpr std::string_view exts[] = {"", ".exe", ".bat", ".cmd"};
+#else
+    constexpr std::string_view exts[] = {""};
+#endif
+
+    const auto probe = [&](const fs::path& dir) -> fs::path {
+        if (dir.empty()) return {};
+        for (auto ext : exts) {
+            auto candidate = dir / (program_name + std::string(ext));
+            std::error_code ec;
+            if (fs::exists(candidate, ec) && !fs::is_directory(candidate, ec)) {
+                return candidate;
+            }
+        }
+        return {};
+    };
+
+    if (auto sibling = probe(subos_bin); !sibling.empty()) {
+        return {AliasOrigin::SubosBin, std::move(sibling)};
+    }
+
+    std::size_t start = 0;
+    while (start <= searchPath.size() && !searchPath.empty()) {
+        auto end = searchPath.find(platform::PATH_SEPARATOR, start);
+        auto part = searchPath.substr(
+            start, end == std::string_view::npos ? std::string_view::npos
+                                                 : end - start);
+        if (!part.empty()) {
+            if (auto hit = probe(fs::path(part)); !hit.empty()) {
+                return {AliasOrigin::SystemPath, std::move(hit)};
+            }
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+
+    return {};
+}
+
 // Merge a shim-injected env value into the existing one. PATH-style vars
 // prepend (new first), but a value already present — as the whole value or as
 // one separator-delimited component — must NOT be appended again: the blind

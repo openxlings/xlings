@@ -95,6 +95,23 @@ enum class FindingKind {
     // name exists purely to anchor the release its libraries belong to.
     ReleaseAnchor,
     AliasUnresolved,
+    // Installed in this subos, payload intact, and no version of it active --
+    // so no shim was ever written and none of its programs are on PATH.
+    //
+    // Every other check is structurally blind to this. Check 1 walks the
+    // ACTIVE workspace, and the name is not in it. Check 2 walks binDir, and
+    // there is no file to find. Check 3 walks the DB and finds a payload that
+    // resolves perfectly, because it does. `xlings list` reported it as
+    // installed like any other package.
+    //
+    // The state is produced by both halves of the lifecycle: registration
+    // withholding activation from a whole release (registration.cppm), and a
+    // `remove` that took out the active version and found no coherent
+    // replacement (removal.cppm). Both were written believing an inactive
+    // package is a visible problem. It is not: the user meets it through
+    // whatever tried to run the missing command, in an error message that
+    // never mentions xlings.
+    InactiveInstalled,
     // An alias or env value that recorded the ABSOLUTE path of whichever
     // subos was active when the package was installed. The shim re-points it
     // at the active subos when it executes, so this is stale bookkeeping
@@ -297,6 +314,17 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     Scan scan;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
 
+    // The PATH an aliased command would inherit. Read once, and read from
+    // THIS process: doctor is normally started from the user's shell, so this
+    // is the same PATH the shim would get. It is not guaranteed to be -- a
+    // stripped environment sees fewer host commands than the user does -- so
+    // it can only ever downgrade a finding from "satisfied by the host" to
+    // "resolves to nothing", never the reverse. That direction is the safe
+    // one to be wrong in: it over-reports in a sandbox instead of staying
+    // silent on a real break.
+    const std::string hostPath =
+        std::getenv("PATH") ? std::getenv("PATH") : std::string{};
+
     // Check 1: every workspace program has its shim.
     for (const auto& [name, version] : st.ws) {
         if (version.empty()) continue;
@@ -400,6 +428,157 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 .shimPath = path,
             });
         }
+    }
+
+    // Check 2.7: installed here, and nothing active.
+    //
+    // The gap between Check 1 and Check 2. Check 1 asks "does every ACTIVE
+    // program have a shim" and never sees a name with no active version;
+    // Check 2 asks "does every shim have an active version" and never sees a
+    // name with no shim. A package that is installed and inactive is missing
+    // from both tables at once, so both loops skip it and the payload loop
+    // below finds it perfectly healthy -- which it is. What is broken is the
+    // selection, and until now nothing looked at the selection.
+    //
+    // Reported per RELEASE, not per program.
+    //
+    // Activation is a release-level act -- `use` moves a whole binding group
+    // at once -- so one inactive release is one problem no matter how many
+    // names it registers. On the measured home the per-program shape printed
+    // fifty lines for three releases: `clang`, `clang++`, `clang-22`,
+    // `llvm-ar` … each with its own identical remedy. That is the same burial
+    // the broken-payload grouping exists to prevent (see Finding::groupKey),
+    // and it would have hidden `node` in the middle of it.
+    struct InactiveRelease {
+        std::string rootTarget;
+        std::string rootVersion;
+        std::vector<std::string> members;
+    };
+    std::map<std::string, InactiveRelease> inactiveReleases;
+
+    for (const auto& [name, versions] : st.wsInstalled) {
+        if (versions.empty()) continue;
+        if (auto wit = st.ws.find(name);
+            wit != st.ws.end() && !wit->second.empty()) continue;
+
+        const auto* vi = xvm::get_vinfo(st.db, name);
+        if (!vi || !xvm::has_program_kind(st.db, name)) continue;
+
+        // Only versions this subos actually has, highest first: the same
+        // ordering removal.cppm:390-393 uses to pick a replacement release,
+        // so doctor's remedy and remove's automatic choice cannot disagree.
+        std::vector<std::string> candidates;
+        for (const auto& version : versions) {
+            if (!vi->versions.contains(version)) continue;
+            if (xvm::effective_kind_of(st.db, name, version) != "program")
+                continue;
+            candidates.push_back(version);
+        }
+        if (candidates.empty()) continue;
+        std::ranges::sort(candidates, xvm::version_key_greater);
+
+        // Would activating it actually produce a working command?
+        //
+        // This is the whole filter, and `is_binding_root` deliberately is not
+        // part of it. A name that exists only to anchor a release has no
+        // executable and drops out here -- activating one is issue #452 in the
+        // other direction, where the shim can only ever print "no active
+        // version". But asking `is_binding_root` first would have thrown out
+        // the real cases too: a group's root is usually its main program.
+        // `node` roots the release that owns `npm` and `npx`, so it answers
+        // true to that question while being exactly the program the user is
+        // missing. Only the payload can tell the two apart, so only the
+        // payload is asked -- the same order Check 3 uses.
+        //
+        // A version whose payload is gone is skipped as well: Check 3 already
+        // reports that as a broken payload with an install remedy, and
+        // offering `xlings use` on top of it would name a command that cannot
+        // succeed.
+        const auto usable = std::ranges::find_if(
+            candidates, [&](const std::string& version) {
+                const auto* vd = xvm::get_vdata(st.db, name, version);
+                if (!vd || vd->path.empty()) return false;
+                if (!vd->alias.empty() && !vd->alias[0].empty()) return true;
+                return !xvm::resolve_executable(name, vd->path, st.homeStr)
+                            .empty();
+            });
+        if (usable == candidates.end()) continue;
+
+        // The release this program belongs to, which is what `use` takes as
+        // an argument. A legacy entry carries no group and is its own root --
+        // that is not a fallback, it is what a single-program package is.
+        const auto* vd = xvm::get_vdata(st.db, name, *usable);
+        const std::string rootTarget =
+            vd && vd->bindingGroup ? vd->bindingGroup->rootTarget : name;
+        const std::string rootVersion =
+            vd && vd->bindingGroup ? vd->bindingGroup->rootVersion : *usable;
+
+        auto& release = inactiveReleases[std::format("{}@{}", rootTarget,
+                                                     rootVersion)];
+        release.rootTarget  = rootTarget;
+        release.rootVersion = rootVersion;
+        release.members.push_back(name);
+    }
+
+    for (const auto& [key, release] : inactiveReleases) {
+        // Names, not a count. "30 programs" tells the user nothing they can
+        // check; `clang, clang++, ld.lld …` is how they recognise what they
+        // have been missing. The list is capped because a release with thirty
+        // members would otherwise take the terminal apart -- `--all` prints it
+        // whole.
+        constexpr std::size_t kShown = 6;
+        std::string names;
+        for (std::size_t i = 0; i < release.members.size() && i < kShown; ++i) {
+            if (!names.empty()) names += ", ";
+            names += release.members[i];
+        }
+        if (release.members.size() > kShown) {
+            names += std::format(", … (+{})", release.members.size() - kShown);
+        }
+
+        // What the repair will ALSO do.
+        //
+        // The remedy is `use`, and `use` moves a whole release. A name that
+        // another package currently owns -- node's release registers `npm`,
+        // and a standalone npm package may hold it -- changes hands when the
+        // release is activated. That is correct for `use` and it is what the
+        // user gets whether they run the command themselves or let `--fix`
+        // run it, but it must not be something they discover afterwards:
+        // finding out later that a selection moved is the same silent-change
+        // shape this whole check exists to end.
+        std::string alsoMoves;
+        if (const auto selection = xvm::resolve_binding_selection(
+                st.db, release.rootTarget, release.rootVersion)) {
+            for (const auto& [memberTarget, memberVersion]
+                     : selection->members) {
+                const auto activeIt = st.ws.find(memberTarget);
+                if (activeIt == st.ws.end() || activeIt->second.empty()) continue;
+                if (activeIt->second == memberVersion) continue;
+                if (!alsoMoves.empty()) alsoMoves += ", ";
+                alsoMoves += std::format("{} ({} → {})", memberTarget,
+                                         activeIt->second, memberVersion);
+            }
+        }
+
+        add({
+            .kind    = FindingKind::InactiveInstalled,
+            .level   = FindingLevel::Error,
+            .target  = release.rootTarget,
+            .version = release.rootVersion,
+            .detail  = std::format(
+                "{} is installed in this subos but no version is active, so no "
+                "shim was written and {} program(s) are not on PATH: {}{}",
+                xvm::display_coordinate(release.rootTarget,
+                                        release.rootVersion),
+                release.members.size(), names,
+                alsoMoves.empty() ? std::string{}
+                                  : std::format(
+                                        "  —  activating it also moves {}",
+                                        alsoMoves)),
+            .remedy  = std::format("xlings use {}@{}", release.rootTarget,
+                                   release.rootVersion),
+            .groupKey = key,
+        });
     }
 
     // Check 2.6: shim ownership anchoring (0.4.48). Warning-only: the usual
@@ -600,33 +779,84 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 continue;
             }
 
-            // Alias mode: best-effort coverage. Absolute-path aliases are
-            // intentionally external and skipped; relative aliases that don't
-            // resolve locally are downgraded to a warning because they MIGHT
-            // be system commands found via the runtime PATH.
+            // Alias mode: ask the question the runtime answers.
             //
-            // TODO(self-doctor): only alias[0] is inspected (matches runtime
-            // today; if multi-element fallback chains ever land they should be
-            // covered too), and "intentional system command" vs
-            // "misconfiguration" still cannot be told apart from inside
-            // doctor. Bounded by warning severity: no error, no exit-1,
-            // --fix doesn't touch it.
+            // This used to call resolve_executable, which searches the
+            // package's own payload and nothing else, and report every miss as
+            // one warning. But the alias branch of shim_dispatch prepends the
+            // payload, the payload's bin, AND the subos bin dir to PATH before
+            // handing the command to a shell, so two whole tiers of the real
+            // search were invisible here. A package whose only job is to give
+            // thirty short names to a sibling package's `mcpp` resolves on
+            // every invocation and was reported broken on every doctor run --
+            // thirty-four such warnings on one measured home, all of them
+            // false, and one warning level for "runs fine via a sibling",
+            // "runs fine via the host" and "nothing to exec at all".
+            //
+            // resolve_alias_program lives next to the dispatcher so the two
+            // cannot drift, the same reason the baked-path check calls the
+            // function its repair calls.
+            //
+            // TODO(self-doctor): only alias[0] is inspected — matches the
+            // runtime today; if multi-element fallback chains ever land they
+            // should be covered too.
             const auto aliasProg = alias_program_(vdata.alias[0], st.homeStr);
-            if (fs::path(aliasProg).is_absolute()) continue;
-            if (!xvm::resolve_executable(aliasProg, vdata.path, st.homeStr)
-                     .empty()) {
+            const auto resolution = xvm::resolve_alias_program(
+                aliasProg, vdata.path, st.homeStr, p.binDir, hostPath);
+            // Its own payload, a sibling shim in this subos, or a full path
+            // that is there. Nothing to report.
+            //
+            // The absolute case used to be skipped BEFORE anything was
+            // checked, so an absolute alias pointing at a path that no longer
+            // existed was the one alias shape doctor could never report. It
+            // is checked now, and only its absence is a finding.
+            if (resolution.origin == xvm::AliasOrigin::Absolute
+                || resolution.origin == xvm::AliasOrigin::Payload
+                || resolution.origin == xvm::AliasOrigin::SubosBin) {
+                continue;
+            }
+            if (resolution.origin == xvm::AliasOrigin::SystemPath) {
+                // Works, and is allowed to: a recipe may deliberately wrap a
+                // host tool. Worth saying once because it is the difference
+                // between a home that is portable and one that is not, but it
+                // is not a defect and must not touch the exit code.
+                add({
+                    .kind    = FindingKind::AliasUnresolved,
+                    .level   = FindingLevel::Notice,
+                    .target  = name,
+                    .version = version,
+                    .detail  = std::format(
+                        "{} alias '{}' is satisfied by a host command ({}), "
+                        "not by anything xlings installed",
+                        xvm::display_coordinate(name, version), aliasProg,
+                        resolution.path.string()),
+                });
+                continue;
+            }
+
+            // Nothing to exec, anywhere the runtime would look.
+            //
+            // Now an error, because it now means what it says. If the alias
+            // names a target xlings knows about, the honest finding is that
+            // the target has no active version -- Check 2.7 already reported
+            // it against the release, with a remedy that fixes both -- and
+            // repeating it here as an alias defect would send the user after
+            // the wrong thing.
+            if (const auto* aliasVi = xvm::get_vinfo(st.db, aliasProg);
+                aliasVi && xvm::has_program_kind(st.db, aliasProg)) {
                 continue;
             }
             add({
                 .kind    = FindingKind::AliasUnresolved,
-                .level   = FindingLevel::Warning,
+                .level   = FindingLevel::Error,
                 .target  = name,
                 .version = version,
                 .detail  = std::format(
-                    "{} alias '{}' not resolvable in {} (may be a system "
-                    "command)",
+                    "{} alias '{}' resolves to nothing — not in {}, not a "
+                    "sibling command in {}, not on PATH",
                     xvm::display_coordinate(name, version), aliasProg,
-                    Config::display_path(expanded)),
+                    Config::display_path(expanded),
+                    Config::display_path(p.binDir)),
             });
         }
     }
@@ -1215,6 +1445,57 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
     }
 }
 
+// Activate what is installed and inactive, by running `use`.
+//
+// Deliberately a subprocess and deliberately the exact command the finding
+// prints. Activating a release is not a workspace write: it places the
+// release's libraries and headers in the sysroot and writes a shim per
+// member, and xvm's `use` path is the only code that does all of it. Setting
+// `workspace[name]` here would activate the name and leave the sysroot
+// holding whatever the previous release put there -- the half-switched state
+// plan_use_switch was written to make impossible.
+//
+// `use` moves the WHOLE release, which can take a name from another provider:
+// node's release owns `npm`, and a separately installed npm package may hold
+// that name today. That is not a side effect this hides -- it is what the
+// printed remedy does when the user runs it by hand, and a `--fix` that did
+// something narrower than the command it advertises would be a third
+// behaviour to reason about. The install path is where "do not take a name
+// from another provider" belongs, and that is where it now lives
+// (registration.cppm); by the time doctor is looking at the wreckage, the
+// user has asked for repair.
+void repair_inactive_(const Scan& scan, const std::string& client,
+                      const CommandRunner& run, bool dryRun,
+                      RepairReport& out) {
+    for (const auto& f : scan.findings) {
+        if (f.kind != FindingKind::InactiveInstalled) continue;
+        if (!is_shell_safe_token(f.target) || !is_shell_safe_token(f.version)) {
+            out.notes.emplace_back(
+                glyph::mark(glyph::failed, "activation skipped"),
+                std::format("{} — name or version is not a safe shell token",
+                            xvm::display_coordinate(f.target, f.version)));
+            continue;
+        }
+        const auto cmd = std::format("{} use {}@{}", client, f.target,
+                                     f.version);
+        if (dryRun) {
+            out.planned.push_back(cmd);
+            continue;
+        }
+        if (run(cmd + quiet_suffix()) == 0) {
+            out.notes.emplace_back(glyph::mark(glyph::bullet, "activated"),
+                                   std::format("{}@{}", f.target, f.version));
+        } else {
+            out.failedEntries.emplace_back(f.target, f.version);
+            out.notes.emplace_back(
+                glyph::mark(glyph::failed, "activation failed"),
+                std::format("{} — run `{}` to see why",
+                            xvm::display_coordinate(f.target, f.version),
+                            f.remedy));
+        }
+    }
+}
+
 // The last rung: drop a registration that is provably dead.
 //
 // Runs after the ladder and after a reload, on findings that SURVIVED it. That
@@ -1333,12 +1614,14 @@ struct Counts {
     int orphans { 0 };
     int broken  { 0 };
     int binding { 0 };
+    int inactive { 0 };
+    int aliasBroken { 0 };
     int warnings { 0 };
     int foreignPayloads { 0 };
     int otherSubos { 0 };
 
     [[nodiscard]] int issues() const {
-        return missing + orphans + broken + binding;
+        return missing + orphans + broken + binding + inactive + aliasBroken;
     }
 };
 
@@ -1363,10 +1646,16 @@ Counts count_(const Scan& scan) {
             // count that does not match the list is the shape the old summary
             // had -- "broken payloads 1" with nothing in the list to explain
             // it -- and it sends people looking for a line that is not there.
+            // An alias that a host command satisfies is a Notice and counts
+            // as nothing; one that resolves nowhere is an Error and counts as
+            // an issue. They used to be the same warning, which is how a real
+            // break stayed invisible inside thirty-four false ones.
             case FindingKind::AliasUnresolved:
-                if (aliasTargets.insert(f.target).second) ++c.warnings;
+                if (f.level != FindingLevel::Error) break;
+                if (aliasTargets.insert(f.target).second) ++c.aliasBroken;
                 break;
             case FindingKind::ReleaseAnchor:   break;
+            case FindingKind::InactiveInstalled: ++c.inactive; break;
             // Per TARGET, matching how they are printed (see render_).
             case FindingKind::SubosPathBaked:
                 if (bakedTargets.insert(f.target).second) ++c.warnings;
@@ -1458,7 +1747,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     std::set<std::string> bakedTargetsShown;
     std::map<std::string, int> bakedVersionCount;
     for (const auto& f : scan.findings) {
-        if (f.kind == FindingKind::AliasUnresolved) ++aliasVersionCount[f.target];
+        // Errors only: the "+N other version(s)" suffix is printed on an
+        // error line, so counting notices into it would inflate a number the
+        // user cannot see the rest of.
+        if (f.kind == FindingKind::AliasUnresolved
+            && f.level == FindingLevel::Error) ++aliasVersionCount[f.target];
         else if (f.kind == FindingKind::SubosPathBaked) ++bakedVersionCount[f.target];
     }
     for (const auto& f : scan.findings) {
@@ -1474,6 +1767,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::LegacyAliasShim:
                 add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
+            case FindingKind::InactiveInstalled:
+                add(glyph::mark(glyph::failed, "no active version"), f.detail);
+                add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
             case FindingKind::ShimAnchor:
                 add(glyph::mark(glyph::warn, "shim anchor"), f.detail); break;
             case FindingKind::AliasUnresolved:
@@ -1484,8 +1781,22 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 // the repeats is the fix; hiding the category is not, because
                 // a genuinely missing alias binary is the only signal there
                 // is.
+                //
+                // The Notice level is "a host command answers this", which is
+                // a portability fact rather than a defect. It is summarised
+                // like the other notices and printed only under `--all`, so
+                // the Error level -- an alias with nothing to exec anywhere --
+                // is the only thing this category shows by default. That is
+                // the whole point of splitting it: the error used to be one
+                // line among thirty-four identical-looking warnings.
+                if (f.level == FindingLevel::Notice) {
+                    if (verbose) {
+                        add(glyph::mark(glyph::note, "host alias"), f.detail);
+                    }
+                    break;
+                }
                 if (verbose || aliasTargetsShown.insert(f.target).second) {
-                    add(glyph::mark(glyph::warn, "alias unresolved"), verbose ? f.detail
+                    add(glyph::mark(glyph::failed, "alias unresolved"), verbose ? f.detail
                         : std::format("{}{}", f.detail,
                             aliasVersionCount.at(f.target) > 1
                                 ? std::format("  (+{} other version(s))",
@@ -1545,6 +1856,9 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // four lines that matter got lost.
     if (!verbose) {
         int anchors = 0, anchorShims = 0, bindingNotices = 0, subosNotices = 0;
+        // Per TARGET, like the warning line it replaced: one package's alias
+        // is one fact however many versions of it are registered.
+        std::set<std::string> hostAliasTargets;
         for (const auto& f : scan.findings) {
             if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
             else if (f.kind == FindingKind::OrphanShim
@@ -1553,6 +1867,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                      && f.level == FindingLevel::Notice) ++bindingNotices;
             else if (f.kind == FindingKind::OtherSubos
                      && f.level == FindingLevel::Notice) ++subosNotices;
+            else if (f.kind == FindingKind::AliasUnresolved
+                     && f.level == FindingLevel::Notice) {
+                hostAliasTargets.insert(f.target);
+            }
         }
         std::string summary;
         const auto part = [&](int n, std::string_view what) {
@@ -1561,6 +1879,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             summary += std::format("{} {}", n, what);
         };
         part(anchors, "release anchor");
+        part(static_cast<int>(hostAliasTargets.size()), "host alias");
         part(anchorShims, "anchor shim");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
@@ -1590,6 +1909,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             add("broken payloads", std::to_string(counts.broken));
         if (counts.binding > 0)
             add("binding state", std::to_string(counts.binding));
+        if (counts.inactive > 0)
+            add("no active version", std::to_string(counts.inactive));
+        if (counts.aliasBroken > 0)
+            add("unresolvable aliases", std::to_string(counts.aliasBroken));
         if (counts.warnings > 0)
             add("warnings", std::to_string(counts.warnings));
         // Reported apart from the counts above because they are apart from the
@@ -1710,8 +2033,13 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     const int before = count_(scan).issues();
 
+    const CommandRunner run = [](const std::string& cmd) {
+        return platform::exec(cmd);
+    };
+
     if (dryRun) {
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
+        repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
         render_(scan, repair, fix, dryRun, verbose, stream);
             return count_(scan).issues() == 0 ? 0 : 1;
     }
@@ -1744,6 +2072,16 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     // Phase 2: the payload ladder.
     repair_payloads_(state, scan, probe, /*dryRun=*/false, repair);
+    refresh();
+
+    // Phase 2.5: activate what is installed and inactive.
+    //
+    // After the ladder, not before: a package whose payload was missing is
+    // both broken AND inactive, and `use` on a payload that is not there fails
+    // for a reason the user cannot act on. The ladder reinstalls it first, and
+    // re-registration may activate it on its own -- in which case `refresh()`
+    // has already dropped the finding and there is nothing left to do here.
+    repair_inactive_(scan, client, run, /*dryRun=*/false, repair);
     refresh();
 
     // Phase 3: the cheap repairs again, on what the ladder left behind.

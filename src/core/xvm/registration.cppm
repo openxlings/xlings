@@ -26,6 +26,22 @@ struct RegistrationNode {
     std::vector<std::string> alias;
     std::map<std::string, std::string> envs;
     std::optional<RegistrationBinding> binding;
+    // Is there actually a command behind this name?
+    //
+    // A virtual root -- registered only so a release has something to bind to
+    // -- is indistinguishable from a real program in this struct and in the
+    // database: `path` is filled in from the package's install dir either way,
+    // `kind` defaults to "program", and `sourceName`/`destinationName` are
+    // auto-derived from the target. The measured #452 anchor
+    // (`xim-anchor-root`, registered with no bindir at all) carries exactly
+    // the same fields as `node`. Only the payload can tell them apart, and
+    // this module does not touch the filesystem by design -- so the caller
+    // that materialised the payload answers the question and passes it here.
+    //
+    // Defaults to true, which is what every existing caller and test means:
+    // "assume there is a command". It is read on ONE path, where being wrong
+    // in the optimistic direction would resurrect #452.
+    bool runnable { true };
 };
 
 struct RegistrationHeader {
@@ -918,11 +934,101 @@ apply_registration_batch(
         // Leaving a name alone when something already owns it is also the
         // right answer across providers: installing gcc must not silently
         // take `cc` away from an active llvm.
-        const bool anyMemberActive = std::ranges::any_of(
+        //
+        // But leaving the name alone is all that was ever intended, and this
+        // used to do much more than that: ANY member name being active vetoed
+        // the WHOLE group, including members nobody was contesting. Installing
+        // node while a standalone npm package held `npm` therefore activated
+        // nothing at all -- `node` and `npx`, which no other package provides,
+        // came out installed and unreachable, with no shim and no error. The
+        // user met it as `/usr/bin/env: 'node': No such file or directory`
+        // from a tool that had nothing to do with xlings.
+        //
+        // Who holds a contested name decides whether it vetoes:
+        //
+        //   same provider   -- an older release of this same package. Moving
+        //                      part of the workspace to the new release and
+        //                      leaving the rest on the old one is exactly the
+        //                      split the binding-group model exists to
+        //                      prevent, and choosing between two releases of
+        //                      one package is the user's call: `use`. Veto.
+        //   other provider  -- a different package owns that name and keeps
+        //                      it. That is ownership, not incoherence, and it
+        //                      says nothing about this release's other names.
+        //                      No veto; the contested name is skipped below.
+        //   unknown         -- an entry with no group metadata, written before
+        //                      providers were recorded. Treated as the same
+        //                      provider, so old homes keep today's behaviour.
+        const auto contested_by =
+            [&](const std::string& memberTarget)
+            -> std::optional<std::string> {
+            const auto activeIt = candidateWorkspace.find(memberTarget);
+            if (activeIt == candidateWorkspace.end()) return std::nullopt;
+            const auto dbIt = candidateDb.find(memberTarget);
+            if (dbIt == candidateDb.end()) return std::string{};
+            const auto verIt = dbIt->second.versions.find(activeIt->second);
+            if (verIt == dbIt->second.versions.end()) return std::string{};
+            if (!verIt->second.bindingGroup) return std::string{};
+            return verIt->second.bindingGroup->provider;
+        };
+
+        std::set<std::string> contested;
+        bool sameProviderContest = false;
+        for (const auto& member : group.members) {
+            const auto owner = contested_by(member.first);
+            if (!owner) continue;
+            contested.insert(member.first);
+            if (*owner == batch.provider) sameProviderContest = true;
+        }
+
+        // Is there anything left worth activating?
+        //
+        // A virtual root exists only to anchor the release its libraries
+        // belong to; there is no command behind it. Activating one writes a
+        // shim that can only print "no active version", which is issue #452:
+        // `self doctor` called the file an orphan, `--fix` deleted it, and the
+        // next install put it straight back. A group whose only uncontested
+        // members are anchors therefore stays inactive, exactly as before.
+        //
+        // Neither the path nor the kind can answer this on its own. A real
+        // anchor carries a payload path like everything else --
+        // `xim-musl-gnu-gcc` records musl-gcc's own directory, and the #452
+        // fixture's root, registered with no bindir at all, still ends up with
+        // the package install dir -- and `kind` defaults to "program" for both.
+        // So the batch's own answer (RegistrationNode::runnable, set by
+        // whoever materialised the payload) is what decides, with the kind and
+        // path as the cheap checks in front of it.
+        const bool anyRealUncontested = std::ranges::any_of(
             group.members, [&](const auto& member) {
-                return candidateWorkspace.contains(member.first);
+                if (contested.contains(member.first)) return false;
+                const auto dbIt = candidateDb.find(member.first);
+                if (dbIt == candidateDb.end()) return false;
+                const auto verIt = dbIt->second.versions.find(member.second);
+                if (verIt == dbIt->second.versions.end()) return false;
+                if (verIt->second.path.empty()) return false;
+                if (effective_kind(dbIt->second, verIt->second) != "program") {
+                    return false;
+                }
+                const auto nodeIt = std::ranges::find_if(
+                    batch.nodes, [&](const RegistrationNode& n) {
+                        return n.target == member.first
+                            && n.version == member.second;
+                    });
+                return nodeIt == batch.nodes.end() || nodeIt->runnable;
             });
-        const bool activateGroup = batch.useAfterInstall || !anyMemberActive;
+
+        // `contested.empty()` first, and not folded into the clause after it.
+        //
+        // The anchor guard exists to stop #452 coming back through the door
+        // the cross-provider rule opens, so it applies only to that door. A
+        // release nobody is contesting activates exactly as it always has --
+        // including a batch that is nothing but a virtual root, which is how
+        // a library-only package registers and which has to stay activated
+        // for anything to bind to it.
+        const bool activateGroup =
+            batch.useAfterInstall
+            || contested.empty()
+            || (!sameProviderContest && anyRealUncontested);
 
         const BindingGroupRef ref{
             .provider = batch.provider,
@@ -964,7 +1070,12 @@ apply_registration_batch(
             if (!foundVersion) {
                 versions.push_back(version);
             }
-            if (activateGroup) {
+            // A contested name stays with whoever holds it. `useAfterInstall`
+            // is the one exception, and it is not an exception to the rule so
+            // much as a different question: the user typed the switch, so
+            // taking the name is what they asked for.
+            if (activateGroup
+                && (batch.useAfterInstall || !contested.contains(target))) {
                 candidateWorkspace[target] = version;
             }
         }

@@ -13,6 +13,21 @@ import :layout;
 
 export namespace xlings::ui {
 
+// One row of `xlings search` / `xlings list`.
+//
+// `status` is a short qualifier the row cannot be read correctly without —
+// today only `inactive`. It gets a column of its own rather than a place in
+// the description because the description is the column that gets dropped
+// when the terminal is narrow (plan_two_column sets descW to 0 below
+// kMinDescW), and a qualifier that disappears at 80 columns is a qualifier
+// that lies. Empty on every row means no column is reserved at all, so
+// `search` renders exactly as it did before.
+struct ListRow {
+    std::string name;
+    std::string desc;
+    std::string status;
+};
+
 // A key-value row for info panels
 struct InfoField {
     std::string label;
@@ -184,19 +199,24 @@ void print_info_panel(std::string_view title,
 // column the user acts on — it goes into the next `xlings install` — so it is
 // never elided; the description is.
 void print_styled_list(std::string_view title,
-                       std::span<const std::pair<std::string, std::string>> items,
+                       std::span<const ListRow> items,
                        bool show_marker) {
     using namespace ftxui;
 
     constexpr int kMarkerW = 4;   // "  ◆ " or four spaces
     constexpr int kGap = 2;
 
-    int nameMax = 0, descMax = 0;
-    for (auto& [name, desc] : items) {
-        nameMax = std::max(nameMax, layout::display_width(name));
-        descMax = std::max(descMax, layout::display_width(desc));
+    int nameMax = 0, descMax = 0, statusMax = 0;
+    for (auto& row : items) {
+        nameMax = std::max(nameMax, layout::display_width(row.name));
+        descMax = std::max(descMax, layout::display_width(row.desc));
+        statusMax = std::max(statusMax, layout::display_width(row.status));
     }
-    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, descMax,
+    // The status column is planned as part of the name block, not of the
+    // description, so it is never the thing that gets dropped or truncated.
+    const int statusBlock = statusMax > 0 ? kGap + statusMax : 0;
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax + statusBlock,
+                                     descMax,
                                      2 + layout::display_width(title));
 
     Elements rows;
@@ -205,7 +225,9 @@ void print_styled_list(std::string_view title,
         rows.push_back(text(""));
     }
 
-    for (auto& [name, desc] : items) {
+    for (auto& row : items) {
+        const auto& name = row.name;
+        const auto& desc = row.desc;
         auto marker = show_marker
             ? (text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()))
             : text("    ");
@@ -222,6 +244,15 @@ void print_styled_list(std::string_view title,
                     text(nameLines[i]) | bold | color(theme::magenta()),
                 }));
             }
+            // Its own line, never elided. The stacked branch is where the
+            // terminal is already too narrow for the name, which is exactly
+            // when a dropped qualifier would do the most damage.
+            if (!row.status.empty()) {
+                rows.push_back(hbox({
+                    text(std::string(kMarkerW + kGap, ' ')),
+                    text(row.status) | color(theme::amber()),
+                }));
+            }
             if (P.descW > 0 && !desc.empty()) {
                 rows.push_back(hbox({
                     text(std::string(kMarkerW + kGap, ' ')),
@@ -233,8 +264,13 @@ void print_styled_list(std::string_view title,
 
         Elements cells;
         cells.push_back(marker);
-        cells.push_back(text(layout::pad_to_width(name, P.nameW))
+        cells.push_back(text(layout::pad_to_width(name, nameMax))
                         | bold | color(theme::magenta()));
+        if (statusMax > 0) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::pad_to_width(row.status, statusMax))
+                            | color(theme::amber()));
+        }
         if (P.descW > 0 && !desc.empty()) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(text(layout::truncate_to_width(desc, P.descW))

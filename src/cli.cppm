@@ -98,13 +98,18 @@ static void dispatch_data_event(const DataEvent& e) {
     else if (e.kind == "styled_list") {
         std::string title = json.value("title", "");
         bool numbered = json.value("numbered", false);
-        std::vector<std::pair<std::string, std::string>> items;
+        std::vector<ui::ListRow> items;
         if (json.contains("items") && json["items"].is_array()) {
             for (auto& item : json["items"]) {
                 if (item.is_array() && item.size() >= 2) {
-                    items.emplace_back(item[0].get<std::string>(), item[1].get<std::string>());
+                    items.push_back({
+                        item[0].get<std::string>(),
+                        item[1].get<std::string>(),
+                        item.size() >= 3 ? item[2].get<std::string>()
+                                         : std::string{},
+                    });
                 } else if (item.is_string()) {
-                    items.emplace_back(item.get<std::string>(), "");
+                    items.push_back({item.get<std::string>(), "", ""});
                 }
             }
         }
