@@ -47,25 +47,46 @@ xlings use gcc@14.2.0     # 等价写法
 如果不接受这种混合状态，用 `--strict`：有任何程序会被留下时直接拒绝切换，
 不做任何改动。
 
-### 省略版本号：确定就执行，有歧义就拒绝
+### 省略版本号：确定就执行，有歧义就列出来
 
 `xlings use <name>` 不带版本时**不会**弹出需要上下键选择的交互框，也不会
-"打印一个列表然后什么都不做"：
+"打印一个列表然后假装切过了"：
 
 | 当前 subos 里已安装的版本数 | 行为 | 退出码 |
 |---|---|:---:|
 | 1 | 直接切换到它 | 0 |
-| \>1 | 不做任何改动，列出候选并给出确切命令 | **2** |
+| \>1 | 不做任何改动，列出候选并给出确切命令 | 0 |
 | 0 | 报错，并给出安装命令 | 1 |
 
 ```bash
-xlings use gcc            # 只装了一个版本 → 直接切；装了多个 → 退出码 2
-xlings use gcc --pick     # 显式要交互选择（需要终端）
+xlings use gcc            # 只装了一个版本 → 直接切；装了多个 → 列出候选
 xlings use gcc --all      # 候选范围放宽到所有 subos
 ```
 
+多个候选时返回 0，因为**它不是一次失败**：不给版本号本来就不是在表达切换，
+而是在提问，而这条命令把问题完整回答了。想要切换就把版本号写出来 ——
+`xlings use gcc 16.1.0` 成功即 0、失败非零，没有第三种含义。
+
 这条规则对脚本和 agent 是硬约定：**"有没有人在键盘前"是探测不出来的**
 （很多 agent 会分配 pty），所以它不参与决定命令做什么，只决定怎么显示。
+
+### `use` 只在已安装的版本之间切换
+
+`xlings use <name> <version>` 要求这个版本**在当前 subos 里装过**。换一个
+全新的 subos，即使别的 subos 装过同一个版本，它也会拒绝并让你去 `install`：
+
+```bash
+xlings subos new probe
+XLINGS_ACTIVE_SUBOS=probe xlings use gcc 16.1.0
+# [xlings:use] 'gcc' is not installed in this subos (probe)
+#   nothing was changed
+#   hint: install it here first with `xlings install gcc@16.1.0`
+```
+
+看着绕，但它挡掉的是一个更难查的结果：**版本数据库不记录依赖关系**，所以
+"直接激活" 只能激活 gcc 自己，激活不了它依赖的 glibc —— 你会得到一个能跑、
+`-print-sysroot` 也正确、唯独编译不了的工具链，而且全程没有任何提示。
+`install` 会解析并安装依赖，所以安装归它管。
 
 ### 坐标写法：命名空间在最前面
 

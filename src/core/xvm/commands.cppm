@@ -365,6 +365,33 @@ int cmd_use(const std::string& target, const std::string& version,
 
     log::debug("fuzzy version match: {} -> {}", version, resolved);
 
+    // A version registered somewhere in this home is not a version this subos
+    // can use.
+    //
+    // `use` used to opt the current subos in silently whenever the payload
+    // existed anywhere (auto-add, 0.4.19+), on the reasoning that the payload
+    // is shared so activation is free. That is true of a self-contained
+    // package and false of everything with a dependency: gcc's glibc is not a
+    // member of gcc's release, and the versions DB records no dependency
+    // information at all, so activating gcc here activated exactly gcc. The
+    // result reported success, put a working `g++` on PATH, printed the right
+    // `-print-sysroot` -- and could not compile, because `usr/include` was
+    // empty. Nothing said so.
+    //
+    // `use` cannot fix that: it cannot even name what is missing. So it stops
+    // pretending to. Switching stays what it says it is -- moving between
+    // versions this subos has -- and getting a version into a subos belongs to
+    // `install`, which resolves dependencies and materialises them.
+    if (filter_to_subos_installed_(target, {resolved}).empty()) {
+        const auto scope = Config::subos_scope().name;
+        log::error("[xlings:use] '{}' is not installed in this subos ({})",
+                   target, scope.empty() ? "default" : scope);
+        log::error("  nothing was changed");
+        log::error("  hint: install it here first with `xlings install {}@{}`",
+                   target, resolved);
+        return 1;
+    }
+
     // Resolve the whole release before touching anything.
     //
     // This used to walk the binding edges by hand, keyed by target rather
@@ -449,13 +476,13 @@ int cmd_use(const std::string& target, const std::string& version,
     // Update workspace for all nodes in the binding tree, and opt this
     // subos into the version's installed[] set if it wasn't already.
     //
-    // The auto-add semantics (0.4.19+): if the user does `xlings use gcc 11.5.0`
-    // in a fresh subos that doesn't have 11.5.0 in `installed[]` but the
-    // payload IS registered in the global versions DB (e.g. another subos
-    // installed it), we add 11.5.0 to this subos's installed[] silently
-    // — payload is shared, so this is a free operation. Without this,
-    // `use` in a fresh subos would always have to be preceded by
-    // `install`, making subos creation feel heavier than it is.
+    // The entry target is guaranteed to be in installed[] already -- the gate
+    // above refused otherwise. What this still covers is the *members*: a
+    // release can gain a program between versions (gcc 16 adding a binary gcc
+    // 15 did not have), and a member the subos never saw is arriving as part
+    // of a release it did ask for, not instead of one. Its payload is the same
+    // already-materialised payload, so recording it is bookkeeping, not an
+    // install.
     auto& wsi = Config::workspace_installed_mut();
     for (auto& [name, ver] : to_switch) {
         Config::workspace_mut()[name] = ver;
@@ -657,7 +684,7 @@ int cmd_list_versions(const std::string& target, EventStream& stream, bool all =
     return 0;
 }
 
-// `xlings use <target>` with no version — deterministic, or it refuses.
+// `xlings use <target>` with no version — deterministic, or it lists.
 //
 // It used to decide by asking whether a terminal was attached: with a TTY it
 // opened an arrow-key picker and blocked until somebody pressed a key,
@@ -675,15 +702,28 @@ int cmd_list_versions(const std::string& target, EventStream& stream, bool all =
 // command has a single correct outcome is.** So that is what decides:
 //
 //   1 candidate   → switch to it                                  (exit 0)
-//   >1 candidates → change nothing, show them, name the exact
-//                   command, and fail so a caller can tell        (exit 2)
+//   >1 candidates → change nothing, list them, name the exact
+//                   command                                       (exit 0)
 //   0 candidates  → error, as before                              (exit 1)
 //
-// The picker is not gone, it is opt-in: `--pick` (`-i`) asks for it
-// explicitly, and if it cannot run it says so instead of falling back to
-// doing nothing.
+// The >1 case reported `[error]` and exit 2 in 2026.7.31.2, from applying
+// "did nothing ⇒ non-zero" to a command that had not failed. That rule is
+// about an *action* failing or silently no-op'ing; `use <target>` without a
+// version is a *query*, and it answers it completely. What the rule really
+// forbade was the old behaviour of printing a list when a single candidate
+// made the switch unambiguous, and that is fixed above. So this branch is now
+// literally the listing command -- same panel, same tip, exit 0.
+//
+// The cost, stated plainly: a script can no longer tell "switched" from
+// "listed" by exit code alone. That is fine, because naming a version is how
+// a switch is requested -- `xlings use gcc 16.1.0` is 0 on success and
+// non-zero on failure, with no third meaning.
+//
+// `--pick` went with it. It existed to give the removed picker an explicit
+// door; once the default path is deterministic, it is one more path to
+// maintain, test and document for a problem that no longer exists.
 int cmd_use_by_name(const std::string& target, EventStream& stream,
-                    bool all = false, bool pick = false, bool strict = false) {
+                    bool all = false, bool strict = false) {
     auto candidates = collect_version_candidates_(target, all);
     if (!candidates) return candidates.error();
 
@@ -694,58 +734,7 @@ int cmd_use_by_name(const std::string& target, EventStream& stream,
         return cmd_use(target, candidates->versions.front(), stream, strict);
     }
 
-    if (pick) {
-        const bool canPrompt = platform::stdin_is_terminal()
-            && platform::supports_rewrite_output()
-            && !platform::is_tui_mode()
-            && !palette::plain_forced();
-        if (!canPrompt) {
-            emit_version_panel_(target, *candidates, stream);
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::InvalidInput,
-                .message = "--pick needs an interactive terminal; "
-                           "nothing was changed",
-                .recoverable = true,
-                .hint = std::format("xlings use {} <version>", target),
-            });
-            return 2;
-        }
-        PromptEvent req;
-        req.id = "select_version";
-        req.question = "Select version for " + target;
-        req.options = candidates->versions;
-        req.defaultValue = candidates->active;
-        auto chosen = stream.prompt(std::move(req));
-        if (chosen.empty()) {
-            // Cancelled: nothing changed, and the exit code has to say so --
-            // the same rule the non-interactive path follows.
-            log::println("cancelled");
-            return 2;
-        }
-        return cmd_use(target, chosen, stream, strict);
-    }
-
-    emit_version_panel_(target, *candidates, stream);
-
-    std::string joined;
-    for (auto& v : candidates->versions) {
-        if (!joined.empty()) joined += " ";
-        joined += v;
-    }
-    std::string current = candidates->active.empty()
-        ? std::string("none active in this subos")
-        : std::format("currently active: {}", candidates->active);
-    stream.emit(ErrorEvent{
-        .code = ErrorCode::InvalidInput,
-        .message = std::format(
-            "'{}' has {} installed versions ({}); name the one you want",
-            target, candidates->versions.size(), current),
-        .recoverable = true,
-        .hint = std::format("xlings use {} <version>   (versions: {})"
-                            "   |   xlings use {} --pick   to choose "
-                            "interactively", target, joined, target),
-    });
-    return 2;
+    return cmd_list_versions(target, stream, all);
 }
 
 // Register a version in the global database (called after xim install)

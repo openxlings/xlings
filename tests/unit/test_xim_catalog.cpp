@@ -518,67 +518,64 @@ TEST(XimNamespaceIndexTest, RejectsDuplicateEffectiveIdentityWithBothPaths) {
 // xim resolver tests
 // ============================================================
 
-class XimResolverTest : public ::testing::Test {
-protected:
-    std::filesystem::path repoDir_;
-    xlings::xim::IndexManager mgr_;
+// The IndexManager overload of resolve() is gone: it was a second
+// version-resolution path that never reached production (only these tests
+// called it), and it resolved `@<hint>` by using the hint verbatim as the
+// version -- so `xim:python@3` meant a literal version "3" there and a
+// semver range everywhere else. Two answers to one question is what these
+// tests now guard against, from the other end: pin_target_to_active is the
+// single place a target meets an already-active version.
 
-    void SetUp() override {
-        auto repo = find_pkgindex_repo();
-        if (!repo) GTEST_SKIP() << "xim-pkgindex repo not found";
-        repoDir_ = *repo;
-        mgr_ = xlings::xim::IndexManager(repoDir_);
-        auto r = mgr_.rebuild();
-        if (!r) GTEST_SKIP() << "rebuild failed: " << r.error();
-    }
-};
+using xlings::xim::pin_target_to_active;
 
-TEST_F(XimResolverTest, ResolveSinglePackage) {
-    std::vector<std::string> targets = { "xvm" };
-    auto result = xlings::xim::resolve(mgr_, targets, "linux");
-    // Should succeed (xvm has no complex deps on linux)
-    ASSERT_FALSE(result->has_errors())
-        << "errors: " << (result->errors.empty() ? "" : result->errors[0]);
-    EXPECT_FALSE(result->nodes.empty());
+// A workspace stub: whatever the test says is active.
+static auto active_map(std::map<std::string, std::string> m) {
+    return [m = std::move(m)](const std::string& name) -> std::string {
+        auto it = m.find(name);
+        return it == m.end() ? std::string{} : it->second;
+    };
 }
 
-TEST_F(XimResolverTest, ResolveWithDeps) {
-    std::vector<std::string> targets = { "pnpm" };
-    auto result = xlings::xim::resolve(mgr_, targets, "linux");
-    // pnpm depends on node (package name is "node", not "nodejs")
-    if (result.has_value() && !result->has_errors()) {
-        bool hasNode = false;
-        for (auto& node : result->nodes) {
-            if (node.name.find("node") != std::string::npos) {
-                hasNode = true;
-                break;
-            }
-        }
-        EXPECT_TRUE(hasNode) << "pnpm should pull in node as dependency";
-        // Deps should come before dependents in topo order
-        int nodeIdx = -1, pnpmIdx = -1;
-        for (int i = 0; i < static_cast<int>(result->nodes.size()); ++i) {
-            if (result->nodes[i].name.find("node") != std::string::npos) nodeIdx = i;
-            if (result->nodes[i].name.find("pnpm") != std::string::npos) pnpmIdx = i;
-        }
-        if (nodeIdx >= 0 && pnpmIdx >= 0) {
-            EXPECT_LT(nodeIdx, pnpmIdx)
-                << "node should come before pnpm in topo order";
-        }
-    }
+TEST(XimPinToActive, NoCallbackLeavesTargetAlone) {
+    EXPECT_EQ(pin_target_to_active("xim:mcpp", {}), "xim:mcpp");
 }
 
-TEST_F(XimResolverTest, ResolveNonexistent) {
-    std::vector<std::string> targets = { "nonexistent_pkg_xyz_123" };
-    auto result = xlings::xim::resolve(mgr_, targets, "linux");
-    EXPECT_TRUE(result->has_errors());
+TEST(XimPinToActive, NothingActiveLeavesTargetAlone) {
+    auto active = active_map({});
+    EXPECT_EQ(pin_target_to_active("xim:mcpp", active), "xim:mcpp");
 }
 
-TEST_F(XimResolverTest, ResolveMultipleTargets) {
-    std::vector<std::string> targets = { "xvm", "claude-code" };
-    auto result = xlings::xim::resolve(mgr_, targets, "linux");
-    if (result.has_value() && !result->has_errors()) {
-        // Should have at least 2 nodes
-        EXPECT_GE(result->nodes.size(), 2u);
-    }
+TEST(XimPinToActive, UnpinnedDepTakesTheActiveVersion) {
+    // The whole point: `deps = {"xim:mcpp"}` must not drag in the newest
+    // mcpp when a perfectly good one is already active.
+    auto active = active_map({{"mcpp", "2026.7.30.2"}});
+    EXPECT_EQ(pin_target_to_active("xim:mcpp", active),
+              "xim:mcpp@2026.7.30.2");
+}
+
+TEST(XimPinToActive, StripsNamespaceWhenLookingUpActive) {
+    // The versions DB is keyed by bare program name; the dep is namespaced.
+    auto active = active_map({{"python", "3.11.4"}});
+    EXPECT_EQ(pin_target_to_active("xim:python@3", active),
+              "xim:python@3.11.4");
+    EXPECT_EQ(pin_target_to_active("python@3", active), "python@3.11.4");
+}
+
+TEST(XimPinToActive, RangeConstraintUsesSemverNotPrefix) {
+    auto active = active_map({{"lib", "1.10.0"}});
+    // `@1.1` must not be satisfied by 1.10.0 -- the bug a starts_with test has.
+    EXPECT_EQ(pin_target_to_active("lib@1.1", active), "lib@1.1");
+    EXPECT_EQ(pin_target_to_active("lib@^1.2", active), "lib@1.10.0");
+    EXPECT_EQ(pin_target_to_active("lib@1", active), "lib@1.10.0");
+}
+
+TEST(XimPinToActive, ExactPinIsNeverOverridden) {
+    // An exact `@2.39` means 2.39. An active 2.38 does not satisfy it, so the
+    // target survives untouched and the install goes ahead.
+    auto active = active_map({{"glibc", "2.38"}});
+    EXPECT_EQ(pin_target_to_active("xim:glibc@2.39", active),
+              "xim:glibc@2.39");
+    auto satisfied = active_map({{"glibc", "2.39"}});
+    EXPECT_EQ(pin_target_to_active("xim:glibc@2.39", satisfied),
+              "xim:glibc@2.39");
 }

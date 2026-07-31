@@ -183,18 +183,17 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     // the prefix — pin the resolution to that exact version. The existing
     // "all packages already installed" fast path takes it from there.
     // For deliberate upgrades, users should run `xlings update <pkg>`.
+    // What is active in the workspace this install is about to write into.
+    // Top-level targets and expanded dependencies both resolve through it, so
+    // "already satisfied" means the same thing on both paths -- it used to be
+    // applied here only, with a `starts_with` test of its own, which made
+    // `@1.1` match an active `1.10` and left every dependency resolving to the
+    // index's newest version.
+    auto active_version_of_ = [](const std::string& name) {
+        return xvm::get_active_version(Config::effective_workspace(), name);
+    };
     auto pin_to_active_if_satisfies_ = [&](const std::string& t) -> std::string {
-        auto at        = t.find('@');
-        auto namePart  = (at == std::string::npos) ? t : t.substr(0, at);
-        auto verHint   = (at == std::string::npos) ? std::string{} : t.substr(at + 1);
-        auto bareName  = namePart.substr(namePart.rfind(':') + 1);
-        auto active    = xvm::get_active_version(
-                            Config::effective_workspace(), bareName);
-        if (active.empty()) return t;
-        if (verHint.empty() || active.rfind(verHint, 0) == 0) {
-            return namePart + "@" + active;
-        }
-        return t;
+        return pin_target_to_active(t, active_version_of_);
     };
 
     for (auto& target : targetVec) {
@@ -313,7 +312,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     }
 
     // Resolve dependencies
-    auto planResult = resolve(catalog, targetVec, platform);
+    auto planResult = resolve(catalog, targetVec, platform, active_version_of_);
     if (!planResult) {
         // #374: structured error on the wire (was a swallowed log::error)
         stream.emit(ErrorEvent{

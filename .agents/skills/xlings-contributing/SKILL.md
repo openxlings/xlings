@@ -127,6 +127,51 @@ Key helpers from `project_test_lib.sh`:
 - `require_fixture_index` — ensures test pkgindex is available
 - `log` / `fail` — logging with consistent prefix
 
+#### Assertions that cannot pass for the wrong reason
+
+The bug class this repo keeps finding is *never-happened and succeeded look
+identical*. A test written carelessly reproduces it inside the test.
+
+**1. Assert the command succeeded before asserting what it printed.**
+
+```bash
+out="$("$SUBOS/bin/g++" -print-sysroot 2>&1)"
+[[ "$out" == *"/subos/probe"* ]] && ok        # ← passes when g++ does not exist
+# env: '.../subos/probe/bin/g++': No such file or directory
+#            ^^^^^^^^^^^^ the failure message contains the needle too
+```
+
+Capture the exit code, or compare the whole line (`[[ "$out" == "$want" ]]`)
+rather than searching inside it. Pick a needle that cannot appear in the
+failure output.
+
+**2. Assert against a filesystem fact where one exists.** `[[ -d
+"$HOME_DIR/data/xpkgs/<ns>-x-<pkg>/<ver>" ]]` cannot be satisfied by a warning
+that happens to mention the version.
+
+**3. Check that a `grep`-based negative assertion is not vacuous.** A fixture
+that declares nothing makes `grep -q ... && fail` pass forever. Confirm the
+positive case fires at least once in the same file — E2E-51's `deps` sits in
+`xpm.<os>.deps`, and writing it one level deeper (inside a version entry)
+declared no dependency at all while every assertion still passed.
+
+**4. Run every new assertion against a build that should fail it.** The
+released binary is the reference:
+
+```bash
+curl -fsSL -o old.tar.gz \
+  https://github.com/xlings-res/xlings/releases/download/<prev>/xlings-<prev>-linux-x86_64.tar.gz
+tar -xzf old.tar.gz
+XLINGS_BIN=$PWD/xlings-<prev>-linux-x86_64/bin/xlings bash tests/e2e/<new>_test.sh
+```
+
+It must fail, and fail *on the assertion the change is about*. A new test that
+is green on both builds is testing something else.
+
+Note `set -e` + `cmd && fail "..."`: when `cmd` returns non-zero the whole
+list is the statement's exit status, so the script dies instead of continuing.
+Write `if cmd; then fail "..."; fi`.
+
 ### Step 5: Build + test locally
 
 ```bash
