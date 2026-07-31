@@ -17,9 +17,11 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.inspect;
+import xlings.core.xvm.switch_plan;   // plan_use_switch — the --fix preflight
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
 import xlings.core.xself.repair;
+import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.profile;
 
 namespace xlings::xself {
@@ -144,6 +146,14 @@ struct Finding {
     // when no command would help -- which is a fact worth printing, not a
     // reason to print a plausible one. See owning_coordinate().
     std::string  remedy;
+    // Why `--fix` must not run the remedy itself.
+    //
+    // Non-empty means the repair is known IN ADVANCE to be one another repair
+    // would immediately undo -- so running it would not fix the home, it would
+    // start a fight. The remedy stays printed: a human who runs it is making a
+    // choice between two packages, which is exactly the thing `--fix` is not
+    // entitled to make on their behalf.
+    std::string  conflict;
     // Broken payloads that share this key are one problem. A missing payload
     // directory takes out every program registered against it -- nine for the
     // measured llvm, three for the measured virtualbox -- and printing each
@@ -309,6 +319,72 @@ owning_coordinate_(const xvm::VersionDB& db,
     return std::nullopt;
 }
 
+// Would activating this release be undone by the repair that runs next?
+//
+// `--fix` is a sequence of repairs, and two of them want opposite things. The
+// activation repair makes an unreachable release reachable; the deactivation
+// repair (repair_state_ → plan_incoherent_deactivation) takes down releases
+// whose members disagree about which release they are. Activating a release
+// that shares program names with an ACTIVE one produces exactly that
+// disagreement, so the second repair tears down what the first just built --
+// and the wreckage reads as a fresh crop of "installed but inactive" entries,
+// which the next run tries to activate again. Measured on 2026.8.1.1: `--fix`
+// ended with more issues than it started with and left `gcc` and `ld` with no
+// active version at all.
+//
+// The answer does not need new machinery. Both halves already exist and are
+// exported: `plan_use_switch` computes the member map activation would write,
+// and `plan_incoherent_deactivation` IS the teardown. So the question is
+// answered by asking the second repair about the first repair's result --
+// simulate, then consult. Detection calls the function the repair calls, the
+// same rule the baked-subos-path check follows, so the two cannot drift.
+//
+// Returns the reason to refuse, or empty when the activation is safe.
+std::string activation_conflict_(const DoctorState& st,
+                                 const std::string& rootTarget,
+                                 const std::string& rootVersion) {
+    auto plan = xvm::plan_use_switch(st.db, st.ws, rootTarget, rootVersion);
+    if (!plan) {
+        // Unresolvable release: `use` would fail too. Refusing here means the
+        // user gets the finding and the command, rather than `--fix` running
+        // something that cannot work.
+        return "the release does not resolve";
+    }
+
+    auto simulated = st.ws;
+    for (const auto& [target, version] : plan->members) {
+        simulated[target] = version;
+    }
+
+    const auto teardown = xvm::plan_incoherent_deactivation(st.db, simulated);
+    if (teardown.targets.empty()) return {};
+
+    // Name the releases that would come down and a few of the programs they
+    // would take with them -- "there is a conflict" is not actionable, "this
+    // takes `ar` away from llvm" is.
+    std::map<std::string, std::vector<std::string>> byRelease;
+    for (const auto& [target, label] : teardown.targets) {
+        byRelease[label].push_back(target);
+    }
+    std::string reason;
+    for (auto& [label, targets] : byRelease) {
+        std::ranges::sort(targets);
+        std::string names;
+        constexpr std::size_t kShown = 4;
+        for (std::size_t i = 0; i < targets.size() && i < kShown; ++i) {
+            if (!names.empty()) names += ", ";
+            names += targets[i];
+        }
+        if (targets.size() > kShown) {
+            names += std::format(", … (+{})", targets.size() - kShown);
+        }
+        if (!reason.empty()) reason += "; ";
+        reason += std::format("it would take {} from the active {}", names,
+                              label);
+    }
+    return reason;
+}
+
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     auto& p = Config::paths();
     Scan scan;
@@ -449,10 +525,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     // `llvm-ar` … each with its own identical remedy. That is the same burial
     // the broken-payload grouping exists to prevent (see Finding::groupKey),
     // and it would have hidden `node` in the middle of it.
+    // Keyed by ROOT TARGET, not by (root, version).
+    //
+    // F3: a package can have several installed releases with none of them
+    // active, and keying by version produced one finding per release, each
+    // with a remedy contradicting the others -- `xim-gnu-gcc@15.1.0` and
+    // `@16.1.0` side by side, both saying "run me". There is one problem here
+    // ("nothing of this package is selected") and one decision to make, so
+    // there is one finding, and it names the versions to choose from.
     struct InactiveRelease {
         std::string rootTarget;
-        std::string rootVersion;
-        std::vector<std::string> members;
+        std::string rootVersion;   // the one the remedy proposes
+        std::set<std::string> members;
     };
     std::map<std::string, InactiveRelease> inactiveReleases;
 
@@ -513,11 +597,55 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         const std::string rootVersion =
             vd && vd->bindingGroup ? vd->bindingGroup->rootVersion : *usable;
 
-        auto& release = inactiveReleases[std::format("{}@{}", rootTarget,
-                                                     rootVersion)];
-        release.rootTarget  = rootTarget;
-        release.rootVersion = rootVersion;
-        release.members.push_back(name);
+        // Both guards run BEFORE the map is touched: `operator[]` would insert
+        // a default-constructed release and the `continue` would leave it
+        // there, which renders as a finding with an empty name and zero
+        // programs.
+        //
+        // F1 — is this release the one you did not pick, rather than one you
+        // cannot reach?
+        //
+        // `llvm` installed at 20.1.7 and 22.1.8, active at 22.1.8, is a normal
+        // home. But 20.1.7 registers names 22.1.8 does not, and those names
+        // have no active version, so the release came back as a finding whose
+        // remedy -- `xlings use llvm@20.1.7` -- would DOWNGRADE the toolchain
+        // the user is actually using. Two releases of one package were
+        // reported as two mutually contradictory defects.
+        //
+        // The root target answers it. If some version of the root is active,
+        // the user has chosen a release of this package and the others are
+        // alternatives, not breakage. When no version of the root is active,
+        // nothing of the package is reachable -- which is exactly the `node`
+        // case this check was written for.
+        if (const auto rootIt = st.ws.find(rootTarget);
+            rootIt != st.ws.end() && !rootIt->second.empty()) {
+            continue;
+        }
+
+        // F2 — a payload built for another platform has no programs to put on
+        // PATH here, ever.
+        //
+        // The measured home carried a May-era WINDOWS llvm@20.1.7 in a Linux
+        // store; it registered `clang.exe` … `libomp.dll` as programs (the
+        // case payload.cppm's header documents), and this check dutifully
+        // reported 29 of them as "not on PATH". They cannot be. The classifier
+        // that answers this already exists and the installer already uses it
+        // (installer.cppm) -- this check simply never asked.
+        if (vd && !vd->path.empty()
+            && xim::classify_payload_platform(
+                   fs::path(xvm::expand_path(vd->path, st.homeStr)))
+                   == xim::PayloadPlatform::Foreign) {
+            continue;
+        }
+
+        auto& release = inactiveReleases[rootTarget];
+        release.rootTarget = rootTarget;
+        // Highest wins the remedy, by version rather than by iteration order.
+        if (release.rootVersion.empty()
+            || xvm::version_key_greater(rootVersion, release.rootVersion)) {
+            release.rootVersion = rootVersion;
+        }
+        release.members.insert(name);
     }
 
     for (const auto& [key, release] : inactiveReleases) {
@@ -528,12 +656,41 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // whole.
         constexpr std::size_t kShown = 6;
         std::string names;
-        for (std::size_t i = 0; i < release.members.size() && i < kShown; ++i) {
+        std::size_t shown = 0;
+        for (const auto& member : release.members) {
+            if (shown++ >= kShown) break;
             if (!names.empty()) names += ", ";
-            names += release.members[i];
+            names += member;
         }
         if (release.members.size() > kShown) {
             names += std::format(", … (+{})", release.members.size() - kShown);
+        }
+
+        // When several releases are installed and none chosen, the versions
+        // ARE the decision. Naming only the one the remedy proposes would hide
+        // that there was a choice.
+        //
+        // Read from installed[], not from the versions the members happened to
+        // resolve to: every member picks the same highest release, so
+        // accumulating those yields one version and the choice stays invisible
+        // -- which is what it did until this was measured.
+        std::string otherVersions;
+        if (const auto rootInstalled = st.wsInstalled.find(release.rootTarget);
+            rootInstalled != st.wsInstalled.end()) {
+            std::vector<std::string> others;
+            for (const auto& version : rootInstalled->second) {
+                if (version == release.rootVersion) continue;
+                others.push_back(version);
+            }
+            std::ranges::sort(others, xvm::version_key_greater);
+            for (const auto& version : others) {
+                if (!otherVersions.empty()) otherVersions += ", ";
+                otherVersions += version;
+            }
+            if (!otherVersions.empty()) {
+                otherVersions = std::format("  —  also installed: {}",
+                                            otherVersions);
+            }
         }
 
         // What the repair will ALSO do.
@@ -571,12 +728,16 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 xvm::display_coordinate(release.rootTarget,
                                         release.rootVersion),
                 release.members.size(), names,
-                alsoMoves.empty() ? std::string{}
-                                  : std::format(
-                                        "  —  activating it also moves {}",
-                                        alsoMoves)),
+                otherVersions
+                    + (alsoMoves.empty()
+                           ? std::string{}
+                           : std::format(
+                                 "  —  activating it also moves {}",
+                                 alsoMoves))),
             .remedy  = std::format("xlings use {}@{}", release.rootTarget,
                                    release.rootVersion),
+            .conflict = activation_conflict_(st, release.rootTarget,
+                                             release.rootVersion),
             .groupKey = key,
         });
     }
@@ -1091,6 +1252,10 @@ struct RepairReport {
     std::vector<std::pair<std::string, std::string>> failedEntries;
     // Commands `--dry-run` would have run.
     std::vector<std::string> planned;
+    // `--fix` ended with more issues than it started with. Sets the exit code
+    // on its own: a run that made the home worse must not be able to report
+    // success, whatever the individual repairs thought they were doing.
+    bool regressed { false };
 };
 
 // Everything below the payload layer: shims and pure state-file edits. All of
@@ -1469,6 +1634,12 @@ void repair_inactive_(const Scan& scan, const std::string& client,
                       RepairReport& out) {
     for (const auto& f : scan.findings) {
         if (f.kind != FindingKind::InactiveInstalled) continue;
+        // Known in advance to be a repair another repair would undo. Not
+        // attempted, and said so out loud: choosing between two packages that
+        // register the same program name is the user's decision, and `--fix`
+        // running `use` here would only start the fight described in
+        // activation_conflict_.
+        if (!f.conflict.empty()) continue;
         if (!is_shell_safe_token(f.target) || !is_shell_safe_token(f.version)) {
             out.notes.emplace_back(
                 glyph::mark(glyph::failed, "activation skipped"),
@@ -1769,6 +1940,14 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
             case FindingKind::InactiveInstalled:
                 add(glyph::mark(glyph::failed, "no active version"), f.detail);
+                // Printed before the remedy, because it changes what the
+                // remedy means: not "run this to fix it" but "run this to
+                // choose this package over that one".
+                if (!f.conflict.empty()) {
+                    add("  " + glyph::mark(glyph::warn, "conflict"),
+                        std::format("{} — `--fix` will not choose between "
+                                    "them", f.conflict));
+                }
                 add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             case FindingKind::ShimAnchor:
@@ -2074,15 +2253,6 @@ export int cmd_doctor(EventStream& stream, bool fix,
     repair_payloads_(state, scan, probe, /*dryRun=*/false, repair);
     refresh();
 
-    // Phase 2.5: activate what is installed and inactive.
-    //
-    // After the ladder, not before: a package whose payload was missing is
-    // both broken AND inactive, and `use` on a payload that is not there fails
-    // for a reason the user cannot act on. The ladder reinstalls it first, and
-    // re-registration may activate it on its own -- in which case `refresh()`
-    // has already dropped the finding and there is nothing left to do here.
-    repair_inactive_(scan, client, run, /*dryRun=*/false, repair);
-    refresh();
 
     // Phase 3: the cheap repairs again, on what the ladder left behind.
     //
@@ -2094,6 +2264,28 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // findings that a single-pass repair reported as unfixed.
     repair_state_(repair);
     repair_local_(state, scan, repair);
+    refresh();
+
+    // Phase 3.5: activate what is installed and inactive.
+    //
+    // LAST among the repairs that write the workspace, and that placement is
+    // the fix for a real bug rather than a preference. It used to run before
+    // the final `repair_state_`, so it activated a release and the
+    // deactivation repair immediately afterwards took down whatever that
+    // activation had knocked out of step -- the two traded the workspace back
+    // and forth and `--fix` ended with more issues than it began with
+    // (2026.8.1.1, measured: `gcc` and `ld` left with no active version).
+    //
+    // Running last means every teardown has already settled, so this acts on a
+    // workspace nothing else is about to rewrite. The preflight in detection
+    // (activation_conflict_) is what stops it from creating a NEW disagreement
+    // for the next run to trip over; the ordering here is what stops it from
+    // being undone within this one.
+    //
+    // Still after the payload ladder for the original reason: a package whose
+    // payload was missing is both broken AND inactive, and `use` on a payload
+    // that is not there fails for a reason the user cannot act on.
+    repair_inactive_(scan, client, run, /*dryRun=*/false, repair);
     refresh();
 
     // Phase 4: whatever is STILL a broken payload after the ladder had its
@@ -2110,6 +2302,32 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     const auto after = count_(scan);
     repair.healed = std::max(0, before - after.issues() - repair.pruned);
+
+    // Did `--fix` actually leave the home better than it found it?
+    //
+    // Nothing asked this until 2026.8.1.2, and the release before it shipped a
+    // repair that undid another one: activating a release stranded members of
+    // a second release, the deactivation repair then took those members down,
+    // and the resulting "installed but inactive" entries were reported as new
+    // findings. `--fix` ended with MORE issues than it started with, having
+    // printed a hundred lines of `deactivated`, and the two repairs would go on
+    // trading the workspace back and forth on every subsequent run.
+    //
+    // This does not fix anything. It is the assertion that makes that class of
+    // bug announce itself on its FIRST run instead of hiding inside a long
+    // successful-looking report. Repairs that can conflict are prevented from
+    // conflicting elsewhere (see the preflight in repair_inactive_); this is
+    // the backstop for the next one nobody predicted.
+    if (after.issues() > before) {
+        repair.regressed = true;
+        repair.notes.emplace_back(
+            glyph::mark(glyph::failed, "not converging"),
+            std::format(
+                "--fix started with {} issue(s) and ended with {} — a repair "
+                "undid another. This is a bug in doctor, not in the home; "
+                "please report it with the output above.",
+                before, after.issues()));
+    }
 
     // A ladder failure only still counts if the entry it covered is still a
     // finding somewhere. An entry that was pruned, or that a later phase
@@ -2147,7 +2365,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
         Config::record_client_version(std::string(Info::VERSION));
     }
 
-    return (after.issues() == 0 && outstanding == 0) ? 0 : 1;
+    return (after.issues() == 0 && outstanding == 0 && !repair.regressed)
+        ? 0 : 1;
 }
 
 } // namespace xlings::xself
