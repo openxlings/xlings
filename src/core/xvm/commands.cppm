@@ -484,7 +484,9 @@ int cmd_use(const std::string& target, const std::string& version,
         fs::create_directories(p.binDir);
         for (auto& [name, ver] : to_switch) {
             auto vinfo = get_vinfo(db, name);
-            if (!vinfo || vinfo->type != "program") continue;
+            // effective_kind_of, not vinfo->type: the per-version kind is the
+            // authority and the target-level type is only its fallback.
+            if (!vinfo || effective_kind_of(db, name, ver) != "program") continue;
             std::string shim_name = (!vinfo->filename.empty()) ? vinfo->filename : name;
             if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
                 shim_name += shim_ext;

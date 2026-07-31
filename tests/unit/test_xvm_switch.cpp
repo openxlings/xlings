@@ -176,6 +176,77 @@ void switch_group_(xlings::xvm::VersionDB& db,
 
 }  // namespace
 
+// ── One authority for "what kind is this entry" ─────────────────────
+//
+// `effective_kind` exists because the per-version `kind` is the authority and
+// the target-level `VInfo::type` is only its fallback -- entries written
+// before 0.4.70 have no per-version kind at all, so on a real installation the
+// fallback was the ONLY thing typing 372 of them.
+//
+// Several call sites read `type` directly anyway, including the line in
+// `cmd_use` that decides whether to write a shim. Where the two disagree, that
+// hands a shim to an entry that can never dispatch one, or denies one to an
+// entry that needs it.
+
+TEST(EffectiveKindAuthority, ThePerVersionKindWins) {
+    xlings::xvm::VersionDB db;
+    auto& info = db["libfoo"];
+    info.type = "program";                       // stale target-level fallback
+    info.versions["1.0.0"].kind = "lib";         // the authority
+    info.versions["1.0.0"].path = "/pkg/libfoo/1.0.0";
+
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "libfoo", "1.0.0"), "lib");
+    EXPECT_NE(info.type, "lib") << "the fixture must actually disagree";
+}
+
+TEST(EffectiveKindAuthority, TheTargetTypeIsUsedWhenTheVersionHasNoKind) {
+    // Pre-0.4.70 state: no per-version kind anywhere.
+    xlings::xvm::VersionDB db;
+    auto& info = db["gcc"];
+    info.type = "program";
+    info.versions["15.1.0"].path = "/pkg/gcc/15.1.0";
+
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "gcc", "15.1.0"), "program");
+}
+
+TEST(EffectiveKindAuthority, OneTargetCanHoldVersionsOfDifferentKinds) {
+    // Which is why a check that skips the whole target on the target-level
+    // type discards the versions that ARE programs.
+    xlings::xvm::VersionDB db;
+    auto& info = db["mixed"];
+    info.type = "lib";
+    info.versions["1.0.0"].kind = "lib";
+    info.versions["2.0.0"].kind = "program";
+
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "mixed", "1.0.0"), "lib");
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "mixed", "2.0.0"), "program");
+    EXPECT_TRUE(xlings::xvm::has_program_kind(db, "mixed"));
+}
+
+TEST(EffectiveKindAuthority, AGroupRootIsNotAProgram) {
+    xlings::xvm::VersionDB db;
+    auto& info = db["xim-gnu-gcc"];
+    info.type = "program";                       // the default it gets when unset
+    info.versions["15.1.0"].kind = "group";
+
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "xim-gnu-gcc", "15.1.0"),
+              "group");
+    EXPECT_FALSE(xlings::xvm::has_program_kind(db, "xim-gnu-gcc"))
+        << "a group root names a release; nothing dispatches it";
+}
+
+TEST(EffectiveKindAuthority, AnUnknownTargetOrVersionDoesNotInventAKind) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].type = "program";
+    db["gcc"].versions["15.1.0"].kind = "program";
+
+    EXPECT_TRUE(xlings::xvm::effective_kind_of(db, "clang", "1.0.0").empty());
+    // An unknown VERSION of a known target falls back to the target's type --
+    // that is the same widening the pre-0.4.70 state relies on.
+    EXPECT_EQ(xlings::xvm::effective_kind_of(db, "gcc", "9.9.9"), "program");
+    EXPECT_FALSE(xlings::xvm::has_program_kind(db, "clang"));
+}
+
 TEST(XvmSwitchPlan, PlansEveryMemberNotJustTheEntryPoint) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
