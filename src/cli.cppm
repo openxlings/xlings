@@ -250,16 +250,6 @@ static void handle_prompt(EventStream& stream, const PromptEvent& p) {
         return;
     }
 
-    // A version choice has its own picker — titled with the target, and
-    // without the description column a version list has nothing to put in.
-    // It existed in ui:: from the start and was never reachable, because
-    // every multi-option prompt landed in select_package below.
-    if (p.id == "select_version" && !p.options.empty()) {
-        auto result = ui::select_version(p.question, p.options, p.defaultValue);
-        stream.respond(p.id, result.value_or(""));
-        return;
-    }
-
     // Multiple options → package selector
     if (!p.options.empty()) {
         std::vector<std::pair<std::string, std::string>> items;
@@ -888,7 +878,6 @@ export int run(int argc, char* argv[]) {
                 },
                 {
                     {"--all, -a",  "Consider versions from every subos, not just this one"},
-                    {"--pick, -i", "Choose the version interactively (needs a terminal)"},
                     {"--strict",   "Refuse if a program of the current release has no version in the new one"},
                 },
             };
@@ -1127,15 +1116,13 @@ export int run(int argc, char* argv[]) {
 
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`
         // (one-shot form, matching install/remove). Bare `<name>` switches
-        // when exactly one version is installed and refuses (exit 2) when
+        // when exactly one version is installed and lists them (exit 0) when
         // several are, rather than blocking on a picker — see
         // xvm::cmd_use_by_name. `--all` widens the candidate set to the
-        // global view (every version every subos has ever installed);
-        // `--pick` asks for the interactive picker explicitly.
+        // global view (every version every subos has ever installed).
         .subcommand("use")
             .description("Switch tool version")
             .option(cmdline::Option("all").short_name('a').help("Show versions across all subos (default: current subos only)"))
-            .option(cmdline::Option("pick").short_name('i').help("Choose the version interactively (needs a terminal)"))
             .option(cmdline::Option("strict").help("Refuse the switch if any program of the current release has no version in the new one"))
             .arg("target").required().help("Tool name (or name@ver one-shot)")
             .arg("version").help("Version to switch to (omit to list installed versions)")
@@ -1152,14 +1139,13 @@ export int run(int argc, char* argv[]) {
                     return 1;
                 }
                 bool show_all = args.is_flag_set("all");
-                bool pick = args.is_flag_set("pick");
                 bool strict = args.is_flag_set("strict");
                 auto first = std::string(args.positional(0));
                 if (n == 1) {
                     auto at = first.find('@');
                     if (at == std::string::npos)
                         return xvm::cmd_use_by_name(first, stream, show_all,
-                                                    pick, strict);
+                                                    strict);
                     return xvm::cmd_use(first.substr(0, at),
                                         first.substr(at + 1), stream, strict);
                 }

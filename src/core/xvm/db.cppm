@@ -1105,7 +1105,7 @@ nlohmann::json workspace_to_json(const Workspace& ws) {
 // Subos-flavored workspace parser. Accepts three value shapes per target:
 //
 //   1. string                      (legacy, pre-0.4.19) — active version,
-//                                  no installed[] info available
+//                                  installed[] implied to be {active}
 //   2. {active, installed[]}       (current, 0.4.19+)   — both fields
 //   3. {linux|windows|macosx|...}  (project-style)      — resolved to a
 //                                  single string the same way project files
@@ -1123,15 +1123,42 @@ SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
     SubosWorkspace sws;
     if (!j.is_object()) return sws;
 
+    // An active version is an installed version -- on read as well as on
+    // write.
+    //
+    // subos_workspace_to_json has always normalised `installed[]` to contain
+    // `active` ("write-time invariant: an active version is implicitly
+    // installed"), but the parser did not apply the same rule, so a record
+    // saying "this subos is on 1.0.0" parsed as "this subos has installed
+    // nothing". That was invisible while `use` opted a subos in silently;
+    // once `use` requires the version to be installed here (2026.7.31.3), it
+    // would refuse the very version the file says is active -- on every home
+    // written by a pre-0.4.19 client, and on every hand-written
+    // platform-conditional entry. Applying the invariant on both sides makes
+    // the round trip a fixed point.
+    //
+    // A lambda rather than a namespace-scope helper on purpose: GCC 16 ICEs
+    // when the first instantiation of a std container over a module-attached
+    // type is required from namespace scope, and the crash leaves a truncated
+    // BMI that reports itself as "Bad file data" in unrelated translation
+    // units.
+    auto set_active = [&sws](const std::string& key, std::string active) {
+        if (active.empty()) return;
+        auto& installed = sws.installed[key];
+        if (std::find(installed.begin(), installed.end(), active)
+                == installed.end()) {
+            installed.push_back(active);
+        }
+        sws.active[key] = std::move(active);
+    };
+
     for (auto it = j.begin(); it != j.end(); ++it) {
         const auto& key = it.key();
         const auto& value = it.value();
 
         if (value.is_string()) {
-            // Legacy form: bare version string. installed[] left empty —
-            // callers that maintain installed[] (install/remove flow) will
-            // populate it on next write, lazily migrating the file.
-            sws.active[key] = value.get<std::string>();
+            // Legacy form: bare version string.
+            set_active(key, value.get<std::string>());
             continue;
         }
 
@@ -1141,15 +1168,15 @@ SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
         bool hasActive = value.contains("active");
         bool hasInstalled = value.contains("installed");
         if (hasActive || hasInstalled) {
-            if (hasActive && value.at("active").is_string()) {
-                sws.active[key] = value.at("active").get<std::string>();
-            }
             if (hasInstalled && value.at("installed").is_array()) {
                 std::vector<std::string> installed;
                 for (auto& v : value.at("installed")) {
                     if (v.is_string()) installed.push_back(v.get<std::string>());
                 }
                 if (!installed.empty()) sws.installed[key] = std::move(installed);
+            }
+            if (hasActive && value.at("active").is_string()) {
+                set_active(key, value.at("active").get<std::string>());
             }
             continue;
         }
@@ -1159,7 +1186,7 @@ SubosWorkspace subos_workspace_from_json(const nlohmann::json& j) {
         // honoring it here means a hand-edited subos file with platform
         // branches behaves the same way the project manifest would.
         if (auto resolved = resolve_platform_workspace_value_(value)) {
-            sws.active[key] = *resolved;
+            set_active(key, *resolved);
         }
     }
 

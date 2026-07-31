@@ -321,6 +321,43 @@ inline void sort_desc(std::vector<std::string>& versions) {
         });
 }
 
+// Does one concrete version satisfy a constraint expression?
+//
+// This is the single-version counterpart of select_best, and it exists
+// because "is what I already have good enough?" is a different question from
+// "which of these should I fetch?" -- the answer decides whether an install
+// happens at all.
+//
+// Empty `expr` is no constraint, so everything satisfies it. That is the
+// whole point: a dependency written `xim:mcpp` with no `@` is asking for
+// *some* mcpp, not for the newest one.
+//
+// Not everything xlings versions is semver. Releases are date-stamped with
+// four components (`2026.7.31.2`) and toolchains carry flavor tags
+// (`15.1.0-aarch64-musl`); `parse` accepts at most three numeric components,
+// so the former is simply unparseable here. Rejecting those would silently
+// turn "already satisfied" into "install the latest" for exactly the
+// packages that ship most often, so an unparseable side falls back to prefix
+// matching on a component boundary -- `2026.7.31` matches `2026.7.31.2` but
+// `1.1` does not match `1.10`, which a bare `starts_with` would.
+inline bool satisfies_expr(std::string_view version, std::string_view expr) {
+    while (!expr.empty() && expr.front() == ' ') expr.remove_prefix(1);
+    while (!expr.empty() && expr.back() == ' ') expr.remove_suffix(1);
+    if (expr.empty()) return true;
+    if (version.empty()) return false;
+    if (version == expr) return true;
+
+    auto v = parse(version);
+    auto range = parse_range(expr);
+    if (v && range) return satisfies(*v, *range);
+
+    // Component-boundary prefix fallback for anything outside the grammar.
+    if (version.size() <= expr.size()) return false;
+    if (!version.starts_with(expr)) return false;
+    const char next = version[expr.size()];
+    return next == '.' || next == '-';
+}
+
 // Select the highest version from `available` that satisfies `range_expr`.
 // Skips "latest" tags. Returns "" if no match.
 inline std::string select_best(std::span<const std::string> available,

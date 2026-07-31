@@ -234,3 +234,68 @@ TEST(SemverToString, RoundTrip) {
     EXPECT_EQ(to_string(*parse("15")), "15");
     EXPECT_EQ(to_string(*parse("1.3.3-beta.1")), "1.3.3-beta.1");
 }
+
+// ── SatisfiesExpr ──
+//
+// The predicate that decides whether an install happens at all: "is the
+// version already active good enough for this dependency?"
+
+TEST(SemverSatisfiesExpr, EmptyConstraintAcceptsAnything) {
+    // A dependency written `xim:mcpp` asks for *some* mcpp, not the newest.
+    EXPECT_TRUE(satisfies_expr("1.0.0", ""));
+    EXPECT_TRUE(satisfies_expr("2026.7.31.2", ""));
+    EXPECT_TRUE(satisfies_expr("15.1.0-musl", ""));
+    EXPECT_TRUE(satisfies_expr("anything", "   "));
+}
+
+TEST(SemverSatisfiesExpr, EmptyVersionSatisfiesNothingConcrete) {
+    EXPECT_FALSE(satisfies_expr("", "1.0.0"));
+    EXPECT_TRUE(satisfies_expr("", ""));
+}
+
+TEST(SemverSatisfiesExpr, ExactPin) {
+    EXPECT_TRUE(satisfies_expr("2.39", "2.39"));
+    EXPECT_FALSE(satisfies_expr("2.38", "2.39"));
+    // A flavor tag is a different version, not the same one.
+    EXPECT_FALSE(satisfies_expr("15.1.0-musl", "15.1.0"));
+}
+
+TEST(SemverSatisfiesExpr, BarePrefixIsARange) {
+    EXPECT_TRUE(satisfies_expr("3.11.4", "3"));
+    EXPECT_TRUE(satisfies_expr("3.0.0", "3"));
+    EXPECT_FALSE(satisfies_expr("4.0.0", "3"));
+    EXPECT_FALSE(satisfies_expr("2.9.9", "3"));
+}
+
+TEST(SemverSatisfiesExpr, PrefixDoesNotMatchAcrossComponentBoundary) {
+    // The bug a plain starts_with test has: "1.1" must not accept "1.10".
+    EXPECT_FALSE(satisfies_expr("1.10.0", "1.1"));
+    EXPECT_TRUE(satisfies_expr("1.1.9", "1.1"));
+}
+
+TEST(SemverSatisfiesExpr, Operators) {
+    EXPECT_TRUE(satisfies_expr("1.5.0", "^1.2.3"));
+    EXPECT_FALSE(satisfies_expr("2.0.0", "^1.2.3"));
+    EXPECT_TRUE(satisfies_expr("1.2.9", "~1.2.3"));
+    EXPECT_FALSE(satisfies_expr("1.3.0", "~1.2.3"));
+    EXPECT_TRUE(satisfies_expr("1.5.0", ">=1.0.0 <2.0.0"));
+    EXPECT_FALSE(satisfies_expr("2.5.0", ">=1.0.0 <2.0.0"));
+    EXPECT_TRUE(satisfies_expr("1.2.7", "1.2.*"));
+}
+
+TEST(SemverSatisfiesExpr, FourComponentReleaseStampsFallBackToPrefix) {
+    // xlings' own releases carry four components, which `parse` rejects.
+    // Rejecting them here would turn "already satisfied" into "install the
+    // latest" for the packages that ship most often.
+    EXPECT_TRUE(satisfies_expr("2026.7.31.2", "2026.7.31.2"));
+    EXPECT_TRUE(satisfies_expr("2026.7.31.2", "2026.7.31"));
+    EXPECT_TRUE(satisfies_expr("2026.7.31.2", "2026.7"));
+    EXPECT_FALSE(satisfies_expr("2026.7.31.2", "2026.7.30"));
+    EXPECT_FALSE(satisfies_expr("2026.7.3.1", "2026.7.31"));
+}
+
+TEST(SemverSatisfiesExpr, FlavorTagSatisfiesTheNumericRange) {
+    // 15.1.0-musl parses as 15.1.0 with a prerelease tag, and is inside "15".
+    EXPECT_TRUE(satisfies_expr("15.1.0-musl", "15"));
+    EXPECT_FALSE(satisfies_expr("15.1.0-musl", "16"));
+}

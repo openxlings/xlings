@@ -1058,6 +1058,80 @@ TEST(XvmJsonTest, WorkspaceRoundTrip) {
     EXPECT_EQ(restored.at("node"), "22.0.0");
 }
 
+// ── Subos workspace: active implies installed, on read as well as write ──
+//
+// subos_workspace_to_json has always folded `active` into `installed[]`. The
+// parser did not, so a pre-0.4.19 record ("gcc": "15.1.0") read back as "this
+// subos has installed nothing" -- harmless while `use` opted a subos in
+// silently, and a refusal on the very version the file calls active once it
+// stopped (2026.7.31.3).
+
+TEST(XvmSubosWorkspaceJsonTest, LegacyStringFormImpliesInstalled) {
+    auto j = nlohmann::json::parse(R"({ "gcc": "15.1.0" })");
+    auto sws = xlings::xvm::subos_workspace_from_json(j);
+
+    EXPECT_EQ(sws.active.at("gcc"), "15.1.0");
+    ASSERT_TRUE(sws.installed.contains("gcc"));
+    EXPECT_EQ(sws.installed.at("gcc"),
+              std::vector<std::string>{"15.1.0"});
+}
+
+TEST(XvmSubosWorkspaceJsonTest, ActiveIsAddedToInstalledWhenMissing) {
+    auto j = nlohmann::json::parse(R"({
+        "gcc": { "active": "16.1.0", "installed": ["15.1.0"] }
+    })");
+    auto sws = xlings::xvm::subos_workspace_from_json(j);
+
+    auto& installed = sws.installed.at("gcc");
+    EXPECT_EQ(installed.size(), 2u);
+    EXPECT_NE(std::find(installed.begin(), installed.end(), "16.1.0"),
+              installed.end());
+    EXPECT_NE(std::find(installed.begin(), installed.end(), "15.1.0"),
+              installed.end());
+}
+
+TEST(XvmSubosWorkspaceJsonTest, InstalledIsNotDuplicated) {
+    auto j = nlohmann::json::parse(R"({
+        "gcc": { "active": "15.1.0", "installed": ["15.1.0", "16.1.0"] }
+    })");
+    auto sws = xlings::xvm::subos_workspace_from_json(j);
+    EXPECT_EQ(sws.installed.at("gcc").size(), 2u);
+}
+
+TEST(XvmSubosWorkspaceJsonTest, InstalledOnlyEntryKeepsNoActive) {
+    // The one shape that must NOT gain an active version out of nowhere.
+    auto j = nlohmann::json::parse(R"({
+        "gcc": { "installed": ["15.1.0", "16.1.0"] }
+    })");
+    auto sws = xlings::xvm::subos_workspace_from_json(j);
+    EXPECT_FALSE(sws.active.contains("gcc"));
+    EXPECT_EQ(sws.installed.at("gcc").size(), 2u);
+}
+
+TEST(XvmSubosWorkspaceJsonTest, PlatformConditionalFormImpliesInstalled) {
+    auto j = nlohmann::json::parse(R"({
+        "node": { "default": "22.17.1", "linux": "20.19.0",
+                  "windows": "22.18.0", "macosx": "21.0.0" }
+    })");
+    auto sws = xlings::xvm::subos_workspace_from_json(j);
+
+    ASSERT_TRUE(sws.active.contains("node"));
+    const auto active = sws.active.at("node");
+    ASSERT_TRUE(sws.installed.contains("node"));
+    EXPECT_EQ(sws.installed.at("node"), std::vector<std::string>{active});
+}
+
+TEST(XvmSubosWorkspaceJsonTest, RoundTripIsAFixedPoint) {
+    auto j = nlohmann::json::parse(R"({ "gcc": "15.1.0" })");
+    auto once = xlings::xvm::subos_workspace_from_json(j);
+    auto written = xlings::xvm::subos_workspace_to_json(once);
+    auto twice = xlings::xvm::subos_workspace_from_json(written);
+
+    EXPECT_EQ(once.active, twice.active);
+    EXPECT_EQ(once.installed, twice.installed);
+    EXPECT_EQ(written, xlings::xvm::subos_workspace_to_json(twice));
+}
+
 TEST(XvmJsonTest, FromJsonEmptyObject) {
     auto j = nlohmann::json::object();
     auto db = xlings::xvm::versions_from_json(j);

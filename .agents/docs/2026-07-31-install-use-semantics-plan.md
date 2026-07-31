@@ -1,7 +1,7 @@
 # install / use 语义优化方案
 
 **日期**: 2026-07-31
-**类型**: 计划（plan）
+**类型**: 计划（plan）→ **已实现，随 `2026.7.31.3` 发布**
 **基线**: `2026.7.31.2`（已发布）
 **相关**: [#459](https://github.com/openxlings/xlings/issues/459)、`.agents/docs/2026-07-31-xvm-subos-architecture-review.md`
 
@@ -16,6 +16,13 @@
 | **P3** | `use <pkg>` 列版本却打印 `[error]` | 语义/表达 | 小 |
 | **P4** | 测试里的"假 PASS" | 方法问题 | — |
 | **P5** | 提议新建已存在的能力（两次） | 方法问题 | — |
+
+**落地状态（2026.7.31.3）**：P1 / P2 / P3 / P3a 全部实现，P4 写进
+`.agents/skills/xlings-contributing`（Step 4 新增"不会因为错误理由通过的断言"一节）。
+测试：`semver` 新增 8 组 `satisfies_expr` 单测、`test_xim_catalog` 新增 6 组
+`pin_target_to_active` 单测、新增 **E2E-51** `install_use_semantics_test.sh`（S1–S6），
+**E2E-48** 的 N2/N3/N4 按新契约改写。全部在 `2026.7.31.2` 的**已发布二进制**上跑过
+差分，逐条失败。
 
 ---
 
@@ -48,22 +55,21 @@ select_best(available, range_expr)             ← 取满足约束的最高版�
 **而且索引侧已经在用它**：`catalog.cppm:179` 的 `select_version_()` 对 `versionHint`
 调用 `semver::select_best`，所以 `xlings install python@3` 能正常解析。
 
-问题在于**有两条版本解析路径，只有一条接了它**：
+**实现时的复核修正**：`resolver.cppm:83` / `:134` 那段确实是"把 hint 原样当版本号"，
+但它属于 `resolve()` 的 **IndexManager 重载**，而生产路径走的是 **PackageCatalog
+重载**（`commands.cppm:316` 是唯一调用者）—— 那个重载只有 4 个单测在用，且它们全都
+`GTEST_SKIP`。**它已随本次改动整体删除**：两条版本解析路径正是让上面这份诊断落在
+死代码上的原因，留着它就是留着下一次误诊。
 
-| 路径 | 怎么解析版本 | 支持 range |
-|---|---|:---:|
-| **catalog**（顶层目标） | `select_version_()` → `semver::select_best` | ✅ |
-| **resolver**（依赖展开，`resolver.cppm:83` / `:134`） | `if (!versionHint.empty()) return versionHint;` **原样当版本号用** | ❌ |
+真正在生产路径上的两个口子是：
 
-```cpp
-// resolver.cppm:83   算 key 时
-if (!versionHint.empty()) return versionHint;
-// resolver.cppm:134  定 node.version 时
-if (!versionHint.empty()) node.version = versionHint;
-```
+| 口子 | 位置 | 后果 |
+|---|---|---|
+| 依赖展开**根本不看工作区** | `resolver.cppm` `expand()` → `catalog.resolve_target(dep)` | 无约束 dep 一律解析成索引最新版 |
+| 顶层的"已装就用"用的是**字符串前缀** | `commands.cppm` `pin_to_active_if_satisfies_`：`active.rfind(verHint,0)==0` | `@1.1` 会被 active `1.10` 命中；`^`/`>=` 一律不认 |
 
-于是 `deps = {"xim:python@3"}` 带着字面量 `"3"` 一路走到 libxpkg 的精确
-`versions.find("3")` → `unknown version: 3`。
+所以 range 语义在**索引选版**那一侧一直是通的（`install python@3` 本来就能解析），
+断在**"已经装了的算不算数"**这一侧 —— 而这正是决定"要不要装"的那个判断。
 
 顺带一个佐证：`semver::select_highest` **零调用者** —— 这个能力写好了，接了一半。
 
@@ -72,9 +78,16 @@ if (!versionHint.empty()) node.version = versionHint;
 
 ### 两个缺陷
 
-**P1-a 依赖展开绕开了版本语义。** 修法不是"实现 range"（已经有了），而是让
-resolver 的两处走 catalog 已有的解析（`select_version_` / `semver::select_best`），
-两条路径口径合一。
+**P1-a 依赖展开绕开了版本语义。** 修法不是"实现 range"（已经有了），而是把
+"已激活的版本满不满足这条约束"做成**一个**判据，两条路径都走它：
+
+- `semver::satisfies_expr(version, expr)` —— 单版本满足性，空约束恒真；
+  非 semver 的版本串（四段的 `2026.7.31.2`、带风味后缀的 `15.1.0-musl`）
+  退化为**按分量边界**的前缀匹配，所以 `1.1` 不会命中 `1.10`；
+- `xim::pin_target_to_active(target, activeOf)` —— 满足就把 target 改写成
+  `name@<active>`，于是它解析成"已安装"并从计划里消失；不满足就原样返回；
+- `resolve(catalog, targets, platform, activeOf)` 多接一个回调，`expand()` 和
+  topo 走的是同一次改写（两处不一致会让边被静默丢掉）。
 
 **P1-b 无约束时直接取 latest，不看本地已装什么**（`resolver.cppm:134` 的 `else` 分支）：
 
@@ -89,9 +102,14 @@ resolver 的两处走 catalog 已有的解析（`select_version_` / `semver::sel
 | **`xim:pkg@^1.2`** | ❌ 同上 | 同上（`semver` 已支持这些运算符） |
 | **`xim:pkg`** | 装 latest | 已装**任意**版本 → **用它**；否则 latest |
 
-"用它"的优先级：**本 subos 的活动版本** > `installed[]` 里满足约束的最高版本。
+"用它"的判据**只有一条：本 subos 当前激活的版本**。
 
-满足性判断用 `semver::satisfies` / `select_best`（已有），**不新建任何版本语义**。
+原方案写的第二档"`installed[]` 里满足约束的最高版本"**实现时去掉了**：payload 装在
+哪个 subos 之外是共享的，一个"装过但在本 subos 没激活"的版本如果因此被判定为满足、
+从而跳过安装，得到的正是 §P2 那个半可用结果 —— 换了身衣服而已。只认活动版本既安全，
+也正好是优先级的第一档。
+
+满足性判断用 `semver`（已有），**不新建任何版本语义**。
 
 ### 为什么 P1-b 是缺陷而不是偏好
 
@@ -105,13 +123,16 @@ resolver 的两处走 catalog 已有的解析（`select_version_` / `semver::sel
 - **不自动降级** —— 已装版本高于约束上界时保持已装，不回退；
 - **不改精确锁定的语义**。
 
-### 验收
+### 验收 → E2E-51 `install_use_semantics_test.sh`
 
-- 本地有 `mcpp@A`，装 `deps = {"xim:mcpp"}` 的包 → 计划里**不出现** mcpp；
-- 本地有 `python@3.11`，`deps = {"xim:python@3"}` → **不出现** python；
-- 本地无 python，`deps = {"xim:python@3"}` → 出现索引里满足 `3` 的最高版（不是 `unknown version`）；
-- `deps = {"xim:glibc@2.39"}` 且本地 2.38 → 仍装 2.39；
-- 差分：以上前三条在 `2026.7.31.2` 构建上必须失败。
+| | 断言 | 用例 |
+|---|---|---|
+| 活动 1.0.0，装 `deps={"xim:sem-lib"}` 的包 | 计划里不出现、2.0.0 的 payload 不落盘、活动版本不动 | S1 |
+| 活动 1.0.0，`deps={"xim:sem-lib@1"}` | 同上，且不得出现 `unknown version` | S2 |
+| 活动 1.0.0，`deps={"xim:sem-lib@2.0.0"}` | **仍装 2.0.0** —— 精确锁定不被"已装"覆盖 | S3 |
+| 全新 subos 无活动版本，`@1` | 装索引里满足 `1` 的**最高**版 1.5.0（不是同样在盘上的 2.0.0） | S4 |
+
+差分：S1 在已发布的 `2026.7.31.2` 二进制上失败（计划里出现 `sem-lib@2.0.0`）。
 
 ---
 
@@ -166,16 +187,49 @@ gcc 未在本 subos (probe) 安装过
 
 这也让 `use` 的语义变干净：**`use` 只在已安装的版本之间切换，安装是 `install` 的事。**
 
+### 实现时挖出来的连带缺陷：读写两侧的不变式不对称
+
+`subos_workspace_to_json` 一直有一条写时不变式 —— 注释里写着 "an active version
+is implicitly installed"，序列化时把 `active` 并进 `installed[]`。**但解析器没有这条
+规则**：
+
+```
+文件里:  "gcc": "15.1.0"          （pre-0.4.19 的字符串形式）
+读进来:  active=15.1.0, installed=[]   ← "这个 subos 什么都没装"
+```
+
+auto-add 在的时候这个不对称是无害的（谁都没读 `installed[]` 做决定）；**闸门一加，
+它立刻变成"拒绝掉文件自己说正在用的那个版本"** —— 对每一个从旧客户端升上来的 home
+都成立，还有所有手写的 platform-conditional 条目（`{linux = ..., default = ...}`）。
+
+修法是把同一条不变式补到读侧，让 round trip 成为不动点。**这正是 §P5 那条规则的
+另一半**：改一个判据之前，先看它读的数据是怎么来的 —— 差点就把一条兼容性断路当成
+新功能发出去了。
+
+（实现细节：这个 helper 必须写成函数体内的 lambda。GCC 16 在"模块类型上的 std 容器
+第一次实例化发生在**命名空间作用域**的 helper 里"时会 ICE，而崩掉的 cc1plus 留下一个
+截断的 BMI，报错报在**别的**翻译单元上：`Bad file data`。）
+
+对应单测 6 组（`XvmSubosWorkspaceJsonTest.*`），含一条"只有 `installed[]` 没有
+`active` 的条目不许凭空长出 active"的反向断言，和一条 round-trip 不动点。
+
 ### 已验证的对照
 
 `xlings install gcc -y` 在同一个全新 subos 里 → `usr/include` 140 项 → 编译通过。
 **install 路径没有这个问题**，因为它解析并安装依赖。
 
-### 验收
+### 验收 → E2E-51 S5 / S6
 
-- 全新 subos `use gcc 16.1.0` → **不切换**，提示去 install，workspace 未变；
-- 同一 subos `install gcc` 之后再 `use gcc 16.1.0` → 正常切换，无提示；
-- 差分：`2026.7.31.2` 构建上会切换并静默 —— 新断言在其上必须失败。
+- S5：全新 subos `use sem-lib 1.0.0` → 非零退出；提示里同时出现 subos 名和
+  `install`；**没有**生成 shim，subos 的 workspace 里**没有**这个包的记录；
+- S6：同一 subos `install` 之后再 `use` → 退出 0，切换生效；且 `default` subos
+  自始至终没被影响。
+- 差分：S5 在 `2026.7.31.2` 上失败（它切换了）。
+
+实现落在 `cmd_use` 里 `resolved` 算完、`plan_use_switch` 之前 —— 即**所有文件系统
+动作之前**，判据是现成的 `filter_to_subos_installed_`。auto-add 没有整个删掉：
+release 的**成员**仍然照旧补进 `installed[]`（新版本多出一个程序时，它是随用户要过的
+release 一起到的，不是替它到的）。
 
 ---
 
@@ -241,8 +295,13 @@ $ echo $?
 ### 需要一并调整的既有契约
 
 **E2E-48 的 N2/N3/N4 断言退出码 2，要改。** 那三条锁的是"歧义时不阻塞、不静默切换"，
-这两点仍然成立 —— 变的只是"不是错误"。改为断言：**不阻塞、退出 0、状态未变、
-候选已列出**。
+这两点仍然成立 —— 变的只是"不是错误"。已改为断言：**不阻塞、退出 0、状态未变、
+候选已列出、输出里没有 `[error]`、版本列表只出现一次**。N4 从"`--pick` 无终端时报错"
+改成"`--pick` 必须被当作未知 flag 拒绝" —— 一个被静默忽略的 flag 比一个不存在的更糟，
+脚本会以为自己要到了什么。
+
+实现上，">1 候选" 这一支现在**就是** `cmd_list_versions`（同一个面板、同一条 tip、
+退出 0）——`use` 不再自己拼一份措辞，"列版本"只有一个实现。
 
 **代价要说清楚**：脚本无法再用退出码区分"切换了"和"列出了"（两者都是 0）。
 这是可以接受的，因为**表达切换意图的方式是给出版本号** —— `xlings use gcc 16.1.0`
@@ -309,8 +368,20 @@ P4              —— 写进测试约定，无代码
 ```
 
 P3 最小（纯呈现 + 删 `--pick`），P2 次之（一个判据 + 一段提示 + 不动作），
-P1 也不大（resolver 两处改调已有的解析 + 接入"本 subos 已装什么"），**不需要新建
-版本语义**。
+P1 也不大（一个判据 + 一次改写 + 一个回调），**不需要新建版本语义**。
+
+### 实际改了什么（`2026.7.31.3`）
+
+| 文件 | 改动 |
+|---|---|
+| `src/core/semver.cppm` | `+satisfies_expr()` —— 单版本满足性，空约束恒真，非 semver 版本串按分量边界退化 |
+| `src/core/xim/resolver.cppm` | `+pin_target_to_active()`；`resolve()` 接受 `activeOf` 回调，`expand()` 和 topo 同步改写；**删掉 IndexManager 重载**（第二条版本解析路径） |
+| `src/core/xim/commands.cppm` | `pin_to_active_if_satisfies_` 改为调用共用判据；把回调传进 `resolve()` |
+| `src/core/xvm/commands.cppm` | `cmd_use` 新增"本 subos 未安装则拒绝"闸门；`cmd_use_by_name` 的多候选支改为委派 `cmd_list_versions`；删 `pick` 形参 |
+| `src/core/xvm/db.cppm` | **读侧补上写侧一直有的不变式**：`subos_workspace_from_json` 把 `active` 并入 `installed[]`。见下 |
+| `src/cli.cppm` | 删 `--pick` / `-i` 及其 help 行、`select_version` prompt 分派 |
+| `src/ui/selector.cppm` | 删 `select_version()`（已无发射方） |
+| `tools/linux_release.sh` | d2x 校验找的是 `xpkgs/d2x`，而 payload 在 `xim-x-d2x` —— 这条**从命名空间化布局起就一直在失败**，只是每个 CI 调用方都设了 `SKIP_NETWORK_VERIFY=1`，唯一能发现它的检查从来没跑过 |
 
 ---
 

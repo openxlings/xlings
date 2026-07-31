@@ -15,7 +15,10 @@
 #   * whether a human is at the keyboard is not detectable, so it must not
 #     decide semantics -- only presentation;
 #   * a command with a single correct outcome performs it (exit 0);
-#   * an ambiguous one changes nothing and says so with exit 2;
+#   * an ambiguous one changes nothing, lists what it could have done, and
+#     says so in words -- exit 0, because a query that answered itself did
+#     not fail (2026.7.31.3; it was exit 2 before, from applying "did nothing
+#     => non-zero" to a command that is not an action);
 #   * nothing waits for input that was never promised a way to arrive.
 #
 # Every case runs under `timeout`, so a regression that reintroduces a blocking
@@ -160,43 +163,62 @@ out="$(RUN use ni-one 2>&1 || true)"
 grep -q -- "ni-one -> 1.0.0" <<<"$out" \
   || fail "N1: no switch was performed, only a listing; got:\n$out"
 
-# ── N2: several candidates → refuse, exit 2, nothing changed ─────────
+# ── N2: several candidates → list them, exit 0, nothing changed ──────
 #
-# The exit code is the whole point. The old path printed this same list and
-# returned 0, so a caller had no way to tell "switched" from "did nothing".
-log "N2: several installed versions refuse with exit 2"
+# What must hold is "nothing changed, and the user can see why" -- not that it
+# reports failure. `use <name>` with no version is a question, and it answers
+# it; the switch is requested by naming a version (N5), which is where a
+# non-zero exit means something. What is still forbidden is the *original*
+# defect: printing a list when a single candidate made the outcome
+# unambiguous (N1 locks that side).
+log "N2: several installed versions list without switching, exit 0"
 before="$(probe_says ni-two)"
 rc="$(rc_of RUN use ni-two)"
-[[ "$rc" == "2" ]] || fail "N2: expected exit 2 for an ambiguous switch, got $rc"
+[[ "$rc" == "0" ]] || fail "N2: expected exit 0 for a listing, got $rc"
 out="$(RUN use ni-two 2>&1 || true)"
 grep -q "1.0.0" <<<"$out" || fail "N2: the candidates were not listed; got:\n$out"
 grep -q "2.0.0" <<<"$out" || fail "N2: the candidates were not listed; got:\n$out"
+grep -q "use ni-two" <<<"$out" \
+  || fail "N2: no command was named for making the choice; got:\n$out"
+# The listing must not be rendered as a failure -- that is what made a normal
+# query look like a fault.
+if grep -qi "\[error\]" <<<"$out"; then
+  fail "N2: a listing was rendered as an error; got:\n$out"
+fi
+# The version list belongs in the panel, once. It used to be repeated in the
+# error hint line.
+[[ "$(grep -c "2\.0\.0" <<<"$out")" == "1" ]] \
+  || fail "N2: the version list was printed more than once; got:\n$out"
 after="$(probe_says ni-two)"
 [[ "$before" == "$after" ]] \
-  || fail "N2: a refused switch changed the active version: '$before' -> '$after'"
+  || fail "N2: a listing changed the active version: '$before' -> '$after'"
 
 # ── N3: the same, inside a pseudo-terminal ───────────────────────────
 #
 # The branch an agent actually reaches. Before this change it opened a picker
 # and waited forever; `timeout 30` is what proves it no longer does.
 if [[ "$HAVE_PTY" == "1" ]]; then
-  log "N3: a pty does not turn the refusal back into a blocking prompt"
+  log "N3: a pty does not turn the listing back into a blocking prompt"
   rc="$(rc_of RUN_PTY use ni-two)"
-  [[ "$rc" == "2" ]] || fail "N3: expected exit 2 under a pty, got $rc"
+  [[ "$rc" == "0" ]] || fail "N3: expected exit 0 under a pty, got $rc"
+  before="$(probe_says ni-two)"
+  RUN_PTY use ni-two >/dev/null 2>&1 || true
+  [[ "$before" == "$(probe_says ni-two)" ]] \
+    || fail "N3: a pty listing switched the active version"
 else
   log "N3: SKIP (no \`script\` binary to allocate a pty)"
 fi
 
-# ── N4: --pick without a terminal fails loudly ───────────────────────
+# ── N4: --pick is gone, and its removal is not a silent no-op ────────
 #
-# Opt-in interactivity that cannot run must say so. Falling back to the panel
-# and exit 0 would be the original defect wearing a flag.
-log "N4: --pick off a terminal refuses instead of doing nothing"
+# `--pick` existed to give the removed picker an explicit door. Once the
+# default path is deterministic there is nothing behind that door, and a flag
+# that is quietly ignored is worse than one that does not exist -- a script
+# passing it would believe it had asked for something.
+log "N4: --pick is rejected as an unknown flag, not silently ignored"
 rc="$(rc_of RUN use ni-two --pick)"
-[[ "$rc" == "2" ]] || fail "N4: expected exit 2 for --pick with no tty, got $rc"
-out="$(RUN use ni-two --pick 2>&1 || true)"
-grep -qi "interactive terminal" <<<"$out" \
-  || fail "N4: no explanation of why --pick could not run; got:\n$out"
+[[ "$rc" != "0" ]] || fail "N4: --pick was accepted and silently ignored"
+[[ "$rc" != "124" ]] || fail "N4: --pick blocked"
 
 # ── N5: naming the version still works ───────────────────────────────
 log "N5: an explicit version switches"

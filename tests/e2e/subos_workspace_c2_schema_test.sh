@@ -46,6 +46,13 @@ cat > "$HOME_DIR/.xlings.json" <<JSON
         "2.0.0": {"path": "/tmp/c2_schema_fakebin/v2", "envs": {}, "alias": []},
         "3.0.0": {"path": "/tmp/c2_schema_fakebin/v3", "envs": {}, "alias": []}
       }
+    },
+    "uu": {
+      "type": "program",
+      "filename": "uu",
+      "versions": {
+        "1.0.0": {"path": "/tmp/c2_schema_fakebin/v1", "envs": {}, "alias": []}
+      }
     }
   }
 }
@@ -78,15 +85,22 @@ cat > "$SUBOS_FILE" <<JSON
 }
 JSON
 
-run_x use tt 2.0.0 >/dev/null
+# Switching to the version the legacy form named. This used to switch to
+# 2.0.0 -- a version the legacy record never mentioned -- which passed only
+# because `use` silently opted the subos into whatever the global DB had
+# (2026.7.31.3 removed that; see E2E-51 S5). Using 1.0.0 tests more, not
+# less: the file coming back as {active:1.0.0, installed:[1.0.0]} proves the
+# string form was read as an *installed* version, which the old assertion
+# could not tell apart from the auto-add that produced it.
+run_x use tt 1.0.0 >/dev/null
 RAW="$(read_tt)"
-echo "  after use 2.0.0: $RAW"
+echo "  after use 1.0.0: $RAW"
 case "$RAW" in
-  '{"active": "2.0.0", "installed": ["2.0.0"]}'|\
-  '{"active":"2.0.0","installed":["2.0.0"]}')
+  '{"active": "1.0.0", "installed": ["1.0.0"]}'|\
+  '{"active":"1.0.0","installed":["1.0.0"]}')
     ;;
   *)
-    fail "T1: expected {active:2.0.0, installed:[2.0.0]} after lazy migration; got: $RAW" ;;
+    fail "T1: expected {active:1.0.0, installed:[1.0.0]} after lazy migration; got: $RAW" ;;
 esac
 
 # ------------------------------------------------------------------ Test 2
@@ -115,20 +129,29 @@ INSTALLED="$(echo "$RAW" | python3 -c 'import sys,json; print(",".join(json.load
 log "T3: save invariant — active is always present in installed[]"
 # Hand-craft a file where active is NOT in installed[]. After save, the
 # serializer should add it back.
+#
+# The save is triggered through a *different* target: the invariant is a
+# property of serialisation, so it has to be observed on an entry the command
+# did not touch. Switching `tt` itself would move its active and prove
+# nothing about the repair.
 cat > "$SUBOS_FILE" <<JSON
 {
   "workspace": {
     "tt": {
       "active": "3.0.0",
       "installed": ["1.0.0"]
+    },
+    "uu": {
+      "active": "1.0.0",
+      "installed": ["1.0.0"]
     }
   }
 }
 JSON
 
-run_x use tt 3.0.0 >/dev/null
+run_x use uu 1.0.0 >/dev/null
 RAW="$(read_tt)"
-echo "  after use 3.0.0 (re-saving): $RAW"
+echo "  after an unrelated save: $RAW"
 INSTALLED="$(echo "$RAW" | python3 -c 'import sys,json; print(",".join(json.loads(sys.stdin.read())["installed"]))')"
 case "$INSTALLED" in
   *3.0.0*) ;;

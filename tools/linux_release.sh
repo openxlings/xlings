@@ -193,11 +193,23 @@ else
     fail "install d2x@0.1.3 failed. Set SKIP_NETWORK_VERIFY=1 to skip."
   fi
 
-  XPKG_D2X="$XLINGS_DATA/xpkgs/d2x"
-  if [[ -d "$XPKG_D2X" ]] && compgen -G "$XPKG_D2X/*" > /dev/null 2>&1; then
-    info "OK: data/xpkgs/d2x installed successfully"
+  # The payload store is keyed by `<namespace>-x-<name>`, so d2x from the xim
+  # index lands in `xim-x-d2x`. This looked for a bare `d2x` and had been
+  # failing since the namespaced layout arrived -- unnoticed because every CI
+  # caller sets SKIP_NETWORK_VERIFY=1, so the only check that would have caught
+  # it is the one that never ran. Both spellings are accepted: a package from
+  # an unnamespaced repo really is stored bare.
+  XPKG_D2X=""
+  for candidate in "$XLINGS_DATA/xpkgs"/*-x-d2x "$XLINGS_DATA/xpkgs/d2x"; do
+    if [[ -d "$candidate" ]] && compgen -G "$candidate/*" > /dev/null 2>&1; then
+      XPKG_D2X="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$XPKG_D2X" ]]; then
+    info "OK: ${XPKG_D2X#"$XLINGS_DATA/"} installed successfully"
   else
-    fail "data/xpkgs/d2x not found after install"
+    fail "no d2x payload under data/xpkgs after install"
   fi
 fi
 
