@@ -468,6 +468,67 @@ D1 与 D2 互不依赖，都能在一个版本内落地，且各自都能**独�
 
 ---
 
+## 10. 实施状态（2026-07-31）
+
+### 已实现并提 PR（均未合入）
+
+| PR | 内容 | 差分测试 |
+|---|---|---|
+| [#460](https://github.com/openxlings/xlings/pull/460) `2026.7.31.2` | **D1-a** 单一 scope 权威 + **D2** `${XLINGS_SUBOS}` 占位符 | 11 个单测 `SubosPlaceholderTest.*`；**E2E-50** 新增；E2E-46 重构。两条 e2e 均确认在 `2026.7.30.2` 上失败 |
+| [#461](https://github.com/openxlings/xlings/pull/461) | **D5** 拆 sandbox（`subos.cppm` 2285 → 1252 行） | 无新增测试 —— 机械拆分不该需要新测试来证明自己；既有 25 单测 + 8 个 subos/sandbox e2e 全绿即判据 |
+
+**实现过程中挖出的、报告里没写到的两处**（都是测试逼出来的，不是读代码读出来的）：
+
+1. **`workspace()` / `workspace_installed()` 不 honor `forceGlobalScope_`，而它们的 `_mut` 版本 honor。**
+   写进一个 map、从另一个 map 查 —— `install -g` 注册了，`remove -g` 回答 "not installed
+   in current subos"，而 shim 明明在磁盘上。这是 B 类问题在 Config 自己的访问器里的实例。
+   已修，并把"读写两版必须解析到同一个 map"写成注释里的不变量。
+2. **`remove` 根本没有 `-g`。** 在项目里用 `install -g` 装的包**结构上无法从项目里卸载**。
+   scope 只在可逆操作的一半上可表达 —— 那这个操作就不可逆。已补。
+
+### D3 暂停：先把 removal 路径的两套机制查清楚
+
+原计划本轮做 D3（统一物化 planner）。**查到一半停了，理由如下，不是排期问题。**
+
+§5 说"物化逻辑三处重复"，这没错，但**卸载那一处实际上是两套并存的机制**：
+
+| 机制 | 粒度 | 位置 |
+|---|---|---|
+| `cleanup_removed_xvm_program_artifacts(...)` | 按 removal 结果批量 | `installer.cppm:2813` |
+| `detach_current_subos_(target, version)` | **单个 entry target**，且带 `detachedByBatch` 门 | `installer.cppm:1344`，调用点 2696 / 2820 |
+
+而 `detach` 的物化部分是这样取资产的：
+
+```cpp
+group_header_assets(db, target, version)   // 释放级：整个 release 的头文件
+library_placement(db, target, version)     // 条目级：只有这个 entry 的库
+file_placement(db, target, version)        // 条目级：只有这个 entry 的文件
+```
+
+**头文件按 release 取，库和文件按 entry 取。** 而 `use` 那一侧是整组一致地处理
+（`plan->members`）。这看起来是一处真实的不对称，但**它可能被批量机制补上了** ——
+`detachedByBatch` 这个门的存在说明两套机制之间有分工，我没有把这个分工验证到
+可以安全重构的程度。
+
+**所以停在这里，而不是重构。** 卸载路径正是这个代码库反复产生"静默成功"缺陷的地方；
+在没验证清楚分工之前动它，会造出同一族的新缺陷 —— 那与本文的目的正相反。
+
+**下一批的第一件事应当是回答这个问题，而不是写代码**：
+
+1. 两套机制各自负责什么？`detachedByBatch` 为真/为假时，分别是谁在清理？
+2. 移除一个 release 的**成员**（而不是 root）时，另一个成员的库/文件资产会被清掉吗？
+3. 若确有不对称：是缺陷，还是 refcount 语义（payload 共享）刻意为之？
+
+答清楚之后，D3 的形状就是确定的：`plan_release_revert(db, ws, target, version)`
+产出与 `UseSwitchPlan` 同构的计划，`use` 与 `remove` 走同一个 apply 循环 ——
+"install 和 remove 作用在不同 subos"这类问题在类型层面变得不可表达。
+
+### 未排期
+
+**D4**（和类型 + schema 迁移）、**D6**（绑定单一化）—— 按 §8 需要版本地板。
+
+---
+
 ## 9. 与既有 issue 的关系
 
 | | 本文定位 |
