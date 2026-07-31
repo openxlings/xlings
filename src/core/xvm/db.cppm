@@ -595,7 +595,8 @@ std::string normalize_subos_paths(const std::string& text,
     return out;
 }
 
-// The placeholder a subos path is stored as, and its expansion.
+// The marker a recipe writes when it needs the ACTIVE subos, and its
+// expansion at execution time.
 //
 // `${XLINGS_HOME}` (expand_path, below) has always been how this codebase
 // keeps a home-relative path out of a stored record. This is the same
@@ -605,22 +606,33 @@ std::string normalize_subos_paths(const std::string& text,
 // the others -- the rule VData::fileSrc/fileDst has carried since the `files`
 // kind was added.
 //
-// Deliberately a value substitution and NOT a flag the core understands. An
-// earlier attempt had registration recognise `--sysroot` and the shim
-// re-emit it, which put a GCC/Clang spelling inside a generic version
-// manager: it did nothing for `-isysroot`, nothing for `--gcc-toolchain=`,
-// nothing for a plain environment variable, and nothing at all for the envs
-// map -- where the same defect lived and had no flag to hang off. Storing the
-// placeholder inside the value leaves the recipe owning the syntax and the
-// core owning only its own marker.
-inline constexpr std::string_view kSubosPlaceholder = "${XLINGS_SUBOS}";
-
-// Rewrite every subos path of this home to the placeholder.
+// **The core knows this marker and nothing else.** It does not know
+// `--sysroot`, `-isysroot` or `--gcc-toolchain=`; how a tool wants to be told
+// is the recipe's business, and a new toolchain with a new spelling needs no
+// change here. What xlings owns is the dictionary of runtime FACTS a recipe
+// can reference by name; what a recipe owns is the syntax it renders them
+// into. An earlier attempt inverted that -- registration recognised
+// `--sysroot` and the shim re-emitted it -- which put one compiler's flag
+// inside a generic version manager and still did nothing for `envs`.
 //
-// This is normalize_subos_paths with the placeholder as the destination --
+// Measured before choosing: of 184 `xvm.add` calls in the package index,
+// exactly one (gcc.lua) puts a subos path into an alias. musl-gcc.lua also
+// writes absolute paths there, but they point into the PAYLOAD and are
+// therefore correct from every subos -- which is why the rule is "no concrete
+// SUBOS path", not "no absolute path".
+inline constexpr std::string_view kSubosPlaceholder =
+    "${XLINGS_DYNAMIC_SUBOS_DIR}";
+
+// Rewrite every concrete subos path of this home to the marker.
+//
+// A REPAIR primitive, not an ingestion filter: registration stores what the
+// recipe wrote, verbatim. This is what `self doctor --fix` applies to a
+// record that pinned one subos, and what the detection side asks ("would this
+// change?") so that detection and repair cannot drift.
+//
+// Implemented as normalize_subos_paths with the marker as the destination --
 // literally the same traversal, so the two can never disagree about which
-// paths are ours. A `--sysroot` pointing at a payload directory or at /opt is
-// left byte-identical, because those are already correct from every subos.
+// paths are ours.
 std::string pin_subos_paths(const std::string& text,
                             const std::string& xlings_home) {
     return normalize_subos_paths(text, xlings_home,
@@ -667,7 +679,6 @@ nlohmann::json vdata_to_json(const VData& vdata) {
     if (!vdata.alias.empty()) {
         j["alias"] = vdata.alias;
     }
-    if (vdata.sysroot) j["sysroot"] = true;
     if (!vdata.envs.empty()) {
         nlohmann::json envs_j = nlohmann::json::object();
         for (auto it = vdata.envs.begin(); it != vdata.envs.end(); ++it) {
@@ -775,8 +786,6 @@ VData vdata_from_json(const nlohmann::json& j) {
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())
         vdata.libdir = j["libdir"].get<std::string>();
-    if (j.contains("sysroot") && j["sysroot"].is_boolean())
-        vdata.sysroot = j["sysroot"].get<bool>();
     if (j.contains("alias") && j["alias"].is_array()) {
         for (auto& a : j["alias"]) {
             if (a.is_string()) vdata.alias.push_back(a.get<std::string>());

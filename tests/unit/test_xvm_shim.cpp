@@ -828,18 +828,16 @@ TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
 
 // ── Pinning a subos path to the placeholder ──────────────────────────
 //
-// The versions database is shared by every subos in the home -- the same rule
-// VData::fileSrc/fileDst has carried since the `files` kind was added, never
-// applied to the alias or to envs. A recipe can only name a subos with the one
-// active while its config hook runs, so registration replaces it with
-// `${XLINGS_SUBOS}` and the shim -- the only layer that knows which subos the
-// calling process resolved to -- substitutes it back.
+// A recipe that needs the ACTIVE subos writes `${XLINGS_DYNAMIC_SUBOS_DIR}`;
+// the shim -- the only layer that knows which subos the calling process
+// resolved to -- substitutes it at exec time. The core knows that marker and
+// nothing else: not `--sysroot`, not `-isysroot`, not `--gcc-toolchain=`. How
+// a tool wants to be told is the recipe's business.
 //
-// Deliberately a VALUE substitution and not a flag the core understands. The
-// release before this one recognised `--sysroot` at registration and re-emitted
-// it at exec: that put a GCC/Clang spelling inside a generic version manager,
-// did nothing for `-isysroot` or `--gcc-toolchain=`, and could not touch envs
-// at all -- where the identical defect lived with no flag to hang off.
+// `pin_subos_paths` is the REPAIR direction, used by `self doctor --fix` and
+// by the detection that decides whether a repair is needed. Registration
+// stores what the recipe wrote, verbatim -- the core does not rewrite recipe
+// values.
 
 namespace {
 std::string pin(std::string_view text, std::string_view home) {
@@ -853,36 +851,36 @@ std::string unpin(std::string_view text, std::string_view subos) {
 
 TEST(SubosPlaceholderTest, PinsAnAliasSysroot) {
     EXPECT_EQ(pin("g++ --sysroot=/home/u/.xlings/subos/default", "/home/u/.xlings"),
-              "g++ --sysroot=${XLINGS_SUBOS}");
+              "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}");
 }
 
 TEST(SubosPlaceholderTest, PinsAFlagSpellingTheCoreHasNeverHeardOf) {
     // The whole point: the core substitutes a value, so the argument syntax is
     // the recipe's business. None of these spellings appear anywhere in xlings.
     EXPECT_EQ(pin("clang -isysroot /home/u/.xlings/subos/dev", "/home/u/.xlings"),
-              "clang -isysroot ${XLINGS_SUBOS}");
+              "clang -isysroot ${XLINGS_DYNAMIC_SUBOS_DIR}");
     EXPECT_EQ(pin("clang --gcc-toolchain=/home/u/.xlings/subos/dev/usr",
                   "/home/u/.xlings"),
-              "clang --gcc-toolchain=${XLINGS_SUBOS}/usr");
+              "clang --gcc-toolchain=${XLINGS_DYNAMIC_SUBOS_DIR}/usr");
 }
 
 TEST(SubosPlaceholderTest, PinsAnEnvValue) {
     // envs were unreachable when this was a flag -- there is no `--sysroot` to
     // recognise in a PKG_CONFIG_PATH.
     EXPECT_EQ(pin("/home/u/.xlings/subos/dev/usr/lib/pkgconfig", "/home/u/.xlings"),
-              "${XLINGS_SUBOS}/usr/lib/pkgconfig");
+              "${XLINGS_DYNAMIC_SUBOS_DIR}/usr/lib/pkgconfig");
 }
 
 TEST(SubosPlaceholderTest, PinsEveryOccurrence) {
     EXPECT_EQ(pin("-I/home/u/.xlings/subos/a/usr/include "
                   "-L/home/u/.xlings/subos/a/lib", "/home/u/.xlings"),
-              "-I${XLINGS_SUBOS}/usr/include -L${XLINGS_SUBOS}/lib");
+              "-I${XLINGS_DYNAMIC_SUBOS_DIR}/usr/include -L${XLINGS_DYNAMIC_SUBOS_DIR}/lib");
 }
 
 TEST(SubosPlaceholderTest, PinsAProjectSubosToo) {
     // <projectDir>/.xlings/subos/<n> is not under the home and is still ours.
     EXPECT_EQ(pin("g++ --sysroot=/w/proj/.xlings/subos/pa", "/home/u/.xlings"),
-              "g++ --sysroot=${XLINGS_SUBOS}");
+              "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}");
 }
 
 TEST(SubosPlaceholderTest, LeavesAPayloadPathAlone) {
@@ -904,7 +902,7 @@ TEST(SubosPlaceholderTest, IsIdempotent) {
 }
 
 TEST(SubosPlaceholderTest, ExpandsBackToTheActiveSubos) {
-    EXPECT_EQ(unpin("g++ --sysroot=${XLINGS_SUBOS}", "/home/u/.xlings/subos/dev"),
+    EXPECT_EQ(unpin("g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}", "/home/u/.xlings/subos/dev"),
               "g++ --sysroot=/home/u/.xlings/subos/dev");
 }
 
@@ -921,7 +919,7 @@ TEST(SubosPlaceholderTest, RoundTripsToWhicheverSubosIsActive) {
 
 TEST(SubosPlaceholderTest, ExpandingWithNoActiveSubosLeavesTheMarker) {
     // Better a visible marker than a path built from an empty string.
-    const std::string cmd = "g++ --sysroot=${XLINGS_SUBOS}";
+    const std::string cmd = "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}";
     EXPECT_EQ(unpin(cmd, ""), cmd);
 }
 

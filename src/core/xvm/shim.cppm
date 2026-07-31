@@ -449,10 +449,11 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // Setup custom envs
         setup_envs(*vdata, "", xlings_home, active_subos_dir);
 
-        // The alias may carry the absolute path of whatever subos was active
-        // when the package was installed (gcc.lua bakes `--sysroot=<subos>`).
-        // Re-point it at the subos THIS process resolves to -- project, env
-        // and global selection all land on xvm_artifact_subos_dir().
+        // COMPAT: an alias written before the placeholder existed carries the
+        // absolute path of whatever subos was active at install time. Re-point
+        // it at the subos THIS process resolves to -- project, env and global
+        // selection all land on xvm_artifact_subos_dir(). A record written by
+        // a current xlings has no such path, so this is a no-op for it.
         //
         // Kept for records written before the placeholder existed. New
         // records carry `${XLINGS_SUBOS}` and have no path here to rewrite.
@@ -464,17 +465,6 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // -- which is exactly why the answer was not in the database.
         alias_cmd = expand_subos_placeholder(alias_cmd, active_subos_dir);
 
-        // COMPAT(2026.7.31.1 → drop in 0.6.0): that one release recorded the
-        // request as a boolean and had the shim re-emit `--sysroot` itself.
-        // Reading it costs three lines; not reading it would silently drop
-        // the flag from every record that release wrote. The spelling is not
-        // reintroduced anywhere else -- a version manager has no business
-        // knowing a compiler's flags, which is why the placeholder replaced
-        // it.
-        if (vdata->sysroot && !active_subos_dir.empty()
-            && alias_cmd.find("--sysroot") == std::string::npos) {
-            alias_cmd += " --sysroot=" + active_subos_dir;
-        }
 
         if (depth >= MAX_SHIM_DEPTH) {
             // Fallback: resolve alias command to full path to break recursion

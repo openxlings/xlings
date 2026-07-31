@@ -24,10 +24,6 @@ struct RegistrationNode {
     std::string fileSrc;
     std::string fileDst;
     std::vector<std::string> alias;
-    // The alias asked for the active subos's sysroot. Recorded as intent, not
-    // as one subos's path -- see VData::sysroot. Lifted out of the alias by
-    // the caller, which is the layer that knows where the home is.
-    bool sysroot { false };
     std::map<std::string, std::string> envs;
     std::optional<RegistrationBinding> binding;
 };
@@ -894,7 +890,6 @@ apply_registration_batch(
         data.destinationName =
             node.kind == "group" ? std::string{} : node.destinationName;
         data.alias = node.alias;
-        data.sysroot = node.sysroot;
         data.envs = node.envs;
         data.bindingGroup.reset();
         data.bindingMembers.clear();

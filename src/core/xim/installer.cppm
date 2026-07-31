@@ -373,19 +373,16 @@ normalize_xpkg_registration_plan(
             return std::unexpected(std::move(exactVersion.error()));
         }
         registrationNode.version = std::move(*exactVersion);
-        // A recipe can only name a subos with the one that is active while
-        // its config hook runs, and this database is shared by every subos --
-        // so the path is replaced with the placeholder on the way in and the
-        // shim substitutes whichever subos the calling process resolves to.
-        // Applies to envs as well as the alias: the defect is a property of
-        // the VALUE, not of any particular flag. See kSubosPlaceholder.
-        const auto homeStr = Config::paths().homeDir.string();
+        // Stored verbatim. The core does not rewrite what a recipe wrote --
+        // it only expands its OWN marker at execution time
+        // (kSubosPlaceholder). A recipe that needs the active subos writes
+        // the marker; one that writes a concrete subos path gets the legacy
+        // treatment (normalize_subos_paths at dispatch) and a doctor finding
+        // telling it so.
         if (!operation.alias.empty()) {
-            registrationNode.alias.push_back(
-                xvm::pin_subos_paths(operation.alias, homeStr));
+            registrationNode.alias.push_back(operation.alias);
         }
-        for (const auto& [key, rawValue] : operation.envs) {
-            const auto value = xvm::pin_subos_paths(rawValue, homeStr);
+        for (const auto& [key, value] : operation.envs) {
             auto [environmentIt, inserted] =
                 registrationNode.envs.emplace(key, value);
             if (!inserted && environmentIt->second != value) {

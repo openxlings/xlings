@@ -520,20 +520,16 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 std::vector<std::string> baked;
                 // A subos path stored in a database every subos shares.
                 //
-                // Alias and envs are asked the SAME question now -- "would
-                // pinning rewrite this?" -- because they have the same fix.
-                // The earlier shape asked the alias a different question (can
-                // a `--sysroot` flag be lifted out of it), which meant the
-                // core had to know a compiler's flag spelling and could do
-                // nothing at all for envs. The defect is a property of the
-                // VALUE, not of any argument syntax.
+                // Alias and envs are asked the SAME question -- "does this
+                // pin one subos?" -- because they have the same fix and the
+                // same cause. The defect is a property of the VALUE, not of
+                // any argument syntax, which is why an earlier shape that
+                // looked for a `--sysroot` flag could do nothing for envs.
                 //
-                // Detection calls the same function the repair calls, so the
-                // two cannot drift: whatever `pin_subos_paths` would rewrite
-                // is exactly what is reported, and after the repair there is
-                // nothing left to rewrite -- the finding goes away
-                // permanently rather than moving to whichever subos ran
-                // doctor next.
+                // Detection calls the function the repair calls, so the two
+                // cannot drift, and after the repair there is nothing left to
+                // rewrite: the finding goes away permanently instead of
+                // moving to whichever subos runs doctor next.
                 const auto note_if_baked = [&](std::string_view what,
                                                const std::string& value) {
                     if (xvm::pin_subos_paths(value, st.homeStr) != value) {

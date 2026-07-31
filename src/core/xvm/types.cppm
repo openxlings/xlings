@@ -41,25 +41,6 @@ struct VData {
     std::string fileDst;
     std::vector<std::string> alias;
 
-    // COMPAT(2026.7.31.1 → drop in 0.6.0). Read-only: nothing writes it.
-    //
-    // That one release recorded "this entry wants the active subos's sysroot"
-    // as a boolean, and had the shim append `--sysroot=<dir>` itself. The idea
-    // was right -- store the intent, not one subos's answer to it -- and the
-    // granularity was wrong: it put a GCC/Clang flag spelling inside a generic
-    // version manager. It did nothing for `-isysroot`, nothing for
-    // `--gcc-toolchain=`, and nothing at all for `envs`, where the identical
-    // defect lived with no flag to hang off.
-    //
-    // Replaced by `${XLINGS_SUBOS}` inside the value itself (see
-    // xvm::kSubosPlaceholder): the recipe owns the argument syntax, the core
-    // owns only its own marker, and alias and envs get the same treatment
-    // because the defect was never a property of the syntax.
-    //
-    // Still read, because records written by that release exist and dropping
-    // the field would silently strip the flag from every one of them.
-    bool sysroot { false };
-
     std::map<std::string, std::string> envs;
     std::optional<BindingGroupRef> bindingGroup;
     std::map<std::string, std::string> bindingMembers;
