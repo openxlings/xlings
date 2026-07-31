@@ -90,7 +90,9 @@ xpkgs/
     3.12.4/   ← SubOS-B installed[]
 ```
 
-`xpkgs/` 是唯一存储位置。多个 SubOS 的 `installed[]` 指向同一物理路径，无需复制。`xlings use` 在新 SubOS 中激活已有版本时自动将其加入 `installed[]`（零拷贝操作）。
+`xpkgs/` 是唯一存储位置。多个 SubOS 的 `installed[]` 指向同一物理路径，无需复制 —— 所以让一个新 SubOS 用上已有版本，**代价只是一次 workspace 写入**。
+
+但把这件事交给 `xlings use` 是错的，`2026.7.31.3` 已经改掉。`use` 只在**本 SubOS 的 `installed[]` 里**切换；某个版本在别的 SubOS 装过，不代表它在这里能用：**VersionDB 不记录依赖关系**，所以"直接激活 gcc"激活不了它依赖的 glibc，得到的是一个能跑、`-print-sysroot` 也对、唯独编译不了的工具链，而 `use` 连缺了什么都答不上来。纳入新 SubOS 由 `xlings install` 负责 —— 它解析依赖，而且因为 payload 共享，已装过的部分同样不会重新下载。
 
 ## `xlings use` 命令流程
 
@@ -99,7 +101,9 @@ flowchart TD
     A[xlings use gcc 15] --> B{VersionDB 存在?}
     B -- 否 --> ERR[报错: 未安装]
     B -- 是 --> C[模糊匹配: 15 → 15.1.0]
-    C --> D[切换 headers/libs 符号链接]
+    C --> S{本 SubOS installed[] 里有?}
+    S -- 否 --> ERR2[拒绝并提示 xlings install<br/>不做任何改动]
+    S -- 是 --> D[切换 headers/libs 符号链接]
     D --> E[遍历 bindings 树收集关联目标]
     E --> F[更新 SubOS workspace + installed]
     F --> G[创建/更新 bin/ shim 硬链接]
@@ -107,6 +111,7 @@ flowchart TD
 ```
 
 步骤说明：
+0. 作用域闸门：目标版本必须在本 SubOS 的 `installed[]` 里，否则**在动任何文件之前**拒绝
 1. 模糊版本匹配（`match_version`）：前缀匹配 + 降序选最高
 2. 头文件/库切换：移除旧版 symlink，安装新版到 `subos/usr/include`、`subos/usr/lib`
 3. Binding 传播：gcc 切换时自动同步 g++ 到对应版本
@@ -118,6 +123,6 @@ flowchart TD
 | 场景 | 传统方案 | xvm |
 |------|----------|-----|
 | 3 个 SubOS 各用 gcc 15.1.0 | 3 份副本 | 1 份 + 3 条 installed 记录 |
-| 新 SubOS 激活已有版本 | 完整安装 | workspace 写入（毫秒级） |
+| 新 SubOS 纳入已有版本（`install`） | 完整安装 | workspace 写入（毫秒级，payload 命中） |
 
 **N 个环境 ≈ 1x 存储**——所有环境共享 `xpkgs/` 下的同一 payload。
