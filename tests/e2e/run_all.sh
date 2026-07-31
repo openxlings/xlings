@@ -101,6 +101,7 @@ TESTS=(
     "E2E-49 |group_switch_report_test.sh||"
     "E2E-50 |subos_scope_authority_test.sh||"
     "E2E-51 |install_use_semantics_test.sh||"
+    "E2E-52 |inactive_installed_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

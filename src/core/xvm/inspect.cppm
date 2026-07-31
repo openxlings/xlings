@@ -276,6 +276,32 @@ std::vector<BindingFinding> inspect_binding_state(
             const bool coherent = activeIt != workspace.end()
                 && activeIt->second == memberVersion;
             if (coherent) continue;
+
+            // A name another PROVIDER owns is not this release breaking step.
+            //
+            // Two packages can register the same program name -- node's
+            // release registers `npm`, and a standalone npm package registers
+            // it too. Whichever is active, the other release's member is
+            // "wrong" by version alone, and calling that incoherent asks the
+            // user to run a `use` that would take the name away from the
+            // package they chose. Registration applies the same rule from the
+            // other side: a foreign claim does not veto its siblings, and a
+            // foreign claim is not a defect afterwards either. A contest with
+            // the SAME provider is a genuinely split release and still
+            // reported.
+            if (activeIt != workspace.end()) {
+                const auto holderIt = db.find(memberTarget);
+                if (holderIt != db.end()) {
+                    const auto heldIt =
+                        holderIt->second.versions.find(activeIt->second);
+                    if (heldIt != holderIt->second.versions.end()
+                        && heldIt->second.bindingGroup
+                        && heldIt->second.bindingGroup->provider
+                               != dataIt->second.bindingGroup->provider) {
+                        continue;
+                    }
+                }
+            }
             const auto key = dataIt->second.bindingGroup->provider + "@"
                 + dataIt->second.bindingGroup->providerVersion + "/"
                 + memberTarget;

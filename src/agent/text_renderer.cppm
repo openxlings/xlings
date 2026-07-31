@@ -113,10 +113,16 @@ export void render_data_event(const DataEvent& e) {
             bool numbered = json.value("numbered", false);
             for (auto& item : json["items"]) {
                 if (item.is_array() && item.size() >= 2) {
+                    // The status qualifier goes next to the name, not at the
+                    // end of the line: an agent reading this transcript must
+                    // not be able to attribute `inactive` to the description.
+                    std::string status = item.size() >= 3
+                        ? item[2].get<std::string>() : std::string{};
+                    if (!status.empty()) status = " [" + status + "]";
                     if (numbered) {
-                        std::println("  {}. {} {}", idx++, item[0].get<std::string>(), item[1].get<std::string>());
+                        std::println("  {}. {}{} {}", idx++, item[0].get<std::string>(), status, item[1].get<std::string>());
                     } else {
-                        std::println("  {} {}", item[0].get<std::string>(), item[1].get<std::string>());
+                        std::println("  {}{} {}", item[0].get<std::string>(), status, item[1].get<std::string>());
                     }
                 } else if (item.is_string()) {
                     if (numbered) {

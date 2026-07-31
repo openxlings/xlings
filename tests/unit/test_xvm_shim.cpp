@@ -241,6 +241,142 @@ TEST(XvmShimTest, ResolveAliasDirectPath) {
 }
 
 // ============================================================
+// alias resolution — the four tiers the runtime actually searches
+// ============================================================
+//
+// The alias branch of shim_dispatch prepends `<payload>`, `<payload>/bin` and
+// the subos bin dir to PATH and hands the command to a shell, so an alias can
+// legitimately resolve at any of four places. `self doctor` used to ask
+// resolve_executable, which knows only the first two, and reported the other
+// two as broken — thirty-four false warnings on one measured home, with a
+// genuinely unresolvable alias indistinguishable among them.
+
+namespace {
+
+struct AliasFixture {
+    std::filesystem::path root;
+    std::filesystem::path payload;
+    std::filesystem::path subosBin;
+    std::filesystem::path hostBin;
+
+    explicit AliasFixture(std::string_view name) {
+        namespace fs = std::filesystem;
+        root = fs::temp_directory_path() / name;
+        fs::remove_all(root);
+        payload  = root / "payload";
+        subosBin = root / "subos" / "bin";
+        hostBin  = root / "host" / "bin";
+        fs::create_directories(payload / "bin");
+        fs::create_directories(subosBin);
+        fs::create_directories(hostBin);
+    }
+    ~AliasFixture() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+
+    void put(const std::filesystem::path& dir, std::string_view name) const {
+        xlings::platform::write_string_to_file(
+            (dir / name).string(), "#!/bin/sh\n");
+    }
+};
+
+}  // namespace
+
+TEST(AliasResolutionTest, ItsOwnPayloadWins) {
+    AliasFixture fx{"xlings_alias_tier_payload"};
+    fx.put(fx.payload / "bin", "tool");
+    fx.put(fx.subosBin, "tool");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "tool", fx.payload.string(), "", fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::Payload);
+    EXPECT_EQ(r.path, fx.payload / "bin" / "tool");
+}
+
+// The `madd` → `mcpp` case, and the reason thirty of the measured warnings
+// existed: the package that registers the short commands ships no payload at
+// all, and every one of its aliases names a program another package
+// installed.
+TEST(AliasResolutionTest, ASiblingShimInTheSubosResolves) {
+    AliasFixture fx{"xlings_alias_tier_sibling"};
+    fx.put(fx.subosBin, "mcpp");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "mcpp", fx.payload.string(), "", fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::SubosBin);
+    EXPECT_EQ(r.path, fx.subosBin / "mcpp");
+}
+
+TEST(AliasResolutionTest, AHostCommandIsFoundAndNamedAsSuch) {
+    AliasFixture fx{"xlings_alias_tier_host"};
+    fx.put(fx.hostBin, "sh");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "sh", fx.payload.string(), "", fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::SystemPath);
+    EXPECT_EQ(r.path, fx.hostBin / "sh");
+}
+
+TEST(AliasResolutionTest, TheSubosComesBeforeTheHost) {
+    // Order matters: the runtime PREPENDS the subos bin dir, so a name that
+    // exists in both is xlings's, not the host's. Getting this backwards
+    // would report a working sibling command as a portability problem.
+    AliasFixture fx{"xlings_alias_tier_order"};
+    fx.put(fx.subosBin, "git");
+    fx.put(fx.hostBin, "git");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "git", fx.payload.string(), "", fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::SubosBin);
+}
+
+TEST(AliasResolutionTest, NothingAnywhereIsNowhere) {
+    AliasFixture fx{"xlings_alias_tier_nowhere"};
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "absent", fx.payload.string(), "", fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::Nowhere);
+    EXPECT_TRUE(r.path.empty());
+}
+
+// An absolute alias is a pinned path, not a host command. The measured home
+// had five `claude` entries whose alias is a full path into xlings's own
+// payload store; calling those "satisfied by the host" inverts the
+// portability fact they represent.
+TEST(AliasResolutionTest, AnAbsolutePathThatExistsIsItsOwnAnswer) {
+    AliasFixture fx{"xlings_alias_tier_abs"};
+    fx.put(fx.payload, "pinned");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        (fx.payload / "pinned").string(), fx.payload.string(), "",
+        fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::Absolute);
+}
+
+// ...and the shape doctor could never report before, because it skipped
+// absolute aliases without looking at them.
+TEST(AliasResolutionTest, AnAbsolutePathThatIsGoneIsNowhere) {
+    AliasFixture fx{"xlings_alias_tier_abs_gone"};
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        (fx.payload / "vanished").string(), fx.payload.string(), "",
+        fx.subosBin, fx.hostBin.string());
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::Nowhere);
+}
+
+// A caller that cannot see a representative PATH must not conclude the alias
+// is broken on the strength of its own stripped environment.
+TEST(AliasResolutionTest, AnEmptySearchPathIsNotSearched) {
+    AliasFixture fx{"xlings_alias_tier_nopath"};
+    fx.put(fx.hostBin, "tool");
+
+    const auto r = xlings::xvm::resolve_alias_program(
+        "tool", fx.payload.string(), "", fx.subosBin, "");
+    EXPECT_EQ(r.origin, xlings::xvm::AliasOrigin::Nowhere);
+}
+
+// ============================================================
 // xvm config integration tests (filesystem-based)
 // ============================================================
 

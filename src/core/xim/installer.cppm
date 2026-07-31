@@ -373,6 +373,28 @@ normalize_xpkg_registration_plan(
             return std::unexpected(std::move(exactVersion.error()));
         }
         registrationNode.version = std::move(*exactVersion);
+        // Is there a command behind this name, or is it a pure anchor?
+        //
+        // The registration layer cannot ask -- it never touches the
+        // filesystem -- and nothing else in the record distinguishes the two:
+        // an anchor registered with no bindir still gets the package install
+        // dir as its `path`, still defaults to kind "program", and still has a
+        // sourceName derived from its own target. The payload has run by the
+        // time config() does, so the file either is there or it is not, and
+        // this is the layer that can look.
+        //
+        // Same helper the shim dispatches through, so "registration thinks
+        // there is a program here" and "the shim finds one" cannot disagree.
+        // An alias-mode entry runs something else by definition and is
+        // runnable regardless.
+        // `operation.alias`, not `registrationNode.alias`: the latter is
+        // filled in further down and is still empty here.
+        if (kind == "program" && operation.alias.empty()) {
+            registrationNode.runnable = !xvm::resolve_executable(
+                sourceName.empty() ? operation.name : sourceName,
+                registrationNode.path,
+                Config::paths().homeDir.string()).empty();
+        }
         // Stored verbatim. The core does not rewrite what a recipe wrote --
         // it only expands its OWN marker at execution time
         // (kSubosPlaceholder). A recipe that needs the active subos writes

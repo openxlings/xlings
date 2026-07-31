@@ -365,27 +365,66 @@ RUN install alias-fixture@1.0.0 -y >/dev/null 2>&1 \
 RUN self doctor >/dev/null 2>&1 \
   || fail "S9: alias resolves correctly, doctor should be OK"
 
-# ── S10: alias's underlying binary missing → warning ───────────────
-log "S10: rm alias target → doctor reports warning (not error)"
+# ── S10: the three tiers below the payload ─────────────────────────
+#
+# The runtime resolves an alias through four places, in order: the payload,
+# the payload's bin, the subos bin dir, and the inherited PATH. doctor used to
+# ask only about the first two and call everything past them one warning, so a
+# package whose aliases name a sibling package's command — thirty of mcpp's
+# short commands do — was reported broken on every run while working
+# perfectly, and a genuinely unresolvable alias was one indistinguishable line
+# among them.
+#
+# RUN() supplies `PATH=/usr/bin:/bin`, so what the host can satisfy is fixed
+# and these three cases are deterministic.
 ALIAS_PAYLOAD="$HOME_DIR/data/xpkgs/xim-x-alias-fixture/1.0.0/bin/alias-real"
+SUBOS_BIN="$HOME_DIR/subos/default/bin"
+
+log "S10a: alias target only in the subos bin dir → silent, exit 0"
 rm -f "$ALIAS_PAYLOAD"
-# Reset rc — it leaks across scenarios via the `cmd || rc=$?` pattern, so a
-# successful exit here would otherwise still see the previous run's value.
+printf '#!/bin/sh\necho sibling\n' > "$SUBOS_BIN/alias-real"
+chmod +x "$SUBOS_BIN/alias-real"
 rc=0
 out=$(RUN self doctor 2>&1) || rc=$?
 echo "$out" | grep -q "alias unresolved" \
-  || fail "S10: should report 'alias unresolved' warning; got:\n$out"
-# Warning-level → exit 0 (no errors; could be intentional system command)
-[[ $rc -eq 0 ]] || fail "S10: alias warning alone should exit 0; got $rc"
-# --fix MUST NOT touch warning-level findings
-RUN self doctor --fix >/dev/null 2>&1
-python3 - "$HOME_DIR" <<'PY' || fail "S10: --fix should not touch alias warning"
-import json, sys, pathlib
-home = sys.argv[1]
-data = json.loads(pathlib.Path(home, ".xlings.json").read_text())
-vers = (data.get("versions") or {}).get("alias-fixture", {}).get("versions", {})
-assert "1.0.0" in vers, "S10: alias-fixture@1.0.0 should remain registered (warning is non-actionable)"
+  && fail "S10a: a sibling command in the subos bin dir resolves at runtime; got:\n$out"
+[[ $rc -eq 0 ]] || fail "S10a: nothing is wrong, expected exit 0; got $rc"
+rm -f "$SUBOS_BIN/alias-real"
+
+log "S10b: alias target only on the host PATH → notice, exit 0"
+# `sh` is on /bin in every environment RUN() constructs.
+python3 - "$HOME_DIR" <<'PY' || fail "S10b setup: could not repoint the alias"
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1], ".xlings.json")
+data = json.loads(p.read_text())
+data["versions"]["alias-fixture"]["versions"]["1.0.0"]["alias"] = ["sh"]
+p.write_text(json.dumps(data, indent=2))
 PY
+rc=0
+out=$(RUN self doctor 2>&1) || rc=$?
+echo "$out" | grep -q "alias unresolved" \
+  && fail "S10b: a host command satisfies the alias; that is a notice, not a defect; got:\n$out"
+[[ $rc -eq 0 ]] || fail "S10b: a host-satisfied alias must not set the exit code; got $rc"
+RUN self doctor --all 2>&1 | grep -q "host alias" \
+  || fail "S10b: --all should name the alias the host is satisfying"
+
+log "S10c: alias target nowhere at all → error, exit 1"
+python3 - "$HOME_DIR" <<'PY' || fail "S10c setup: could not repoint the alias"
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1], ".xlings.json")
+data = json.loads(p.read_text())
+data["versions"]["alias-fixture"]["versions"]["1.0.0"]["alias"] = ["alias-real"]
+p.write_text(json.dumps(data, indent=2))
+PY
+rc=0
+out=$(RUN self doctor 2>&1) || rc=$?
+echo "$out" | grep -q "alias unresolved" \
+  || fail "S10c: an alias with nothing to exec must be reported; got:\n$out"
+echo "$out" | grep -q "resolves to nothing" \
+  || fail "S10c: the finding should say what was searched; got:\n$out"
+# The behaviour change this scenario exists to pin: it used to be a warning
+# that exited 0, which is how it stayed invisible among the false ones.
+[[ $rc -eq 1 ]] || fail "S10c: an unresolvable alias is an error; expected exit 1, got $rc"
 
 # ── S11: repairing an alias-mode entry is reported as repaired ─────
 #

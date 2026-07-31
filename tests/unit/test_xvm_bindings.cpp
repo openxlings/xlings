@@ -3198,6 +3198,171 @@ TEST(XvmRegistrationTest, AnUncontestedRootStillLosesWithItsGroup) {
         db, "xim-musl-gnu-gcc", "15.1.0-musl"));
 }
 
+// The measured break: `codex` reporting
+// `/usr/bin/env: 'node': No such file or directory` on a home where node was
+// installed, its payload intact, and its shim never written.
+//
+// node's release registers `node`, `npm` and `npx`. A separately installed
+// npm package held `npm`. The activation vote was "is ANY member name already
+// active", so one contested name suppressed the whole release and `node` --
+// which nothing else on the machine provides -- came out installed and
+// unreachable. Nothing reported it: `xlings list` showed the package as
+// installed, and `self doctor` had no check that looked at the selection.
+TEST(XvmRegistrationTest, AForeignProvidersClaimDoesNotVetoItsSiblings) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    // A standalone npm package takes the `npm` name first.
+    auto standaloneNpm = make_registration_node("npm", "11.2.0");
+    auto npmBatch = make_registration_batch({standaloneNpm});
+    npmBatch.provider = "xim:npm";
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, npmBatch);
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    ASSERT_EQ(workspace.at("npm"), "11.2.0");
+
+    // Then the node release arrives, which also registers `npm`.
+    auto nodeRoot = make_registration_node("node", "24.15.0");
+    auto nodeNpm = make_registration_node("npm", "node-24.15.0");
+    nodeNpm.binding = make_registration_binding("node", "24.15.0", "node");
+    auto nodeNpx = make_registration_node("npx", "node-24.15.0");
+    nodeNpx.binding = make_registration_binding("node", "24.15.0", "node");
+    auto nodeBatch = make_registration_batch({nodeRoot, nodeNpm, nodeNpx});
+    nodeBatch.provider = "xim:node";
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, nodeBatch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    EXPECT_EQ(workspace.at("npm"), "11.2.0")
+        << "installing node took a name another provider owns";
+    ASSERT_TRUE(workspace.contains("node"))
+        << "node is installed and unreachable: no active version, so no shim";
+    EXPECT_EQ(workspace.at("node"), "24.15.0");
+    ASSERT_TRUE(workspace.contains("npx"))
+        << "npx is uncontested too and lost the same vote";
+    EXPECT_EQ(workspace.at("npx"), "node-24.15.0");
+}
+
+// The other side of the same rule. A contest with the SAME provider is an
+// older release of this very package, and moving some names to the new one
+// while the rest stay behind is the split the binding-group model exists to
+// prevent. Choosing between two releases of one package is `use`, not
+// install.
+TEST(XvmRegistrationTest, TheSameProvidersOlderReleaseStillVetoesTheGroup) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto oldGcc = make_registration_node("gcc", "15.1.0");
+    auto oldCxx = make_registration_node("g++", "15.1.0");
+    oldCxx.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "15.1.0"};
+    auto firstBatch = make_registration_batch({oldGcc, oldCxx});
+    firstBatch.provider = "xim:gcc";
+    firstBatch.providerVersion = "15.1.0";
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, firstBatch);
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    ASSERT_EQ(workspace.at("gcc"), "15.1.0");
+
+    // 16.1.0 from the same provider, and it adds a name 15.1.0 did not have.
+    auto newGcc = make_registration_node("gcc", "16.1.0");
+    auto newCxx = make_registration_node("g++", "16.1.0");
+    newCxx.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "16.1.0"};
+    auto newAr = make_registration_node("gcc-ar", "16.1.0");
+    newAr.binding = xlings::xvm::RegistrationBinding{
+        .rootTarget = "gcc", .rootVersion = "16.1.0"};
+    auto secondBatch = make_registration_batch({newGcc, newCxx, newAr});
+    secondBatch.provider = "xim:gcc";
+    secondBatch.providerVersion = "16.1.0";
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, secondBatch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0");
+    EXPECT_EQ(workspace.at("g++"), "15.1.0");
+    EXPECT_FALSE(workspace.contains("gcc-ar"))
+        << "an uncontested NEW member of a same-provider release was "
+           "activated on its own — the workspace now spans two releases";
+}
+
+// #452 must not come back through the new door.
+//
+// A flavor release anchors itself on a virtual root: a `group` entry with no
+// command behind it. When the contest is cross-provider the veto no longer
+// fires, so the only thing standing between this group and activation is the
+// kind check -- and activating the root would write a shim that can only
+// print "no active version", which `--fix` then deletes and the next install
+// recreates.
+TEST(XvmRegistrationTest, AGroupWhoseOnlyFreeMemberIsAnAnchorStaysInactive) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto glibcGcc = make_registration_node("gcc", "15.1.0");
+    auto glibcBatch = make_registration_batch({glibcGcc});
+    glibcBatch.provider = "xim:gcc";
+    auto first = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, glibcBatch);
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    ASSERT_EQ(workspace.at("gcc"), "15.1.0");
+
+    // musl-gcc: a DIFFERENT provider, so `gcc` does not veto. Its only other
+    // member is the anchor.
+    auto root = make_registration_node("xim-musl-gnu-gcc", "15.1.0-musl",
+                                       "group");
+    root.sourceName.clear();
+    root.destinationName.clear();
+    auto flavorGcc = make_registration_node("gcc", "15.1.0-musl");
+    flavorGcc.binding = make_registration_binding(
+        "xim-musl-gnu-gcc", "15.1.0-musl", "gcc-flavor");
+    auto flavorBatch = make_registration_batch({root, flavorGcc});
+    flavorBatch.provider = "xim:musl-gcc";
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, flavorBatch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    EXPECT_EQ(workspace.at("gcc"), "15.1.0")
+        << "the flavor took a name the glibc release still owns";
+    EXPECT_FALSE(workspace.contains("xim-musl-gnu-gcc"))
+        << "a virtual anchor was activated on its own — issue #452, whose "
+           "shim can only ever print \"no active version\"";
+}
+
+// `install --use` says the user typed the switch. Taking a contested name is
+// then not a surprise, it is the request.
+TEST(XvmRegistrationTest, UseAfterInstallStillTakesAContestedName) {
+    xlings::xvm::VersionDB db;
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+
+    auto standaloneNpm = make_registration_node("npm", "11.2.0");
+    auto npmBatch = make_registration_batch({standaloneNpm});
+    npmBatch.provider = "xim:npm";
+    ASSERT_TRUE(xlings::xvm::apply_registration_batch(
+        db, workspace, installed, npmBatch).has_value());
+
+    auto nodeRoot = make_registration_node("node", "24.15.0");
+    auto nodeNpm = make_registration_node("npm", "node-24.15.0");
+    nodeNpm.binding = make_registration_binding("node", "24.15.0", "node");
+    auto nodeBatch = make_registration_batch({nodeRoot, nodeNpm});
+    nodeBatch.provider = "xim:node";
+    nodeBatch.useAfterInstall = true;
+
+    auto second = xlings::xvm::apply_registration_batch(
+        db, workspace, installed, nodeBatch);
+    ASSERT_TRUE(second.has_value()) << second.error().message;
+
+    EXPECT_EQ(workspace.at("npm"), "node-24.15.0")
+        << "--use was ignored for a contested name";
+    EXPECT_EQ(workspace.at("node"), "24.15.0");
+}
+
 TEST(XvmRegistrationHeaderTest, UngroupedHeaderFallsBackToThePrimaryTarget) {
     auto program = make_registration_node("openssl", "repo:3.1.5");
     auto library = make_registration_node("libssl", "repo:3.1.5");
