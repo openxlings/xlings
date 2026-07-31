@@ -42,6 +42,39 @@ bool release_declares_file_assets_(const VersionDB& db,
     return false;
 }
 
+// Is this member's name currently held by a DIFFERENT provider?
+//
+// Two packages can register the same program name: node's release registers
+// `npm`, and a standalone npm package registers it too. Whichever is active,
+// the other release's member is "wrong" by version alone -- and treating that
+// as a broken release is wrong twice over. As a report it tells the user to
+// run a `use` that would take the name away from the package they chose; as a
+// REPAIR it tears down a release that is working. A contest with the SAME
+// provider is a genuinely split release and is neither.
+//
+// Extracted because the reporter and the repairer disagreed about it and that
+// disagreement shipped. `analyze_bindings` (INV-2) learned this rule in
+// 2026.8.1.1; `plan_incoherent_deactivation` -- which is what `self doctor
+// --fix` actually executes -- did not. So doctor said "this home is fine" and
+// `--fix`, on the same home, took `gcc` and `ld` down. One predicate, both
+// callers: the two cannot drift again.
+bool held_by_another_provider_(const VersionDB& db,
+                               const Workspace& workspace,
+                               const std::string& memberTarget,
+                               const std::string& releaseProvider) {
+    const auto activeIt = workspace.find(memberTarget);
+    if (activeIt == workspace.end()) return false;
+    const auto holderIt = db.find(memberTarget);
+    if (holderIt == db.end()) return false;
+    const auto heldIt = holderIt->second.versions.find(activeIt->second);
+    if (heldIt == holderIt->second.versions.end()) return false;
+    // No group metadata means an entry written before providers were
+    // recorded. Treated as the same provider, so old homes keep the older,
+    // stricter behaviour rather than silently losing a coherence check.
+    if (!heldIt->second.bindingGroup) return false;
+    return heldIt->second.bindingGroup->provider != releaseProvider;
+}
+
 }  // namespace xlings::xvm::detail_
 
 export namespace xlings::xvm {
@@ -277,30 +310,10 @@ std::vector<BindingFinding> inspect_binding_state(
                 && activeIt->second == memberVersion;
             if (coherent) continue;
 
-            // A name another PROVIDER owns is not this release breaking step.
-            //
-            // Two packages can register the same program name -- node's
-            // release registers `npm`, and a standalone npm package registers
-            // it too. Whichever is active, the other release's member is
-            // "wrong" by version alone, and calling that incoherent asks the
-            // user to run a `use` that would take the name away from the
-            // package they chose. Registration applies the same rule from the
-            // other side: a foreign claim does not veto its siblings, and a
-            // foreign claim is not a defect afterwards either. A contest with
-            // the SAME provider is a genuinely split release and still
-            // reported.
-            if (activeIt != workspace.end()) {
-                const auto holderIt = db.find(memberTarget);
-                if (holderIt != db.end()) {
-                    const auto heldIt =
-                        holderIt->second.versions.find(activeIt->second);
-                    if (heldIt != holderIt->second.versions.end()
-                        && heldIt->second.bindingGroup
-                        && heldIt->second.bindingGroup->provider
-                               != dataIt->second.bindingGroup->provider) {
-                        continue;
-                    }
-                }
+            if (detail_::held_by_another_provider_(
+                    db, workspace, memberTarget,
+                    dataIt->second.bindingGroup->provider)) {
+                continue;
             }
             const auto key = dataIt->second.bindingGroup->provider + "@"
                 + dataIt->second.bindingGroup->providerVersion + "/"
@@ -677,15 +690,25 @@ DeactivationPlan plan_incoherent_deactivation(const VersionDB& db,
         auto selection = resolve_binding_selection(db, target, version);
         if (!selection) continue;  // unresolvable is a different problem
 
+        const auto& ref = *dataIt->second.bindingGroup;
+
+        // Exactly the predicate INV-2 reports with. A member whose name is
+        // held by another provider is not this release breaking step, so it
+        // must not put this release on the teardown list either -- which it
+        // did until 2026.8.1.2, making `--fix` demolish releases `self doctor`
+        // had just called healthy.
         const bool coherent = std::ranges::all_of(
             selection->members, [&](const auto& member) {
                 auto activeIt = workspace.find(member.first);
-                return activeIt != workspace.end()
-                    && activeIt->second == member.second;
+                if (activeIt != workspace.end()
+                    && activeIt->second == member.second) {
+                    return true;
+                }
+                return detail_::held_by_another_provider_(
+                    db, workspace, member.first, ref.provider);
             });
         if (coherent) continue;
 
-        const auto& ref = *dataIt->second.bindingGroup;
         const auto label =
             std::format("{}@{}", ref.provider, ref.providerVersion);
         // Take down every member of this release that is active, not just

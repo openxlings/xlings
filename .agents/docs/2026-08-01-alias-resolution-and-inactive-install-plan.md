@@ -386,6 +386,12 @@ install 侧放行之后，`self doctor` 的 Check 4 立刻把新状态判成
 跳过被**其它 provider** 持有的名字。同 provider 的分裂仍然报。
 
 **5 — `--fix` 走 `use`，会带走被占的名字；办法是先说，不是不做。**
+> ⚠️ **本条判断有误，已被
+> `.agents/docs/2026-08-01-doctor-fix-nonconvergence-postmortem.md` 取代。**
+> 披露解决了"用户不知情"，没解决"搬走名字之后原 release 失去连贯性，
+> 会被同一次 `--fix` 里的 `plan_incoherent_deactivation` 立刻拆掉"。
+> 结果是 `--fix` 不收敛，在真实 home 上抹掉了 `gcc`/`ld` 的 active。
+
 计划的约束 1 是"`--fix` 不抢已被占用的名字"。实现时发现 `use` 天然是
 release 级操作：`xlings use node@24.15.0` 一定会把 `npm` 一起搬走，
 所以"`--fix` 做得比它自己打印的 remedy 更窄"会变成第三种行为。
