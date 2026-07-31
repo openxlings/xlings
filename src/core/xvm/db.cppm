@@ -595,72 +595,60 @@ std::string normalize_subos_paths(const std::string& text,
     return out;
 }
 
-// Lift `--sysroot=<a subos of this home>` out of an alias.
+// The marker a recipe writes when it needs the ACTIVE subos, and its
+// expansion at execution time.
 //
-// Returns the alias without that argument, and whether one was found. The
-// caller records the boolean instead of the path -- see VData::sysroot for
-// why a subos path may not live in a home-wide database at all.
+// `${XLINGS_HOME}` (expand_path, below) has always been how this codebase
+// keeps a home-relative path out of a stored record. This is the same
+// mechanism one level down, and it exists for the same reason: the versions
+// database is shared by every subos in the home, so a value naming one of
+// them is right for the subos that installed the package and wrong for all
+// the others -- the rule VData::fileSrc/fileDst has carried since the `files`
+// kind was added.
 //
-// Only OUR subos paths are lifted, decided by the same test
-// normalize_subos_paths uses: a recipe pointing --sysroot at a payload
-// directory, or at anything outside this home, is expressing something else
-// and is left byte-identical. Both `--sysroot=<p>` and `--sysroot <p>` are
-// recognised because both are valid GCC/Clang spellings and a recipe may
-// write either.
-struct AliasSysroot {
-    std::string alias;
-    bool found { false };
-};
+// **The core knows this marker and nothing else.** It does not know
+// `--sysroot`, `-isysroot` or `--gcc-toolchain=`; how a tool wants to be told
+// is the recipe's business, and a new toolchain with a new spelling needs no
+// change here. What xlings owns is the dictionary of runtime FACTS a recipe
+// can reference by name; what a recipe owns is the syntax it renders them
+// into. An earlier attempt inverted that -- registration recognised
+// `--sysroot` and the shim re-emitted it -- which put one compiler's flag
+// inside a generic version manager and still did nothing for `envs`.
+//
+// Measured before choosing: of 184 `xvm.add` calls in the package index,
+// exactly one (gcc.lua) puts a subos path into an alias. musl-gcc.lua also
+// writes absolute paths there, but they point into the PAYLOAD and are
+// therefore correct from every subos -- which is why the rule is "no concrete
+// SUBOS path", not "no absolute path".
+inline constexpr std::string_view kSubosPlaceholder =
+    "${XLINGS_DYNAMIC_SUBOS_DIR}";
 
-AliasSysroot lift_subos_sysroot(const std::string& alias,
-                                const std::string& xlings_home) {
-    AliasSysroot out{.alias = alias};
-    if (alias.empty() || xlings_home.empty()) return out;
+// Rewrite every concrete subos path of this home to the marker.
+//
+// A REPAIR primitive, not an ingestion filter: registration stores what the
+// recipe wrote, verbatim. This is what `self doctor --fix` applies to a
+// record that pinned one subos, and what the detection side asks ("would this
+// change?") so that detection and repair cannot drift.
+//
+// Implemented as normalize_subos_paths with the marker as the destination --
+// literally the same traversal, so the two can never disagree about which
+// paths are ours.
+std::string pin_subos_paths(const std::string& text,
+                            const std::string& xlings_home) {
+    return normalize_subos_paths(text, xlings_home,
+                                 std::string(kSubosPlaceholder));
+}
 
-    static constexpr std::string_view kFlag = "--sysroot";
-    std::size_t search = 0;
-    while (true) {
-        const auto at = out.alias.find(kFlag, search);
-        if (at == std::string::npos) return out;
-        // Must start a token: `--no-sysroot` and `-Wl,--sysroot` are not this.
-        if (at > 0 && out.alias[at - 1] != ' ' && out.alias[at - 1] != '\t') {
-            search = at + kFlag.size();
-            continue;
-        }
-        auto valueStart = at + kFlag.size();
-        if (valueStart < out.alias.size()
-            && (out.alias[valueStart] == '=' || out.alias[valueStart] == ' ')) {
-            ++valueStart;
-        } else {
-            search = at + kFlag.size();
-            continue;   // `--sysrootfoo`
-        }
-        auto valueEnd = out.alias.find_first_of(" \t", valueStart);
-        if (valueEnd == std::string::npos) valueEnd = out.alias.size();
-        const auto value = out.alias.substr(valueStart, valueEnd - valueStart);
-
-        // Ours only. normalize_subos_paths changes a subos path of this home
-        // and passes anything else through untouched, so "it would be
-        // rewritten" is exactly the question being asked -- and asking it
-        // this way means the two functions can never disagree about what
-        // counts as ours.
-        const auto probe = (std::filesystem::path(xlings_home)
-                            / "subos" / "current").string();
-        if (normalize_subos_paths(value, xlings_home, probe) == value
-            && value != probe) {
-            search = valueEnd;
-            continue;
-        }
-
-        // Take the flag, its value, and exactly one separating space.
-        auto cut = at;
-        while (cut > 0 && (out.alias[cut - 1] == ' ' || out.alias[cut - 1] == '\t')) {
-            --cut;
-        }
-        out.alias.erase(cut, valueEnd - cut);
-        out.found = true;
-        search = cut;
+std::string expand_subos_placeholder(const std::string& text,
+                                     const std::string& subos_dir) {
+    if (subos_dir.empty() || text.empty()) return text;
+    std::string result = text;
+    std::size_t pos = 0;
+    while ((pos = result.find(kSubosPlaceholder, pos)) != std::string::npos) {
+        result.replace(pos, kSubosPlaceholder.size(), subos_dir);
+        pos += subos_dir.size();
     }
+    return result;
 }
 
 // Expand ${XLINGS_HOME} in a path string
@@ -691,7 +679,6 @@ nlohmann::json vdata_to_json(const VData& vdata) {
     if (!vdata.alias.empty()) {
         j["alias"] = vdata.alias;
     }
-    if (vdata.sysroot) j["sysroot"] = true;
     if (!vdata.envs.empty()) {
         nlohmann::json envs_j = nlohmann::json::object();
         for (auto it = vdata.envs.begin(); it != vdata.envs.end(); ++it) {
@@ -799,8 +786,6 @@ VData vdata_from_json(const nlohmann::json& j) {
         vdata.includedir = j["includedir"].get<std::string>();
     if (j.contains("libdir") && j["libdir"].is_string())
         vdata.libdir = j["libdir"].get<std::string>();
-    if (j.contains("sysroot") && j["sysroot"].is_boolean())
-        vdata.sysroot = j["sysroot"].get<bool>();
     if (j.contains("alias") && j["alias"].is_array()) {
         for (auto& a : j["alias"]) {
             if (a.is_string()) vdata.alias.push_back(a.get<std::string>());

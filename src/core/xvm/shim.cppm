@@ -300,8 +300,10 @@ void setup_envs(const VData& vdata,
     for (auto& [key, value] : vdata.envs) {
         // Same hazard as the alias: an env value recorded at install time can
         // name that install's subos. Re-point it at the active one.
-        auto expanded = normalize_subos_paths(
-            expand_path(value, xlings_home), xlings_home, active_subos_dir);
+        auto expanded = expand_subos_placeholder(
+            normalize_subos_paths(expand_path(value, xlings_home),
+                                  xlings_home, active_subos_dir),
+            active_subos_dir);
         auto existing = std::string(std::getenv(key.c_str()) ? std::getenv(key.c_str()) : "");
         if (auto merged = merge_shim_env_value(expanded, existing))
             platform::set_env_variable(key, *merged);
@@ -447,24 +449,22 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // Setup custom envs
         setup_envs(*vdata, "", xlings_home, active_subos_dir);
 
-        // The alias may carry the absolute path of whatever subos was active
-        // when the package was installed (gcc.lua bakes `--sysroot=<subos>`).
-        // Re-point it at the subos THIS process resolves to -- project, env
-        // and global selection all land on xvm_artifact_subos_dir().
+        // COMPAT: an alias written before the placeholder existed carries the
+        // absolute path of whatever subos was active at install time. Re-point
+        // it at the subos THIS process resolves to -- project, env and global
+        // selection all land on xvm_artifact_subos_dir(). A record written by
+        // a current xlings has no such path, so this is a no-op for it.
         //
-        // Kept for records written before the flag below existed, and for any
-        // subos path an alias carries for some other reason. New records have
-        // nothing here to rewrite.
+        // Kept for records written before the placeholder existed. New
+        // records carry `${XLINGS_SUBOS}` and have no path here to rewrite.
         std::string alias_cmd = normalize_subos_paths(
             vdata->alias[0], xlings_home, active_subos_dir);
 
-        // The entry asked for the active subos's sysroot rather than storing
-        // one. This is where that request is answered -- the shim is the only
-        // layer that knows which subos this process resolved to, which is
-        // exactly why the answer is not in the database. See VData::sysroot.
-        if (vdata->sysroot && !active_subos_dir.empty()) {
-            alias_cmd += " --sysroot=" + active_subos_dir;
-        }
+        // The record stored a marker rather than one subos's answer, and this
+        // is the only layer that knows which subos this process resolved to
+        // -- which is exactly why the answer was not in the database.
+        alias_cmd = expand_subos_placeholder(alias_cmd, active_subos_dir);
+
 
         if (depth >= MAX_SHIM_DEPTH) {
             // Fallback: resolve alias command to full path to break recursion

@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.7.31.1";
+    static constexpr std::string_view VERSION = "2026.7.31.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -60,6 +60,18 @@ export std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
 }
 
 using MirrorServerMap = std::unordered_map<std::string, std::vector<std::string>>;
+
+// Which subos a process is acting on: a name and the root of its tree.
+//
+// One value rather than two lookups. Every "which subos" question in the code
+// base used to be answered by one of seven spellings, and the two that
+// mattered disagreed (see Config::resolve_subos_scope_). Handing back both
+// halves together removes the shape of that bug: a caller cannot take the
+// name from one resolution and the root from another.
+export struct SubosScope {
+    std::string name;
+    std::filesystem::path root;
+};
 
 export enum class ProjectSubosMode {
     None,
@@ -472,31 +484,47 @@ private:
         return selected;
     }
 
+    // The ONE answer to "which subos is this process acting on".
+    //
+    // Resolution priority:
+    //   1. Project-mode (Named or Anonymous) — strongest, "this directory
+    //      asks for subos X" overrides everything else. Unless `-g` was
+    //      passed, which is exactly what forceGlobalScope_ means: act on the
+    //      home, not on this project.
+    //   2. $XLINGS_ACTIVE_SUBOS env var — shell-level override; the shell
+    //      profile honors the same priority so PATH and `xpkg install`
+    //      target stay in sync.
+    //   3. globalActiveSubos_ from ~/.xlings.json — the persistent default
+    //      that new shells inherit when no env override is set.
+    //
+    // Everything that needs a subos goes through here. There used to be two
+    // implementations of this question that disagreed: `update_effective_paths_`
+    // (which ignored forceGlobalScope_ and was computed once at construction)
+    // and `xvm_artifact_subos_dir()` (which honored it and recomputed). They
+    // diverged on exactly one case -- `xlings install -g` run inside a project
+    // -- and the three paths that matter had picked different ones: install
+    // resolved artifacts with the second, while `use` and the removal path
+    // read `paths()`, i.e. the first. Installing into one subos and cleaning
+    // another is not a bug that can be fixed at a call site; it is what having
+    // two authorities means.
+    [[nodiscard]] SubosScope resolve_subos_scope_() const {
+        const bool useProject = hasProjectConfig_ && !forceGlobalScope_;
+        if (useProject && projectSubosMode_ == ProjectSubosMode::Named
+            && !projectSubosName_.empty()) {
+            return {projectSubosName_, project_subos_dir_()};
+        }
+        if (useProject && projectSubosMode_ == ProjectSubosMode::Anonymous) {
+            return {"_", project_subos_dir_()};
+        }
+        auto name = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+        if (name.empty()) name = globalActiveSubos_;
+        return {name, paths_.homeDir / "subos" / name};
+    }
+
     void update_effective_paths_() {
-        // Resolution priority for the effective subos:
-        //   1. Project-mode (Named or Anonymous) — strongest, "this directory
-        //      asks for subos X" overrides everything else.
-        //   2. $XLINGS_ACTIVE_SUBOS env var — shell-level override; the shell
-        //      profile honors the same priority so PATH and `xpkg install`
-        //      target stay in sync.
-        //   3. globalActiveSubos_ from ~/.xlings.json — the persistent default
-        //      that new shells inherit when no env override is set.
-        paths_.activeSubos = globalActiveSubos_;
-        paths_.subosDir = paths_.homeDir / "subos" / globalActiveSubos_;
-
-        if (auto env = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
-            !env.empty()) {
-            paths_.activeSubos = env;
-            paths_.subosDir = paths_.homeDir / "subos" / env;
-        }
-
-        if (projectSubosMode_ == ProjectSubosMode::Named && !projectSubosName_.empty()) {
-            paths_.activeSubos = projectSubosName_;
-            paths_.subosDir = project_subos_dir_();
-        } else if (projectSubosMode_ == ProjectSubosMode::Anonymous) {
-            paths_.activeSubos = "_";
-            paths_.subosDir = project_subos_dir_();
-        }
+        auto scope = resolve_subos_scope_();
+        paths_.activeSubos = std::move(scope.name);
+        paths_.subosDir = std::move(scope.root);
         paths_.binDir = paths_.subosDir / "bin";
         paths_.libDir = paths_.subosDir / "lib";
     }
@@ -1071,16 +1099,36 @@ public:
     // Get effective workspace: project overrides subos
     [[nodiscard]] static xvm::Workspace effective_workspace() {
         auto& self = instance_();
-        if (!self.hasProjectConfig_) return self.globalWorkspace_;
+        // `-g` means "act on the home, not on this project" -- and that has to
+        // include which workspace is authoritative, not only which directory
+        // the artifacts land in. Honoring it for paths alone is how
+        // `install -g` wrote a shim into the home's subos while `remove -g`
+        // asked the project's workspace whether the package was there, got
+        // "no", and stopped: the same package, present and absent at once,
+        // depending on which half of the scope you read.
+        if (!self.hasProjectConfig_ || self.forceGlobalScope_) {
+            return self.globalWorkspace_;
+        }
         return merged_workspace(self.globalWorkspace_,
                                 self.projectWorkspace_,
                                 self.projectSubosWorkspace_,
                                 self.projectSubosMode_);
     }
 
+    // INVARIANT: a reader and its writer must resolve to the SAME map.
+    //
+    // They did not. `workspace_mut()` honored forceGlobalScope_ and
+    // `workspace()` did not, so under `-g` a package was written into the
+    // home's workspace and looked up in the project's -- present and absent
+    // at the same time, depending on which half you asked. `install -g`
+    // registered it and `remove -g` reported "not installed in current
+    // subos", with the shim plainly on disk.
+    //
+    // The two bodies are therefore identical on purpose. If one grows a
+    // condition, the other has to grow it too.
     [[nodiscard]] static const xvm::Workspace& workspace() {
         auto& self = instance_();
-        if (!self.hasProjectConfig_) return self.globalWorkspace_;
+        if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalWorkspace_;
         if (self.projectSubosMode_ == ProjectSubosMode::Named ||
             self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosWorkspace_;
         return self.projectWorkspace_;
@@ -1097,9 +1145,10 @@ public:
     // workspace returned by workspace()/workspace_mut(). Only meaningful
     // for subos-side writes (project manifest path returns an empty
     // installed map since the project file format has no installed).
+    // Same invariant as workspace()/workspace_mut() above, same reason.
     [[nodiscard]] static const xvm::WorkspaceInstalled& workspace_installed() {
         auto& self = instance_();
-        if (!self.hasProjectConfig_) return self.globalInstalled_;
+        if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalInstalled_;
         if (self.projectSubosMode_ == ProjectSubosMode::Named ||
             self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosInstalled_;
         return self.globalInstalled_;
@@ -1115,7 +1164,15 @@ public:
 
     // Force all version/workspace writes to go to global scope.
     // Used by `install -g` to ensure tools are available outside project context.
-    static void set_force_global_scope(bool force) { instance_().forceGlobalScope_ = force; }
+    // Recomputes the cached paths: `-g` changes which subos this process acts
+    // on, and paths_ is derived from that. Without the recompute the flag was
+    // honored by one reader and ignored by another for the rest of the run.
+    static void set_force_global_scope(bool force) {
+        auto& self = instance_();
+        if (self.forceGlobalScope_ == force) return;
+        self.forceGlobalScope_ = force;
+        self.update_effective_paths_();
+    }
 
     static std::filesystem::path subos_dir(const std::string& name) {
         return instance_().paths_.homeDir / "subos" / name;
@@ -1129,19 +1186,18 @@ public:
         return global_subos_dir() / "bin";
     }
 
+    // Kept as a name because ~40 call sites read it, but it is no longer a
+    // second implementation -- it is the single resolver, live. See
+    // resolve_subos_scope_ for why there is exactly one.
     [[nodiscard]] static std::filesystem::path
     xvm_artifact_subos_dir() {
-        auto& self = instance_();
-        const bool useProject =
-            self.hasProjectConfig_ && !self.forceGlobalScope_;
-        if (useProject
-            && (self.projectSubosMode_
-                    == ProjectSubosMode::Named
-                || self.projectSubosMode_
-                    == ProjectSubosMode::Anonymous)) {
-            return self.project_subos_dir_();
-        }
-        return self.global_subos_dir_();
+        return instance_().resolve_subos_scope_().root;
+    }
+
+    // The same answer as a value: name and root together, so a caller that
+    // needs both cannot pick them from two different resolutions.
+    [[nodiscard]] static SubosScope subos_scope() {
+        return instance_().resolve_subos_scope_();
     }
 
     static std::vector<std::string> list_subos_names() {

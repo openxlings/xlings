@@ -826,99 +826,101 @@ TEST(SubosPathNormalizeTest, LeavesTrailingSubosMarkerAlone) {
 // rewrites both, which is why every gcc install carried a standing
 // `subos path` warning it could do nothing about.
 
-// ── Lifting the sysroot out of the alias ─────────────────────────────
+// ── Pinning a subos path to the placeholder ──────────────────────────
 //
-// The versions database is shared by every subos in the home -- the same rule
-// VData::fileSrc/fileDst has carried since the `files` kind was added, never
-// applied to the alias. A recipe can only express `--sysroot` with a concrete
-// path, so registration takes the path out and records the INTENT; the shim,
-// which is the only layer that knows which subos this process resolved to,
-// puts the flag back at exec time.
+// A recipe that needs the ACTIVE subos writes `${XLINGS_DYNAMIC_SUBOS_DIR}`;
+// the shim -- the only layer that knows which subos the calling process
+// resolved to -- substitutes it at exec time. The core knows that marker and
+// nothing else: not `--sysroot`, not `-isysroot`, not `--gcc-toolchain=`. How
+// a tool wants to be told is the recipe's business.
+//
+// `pin_subos_paths` is the REPAIR direction, used by `self doctor --fix` and
+// by the detection that decides whether a repair is needed. Registration
+// stores what the recipe wrote, verbatim -- the core does not rewrite recipe
+// values.
 
 namespace {
-xlings::xvm::AliasSysroot lift(std::string_view alias, std::string_view home) {
-    return xlings::xvm::lift_subos_sysroot(std::string(alias),
-                                           std::string(home));
+std::string pin(std::string_view text, std::string_view home) {
+    return xlings::xvm::pin_subos_paths(std::string(text), std::string(home));
+}
+std::string unpin(std::string_view text, std::string_view subos) {
+    return xlings::xvm::expand_subos_placeholder(std::string(text),
+                                                 std::string(subos));
 }
 }  // namespace
 
-TEST(AliasSysrootLiftTest, TakesTheFlagAndLeavesTheCommand) {
-    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/default", "/home/u/.xlings");
-    EXPECT_TRUE(r.found);
-    EXPECT_EQ(r.alias, "g++");
+TEST(SubosPlaceholderTest, PinsAnAliasSysroot) {
+    EXPECT_EQ(pin("g++ --sysroot=/home/u/.xlings/subos/default", "/home/u/.xlings"),
+              "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}");
 }
 
-TEST(AliasSysrootLiftTest, KeepsEveryOtherArgument) {
-    auto r = lift("gcc -O2 --sysroot=/home/u/.xlings/subos/dev -pipe",
-                  "/home/u/.xlings");
-    EXPECT_TRUE(r.found);
-    EXPECT_EQ(r.alias, "gcc -O2 -pipe");
+TEST(SubosPlaceholderTest, PinsAFlagSpellingTheCoreHasNeverHeardOf) {
+    // The whole point: the core substitutes a value, so the argument syntax is
+    // the recipe's business. None of these spellings appear anywhere in xlings.
+    EXPECT_EQ(pin("clang -isysroot /home/u/.xlings/subos/dev", "/home/u/.xlings"),
+              "clang -isysroot ${XLINGS_DYNAMIC_SUBOS_DIR}");
+    EXPECT_EQ(pin("clang --gcc-toolchain=/home/u/.xlings/subos/dev/usr",
+                  "/home/u/.xlings"),
+              "clang --gcc-toolchain=${XLINGS_DYNAMIC_SUBOS_DIR}/usr");
 }
 
-TEST(AliasSysrootLiftTest, RecognisesTheSpaceSeparatedSpelling) {
-    // Both are valid GCC spellings and a recipe may write either.
-    auto r = lift("g++ --sysroot /home/u/.xlings/subos/default",
-                  "/home/u/.xlings");
-    EXPECT_TRUE(r.found);
-    EXPECT_EQ(r.alias, "g++");
+TEST(SubosPlaceholderTest, PinsAnEnvValue) {
+    // envs were unreachable when this was a flag -- there is no `--sysroot` to
+    // recognise in a PKG_CONFIG_PATH.
+    EXPECT_EQ(pin("/home/u/.xlings/subos/dev/usr/lib/pkgconfig", "/home/u/.xlings"),
+              "${XLINGS_DYNAMIC_SUBOS_DIR}/usr/lib/pkgconfig");
 }
 
-TEST(AliasSysrootLiftTest, TakesThePortableSpellingToo) {
-    // `subos/current` is better than a pinned subos and still a subos path in
-    // a shared store. The intent is the same; lift it.
-    auto r = lift("g++ --sysroot=/home/u/.xlings/subos/current",
-                  "/home/u/.xlings");
-    EXPECT_TRUE(r.found);
-    EXPECT_EQ(r.alias, "g++");
+TEST(SubosPlaceholderTest, PinsEveryOccurrence) {
+    EXPECT_EQ(pin("-I/home/u/.xlings/subos/a/usr/include "
+                  "-L/home/u/.xlings/subos/a/lib", "/home/u/.xlings"),
+              "-I${XLINGS_DYNAMIC_SUBOS_DIR}/usr/include -L${XLINGS_DYNAMIC_SUBOS_DIR}/lib");
 }
 
-TEST(AliasSysrootLiftTest, AProjectSubosCounts) {
-    // <projectDir>/.xlings/subos/<n> is not under the home at all, and is
-    // still ours -- the same test normalize_subos_paths applies.
-    auto r = lift("g++ --sysroot=/w/proj/.xlings/subos/pa", "/home/u/.xlings");
-    EXPECT_TRUE(r.found);
-    EXPECT_EQ(r.alias, "g++");
+TEST(SubosPlaceholderTest, PinsAProjectSubosToo) {
+    // <projectDir>/.xlings/subos/<n> is not under the home and is still ours.
+    EXPECT_EQ(pin("g++ --sysroot=/w/proj/.xlings/subos/pa", "/home/u/.xlings"),
+              "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}");
 }
 
-TEST(AliasSysrootLiftTest, APayloadSysrootIsNotOurs) {
-    // Pointing --sysroot at a payload expresses something else entirely, and
-    // that path is correct from every subos. Byte-identical passthrough.
+TEST(SubosPlaceholderTest, LeavesAPayloadPathAlone) {
+    // A path inside the payload store is already correct from every subos.
     const std::string cmd =
         "g++ --sysroot=/home/u/.xlings/data/xpkgs/xim-x-gcc/15.1.0";
-    auto r = lift(cmd, "/home/u/.xlings");
-    EXPECT_FALSE(r.found);
-    EXPECT_EQ(r.alias, cmd);
+    EXPECT_EQ(pin(cmd, "/home/u/.xlings"), cmd);
 }
 
-TEST(AliasSysrootLiftTest, AForeignSysrootIsLeftAlone) {
+TEST(SubosPlaceholderTest, LeavesAForeignPathAlone) {
     const std::string cmd = "g++ --sysroot=/opt/toolchain/sysroot";
-    auto r = lift(cmd, "/home/u/.xlings");
-    EXPECT_FALSE(r.found);
-    EXPECT_EQ(r.alias, cmd);
+    EXPECT_EQ(pin(cmd, "/home/u/.xlings"), cmd);
 }
 
-TEST(AliasSysrootLiftTest, ASimilarlyNamedFlagIsNotTouched) {
-    // `--no-sysroot-suffix` starts with the same letters and is not this.
-    const std::string cmd =
-        "g++ --no-sysroot-suffix=/home/u/.xlings/subos/default";
-    auto r = lift(cmd, "/home/u/.xlings");
-    EXPECT_FALSE(r.found);
-    EXPECT_EQ(r.alias, cmd);
+TEST(SubosPlaceholderTest, IsIdempotent) {
+    const auto once = pin("g++ --sysroot=/home/u/.xlings/subos/default",
+                          "/home/u/.xlings");
+    EXPECT_EQ(pin(once, "/home/u/.xlings"), once);
 }
 
-TEST(AliasSysrootLiftTest, AnAliasWithoutOneIsUnchanged) {
-    const std::string cmd = "clang++ -stdlib=libc++";
-    auto r = lift(cmd, "/home/u/.xlings");
-    EXPECT_FALSE(r.found);
-    EXPECT_EQ(r.alias, cmd);
+TEST(SubosPlaceholderTest, ExpandsBackToTheActiveSubos) {
+    EXPECT_EQ(unpin("g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}", "/home/u/.xlings/subos/dev"),
+              "g++ --sysroot=/home/u/.xlings/subos/dev");
 }
 
-TEST(AliasSysrootLiftTest, IsIdempotent) {
-    auto once = lift("g++ --sysroot=/home/u/.xlings/subos/default",
-                     "/home/u/.xlings");
-    auto twice = lift(once.alias, "/home/u/.xlings");
-    EXPECT_FALSE(twice.found);
-    EXPECT_EQ(twice.alias, once.alias);
+TEST(SubosPlaceholderTest, RoundTripsToWhicheverSubosIsActive) {
+    // The property that matters: what was recorded in one subos comes back
+    // correct in another, with no migration and no repair.
+    const auto stored = pin("g++ --sysroot=/home/u/.xlings/subos/default",
+                            "/home/u/.xlings");
+    EXPECT_EQ(unpin(stored, "/home/u/.xlings/subos/dev"),
+              "g++ --sysroot=/home/u/.xlings/subos/dev");
+    EXPECT_EQ(unpin(stored, "/w/proj/.xlings/subos/pa"),
+              "g++ --sysroot=/w/proj/.xlings/subos/pa");
+}
+
+TEST(SubosPlaceholderTest, ExpandingWithNoActiveSubosLeavesTheMarker) {
+    // Better a visible marker than a path built from an empty string.
+    const std::string cmd = "g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}";
+    EXPECT_EQ(unpin(cmd, ""), cmd);
 }
 
 TEST(SubosPathNormalizeTest, TheCurrentSpellingStillNormalizesAtExecTime) {

@@ -373,18 +373,14 @@ normalize_xpkg_registration_plan(
             return std::unexpected(std::move(exactVersion.error()));
         }
         registrationNode.version = std::move(*exactVersion);
+        // Stored verbatim. The core does not rewrite what a recipe wrote --
+        // it only expands its OWN marker at execution time
+        // (kSubosPlaceholder). A recipe that needs the active subos writes
+        // the marker; one that writes a concrete subos path gets the legacy
+        // treatment (normalize_subos_paths at dispatch) and a doctor finding
+        // telling it so.
         if (!operation.alias.empty()) {
-            // Lift `--sysroot=<a subos of this home>` out before it is
-            // stored. `xvm.add` can only express the flag with a concrete
-            // path, and this database is shared by every subos -- so what
-            // gets recorded is the intent, and the shim supplies the answer
-            // for whichever subos is actually active. See VData::sysroot.
-            auto lifted = xvm::lift_subos_sysroot(
-                operation.alias, Config::paths().homeDir.string());
-            if (lifted.found) registrationNode.sysroot = true;
-            if (!lifted.alias.empty()) {
-                registrationNode.alias.push_back(std::move(lifted.alias));
-            }
+            registrationNode.alias.push_back(operation.alias);
         }
         for (const auto& [key, value] : operation.envs) {
             auto [environmentIt, inserted] =
