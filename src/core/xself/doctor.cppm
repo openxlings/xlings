@@ -301,7 +301,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     for (const auto& [name, version] : st.ws) {
         if (version.empty()) continue;
         const auto* vi = xvm::get_vinfo(st.db, name);
-        if (!vi || vi->type != "program") continue;
+        if (!vi || xvm::effective_kind_of(st.db, name, version) != "program")
+            continue;
 
         auto shimPath = p.binDir / shim_filename_(name);
         if (fs::exists(shimPath) || fs::is_symlink(shimPath)) continue;
@@ -345,8 +346,10 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             if (!shim_ext_.empty() && base.ends_with(shim_ext_)) {
                 base = base.substr(0, base.size() - shim_ext_.size());
             }
+            // Only a shim file name is in hand here, so the question is
+            // widened to "any version of this name is a program".
             const auto* vi = xvm::get_vinfo(st.db, base);
-            if (!vi || vi->type != "program") continue;
+            if (!vi || !xvm::has_program_kind(st.db, base)) continue;
 
             auto wit = st.ws.find(base);
             if (wit != st.ws.end() && !wit->second.empty()) continue;
@@ -421,8 +424,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 base = base.substr(0, base.size() - shim_ext_.size());
             }
             if (xvm::is_xlings_binary(base)) continue;
-            const auto* vi = xvm::get_vinfo(st.db, base);
-            if (!vi || vi->type != "program") continue;
+            if (!xvm::has_program_kind(st.db, base)) continue;
 
             auto owner = xvm::resolve_owner_home(entry.path());
             std::error_code oec;
@@ -495,8 +497,11 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     };
 
     for (const auto& [name, vinfo] : st.db) {
-        if (vinfo.type != "program") continue;
         for (const auto& [version, vdata] : vinfo.versions) {
+            // Per version, not per target: one target can hold versions of
+            // different kinds, and skipping the whole target on the
+            // target-level fallback discards the ones that are programs.
+            if (xvm::effective_kind(vinfo, vdata) != "program") continue;
             if (vdata.path.empty()) continue;  // type-only stub
 
             auto expanded = xvm::expand_path(vdata.path, st.homeStr);

@@ -191,6 +191,41 @@ std::string effective_destination_name(const std::string& target,
     return std::string(sourceName);
 }
 
+// effective_kind for a (target, version) resolved out of the database.
+//
+// Several call sites that decide "does this name own a shim" read
+// `VInfo::type` directly. That is the FALLBACK, not the authority: a
+// per-version `kind` overrides it, and entries written before 0.4.70 have no
+// per-version kind at all -- which is why the fallback exists and why reading
+// it where the authority is available gets the answer wrong in exactly the
+// cases the two disagree. A `lib` or `files` entry could be handed a shim it
+// can never dispatch, and a `program` could be denied one.
+std::string effective_kind_of(const VersionDB& db,
+                              const std::string& target,
+                              const std::string& version) {
+    auto it = db.find(target);
+    if (it == db.end()) return {};
+    auto vit = it->second.versions.find(version);
+    if (vit == it->second.versions.end()) return it->second.type;
+    return effective_kind(it->second, vit->second);
+}
+
+// Whether ANY version of this target materializes as a program.
+//
+// For the checks that start from a shim FILE and have no version in hand. A
+// shim belongs to whichever version is active, and widening to "any version"
+// is the conservative direction here: it can only make a check report fewer
+// orphans, never fabricate one.
+bool has_program_kind(const VersionDB& db, const std::string& target) {
+    auto it = db.find(target);
+    if (it == db.end()) return false;
+    if (it->second.versions.empty()) return it->second.type == "program";
+    for (const auto& [version, data] : it->second.versions) {
+        if (effective_kind(it->second, data) == "program") return true;
+    }
+    return false;
+}
+
 } // namespace xlings::xvm
 
 #if !defined(_MSC_VER)
