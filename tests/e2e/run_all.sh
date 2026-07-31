@@ -99,6 +99,7 @@ TESTS=(
     "E2E-47 |foreign_payload_reinstall_test.sh||"
     "E2E-48 |non_interactive_contract_test.sh||"
     "E2E-49 |group_switch_report_test.sh||"
+    "E2E-50 |subos_scope_authority_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

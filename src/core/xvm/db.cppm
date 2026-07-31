@@ -595,72 +595,48 @@ std::string normalize_subos_paths(const std::string& text,
     return out;
 }
 
-// Lift `--sysroot=<a subos of this home>` out of an alias.
+// The placeholder a subos path is stored as, and its expansion.
 //
-// Returns the alias without that argument, and whether one was found. The
-// caller records the boolean instead of the path -- see VData::sysroot for
-// why a subos path may not live in a home-wide database at all.
+// `${XLINGS_HOME}` (expand_path, below) has always been how this codebase
+// keeps a home-relative path out of a stored record. This is the same
+// mechanism one level down, and it exists for the same reason: the versions
+// database is shared by every subos in the home, so a value naming one of
+// them is right for the subos that installed the package and wrong for all
+// the others -- the rule VData::fileSrc/fileDst has carried since the `files`
+// kind was added.
 //
-// Only OUR subos paths are lifted, decided by the same test
-// normalize_subos_paths uses: a recipe pointing --sysroot at a payload
-// directory, or at anything outside this home, is expressing something else
-// and is left byte-identical. Both `--sysroot=<p>` and `--sysroot <p>` are
-// recognised because both are valid GCC/Clang spellings and a recipe may
-// write either.
-struct AliasSysroot {
-    std::string alias;
-    bool found { false };
-};
+// Deliberately a value substitution and NOT a flag the core understands. An
+// earlier attempt had registration recognise `--sysroot` and the shim
+// re-emit it, which put a GCC/Clang spelling inside a generic version
+// manager: it did nothing for `-isysroot`, nothing for `--gcc-toolchain=`,
+// nothing for a plain environment variable, and nothing at all for the envs
+// map -- where the same defect lived and had no flag to hang off. Storing the
+// placeholder inside the value leaves the recipe owning the syntax and the
+// core owning only its own marker.
+inline constexpr std::string_view kSubosPlaceholder = "${XLINGS_SUBOS}";
 
-AliasSysroot lift_subos_sysroot(const std::string& alias,
-                                const std::string& xlings_home) {
-    AliasSysroot out{.alias = alias};
-    if (alias.empty() || xlings_home.empty()) return out;
+// Rewrite every subos path of this home to the placeholder.
+//
+// This is normalize_subos_paths with the placeholder as the destination --
+// literally the same traversal, so the two can never disagree about which
+// paths are ours. A `--sysroot` pointing at a payload directory or at /opt is
+// left byte-identical, because those are already correct from every subos.
+std::string pin_subos_paths(const std::string& text,
+                            const std::string& xlings_home) {
+    return normalize_subos_paths(text, xlings_home,
+                                 std::string(kSubosPlaceholder));
+}
 
-    static constexpr std::string_view kFlag = "--sysroot";
-    std::size_t search = 0;
-    while (true) {
-        const auto at = out.alias.find(kFlag, search);
-        if (at == std::string::npos) return out;
-        // Must start a token: `--no-sysroot` and `-Wl,--sysroot` are not this.
-        if (at > 0 && out.alias[at - 1] != ' ' && out.alias[at - 1] != '\t') {
-            search = at + kFlag.size();
-            continue;
-        }
-        auto valueStart = at + kFlag.size();
-        if (valueStart < out.alias.size()
-            && (out.alias[valueStart] == '=' || out.alias[valueStart] == ' ')) {
-            ++valueStart;
-        } else {
-            search = at + kFlag.size();
-            continue;   // `--sysrootfoo`
-        }
-        auto valueEnd = out.alias.find_first_of(" \t", valueStart);
-        if (valueEnd == std::string::npos) valueEnd = out.alias.size();
-        const auto value = out.alias.substr(valueStart, valueEnd - valueStart);
-
-        // Ours only. normalize_subos_paths changes a subos path of this home
-        // and passes anything else through untouched, so "it would be
-        // rewritten" is exactly the question being asked -- and asking it
-        // this way means the two functions can never disagree about what
-        // counts as ours.
-        const auto probe = (std::filesystem::path(xlings_home)
-                            / "subos" / "current").string();
-        if (normalize_subos_paths(value, xlings_home, probe) == value
-            && value != probe) {
-            search = valueEnd;
-            continue;
-        }
-
-        // Take the flag, its value, and exactly one separating space.
-        auto cut = at;
-        while (cut > 0 && (out.alias[cut - 1] == ' ' || out.alias[cut - 1] == '\t')) {
-            --cut;
-        }
-        out.alias.erase(cut, valueEnd - cut);
-        out.found = true;
-        search = cut;
+std::string expand_subos_placeholder(const std::string& text,
+                                     const std::string& subos_dir) {
+    if (subos_dir.empty() || text.empty()) return text;
+    std::string result = text;
+    std::size_t pos = 0;
+    while ((pos = result.find(kSubosPlaceholder, pos)) != std::string::npos) {
+        result.replace(pos, kSubosPlaceholder.size(), subos_dir);
+        pos += subos_dir.size();
     }
+    return result;
 }
 
 // Expand ${XLINGS_HOME} in a path string

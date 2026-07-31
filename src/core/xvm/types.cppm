@@ -41,21 +41,23 @@ struct VData {
     std::string fileDst;
     std::vector<std::string> alias;
 
-    // This entry wants `--sysroot=<the active subos>` on every invocation.
+    // COMPAT(2026.7.31.1 → drop in 0.6.0). Read-only: nothing writes it.
     //
-    // The same rule as fileSrc/fileDst above, finally applied to the alias:
-    // **this database is shared by every subos in the home**, so a subos path
-    // stored in it is right for the subos that installed the package and
-    // wrong for all the others. A recipe writes the flag with a concrete path
-    // because that is all `xvm.add` can express; registration lifts it out of
-    // the alias into this boolean, and the shim -- which is the layer that
-    // actually knows which subos is active -- puts it back at exec time.
+    // That one release recorded "this entry wants the active subos's sysroot"
+    // as a boolean, and had the shim append `--sysroot=<dir>` itself. The idea
+    // was right -- store the intent, not one subos's answer to it -- and the
+    // granularity was wrong: it put a GCC/Clang flag spelling inside a generic
+    // version manager. It did nothing for `-isysroot`, nothing for
+    // `--gcc-toolchain=`, and nothing at all for `envs`, where the identical
+    // defect lived with no flag to hang off.
     //
-    // What is stored is therefore the INTENT ("this compiler needs the FHS
-    // view") rather than one subos's answer to it, and the record is correct
-    // read from anywhere. Legacy entries that still carry the path keep
-    // working: normalize_subos_paths rewrites them on the way out, and
-    // `self doctor --fix` migrates them to this form.
+    // Replaced by `${XLINGS_SUBOS}` inside the value itself (see
+    // xvm::kSubosPlaceholder): the recipe owns the argument syntax, the core
+    // owns only its own marker, and alias and envs get the same treatment
+    // because the defect was never a property of the syntax.
+    //
+    // Still read, because records written by that release exist and dropping
+    // the field would silently strip the flag from every one of them.
     bool sysroot { false };
 
     std::map<std::string, std::string> envs;

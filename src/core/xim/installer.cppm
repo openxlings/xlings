@@ -373,20 +373,19 @@ normalize_xpkg_registration_plan(
             return std::unexpected(std::move(exactVersion.error()));
         }
         registrationNode.version = std::move(*exactVersion);
+        // A recipe can only name a subos with the one that is active while
+        // its config hook runs, and this database is shared by every subos --
+        // so the path is replaced with the placeholder on the way in and the
+        // shim substitutes whichever subos the calling process resolves to.
+        // Applies to envs as well as the alias: the defect is a property of
+        // the VALUE, not of any particular flag. See kSubosPlaceholder.
+        const auto homeStr = Config::paths().homeDir.string();
         if (!operation.alias.empty()) {
-            // Lift `--sysroot=<a subos of this home>` out before it is
-            // stored. `xvm.add` can only express the flag with a concrete
-            // path, and this database is shared by every subos -- so what
-            // gets recorded is the intent, and the shim supplies the answer
-            // for whichever subos is actually active. See VData::sysroot.
-            auto lifted = xvm::lift_subos_sysroot(
-                operation.alias, Config::paths().homeDir.string());
-            if (lifted.found) registrationNode.sysroot = true;
-            if (!lifted.alias.empty()) {
-                registrationNode.alias.push_back(std::move(lifted.alias));
-            }
+            registrationNode.alias.push_back(
+                xvm::pin_subos_paths(operation.alias, homeStr));
         }
-        for (const auto& [key, value] : operation.envs) {
+        for (const auto& [key, rawValue] : operation.envs) {
+            const auto value = xvm::pin_subos_paths(rawValue, homeStr);
             auto [environmentIt, inserted] =
                 registrationNode.envs.emplace(key, value);
             if (!inserted && environmentIt->second != value) {

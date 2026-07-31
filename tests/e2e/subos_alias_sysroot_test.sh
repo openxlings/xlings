@@ -137,10 +137,10 @@ chmod +x "$PAYLOAD_BIN"
 # alias into VData::sysroot, so the shared database holds the intent and no
 # subos path at all. Both halves are asserted: a record with neither would
 # also have no path, and would pass a one-sided check for the wrong reason.
-grep -q '"sysroot": true' "$HOME_DIR/.xlings.json" \
-  || fail "invariant: the registration did not record the sysroot intent"
-if grep -q -- '--sysroot=' "$HOME_DIR/.xlings.json"; then
-  fail "invariant: a subos path is still stored in the home-wide database"
+grep -q 'XLINGS_SUBOS' "$HOME_DIR/.xlings.json" \
+  || fail "invariant: the registration did not record the placeholder"
+if grep -qE '/subos/(default|dev)' "$HOME_DIR/.xlings.json"; then
+  fail "invariant: a concrete subos path is still stored in the shared database"
 fi
 
 # ── A1: run from 'dev' — the baseline, must target dev ───────────────
@@ -221,11 +221,11 @@ RUN_IN default self doctor >/dev/null 2>&1 \
 log "A5: doctor --fix rewrites the record"
 RUN_IN default self doctor --fix >/dev/null 2>&1 \
   || fail "A5: doctor --fix failed"
-if grep -q -- '--sysroot=' "$HOME_DIR/.xlings.json"; then
-  fail "A5: --fix left a subos path in the DB instead of migrating it"
+if grep -qE '/subos/(default|dev)"' "$HOME_DIR/.xlings.json"; then
+  fail "A5: --fix left a concrete subos path in the DB instead of pinning it"
 fi
-grep -q '"sysroot": true' "$HOME_DIR/.xlings.json" \
-  || fail "A5: --fix dropped the path without recording the intent"
+grep -q 'XLINGS_SUBOS' "$HOME_DIR/.xlings.json" \
+  || fail "A5: --fix dropped the path without leaving the placeholder"
 out="$(RUN_IN default self doctor 2>&1 || true)"
 if grep -q "subos path" <<<"$out"; then
   fail "A5: the finding survived --fix; got:\n$out"
@@ -321,10 +321,10 @@ chmod +x "$(find "$HOME_DIR/data/xpkgs" -name sp-real -type f | head -1)"
 # and it is still a subos path in a database every subos shares, so the record
 # must not keep it either.
 if grep -q '/subos/current' "$HOME_DIR/.xlings.json"; then
-  fail "A7: the portable spelling was stored instead of being lifted"
+  fail "A7: the portable spelling was stored instead of being pinned"
 fi
-grep -q '"sysroot": true' "$HOME_DIR/.xlings.json" \
-  || fail "A7: the portable spelling was dropped without recording the intent"
+grep -q 'XLINGS_SUBOS' "$HOME_DIR/.xlings.json" \
+  || fail "A7: the portable spelling was dropped without leaving the placeholder"
 
 out="$(RUN_IN default self doctor 2>&1 || true)"
 if grep -q "sr-portable" <<<"$out"; then

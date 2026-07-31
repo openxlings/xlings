@@ -520,36 +520,28 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
                 std::vector<std::string> baked;
                 // A subos path stored in a database every subos shares.
                 //
-                // The alias and the envs fail for the same reason but have
-                // different fixes, so they are asked different questions:
+                // Alias and envs are asked the SAME question now -- "would
+                // pinning rewrite this?" -- because they have the same fix.
+                // The earlier shape asked the alias a different question (can
+                // a `--sysroot` flag be lifted out of it), which meant the
+                // core had to know a compiler's flag spelling and could do
+                // nothing at all for envs. The defect is a property of the
+                // VALUE, not of any argument syntax.
                 //
-                //   alias -- "can the sysroot be lifted out of it?"
-                //            `lift_subos_sysroot` answers exactly that, and
-                //            answering it with the same function the repair
-                //            uses means detection and repair cannot drift.
-                //            A lifted record needs no path at all, so this is
-                //            a finding that goes away permanently.
-                //
-                //   envs  -- there is no intent flag for an arbitrary
-                //            environment variable, so the best available fix
-                //            is the portable `subos/current` spelling.
-                //            Normalizing *towards* it is what separates a
-                //            value that pins one subos (changes) from one
-                //            already portable (does not); comparing against
-                //            the active subos cannot -- it rewrites both.
-                const auto portableSubos =
-                    (fs::path(st.homeStr) / "subos" / "current").string();
+                // Detection calls the same function the repair calls, so the
+                // two cannot drift: whatever `pin_subos_paths` would rewrite
+                // is exactly what is reported, and after the repair there is
+                // nothing left to rewrite -- the finding goes away
+                // permanently rather than moving to whichever subos ran
+                // doctor next.
                 const auto note_if_baked = [&](std::string_view what,
                                                const std::string& value) {
-                    if (xvm::normalize_subos_paths(value, st.homeStr,
-                                                   portableSubos) != value) {
+                    if (xvm::pin_subos_paths(value, st.homeStr) != value) {
                         baked.push_back(std::format("{} '{}'", what, value));
                     }
                 };
-                if (!vdata.alias.empty()
-                    && xvm::lift_subos_sysroot(vdata.alias[0],
-                                               st.homeStr).found) {
-                    baked.push_back(std::format("alias '{}'", vdata.alias[0]));
+                if (!vdata.alias.empty()) {
+                    note_if_baked("alias", vdata.alias[0]);
                 }
                 for (const auto& [key, value] : vdata.envs) {
                     note_if_baked(std::format("env {}", key), value);
@@ -971,22 +963,17 @@ void repair_state_(RepairReport& out) {
     // a symlink cannot follow.
     {
         const auto homeStr = Config::paths().homeDir.string();
-        const auto activeSubos =
-            (Config::paths().homeDir / "subos" / "current").string();
         const auto has_baked = [&](const xvm::VersionDB& src) {
             if (homeStr.empty()) return false;
             for (const auto& [name, vinfo] : src) {
                 for (const auto& [version, vdata] : vinfo.versions) {
                     if (!vdata.alias.empty()
-                        && xvm::lift_subos_sysroot(vdata.alias[0],
-                                                   homeStr).found) {
+                        && xvm::pin_subos_paths(vdata.alias[0], homeStr)
+                               != vdata.alias[0]) {
                         return true;
                     }
                     for (const auto& [k, v] : vdata.envs) {
-                        if (xvm::normalize_subos_paths(v, homeStr, activeSubos)
-                            != v) {
-                            return true;
-                        }
+                        if (xvm::pin_subos_paths(v, homeStr) != v) return true;
                     }
                 }
             }
@@ -1005,27 +992,21 @@ void repair_state_(RepairReport& out) {
                 for (auto& [name, vinfo] : mutableDb) {
                     for (auto& [version, vdata] : vinfo.versions) {
                         bool touched = false;
+                        // The real migration: the concrete subos becomes the
+                        // placeholder, so the finding disappears instead of
+                        // moving to whichever subos ran doctor. Rewriting it
+                        // to another subos -- including `current` -- would
+                        // leave a subos path in a shared database, and the
+                        // next run would be right to report it again.
                         for (auto& a : vdata.alias) {
-                            // The real migration: take the path out and set
-                            // the intent, which is what makes the finding
-                            // disappear rather than move. Rewriting it to
-                            // another subos -- including `current` -- would
-                            // leave a subos path in a shared database, and
-                            // the next `doctor` would be right to say so.
-                            auto lifted = xvm::lift_subos_sysroot(a, homeStr);
-                            if (lifted.found) {
-                                a = std::move(lifted.alias);
-                                vdata.sysroot = true;
-                                touched = true;
-                            }
+                            auto fixed = xvm::pin_subos_paths(a, homeStr);
+                            if (fixed != a) { a = std::move(fixed); touched = true; }
                         }
+                        // Envs get the same treatment, which they could not
+                        // when this was a flag: the defect is a property of
+                        // the value, not of any particular argument syntax.
                         for (auto& [k, v] : vdata.envs) {
-                            // No intent flag exists for an arbitrary env
-                            // value, so the portable spelling is the best
-                            // available: it stops naming one subos, and
-                            // exec-time normalization still resolves it.
-                            auto fixed = xvm::normalize_subos_paths(
-                                v, homeStr, activeSubos);
+                            auto fixed = xvm::pin_subos_paths(v, homeStr);
                             if (fixed != v) { v = std::move(fixed); touched = true; }
                         }
                         if (touched) {

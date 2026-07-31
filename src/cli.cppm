@@ -853,7 +853,10 @@ export int run(int argc, char* argv[]) {
                 {
                     {"package", "Package name (or name@ver)", true},
                     {"version", "Optional version (alternative to name@ver form)"},
-                }, {},
+                },
+                {
+                    {"--global, -g", "Act on the global scope (not the project-local subos)"},
+                },
             };
             else if (match("update")) h = SubHelp{
                 "update", "Update package index or a specific package",
@@ -1050,12 +1053,22 @@ export int run(int argc, char* argv[]) {
             }))
 
         // remove
+        // `-g` mirrors install's. Without it, a package installed with
+        // `install -g` from inside a project could not be removed from inside
+        // that project at all: remove resolved the project subos, found the
+        // package registered in the home's, and there was no way to say
+        // otherwise. Scope has to be expressible on both halves of a
+        // reversible pair, or the pair is not reversible.
         .subcommand("remove")
             .description("Remove a package")
+            .option(cmdline::Option("global").short_name('g').help("Act on the global scope (not the project-local subos)"))
             .arg("package").required().help("Package to remove (name or name@ver)")
             .arg("version").help("Optional version (alternative to name@ver form)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
+                if (args.is_flag_set("global")) {
+                    Config::set_force_global_scope(true);
+                }
                 std::string target;
                 if (!parse_target_spec_(args, target)) return 1;
                 bool yes = args.is_flag_set("yes");
