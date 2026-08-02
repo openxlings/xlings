@@ -43,10 +43,21 @@ echo "node --version (with XLINGS_PROJECT_DIR): $NODE_VER"
 [[ "$NODE_VER" == "v22.17.1" ]] || fail "shim with XLINGS_PROJECT_DIR did not resolve expected version (got: $NODE_VER)"
 
 # --- Test 2: Without XLINGS_PROJECT_DIR, shim fails from outside project ---
+#
+# HOME points at an empty directory, not the caller's.
+#
+# It used to be passed through, and on any machine whose real `~/.xlings` has
+# node active the shim resolved THERE and answered a version -- so the "should
+# have failed" assertion could not fail, on the one kind of machine that
+# actually develops xlings. Green in CI for the wrong reason: CI's HOME simply
+# has no xlings home to fall back to. Measured 2026-08-02: v24.15.0 from the
+# developer's real home, identical on the released 2026.8.1.2 binary.
+EMPTY_HOME="$OUTSIDE_DIR/empty-home"
+mkdir -p "$EMPTY_HOME"
 set +e
 NODE_ERR="$(
   cd "$OUTSIDE_DIR" &&
-  env -i HOME="$HOME" PATH="$PATH" XLINGS_HOME="$HOME_DIR" \
+  env -i HOME="$EMPTY_HOME" PATH="$PATH" XLINGS_HOME="$HOME_DIR" \
     "$PROJECT_BIN/node" --version 2>&1
 )"
 NODE_RC=$?

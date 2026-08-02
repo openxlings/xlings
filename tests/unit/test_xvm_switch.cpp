@@ -174,6 +174,54 @@ void switch_group_(xlings::xvm::VersionDB& db,
     root.bindingMembersDeclared = true;
 }
 
+// Two packages that provide the same program names, each with its own group
+// root -- the jdk-temurin / jdk-zulu shape.
+//
+// Three details copied from the real recipes (`pkgs/j/jdk-zulu.lua`):
+//   * the root's name IS the package name (the index spec requires config()
+//     to register package.name), so two packages can never share one;
+//   * the program members carry a FLAVOR version (`25.0.4+7-temurin`), which
+//     is not the root's version (`25.0.4+7`) -- xvm refuses to let two
+//     packages claim one (name, version) pair, so real recipes must differ
+//     here;
+//   * the provider reads `xim:<package>`, as it does on a real installation.
+void distribution_group_(xlings::xvm::VersionDB& db,
+                         std::string_view provider,
+                         std::string_view root,
+                         std::string_view rootVersion,
+                         const std::vector<std::string>& programs,
+                         std::string_view programVersion,
+                         std::string_view rootKind = "group") {
+    const xlings::xvm::BindingGroupRef ref{
+        .provider = std::string(provider),
+        .providerVersion = std::string(rootVersion),
+        .group = std::string(root),
+        .rootTarget = std::string(root),
+        .rootVersion = std::string(rootVersion),
+    };
+    std::map<std::string, std::string> manifest;
+    manifest[std::string(root)] = std::string(rootVersion);
+    for (const auto& p : programs) manifest[p] = std::string(programVersion);
+
+    auto& rootInfo = db[std::string(root)];
+    rootInfo.type = std::string(rootKind);
+    auto& rootData = rootInfo.versions[std::string(rootVersion)];
+    rootData.path = std::format("/pkg/{}/{}", root, rootVersion);
+    rootData.kind = std::string(rootKind);
+    rootData.bindingGroup = ref;
+    rootData.bindingMembers = manifest;
+    rootData.bindingMembersDeclared = true;
+
+    for (const auto& p : programs) {
+        auto& info = db[p];
+        if (info.type.empty()) info.type = "program";
+        auto& data = info.versions[std::string(programVersion)];
+        data.path = std::format("/pkg/{}/{}/bin", root, rootVersion);
+        data.kind = "program";
+        data.bindingGroup = ref;
+    }
+}
+
 }  // namespace
 
 // ── One authority for "what kind is this entry" ─────────────────────
@@ -600,6 +648,103 @@ TEST(XvmSwitchPlan, AnUnresolvableOutgoingReleaseDoesNotFailTheSwitch) {
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->members.size(), 2u);
+}
+
+// ── Switching packages is not a half-finished switch ────────────────
+//
+// `use java <zulu>` hands the name `java` from one JDK to another. The whole
+// zulu release comes across; temurin is left untouched, complete and still
+// active. Nothing fell behind.
+//
+// Reporting it anyway is not merely noise. A group root's name IS the package
+// name, so two packages can never share one -- the root of the package being
+// left lands in the report on EVERY cross-package switch, and `--strict`
+// refuses over it. Measured on a real home: `gcc` from the gnu package to the
+// musl one produces 18 such lines, none of them actionable.
+
+TEST(XvmSwitchPlan, SwitchingBetweenTwoPackagesStrandsNothing) {
+    xlings::xvm::VersionDB db;
+    distribution_group_(db, "xim:jdk-temurin", "jdk-temurin", "25.0.4+7",
+                        {"java", "javac"}, "25.0.4+7-temurin");
+    distribution_group_(db, "xim:jdk-zulu", "jdk-zulu", "25.0.4",
+                        {"java", "javac"}, "25.0.4-zulu");
+    const xlings::xvm::Workspace ws{
+        {"java", "25.0.4+7-temurin"}, {"javac", "25.0.4+7-temurin"},
+        {"jdk-temurin", "25.0.4+7"}, {"jdk-zulu", "25.0.4"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_TRUE(plan->stranded.empty())
+        << "the package being left is complete and still active; nothing "
+           "about it is stranded";
+    EXPECT_EQ(plan->fromProvider, "xim:jdk-temurin");
+    EXPECT_EQ(plan->fromProviderVersion, "25.0.4+7");
+    EXPECT_EQ(plan->toProvider, "xim:jdk-zulu");
+    EXPECT_EQ(plan->toProviderVersion, "25.0.4");
+}
+
+TEST(XvmSwitchPlan, NamesTheOtherPackageKeepsAreListedApartFromStranded) {
+    // The old package has a program the new one does not. It did not fall
+    // behind -- it belongs to a package that is still there and still active,
+    // and the incoming package has no version of it to switch to. So it goes
+    // on the `-v` list, never into --strict's way.
+    xlings::xvm::VersionDB db;
+    distribution_group_(db, "xim:jdk-temurin", "jdk-temurin", "25.0.4+7",
+                        {"java", "javac", "jwebserver"}, "25.0.4+7-temurin");
+    distribution_group_(db, "xim:jdk-zulu", "jdk-zulu", "25.0.4",
+                        {"java", "javac"}, "25.0.4-zulu");
+    const xlings::xvm::Workspace ws{
+        {"java", "25.0.4+7-temurin"}, {"javac", "25.0.4+7-temurin"},
+        {"jwebserver", "25.0.4+7-temurin"},
+        {"jdk-temurin", "25.0.4+7"}, {"jdk-zulu", "25.0.4"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_TRUE(plan->stranded.empty()) << "--strict must stay switchable";
+    ASSERT_EQ(plan->retainedByOldPackage.size(), 1u);
+    EXPECT_EQ(plan->retainedByOldPackage.front().target, "jwebserver");
+    EXPECT_EQ(plan->retainedByOldPackage.front().version, "25.0.4+7-temurin");
+    EXPECT_EQ(plan->retainedByOldPackage.front().kind, "program");
+}
+
+TEST(XvmSwitchPlan, AGroupRootIsNeverStrandedEvenWithinOnePackage) {
+    // Reachable inside one package too, when a recipe renames its root
+    // between versions. Independent of the package rule: a group root
+    // materializes nothing -- no shim, no library, no file -- so "still on
+    // the old release" describes nothing at all.
+    xlings::xvm::VersionDB db;
+    distribution_group_(db, "xim:demo", "demo-root-old", "1.0.0",
+                        {"demo"}, "1.0.0");
+    distribution_group_(db, "xim:demo", "demo-root-new", "2.0.0",
+                        {"demo"}, "2.0.0");
+    const xlings::xvm::Workspace ws{
+        {"demo", "1.0.0"}, {"demo-root-old", "1.0.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    EXPECT_EQ(plan->fromProvider, plan->toProvider) << "same package fixture";
+    EXPECT_TRUE(plan->stranded.empty())
+        << "demo-root-old names no artifact; it cannot be left behind";
+}
+
+TEST(XvmSwitchPlan, ALibraryLeftBehindWithinOnePackageIsStrandedAndSaysSo) {
+    // A library does put a file into the sysroot, so it can genuinely be left
+    // there -- it just must not be described as a program.
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++.so.6"}, "15.1.0");
+    switch_group_(db, "16.1.0", {"gcc", "g++"}, "16.1.0");
+    const xlings::xvm::Workspace ws{
+        {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"libstdc++.so.6", "15.1.0"}};
+
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+
+    ASSERT_TRUE(plan.has_value()) << plan.error().what;
+    ASSERT_EQ(plan->stranded.size(), 1u);
+    EXPECT_EQ(plan->stranded.front().target, "libstdc++.so.6");
+    EXPECT_EQ(plan->stranded.front().kind, "lib");
 }
 
 TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {

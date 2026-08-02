@@ -33,8 +33,10 @@ PKG_NAME="xlings-${VERSION}-linux-${ARCH}"
 OUT_DIR="$PROJECT_DIR/build/$PKG_NAME"
 
 TEST_DATA=""
+VERIFY_HOME=""
 cleanup() {
   [[ -n "$TEST_DATA" && -d "$TEST_DATA" ]] && rm -rf "$TEST_DATA"
+  [[ -n "$VERIFY_HOME" && -d "$VERIFY_HOME" ]] && rm -rf "$VERIFY_HOME"
   return 0  # never fail the script (TEST_DATA is empty on SKIP_RUN_VERIFY cross builds)
 }
 trap cleanup EXIT
@@ -181,17 +183,41 @@ else
     if command -v timeout &>/dev/null; then timeout "$t" "$@"; else "$@"; fi
   }
 
+  # Verify against a COPY of the package, never the package itself.
+  #
+  # These two commands install into whatever home they are pointed at, and
+  # they used to be pointed at $OUT_DIR -- the very directory tar'd up on the
+  # next screen. A local run therefore shipped an artifact carrying 152 MB of
+  # payloads under data/xpkgs, ~170 entries in .xlings.json, and a subos
+  # workspace claiming glibc/openssl/d2x as active: the user's first `xlings`
+  # would start from someone else's machine state, with payload paths that do
+  # not exist for them.
+  #
+  # Invisible in CI, and for the worst reason: every CI caller sets
+  # SKIP_NETWORK_VERIFY=1, so the branch that causes it never runs there. The
+  # released tarballs are clean; anyone following this script's own usage line
+  # got the polluted one. Found 2026-08-02 when the packaged d2x made
+  # E2E-12 skip elfpatch entirely -- it had nothing left to install.
+  VERIFY_HOME="$PROJECT_DIR/build/.release_verify_home_$$"
+  rm -rf "$VERIFY_HOME"
+  cp -r "$OUT_DIR" "$VERIFY_HOME"
+
   info "Verify: xlings update (timeout 300s)..."
   if ! run_with_timeout 300 bash -c \
-    'PATH="$1/subos/current/bin:$1/bin:/usr/local/bin:/usr/bin:/bin" "$1/bin/xlings" update' _ "$OUT_DIR"; then
+    'PATH="$1/subos/current/bin:$1/bin:/usr/local/bin:/usr/bin:/bin" XLINGS_HOME="$1" XLINGS_DATA="$1/data" XLINGS_SUBOS="$1/subos/current" "$1/bin/xlings" update' _ "$VERIFY_HOME"; then
     fail "xlings update failed (network?). Set SKIP_NETWORK_VERIFY=1 to skip."
   fi
 
   info "Verify: xlings install d2x@0.1.3 -y (timeout 300s)..."
   if ! run_with_timeout 300 bash -c \
-    'PATH="$1/subos/current/bin:$1/bin:/usr/local/bin:/usr/bin:/bin" "$1/bin/xlings" install d2x@0.1.3 -y' _ "$OUT_DIR"; then
+    'PATH="$1/subos/current/bin:$1/bin:/usr/local/bin:/usr/bin:/bin" XLINGS_HOME="$1" XLINGS_DATA="$1/data" XLINGS_SUBOS="$1/subos/current" "$1/bin/xlings" install d2x@0.1.3 -y' _ "$VERIFY_HOME"; then
     fail "install d2x@0.1.3 failed. Set SKIP_NETWORK_VERIFY=1 to skip."
   fi
+  # The check below reads the home the install actually wrote to. Both this
+  # and the per-command XLINGS_DATA above are needed: the exported one still
+  # points at $OUT_DIR, and an inherited data dir would put the payloads back
+  # into the package no matter which home was named.
+  XLINGS_DATA="$VERIFY_HOME/data"
 
   # The payload store is keyed by `<namespace>-x-<name>`, so d2x from the xim
   # index lands in `xim-x-d2x`. This looked for a bare `d2x` and had been
@@ -215,6 +241,50 @@ fi
 
 cleanup
 trap - EXIT
+
+# ── 4f. The artifact ships a FRESH home, not this machine's ──────
+#
+# The gate, not the intention. Every verification above runs commands that
+# install things, and the only reason they no longer install them into the
+# package is that each was pointed elsewhere by hand -- one future edit away
+# from shipping a home full of local payloads again, silently, because a
+# 152 MB tarball still unpacks and still runs. This asks the artifact instead
+# of trusting the procedure.
+info "Verify: the package carries no local state"
+if compgen -G "$OUT_DIR/data/xpkgs/*" > /dev/null 2>&1; then
+  info "  offending entries:"
+  ls -1 "$OUT_DIR/data/xpkgs" | head -10
+  fail "data/xpkgs is not empty — a verification step installed into the package"
+fi
+if command -v python3 &>/dev/null; then
+  python3 - "$OUT_DIR" <<'PY' || fail "the package carries registered state (see above)"
+import json, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+bad = []
+def count(path, *keys):
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text())
+    except Exception as exc:                     # unreadable is its own defect
+        bad.append(f"{path}: unreadable ({exc})")
+        return
+    for key in keys:
+        data = data.get(key, {}) if isinstance(data, dict) else {}
+    if data:
+        names = ", ".join(list(data)[:5])
+        bad.append(f"{path.relative_to(root)}: {len(data)} entr(ies) — {names} …")
+count(root / ".xlings.json", "versions")
+for ws in (root / "subos").glob("*/.xlings.json"):
+    count(ws, "workspace")
+for line in bad:
+    print(f"[release]   {line}")
+sys.exit(1 if bad else 0)
+PY
+else
+  info "  (python3 absent — state check limited to data/xpkgs)"
+fi
+info "OK: package is a fresh home"
 
 # ── 5. Create archive ───────────────────────────────────────────
 info ""
