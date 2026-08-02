@@ -1,6 +1,6 @@
 # Multiplatform user-experience contracts — design
 
-> 2026-08-03 | status: approved direction, implementation pending
+> 2026-08-03 | status: implemented on feature branch; PR validation required
 
 ## Problem
 
@@ -45,6 +45,9 @@ release, change xim-pkgindex, or add xlings-res assets.
    cold-home verification on every published platform/architecture.
 8. Public documentation must state the real isolation and artifact support
    matrix and keep executable examples aligned with the current interface.
+9. An explicit cold `XLINGS_HOME` must support a first package install without
+   requiring `self init`; workspace persistence creates its selected parent
+   directory before writing (Issue #471).
 
 ## Non-goals
 

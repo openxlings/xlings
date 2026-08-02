@@ -5,6 +5,7 @@ export module xlings.agent.skills.usage;
 
 import std;
 import xlings.agent.skill;
+import xlings.cli.spec;
 
 namespace xlings::agent::skills {
 
@@ -14,7 +15,17 @@ public:
     auto description() const -> std::string_view override {
         return "IMPORTANT: Read this FIRST. Complete usage instructions for AI agents.";
     }
-    auto content() const -> std::string_view override { return kContent; }
+    auto content() const -> std::string_view override {
+        static const std::string generated = [] {
+            std::string value{kContent};
+            constexpr std::string_view marker = "@@COMMAND_REFERENCE@@";
+            if (const auto at = value.find(marker); at != std::string::npos) {
+                value.replace(at, marker.size(), cli::spec::agent_reference());
+            }
+            return value;
+        }();
+        return generated;
+    }
 
 private:
     static constexpr std::string_view kContent = R"SKILL([SYSTEM INSTRUCTION — xlings usage for AI agents]
@@ -43,34 +54,7 @@ RULES — you MUST follow these, no exceptions
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMMAND REFERENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-SEARCH — always do this first if unsure about a package name
-  xlings search <keyword> --agent
-
-INSTALL — one or more packages
-  xlings install <pkg>@<ver> --yes --agent
-  xlings install <pkg1> <pkg2> --yes --agent
-  Extra flags:
-    -g    Install to global scope (not project-local)
-    -u    Activate this version even if another is active
-
-REMOVE
-  xlings remove <pkg>[@<ver>] --yes --agent
-
-LIST installed packages
-  xlings list --agent
-  xlings list --all --agent            # across all subos
-
-PACKAGE INFO — see available versions, metadata
-  xlings info <pkg> --agent
-
-UPDATE package index or a specific package
-  xlings update --agent
-  xlings update <pkg> --yes --agent
-
-SWITCH active version
-  xlings use <pkg> <ver> --agent
-  xlings use <pkg> --agent             # list installed versions
+@@COMMAND_REFERENCE@@
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DECISION TREES — follow these, do not improvise
@@ -106,6 +90,9 @@ multiple toolchains on one machine.
   xlings subos use <name> --cmd "<cmd>"   # run one command inside
   xlings subos use <name> --sandbox       # filesystem isolation
   xlings subos use <name> --sandbox --gpu # sandbox + NVIDIA/DRM passthrough
+
+Security: Linux sandbox mode isolates the filesystem. macOS and Windows only
+redirect HOME/USERPROFILE; use an OS sandbox or VM for untrusted code.
   xlings subos list --agent               # list all
   xlings subos remove <name>              # delete
 

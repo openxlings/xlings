@@ -16,6 +16,9 @@
 - Treat non-empty xpkg `archs` as authoritative for every supported spec revision.
 - Continue using libxpkg as the only Lua/xpkg parser and resource normalizer.
 - Keep every stateful E2E in an isolated `HOME` and `XLINGS_HOME`.
+- Cover Issue #471 with a first-install E2E whose explicit `XLINGS_HOME` has
+  no pre-created `subos/` tree and which verifies persisted installed/active
+  state after exit 0.
 - Preserve Linux x86_64/aarch64, macOS 14 arm64 and Windows x86_64 release support.
 - Preserve the existing `latest`-floating post-release fresh-install suite.
 - Use `mcpp build` and `mcpp test`; never install dependencies with apt/brew/curl during local work.

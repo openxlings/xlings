@@ -909,6 +909,19 @@ export int enter(const std::string& name, EventStream& stream,
     } else {
         backend = detect_backend_(p.homeDir, subos_dir);
         if (!backend) {
+#if defined(__aarch64__)
+            // The published automatic backends currently declare x86_64
+            // only. Refuse before calling the installer so this path emits
+            // one causal error and performs zero download requests. A backend
+            // already supplied by the user is still accepted above.
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = "E_UNSUPPORTED_TARGET: sandbox backend has no linux-aarch64 artifact",
+                .recoverable = false,
+                .hint = "use shell isolation, or install a supported backend manually",
+            });
+            return 1;
+#else
             auto rc = auto_install_backend_(p.homeDir, stream);
             if (rc != 0) {
                 stream.emit(ErrorEvent{
@@ -928,6 +941,7 @@ export int enter(const std::string& name, EventStream& stream,
                 });
                 return 1;
             }
+#endif
         }
     }
 
@@ -1045,9 +1059,7 @@ export int enter(const std::string& name, EventStream& stream,
     platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "/.cache");
     platform::set_env_variable("XDG_STATE_HOME", sandbox_home + "/.local/state");
 
-    ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
-    log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
-    return 127;
+    return platform::run_shell(cmd, cmd.empty());
 
 #elif defined(_WIN32)
     // ═══════════════════════════════════════════════════════════════
@@ -1070,25 +1082,7 @@ export int enter(const std::string& name, EventStream& stream,
     platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "\\.local\\share");
     platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "\\.cache");
 
-    // Windows: CreateProcess + WaitForSingleObject (same as use_spawn_shell)
-    constexpr const char* shells[] = { "pwsh.exe", "powershell.exe", "cmd.exe" };
-    for (auto* exe : shells) {
-        STARTUPINFOA si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        std::string cmdline = exe;
-        if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
-                             TRUE, 0, nullptr, nullptr, &si, &pi)) {
-            ::WaitForSingleObject(pi.hProcess, INFINITE);
-            DWORD exitCode = 0;
-            ::GetExitCodeProcess(pi.hProcess, &exitCode);
-            ::CloseHandle(pi.hThread);
-            ::CloseHandle(pi.hProcess);
-            return static_cast<int>(exitCode);
-        }
-    }
-    log::error("could not launch any shell on Windows");
-    return 127;
+    return platform::run_shell(cmd, cmd.empty());
 #endif
 }
 

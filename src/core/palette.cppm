@@ -47,6 +47,16 @@ inline auto opted_out_() -> bool {
     return false;
 }
 
+inline auto cursor_rewrite_allowed(bool stdoutTerminal, bool tuiMode,
+                                   bool plainOutput) -> bool {
+    return stdoutTerminal && !tuiMode && !plainOutput;
+}
+
+inline auto cursor_rewrite_allowed() -> bool {
+    return cursor_rewrite_allowed(stdout_is_terminal(),
+                                  platform::is_tui_mode(), opted_out_());
+}
+
 inline auto colors_enabled() -> bool {
     return !opted_out_() && stdout_is_terminal();
 }

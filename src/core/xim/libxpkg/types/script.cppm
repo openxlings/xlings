@@ -33,7 +33,8 @@ bool default_install(const PlanNode& node,
 }
 
 bool default_config(const PlanNode& node,
-                    const std::filesystem::path& dataDir) {
+                    const std::filesystem::path& dataDir,
+                    const std::string& versionNamespace) {
     auto storeName = package_store_name(node.namespaceName, node.name);
     auto targetScript = (node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot)
         / storeName
@@ -44,9 +45,10 @@ bool default_config(const PlanNode& node,
     auto bindir = targetScript.parent_path().string();
 
     xvm::add_version(Config::versions_mut(),
-                     node.name, node.version, bindir, "program", "", alias);
+                     node.name, node.version, bindir, "program", "", alias,
+                     versionNamespace);
 
-    auto ver_key = xvm::make_ns_version("", node.version);
+    auto ver_key = xvm::make_ns_version(versionNamespace, node.version);
     Config::workspace_mut()[node.name] = ver_key;
 
     auto paths = Config::paths();

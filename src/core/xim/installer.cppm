@@ -6,6 +6,7 @@ import mcpplibs.xpkg.loader;
 import mcpplibs.xpkg.compat;
 import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
+import xlings.core.xim.compatibility;
 import xlings.core.xim.payload;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
@@ -851,6 +852,14 @@ std::string effective_store_name_(const PackageMatch& match) {
     return effective_store_name_(match.namespaceName, match.name);
 }
 
+std::string version_namespace_(std::string_view namespaceName) {
+    const auto& globalRepos = Config::global_index_repos();
+    const bool isPrimary = !globalRepos.empty()
+        && namespaceName == globalRepos.front().name;
+    if (isPrimary || namespaceName.empty()) return {};
+    return std::string(namespaceName);
+}
+
 std::string plan_key_(const PlanNode& node) {
     auto name = node.canonicalName.empty()
         ? canonical_package_name(node.namespaceName, node.name)
@@ -1465,20 +1474,12 @@ bool process_xvm_operations_(const PlanNode& node,
     if (!std::filesystem::exists(xlings_bin))
         xlings_bin = paths.homeDir / "xlings";
 
-    // Determine namespace for version keys: primary repo gets bare versions,
-    // other repos get "ns:version" to allow coexistence.
-    std::string version_ns;
-    {
-        auto& globalRepos = Config::global_index_repos();
-        bool isPrimary = !globalRepos.empty()
-            && node.namespaceName == globalRepos[0].name;
-        if (!isPrimary && !node.namespaceName.empty()) {
-            version_ns = node.namespaceName;
-        }
-    }
+    // Primary repo versions retain their historical bare keys. Other repos
+    // retain their namespace so install and exact removal resolve identically.
+    const auto versionNamespace = version_namespace_(node.namespaceName);
 
     auto registration = normalize_xpkg_registration_plan(
-        node, xvm_ops, version_ns, dataDir, useAfterInstall);
+        node, xvm_ops, versionNamespace, dataDir, useAfterInstall);
     if (!registration) {
         log::warn(
             "xvm registration normalization failed for {}@{}: {} "
@@ -1598,7 +1599,7 @@ bool process_xvm_operations_(const PlanNode& node,
     // scopedDb, so a package whose own name is not a registered target simply
     // gets no marker rather than a phantom entry.
     if (const auto headerVersion =
-            xvm::make_ns_version(version_ns, node.version);
+            xvm::make_ns_version(versionNamespace, node.version);
         attach_legacy_header_dir(
             scopedDb, node.name, headerVersion, metadata->effects) == 0) {
         const bool declaresHeaders = std::ranges::any_of(
@@ -1993,32 +1994,13 @@ public:
                 continue;
             }
 
-            // Fail-closed arch gate: refuse a package whose declared `archs`
-            // don't include the host arch. Gated on spec >= "2": in V1 the
-            // `archs` field was never enforced and is frequently
-            // under-declared (e.g. an x86_64-only list on a recipe that
-            // actually resolves an aarch64 asset via XLINGS_RES), so enforcing
-            // it would break installs that worked before. V2 authors opt into
-            // correct per-arch declarations and want this enforced. Empty
-            // `archs` is always exempt.
-            // `>= 2` rather than `== "2"`: a spec revision we do implement
-            // keeps the enforcement its predecessor introduced.
-            if (specSupport.declared >= 2 && !pkg->archs.empty()) {
-                const std::string hostArchCheck =
-                    mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
-                bool supported = false;
-                for (auto& a : pkg->archs)
-                    if (mcpplibs::xpkg::arch_matches(a, hostArchCheck)) { supported = true; break; }
-                if (!supported) {
-                    std::string have;
-                    for (auto& a : pkg->archs) { if (!have.empty()) have += ", "; have += a; }
-                    log::error("{}: unsupported architecture '{}' (supported: {})",
-                               node.name, hostArchCheck, have);
-                    // Same reason as the spec gate: without this the package
-                    // is skipped for download and then installed anyway.
-                    refusedNodes.insert(detail_::plan_key_(node));
-                    continue;
-                }
+            const auto compatibility = check_target_compatibility(
+                *pkg, platform, hostArch);
+            if (!compatibility.supported) {
+                log::error("{}", compatibility_error(node.canonicalName,
+                                                       compatibility));
+                refusedNodes.insert(detail_::plan_key_(node));
+                continue;
             }
 
             auto resource = detail_::resolve_download_resource_(
@@ -2508,7 +2490,10 @@ public:
                 log::debug("[{}] kind=Build: skipping config hook / workspace activation",
                            node.name);
             } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 1 /* Script */) {
-                if (!script::default_config(node, dataDir)) {
+                if (!script::default_config(
+                        node,
+                        dataDir,
+                        detail_::version_namespace_(node.namespaceName))) {
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    "default script config failed" });
@@ -2516,7 +2501,10 @@ public:
                     continue;
                 }
             } else if (!executor.has_hook(mcpplibs::xpkg::HookType::Config) && node.pkgType == 4 /* Subos */) {
-                if (!subos::default_config(node, dataDir)) {
+                if (!subos::default_config(
+                        node,
+                        dataDir,
+                        detail_::version_namespace_(node.namespaceName))) {
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    "default subos config failed" });
@@ -2665,14 +2653,9 @@ public:
         auto detachTarget = resolvedMatch ? resolvedMatch->name : targetName;
         auto detachVersion = resolvedMatch ? resolvedMatch->version : requestedVersion;
         if (resolvedMatch) {
-            auto& globalRepos = Config::global_index_repos();
-            const bool isPrimary = !globalRepos.empty()
-                && resolvedMatch->namespaceName == globalRepos[0].name;
-            if (!isPrimary && !resolvedMatch->namespaceName.empty()) {
-                detachVersion = xvm::make_ns_version(
-                    resolvedMatch->namespaceName,
-                    resolvedMatch->version);
-            }
+            detachVersion = xvm::make_ns_version(
+                detail_::version_namespace_(resolvedMatch->namespaceName),
+                resolvedMatch->version);
         }
         auto executingProvider = resolvedMatch
             ? (resolvedMatch->canonicalName.empty()

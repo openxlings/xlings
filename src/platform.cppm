@@ -8,6 +8,8 @@ module;
 #include <fcntl.h>
 #else
 #include <io.h>
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 export module xlings.platform;
@@ -207,6 +209,93 @@ namespace platform {
         return status;
 #else
         return status;
+#endif
+    }
+
+    export [[nodiscard]] std::string shell_quote(const std::string& arg);
+
+    export std::vector<std::string> shell_command_argv(
+        std::string_view shell, std::string_view command, bool interactive) {
+        std::vector<std::string> argv{std::string(shell)};
+        if (interactive) {
+#if !defined(_WIN32)
+            argv.push_back("-i");
+#endif
+        } else if (shell.find("powershell") != std::string_view::npos
+                   || shell.find("pwsh") != std::string_view::npos) {
+            argv.insert(argv.end(), {"-NoLogo", "-NonInteractive", "-Command",
+                                     std::string(command)});
+        } else if (shell.find("cmd") != std::string_view::npos) {
+            argv.insert(argv.end(), {"/d", "/s", "/c", std::string(command)});
+        } else {
+            argv.insert(argv.end(), {"-c", std::string(command)});
+        }
+        return argv;
+    }
+
+    export int run_shell(std::string_view command, bool interactive) {
+        std::cout.flush();
+        std::cerr.flush();
+#if defined(_WIN32)
+        std::vector<std::string> shells;
+        if (const auto* configured = std::getenv("XLINGS_SHELL");
+            configured && *configured) {
+            shells.emplace_back(configured);
+        } else {
+            shells = {"pwsh.exe", "powershell.exe", "cmd.exe"};
+        }
+        for (const auto shell : shells) {
+            auto argv = shell_command_argv(shell, command, interactive);
+            std::string commandLine;
+            if (shell.find("cmd") != std::string_view::npos && !interactive) {
+                // cmd.exe does not use CRT backslash escaping for the source
+                // following /c. /s deliberately strips this one outer quote
+                // pair and leaves quotes/metacharacters inside the command to
+                // cmd's own grammar.
+                commandLine = shell_quote(std::string(shell))
+                    + " /d /s /c \"" + std::string(command) + "\"";
+            } else {
+                for (const auto& arg : argv) {
+                    if (!commandLine.empty()) commandLine += ' ';
+                    commandLine += shell_quote(arg);
+                }
+            }
+            STARTUPINFOA startup{};
+            startup.cb = sizeof(startup);
+            PROCESS_INFORMATION process{};
+            if (!::CreateProcessA(nullptr, commandLine.data(), nullptr, nullptr,
+                                  TRUE, 0, nullptr, nullptr,
+                                  &startup, &process)) {
+                continue;
+            }
+            ::WaitForSingleObject(process.hProcess, INFINITE);
+            DWORD exitCode = 127;
+            ::GetExitCodeProcess(process.hProcess, &exitCode);
+            ::CloseHandle(process.hThread);
+            ::CloseHandle(process.hProcess);
+            return static_cast<int>(exitCode);
+        }
+        return 127;
+#else
+        auto shell = std::getenv("SHELL");
+        std::string executable = shell && *shell ? shell : "/bin/sh";
+        const auto pid = ::fork();
+        if (pid < 0) return 127;
+        if (pid == 0) {
+            if (interactive) {
+                ::execl(executable.c_str(), executable.c_str(), "-i",
+                        static_cast<char*>(nullptr));
+            } else {
+                ::execl(executable.c_str(), executable.c_str(), "-c",
+                        std::string(command).c_str(), static_cast<char*>(nullptr));
+            }
+            ::_exit(127);
+        }
+        int status = 0;
+        if (::waitpid(pid, &status, 0) < 0) return 127;
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+        return 127;
 #endif
     }
 

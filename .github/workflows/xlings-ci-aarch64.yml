@@ -30,6 +30,41 @@ env:
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
 
 jobs:
+  native-contracts:
+    name: native aarch64 compatibility contracts
+    needs: cross-build-and-run
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-aarch64-candidate
+          path: candidate
+      - name: Install bootstrap xlings
+        env:
+          XLINGS_NON_INTERACTIVE: 1
+          XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+          echo "XLINGS_HOME=$HOME/.xlings" >> "$GITHUB_ENV"
+          echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
+      - name: Install mcpp and run native contracts
+        run: |
+          xlings config --mirror GLOBAL
+          xlings install mcpp -y
+          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
+          mcpp build
+          mcpp test xpkg_compatibility
+          bin=$(find target -path '*/bin/xlings' -type f | head -1)
+          test -x "$bin"
+          "$bin" --version
+          XLINGS_BIN="$bin" bash tests/e2e/aarch64_compat_contract_test.sh
+      - name: Candidate cold-home and aarch64 fail-closed lifecycle
+        run: |
+          bash tests/candidate-install/smoke.sh \
+            candidate/*.tar.gz candidate/*.tar.gz.sha256
+
   cross-build-and-run:
     name: cross-build xlings aarch64 (host x86_64) + qemu run
     runs-on: ubuntu-24.04
@@ -84,10 +119,17 @@ jobs:
           "$MCPP" self config --mirror GLOBAL
           echo "MCPP=$MCPP" >> "$GITHUB_ENV"
 
-      - name: Cross-build xlings -> aarch64 static, run under qemu
+      - name: Cross-build release candidate -> aarch64 static, run under qemu
         run: |
-          "$MCPP" build --target aarch64-linux-musl
-          bin=$(find target/aarch64-linux-musl -type f -name xlings | head -1)
+          MCPP_BIN="$MCPP" MCPP_TARGET=aarch64-linux-musl \
+            SKIP_RUN_VERIFY=1 SKIP_NETWORK_VERIFY=1 \
+            bash tools/linux_release.sh
+          archive=$(find build -maxdepth 1 -name 'xlings-*-linux-aarch64.tar.gz' | head -1)
+          test -f "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          package_root=$(mktemp -d)
+          tar -xzf "$archive" -C "$package_root"
+          bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)
           echo "== file =="; file "$bin"
           file "$bin" | grep -q "ARM aarch64" || { echo "NOT aarch64"; exit 1; }
           file "$bin" | grep -q "statically linked" || { echo "NOT static"; exit 1; }
@@ -95,3 +137,11 @@ jobs:
           ver=$(qemu-aarch64-static "$bin" --version)
           echo "$ver"
           echo "$ver" | grep -q "xlings" || { echo "xlings --version failed under qemu"; exit 1; }
+
+      - name: Upload aarch64 candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlings-linux-aarch64-candidate
+          path: |
+            build/xlings-*-linux-aarch64.tar.gz
+            build/xlings-*-linux-aarch64.tar.gz.sha256

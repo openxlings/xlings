@@ -345,8 +345,72 @@ jobs:
           name: xlings-windows-x86_64
           path: build/xlings-*-windows-x86_64.zip
 
-  create-release:
+  prepare-candidates:
     needs: [build-linux, build-linux-aarch64, build-macos, build-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Generate source-bound sidecars
+        run: |
+          mkdir sidecars
+          while IFS= read -r file; do
+            name=$(basename "$file")
+            sha256sum "$file" > "sidecars/$name.sha256"
+          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlings-release-sidecars
+          path: sidecars/*.sha256
+
+  candidate-linux-x86_64:
+    needs: [prepare-candidates]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-linux-x86_64, path: candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-release-sidecars, path: sidecars}
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*linux-x86_64.tar.gz.sha256
+
+  candidate-linux-aarch64:
+    needs: [prepare-candidates]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-linux-aarch64, path: candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-release-sidecars, path: sidecars}
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*linux-aarch64.tar.gz.sha256
+
+  candidate-macos-arm64:
+    needs: [prepare-candidates]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-macosx-arm64, path: candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-release-sidecars, path: sidecars}
+      - run: bash tests/candidate-install/smoke.sh candidate/*.tar.gz sidecars/*macosx-arm64.tar.gz.sha256
+
+  candidate-windows-x86_64:
+    needs: [prepare-candidates]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-windows-x86_64, path: candidate}
+      - uses: actions/download-artifact@v4
+        with: {name: xlings-release-sidecars, path: sidecars}
+      - shell: pwsh
+        run: powershell -File tests/candidate-install/smoke.ps1 (Get-ChildItem candidate/*.zip).FullName (Get-ChildItem sidecars/*windows-x86_64.zip.sha256).FullName
+
+  create-release:
+    needs: [candidate-linux-x86_64, candidate-linux-aarch64, candidate-macos-arm64, candidate-windows-x86_64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -377,14 +441,6 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
-      - name: Generate SHA256 sidecars
-        run: |
-          while IFS= read -r file; do
-            dir=$(dirname "$file")
-            name=$(basename "$file")
-            (cd "$dir" && sha256sum "$name" > "$name.sha256")
-          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
-
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -397,7 +453,7 @@ jobs:
             artifacts/xlings-linux-aarch64/xlings-*-linux-aarch64.tar.gz
             artifacts/xlings-macosx-arm64/xlings-*-macosx-arm64.tar.gz
             artifacts/xlings-windows-x86_64/xlings-*-windows-x86_64.zip
-            artifacts/**/*.sha256
+            artifacts/xlings-release-sidecars/*.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

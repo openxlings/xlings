@@ -801,72 +801,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     std::cout.flush();
     std::cerr.flush();
 
-#if defined(_WIN32)
-    // Windows: CreateProcess + WaitForSingleObject. We try shells in
-    // preference order (pwsh > powershell > cmd) and inherit the parent's
-    // stdio handles so the user can interact normally. Unlike POSIX exec,
-    // CreateProcess can't replace the current process — xlings stays
-    // alive parked on WaitForSingleObject. The child's exit code becomes
-    // ours so `xlings subos use` exits with whatever the shell exited.
-    constexpr const char* shells[] = { "pwsh.exe", "powershell.exe", "cmd.exe" };
-    for (auto* exe : shells) {
-        STARTUPINFOA si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        // CreateProcessA needs a writable command-line buffer; std::string
-        // ::data() returns a non-const char* since C++17. We pass null for
-        // lpApplicationName so Windows resolves the bare exe via PATH.
-        //
-        // M3: when `cmd` is set, append the appropriate non-interactive
-        // single-command flag. pwsh/powershell use `-Command "<cmd>"`;
-        // cmd.exe uses `/c "<cmd>"`.
-        std::string cmdline = exe;
-        if (!cmd.empty()) {
-            std::string_view exe_sv = exe;
-            if (exe_sv.find("cmd.exe") != std::string_view::npos) {
-                cmdline += " /c \"" + cmd + "\"";
-            } else {
-                cmdline += " -Command \"" + cmd + "\"";
-            }
-        }
-        if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
-                             /*bInheritHandles=*/TRUE,
-                             /*dwCreationFlags=*/0,
-                             /*lpEnvironment=*/nullptr,
-                             /*lpCurrentDirectory=*/nullptr,
-                             &si, &pi)) {
-            ::WaitForSingleObject(pi.hProcess, INFINITE);
-            DWORD exitCode = 0;
-            ::GetExitCodeProcess(pi.hProcess, &exitCode);
-            ::CloseHandle(pi.hThread);
-            ::CloseHandle(pi.hProcess);
-            return static_cast<int>(exitCode);
-        }
-    }
-    log::error("could not launch any shell on Windows "
-               "(tried pwsh.exe, powershell.exe, cmd.exe)");
-    return 127;
-#else
-    // POSIX: exec(2) replaces the current process so xlings exits and the
-    // child shell takes over. `exit` from that shell returns directly to
-    // the parent shell with the original env intact.
-    //
-    // M3: `--cmd` switches to non-interactive single-command mode —
-    // `shell -c <cmd>`. The shell exits after the command, propagating
-    // its exit code as xlings's exit code.
-    auto shell = utils::get_env_or_default("SHELL");
-    if (shell.empty()) shell = "/bin/sh";
-    if (!cmd.empty()) {
-        ::execl(shell.c_str(), shell.c_str(), "-c", cmd.c_str(),
-                static_cast<char*>(nullptr));
-    } else {
-        ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
-    }
-
-    // Only reached if exec failed.
-    log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
-    return 127;
-#endif
+    return platform::run_shell(cmd, cmd.empty());
 }
 
 // Back-compat single-arg entry point: keeps existing callers (anyone who

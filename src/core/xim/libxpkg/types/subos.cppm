@@ -77,7 +77,8 @@ bool default_install(const PlanNode& node,
 }
 
 bool default_config(const PlanNode& node,
-                    const std::filesystem::path& dataDir) {
+                    const std::filesystem::path& dataDir,
+                    const std::string& versionNamespace) {
     auto storeName = package_store_name(node.namespaceName, node.name);
     auto installDir = (node.storeRoot.empty() ? (dataDir / "xpkgs") : node.storeRoot)
         / storeName
@@ -88,9 +89,10 @@ bool default_config(const PlanNode& node,
     // normally. Subos base does NOT need a `xlings`-dispatching shim like
     // type=script does — the package is a fork source, not a runnable.
     xvm::add_version(Config::versions_mut(),
-                     node.name, node.version, bindir, "subos-base", "", "");
+                     node.name, node.version, bindir, "subos-base", "", "",
+                     versionNamespace);
 
-    auto ver_key = xvm::make_ns_version(node.namespaceName, node.version);
+    auto ver_key = xvm::make_ns_version(versionNamespace, node.version);
     Config::workspace_mut()[node.name] = ver_key;
 
     Config::save_versions();

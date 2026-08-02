@@ -1339,6 +1339,13 @@ public:
                 self.global_subos_dir_() / ".xlings.json";
         }
 
+        // XLINGS_HOME is a supported explicit scope, not proof that `self
+        // init` has already run. A first package install into a cold home
+        // reaches this writer after the payload is complete; create the state
+        // directory before persisting installed/active ownership so success
+        // is never followed by a spurious write failure (issue #471).
+        fs::create_directories(subosConfigPath.parent_path());
+
         nlohmann::json json;
         if (fs::exists(subosConfigPath)) {
             try {

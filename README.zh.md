@@ -24,6 +24,16 @@
 
 一个工具,安装任意版本的任意软件,无需 root 运行,并提供 OS 级的环境隔离 —— 在 Linux / macOS / Windows 上统一。
 
+| 发布目标 | 包管理 | `subos --sandbox` |
+|---|---|---|
+| Linux x86_64 | 支持 | bwrap/proot 文件系统隔离 |
+| Linux aarch64 | 支持；架构不兼容的包会在下载前拒绝 | bwrap/proot 文件系统隔离 |
+| macOS 14+ arm64 | 支持 | 仅 HOME 重定向 |
+| Windows x86_64 | 支持 | 仅 USERPROFILE 重定向 |
+
+macOS 和 Windows 的 sandbox 模式只隔离配置目录，不隔离宿主文件系统或
+进程，不能用来执行不受信代码。
+
 → [xlings 与 apt / nix / docker 对比](docs/comparison.md)
 
 ## 核心能力
@@ -110,7 +120,8 @@ xlings install           # 按声明的版本装进项目级隔离环境
 
 ### 🤖 在隔离 SubOS 中运行 Agent / 不受信代码
 
-把 claude / codex / opencode —— 或任意不受信代码 —— 跑在**隔离的 SubOS 内部**:内部拥有完全权限,宿主机不受影响。从 base 环境秒级 fork,一台机器可跑多个隔离实例。
+Linux 可在 rootless 文件系统隔离的 SubOS 中运行 Agent。macOS 和 Windows
+仅重定向用户目录；若需运行不受信代码，请使用操作系统沙箱或虚拟机。
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest

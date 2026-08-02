@@ -24,6 +24,16 @@
 
 One tool to install any version of anything, run it rootless, and isolate it OS-like — across Linux, macOS, and Windows.
 
+| Release target | Package management | `subos --sandbox` |
+|---|---|---|
+| Linux x86_64 | Supported | Filesystem isolation with bwrap/proot |
+| Linux aarch64 | Supported; recipes with incompatible `archs` are refused before download | Filesystem isolation with bwrap/proot |
+| macOS 14+ arm64 | Supported | HOME redirection only |
+| Windows x86_64 | Supported | USERPROFILE redirection only |
+
+macOS and Windows sandbox mode isolates configuration directories, not the
+host filesystem or processes. Do not use it to run untrusted code.
+
 → [How xlings compares to apt / nix / docker](docs/comparison.md)
 
 ## Core capabilities
@@ -110,7 +120,9 @@ xlings install           # installs the declared versions, project-local
 
 ### 🤖 Agents & untrusted code in an isolated SubOS
 
-Run claude / codex / opencode — or any untrusted code — **inside** a rootless SubOS: full permissions within, host untouched. Fork from a base env in seconds and run several isolated instances on one machine.
+On Linux, run agents inside a rootless filesystem-isolated SubOS. On macOS and
+Windows, SubOS redirects the home directory but does not contain untrusted
+code; use an OS sandbox or VM when that boundary is required.
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest

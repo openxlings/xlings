@@ -26,6 +26,17 @@ xlings 的基础架构和主路径已经具备相当好的产品骨架：公开�
 - **Agent/NDJSON：接口设计扎实；但 CLI 假成功、列表漏报和文档旧协议会放大自动化风险。**
 - **发布体系：构建覆盖强，但 release 绿色不等于用户路径绿色；当前公开版就是反例。**
 
+### 1.1 追加验证：Issue #471 是真实缺陷
+
+2026-08-03 对未修复二进制进行了隔离复现：将 `XLINGS_HOME` 指向一个
+尚未 bootstrap 的目录后首次执行包安装，payload 阶段完成，但命令在写
+`subos/default/.xlings.json` 时退出 1。根因是 `Config::save_workspace()`
+假设目标 SubOS 目录已存在。修复契约是写入前创建所选状态文件的父目录，
+并以本地 recipe 验证首次安装退出 0、精确 installed/active 状态落盘；该
+回归属于 cold-home 与 release candidate 门禁的一部分。
+
+参考：[Issue #471](https://github.com/openxlings/xlings/issues/471)。
+
 ## 2. 审计范围与证据等级
 
 ### 2.1 基线确认

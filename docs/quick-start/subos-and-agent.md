@@ -1,8 +1,9 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 更新日期：2026-08-03
 
 # SubOS 与 AI Agent 协作指南
 
-SubOS 为 AI Agent 提供隔离的运行环境。Agent 运行在 SubOS 内部，拥有独立的文件系统和工具链，不会影响宿主系统。
+Linux SubOS 可为 AI Agent 提供文件系统隔离。macOS 和 Windows 只重定向
+用户目录，不隔离宿主文件系统或进程，因此不能用于运行不受信代码。
 
 ## SubOS 隔离级别
 
@@ -84,7 +85,7 @@ xlings subos use agent-backend --sandbox --cmd "claude --task 'add API endpoints
 xlings subos use agent-infra --sandbox --cmd "codex --task 'write terraform modules'"
 ```
 
-每个 SubOS 拥有独立的文件系统和进程空间，Agent 之间不会产生冲突。
+Linux sandbox 模式提供独立文件系统视图；macOS/Windows 只分离配置目录。
 
 ## 临时任务（一次性执行）
 
@@ -106,14 +107,17 @@ xlings subos remove ephemeral
 `xlings interface` 提供 NDJSON 协议，支持外部程序以结构化方式控制 SubOS 生命周期：
 
 ```bash
-# 启动 interface
-xlings interface
+# 能力发现
+xlings interface --list
 
-# 输入 NDJSON 指令（示例）
-{"action":"subos.new","name":"ci-agent","storage":"tmpfs"}
-{"action":"subos.use","name":"ci-agent","cmd":"claude --task 'run tests'"}
-{"action":"subos.stop","name":"ci-agent"}
+# 每次调用在命令行指定 capability 和 JSON 参数
+xlings interface create_subos --args '{"name":"ci-agent"}'
+xlings interface list_subos --args '{}'
+xlings interface remove_subos --args '{"name":"ci-agent"}'
 ```
+
+stdin 只传递 `cancel`、`pause`、`resume` 和 `prompt-reply` 等运行时控制
+消息，不用于选择 capability。
 
 可用于 CI/CD 集成或自定义编排工具。
 

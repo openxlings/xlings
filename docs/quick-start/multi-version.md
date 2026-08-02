@@ -160,17 +160,17 @@ graph TD
 
 ```bash
 # 创建两个独立环境
-xlings subos create dev-legacy
-xlings subos create dev-latest
+xlings subos new dev-legacy
+xlings subos new dev-latest
 
 # 在 dev-legacy 中使用旧版本
-xlings subos enter dev-legacy
+xlings subos use dev-legacy
 xlings install gcc@14.2.0
 xlings use gcc@14.2.0
 gcc --version   # 14.2.0
 
 # 在 dev-latest 中使用新版本
-xlings subos enter dev-latest
+xlings subos use dev-latest
 xlings install gcc@16.1.0
 xlings use gcc@16.1.0
 gcc --version   # 16.1.0

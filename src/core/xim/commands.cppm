@@ -6,6 +6,8 @@ import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
 import mcpplibs.xpkg.loader;
 import xlings.core.xim.catalog;
+import xlings.core.xim.payload;
+import xlings.core.xim.inventory;
 import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
@@ -24,6 +26,7 @@ import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.profile;
 import xlings.runtime.cancellation;
+import xlings.core.version_order;
 // Leaf module (std + log + platform only), so importing it here does not
 // recreate the xim.commands <-> xself cycle that keeps `self update` shelling
 // out to a subprocess.
@@ -847,23 +850,12 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         return 1;
     }
 
-    auto results = catalog.search(filter.empty() ? "" : filter, detect_platform());
-
-    const auto& wsi = Config::workspace_installed();
-    auto in_current_subos = [&](const std::string& name, const std::string& version) {
-        auto it = wsi.find(name);
-        if (it == wsi.end()) return false;
-        for (auto& v : it->second) {
-            if (v == version || xvm::strip_namespace(v) == version) return true;
-        }
-        return false;
-    };
-
-    std::vector<PackageMatch> installed;
-    for (auto& match : results) {
-        if (!match.installed) continue;
-        if (!all && !in_current_subos(match.name, match.version)) continue;
-        installed.push_back(std::move(match));
+    auto installed = collect_inventory(catalog, all);
+    if (!filter.empty()) {
+        std::erase_if(installed, [&](const auto& record) {
+            return !record.canonicalName.contains(filter)
+                && !record.name.contains(filter);
+        });
     }
 
     if (installed.empty()) {
@@ -920,8 +912,7 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
 
     nlohmann::json listItems = nlohmann::json::array();
     for (auto& match : installed) {
-        auto pkg = catalog.load_package(match);
-        std::string desc = pkg ? std::string(pkg->description) : std::string{};
+        std::string desc = match.description;
         // Asked of the programs the recipe declares, not of the package name:
         // the package is `mcpp-short-cmd`, the xvm targets are `madd`,
         // `mbuild`, … and the package name is never one of them. A package
@@ -936,12 +927,13 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         // not, though `self doctor` reports it by release. This is a floor,
         // not full coverage, and the fix is in the recipe.
         std::string status;
-        if (pkg && !pkg->programs.empty()
-            && std::ranges::none_of(pkg->programs,
-                                    [&](std::string_view program) {
-                                        return served_by_this_row(
-                                            program, match.version);
-                                    })) {
+        if (!match.degradedReason.empty()) {
+            status = "degraded: " + match.degradedReason;
+        } else if (!match.active && !match.programs.empty()
+            && std::ranges::none_of(match.programs,
+                [&](std::string_view program) {
+                    return served_by_this_row(program, match.version);
+                })) {
             status = "inactive";
         }
         listItems.push_back({match.canonicalName + "@" + match.version,
@@ -960,7 +952,8 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
 }
 
 // === info command ===
-int cmd_info(const std::string& target, EventStream& stream) {
+int cmd_info(const std::string& target, EventStream& stream,
+             bool allVersions = false) {
     auto& catalog = get_catalog();
     if (!catalog.is_loaded()) {
         log::error("package index not available");
@@ -1015,17 +1008,35 @@ int cmd_info(const std::string& target, EventStream& stream) {
         // `versions` row, so `latest` and the version it points at appeared
         // side by side — `latest -> 16.1.0, 16.1.0` reads as the list
         // repeating itself. They are two different facts; they get two rows.
-        std::string verStr;
-        std::string aliasStr;
+        std::vector<std::string> versions;
+        std::vector<std::string> aliases;
         for (auto& [ver, res] : platformIt->second) {
+            if (version_order::is_internal_key(ver)) continue;
             if (!res.ref.empty()) {
-                if (!aliasStr.empty()) aliasStr += ", ";
-                aliasStr += ver + " -> " + res.ref;
+                aliases.push_back(ver + " -> " + res.ref);
                 continue;
             }
-            if (!verStr.empty()) verStr += ", ";
-            verStr += ver;
+            versions.push_back(ver);
         }
+        version_order::sort_desc(versions);
+        std::ranges::sort(aliases);
+        auto join_wrapped = [](const std::vector<std::string>& values,
+                               std::size_t limit) {
+            std::string result;
+            const auto count = std::min(values.size(), limit);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (!result.empty()) result += (i % 4 == 0 ? "\n" : ", ");
+                result += values[i];
+            }
+            if (values.size() > count) {
+                result += std::format("\n… {} more (--all-versions)",
+                                      values.size() - count);
+            }
+            return result;
+        };
+        auto verStr = join_wrapped(versions,
+            allVersions ? versions.size() : std::size_t{8});
+        auto aliasStr = join_wrapped(aliases, aliases.size());
         // `available` rather than `versions`: the panel's second half also
         // had a row called `versions`, meaning the locally installed ones.
         if (!verStr.empty())   addField(fieldsJson, "available", verStr);
@@ -1058,14 +1069,24 @@ int cmd_info(const std::string& target, EventStream& stream) {
         }
     }
 
-    // Only when the answer is "no". When it is installed the second half of
-    // the panel says so in detail — `active`, `installed`, the payload path —
-    // and a bare `installed  yes` above it is a third label competing to mean
-    // the same thing.
-    if (!match->installed) addField(fieldsJson, "installed", "no");
+    const auto storeName = package_store_name(match->namespaceName, match->name);
+    const auto storePath = match->storeRoot / storeName;
+    const auto inventory = collect_inventory(catalog, true);
+    const auto packageInstalled = std::ranges::any_of(inventory,
+        [&](const auto& record) {
+            return record.canonicalName == match->canonicalName;
+        });
+    const auto selectedInstalled = std::ranges::any_of(inventory,
+        [&](const auto& record) {
+            return record.canonicalName == match->canonicalName
+                && record.version == xvm::strip_namespace(match->version);
+        });
+    addField(fieldsJson, "package installed", packageInstalled ? "yes" : "no");
+    addField(fieldsJson, "selected version", match->version);
+    addField(fieldsJson, "selected installed", selectedInstalled ? "yes" : "no");
 
     nlohmann::json extraJson = nlohmann::json::array();
-    if (match->installed) {
+    if (packageInstalled) {
         auto db = Config::versions();
         auto ws = Config::effective_workspace();
         auto target = match->name;
@@ -1088,8 +1109,6 @@ int cmd_info(const std::string& target, EventStream& stream) {
             addField(extraJson, "installed", verList);
         }
 
-        auto storeName = package_store_name(match->namespaceName, match->name);
-        auto storePath = match->storeRoot / storeName;
         addField(extraJson, "xpkg path", Config::display_path(storePath));
 
         auto binDir = Config::global_subos_bin_dir();

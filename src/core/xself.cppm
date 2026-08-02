@@ -63,7 +63,20 @@ static int cmd_help(EventStream& stream) {
 
 export int run(int argc, char* argv[], EventStream& stream) {
     std::string action = (argc >= 3) ? argv[2] : "help";
-    if (action == "install") return cmd_install();
+    const auto reject_surplus = [&](std::string_view command) {
+        if (argc <= 3) return false;
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = std::format("unknown option for `xlings self {}`: {}",
+                                   command, argv[3]),
+            .recoverable = false,
+        });
+        return true;
+    };
+    if (action == "install") {
+        if (reject_surplus(action)) return 2;
+        return cmd_install();
+    }
     if (action == "uninstall") {
         UninstallOpts opts;
         for (int i = 3; i < argc; ++i) {
@@ -72,21 +85,48 @@ export int run(int argc, char* argv[], EventStream& stream) {
             else if (a == "--keep-data")        opts.keepData = true;
             else if (a == "--dry-run")          opts.dryRun   = true;
             else {
-                stream.emit(DataEvent{"error",
-                    nlohmann::json{{"msg", "unknown 'self uninstall' flag: " + a}}.dump()});
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = "unknown 'self uninstall' flag: " + a,
+                    .recoverable = false,
+                });
                 return 2;
             }
         }
         return cmd_uninstall(opts);
     }
-    if (action == "init")    return cmd_init();
-    if (action == "update")  return cmd_update();
-    if (action == "config")  return cmd_config(stream);
+    if (action == "init") {
+        if (reject_surplus(action)) return 2;
+        return cmd_init();
+    }
+    if (action == "update") {
+        if (reject_surplus(action)) return 2;
+        return cmd_update();
+    }
+    if (action == "config") {
+        if (reject_surplus(action)) return 2;
+        return cmd_config(stream);
+    }
     if (action == "clean") {
-        bool dryRun = argc >= 4 && std::string(argv[3]) == "--dry-run";
+        bool dryRun = false;
+        for (int i = 3; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--dry-run") dryRun = true;
+            else {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = "unknown option for `xlings self clean`: " + arg,
+                    .recoverable = false,
+                });
+                return 2;
+            }
+        }
         return cmd_clean(dryRun);
     }
-    if (action == "migrate") return cmd_migrate();
+    if (action == "migrate") {
+        if (reject_surplus(action)) return 2;
+        return cmd_migrate();
+    }
     if (action == "doctor") {
         bool fix = false;
         bool resetMetadata = false;
@@ -111,7 +151,16 @@ export int run(int argc, char* argv[], EventStream& stream) {
             // log level with it) and is STRIPPED from argv before this
             // dispatch ever runs, so a `--verbose` here would be documented in
             // the help text and silently do nothing.
-            if (arg == "--all") verbose = true;
+            else if (arg == "--all") verbose = true;
+            else if (arg != "--fix" && arg != "--reset-metadata"
+                     && arg != "--dry-run") {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = "unknown option for `xlings self doctor`: " + arg,
+                    .recoverable = false,
+                });
+                return 2;
+            }
         }
         return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose);
     }
@@ -121,9 +170,11 @@ export int run(int argc, char* argv[], EventStream& stream) {
     if (action == "help" || action == "-h" || action == "--help" || action.empty()) {
         return cmd_help(stream);
     }
-    stream.emit(DataEvent{"error",
-        nlohmann::json{{"msg", "unknown 'self' action: " + action}}.dump()});
-    cmd_help(stream);
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = "unknown 'self' action: " + action,
+        .recoverable = false,
+    });
     return 2;
 }
 

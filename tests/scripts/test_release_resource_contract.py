@@ -6,8 +6,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_release_publishes_sha256_sidecars():
     workflow = (ROOT / ".github/workflows/release.yml").read_text()
-    assert "Generate SHA256 sidecars" in workflow
-    assert "artifacts/**/*.sha256" in workflow
+    assert "Generate source-bound sidecars" in workflow
+    assert "artifacts/xlings-release-sidecars/*.sha256" in workflow
 
 
 def test_xlings_resource_mirror_includes_sha256_sidecars():
