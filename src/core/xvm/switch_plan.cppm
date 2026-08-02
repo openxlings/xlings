@@ -21,6 +21,28 @@ import xlings.core.xvm.errors;
 // "a half-switched toolchain", and makes the interesting logic reachable from
 // a unit test -- cmd_use needs a Config singleton and a real filesystem, so
 // nothing inside it was testable before.
+namespace xlings::xvm::detail_ {
+
+// Which package a (target, version) belongs to, and at which version of it.
+//
+// Empty when the entry carries no group metadata -- entries written before
+// providers were recorded. Callers must treat that as "unknown", not as "a
+// different package".
+std::pair<std::string, std::string> provider_of_(const VersionDB& db,
+                                                 const std::string& target,
+                                                 const std::string& version) {
+    const auto it = db.find(target);
+    if (it == db.end()) return {};
+    const auto vit = it->second.versions.find(version);
+    if (vit == it->second.versions.end() || !vit->second.bindingGroup) {
+        return {};
+    }
+    return {vit->second.bindingGroup->provider,
+            vit->second.bindingGroup->providerVersion};
+}
+
+}  // namespace xlings::xvm::detail_
+
 export namespace xlings::xvm {
 
 // What has to change on disk for one member of the release.
@@ -57,7 +79,7 @@ struct MemberSwitch {
     std::string removeLibName;
 };
 
-// A program the outgoing release had and the incoming one does not.
+// A name the outgoing release had and the incoming one does not.
 //
 // `use` only ever writes the members of the release it switches TO, so a name
 // that release has no version of is left exactly where it was -- still
@@ -65,13 +87,24 @@ struct MemberSwitch {
 // silently mixed toolchain: `xlings use llvm 20.1.7` prints one line about
 // llvm, and `clang` keeps answering 22.1.8.
 //
-// That is not a corner case. Two releases of the same package routinely
-// register different program sets -- a tool added between versions, a
-// platform-specific name, or (measured) a payload whose members were
-// registered under the wrong names entirely. Nothing reported it.
+// How often that happens was overstated here until 2026.8.2.1. The claim was
+// that two releases of one package "routinely" register different program
+// sets; re-measured across a 246-target installation, exactly ONE same-package
+// pair disagreed -- llvm 20.1.7 vs 22.1.8, the very case above -- and that one
+// was a Windows payload sitting in a Linux store, registering 29 unrunnable
+// `.exe` names (xim-pkgindex#454, fixed 2026-07-30). So the founding evidence
+// for this report was itself a recipe bug.
+//
+// The report stays: a package really can add or drop a tool between versions,
+// and finding out from your compiler is the worst way to learn it. What
+// changed is its weight -- collapsed to one line unless `-v` asks, because on
+// real state it fires far less often than the noise it used to print.
 struct StrandedMember {
     std::string target;
     std::string version;   // what it still resolves to
+    // "program" | "lib" | "files". Never "group": a name that materializes
+    // nothing cannot be left behind -- see kind_can_strand.
+    std::string kind;
 };
 
 struct UseSwitchPlan {
@@ -81,7 +114,33 @@ struct UseSwitchPlan {
     // Reported, never acted on: deactivating them would be a guess about
     // intent, and picking a replacement version even more so. `use --strict`
     // turns the report into a refusal for callers that want neither.
+    //
+    // Only ever filled for a switch WITHIN one package. Switching packages is
+    // not a half-finished switch -- see the note above the stranded loop.
     std::vector<StrandedMember> stranded;
+
+    // Switching packages: the names the package being left still owns.
+    //
+    // Kept apart from `stranded` on purpose. Nothing here is a problem: the
+    // old package is untouched, complete, and still active, and the incoming
+    // package has no version of these names to switch them to. They exist so
+    // `-v` can answer "what did NOT come along", and they must never reach
+    // `--strict` -- refusing over them would mean `java` can never move
+    // between two JDK distributions at all.
+    std::vector<StrandedMember> retainedByOldPackage;
+
+    // The release coordinate this switch moves between, for the command line
+    // that reports it. `from*` is empty on a first activation; all four are
+    // empty when the entry carries no group metadata, and the caller then
+    // falls back to the bare `target -> version` line.
+    //
+    // The provider name (`xim:jdk-zulu`) rather than the binding root name
+    // (`xim-musl-gnu-gcc`): the first is what the user typed at install time,
+    // the second is an implementation detail they have never seen.
+    std::string fromProvider;
+    std::string fromProviderVersion;
+    std::string toProvider;
+    std::string toProviderVersion;
 
     // Header assets for the whole release, deduplicated, with the two lists
     // already disjoint.
@@ -245,6 +304,10 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
     plan.installHeaders = std::move(incoming);
     plan.removeHeaders = std::move(outgoing);
 
+    // Which package this switch moves between, for the report line.
+    std::tie(plan.toProvider, plan.toProviderVersion) =
+        detail_::provider_of_(db, target, resolvedVersion);
+
     // What the release being left had, that this one does not.
     //
     // Best effort by construction: an outgoing release that no longer
@@ -256,6 +319,37 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         previousIt != workspace.end()
         && !previousIt->second.empty()
         && previousIt->second != resolvedVersion) {
+        std::tie(plan.fromProvider, plan.fromProviderVersion) =
+            detail_::provider_of_(db, target, previousIt->second);
+
+        // Switching PACKAGES is not a half-finished switch.
+        //
+        // `use java 25.0.4-zulu` hands the name `java` from one JDK to
+        // another: the whole zulu release comes across, and temurin is left
+        // untouched, complete, and still active. Nothing fell behind, so
+        // there is nothing to report -- and reporting it costs real damage.
+        // A group root's name IS the package name, so two packages can never
+        // share one; the root of the package being left therefore lands in
+        // the report on EVERY cross-package switch, and `--strict` refuses
+        // over it, which means `--strict` can never move `java` between two
+        // distributions no matter what the user does first. Measured on a
+        // real home: `gcc` from the gnu package to the musl one produces 18
+        // such lines, and not one of them names something the user can act
+        // on -- the musl package has no version of any of them.
+        //
+        // This is the rule `self doctor` has followed since 2026.8.1.1: a
+        // name held by another provider is ownership, not incoherence
+        // (inspect.cppm's held_by_another_provider_). `use` was the last
+        // place still reading it as a broken toolchain.
+        //
+        // Unknown metadata counts as the same package -- entries written
+        // before providers were recorded keep the older, stricter behaviour
+        // instead of silently losing the check. Same fallback direction as
+        // held_by_another_provider_.
+        const bool samePackage =
+            plan.fromProvider.empty() || plan.toProvider.empty()
+            || plan.fromProvider == plan.toProvider;
+
         if (auto outgoingSelection =
                 resolve_binding_selection(db, target, previousIt->second)) {
             for (const auto& [memberTarget, memberVersion] :
@@ -266,7 +360,14 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
                     || activeIt->second != memberVersion) {
                     continue;
                 }
-                plan.stranded.push_back({memberTarget, memberVersion});
+                // A member that materializes nothing cannot be left behind.
+                // The shim loop in cmd_use asks the same question of the same
+                // authority before writing a shim; this report was the one
+                // place that never asked.
+                auto kind = effective_kind_of(db, memberTarget, memberVersion);
+                if (!kind_can_strand(kind)) continue;
+                (samePackage ? plan.stranded : plan.retainedByOldPackage)
+                    .push_back({memberTarget, memberVersion, std::move(kind)});
             }
         }
     }

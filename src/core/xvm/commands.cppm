@@ -418,13 +418,27 @@ int cmd_use(const std::string& target, const std::string& version,
     // resolving to the release being left -- see StrandedMember. `--strict`
     // is for callers that would rather not switch at all than end up holding
     // two releases, and it has to refuse HERE, while nothing has moved yet.
+    //
+    // `stranded` only ever holds members of the SAME package (the planner
+    // sorts a package switch into retainedByOldPackage instead), so this can
+    // no longer refuse a move between two distributions of one tool -- a
+    // refusal the user could not have satisfied, since the two packages have
+    // no name in common to move first.
+    //
+    // Always lists every entry, verbose or not: this is the error path, and
+    // the reason for a refusal is not a detail.
     if (strict && !plan->stranded.empty()) {
         log::error("[xlings:use] --strict: not switching {} to {}",
                    target, resolved);
-        log::error("  {} program(s) would stay on the old release:",
+        log::error("  {} name(s) would stay on the old release:",
                    plan->stranded.size());
         for (const auto& member : plan->stranded) {
-            log::error("    {} (still {})", member.target, member.version);
+            if (member.kind == "program") {
+                log::error("    {} (still {})", member.target, member.version);
+            } else {
+                log::error("    {} (still {}, {})", member.target,
+                           member.version, member.kind);
+            }
         }
         log::error("  hint: drop --strict, or move each one first");
         return 1;
@@ -555,7 +569,40 @@ int cmd_use(const std::string& target, const std::string& version,
         xself::compat::v0_4_8::cleanup_legacy_alias_shims(p.binDir, xlings_bin);
     }
 
-    log::info("{} -> {}", target, resolved);
+    // Which release did this actually move?
+    //
+    // `xlings use java 25.0.4-zulu` names a MEMBER, not a package, so the
+    // bare line leaves the user unable to tell which package -- and which
+    // version of it -- they just selected, or that they changed packages at
+    // all. The clause carries the provider name (what they typed at install
+    // time) and the provider version, which is not the same string as the
+    // target's version: `xim:jdk-temurin 25.0.4+7` vs `java 25.0.4+7-temurin`.
+    //
+    // The `{target} -> {version}` half is unchanged, deliberately: it is what
+    // scripts and tests grep for.
+    if (plan->toProvider.empty()) {
+        log::info("{} -> {}", target, resolved);   // no group metadata
+    } else if (plan->fromProvider.empty()) {
+        log::info("{} -> {}  ({} {})", target, resolved,
+                  plan->toProvider, plan->toProviderVersion);
+    } else if (plan->fromProvider == plan->toProvider) {
+        log::info("{} -> {}  ({} {} -> {})", target, resolved,
+                  plan->toProvider, plan->fromProviderVersion,
+                  plan->toProviderVersion);
+    } else {
+        log::info("{} -> {}  ({} {} -> {} {})", target, resolved,
+                  plan->fromProvider, plan->fromProviderVersion,
+                  plan->toProvider, plan->toProviderVersion);
+    }
+
+    // `-v` is the global flag; nothing here needs an option of its own.
+    const bool verbose = log::get_level() <= log::Level::Debug;
+    // The release being left. `workspace` is the copy read before anything
+    // moved -- the writes above went through Config::workspace_mut() -- so it
+    // still answers for the state the user is coming from.
+    const auto leftIt = workspace.find(target);
+    const std::string leftRelease =
+        leftIt == workspace.end() ? std::string{} : leftIt->second;
 
     // Say what the switch did NOT cover.
     //
@@ -564,20 +611,59 @@ int cmd_use(const std::string& target, const std::string& version,
     // their compiler, not from xlings. Naming each one and what it still
     // resolves to is the difference between a mixed toolchain the user chose
     // and one they were handed.
+    //
+    // Collapsed to one line unless asked: a real case runs to dozens of
+    // entries, and a report nobody finishes reading protects nobody. The line
+    // has to carry all three facts on its own -- how many, why they did not
+    // come along, and what they are now -- or it just puzzles the reader.
     if (!plan->stranded.empty()) {
         // Kept to short lines on purpose: core cannot wrap (it does not
         // depend on ui, which owns the width contract), so the only way these
         // stay inside a narrow terminal is to be written that way.
-        log::warn("{} program(s) not in {}@{}, still on the old release:",
-                  plan->stranded.size(), target, resolved);
-        for (const auto& member : plan->stranded) {
-            log::warn("    {} (still {})", member.target, member.version);
+        if (!verbose) {
+            log::warn("{} name(s) not in {}@{} still run from {} — -v to list",
+                      plan->stranded.size(), target, resolved, leftRelease);
+        } else {
+            log::warn("{} name(s) not in {}@{}, still on the old release:",
+                      plan->stranded.size(), target, resolved);
+            for (const auto& member : plan->stranded) {
+                if (member.kind == "program") {
+                    log::warn("    {} (still {})", member.target,
+                              member.version);
+                } else {
+                    log::warn("    {} (still {}, {})", member.target,
+                              member.version, member.kind);
+                }
+            }
+            log::warn("  move: xlings use {} <version>",
+                      plan->stranded.front().target);
+            log::warn("  drop: xlings remove {}@{}",
+                      plan->stranded.front().target,
+                      plan->stranded.front().version);
         }
-        log::warn("  move: xlings use {} <version>",
-                  plan->stranded.front().target);
-        log::warn("  drop: xlings remove {}@{}",
-                  plan->stranded.front().target,
-                  plan->stranded.front().version);
+    }
+
+    // Switching packages: what the old one still owns.
+    //
+    // Silent by default, and that is the point. These names did not fall
+    // behind -- the package they belong to is untouched and still active, and
+    // the incoming package has no version of them to offer. There is no
+    // action to recommend, so a warning would be pure noise on a command that
+    // did exactly what it was asked. The `(A -> B)` clause above already says
+    // the package changed; `-v` is where the list belongs.
+    if (verbose && !plan->retainedByOldPackage.empty()) {
+        log::warn("{} name(s) still come from {}:",
+                  plan->retainedByOldPackage.size(), plan->fromProvider);
+        for (const auto& member : plan->retainedByOldPackage) {
+            if (member.kind == "program") {
+                log::warn("    {} ({})", member.target, member.version);
+            } else {
+                log::warn("    {} ({}, {})", member.target, member.version,
+                          member.kind);
+            }
+        }
+        log::warn("  {} has no version of them to switch to.",
+                  plan->toProvider);
     }
 
     xself::print_migration_hint_once(Config::recorded_client_version(),

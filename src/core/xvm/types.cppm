@@ -193,6 +193,25 @@ std::string effective_kind_of(const VersionDB& db,
     return effective_kind(it->second, vit->second);
 }
 
+// Can a member of this kind be "left behind" in a way the user can observe?
+//
+// Only `group` cannot. It materializes nothing: effective_source_name and
+// effective_destination_name above return empty for it, the shim loop skips
+// it, and neither a library nor a file placement is emitted. The name exists
+// so a release has something to bind to; there is nothing behind it, so
+// "still on the old release" cannot describe anything.
+//
+// Deliberately NOT the same predicate as registration's `namesAnArtifact`
+// (`kind != "group" && kind != "files"`). A `files` entry carries no source or
+// destination *name*, which is what that one is about -- but it does put a
+// file into the subos, so it can be left there, and it counts here.
+//
+// A blacklist rather than a whitelist: a missing kind (entries written before
+// 0.4.70 fall back to VInfo::type, which a damaged home can leave empty) is
+// treated as "counts". Missing a real program is the failure this whole report
+// exists to end; naming one unknown kind too many is only noise.
+bool kind_can_strand(std::string_view kind) { return kind != "group"; }
+
 // Whether ANY version of this target materializes as a program.
 //
 // For the checks that start from a shim FILE and have no version in hand. A
