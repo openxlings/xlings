@@ -64,7 +64,7 @@ package = {
     authors = {"xlings-ci"},
     licenses = {"MIT"},
     type = "package",
-    archs = {"x86_64"},
+    archs = {"x86_64", "aarch64"},
     status = "stable",
     categories = {"test-fixture"},
 

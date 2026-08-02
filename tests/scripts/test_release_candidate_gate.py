@@ -57,4 +57,17 @@ for powershell_test in (
 ):
     if re.search(r"(?im)^\s*\$home\s*=", powershell_test.read_text()):
         raise SystemExit(f"PowerShell test overwrites read-only HOME: {powershell_test}")
+portable_fixture_files = (
+    root / "tests/e2e/remove_multi_version_test.sh",
+    root / "tests/e2e/remove_self_guard_test.sh",
+    root / "tests/e2e/fixtures/project_index/pkgs/n/node.lua",
+    root / "tests/e2e/fixtures/project_index/pkgs/n/ninja.lua",
+    root / "tests/e2e/fixtures/build_deps_split/bdconsumer.lua",
+    root / "tests/e2e/fixtures/build_deps_split/bdtool.lua",
+    root / "tests/e2e/fixtures/build_deps_split/rttool.lua",
+)
+for fixture_file in portable_fixture_files:
+    archs = re.search(r"archs\s*=\s*\{([^}]*)\}", fixture_file.read_text())
+    if not archs or '"aarch64"' not in archs.group(1):
+        raise SystemExit(f"macOS E2E fixture omits aarch64: {fixture_file}")
 print("release candidate gates: ok")
