@@ -17,6 +17,14 @@ if "Generate source-bound sidecars" not in prefix:
 root = Path(__file__).resolve().parents[2]
 smokes = [(root / "tests/candidate-install/smoke.sh").read_text(),
           (root / "tests/candidate-install/smoke.ps1").read_text()]
+candidate_fixture = root / "tests/candidate-install/candidate-helper.lua"
+if not candidate_fixture.is_file():
+    raise SystemExit("candidate lifecycle fixture is missing")
+for smoke in smokes:
+    if "tests/fixtures/xim-pkgindex" in smoke:
+        raise SystemExit("candidate smoke depends on an optional package-index clone")
+    if "candidate-helper.lua" not in smoke:
+        raise SystemExit("candidate smoke does not use the in-tree lifecycle fixture")
 if "sed '0," in smokes[0]:
     raise SystemExit("candidate smoke uses a GNU-only sed address")
 for smoke in smokes:

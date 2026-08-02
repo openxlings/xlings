@@ -37,11 +37,10 @@ run_candidate "$installed" self doctor
 # Offline package lifecycle from a working-tree recipe. This exercises the
 # candidate's catalog import, install, activation/list and remove paths rather
 # than merely executing the portable binary from the archive. Derive a unique
-# package name so the bundled official recipe cannot make the local fixture
-# ambiguous.
-fixture="$work/candidate-helper.lua"
-sed 's/name = "xpkg-helper"/name = "candidate-helper"/' \
-  "$repo_root/tests/fixtures/xim-pkgindex/pkgs/x/xpkg-helper.lua" > "$fixture"
+# package name so the bundled official recipes cannot make the local fixture
+# ambiguous. Keep the fixture in-tree so candidate validation does not depend
+# on an optional package-index clone prepared by another workflow step.
+fixture="$repo_root/tests/candidate-install/candidate-helper.lua"
 run_candidate "$installed" config --add-xpkg "$fixture"
 search_output=$(run_candidate "$installed" search candidate-helper)
 grep -q 'local:candidate-helper' <<<"$search_output"

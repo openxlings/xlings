@@ -25,10 +25,7 @@ try {
   if (-not (Test-Path $installed)) { throw "installed candidate missing" }
   & $installed self doctor
   if ($LASTEXITCODE -ne 0) { throw "self doctor failed" }
-  $fixtureSource = Join-Path $repoRoot "tests\fixtures\xim-pkgindex\pkgs\x\xpkg-helper.lua"
-  $fixture = Join-Path $work "candidate-helper.lua"
-  (Get-Content -Raw $fixtureSource).Replace('name = "xpkg-helper"', 'name = "candidate-helper"') |
-    Set-Content $fixture
+  $fixture = Join-Path $repoRoot "tests\candidate-install\candidate-helper.lua"
   & $installed config --add-xpkg $fixture
   if ($LASTEXITCODE -ne 0) { throw "fixture import failed" }
   $search = & $installed search candidate-helper | Out-String
