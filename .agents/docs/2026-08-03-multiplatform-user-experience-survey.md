@@ -1,9 +1,9 @@
 # xlings 2026.8.2.1 多平台用户体验与稳定性深度审计
 
-> 审计日期：2026-08-03（Asia/Shanghai）  
-> 审计对象：`openxlings/xlings` `main@3b3c0552b0f2d1709fa553d64bd76004bbe2e6c0`  
-> 公开版本：`v2026.8.2.1`  
-> 视角：首次安装用户、日常 CLI 用户、CI/脚本用户、AI Agent、跨平台维护者  
+> 审计日期：2026-08-03（Asia/Shanghai）
+> 审计对象：`openxlings/xlings` `main@3b3c0552b0f2d1709fa553d64bd76004bbe2e6c0`
+> 公开版本：`v2026.8.2.1`
+> 视角：首次安装用户、日常 CLI 用户、CI/脚本用户、AI Agent、跨平台维护者
 > 状态：调研完成；本文只报告问题和建议，没有修改产品代码
 
 ## 1. 结论先行
