@@ -38,7 +38,15 @@ if "xlings install mcpp" in native_job:
     raise SystemExit("native aarch64 contracts depend on unavailable compiler assets")
 if "aarch64_compat_contract_test.sh" not in native_job:
     raise SystemExit("native aarch64 job does not run the runtime contract")
+if "prepare_fixture_index.sh" not in native_job:
+    raise SystemExit("native aarch64 job does not prepare its package fixture")
 windows_contract = (root / "tests/e2e/subos_cmd_contract_test.ps1").read_text()
 if not windows_contract.rstrip().endswith("exit 0"):
     raise SystemExit("Windows command contract leaks the expected exit 37")
+for powershell_test in (
+    root / "tests/candidate-install/smoke.ps1",
+    root / "tests/e2e/fresh_xlings_home_install_test.ps1",
+):
+    if re.search(r"(?im)^\s*\$home\s*=", powershell_test.read_text()):
+        raise SystemExit(f"PowerShell test overwrites read-only HOME: {powershell_test}")
 print("release candidate gates: ok")

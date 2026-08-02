@@ -43,6 +43,7 @@ jobs:
           path: candidate
       - name: Run native contracts from the cross-built candidate
         run: |
+          bash tests/e2e/prepare_fixture_index.sh
           package_root=$(mktemp -d)
           tar -xzf candidate/*.tar.gz -C "$package_root"
           bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)

@@ -279,7 +279,6 @@ namespace platform {
 #else
         auto shell = std::getenv("SHELL");
         std::string executable = shell && *shell ? shell : "/bin/sh";
-        std::string command_text(command);
         const auto pid = ::fork();
         if (pid < 0) return 127;
         if (pid == 0) {
@@ -288,7 +287,7 @@ namespace platform {
                         static_cast<char*>(nullptr));
             } else {
                 ::execl(executable.c_str(), executable.c_str(), "-c",
-                        command_text.c_str(), static_cast<char*>(nullptr));
+                        std::string(command).c_str(), static_cast<char*>(nullptr));
             }
             ::_exit(127);
         }

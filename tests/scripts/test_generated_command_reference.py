@@ -60,10 +60,11 @@ def assert_help(node, path):
 
 assert_help(spec, [])
 
-for command in (["no-such-command"], ["self", "doctor", "--bogus"]):
+for command, expected_code in ((["no-such-command"], 1),
+                               (["self", "doctor", "--bogus"], 2)):
     result = subprocess.run([args.xlings, *command], text=True,
                             capture_output=True)
-    if result.returncode == 0 or result.stdout:
+    if result.returncode != expected_code or result.stdout:
         raise SystemExit(
             f"invalid command was not a stderr-only failure: {command}: {result}")
     if "unknown" not in result.stderr.lower():

@@ -866,7 +866,7 @@ export int run(int argc, char* argv[]) {
                 if (auto validated = spec::validate_manual_argv(
                         *command, manualArgs); !validated) {
                     log::error("{}", validated.error().message);
-                    return 1;
+                    return 2;
                 }
             }
         }

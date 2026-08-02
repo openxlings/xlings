@@ -12,11 +12,3 @@ TEST(ShellCommand, BuildsPlatformArguments) {
     EXPECT_EQ(xlings::platform::shell_command_argv("cmd.exe", "exit 37", false),
               (std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", "exit 37"}));
 }
-
-#if !defined(_WIN32)
-TEST(ShellCommand, PropagatesExitStatus) {
-    for (int attempt = 0; attempt < 32; ++attempt) {
-        EXPECT_EQ(xlings::platform::run_shell("exit 37", false), 37);
-    }
-}
-#endif

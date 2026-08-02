@@ -10,10 +10,10 @@ try {
   $bin = Get-ChildItem $work -Recurse -Filter xlings.exe | Where-Object FullName -Like '*\bin\xlings.exe' | Select-Object -First 1
   if (-not $bin) { throw "candidate binary missing" }
   $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-  $home = Join-Path $work "home"
-  $env:USERPROFILE = $home
-  $env:HOME = $home
-  $env:XLINGS_HOME = Join-Path $home "explicit-cold-home"
+  $userHome = Join-Path $work "home"
+  $env:USERPROFILE = $userHome
+  $env:HOME = $userHome
+  $env:XLINGS_HOME = Join-Path $userHome "explicit-cold-home"
   $env:XLINGS_NON_INTERACTIVE = "1"
   $env:NO_COLOR = "1"
   & $bin.FullName --version
