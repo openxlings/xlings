@@ -1,0 +1,224 @@
+name: TEMP xlings released UX audit
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: temp-ux-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XLINGS_VERSION: v2026.8.2.1
+  XLINGS_NON_INTERACTIVE: '1'
+  XLINGS_RELEASE_MIRROR: GLOBAL
+
+jobs:
+  posix-released-ux:
+    name: released UX (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-x86_64
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+          - os: macos-14
+            label: macos-14
+          - os: macos-15
+            label: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Quick-install fixed public release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xlings-ux-audit"
+          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh \
+            > "$RUNNER_TEMP/quick_install.sh"
+          bash "$RUNNER_TEMP/quick_install.sh" 2>&1 \
+            | tee "$RUNNER_TEMP/xlings-ux-audit/00-quick-install.txt"
+          echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.xlings/bin" >> "$GITHUB_PATH"
+          echo "XLINGS_HOME=$HOME/.xlings" >> "$GITHUB_ENV"
+
+      - name: Probe CLI, lifecycle, output bytes, and interface
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.xlings/subos/current/bin:$HOME/.xlings/bin:$PATH"
+          report="$RUNNER_TEMP/xlings-ux-audit/10-probes.txt"
+          : > "$report"
+
+          probe() {
+            local label="$1"; shift
+            local out="$RUNNER_TEMP/probe.out" err="$RUNNER_TEMP/probe.err" rc
+            {
+              printf '\n===== %s =====\n$' "$label"
+              printf ' %q' "$@"
+              printf '\n'
+            } | tee -a "$report"
+            set +e
+            "$@" >"$out" 2>"$err"
+            rc=$?
+            set -e
+            {
+              printf 'exit=%s\n--- stdout ---\n' "$rc"
+              cat "$out"
+              printf '\n--- stderr ---\n'
+              cat "$err"
+              printf '\n'
+            } | tee -a "$report"
+          }
+
+          {
+            echo "runner_os=$RUNNER_OS"
+            echo "arch=$(uname -m)"
+            sw_vers 2>/dev/null || true
+            uname -a
+          } | tee -a "$report"
+
+          probe version xlings --version
+          probe bare xlings
+          probe help xlings -h
+          probe install-help xlings install -h
+          probe use-help xlings use -h
+          probe subos-help xlings subos -h
+          probe unknown-command xlings definitely-not-a-command
+          probe missing-search-arg xlings search
+          probe config xlings config
+          probe search xlings search mcpp
+          probe initial-list xlings list
+          probe interface-version xlings interface --version
+          probe interface-list xlings interface --list
+          probe interface-status xlings interface system_status --args '{}'
+          probe install-ninja xlings install ninja@1.12.1 -y -g
+          probe ninja-version ninja --version
+          probe install-d2x xlings install d2x -y -g
+          probe list-after-install xlings list
+          probe list-all-after-install xlings list --all
+          probe subos-new xlings subos new ux-audit
+          probe subos-list xlings subos list
+          probe subos-info xlings subos info ux-audit
+          probe subos-use xlings subos use ux-audit --global
+          probe subos-use-default xlings subos use default --global
+          probe subos-remove xlings subos remove ux-audit
+          probe self-doctor xlings self doctor
+          probe agent-list xlings --agent list --all
+
+          NO_COLOR=1 TERM=dumb xlings -h > "$RUNNER_TEMP/xlings-ux-audit/20-no-color.bin" 2>&1
+          python3 - "$RUNNER_TEMP/xlings-ux-audit/20-no-color.bin" <<'PY' | tee -a "$report"
+          import pathlib, sys
+          data = pathlib.Path(sys.argv[1]).read_bytes()
+          print("\n===== no-color-byte-audit =====")
+          print(f"bytes={len(data)} esc={data.count(bytes([27]))} nul={data.count(bytes([0]))} cr={data.count(bytes([13]))}")
+          PY
+
+      - name: Upload UX evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-audit-${{ matrix.label }}
+          path: ${{ runner.temp }}/xlings-ux-audit
+
+  windows-released-ux:
+    name: released UX (windows-x86_64)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Quick-install fixed public release
+        shell: pwsh
+        run: |
+          $audit = Join-Path $env:RUNNER_TEMP 'xlings-ux-audit'
+          New-Item -ItemType Directory -Force $audit | Out-Null
+          $script = Invoke-RestMethod https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1
+          $script | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'quick_install.ps1')
+          & (Join-Path $env:RUNNER_TEMP 'quick_install.ps1') *>&1 |
+            Tee-Object -FilePath (Join-Path $audit '00-quick-install.txt')
+          "$env:USERPROFILE\.xlings\subos\current\bin" >> $env:GITHUB_PATH
+          "$env:USERPROFILE\.xlings\bin" >> $env:GITHUB_PATH
+          "XLINGS_HOME=$env:USERPROFILE\.xlings" >> $env:GITHUB_ENV
+
+      - name: Probe CLI, lifecycle, output bytes, and interface
+        shell: pwsh
+        run: |
+          $env:Path = "$env:USERPROFILE\.xlings\subos\current\bin;$env:USERPROFILE\.xlings\bin;$env:Path"
+          $audit = Join-Path $env:RUNNER_TEMP 'xlings-ux-audit'
+          $report = Join-Path $audit '10-probes.txt'
+          '' | Set-Content -Encoding utf8 $report
+
+          function Invoke-Probe {
+            param([string]$Label, [string[]]$Command)
+            $out = Join-Path $env:RUNNER_TEMP 'probe.out'
+            $err = Join-Path $env:RUNNER_TEMP 'probe.err'
+            Add-Content $report "`n===== $Label ====="
+            Add-Content $report ('$ ' + ($Command -join ' '))
+            $exe = $Command[0]
+            $args = @()
+            if ($Command.Count -gt 1) { $args = $Command[1..($Command.Count - 1)] }
+            $global:LASTEXITCODE = 0
+            & $exe @args 1> $out 2> $err
+            $rc = $LASTEXITCODE
+            Add-Content $report "exit=$rc`n--- stdout ---"
+            if (Test-Path $out) { Get-Content -Raw $out | Add-Content $report }
+            Add-Content $report '--- stderr ---'
+            if (Test-Path $err) { Get-Content -Raw $err | Add-Content $report }
+          }
+
+          Add-Content $report "runner_os=$env:RUNNER_OS"
+          Add-Content $report "arch=$env:PROCESSOR_ARCHITECTURE"
+          Invoke-Probe 'version' @('xlings', '--version')
+          Invoke-Probe 'bare' @('xlings')
+          Invoke-Probe 'help' @('xlings', '-h')
+          Invoke-Probe 'install-help' @('xlings', 'install', '-h')
+          Invoke-Probe 'use-help' @('xlings', 'use', '-h')
+          Invoke-Probe 'subos-help' @('xlings', 'subos', '-h')
+          Invoke-Probe 'unknown-command' @('xlings', 'definitely-not-a-command')
+          Invoke-Probe 'missing-search-arg' @('xlings', 'search')
+          Invoke-Probe 'config' @('xlings', 'config')
+          Invoke-Probe 'search' @('xlings', 'search', 'mcpp')
+          Invoke-Probe 'initial-list' @('xlings', 'list')
+          Invoke-Probe 'interface-version' @('xlings', 'interface', '--version')
+          Invoke-Probe 'interface-list' @('xlings', 'interface', '--list')
+          Invoke-Probe 'interface-status' @('xlings', 'interface', 'system_status', '--args', '{}')
+          Invoke-Probe 'install-ninja' @('xlings', 'install', 'ninja@1.12.1', '-y', '-g')
+          Invoke-Probe 'ninja-version' @('ninja', '--version')
+          Invoke-Probe 'install-d2x' @('xlings', 'install', 'd2x', '-y', '-g')
+          Invoke-Probe 'list-after-install' @('xlings', 'list')
+          Invoke-Probe 'list-all-after-install' @('xlings', 'list', '--all')
+          Invoke-Probe 'subos-new' @('xlings', 'subos', 'new', 'ux-audit')
+          Invoke-Probe 'subos-list' @('xlings', 'subos', 'list')
+          Invoke-Probe 'subos-info' @('xlings', 'subos', 'info', 'ux-audit')
+          Invoke-Probe 'subos-use' @('xlings', 'subos', 'use', 'ux-audit', '--global')
+          Invoke-Probe 'subos-use-default' @('xlings', 'subos', 'use', 'default', '--global')
+          Invoke-Probe 'subos-remove' @('xlings', 'subos', 'remove', 'ux-audit')
+          Invoke-Probe 'self-doctor' @('xlings', 'self', 'doctor')
+          Invoke-Probe 'agent-list' @('xlings', '--agent', 'list', '--all')
+
+          $oldNoColor = $env:NO_COLOR
+          $oldTerm = $env:TERM
+          $env:NO_COLOR = '1'
+          $env:TERM = 'dumb'
+          $noColor = Join-Path $audit '20-no-color.bin'
+          & xlings -h 1> $noColor 2>&1
+          $env:NO_COLOR = $oldNoColor
+          $env:TERM = $oldTerm
+          $bytes = [IO.File]::ReadAllBytes($noColor)
+          $esc = ($bytes | Where-Object { $_ -eq 27 }).Count
+          $nul = ($bytes | Where-Object { $_ -eq 0 }).Count
+          $cr = ($bytes | Where-Object { $_ -eq 13 }).Count
+          Add-Content $report "`n===== no-color-byte-audit =====`nbytes=$($bytes.Count) esc=$esc nul=$nul cr=$cr"
+          Get-Content -Raw $report | Write-Host
+
+      - name: Upload UX evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-audit-windows-x86_64
+          path: ${{ runner.temp }}\xlings-ux-audit

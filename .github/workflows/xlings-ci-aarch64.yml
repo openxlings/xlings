@@ -19,7 +19,7 @@ on:
   push:
     branches: [ main, 'release/**' ]
   pull_request:
-    branches: [ main, 'release/**' ]
+    branches: [ '__disabled_for_temp_ux_audit__' ]
   workflow_dispatch:
 
 concurrency:
