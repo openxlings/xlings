@@ -104,6 +104,7 @@ jobs:
           probe subos-new xlings subos new ux-audit
           probe subos-list xlings subos list
           probe subos-info xlings subos info ux-audit
+          probe subos-sandbox-cmd xlings subos use ux-audit --sandbox --cmd 'printf "mode=%s home=%s\\n" "$XLINGS_SUBOS_MODE" "$HOME"'
           probe subos-use xlings subos use ux-audit --global
           probe subos-use-default xlings subos use default --global
           probe subos-remove xlings subos remove ux-audit
@@ -195,6 +196,7 @@ jobs:
           Invoke-Probe 'subos-new' @('xlings', 'subos', 'new', 'ux-audit')
           Invoke-Probe 'subos-list' @('xlings', 'subos', 'list')
           Invoke-Probe 'subos-info' @('xlings', 'subos', 'info', 'ux-audit')
+          Invoke-Probe 'subos-sandbox-cmd' @('xlings', 'subos', 'use', 'ux-audit', '--sandbox', '--cmd', 'Write-Output "mode=$env:XLINGS_SUBOS_MODE home=$env:USERPROFILE"')
           Invoke-Probe 'subos-use' @('xlings', 'subos', 'use', 'ux-audit', '--global')
           Invoke-Probe 'subos-use-default' @('xlings', 'subos', 'use', 'default', '--global')
           Invoke-Probe 'subos-remove' @('xlings', 'subos', 'remove', 'ux-audit')
