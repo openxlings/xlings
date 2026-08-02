@@ -41,22 +41,11 @@ jobs:
         with:
           name: xlings-linux-aarch64-candidate
           path: candidate
-      - name: Install bootstrap xlings
-        env:
-          XLINGS_NON_INTERACTIVE: 1
-          XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
+      - name: Run native contracts from the cross-built candidate
         run: |
-          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
-          echo "XLINGS_HOME=$HOME/.xlings" >> "$GITHUB_ENV"
-          echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
-      - name: Install mcpp and run native contracts
-        run: |
-          xlings config --mirror GLOBAL
-          xlings install mcpp -y
-          bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
-          mcpp build
-          mcpp test xpkg_compatibility
-          bin=$(find target -path '*/bin/xlings' -type f | head -1)
+          package_root=$(mktemp -d)
+          tar -xzf candidate/*.tar.gz -C "$package_root"
+          bin=$(find "$package_root" -path '*/bin/xlings' -type f | head -1)
           test -x "$bin"
           "$bin" --version
           XLINGS_BIN="$bin" bash tests/e2e/aarch64_compat_contract_test.sh

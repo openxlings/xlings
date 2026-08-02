@@ -17,6 +17,8 @@ if "Generate source-bound sidecars" not in prefix:
 root = Path(__file__).resolve().parents[2]
 smokes = [(root / "tests/candidate-install/smoke.sh").read_text(),
           (root / "tests/candidate-install/smoke.ps1").read_text()]
+if "sed '0," in smokes[0]:
+    raise SystemExit("candidate smoke uses a GNU-only sed address")
 for smoke in smokes:
     for contract in ("self install", "install candidate-helper",
                      "search candidate-helper", "use candidate-helper",
@@ -29,4 +31,14 @@ for workflow in ("xlings-ci-linux.yml", "xlings-ci-macos.yml",
     contents = (root / ".github/workflows" / workflow).read_text()
     if "candidate-install" not in contents or "smoke" not in contents:
         raise SystemExit(f"PR workflow does not reuse candidate smoke: {workflow}")
+arm_workflow = (root / ".github/workflows/xlings-ci-aarch64.yml").read_text()
+native_job = arm_workflow.split("  native-contracts:", 1)[1].split(
+    "  cross-build-and-run:", 1)[0]
+if "xlings install mcpp" in native_job:
+    raise SystemExit("native aarch64 contracts depend on unavailable compiler assets")
+if "aarch64_compat_contract_test.sh" not in native_job:
+    raise SystemExit("native aarch64 job does not run the runtime contract")
+windows_contract = (root / "tests/e2e/subos_cmd_contract_test.ps1").read_text()
+if not windows_contract.rstrip().endswith("exit 0"):
+    raise SystemExit("Windows command contract leaks the expected exit 37")
 print("release candidate gates: ok")

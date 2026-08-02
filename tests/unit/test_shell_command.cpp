@@ -15,6 +15,8 @@ TEST(ShellCommand, BuildsPlatformArguments) {
 
 #if !defined(_WIN32)
 TEST(ShellCommand, PropagatesExitStatus) {
-    EXPECT_EQ(xlings::platform::run_shell("exit 37", false), 37);
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        EXPECT_EQ(xlings::platform::run_shell("exit 37", false), 37);
+    }
 }
 #endif

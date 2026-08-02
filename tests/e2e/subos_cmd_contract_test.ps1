@@ -25,3 +25,4 @@ try {
   Remove-Item Env:XLINGS_SHELL
   Write-Host "subos cmd Windows contract: ok"
 } finally { Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue }
+exit 0

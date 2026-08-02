@@ -40,7 +40,7 @@ run_candidate "$installed" self doctor
 # package name so the bundled official recipe cannot make the local fixture
 # ambiguous.
 fixture="$work/candidate-helper.lua"
-sed '0,/name = "xpkg-helper"/s//name = "candidate-helper"/' \
+sed 's/name = "xpkg-helper"/name = "candidate-helper"/' \
   "$repo_root/tests/fixtures/xim-pkgindex/pkgs/x/xpkg-helper.lua" > "$fixture"
 run_candidate "$installed" config --add-xpkg "$fixture"
 search_output=$(run_candidate "$installed" search candidate-helper)
