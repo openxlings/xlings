@@ -1045,11 +1045,12 @@ export int enter(const std::string& name, EventStream& stream,
     // macOS L2: HOME redirect (dotfile isolation)
     // ═══════════════════════════════════════════════════════════════
 
-    auto shell = utils::get_env_or_default("SHELL");
-    if (shell.empty()) shell = "/bin/zsh";  // macOS default
-
+    // Ask the same resolver the launch is about to use. Deriving the reported
+    // shell here independently is how `subos_entering` came to announce
+    // `/bin/zsh` while the process that started was `/bin/sh`: two fallbacks
+    // for the same question, in two places, that only agree when SHELL is set.
     payload["backend"] = "home-redirect";
-    payload["shell"] = shell;
+    payload["shell"] = platform::resolve_shell();
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
     platform::set_env_variable("HOME", sandbox_home);
