@@ -146,8 +146,14 @@ resolve(PackageCatalog& catalog,
 
         auto pkg = catalog.load_package(match);
         if (pkg) {
+            // Evidence-graded, and asked of the entry this node would
+            // download. Refusing here keeps the "zero requests for an
+            // unsupported target" contract, but only for a resource that
+            // enumerates its architectures and does not list this one -- a
+            // package-level `archs` union is never enough to stop a plan.
+            const auto* entry = find_entry(*pkg, platform, node.version);
             const auto compatibility = check_target_compatibility(
-                *pkg, platform, hostArch);
+                *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {
                 std::string chain;
                 for (const auto& item : path) {

@@ -107,6 +107,7 @@ TESTS=(
     "E2E-55 |list_exact_inventory_test.sh||"
     "E2E-56 |info_output_contract_test.sh||"
     "E2E-57 |subos_use_process_model_test.sh||"
+    "E2E-58 |arch_evidence_contract_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

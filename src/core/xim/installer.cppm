@@ -1994,13 +1994,22 @@ public:
                 continue;
             }
 
+            // Asked of the resource this node is about to download, not of
+            // the package-level `archs` union: a recipe whose macOS entry is a
+            // darwin-arm64 tarball is installable on arm64 no matter what the
+            // union says, and a V1 recipe with an under-declared union must
+            // not be refused on the strength of a field nothing ever enforced.
+            const auto* entry = find_entry(*pkg, platform, node.version);
             const auto compatibility = check_target_compatibility(
-                *pkg, platform, hostArch);
+                *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {
                 log::error("{}", compatibility_error(node.canonicalName,
                                                        compatibility));
                 refusedNodes.insert(detail_::plan_key_(node));
                 continue;
+            }
+            if (!compatibility.advisory.empty()) {
+                log::warn("{}", compatibility.advisory);
             }
 
             auto resource = detail_::resolve_download_resource_(
