@@ -15,6 +15,15 @@ struct ArgSpec {
 struct OptionSpec {
     std::string syntax;
     std::string description;
+    // Accepted by every command, not only the one that lists it. `xlings
+    // --help` documents these without qualification, so a user -- or an agent
+    // told to "ALWAYS add --yes" -- will append them to commands that have
+    // nothing to confirm. Refusing those with exit 2 makes a documented
+    // spelling a trap; a command that cannot act on a global option ignores
+    // it. `-h`/`--version` are NOT global: they are commands in their own
+    // right, and accepting them mid-argv would make
+    // `xlings subos new foo --version` silently create a subos.
+    bool global { false };
 };
 
 struct CommandSpec {
@@ -33,10 +42,10 @@ const CommandSpec& root() {
         .options = {
             {"-h, --help", "Show help for the selected command"},
             {"--version", "Show version"},
-            {"-y, --yes", "Skip confirmation prompts"},
-            {"--agent", "Use stable plain-text output"},
-            {"-v, --verbose", "Enable verbose output"},
-            {"-q, --quiet", "Suppress non-essential output"},
+            {"-y, --yes", "Skip confirmation prompts", true},
+            {"--agent", "Use stable plain-text output", true},
+            {"-v, --verbose", "Enable verbose output", true},
+            {"-q, --quiet", "Suppress non-essential output", true},
         },
         .children = {
             {"install", "Install packages", {}, {{"packages", "Package names", false, true}},
@@ -109,19 +118,77 @@ struct CliError {
     std::string message;
 };
 
-std::expected<ParsedManualArgs, CliError> validate_manual_argv(
+// `-g, --global` / `--ttl <SECONDS>` -> {"-g", "--global"} / {"--ttl"}.
+std::vector<std::string_view> option_aliases(const OptionSpec& option) {
+    std::vector<std::string_view> aliases;
+    for (const auto piece : std::views::split(option.syntax, ',')) {
+        auto alias = std::string_view{piece.begin(), piece.end()};
+        while (!alias.empty() && alias.front() == ' ') alias.remove_prefix(1);
+        alias = alias.substr(0, alias.find_first_of(" <[="));
+        if (!alias.empty()) aliases.push_back(alias);
+    }
+    return aliases;
+}
+
+// The subset of root's options every command accepts. Kept as a view over
+// root() rather than a second list so `--help`, the generated reference and
+// this predicate cannot disagree about what "global" means.
+const std::vector<const OptionSpec*>& global_options() {
+    static const std::vector<const OptionSpec*> value = [] {
+        std::vector<const OptionSpec*> options;
+        for (const auto& option : root().options) {
+            if (option.global) options.push_back(&option);
+        }
+        return options;
+    }();
+    return value;
+}
+
+bool is_global_option(std::string_view token) {
+    const auto name = token.substr(0, token.find('='));
+    for (const auto* option : global_options()) {
+        for (const auto alias : option_aliases(*option)) {
+            if (alias == name) return true;
+        }
+    }
+    return false;
+}
+
+namespace detail_ {
+
+// Non-flag tokens from `from` onward. Used to decide whether an optional
+// value may eat the next token or whether a required positional still needs it.
+std::size_t free_tokens_(std::span<const std::string_view> argv,
+                         std::size_t from) {
+    std::size_t count = 0;
+    for (std::size_t i = from; i < argv.size(); ++i) {
+        if (!argv[i].starts_with('-')) ++count;
+    }
+    return count;
+}
+
+std::expected<ParsedManualArgs, CliError> validate_(
     const CommandSpec& command,
-    std::span<const std::string_view> argv) {
+    std::span<const std::string_view> argv,
+    // Full invocation path, so a diagnostic names the command the user typed.
+    // `command.name` alone turns `xlings subos use` into `xlings use` -- a
+    // different, existing command -- and `xlings self doctor` into
+    // `xlings doctor`, which does not exist at all.
+    const std::string& path) {
     if (!command.children.empty() && !argv.empty()
         && !argv.front().starts_with('-')) {
         if (const auto* child = find(std::array<std::string_view, 2>{
                 command.name, argv.front()})) {
-            return validate_manual_argv(*child, argv.subspan(1));
+            return validate_(*child, argv.subspan(1),
+                             path + " " + std::string(argv.front()));
         }
         return std::unexpected(CliError{std::format(
-            "unknown subcommand for `xlings {}`: {}", command.name,
-            argv.front())});
+            "unknown subcommand for `{}`: {}", path, argv.front())});
     }
+
+    const auto required = static_cast<std::size_t>(
+        std::ranges::count_if(command.arguments,
+            [](const auto& argument) { return argument.required; }));
 
     ParsedManualArgs parsed;
     for (std::size_t i = 0; i < argv.size(); ++i) {
@@ -135,21 +202,22 @@ std::expected<ParsedManualArgs, CliError> validate_manual_argv(
         const auto optionName = token.substr(0, equals);
         const OptionSpec* matched = nullptr;
         for (const auto& option : command.options) {
-            for (const auto piece : std::views::split(option.syntax, ',')) {
-                auto alias = std::string_view{piece.begin(), piece.end()};
-                while (!alias.empty() && alias.front() == ' ') alias.remove_prefix(1);
-                const auto value = alias.find_first_of(" <[");
-                alias = alias.substr(0, value);
-                if (alias == optionName) {
-                    matched = &option;
-                    break;
-                }
+            for (const auto alias : option_aliases(option)) {
+                if (alias == optionName) { matched = &option; break; }
             }
             if (matched) break;
         }
         if (!matched) {
+            for (const auto* option : global_options()) {
+                for (const auto alias : option_aliases(*option)) {
+                    if (alias == optionName) { matched = option; break; }
+                }
+                if (matched) break;
+            }
+        }
+        if (!matched) {
             return std::unexpected(CliError{std::format(
-                "unknown option for `xlings {}`: {}", command.name, token)});
+                "unknown option for `{}`: {}", path, token)});
         }
         parsed.options.insert(std::string(optionName));
 
@@ -172,29 +240,40 @@ std::expected<ParsedManualArgs, CliError> validate_manual_argv(
         }
         if (optionalValue && i + 1 < argv.size()
             && !argv[i + 1].starts_with('-')) {
-            const auto value = argv[i + 1];
-            const bool recognizedOptionalValue =
-                (optionName == "--sandbox" && (value == "bwrap" || value == "proot"))
-                || (optionName == "--shell" && (value == "sh" || value == "bash"
-                    || value == "zsh" || value == "fish" || value == "pwsh"));
-            if (recognizedOptionalValue) ++i;
+            // Take the next token as this option's value unless a required
+            // positional still needs it. Deciding by a whitelist of known
+            // values instead would mean every new shell kind, sandbox backend
+            // or storage mode the parser learns silently reappears here as a
+            // "surplus positional argument" -- which is exactly how
+            // `--shell powershell` became an exit-2 error while the parser
+            // that runs it accepted the word.
+            if (parsed.positional.size()
+                    + detail_::free_tokens_(argv, i + 2) >= required) {
+                ++i;
+            }
         }
     }
 
-    const auto required = std::ranges::count_if(command.arguments,
-        [](const auto& argument) { return argument.required; });
     const bool variadic = !command.arguments.empty()
         && command.arguments.back().variadic;
-    if (parsed.positional.size() < static_cast<std::size_t>(required)) {
+    if (parsed.positional.size() < required) {
         return std::unexpected(CliError{std::format(
-            "missing argument for `xlings {}`", command.name)});
+            "missing argument for `{}`", path)});
     }
     if (!variadic && parsed.positional.size() > command.arguments.size()) {
         return std::unexpected(CliError{std::format(
-            "surplus positional argument for `xlings {}`: {}", command.name,
+            "surplus positional argument for `{}`: {}", path,
             parsed.positional[command.arguments.size()])});
     }
     return parsed;
+}
+
+}  // namespace detail_
+
+std::expected<ParsedManualArgs, CliError> validate_manual_argv(
+    const CommandSpec& command,
+    std::span<const std::string_view> argv) {
+    return detail_::validate_(command, argv, "xlings " + command.name);
 }
 
 nlohmann::json help_json(const CommandSpec& command) {
@@ -211,7 +290,8 @@ nlohmann::json help_json(const CommandSpec& command) {
     }
     for (const auto& option : command.options) {
         value["options"].push_back({{"syntax", option.syntax},
-                                     {"description", option.description}});
+                                     {"description", option.description},
+                                     {"global", option.global}});
     }
     for (const auto& child : command.children) {
         value["subcommands"].push_back(help_json(child));
@@ -222,7 +302,17 @@ nlohmann::json help_json(const CommandSpec& command) {
 nlohmann::json reference_json() { return help_json(root()); }
 
 std::string agent_reference() {
-    std::string output;
+    // The global options come first and on their own. They used to be spelled
+    // out in every hand-written example (`xlings install <pkg> --yes --agent`);
+    // a per-command listing that skips the root node drops them entirely, and
+    // an agent reading only this section would never learn the two flags the
+    // rules above tell it to always pass.
+    std::string output = "GLOBAL OPTIONS — valid on every command\n";
+    for (const auto* option : global_options()) {
+        output += "  " + option->syntax + "\n    " + option->description + "\n";
+    }
+    output += "\n";
+
     const auto append = [&](this const auto& self, const CommandSpec& command,
                             std::string path) -> void {
         if (command.name != "xlings") {

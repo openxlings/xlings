@@ -31,6 +31,9 @@ import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.subos.keeper;
 import xlings.core.subos.gpu;
 import xlings.core.subos.sandbox;
+// Leaf module (std + json only). Same source for "is this a global option"
+// that the CLI validator uses, so the two cannot disagree about `--yes`.
+import xlings.cli.spec;
 
 namespace xlings::subos {
 
@@ -963,6 +966,20 @@ int run_info_(const std::string& name, EventStream& stream) {
 }
 
 export int run(int argc, char* argv[], EventStream& stream) {
+    // Drop the options root publishes as valid on every command before any
+    // subcommand's argv loop sees them. `subos new` and `subos use` end their
+    // loops with a catch-all `usageError`, so a documented global flag such as
+    // `--yes` -- which an agent is instructed to always pass -- would come
+    // back as "unknown option" from a command that has nothing to confirm.
+    std::vector<char*> filtered;
+    filtered.reserve(static_cast<std::size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        if (i >= 3 && cli::spec::is_global_option(argv[i])) continue;
+        filtered.push_back(argv[i]);
+    }
+    argc = static_cast<int>(filtered.size());
+    argv = filtered.data();
+
     if (argc < 3) return run_list_(stream);
 
     std::string sub = argv[2];

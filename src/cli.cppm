@@ -817,6 +817,14 @@ export int run(int argc, char* argv[]) {
             return 0;
         }
 
+        // agent — dispatched before the generic help interception so it keeps
+        // handling its own -h as plain text. `xlings agent -h` has to print
+        // the skill overview (the list of what is installed and readable),
+        // and the boxed subcommand help rendered from the spec neither is
+        // plain text nor names a single skill. The whole point of this command
+        // family is that a machine reads its output.
+        if (cmd == "agent") return agent::run(fargc, fargv.data());
+
         // Intercept subcommand help: xlings <cmd> -h/--help
         bool wantsHelp = false;
         for (int i = 2; i < fargc; ++i) {
@@ -888,7 +896,6 @@ export int run(int argc, char* argv[]) {
         if (cmd == "subos") return subos::run(fargc, fargv.data(), stream);
         if (cmd == "self") return xself::run(fargc, fargv.data(), stream);
         if (cmd == "profile") return run_profile_(fargc, fargv.data(), stream);
-        if (cmd == "agent") return agent::run(fargc, fargv.data());
         if (cmd == "script") {
             if (fargc < 3) {
                 ui::print_usage("xlings script <script-file> [args...]");

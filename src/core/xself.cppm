@@ -39,6 +39,10 @@ export import xlings.core.xself.compat;
 
 import xlings.libs.json;
 import xlings.runtime;
+// Leaf module (std + json only). `self` needs the same answer to "is this a
+// global option" that the CLI's own validator uses; importing the spec is what
+// stops the two from drifting into disagreeing about `--yes`.
+import xlings.cli.spec;
 
 namespace xlings::xself {
 
@@ -63,68 +67,71 @@ static int cmd_help(EventStream& stream) {
 
 export int run(int argc, char* argv[], EventStream& stream) {
     std::string action = (argc >= 3) ? argv[2] : "help";
-    const auto reject_surplus = [&](std::string_view command) {
-        if (argc <= 3) return false;
+
+    // Drop the options root publishes as valid on every command before any
+    // action inspects argv. `xlings self doctor --yes` names a documented
+    // global flag on a command that has nothing to confirm: the right answer
+    // is to ignore it, not to exit 2 and make `xlings --help` a liar. Doing
+    // it once here also keeps every action's loop free of the same skip.
+    std::vector<std::string> args;
+    for (int i = 3; i < argc; ++i) {
+        if (cli::spec::is_global_option(argv[i])) continue;
+        args.emplace_back(argv[i]);
+    }
+    const auto reject = [&](std::string_view command, const std::string& arg) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = std::format("unknown option for `xlings self {}`: {}",
-                                   command, argv[3]),
+                                   command, arg),
             .recoverable = false,
         });
-        return true;
+        return 2;
+    };
+    const auto reject_surplus = [&](std::string_view command) {
+        return args.empty() ? 0 : reject(command, args.front());
     };
     if (action == "install") {
-        if (reject_surplus(action)) return 2;
+        if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_install();
     }
     if (action == "uninstall") {
         UninstallOpts opts;
+        // `-y`/`--yes` is global and already stripped above; uninstall is the
+        // one action that has to look at it, so it reads the flag from the
+        // shared predicate rather than from its own argv scan.
         for (int i = 3; i < argc; ++i) {
-            std::string a = argv[i];
-            if      (a == "-y" || a == "--yes") opts.yes      = true;
-            else if (a == "--keep-data")        opts.keepData = true;
-            else if (a == "--dry-run")          opts.dryRun   = true;
-            else {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::InvalidInput,
-                    .message = "unknown 'self uninstall' flag: " + a,
-                    .recoverable = false,
-                });
-                return 2;
-            }
+            const std::string a = argv[i];
+            if (a == "-y" || a == "--yes") opts.yes = true;
+        }
+        for (const auto& a : args) {
+            if      (a == "--keep-data") opts.keepData = true;
+            else if (a == "--dry-run")   opts.dryRun   = true;
+            else return reject("uninstall", a);
         }
         return cmd_uninstall(opts);
     }
     if (action == "init") {
-        if (reject_surplus(action)) return 2;
+        if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_init();
     }
     if (action == "update") {
-        if (reject_surplus(action)) return 2;
+        if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_update();
     }
     if (action == "config") {
-        if (reject_surplus(action)) return 2;
+        if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_config(stream);
     }
     if (action == "clean") {
         bool dryRun = false;
-        for (int i = 3; i < argc; ++i) {
-            const std::string arg = argv[i];
+        for (const auto& arg : args) {
             if (arg == "--dry-run") dryRun = true;
-            else {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::InvalidInput,
-                    .message = "unknown option for `xlings self clean`: " + arg,
-                    .recoverable = false,
-                });
-                return 2;
-            }
+            else return reject("clean", arg);
         }
         return cmd_clean(dryRun);
     }
     if (action == "migrate") {
-        if (reject_surplus(action)) return 2;
+        if (auto rc = reject_surplus(action); rc != 0) return rc;
         return cmd_migrate();
     }
     if (action == "doctor") {
@@ -132,8 +139,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
         bool resetMetadata = false;
         bool dryRun = false;
         bool verbose = false;
-        for (int i = 3; i < argc; ++i) {
-            const auto arg = std::string(argv[i]);
+        for (const auto& arg : args) {
             if (arg == "--fix") fix = true;
             // Discards unreadable binding metadata, so it is opt-in on top
             // of --fix rather than part of it.
@@ -154,12 +160,7 @@ export int run(int argc, char* argv[], EventStream& stream) {
             else if (arg == "--all") verbose = true;
             else if (arg != "--fix" && arg != "--reset-metadata"
                      && arg != "--dry-run") {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::InvalidInput,
-                    .message = "unknown option for `xlings self doctor`: " + arg,
-                    .recoverable = false,
-                });
-                return 2;
+                return reject("doctor", arg);
             }
         }
         return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose);
