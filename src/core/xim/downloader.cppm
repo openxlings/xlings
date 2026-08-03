@@ -937,27 +937,33 @@ download_all(std::span<const DownloadTask> tasks,
     std::jthread tuiThread([&](std::stop_token stoken) {
         if (!onRender) return;  // No renderer — skip TUI
 
-        if (!canRewrite) {
-            while (!stoken.stop_requested() && !allDone.load()
-                   && !(cancel && (cancel->is_paused()
-                                   || cancel->is_cancelled()))) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            }
-            auto elapsed = std::chrono::steady_clock::now() - startTime;
-            const auto elapsedSec =
-                std::chrono::duration<double>(elapsed).count();
-            std::lock_guard lock(mutex);
-            onRender(progState, nameWidth, elapsedSec,
-                     sizesReady.load(), 0);
-            return;
+        // A destination that cannot be rewritten still deserves progress. It
+        // gets appended frames instead of overwritten ones, throttled so a CI
+        // log or an agent transcript collects a handful of updates rather than
+        // one every 200ms. What it must not get is what it got before: a
+        // silent wait for the whole download and a single frame at the end,
+        // which on a multi-minute install is indistinguishable from a hang.
+        const auto interval = canRewrite ? std::chrono::milliseconds(200)
+                                         : std::chrono::milliseconds(5000);
+        const auto still_running = [&] {
+            return !stoken.stop_requested() && !allDone.load()
+                && !(cancel && (cancel->is_paused() || cancel->is_cancelled()));
+        };
+
+        if (canRewrite) {
+            std::print("\033[?25l");
+            std::fflush(stdout);
         }
 
-        std::print("\033[?25l");
-        std::fflush(stdout);
-
-        while (!stoken.stop_requested() && !allDone.load() &&
-               !(cancel && (cancel->is_paused() || cancel->is_cancelled()))) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        while (still_running()) {
+            // Slice the wait so a finished or cancelled download is noticed
+            // promptly even on the slow append cadence.
+            for (auto waited = std::chrono::milliseconds(0);
+                 waited < interval && still_running();
+                 waited += std::chrono::milliseconds(50)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (!still_running()) break;
 
             auto elapsed = std::chrono::steady_clock::now() - startTime;
             auto elapsedSec = std::chrono::duration<double>(elapsed).count();
@@ -976,8 +982,10 @@ download_all(std::span<const DownloadTask> tasks,
             onRender(progState, nameWidth, elapsedSec,
                      sizesReady.load(), canRewrite ? lastLines : 0);
         }
-        std::print("\033[?25h");
-        std::fflush(stdout);
+        if (canRewrite) {
+            std::print("\033[?25h");
+            std::fflush(stdout);
+        }
     });
 
     std::vector<std::jthread> threads;
