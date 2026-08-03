@@ -148,6 +148,7 @@ jobs:
           bash tests/scripts/test_quick_install.sh
           python3 tests/scripts/test_release_candidate_gate.py
           python3 tests/scripts/test_index_pointer_history.py
+          python3 tests/scripts/test_version_consistency.py
           bin=$(find target -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)
           python3 tests/scripts/test_docs_examples.py --xlings "$bin"
           python3 tests/scripts/test_generated_command_reference.py --xlings "$bin"
