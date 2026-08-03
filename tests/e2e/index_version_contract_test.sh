@@ -86,6 +86,7 @@ run() {
     "$XLINGS_BIN" "$@" 2>&1
 }
 landed() { ls "$HOME_DIR/data/xim-pkgindex/pkgs/m/" 2>/dev/null | head -1; }
+marker() { cat "$HOME_DIR/data/xim-pkgindex/.xlings-index-version" 2>/dev/null; }
 
 # ── A: the newest snapshot is within reach ───────────────────────
 write_pointer "" ""
@@ -103,6 +104,11 @@ out="$(run update)" || fail "B: update failed: $out"
 grep -q "new0003" <<<"$out" || fail "B: did not name the snapshot it skipped: $out"
 grep -q "9999.1.1.1" <<<"$out" || fail "B: did not state the requirement: $out"
 grep -qE "self update|upgrade" <<<"$out" || fail "B: did not say how to fix it: $out"
+# The on-disk marker must name the tree that is on disk, not the pointer head.
+# Two readers depend on it: a human debugging a missing package, and
+# get_repo_head_hash(), which keys the parsed-index cache on it.
+[[ "$(marker)" == "mid0002" ]] \
+  || fail "B: version marker says '$(marker)' but the tree is mid0002"
 pass "B: routes back to the newest compatible snapshot and explains why"
 
 # ── C: nothing compatible -> hard error, tree left alone ─────────
@@ -164,6 +170,11 @@ assert rows["new0003"]["current"] is False
 # it does not own.
 assert rows["new0003"]["requires"] == {"xlings": {"min": "9999.1.1.1"}}, \
     rows["new0003"]["requires"]
+# `installed` is the tree on disk; here it agrees with the selection because
+# `update` just ran. Scenario J drives them apart.
+assert xim["installed"] == "mid0002", xim["installed"]
+assert rows["mid0002"]["installed"] is True
+assert rows["new0003"]["installed"] is False
 PYJ
 pass "G: index list reports the routed snapshot, and --json carries the contract"
 
@@ -181,5 +192,63 @@ run update >/dev/null || fail "H: update after unpin failed"
 [[ "$(landed)" == "marker-mid.lua" ]] \
   || fail "H: unpin did not return to automatic routing, got '$(landed)'"
 pass "H: index use pins, refuses unknown versions, and unpins"
+
+# ── I: the head moves, the client still routes to the same snapshot ──
+#
+# The marker is the parsed-index cache key for an artifact-managed index. If it
+# tracked the pointer head, every publish would change the key for a client that
+# keeps landing on the same old tree -- a full index rescan on every update,
+# forever, for exactly the oldest clients.
+run index use xim latest >/dev/null || fail "I: unpin failed"
+build_snapshot new0004 marker-newer
+python3 - "$SERVE" <<'PY'
+import json, pathlib, sys
+serve = pathlib.Path(sys.argv[1])
+def man(v): return json.load(open(serve / f"xim-index-{v}.manifest.json"))
+def entry(v, req):
+    m = man(v)
+    e = {"index_version": m["index_version"], "generated_at": m.get("generated_at", ""),
+         "artifact": m["artifact"]}
+    if req: e["requires"] = {"xlings": {"min": req}}
+    return e
+head = man("new0004")
+head["requires"] = {"xlings": {"min": "9999.1.1.1"}}
+head["history"] = [entry("new0004", "9999.1.1.1"), entry("new0003", "9999.1.1.1"),
+                   entry("mid0002", ""), entry("old0001", "")]
+head["history_truncated"] = False
+json.dump({"format_version": 2, "indexes": {"xim": head},
+           "client_latest": {"xlings": "9999.1.1.1"}},
+          open(serve / "xim-index-pointers.json", "w"), indent=2)
+PY
+run update >/dev/null || fail "I: update after head moved failed"
+[[ "$(landed)" == "marker-mid.lua" ]] \
+  || fail "I: expected to stay on mid0002, got '$(landed)'"
+[[ "$(marker)" == "mid0002" ]] \
+  || fail "I: marker followed the head ('$(marker)') instead of the landed tree"
+pass "I: a moving head does not churn the cache key of a routed-back client"
+
+# ── J: what is on disk, when it differs from what would be picked ──
+#
+# Between a pointer moving and the next `update`, the tree on disk and the
+# snapshot this client would pick are different snapshots. Reporting only the
+# latter answers a question the user did not ask while looking like it answered
+# the one they did.
+write_pointer "" ""            # newest reachable again; disk still holds mid0002
+[[ "$(marker)" == "mid0002" ]] || fail "J: precondition, disk should hold mid0002"
+out="$(run index list xim)"
+grep -qE '^\s*\*\s*mid0002' <<<"$out" || fail "J: did not mark the tree on disk: $out"
+grep -qE '^\s*>\s*new0003' <<<"$out" || fail "J: did not mark what update would fetch: $out"
+grep -q 'xlings update' <<<"$out" || fail "J: did not say the two differ: $out"
+python3 - "$(run index list xim --json)" <<'PYJ'
+import json, sys
+xim = next(e for e in json.loads(sys.argv[1]) if e["name"] == "xim")
+assert xim["installed"] == "mid0002", xim["installed"]
+assert xim["current"] == "new0003", xim["current"]
+PYJ
+run update >/dev/null || fail "J: update failed"
+out="$(run index list xim)"
+grep -qE '^\s*\*\s*new0003' <<<"$out" || fail "J: disk did not follow after update: $out"
+grep -q 'run `xlings update` to move' <<<"$out" && fail "J: still nagging after update: $out"
+pass "J: index list distinguishes the tree on disk from the next selection"
 
 echo "[test] index version contract: all scenarios passed"

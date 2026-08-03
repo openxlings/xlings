@@ -784,9 +784,16 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     }
 
     // Record the installed version for diagnostics / future ETag-style checks.
+    // This is the version of the snapshot that actually lands, NOT the head of
+    // the pointer -- routing (#476) makes those differ, and both readers care:
+    // a human debugging "where did my package go" reads this file, and
+    // get_repo_head_hash() keys the parsed-index cache on it. Writing the head
+    // here would name a tree that is not on disk, and would change on every
+    // publish for a client that keeps landing on the same old snapshot --
+    // rebuilding that client's cache forever.
     {
         std::ofstream v(stage / ".xlings-index-version", std::ios::binary);
-        v << manifest.index_version;
+        v << snapshot.index_version;
     }
 
     auto backup = fs::path(destIndexDir.string() + ".old." +
