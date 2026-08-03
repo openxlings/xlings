@@ -224,6 +224,9 @@ class PackageCatalog {
     std::vector<RepoState> projectRepos_;
     std::vector<RepoState> globalRepos_;
     std::vector<RepoLoadWarning> loadWarnings_;
+    // Recipe -> parsed package, for the lifetime of the process. See
+    // load_package() for why.
+    std::unordered_map<std::string, xpkg::Package> packageCache_;
     bool loaded_ { false };
 
     static std::vector<RepoIndexSpec> repo_specs_() {
@@ -438,6 +441,8 @@ public:
         projectRepos_.clear();
         globalRepos_.clear();
         loadWarnings_.clear();
+        // The recipes behind the cached entries may have just been resynced.
+        packageCache_.clear();
 
         auto specs = repo_specs_();
         log::debug("catalog rebuild: {} repo(s), force={}", specs.size(), forceRebuild);
@@ -542,6 +547,22 @@ public:
     }
 
     std::expected<xpkg::Package, std::string> load_package(const PackageMatch& match) {
+        // Loading a package means starting a Lua state and executing the
+        // recipe file. `search()` already does that once per candidate while
+        // it builds the matches, so every caller that then asks for the same
+        // package pays for a second evaluation of the same file.
+        //
+        // Keyed by what identifies the file, not by the query that found it.
+        // Lifetime is the process: an index that changed underneath a running
+        // command would invalidate the matches too, and `rebuild()` clears it.
+        const auto key = std::format("{}\x1f{}\x1f{}",
+            match.scope == PackageScope::Project ? "p" : "g",
+            match.repoName, match.rawName);
+        if (const auto cached = packageCache_.find(key);
+            cached != packageCache_.end()) {
+            return cached->second;
+        }
+
         auto load = [&](std::vector<RepoState>& repos) -> std::expected<xpkg::Package, std::string> {
             for (auto& repo : repos) {
                 if (repo.spec.name != match.repoName || repo.spec.scope != match.scope) continue;
@@ -550,8 +571,10 @@ public:
             return std::unexpected(std::format("package '{}' not loaded", match.canonicalName));
         };
 
-        if (match.scope == PackageScope::Project) return load(projectRepos_);
-        return load(globalRepos_);
+        auto result = match.scope == PackageScope::Project
+            ? load(projectRepos_) : load(globalRepos_);
+        if (result) packageCache_.emplace(key, *result);
+        return result;
     }
 
     void mark_installed(const PackageMatch& match, bool installed) {

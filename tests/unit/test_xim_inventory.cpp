@@ -32,7 +32,7 @@ TEST(XimInventory, WorkspaceStateDrivesExactInventoryAndMissingPayloadIsVisible)
         {.name = "other",
          .installed = {{"tool", {"ns:1.2.3"}}}},
     };
-    std::map<std::string, detail::CatalogMetadata> metadata;
+    detail::MetadataLookup metadata{std::map<std::string, detail::CatalogMetadata>{}};
     auto records = detail::assemble_inventory(
         db, workspaces, root / "xpkgs", metadata, true);
 
@@ -66,7 +66,7 @@ TEST(XimInventory, InstallerMetadataRetainsPackagesWithoutTargets) {
 
     xlings::xvm::VersionDB db;
     std::vector<InventoryWorkspace> workspaces;
-    std::map<std::string, detail::CatalogMetadata> metadata;
+    detail::MetadataLookup metadata{std::map<std::string, detail::CatalogMetadata>{}};
     auto records = detail::assemble_inventory(
         db, workspaces, root / "xpkgs", metadata, true);
 
@@ -86,9 +86,50 @@ TEST(XimInventory, MissingPayloadRootIsAnEmptyInventory) {
 
     xlings::xvm::VersionDB db;
     std::vector<InventoryWorkspace> workspaces;
-    std::map<std::string, detail::CatalogMetadata> metadata;
+    detail::MetadataLookup metadata{std::map<std::string, detail::CatalogMetadata>{}};
     const auto records = detail::assemble_inventory(
         db, workspaces, root / "xpkgs", metadata, true);
 
     EXPECT_TRUE(records.empty());
+}
+
+// A package from a project-scoped index repo installs under the PROJECT data
+// dir. Deriving every payload path from one global store root reported all of
+// them as "degraded: payload missing" while the payload sat where the match
+// said it would.
+TEST(XimInventory, PayloadPathFollowsTheRepoScope) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-inventory-scope-{}",
+                      std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto globalStore = root / "global" / "xpkgs";
+    const auto projectStore = root / "project" / "xpkgs";
+    fs::create_directories(projectStore / "proj-x-tool" / "1.0.0");
+    std::ofstream(projectStore / "proj-x-tool" / "1.0.0" / "tool") << "ok";
+    fs::create_directories(globalStore);
+
+    xlings::xvm::VersionDB db;
+    std::vector<InventoryWorkspace> workspaces{
+        {.name = "default",
+         .installed = {{"tool", {"proj:1.0.0"}}},
+         .current = true},
+    };
+    detail::MetadataLookup metadata{std::map<std::string, detail::CatalogMetadata>{
+        {"proj-x-tool", {.namespaceName = "proj",
+                         .name = "tool",
+                         .canonicalName = "proj:tool",
+                         .description = "project-scoped",
+                         .storeRoot = projectStore}},
+    }};
+    const auto records = detail::assemble_inventory(
+        db, workspaces, globalStore, metadata, false);
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].canonicalName, "proj:tool");
+    EXPECT_TRUE(records[0].payloadPresent)
+        << "payload path resolved against the global store: "
+        << records[0].payloadPath.string();
+    EXPECT_TRUE(records[0].degradedReason.empty());
+
+    fs::remove_all(root);
 }

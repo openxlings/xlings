@@ -11,6 +11,14 @@ import xlings.core.xvm.owner;
 import xlings.core.xvm.types;
 import xlings.platform;
 
+// What is installed, taken from the records that decide it.
+//
+// The walk starts from the workspace and the version DB and asks the catalog
+// only about the names it finds there. Materialising the whole index first and
+// filtering it down to the installed rows is the other direction, and it made
+// `info` -- a question about ONE package -- proportional to the size of the
+// index. It also loaded every recipe twice, because building the matches
+// already evaluates each one.
 export namespace xlings::xim {
 
 struct InstalledPackageRecord {
@@ -53,6 +61,82 @@ struct CatalogMetadata {
     std::string canonicalName;
     std::string description;
     std::vector<std::string> programs;
+    // Where this package's payload lives. A project-scoped index repo installs
+    // under the project data dir, so a single hard-coded store root reports
+    // every project-scoped install as "payload missing".
+    std::filesystem::path storeRoot;
+};
+
+// Targeted catalog lookups, memoised. Replaces a full-index scan: the only
+// names asked about are the ones the install records mention.
+class MetadataLookup {
+public:
+    MetadataLookup(PackageCatalog& catalog, std::string platform)
+        : catalog_(&catalog), platform_(std::move(platform)) {}
+
+    // A fixed table with no catalog behind it. Lets assemble_inventory be
+    // exercised against a stated index rather than whatever the machine
+    // running the test happens to have installed.
+    explicit MetadataLookup(std::map<std::string, CatalogMetadata> table) {
+        for (auto& [storeName, item] : table) {
+            exact_.emplace(storeName, std::move(item));
+        }
+    }
+
+    // Metadata for EXACTLY this identity. A hit means the index holds a
+    // package whose own store name is the one asked for -- resolving
+    // `xpkg-helper` to `xim:xpkg-helper` is not a hit for the namespace-less
+    // identity, because those two are different rows in the inventory and
+    // merging them here is how one installed package came to be listed twice.
+    const CatalogMetadata* by_identity(const std::string& namespaceName,
+                                       const std::string& name) {
+        const auto storeName = package_store_name(namespaceName, name);
+        if (const auto found = exact_.find(storeName); found != exact_.end()) {
+            return found->second ? &*found->second : nullptr;
+        }
+        auto resolved = resolve_(namespaceName.empty()
+            ? name : namespaceName + ":" + name);
+        if (resolved
+            && package_store_name(resolved->namespaceName, resolved->name)
+                   != storeName) {
+            resolved.reset();
+        }
+        const auto [it, _] = exact_.emplace(storeName, std::move(resolved));
+        return it->second ? &*it->second : nullptr;
+    }
+
+    // For a target whose namespace the records never recorded. The catalog can
+    // restore one when the short name is unambiguous; resolve_target reports
+    // ambiguity rather than guessing, so a name shared by two namespaces stays
+    // unresolved and the row keeps the identity it already had.
+    const CatalogMetadata* by_short_name(const std::string& name) {
+        if (const auto found = short_.find(name); found != short_.end()) {
+            return found->second ? &*found->second : nullptr;
+        }
+        const auto [it, _] = short_.emplace(name, resolve_(name));
+        return it->second ? &*it->second : nullptr;
+    }
+
+private:
+    std::optional<CatalogMetadata> resolve_(const std::string& target) {
+        if (catalog_ == nullptr) return std::nullopt;
+        auto match = catalog_->resolve_target(target, platform_);
+        if (!match) return std::nullopt;
+        auto pkg = catalog_->load_package(*match);
+        return CatalogMetadata{
+            .namespaceName = match->namespaceName,
+            .name = match->name,
+            .canonicalName = match->canonicalName,
+            .description = pkg ? std::string(pkg->description) : std::string{},
+            .programs = pkg ? pkg->programs : std::vector<std::string>{},
+            .storeRoot = match->storeRoot,
+        };
+    }
+
+    PackageCatalog* catalog_ { nullptr };
+    std::string platform_;
+    std::map<std::string, std::optional<CatalogMetadata>> exact_;
+    std::map<std::string, std::optional<CatalogMetadata>> short_;
 };
 
 std::string coordinate_key(const xvm::InstallCoordinate& coordinate) {
@@ -64,11 +148,10 @@ xvm::InstallCoordinate owner_for(
     const std::string& target,
     const std::string& version,
     const std::filesystem::path& storeRoot,
-    const std::map<std::string, CatalogMetadata>& metadata) {
+    MetadataLookup& metadata) {
     const auto candidates = xvm::owner_candidates(db, target, version);
     for (const auto& candidate : candidates) {
-        if (metadata.contains(package_store_name(candidate.ns,
-                                                 candidate.package))) {
+        if (metadata.by_identity(candidate.ns, candidate.package)) {
             return candidate;
         }
     }
@@ -83,16 +166,7 @@ xvm::InstallCoordinate owner_for(
     // Legacy DB entries may only carry the target's short name. The catalog
     // can restore its namespace when that short name is unique; it still does
     // not decide whether the record exists or which exact version is owned.
-    const CatalogMetadata* unique = nullptr;
-    for (const auto& [_, item] : metadata) {
-        if (item.name != target) continue;
-        if (unique) {
-            unique = nullptr;
-            break;
-        }
-        unique = &item;
-    }
-    if (unique) {
+    if (const auto* unique = metadata.by_short_name(target)) {
         const auto [_, bareVersion] = xvm::parse_ns_version(version);
         return {.ns = unique->namespaceName,
                 .package = unique->name,
@@ -107,8 +181,8 @@ std::vector<InstalledPackageRecord> assemble_inventory(
     const xvm::VersionDB& db,
     std::span<const InventoryWorkspace> workspaces,
     const std::filesystem::path& storeRoot,
-    const std::map<std::string, CatalogMetadata>& metadata,
-    bool includePayloadMetadata) {
+    MetadataLookup& metadata,
+    bool includePayloadOnly) {
     std::map<std::string, InstalledPackageRecord> records;
 
     const auto ensure_record = [&](const xvm::InstallCoordinate& coordinate)
@@ -122,9 +196,6 @@ std::vector<InstalledPackageRecord> assemble_inventory(
                 ? coordinate.package
                 : coordinate.ns + ":" + coordinate.package;
             record.version = coordinate.version;
-            const auto storeName = package_store_name(coordinate.ns,
-                                                       coordinate.package);
-            record.payloadPath = storeRoot / storeName / coordinate.version;
         }
         return record;
     };
@@ -152,7 +223,7 @@ std::vector<InstalledPackageRecord> assemble_inventory(
     // A payload directory is not an install record. Only the installer-owned
     // sidecar/marker can add a payload-only package (for example a package
     // with no runnable target). Arbitrary leftover directories are ignored.
-    if (includePayloadMetadata && std::filesystem::exists(storeRoot)) {
+    if (includePayloadOnly && std::filesystem::exists(storeRoot)) {
         for (const auto& packageDir : platform::dir_entries(storeRoot)) {
             std::error_code ec;
             if (!packageDir.is_directory(ec)) continue;
@@ -176,19 +247,24 @@ std::vector<InstalledPackageRecord> assemble_inventory(
     std::vector<InstalledPackageRecord> result;
     result.reserve(records.size());
     for (auto& [_, record] : records) {
-        record.payloadPresent = payload_has_content(record.payloadPath);
-        const auto storeName = package_store_name(record.namespaceName,
-                                                   record.name);
-        if (const auto found = metadata.find(storeName); found != metadata.end()) {
-            record.namespaceName = found->second.namespaceName;
-            record.name = found->second.name;
-            record.canonicalName = found->second.canonicalName;
-            record.description = found->second.description;
-            record.programs = found->second.programs;
+        auto root = storeRoot;
+        const auto* found = metadata.by_identity(record.namespaceName,
+                                                 record.name);
+        if (found) {
+            record.namespaceName = found->namespaceName;
+            record.name = found->name;
+            record.canonicalName = found->canonicalName;
+            record.description = found->description;
+            record.programs = found->programs;
+            if (!found->storeRoot.empty()) root = found->storeRoot;
         }
+        record.payloadPath = root
+            / package_store_name(record.namespaceName, record.name)
+            / record.version;
+        record.payloadPresent = payload_has_content(record.payloadPath);
         if (!record.payloadPresent) {
             record.degradedReason = "payload missing";
-        } else if (!metadata.contains(storeName)) {
+        } else if (!found) {
             record.degradedReason = "index entry unavailable";
         }
         result.push_back(std::move(record));
@@ -205,27 +281,25 @@ std::vector<InstalledPackageRecord> assemble_inventory(
 
 }  // namespace detail
 
-std::vector<InstalledPackageRecord> collect_inventory(PackageCatalog& catalog,
-                                                       bool allSubos) {
+constexpr std::string_view inventory_platform() {
 #if defined(_WIN32)
-    constexpr std::string_view platformName = "windows";
+    return "windows";
 #elif defined(__APPLE__)
-    constexpr std::string_view platformName = "macosx";
+    return "macosx";
 #else
-    constexpr std::string_view platformName = "linux";
+    return "linux";
 #endif
-    std::map<std::string, detail::CatalogMetadata> metadata;
-    for (auto& match : catalog.search("", std::string(platformName))) {
-        auto pkg = catalog.load_package(match);
-        metadata.emplace(package_store_name(match.namespaceName, match.name),
-            detail::CatalogMetadata{
-                .namespaceName = match.namespaceName,
-                .name = match.name,
-                .canonicalName = match.canonicalName,
-                .description = pkg ? std::string(pkg->description) : std::string{},
-                .programs = pkg ? pkg->programs : std::vector<std::string>{},
-            });
-    }
+}
+
+// `allSubos` widens which workspaces are read. `includePayloadOnly` decides
+// whether a package with no runnable target -- present only as a stamped
+// payload -- appears at all. They used to be one flag, which made such a
+// package visible from `list --all` and invisible from `list`, for no reason a
+// user could name.
+std::vector<InstalledPackageRecord> collect_inventory(
+    PackageCatalog& catalog, bool allSubos, bool includePayloadOnly = true) {
+    detail::MetadataLookup metadata(catalog,
+                                    std::string(inventory_platform()));
 
     std::vector<InventoryWorkspace> workspaces;
     const auto currentName = Config::paths().subosDir.filename().string();
@@ -253,7 +327,19 @@ std::vector<InstalledPackageRecord> collect_inventory(PackageCatalog& catalog,
     }
 
     return detail::assemble_inventory(Config::versions(), workspaces,
-        Config::global_data_dir() / "xpkgs", metadata, allSubos);
+        Config::global_data_dir() / "xpkgs", metadata, includePayloadOnly);
+}
+
+// One package's rows, without materialising the rest of the inventory. This is
+// what `info` needs: whether the package is installed at all, and whether the
+// exact version it selected is.
+std::vector<InstalledPackageRecord> collect_package_inventory(
+    PackageCatalog& catalog, const std::string& canonicalName) {
+    auto records = collect_inventory(catalog, /*allSubos=*/true);
+    std::erase_if(records, [&](const auto& record) {
+        return record.canonicalName != canonicalName;
+    });
+    return records;
 }
 
 }  // namespace xlings::xim

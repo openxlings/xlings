@@ -936,6 +936,18 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
                 })) {
             status = "inactive";
         }
+        // Which subos a row belongs to is the whole reason `--all` exists, and
+        // the inventory has always carried it. Without it the wider listing is
+        // a flat set of names with no way to tell where any of them lives.
+        if (all && !match.suboses.empty()) {
+            std::string where;
+            for (const auto& subos : match.suboses) {
+                if (!where.empty()) where += ", ";
+                where += subos;
+            }
+            status += status.empty() ? "" : " \u00b7 ";
+            status += "in " + where;
+        }
         listItems.push_back({match.canonicalName + "@" + match.version,
                              desc, status});
     }
@@ -1071,19 +1083,25 @@ int cmd_info(const std::string& target, EventStream& stream,
 
     const auto storeName = package_store_name(match->namespaceName, match->name);
     const auto storePath = match->storeRoot / storeName;
-    const auto inventory = collect_inventory(catalog, true);
-    const auto packageInstalled = std::ranges::any_of(inventory,
+    // This package's rows only. Building the whole inventory to answer two
+    // booleans about one package made `info` proportional to the index.
+    const auto rows = collect_package_inventory(catalog, match->canonicalName);
+    const auto packageInstalled = !rows.empty();
+    const auto selectedInstalled = std::ranges::any_of(rows,
         [&](const auto& record) {
-            return record.canonicalName == match->canonicalName;
+            return record.version == xvm::strip_namespace(match->version);
         });
-    const auto selectedInstalled = std::ranges::any_of(inventory,
-        [&](const auto& record) {
-            return record.canonicalName == match->canonicalName
-                && record.version == xvm::strip_namespace(match->version);
-        });
-    addField(fieldsJson, "package installed", packageInstalled ? "yes" : "no");
+    // Two labels, not three, and neither of them is a bare `installed`: the
+    // detail section below already has a row by that name listing the
+    // versions on disk. `package installed yes` / `selected installed no` /
+    // `installed 0.0.1 (active)` is three labels for overlapping facts, and
+    // the middle one is the only question the summary can answer that the
+    // list below cannot.
     addField(fieldsJson, "selected version", match->version);
-    addField(fieldsJson, "selected installed", selectedInstalled ? "yes" : "no");
+    addField(fieldsJson, "selected installed",
+             !packageInstalled ? "no (package not installed)"
+             : selectedInstalled ? "yes"
+             : "no (other versions are)");
 
     nlohmann::json extraJson = nlohmann::json::array();
     if (packageInstalled) {

@@ -44,4 +44,13 @@ for output in "$current" "$all" "$agent" "$interface"; do
   ! grep -q 'orphan@9.9.9' <<<"$output"
 done
 [[ $(grep -o 'xpkg-helper@0.0.1' <<<"$all" | wc -l) -eq 1 ]]
+
+# `--all` exists to widen the listing past the current subos, so it has to say
+# which subos each row came from. The inventory has always carried the
+# attribution; it just never reached the output, leaving the wider listing a
+# flat set of names with no way to tell where any of them lives.
+grep -q 'xpkg-helper@0.0.1.*in default, other' <<<"$all" \
+  || fail "list --all does not attribute rows to their subos: $all"
+! grep -q 'in default' <<<"$current" \
+  || fail "the single-subos listing should not repeat the subos on every row"
 echo "exact inventory contract: ok"

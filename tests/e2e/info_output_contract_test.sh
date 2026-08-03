@@ -49,9 +49,15 @@ run() { HOME="$root/user" XLINGS_HOME="$home" NO_COLOR=1 "$bin" "$@"; }
 run install infofixture@0.0.1 -y >/dev/null
 
 summary=$(run info infofixture)
-grep -q 'package installed.*yes' <<<"$summary"
+# 0.0.1 is installed and the selected version is the newest, so the summary
+# has to distinguish "this package is not installed" from "that version is
+# not". Neither label may be a bare `installed`: the detail section below
+# already owns that name for the list of versions on disk.
 grep -q 'selected version.*2026.8.3.10' <<<"$summary"
-grep -q 'selected installed.*no' <<<"$summary"
+grep -q 'selected installed.*no (other versions are)' <<<"$summary"
+[[ $(grep -c '^ *installed ' <<<"$summary") -le 1 ]] \
+  || fail "two rows labelled 'installed' in one panel"
+
 grep -q 'more (--all-versions)' <<<"$summary"
 ! grep -q 'res_versioned' <<<"$summary"
 
