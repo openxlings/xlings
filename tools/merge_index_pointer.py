@@ -105,6 +105,27 @@ def main() -> int:
     for key, manifest in incoming.items():
         previous = base["indexes"].get(key, {}).get("history", [])
         history, truncated = merge_history(previous, snapshot_of(manifest))
+
+        # Declaring a floor only helps if there is somewhere to route back TO.
+        # The first publish after adopting this carries a one-entry history, so
+        # a floor declared in that same publish strands every client below it
+        # instead of routing it -- worse than the hard failure it replaces.
+        # Publish history first, let it accumulate, then raise the floor.
+        head_requires = manifest.get("requires", {}).get("xlings", {})
+        if head_requires.get("min"):
+            escape = [r for r in history[1:]
+                      if not r.get("requires", {}).get("xlings", {}).get("min")]
+            older = [r for r in history[1:]]
+            if not older:
+                print(f"[pointers] WARNING: {key} declares a client floor but "
+                      f"publishes no older snapshot. Clients below "
+                      f"{head_requires['min']} will have nowhere to route and "
+                      f"will fail outright. Publish history before raising a "
+                      f"floor.", file=sys.stderr)
+            elif not escape:
+                print(f"[pointers] note: {key} floor {head_requires['min']}; "
+                      f"every published snapshot declares one, so clients older "
+                      f"than the lowest will still fail.", file=sys.stderr)
         entry = dict(manifest)
         entry["history"] = history
         entry["history_truncated"] = truncated

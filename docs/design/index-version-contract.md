@@ -145,7 +145,29 @@ xlings 提供参考实现：`tools/merge_index_pointer.py`（可直接复用，�
 
 ---
 
-## 6. 检查清单
+## 6. 部署顺序 —— 这一条搞反会伤到用户
+
+**声明 floor 之前，历史里必须已经有可退回的快照。**
+
+第一次采用本机制时，指针里的 `history` 只有当前这一条。如果**同一次发布**就声明 floor，
+低于 floor 的客户端**无处可退**，会直接报 `E_INDEX_NO_COMPATIBLE_SNAPSHOT` ——
+比它替代的硬失败更糟。
+
+正确顺序：
+
+```
+1. 先发布带 history 的指针，但不声明 floor      （几次发布，history 攒起来）
+2. 确认 history 里有若干无约束/低约束的快照
+3. 再在 index-compat.json 里声明 floor
+```
+
+`tools/merge_index_pointer.py` 会在你违反这一条时打印警告，但它无法阻止你 ——
+这是发布方的决定。
+
+同理，`tools/check_index_compat.py` 报出"需要 >= X"时，**不要立刻照抄进
+index-compat.json**，先确认 history 里已有低于 X 的快照可供老客户端落脚。
+
+## 7. 检查清单
 
 - [ ] 索引树里有 `index-compat.json`（需要约束时）
 - [ ] 构建产出的 manifest 含 `requires`
