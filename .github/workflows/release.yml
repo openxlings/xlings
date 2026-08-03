@@ -349,16 +349,12 @@ jobs:
     needs: [build-linux, build-linux-aarch64, build-macos, build-windows]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
       - name: Generate source-bound sidecars
-        run: |
-          mkdir sidecars
-          while IFS= read -r file; do
-            name=$(basename "$file")
-            sha256sum "$file" > "sidecars/$name.sha256"
-          done < <(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+        run: bash tools/gen_release_sidecars.sh artifacts sidecars
       - uses: actions/upload-artifact@v4
         with:
           name: xlings-release-sidecars

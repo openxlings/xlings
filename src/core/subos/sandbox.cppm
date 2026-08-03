@@ -1110,6 +1110,20 @@ export int enter(const std::string& name, EventStream& stream,
     // shell here independently is how `subos_entering` came to announce
     // `/bin/zsh` while the process that started was `/bin/sh`: two fallbacks
     // for the same question, in two places, that only agree when SHELL is set.
+    // Say it where the person is, not only in the README. A user who reaches
+    // for `--sandbox` to run something they do not trust is exactly the user
+    // who did not read the isolation matrix, and on these two platforms this
+    // is a dotfile redirect -- no filesystem, network or process boundary.
+    //
+    // Only on interactive entry: a `--cmd` run is a script, and a warning it
+    // emits on every invocation is noise nobody reads. `--quiet` silences it.
+    if (cmd.empty()) {
+        log::warn("sandbox on {} redirects the home directory only -- "
+                  "it does not contain the filesystem, network or processes. "
+                  "Use an OS sandbox or a VM for untrusted code.",
+                  "macOS");
+    }
+
     payload["backend"] = "home-redirect";
     payload["shell"] = platform::resolve_shell();
     stream.emit(DataEvent{"subos_entering", payload.dump()});
@@ -1131,6 +1145,20 @@ export int enter(const std::string& name, EventStream& stream,
     // Pre-create AppData structure
     fs::create_directories(fs::path(sandbox_home) / "AppData" / "Roaming");
     fs::create_directories(fs::path(sandbox_home) / "AppData" / "Local");
+
+    // Say it where the person is, not only in the README. A user who reaches
+    // for `--sandbox` to run something they do not trust is exactly the user
+    // who did not read the isolation matrix, and on these two platforms this
+    // is a dotfile redirect -- no filesystem, network or process boundary.
+    //
+    // Only on interactive entry: a `--cmd` run is a script, and a warning it
+    // emits on every invocation is noise nobody reads. `--quiet` silences it.
+    if (cmd.empty()) {
+        log::warn("sandbox on {} redirects the home directory only -- "
+                  "it does not contain the filesystem, network or processes. "
+                  "Use an OS sandbox or a VM for untrusted code.",
+                  "Windows");
+    }
 
     payload["backend"] = "home-redirect";
     stream.emit(DataEvent{"subos_entering", payload.dump()});

@@ -24,15 +24,27 @@
 
 One tool to install any version of anything, run it rootless, and isolate it OS-like — across Linux, macOS, and Windows.
 
-| Release target | Package management | `subos --sandbox` |
-|---|---|---|
-| Linux x86_64 | Supported | Filesystem isolation with bwrap/proot |
-| Linux aarch64 | Supported; recipes with incompatible `archs` are refused before download | Filesystem isolation with bwrap/proot |
-| macOS 14+ arm64 | Supported | HOME redirection only |
-| Windows x86_64 | Supported | USERPROFILE redirection only |
+"Supported" is three separate questions, so here are three columns. A platform
+xlings runs on is not automatically a platform every package has an artifact
+for, and neither of those says anything about how much isolation `--sandbox`
+can actually give you.
 
-macOS and Windows sandbox mode isolates configuration directories, not the
-host filesystem or processes. Do not use it to run untrusted code.
+| Platform | xlings release | Package coverage | `subos --sandbox` isolates |
+|---|---|---|---|
+| Linux x86_64 | ✅ published | full | the filesystem (bwrap / proot) |
+| Linux aarch64 | ✅ published | partial — many recipes only publish an x86_64 artifact | the filesystem, once a backend is available for the arch |
+| macOS 14+ arm64 | ✅ published | partial — some recipes ship x86_64 only | **only `$HOME`** |
+| Windows x86_64 | ✅ published | partial | **only `%USERPROFILE%`** |
+
+Package coverage is a property of the recipe, not of xlings: `xlings install`
+refuses a target only when the recipe enumerates its architectures and yours
+is not among them. When a recipe ships a single artifact it is installed and
+you are told the recipe could not confirm your architecture.
+
+> **macOS and Windows `--sandbox` is not a security boundary.** It redirects
+> the home directory so tools write their dotfiles somewhere isolated. It does
+> not contain the filesystem, the network or processes. Use an OS sandbox or a
+> VM to run code you do not trust.
 
 → [How xlings compares to apt / nix / docker](docs/comparison.md)
 
