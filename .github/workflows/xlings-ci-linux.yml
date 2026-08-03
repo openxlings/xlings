@@ -17,8 +17,8 @@ env:
   # Pinned bootstrap xlings used to install mcpp. Bump together with
   # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
-  # Must contain the mcpp version pinned in .xlings.json (0.0.109).
-  XIM_PKGINDEX_REF: 3e47f8b6e3ec034fca06ec17ac5990a56183d662
+  # Must contain the mcpp version pinned in .xlings.json (2026.8.3.3).
+  XIM_PKGINDEX_REF: 20e53c6a4967346282af21c8fd2af91e6af75cc7
 
 jobs:
   build-and-test:
