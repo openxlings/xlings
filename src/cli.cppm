@@ -31,6 +31,7 @@ import xlings.core.xvm.commands;
 import xlings.core.profile;
 import xlings.core.utf8;
 import xlings.cli.spec;
+import xlings.core.xim.index_cmd;
 
 namespace lua = mcpplibs::capi::lua;
 
@@ -864,6 +865,39 @@ export int run(int argc, char* argv[]) {
                 return 0;
             }
 
+        }
+
+        // index — positional dispatch like subos/self, so it validates the
+        // same way and never reaches the cmdline builder's package semantics.
+        if (cmd == "index") {
+            const std::array<std::string_view, 1> path{cmd};
+            if (const auto* command = spec::find(path)) {
+                std::vector<std::string_view> manualArgs;
+                for (int i = 2; i < fargc; ++i) manualArgs.emplace_back(fargv[i]);
+                if (auto validated = spec::validate_manual_argv(*command, manualArgs);
+                    !validated) {
+                    log::error("{}", validated.error().message);
+                    return 2;
+                }
+            }
+            std::string sub = fargc > 2 ? fargv[2] : "list";
+            if (sub == "ls") sub = "list";
+            if (sub == "list") {
+                std::string filter;
+                bool asJson = false;
+                for (int i = 3; i < fargc; ++i) {
+                    std::string_view a{fargv[i]};
+                    if (a == "--json") asJson = true;
+                    else if (!a.starts_with('-')) filter = std::string(a);
+                }
+                return xim::cmd_index_list(filter, asJson, stream);
+            }
+            if (sub == "use") {
+                return xim::cmd_index_use(fargc > 3 ? fargv[3] : "",
+                                          fargc > 4 ? fargv[4] : "", stream);
+            }
+            log::error("unknown subcommand for `xlings index`: {}", sub);
+            return 2;
         }
 
         if (cmd == "subos" || cmd == "self" || cmd == "profile") {

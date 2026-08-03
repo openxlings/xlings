@@ -82,6 +82,11 @@ const CommandSpec& root() {
             }},
             {"script", "Run an xlings script", {}, {{"script-file", "Script path", true}, {"args", "Script arguments", false, true}}, {}, {}},
             {"interface", "Use the NDJSON interface", {}, {{"capability", "Capability name", false}}, {{"--args <JSON>", "Capability arguments"}, {"--args-file <PATH>", "Read capability arguments from a file"}, {"--list", "List capabilities"}, {"--version", "Show protocol version"}}, {}},
+            {"index", "Inspect and select package index snapshots", {}, {}, {}, {
+                {"list", "List published index snapshots", {"ls"}, {{"name", "Optional index source", false}},
+                    {{"--json", "Machine-readable output"}}, {}},
+                {"use", "Pin an index source to a snapshot", {}, {{"name", "Index source", true}, {"version", "Snapshot version, or 'latest'", true}}, {}, {}},
+            }},
             {"agent", "Agent integration", {}, {}, {}, {
                 {"skills", "List or show built-in skills", {}, {{"name", "Optional skill name", false}}, {}, {}},
             }},

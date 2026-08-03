@@ -142,4 +142,44 @@ out="$(XLINGS_INDEX_PIN=newest run update)" || fail "F: escape hatch failed: $ou
   || fail "F: XLINGS_INDEX_PIN=newest did not reach the newest, got '$(landed)'"
 pass "F: the upgrade path reaches the newest snapshot despite the contract"
 
+# ── G: `xlings index list` reports what routing would pick ───────
+write_pointer "9999.1.1.1" ""
+run update >/dev/null || fail "G: update failed"
+out="$(run index list xim)"
+grep -q "mid0002" <<<"$out" || fail "G: list did not mention the routed snapshot: $out"
+grep -qE '^\s*\*\s*mid0002' <<<"$out" \
+  || fail "G: list did not mark the CURRENT snapshot: $out"
+grep -q "new0003" <<<"$out" || fail "G: list hid the newer snapshot: $out"
+
+json="$(run index list xim --json)"
+python3 - "$json" <<'PYJ'
+import json, sys
+data = json.loads(sys.argv[1])
+xim = next(e for e in data if e["name"] == "xim")
+assert xim["current"] == "mid0002", xim["current"]
+rows = {s["index_version"]: s for s in xim["snapshots"]}
+assert rows["mid0002"]["current"] is True
+assert rows["new0003"]["current"] is False
+# The contract is handed back verbatim -- xlings must not normalise a document
+# it does not own.
+assert rows["new0003"]["requires"] == {"xlings": {"min": "9999.1.1.1"}}, \
+    rows["new0003"]["requires"]
+PYJ
+pass "G: index list reports the routed snapshot, and --json carries the contract"
+
+# ── H: `index use` pins, and refuses a version that does not exist ──
+run index use xim old0001 >/dev/null || fail "H: pinning failed"
+run update >/dev/null || fail "H: update after pin failed"
+[[ "$(landed)" == "marker-old.lua" ]] || fail "H: pin did not take effect"
+
+set +e; out="$(run index use xim deadbee)"; rc=$?; set -e
+[[ $rc -ne 0 ]] || fail "H: `index use` accepted an unpublished snapshot"
+grep -q "available" <<<"$out" || fail "H: refusal did not list what exists: $out"
+
+run index use xim latest >/dev/null || fail "H: unpinning failed"
+run update >/dev/null || fail "H: update after unpin failed"
+[[ "$(landed)" == "marker-mid.lua" ]] \
+  || fail "H: unpin did not return to automatic routing, got '$(landed)'"
+pass "H: index use pins, refuses unknown versions, and unpins"
+
 echo "[test] index version contract: all scenarios passed"
