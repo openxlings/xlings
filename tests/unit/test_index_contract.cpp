@@ -253,3 +253,36 @@ TEST(IndexContract, ManifestParsingIsAdditive) {
     EXPECT_EQ(modern->history[1].artifact_sha256, "ab");
     EXPECT_EQ(requirement_for(modern->requirements, "xlings")->min, "2026.8.3.1");
 }
+
+// Contract 8: the upgrade path is exempt from routing.
+//
+// Without this a client routed to an older snapshot reads that snapshot's own
+// xlings recipe, is told it is already current, and can never reach the version
+// that would let it move forward -- a deadlock guaranteed by construction. The
+// escape hatch has to ignore the contract, which is exactly what makes it an
+// escape hatch and why nothing else may use it.
+TEST(IndexContract, NewestPinEscapesTheRoutingDeadlock) {
+    auto m = with_history({
+        snap("e2aad0b", requires_xlings("2026.9.9.9")),   // unreachable for us
+        snap("20e53c6", requires_xlings("2026.8.1.1")),
+    });
+
+    // Normal routing steps back, as it should.
+    auto routed = choose_snapshot(m, "2026.8.3.1", {});
+    ASSERT_TRUE(routed);
+    EXPECT_EQ(routed->snapshot.index_version, "20e53c6");
+
+    // The upgrade path reaches the newest snapshot anyway.
+    auto escape = choose_snapshot(m, "2026.8.3.1", "newest");
+    ASSERT_TRUE(escape);
+    EXPECT_EQ(escape->snapshot.index_version, "e2aad0b");
+    EXPECT_TRUE(escape->isNewest);
+
+    // And it still works when nothing at all is compatible -- the case where a
+    // client would otherwise be stranded with no reachable index.
+    auto stranded = choose_snapshot(m, "0.4.69", {});
+    ASSERT_FALSE(stranded);
+    auto rescue = choose_snapshot(m, "0.4.69", "newest");
+    ASSERT_TRUE(rescue);
+    EXPECT_EQ(rescue->snapshot.index_version, "e2aad0b");
+}

@@ -14,14 +14,31 @@ namespace xlings::xself {
 // (xim.commands and xvm.commands both import xlings.core.xself).
 export int cmd_update() {
     log::info("updating package index...");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
     int rc = platform::exec("xlings update");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
         log::error("failed to update package index");
         return rc;
     }
 
+    // Reach the newest index snapshot for THIS step only.
+    //
+    // Routing (#476) can put an older client on an older index snapshot -- and
+    // that snapshot's own `pkgs/x/xlings.lua` names the `latest` of its era. A
+    // client routed back would therefore be told it is already current and
+    // could never upgrade, so it could never return to the newer index: a
+    // deadlock guaranteed by construction, not a rare race.
+    //
+    // The upgrade path is exempt from routing. Only one recipe has to be
+    // readable from the newer snapshot, and that recipe's shape (XLINGS_RES
+    // plus per-arch sha256) has been stable across every release so far. If
+    // the install fails partway the tree is newer than the client, and the
+    // next `xlings update` routes it back -- the state self-heals.
     log::info("installing xlings@latest...");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
     rc = platform::exec("xlings install xlings@latest -y");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
         // This used to warn and return 0. A failed upgrade then looked
         // exactly like a successful one: the install error scrolled past

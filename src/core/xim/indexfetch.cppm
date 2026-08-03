@@ -425,6 +425,16 @@ std::expected<SnapshotChoice, std::string> choose_snapshot(
         return list;
     };
 
+    // "newest": take the head of the list whatever it requires. This is the
+    // escape hatch `self update` runs on, and it is what breaks the deadlock a
+    // routed-back client would otherwise sit in forever -- an old snapshot's
+    // own xlings recipe names an old `latest`, so a client routed there could
+    // never see, let alone install, the version that would let it move on.
+    if (pin == "newest") {
+        SnapshotChoice choice{snapshots.front(), true, {}};
+        return choice;
+    }
+
     // Explicit pin: honour it exactly. It bypasses the contract check -- asking
     // for a specific snapshot is a deliberate act, often to reproduce a bug --
     // but never the sha256 check downstream.
@@ -719,7 +729,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     // #476: route to the newest snapshot this client's version accepts, or to
     // an explicit pin. On failure the local index tree is left alone -- keeping
     // the last snapshot that worked beats replacing it with a wrong one.
-    const auto choice = choose_snapshot(manifest, Info::VERSION, pin);
+    // XLINGS_INDEX_PIN overrides the per-repo pin: an escape hatch for
+    // debugging, and the mechanism `self update` uses to reach a newer client
+    // through an index this version would not otherwise route to.
+    std::string effectivePin{pin};
+    if (const auto* env = std::getenv("XLINGS_INDEX_PIN"); env && *env) {
+        effectivePin = env;
+    }
+    const auto choice = choose_snapshot(manifest, Info::VERSION, effectivePin);
     if (!choice) { err = choice.error(); return false; }
     const IndexSnapshot& snapshot = choice->snapshot;
 
@@ -785,8 +802,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
             // After the exchange, `stage` now holds the OLD tree — drop it.
             fs::remove_all(stage, ec);
             log::info("[index] updated from artifact {} ({})",
-                      manifest.artifact_name,
-                      manifest.index_version.empty() ? "?" : manifest.index_version);
+                      snapshot.artifact_name,
+                      snapshot.index_version.empty() ? "?" : snapshot.index_version);
             return true;
         }
         // Fallback (non-Linux / kernel without renameat2): manual move-aside.
@@ -806,9 +823,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     }
     fs::remove_all(backup, ec);
 
+    // The SNAPSHOT that landed, not the manifest's head. Reporting the head
+    // here would print `updated from xim-index-new0003` immediately after
+    // "using old0001 instead of new0003" -- and this line is what the release
+    // verification runbook greps to decide which artifact a run actually used
+    // (reference_index_publish_lag).
     log::info("[index] updated from artifact {} ({})",
-              manifest.artifact_name,
-              manifest.index_version.empty() ? "?" : manifest.index_version);
+              snapshot.artifact_name,
+              snapshot.index_version.empty() ? "?" : snapshot.index_version);
     return true;
 }
 
