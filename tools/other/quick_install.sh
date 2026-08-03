@@ -43,6 +43,9 @@ CURL_DL_OPTS="-4 --connect-timeout ${_CT} --retry 2 --retry-delay 1"
 # Specify version: curl ... | bash -s -- v0.5.0
 # Or env var:      XLINGS_VERSION=v0.5.0 curl ... | bash
 XLINGS_VERSION="${1:-${XLINGS_VERSION:-}}"
+# Serve the release assets from an explicit base URL instead of discovering
+# them. Set together with XLINGS_VERSION; see resolve_direct below.
+XLINGS_BASE_URL="${XLINGS_BASE_URL:-}"
 
 # --------------- detect platform ---------------
 
@@ -224,14 +227,34 @@ probe_source() {
     fi
 }
 
+# A release source given outright: "<base-url>" serving
+# <base>/<asset>.tar.gz and <base>/<asset>.tar.gz.sha256. Requires
+# XLINGS_VERSION so there is nothing left to discover.
+#
+# This is what lets the installer be tested by RUNNING it. Everything below
+# this line -- source selection, download, sidecar verification, unpacking,
+# `self install` -- is the same code a user reaches through `curl | sh`; only
+# the host differs. The alternative is a test that greps this file for the
+# strings it expects to find, which passes whether or not any of it works.
+resolve_direct() {
+    [[ -n "$XLINGS_BASE_URL" && -n "$XLINGS_VERSION" ]] || return 1
+    local version_num="${XLINGS_VERSION#v}"
+    local base="${XLINGS_BASE_URL%/}"
+    echo "${version_num}|${base}/$(ASSET_NAME "$version_num")|0.000"
+}
+
 if [[ -n "$XLINGS_VERSION" ]]; then
     log_info "Using specified version: ${CYAN}${XLINGS_VERSION#v}${RESET}"
 else
     log_info "Resolving latest release across sources..."
 fi
 
-probe_source "GitHub"  resolve_github
-probe_source "GitCode" resolve_gitcode
+if [[ -n "$XLINGS_BASE_URL" ]]; then
+    probe_source "Direct" resolve_direct
+else
+    probe_source "GitHub"  resolve_github
+    probe_source "GitCode" resolve_gitcode
+fi
 
 if [[ ${#CAND_SRC[@]} -eq 0 ]]; then
     log_error "All release sources failed. Check your network or set XLINGS_GITHUB_MIRROR."

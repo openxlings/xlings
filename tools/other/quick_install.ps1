@@ -131,6 +131,26 @@ function Get-ReleaseAsset {
 }
 
 function Resolve-ReleaseCandidates {
+    # A release source given outright: $env:XLINGS_BASE_URL serving
+    # <base>/<asset>.zip and <base>/<asset>.zip.sha256, with $Version pinned so
+    # there is nothing left to discover.
+    #
+    # This is what lets the installer be tested by RUNNING it. Everything after
+    # source selection -- download, checksum verification, unpacking, `self
+    # install` -- is the same code a user reaches through `irm | iex`; only the
+    # host differs. The alternative is a test that greps this file for the
+    # strings it expects to contain, which passes whether or not any of it works.
+    if ($env:XLINGS_BASE_URL) {
+        return @([pscustomobject]@{
+            Name       = "Direct"
+            Repo       = $null
+            ApiBase    = $null
+            WebBase    = $env:XLINGS_BASE_URL.TrimEnd([char[]]"/")
+            PreferVTag = $false
+            Direct     = $true
+        })
+    }
+
     $githubWebBase = if ($GITHUB_MIRROR) { $GITHUB_MIRROR.TrimEnd([char[]]"/") } else { "https://github.com" }
 
     # Probe only the two supported Windows package sources. GitCode is the
@@ -200,6 +220,25 @@ function Resolve-SourceCandidate {
         [string]$RequestedVersion,
         [string]$PackageArch
     )
+
+    if ($Source.Direct) {
+        if (-not $RequestedVersion) {
+            throw "XLINGS_BASE_URL requires an explicit version"
+        }
+        $versionNum = Get-VersionNumber $RequestedVersion
+        $zipName = "xlings-$versionNum-windows-$PackageArch.zip"
+        $assetUrl = "$($Source.WebBase)/$zipName"
+        return [pscustomobject]@{
+            Source      = $Source.Name
+            Tag         = $versionNum
+            Version     = $versionNum
+            VersionKey  = (Get-VersionSortKey $versionNum)
+            ProbeMs     = 0
+            ZipName     = $zipName
+            Url         = $assetUrl
+            ChecksumUrl = "$assetUrl.sha256"
+        }
+    }
 
     $probe = Measure-ReleaseLatency -Source $Source -RequestedVersion $RequestedVersion
     $release = $probe.Release

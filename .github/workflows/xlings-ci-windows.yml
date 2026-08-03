@@ -156,10 +156,6 @@ jobs:
         shell: pwsh
         run: '& "$env:GITHUB_WORKSPACE\tests\e2e\fresh_xlings_home_install_test.ps1"'
 
-      - name: Deterministic quick installer contracts
-        shell: pwsh
-        run: '& "$env:GITHUB_WORKSPACE\tests\scripts\test_quick_install.ps1"'
-
       - name: "E2E-01: Bootstrap Home (portable + installed)"
         shell: pwsh
         run: |

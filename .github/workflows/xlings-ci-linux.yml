@@ -150,6 +150,7 @@ jobs:
           bin=$(find target -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)
           python3 tests/scripts/test_docs_examples.py --xlings "$bin"
           python3 tests/scripts/test_generated_command_reference.py --xlings "$bin"
+          python3 tests/scripts/test_cli_spec_parity.py --xlings "$bin"
 
       # ── Phase 2: Build via Release Script ───────────────────────
       # NOTE: the E2E suite (E2E-00..E2E-28) moved to xlings-ci-linux-e2e.yml

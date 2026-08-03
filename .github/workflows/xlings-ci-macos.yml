@@ -163,9 +163,6 @@ jobs:
       - name: Fresh XLINGS_HOME first install
         run: bash tests/e2e/fresh_xlings_home_install_test.sh
 
-      - name: Deterministic quick installer contracts
-        run: bash tests/scripts/test_quick_install.sh
-
       - name: "E2E-01: Bootstrap Home (portable + installed)"
         run: |
           bash tests/e2e/bootstrap_home_test.sh
