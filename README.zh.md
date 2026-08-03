@@ -24,6 +24,24 @@
 
 一个工具,安装任意版本的任意软件,无需 root 运行,并提供 OS 级的环境隔离 —— 在 Linux / macOS / Windows 上统一。
 
+"支持"是三个不同的问题，所以拆成三列。xlings 能跑的平台，不等于每个包都有
+对应架构的产物；而这两件事都不说明 `--sandbox` 到底能隔离到什么程度。
+
+| 平台 | xlings 发布产物 | 包生态覆盖 | `subos --sandbox` 隔离的是 |
+|---|---|---|---|
+| Linux x86_64 | ✅ 有 | 完整 | 文件系统（bwrap / proot） |
+| Linux aarch64 | ✅ 有 | 部分 —— 不少配方只发布 x86_64 产物 | 文件系统，前提是该架构有可用后端 |
+| macOS 14+ arm64 | ✅ 有 | 部分 —— 部分配方只发布 x86_64 | **仅 `$HOME`** |
+| Windows x86_64 | ✅ 有 | 部分 | **仅 `%USERPROFILE%`** |
+
+包生态覆盖是配方的属性，不是 xlings 的：只有当配方**逐架构列出**了自己的产物、
+而其中没有你的架构时，`xlings install` 才会拒绝；配方只提供单一产物时照常安装，
+并提示该配方无法确认你的架构。
+
+> **macOS 与 Windows 的 `--sandbox` 不是安全边界。** 它重定向 home 目录，让工具
+> 把 dotfile 写到隔离位置，但不隔离文件系统、网络或进程。要运行不受信任的代码，
+> 请使用操作系统级沙箱或虚拟机。
+
 → [xlings 与 apt / nix / docker 对比](docs/comparison.md)
 
 ## 核心能力
@@ -110,7 +128,8 @@ xlings install           # 按声明的版本装进项目级隔离环境
 
 ### 🤖 在隔离 SubOS 中运行 Agent / 不受信代码
 
-把 claude / codex / opencode —— 或任意不受信代码 —— 跑在**隔离的 SubOS 内部**:内部拥有完全权限,宿主机不受影响。从 base 环境秒级 fork,一台机器可跑多个隔离实例。
+Linux 可在 rootless 文件系统隔离的 SubOS 中运行 Agent。macOS 和 Windows
+仅重定向用户目录；若需运行不受信代码，请使用操作系统沙箱或虚拟机。
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest

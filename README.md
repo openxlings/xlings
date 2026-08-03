@@ -24,6 +24,28 @@
 
 One tool to install any version of anything, run it rootless, and isolate it OS-like — across Linux, macOS, and Windows.
 
+"Supported" is three separate questions, so here are three columns. A platform
+xlings runs on is not automatically a platform every package has an artifact
+for, and neither of those says anything about how much isolation `--sandbox`
+can actually give you.
+
+| Platform | xlings release | Package coverage | `subos --sandbox` isolates |
+|---|---|---|---|
+| Linux x86_64 | ✅ published | full | the filesystem (bwrap / proot) |
+| Linux aarch64 | ✅ published | partial — many recipes only publish an x86_64 artifact | the filesystem, once a backend is available for the arch |
+| macOS 14+ arm64 | ✅ published | partial — some recipes ship x86_64 only | **only `$HOME`** |
+| Windows x86_64 | ✅ published | partial | **only `%USERPROFILE%`** |
+
+Package coverage is a property of the recipe, not of xlings: `xlings install`
+refuses a target only when the recipe enumerates its architectures and yours
+is not among them. When a recipe ships a single artifact it is installed and
+you are told the recipe could not confirm your architecture.
+
+> **macOS and Windows `--sandbox` is not a security boundary.** It redirects
+> the home directory so tools write their dotfiles somewhere isolated. It does
+> not contain the filesystem, the network or processes. Use an OS sandbox or a
+> VM to run code you do not trust.
+
 → [How xlings compares to apt / nix / docker](docs/comparison.md)
 
 ## Core capabilities
@@ -110,7 +132,9 @@ xlings install           # installs the declared versions, project-local
 
 ### 🤖 Agents & untrusted code in an isolated SubOS
 
-Run claude / codex / opencode — or any untrusted code — **inside** a rootless SubOS: full permissions within, host untouched. Fork from a base env in seconds and run several isolated instances on one machine.
+On Linux, run agents inside a rootless filesystem-isolated SubOS. On macOS and
+Windows, SubOS redirects the home directory but does not contain untrusted
+code; use an OS sandbox or VM when that boundary is required.
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest

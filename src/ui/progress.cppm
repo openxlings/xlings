@@ -7,6 +7,7 @@ module;
 export module xlings.ui:progress;
 
 import std;
+import xlings.core.palette;
 import :theme;
 import :layout;
 
@@ -254,6 +255,7 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState,
                              bool sizesReady,
                              int prevLines = 0) {
     using namespace ftxui;
+    const bool rewrite = palette::cursor_rewrite_allowed();
     constexpr std::size_t statusWidth = 8;
     constexpr int iconW = 6;   // "    <icon> "
 
@@ -291,7 +293,7 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState,
             icon = text("    " + std::string(theme::icon::downloading) + " ")
                 | color(theme::cyan());
             nameEl = name_as_progress(p.name, pct,
-                theme::cyan(), theme::border_color(), nameWidth, true, true);
+                theme::cyan(), theme::border_color(), nameWidth, true, rewrite);
             if (pct > 0.0f) {
                 int whole = static_cast<int>(pct * 100.0f);
                 int frac = static_cast<int>(pct * 1000.0f) % 10;
@@ -393,15 +395,15 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState,
     // one, and a trimmed line that is shorter than its predecessor would
     // otherwise leave the old tail behind.
     auto body = layout::render_to_string(vbox(std::move(rows)), width,
-                                         /*erase_eol=*/true);
+                                         /*erase_eol=*/rewrite);
 
     // Build single output buffer: cursor-up + content + clear trailing.
     std::string output;
-    if (prevLines > 0) {
+    if (rewrite && prevLines > 0) {
         output += "\033[" + std::to_string(prevLines) + "A\r";
     }
     output += body;
-    output += "\033[J";  // clear any leftover lines below
+    if (rewrite) output += "\033[J";
 
     std::cout << output << std::flush;
 

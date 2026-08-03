@@ -6,6 +6,8 @@ import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
 import mcpplibs.xpkg.loader;
 import xlings.core.xim.catalog;
+import xlings.core.xim.payload;
+import xlings.core.xim.inventory;
 import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
@@ -17,6 +19,7 @@ import xlings.runtime;
 import xlings.libs.json;
 import xlings.core.i18n;
 import xlings.platform;
+import xlings.platform.target;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
@@ -24,6 +27,7 @@ import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.profile;
 import xlings.runtime.cancellation;
+import xlings.core.version_order;
 // Leaf module (std + log + platform only), so importing it here does not
 // recreate the xim.commands <-> xself cycle that keeps `self update` shelling
 // out to a subprocess.
@@ -72,15 +76,7 @@ PackageCatalog& get_catalog() {
 }
 
 std::string detect_platform() {
-    #if defined(__linux__)
-        return "linux";
-    #elif defined(__APPLE__)
-        return "macosx";
-    #elif defined(_WIN32)
-        return "windows";
-    #else
-        return "unknown";
-    #endif
+    return std::string(xlings::platform::build_os());
 }
 
 // Forward declaration for deferred install request processing
@@ -124,6 +120,19 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     if (!stateLock) {
         log::error("{}", stateLock.error());
         return 1;
+    }
+
+    // An emulated build installs emulated packages -- correctly, since they
+    // have to match this process's ABI, and slowly, since every one of them
+    // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
+    // decide to switch, and cannot decide if nobody says it. Said at install
+    // time because that is when the cost is being incurred.
+    if (platform::is_emulated()) {
+        log::warn("this xlings is a {} build running on {} hardware; packages "
+                  "will match the build, not the machine. A native {} release "
+                  "avoids the emulation.",
+                  platform::build().arch, platform::host().arch,
+                  platform::host().str());
     }
     Config::reload_state();
 
@@ -574,6 +583,19 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
         log::error("{}", stateLock.error());
         return 1;
     }
+
+    // An emulated build installs emulated packages -- correctly, since they
+    // have to match this process's ABI, and slowly, since every one of them
+    // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
+    // decide to switch, and cannot decide if nobody says it. Said at install
+    // time because that is when the cost is being incurred.
+    if (platform::is_emulated()) {
+        log::warn("this xlings is a {} build running on {} hardware; packages "
+                  "will match the build, not the machine. A native {} release "
+                  "avoids the emulation.",
+                  platform::build().arch, platform::host().arch,
+                  platform::host().str());
+    }
     Config::reload_state();
 
     auto& catalog = get_catalog();
@@ -847,23 +869,12 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         return 1;
     }
 
-    auto results = catalog.search(filter.empty() ? "" : filter, detect_platform());
-
-    const auto& wsi = Config::workspace_installed();
-    auto in_current_subos = [&](const std::string& name, const std::string& version) {
-        auto it = wsi.find(name);
-        if (it == wsi.end()) return false;
-        for (auto& v : it->second) {
-            if (v == version || xvm::strip_namespace(v) == version) return true;
-        }
-        return false;
-    };
-
-    std::vector<PackageMatch> installed;
-    for (auto& match : results) {
-        if (!match.installed) continue;
-        if (!all && !in_current_subos(match.name, match.version)) continue;
-        installed.push_back(std::move(match));
+    auto installed = collect_inventory(catalog, all);
+    if (!filter.empty()) {
+        std::erase_if(installed, [&](const auto& record) {
+            return !record.canonicalName.contains(filter)
+                && !record.name.contains(filter);
+        });
     }
 
     if (installed.empty()) {
@@ -920,8 +931,7 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
 
     nlohmann::json listItems = nlohmann::json::array();
     for (auto& match : installed) {
-        auto pkg = catalog.load_package(match);
-        std::string desc = pkg ? std::string(pkg->description) : std::string{};
+        std::string desc = match.description;
         // Asked of the programs the recipe declares, not of the package name:
         // the package is `mcpp-short-cmd`, the xvm targets are `madd`,
         // `mbuild`, … and the package name is never one of them. A package
@@ -936,13 +946,26 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         // not, though `self doctor` reports it by release. This is a floor,
         // not full coverage, and the fix is in the recipe.
         std::string status;
-        if (pkg && !pkg->programs.empty()
-            && std::ranges::none_of(pkg->programs,
-                                    [&](std::string_view program) {
-                                        return served_by_this_row(
-                                            program, match.version);
-                                    })) {
+        if (!match.degradedReason.empty()) {
+            status = "degraded: " + match.degradedReason;
+        } else if (!match.active && !match.programs.empty()
+            && std::ranges::none_of(match.programs,
+                [&](std::string_view program) {
+                    return served_by_this_row(program, match.version);
+                })) {
             status = "inactive";
+        }
+        // Which subos a row belongs to is the whole reason `--all` exists, and
+        // the inventory has always carried it. Without it the wider listing is
+        // a flat set of names with no way to tell where any of them lives.
+        if (all && !match.suboses.empty()) {
+            std::string where;
+            for (const auto& subos : match.suboses) {
+                if (!where.empty()) where += ", ";
+                where += subos;
+            }
+            status += status.empty() ? "" : " \u00b7 ";
+            status += "in " + where;
         }
         listItems.push_back({match.canonicalName + "@" + match.version,
                              desc, status});
@@ -960,7 +983,8 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
 }
 
 // === info command ===
-int cmd_info(const std::string& target, EventStream& stream) {
+int cmd_info(const std::string& target, EventStream& stream,
+             bool allVersions = false) {
     auto& catalog = get_catalog();
     if (!catalog.is_loaded()) {
         log::error("package index not available");
@@ -1015,17 +1039,35 @@ int cmd_info(const std::string& target, EventStream& stream) {
         // `versions` row, so `latest` and the version it points at appeared
         // side by side — `latest -> 16.1.0, 16.1.0` reads as the list
         // repeating itself. They are two different facts; they get two rows.
-        std::string verStr;
-        std::string aliasStr;
+        std::vector<std::string> versions;
+        std::vector<std::string> aliases;
         for (auto& [ver, res] : platformIt->second) {
+            if (version_order::is_internal_key(ver)) continue;
             if (!res.ref.empty()) {
-                if (!aliasStr.empty()) aliasStr += ", ";
-                aliasStr += ver + " -> " + res.ref;
+                aliases.push_back(ver + " -> " + res.ref);
                 continue;
             }
-            if (!verStr.empty()) verStr += ", ";
-            verStr += ver;
+            versions.push_back(ver);
         }
+        version_order::sort_desc(versions);
+        std::ranges::sort(aliases);
+        auto join_wrapped = [](const std::vector<std::string>& values,
+                               std::size_t limit) {
+            std::string result;
+            const auto count = std::min(values.size(), limit);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (!result.empty()) result += (i % 4 == 0 ? "\n" : ", ");
+                result += values[i];
+            }
+            if (values.size() > count) {
+                result += std::format("\n… {} more (--all-versions)",
+                                      values.size() - count);
+            }
+            return result;
+        };
+        auto verStr = join_wrapped(versions,
+            allVersions ? versions.size() : std::size_t{8});
+        auto aliasStr = join_wrapped(aliases, aliases.size());
         // `available` rather than `versions`: the panel's second half also
         // had a row called `versions`, meaning the locally installed ones.
         if (!verStr.empty())   addField(fieldsJson, "available", verStr);
@@ -1058,14 +1100,30 @@ int cmd_info(const std::string& target, EventStream& stream) {
         }
     }
 
-    // Only when the answer is "no". When it is installed the second half of
-    // the panel says so in detail — `active`, `installed`, the payload path —
-    // and a bare `installed  yes` above it is a third label competing to mean
-    // the same thing.
-    if (!match->installed) addField(fieldsJson, "installed", "no");
+    const auto storeName = package_store_name(match->namespaceName, match->name);
+    const auto storePath = match->storeRoot / storeName;
+    // This package's rows only. Building the whole inventory to answer two
+    // booleans about one package made `info` proportional to the index.
+    const auto rows = collect_package_inventory(catalog, match->canonicalName);
+    const auto packageInstalled = !rows.empty();
+    const auto selectedInstalled = std::ranges::any_of(rows,
+        [&](const auto& record) {
+            return record.version == xvm::strip_namespace(match->version);
+        });
+    // Two labels, not three, and neither of them is a bare `installed`: the
+    // detail section below already has a row by that name listing the
+    // versions on disk. `package installed yes` / `selected installed no` /
+    // `installed 0.0.1 (active)` is three labels for overlapping facts, and
+    // the middle one is the only question the summary can answer that the
+    // list below cannot.
+    addField(fieldsJson, "selected version", match->version);
+    addField(fieldsJson, "selected installed",
+             !packageInstalled ? "no (package not installed)"
+             : selectedInstalled ? "yes"
+             : "no (other versions are)");
 
     nlohmann::json extraJson = nlohmann::json::array();
-    if (match->installed) {
+    if (packageInstalled) {
         auto db = Config::versions();
         auto ws = Config::effective_workspace();
         auto target = match->name;
@@ -1088,8 +1146,6 @@ int cmd_info(const std::string& target, EventStream& stream) {
             addField(extraJson, "installed", verList);
         }
 
-        auto storeName = package_store_name(match->namespaceName, match->name);
-        auto storePath = match->storeRoot / storeName;
         addField(extraJson, "xpkg path", Config::display_path(storePath));
 
         auto binDir = Config::global_subos_bin_dir();

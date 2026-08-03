@@ -2,6 +2,14 @@
 
 xlings 是一个通用包管理基础设施,支持多版本共存、OS-like SubOS 环境隔离和去中心化包索引生态。可以作为操作系统的系统级包管理器使用。
 
+| 发布目标 | 包管理 | Sandbox 边界 |
+|---|---|---|
+| Linux x86_64 / aarch64 | 支持 | bwrap/proot 文件系统隔离 |
+| macOS 14+ arm64 | 支持 | 仅 HOME 重定向 |
+| Windows x86_64 | 支持 | 仅 USERPROFILE 重定向 |
+
+macOS/Windows 的重定向不是不受信代码的安全边界。
+
 ## 目录
 
 - **[一、快速开始](#一快速开始)**
@@ -113,6 +121,7 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 | [SubOS 隔离机制](design/subos-isolation.md) | 三级隔离(shell / FS / image)的实现细节 |
 | [包索引生态](design/package-index-ecosystem.md) | 去中心化索引设计 |
 | [Interface 协议](design/interface-protocol.md) | `xlings interface` NDJSON 通信协议 |
+| [命令参考（生成）](generated/command-reference.md) | 由内置 `CommandSpec` 生成并经 CI 校验 |
 
 ### 3.3 规范
 

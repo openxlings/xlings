@@ -100,7 +100,14 @@ elif echo "$out" | grep -q "failed to install"; then
   log "PASS: subos sandbox V5 (Linux, partial — S1-S2 only)"
   exit 0
 else
-  log "  (unexpected output, skipping remaining sandbox tests)"
+  # Not a recognised outcome. Still not fatal -- this path depends on a
+  # backend install that needs sudo for setuid, and a developer machine
+  # without passwordless sudo legitimately lands here -- but PRINT what
+  # happened. Reporting PASS while silently skipping the entire feature under
+  # test is how a real regression in sandbox entry would reach a release
+  # looking exactly like an unattended laptop.
+  log "  (unexpected output, skipping remaining sandbox tests):"
+  printf '%s\n' "$out" | sed 's/^/      | /'
   log "PASS: subos sandbox V5 (Linux, partial — S1-S2 only)"
   exit 0
 fi

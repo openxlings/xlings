@@ -10,9 +10,15 @@ $ErrorActionPreference = "Stop"
 
 # --------------- helpers ---------------
 
-function Log-Info  { param([string]$Msg) Write-Host "[xlings]: $Msg" -ForegroundColor Green }
-function Log-Warn  { param([string]$Msg) Write-Host "[xlings]: $Msg" -ForegroundColor Yellow }
-function Log-Error { param([string]$Msg) Write-Host "[xlings]: $Msg" -ForegroundColor Red }
+$UseColor = -not $env:NO_COLOR -and -not [Console]::IsOutputRedirected
+function Write-InstallLog {
+    param([string]$Msg, [ConsoleColor]$Color)
+    if ($script:UseColor) { Write-Host "[xlings]: $Msg" -ForegroundColor $Color }
+    else { Write-Host "[xlings]: $Msg" }
+}
+function Log-Info  { param([string]$Msg) Write-InstallLog $Msg Green }
+function Log-Warn  { param([string]$Msg) Write-InstallLog $Msg Yellow }
+function Log-Error { param([string]$Msg) Write-InstallLog $Msg Red }
 
 $OFFICIAL_REPO = "openxlings/xlings"
 $RESOURCE_REPO = "xlings-res/xlings"
@@ -22,7 +28,7 @@ $GITCODE_API = "https://api.gitcode.com/api/v5"
 
 # --------------- banner ---------------
 
-Write-Host @"
+$banner = @"
 
  __   __  _      _
  \ \ / / | |    (_)
@@ -36,7 +42,9 @@ Write-Host @"
 repo:  https://github.com/openxlings/xlings
 forum: https://forum.d2learn.org
 
-"@ -ForegroundColor Cyan
+"@
+if ($UseColor) { Write-Host $banner -ForegroundColor Cyan }
+else { Write-Host $banner }
 
 # --------------- detect architecture ---------------
 
@@ -44,6 +52,9 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else { "x
 # ARM64 detection (Windows 11+)
 if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
     $arch = "arm64"
+}
+if ($arch -ne "x86_64") {
+    throw "Unsupported release target: windows-$arch"
 }
 
 # --------------- resolve download URL ---------------
@@ -120,6 +131,26 @@ function Get-ReleaseAsset {
 }
 
 function Resolve-ReleaseCandidates {
+    # A release source given outright: $env:XLINGS_BASE_URL serving
+    # <base>/<asset>.zip and <base>/<asset>.zip.sha256, with $Version pinned so
+    # there is nothing left to discover.
+    #
+    # This is what lets the installer be tested by RUNNING it. Everything after
+    # source selection -- download, checksum verification, unpacking, `self
+    # install` -- is the same code a user reaches through `irm | iex`; only the
+    # host differs. The alternative is a test that greps this file for the
+    # strings it expects to contain, which passes whether or not any of it works.
+    if ($env:XLINGS_BASE_URL) {
+        return @([pscustomobject]@{
+            Name       = "Direct"
+            Repo       = $null
+            ApiBase    = $null
+            WebBase    = $env:XLINGS_BASE_URL.TrimEnd([char[]]"/")
+            PreferVTag = $false
+            Direct     = $true
+        })
+    }
+
     $githubWebBase = if ($GITHUB_MIRROR) { $GITHUB_MIRROR.TrimEnd([char[]]"/") } else { "https://github.com" }
 
     # Probe only the two supported Windows package sources. GitCode is the
@@ -190,6 +221,25 @@ function Resolve-SourceCandidate {
         [string]$PackageArch
     )
 
+    if ($Source.Direct) {
+        if (-not $RequestedVersion) {
+            throw "XLINGS_BASE_URL requires an explicit version"
+        }
+        $versionNum = Get-VersionNumber $RequestedVersion
+        $zipName = "xlings-$versionNum-windows-$PackageArch.zip"
+        $assetUrl = "$($Source.WebBase)/$zipName"
+        return [pscustomobject]@{
+            Source      = $Source.Name
+            Tag         = $versionNum
+            Version     = $versionNum
+            VersionKey  = (Get-VersionSortKey $versionNum)
+            ProbeMs     = 0
+            ZipName     = $zipName
+            Url         = $assetUrl
+            ChecksumUrl = "$assetUrl.sha256"
+        }
+    }
+
     $probe = Measure-ReleaseLatency -Source $Source -RequestedVersion $RequestedVersion
     $release = $probe.Release
     $tag = [string]$release.tag_name
@@ -216,6 +266,7 @@ function Resolve-SourceCandidate {
         ProbeMs = $probe.ProbeMs
         ZipName = $zipName
         Url     = $assetUrl
+        ChecksumUrl = "$assetUrl.sha256"
     }
 }
 
@@ -301,12 +352,23 @@ function Download-ReleasePackage {
             $ProgressPreference = 'SilentlyContinue'
             try {
                 Invoke-WebRequest -Uri $candidate.Url -OutFile $zipPath -UseBasicParsing -UserAgent "xlings-quick-install" -ErrorAction Stop
+                $sidecarPath = "$zipPath.sha256"
+                Invoke-WebRequest -Uri $candidate.ChecksumUrl -OutFile $sidecarPath -UseBasicParsing -UserAgent "xlings-quick-install" -ErrorAction Stop
             } finally {
                 $ProgressPreference = $progressPref
             }
 
             if (-not (Test-ZipPackage $zipPath)) {
                 throw "downloaded file is not a zip package"
+            }
+
+            $sidecar = (Get-Content -Raw -Path $sidecarPath).Trim()
+            if ($sidecar -notmatch '^(?<hash>[0-9a-fA-F]{64})(?:\s+\*?\S+)?$') {
+                throw "checksum sidecar is missing or malformed"
+            }
+            $actualHash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash
+            if ($actualHash -ne $Matches.hash) {
+                throw "SHA256 checksum mismatch for $($candidate.ZipName)"
             }
 
             return [pscustomobject]@{

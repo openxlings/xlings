@@ -5,6 +5,7 @@ import mcpplibs.xpkg;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
+import xlings.core.xim.compatibility;
 import xlings.core.log;
 import xlings.core.semver;
 import xlings.platform;
@@ -77,7 +78,8 @@ std::expected<InstallPlan, std::string>
 resolve(PackageCatalog& catalog,
         std::span<const std::string> targets,
         const std::string& platform,
-        const ActiveVersionFn& activeOf = {}) {
+        const ActiveVersionFn& activeOf = {},
+        const std::string& hostArch = host_architecture()) {
 
     InstallPlan plan;
 
@@ -144,6 +146,26 @@ resolve(PackageCatalog& catalog,
 
         auto pkg = catalog.load_package(match);
         if (pkg) {
+            // Evidence-graded, and asked of the entry this node would
+            // download. Refusing here keeps the "zero requests for an
+            // unsupported target" contract, but only for a resource that
+            // enumerates its architectures and does not list this one -- a
+            // package-level `archs` union is never enough to stop a plan.
+            const auto* entry = find_entry(*pkg, platform, node.version);
+            const auto compatibility = check_target_compatibility(
+                *pkg, entry, platform, hostArch);
+            if (!compatibility.supported) {
+                std::string chain;
+                for (const auto& item : path) {
+                    if (!chain.empty()) chain += " -> ";
+                    chain += item;
+                }
+                plan.errors.push_back(std::format("{}: {}", chain,
+                    compatibility_error(match.canonicalName, compatibility)));
+                color[key] = Color_::Black;
+                path.pop_back();
+                return false;
+            }
             node.pkgType = static_cast<int>(pkg->type);
 
             auto rtIt = pkg->xpm.runtime_deps.find(platform);

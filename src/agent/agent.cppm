@@ -71,7 +71,12 @@ export int run(int argc, char* argv[]) {
     }
 
     if (sub == "skills") {
-        if (argc <= 3) {
+        // `-h`/`--help` here is a help request, not a skill named "--help".
+        // Without this, `xlings agent skills --help` looks up a skill by that
+        // name, fails, and exits 1 -- the one shape a documented command path
+        // must never have.
+        if (argc <= 3 || std::string_view{argv[3]} == "-h"
+            || std::string_view{argv[3]} == "--help") {
             print_overview(reg);
             return 0;
         }

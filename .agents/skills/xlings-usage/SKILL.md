@@ -72,7 +72,7 @@ the output**; `--strict` refuses such a switch instead.
 | Level | Command | Root? | Use case |
 |-------|---------|:---:|---|
 | Shell | `xlings subos use <name>` | No | Version isolation only |
-| FS (sandbox) | `xlings subos use <name> --sandbox` | No | Full filesystem isolation |
+| FS (sandbox) | `xlings subos use <name> --sandbox` | No | Linux filesystem isolation; macOS/Windows home redirection only |
 | Image | `xlings subos use <name> --sandbox` (storage=image) | Yes | Block-device isolation |
 
 ### Lifecycle
@@ -113,6 +113,9 @@ xlings install     # installs deps into project isolation
 ## Agent Workflows
 
 ### Agent runs inside SubOS
+
+Treat `--sandbox` as a security boundary only on Linux with bwrap/proot.
+macOS and Windows redirect HOME/USERPROFILE and must not run untrusted code.
 
 ```bash
 # Create isolated env for agent

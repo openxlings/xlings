@@ -8,6 +8,8 @@ module;
 #include <fcntl.h>
 #else
 #include <io.h>
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 export module xlings.platform;
@@ -51,6 +53,7 @@ namespace platform {
     export using platform_impl::ProcessHandle;
     export using platform_impl::spawn_command;
     export using platform_impl::wait_or_kill;
+    export using platform_impl::displace_locked_file;
     export using platform_impl::atomic_replace_executable;
     export using platform_impl::atomic_swap_paths;
     export using platform_impl::FileLock;
@@ -208,6 +211,158 @@ namespace platform {
 #else
         return status;
 #endif
+    }
+
+    export [[nodiscard]] std::string shell_quote(const std::string& arg);
+
+    export std::vector<std::string> shell_command_argv(
+        std::string_view shell, std::string_view command, bool interactive) {
+        std::vector<std::string> argv{std::string(shell)};
+        if (interactive) {
+#if !defined(_WIN32)
+            argv.push_back("-i");
+#endif
+        } else if (shell.find("powershell") != std::string_view::npos
+                   || shell.find("pwsh") != std::string_view::npos) {
+            argv.insert(argv.end(), {"-NoLogo", "-NonInteractive", "-Command",
+                                     std::string(command)});
+        } else if (shell.find("cmd") != std::string_view::npos) {
+            argv.insert(argv.end(), {"/d", "/s", "/c", std::string(command)});
+        } else {
+            argv.insert(argv.end(), {"-c", std::string(command)});
+        }
+        return argv;
+    }
+
+    // The shells to try, most preferred first. One priority chain for both
+    // families: `XLINGS_SHELL` wins everywhere, then the platform's own
+    // notion of the user's shell, then a guaranteed fallback. Windows used to
+    // honour `XLINGS_SHELL` while POSIX read only `SHELL`, which is the kind
+    // of split a caller cannot see and cannot work around.
+    export std::vector<std::string> shell_candidates() {
+        if (const auto* configured = std::getenv("XLINGS_SHELL");
+            configured && *configured) {
+            return {std::string(configured)};
+        }
+#if defined(_WIN32)
+        return {"pwsh.exe", "powershell.exe", "cmd.exe"};
+#elif defined(__APPLE__)
+        const auto* shell = std::getenv("SHELL");
+        return {shell && *shell ? std::string(shell) : std::string("/bin/zsh"),
+                "/bin/zsh", "/bin/sh"};
+#else
+        const auto* shell = std::getenv("SHELL");
+        return {shell && *shell ? std::string(shell) : std::string("/bin/sh"),
+                "/bin/sh"};
+#endif
+    }
+
+    // The shell a caller should name when it reports what it is about to run.
+    // Resolving it here rather than at each call site is what keeps an event
+    // payload and the process that actually starts from naming different
+    // shells -- the macOS sandbox reported `/bin/zsh` while `run_shell` went
+    // on to re-read the environment and exec `/bin/sh`.
+    export std::string resolve_shell() { return shell_candidates().front(); }
+
+    // Replace this process with an interactive shell. POSIX only, and it does
+    // not return on success.
+    //
+    // This is not an optimisation. exec(2) hands the terminal to the shell
+    // outright: it becomes the foreground process group leader, job control
+    // and Ctrl-Z work, Ctrl-C reaches only the shell, and `exit` returns
+    // straight to the parent shell with the original environment. Running the
+    // same shell as a forked child that xlings then waits on leaves xlings in
+    // the foreground process group, so SIGINT is delivered to it as well and
+    // it can die on its default disposition while the child still owns the
+    // tty -- two readers on one terminal.
+    //
+    // Windows has no exec, so `subos use` there really does have to park on
+    // WaitForSingleObject; that is a genuine platform difference and the only
+    // reason the two families diverge here.
+#if !defined(_WIN32)
+    export int exec_replace_interactive_shell() {
+        std::cout.flush();
+        std::cerr.flush();
+        for (const auto& shell : shell_candidates()) {
+            ::execl(shell.c_str(), shell.c_str(), "-i",
+                    static_cast<char*>(nullptr));
+        }
+        return 127;  // only reached when every candidate failed to exec
+    }
+#endif
+
+    // Run one command through a shell and return its exit code. Used for
+    // `--cmd` on every platform, and for interactive entry on Windows.
+    export int run_shell_command(std::string_view command, bool interactive) {
+        std::cout.flush();
+        std::cerr.flush();
+#if defined(_WIN32)
+        for (const auto& shell : shell_candidates()) {
+            auto argv = shell_command_argv(shell, command, interactive);
+            std::string commandLine;
+            if (shell.find("cmd") != std::string::npos && !interactive) {
+                // cmd.exe does not use CRT backslash escaping for the source
+                // following /c. /s deliberately strips this one outer quote
+                // pair and leaves quotes/metacharacters inside the command to
+                // cmd's own grammar.
+                commandLine = shell_quote(shell)
+                    + " /d /s /c \"" + std::string(command) + "\"";
+            } else {
+                for (const auto& arg : argv) {
+                    if (!commandLine.empty()) commandLine += ' ';
+                    commandLine += shell_quote(arg);
+                }
+            }
+            STARTUPINFOA startup{};
+            startup.cb = sizeof(startup);
+            PROCESS_INFORMATION process{};
+            if (!::CreateProcessA(nullptr, commandLine.data(), nullptr, nullptr,
+                                  TRUE, 0, nullptr, nullptr,
+                                  &startup, &process)) {
+                continue;
+            }
+            ::WaitForSingleObject(process.hProcess, INFINITE);
+            DWORD exitCode = 127;
+            ::GetExitCodeProcess(process.hProcess, &exitCode);
+            ::CloseHandle(process.hThread);
+            ::CloseHandle(process.hProcess);
+            return static_cast<int>(exitCode);
+        }
+        return 127;
+#else
+        const auto candidates = shell_candidates();
+        const auto pid = ::fork();
+        if (pid < 0) return 127;
+        if (pid == 0) {
+            for (const auto& shell : candidates) {
+                // Built through the same helper the unit test pins, so what is
+                // asserted about the argv is what the child actually execs.
+                const auto argv = shell_command_argv(shell, command, interactive);
+                std::vector<char*> raw;
+                raw.reserve(argv.size() + 1);
+                for (const auto& arg : argv) {
+                    raw.push_back(const_cast<char*>(arg.c_str()));
+                }
+                raw.push_back(nullptr);
+                ::execv(shell.c_str(), raw.data());
+            }
+            ::_exit(127);
+        }
+        int status = 0;
+        if (::waitpid(pid, &status, 0) < 0) return 127;
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+        return 127;
+#endif
+    }
+
+    // Entry point for `subos use`: interactive entry replaces this process on
+    // POSIX, everything else spawns and waits.
+    export int run_shell(std::string_view command, bool interactive) {
+#if !defined(_WIN32)
+        if (interactive) return exec_replace_interactive_shell();
+#endif
+        return run_shell_command(command, interactive);
     }
 
     // Escape a single argument for safe embedding in a shell command string.

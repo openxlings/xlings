@@ -204,8 +204,18 @@ static fs::path detect_existing_home() {
     auto envHome = utils::get_env_or_default("XLINGS_HOME");
     if (!envHome.empty()) {
         auto p = fs::path(envHome);
-        if (fs::exists(p / "bin") && fs::exists(p / "subos"))
-            return fs::weakly_canonical(p);
+        // An explicit target is authoritative even for the first install.
+        // PATH discovery is only a convenience when the caller did not name
+        // a destination; otherwise an unrelated older xlings can hijack a
+        // cold-home bootstrap.
+        std::error_code ec;
+        auto absolute = fs::absolute(p, ec);
+        if (ec) return p.lexically_normal();
+        if (fs::exists(absolute, ec)) {
+            auto canonical = fs::weakly_canonical(absolute, ec);
+            return ec ? absolute.lexically_normal() : canonical;
+        }
+        return absolute.lexically_normal();
     }
     auto [rc, out] = platform::run_command_capture(
 #ifdef _WIN32

@@ -41,10 +41,38 @@ inline auto stdout_is_terminal() -> bool {
 // out in true color and a redirect to a file captured every escape.
 inline auto opted_out_() -> bool {
     if (detail::plain_override_()) return true;
-    if (std::getenv("NO_COLOR") != nullptr) return true;
+    // Present AND non-empty, per the NO_COLOR convention. `NO_COLOR=` is how a
+    // wrapper script clears an inherited value; treating the empty string as
+    // an opt-out means the user cannot turn colour back on.
+    if (const auto* value = std::getenv("NO_COLOR");
+        value != nullptr && *value != '\0') {
+        return true;
+    }
     if (auto* term = std::getenv("TERM"); term != nullptr && std::string_view{term} == "dumb")
         return true;
     return false;
+}
+
+// Whether the destination can be redrawn in place. Three independent
+// questions decide the shape of xlings's output and each one only looks at
+// what it is about:
+//
+//   colours        a terminal, and the user has not opted out of colour
+//   cursor rewrite a terminal, no TUI owning the screen, not forced plain
+//   live progress  always -- rewritten when it can be, appended when it cannot
+//
+// NO_COLOR deliberately does NOT appear here. It asks for no colour, not for
+// no cursor control; folding it in left `NO_COLOR=1 xlings install llvm` with
+// no feedback at all for the length of the download. `--agent` (plain forced)
+// does appear, because that output is parsed by a machine.
+inline auto cursor_rewrite_allowed(bool stdoutTerminal, bool tuiMode,
+                                   bool plainOutput) -> bool {
+    return stdoutTerminal && !tuiMode && !plainOutput;
+}
+
+inline auto cursor_rewrite_allowed() -> bool {
+    return cursor_rewrite_allowed(stdout_is_terminal(),
+                                  platform::is_tui_mode(), plain_forced());
 }
 
 inline auto colors_enabled() -> bool {

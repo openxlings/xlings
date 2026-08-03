@@ -1,4 +1,4 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 更新日期：2026-08-03
 
 # Interface Protocol — NDJSON over stdio
 
@@ -91,7 +91,7 @@ sequenceDiagram
     participant C as Client
     participant X as xlings interface
 
-    C->>X: 启动进程: xlings interface install --args '{"pkg":"gcc"}'
+    C->>X: 启动进程: xlings interface install_packages --args '{"targets":["gcc"]}'
     X->>C: {"kind":"progress","phase":"resolve",...}
     X->>C: {"kind":"log","level":"info",...}
     X->>C: {"kind":"prompt","id":"confirm-1",...}
@@ -107,10 +107,10 @@ sequenceDiagram
 
 ```bash
 # 执行某个 capability，传递 JSON 参数
-xlings interface install --args '{"pkg":"gcc","version":"16.1.0"}'
+xlings interface install_packages --args '{"targets":["gcc@16.1.0"],"yes":true}'
 
 # 从文件读取参数（适用于 Windows 命令行引号问题）
-xlings interface install --args-file /tmp/args.json
+xlings interface install_packages --args-file /tmp/args.json
 ```
 
 ## 使用场景

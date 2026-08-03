@@ -5,7 +5,7 @@ package = {
     licenses = {"Apache-2.0"},
     type = "package",
     repo = "https://github.com/ninja-build/ninja",
-    archs = {"x86_64"},
+    archs = {"x86_64", "aarch64"},
     xvm_enable = true,
 
     xpm = {

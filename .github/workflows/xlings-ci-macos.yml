@@ -157,6 +157,12 @@ jobs:
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
 
+      - name: SubOS sandbox command contract
+        run: bash tests/e2e/subos_cmd_contract_test.sh
+
+      - name: Fresh XLINGS_HOME first install
+        run: bash tests/e2e/fresh_xlings_home_install_test.sh
+
       - name: "E2E-01: Bootstrap Home (portable + installed)"
         run: |
           bash tests/e2e/bootstrap_home_test.sh
@@ -167,6 +173,12 @@ jobs:
           [[ -z "$tarball" ]] && { echo "No release tarball found"; exit 1; }
           cp "$tarball" build/release.tar.gz
 
+      - name: Candidate cold-home lifecycle
+        run: |
+          shasum -a 256 build/release.tar.gz > build/release.tar.gz.sha256
+          bash tests/candidate-install/smoke.sh \
+            build/release.tar.gz build/release.tar.gz.sha256
+
       - name: "E2E-02: Release Self Install"
         run: |
           bash tests/e2e/release_self_install_test.sh build/release.tar.gz
@@ -176,11 +188,10 @@ jobs:
           bash tests/e2e/release_packaged_index_test.sh build/release.tar.gz
 
       - name: "E2E-03: Quick Install Smoke"
-        continue-on-error: true  # may fail due to GitHub rate limits
         env:
           XLINGS_NON_INTERACTIVE: 1
         run: |
-          bash tests/e2e/release_quick_install_test.sh
+          bash tests/scripts/test_quick_install.sh
 
       - name: "E2E-04: Release Subos + d2x Reuse + RPATH"
         run: |

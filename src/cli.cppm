@@ -30,6 +30,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.commands;
 import xlings.core.profile;
 import xlings.core.utf8;
+import xlings.cli.spec;
 
 namespace lua = mcpplibs::capi::lua;
 
@@ -673,6 +674,11 @@ int run_profile_(int argc, char* argv[], EventStream& stream) {
 }
 
 export int run(int argc, char* argv[]) {
+    if (argc == 2
+        && std::string_view{argv[1]} == "--command-reference-json") {
+        std::println("{}", spec::reference_json().dump());
+        return 0;
+    }
     using namespace mcpplibs;
 
     // Bare `xlings` (no args) used to silently exit 0 because the
@@ -811,7 +817,12 @@ export int run(int argc, char* argv[]) {
             return 0;
         }
 
-        // agent — dispatched early so it handles its own -h as plain text
+        // agent — dispatched before the generic help interception so it keeps
+        // handling its own -h as plain text. `xlings agent -h` has to print
+        // the skill overview (the list of what is installed and readable),
+        // and the boxed subcommand help rendered from the spec neither is
+        // plain text nor names a single skill. The whole point of this command
+        // family is that a machine reads its output.
         if (cmd == "agent") return agent::run(fargc, fargv.data());
 
         // Intercept subcommand help: xlings <cmd> -h/--help
@@ -824,124 +835,60 @@ export int run(int argc, char* argv[]) {
             using A = ui::HelpArg;
             using O = ui::HelpOpt;
 
-            struct SubHelp {
-                std::string_view name;
-                std::string_view desc;
-                std::vector<A> args;
-                std::vector<O> opts;
-                std::vector<O> subcmds;
-            };
-
-            auto match = [&](std::string_view n) { return cmd == n; };
-
-            std::optional<SubHelp> h;
-            if (match("install")) h = SubHelp{
-                "install", "Install packages (e.g. xlings install gcc@15 node)",
-                { {"packages", "Package names with optional version"} },
-                {
-                    {"-g, --global", "Install to global scope (not project-local subos)"},
-                    {"-u, --use",    "Activate the installed version even if another version is currently active"},
-                },
-            };
-            else if (match("remove")) h = SubHelp{
-                "remove", "Remove a package",
-                {
-                    {"package", "Package name (or name@ver)", true},
-                    {"version", "Optional version (alternative to name@ver form)"},
-                },
-                {
-                    {"--global, -g", "Act on the global scope (not the project-local subos)"},
-                },
-            };
-            else if (match("update")) h = SubHelp{
-                "update", "Update package index or a specific package",
-                {
-                    {"package", "Package to update (omit for index only)"},
-                    {"version", "Optional version (alternative to name@ver form)"},
-                }, {},
-            };
-            else if (match("search")) h = SubHelp{
-                "search", "Search for packages",
-                { {"keyword", "Search keyword", true} }, {},
-            };
-            else if (match("list")) h = SubHelp{
-                "list", "List installed packages",
-                { {"filter", "Filter pattern"} }, {},
-            };
-            else if (match("info")) h = SubHelp{
-                "info", "Show package information",
-                {
-                    {"package", "Package name (or name@ver)", true},
-                    {"version", "Optional version (alternative to name@ver form)"},
-                }, {},
-            };
-            else if (match("use")) h = SubHelp{
-                "use", "Switch tool version",
-                {
-                    {"target",  "Tool name (or name@ver one-shot)", true},
-                    {"version", "Version to switch to (omit: switch when only one is installed, else exit 2)"},
-                },
-                {
-                    {"--all, -a",  "Consider versions from every subos, not just this one"},
-                    {"--strict",   "Refuse if a program of the current release has no version in the new one"},
-                },
-            };
-            else if (match("config")) h = SubHelp{
-                "config", "Show or modify xlings configuration", {},
-                {
-                    {"--lang <LANG>",       "Set language (en/zh)"},
-                    {"--mirror <MIRROR>",   "Set mirror (GLOBAL/CN)"},
-                    {"--add-xpkg <FILE>",   "Add xpkg file to package index"},
-                    {"--index-repo <NS:URL>", "Add/update index repo (e.g. myns:https://...git)"},
-                },
-            };
-            else if (match("self")) h = SubHelp{
-                "self", "Manage xlings itself", {},
-                {
-                    {"install",  "Install xlings from release package"},
-                    {"init",     "Create home/data/subos dirs"},
-                    {"update",   "Update index + install latest xlings"},
-                    {"config",   "Show configuration details"},
-                    {"clean",    "Remove cache + gc orphaned packages (--dry-run)"},
-                    {"migrate",  "Migrate old layout to subos/default"},
-                    {"doctor",   "Verify workspace/shim consistency (--fix to repair, --dry-run to preview, --all to list non-defect findings, --reset-metadata to discard unreadable release metadata)"},
-                },
-            };
-            else if (match("subos")) h = SubHelp{
-                "subos", "Manage sub-OS environments", {},
-                {
-                    {"new <name>",    "Create a new sub-OS"},
-                    {"use <name>",    "Switch active sub-OS"},
-                    {"list",          "List all sub-OS environments"},
-                    {"remove <name>", "Remove a sub-OS"},
-                    {"info [name]",   "Show sub-OS details"},
-                },
-            };
-            else if (match("script")) h = SubHelp{
-                "script", "Run xlings scripts",
-                { {"script-file", "Path to script file", true}, {"args", "Script arguments"} }, {},
-            };
-
-            if (h) {
-                ui::print_subcommand_help(h->name, h->desc, h->args, h->opts, h->subcmds);
+            std::vector<std::string_view> commandPath;
+            commandPath.push_back(cmd);
+            if (fargc > 2) {
+                const std::string_view nested{fargv[2]};
+                if (!nested.starts_with('-')) {
+                    auto candidate = commandPath;
+                    candidate.push_back(nested);
+                    if (spec::find(candidate)) commandPath = std::move(candidate);
+                }
+            }
+            if (const auto* command = spec::find(commandPath)) {
+                std::vector<A> arguments;
+                std::vector<O> options;
+                std::vector<O> children;
+                for (const auto& argument : command->arguments) {
+                    arguments.push_back({argument.name, argument.description,
+                                         argument.required});
+                }
+                for (const auto& option : command->options) {
+                    options.push_back({option.syntax, option.description});
+                }
+                for (const auto& child : command->children) {
+                    children.push_back({child.name, child.description});
+                }
+                ui::print_subcommand_help(command->name, command->description,
+                                          arguments, options, children);
                 return 0;
+            }
+
+        }
+
+        if (cmd == "subos" || cmd == "self" || cmd == "profile") {
+            const std::array<std::string_view, 1> path{cmd};
+            if (const auto* command = spec::find(path)) {
+                std::vector<std::string_view> manualArgs;
+                for (int i = 2; i < fargc; ++i) manualArgs.emplace_back(fargv[i]);
+                if (auto validated = spec::validate_manual_argv(
+                        *command, manualArgs); !validated) {
+                    log::error("{}", validated.error().message);
+                    return 2;
+                }
             }
         }
 
         // Detect unknown commands early — show TUI error + help
         {
-            static constexpr std::string_view known_cmds[] = {
-                "install", "remove", "update", "search", "list",
-                "info", "use", "config", "subos", "self", "script",
-                "interface", "agent", "profile",
-            };
-            bool known = false;
-            for (auto& k : known_cmds) {
-                if (cmd == k) { known = true; break; }
-            }
+            const bool known = std::ranges::any_of(spec::root().children,
+                [&](const auto& command) {
+                    return command.name == cmd
+                        || std::ranges::find(command.aliases, cmd)
+                            != command.aliases.end();
+                });
             if (!known && !cmd.starts_with("-")) {
                 log::error("unknown command: {}", cmd);
-                ui::print_help(Info::VERSION);
                 return 1;
             }
         }
@@ -1110,13 +1057,15 @@ export int run(int argc, char* argv[]) {
         // info
         .subcommand("info")
             .description("Show package information")
+            .option(cmdline::Option("all-versions").help("Show every available version"))
             .arg("package").required().help("Package name (or name@ver)")
             .arg("version").help("Optional version (alternative to name@ver form)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
                 std::string target;
                 if (!parse_target_spec_(args, target)) return 1;
-                return xim::cmd_info(target, stream);
+                return xim::cmd_info(target, stream,
+                                     args.is_flag_set("all-versions"));
             }))
 
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`

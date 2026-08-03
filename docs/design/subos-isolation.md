@@ -1,4 +1,4 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 更新日期：2026-08-03
 
 # SubOS 隔离模型
 
@@ -46,7 +46,7 @@ graph TD
 
 ### Level 3 — Image 级
 
-- 创建: `xlings subos create <name> --storage image`
+- 创建: `xlings subos new <name> --storage image`
 - 机制: `truncate` 创建稀疏文件 + `mkfs.ext4` 格式化 + `sudo mount -o loop` 挂载
 - 结果: `/home` 完全位于独立块设备，具备 inode/权限/quota 隔离
 - 默认大小: 50G（稀疏文件，实际占用按需增长）
@@ -126,10 +126,12 @@ Shell 级入口永远不触发挂载操作；非 Shared 存储仅在 `--sandbox`
 | 平台 | Shell 级 | FS 级 (Sandbox) | Image 级 |
 |------|----------|-----------------|----------|
 | **Linux** | 完整支持 | bwrap (首选) / proot (回退) | ext4 loop mount |
-| **macOS** | 完整支持 | HOME 重定向 only (无 namespace/ptrace) | 不支持 |
-| **Windows** | env 切换 (CreateProcess) | 不支持 | 不支持 |
+| **macOS 14+ arm64** | 支持 | 仅 HOME 重定向（无 namespace/ptrace） | 不支持 |
+| **Windows x86_64** | 支持 | 仅 USERPROFILE 重定向 | 不支持 |
 
-macOS 沙箱入口仅提供 HOME 重定向 (设置 `$HOME` 指向沙箱目录)，不提供文件系统视图隔离。Windows 仅支持 Shell 级环境变量切换。
+macOS 沙箱入口仅提供 HOME 重定向，Windows 沙箱入口仅提供 USERPROFILE
+重定向。二者都不提供文件系统视图或进程隔离，不能作为不受信代码的
+安全边界。两端均支持 `--cmd` 并传播子进程退出码。
 
 ## GPU 透传 (`--gpu`)
 

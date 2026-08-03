@@ -141,3 +141,9 @@ try {
 }
 
 Write-Host "PASS: bootstrap home works for portable and installed modes"
+
+# Land an explicit success: this script checks for exit codes it expects to be
+# non-zero, and `pwsh -command ". script.ps1"` returns whatever $LASTEXITCODE
+# happens to hold as the step's exit code -- turning a passing test into a red
+# job with "PASS" printed right above the failure.
+exit 0

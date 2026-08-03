@@ -24,6 +24,7 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
+import xlings.core.xim.compatibility;
 import xlings.core.subos.gpu;
 
 // Runtime isolation for a subos: proot/bwrap backends, storage images, GPU
@@ -679,6 +680,53 @@ detect_backend_(const fs::path& home_dir,
     return std::nullopt;
 }
 
+// Should we even try to fetch a sandbox backend for this host? Answered from
+// the on-disk index, with no network access.
+//
+// The evidence rule here is deliberately stricter than the one `xlings
+// install` uses, and the difference is who asked. A package-level `archs`
+// union is weak evidence -- it went unenforced for all of spec V1 and is
+// routinely under-declared -- so it must never veto an install the USER named:
+// being wrong there means refusing a package that works, and the user has no
+// way around it.
+//
+// This install is one nobody asked for. `--sandbox` triggers it implicitly,
+// and being wrong costs only a skipped auto-install that
+// `xlings install bwrap` still overrides. Being wrong the other way costs
+// every `--sandbox` invocation on the arch a download that 404s, ~45s of
+// waiting, and a diagnostic that blames the installer rather than naming the
+// target. So a weak signal is enough to decline here.
+//
+// What it is NOT is a compile-time `#if defined(__aarch64__)`, which is what
+// this replaced: that freezes a claim about the package index into the binary,
+// so the day an aarch64 backend is published every client in the field still
+// refuses. This is re-read from the index on every call.
+std::optional<std::string> backend_target_unavailable_() {
+    auto& catalog = xim::get_catalog();
+    if (!catalog.is_loaded()) return std::nullopt;
+
+    const auto hostArch = xim::host_architecture();
+    std::string target;
+    for (const auto* name : {"bwrap", "proot"}) {
+        auto match = catalog.resolve_target(name, "linux");
+        if (!match) return std::nullopt;          // cannot say -> let it try
+        auto pkg = catalog.load_package(*match);
+        if (!pkg) return std::nullopt;
+        const auto* entry = xim::find_entry(*pkg, "linux", match->version);
+        const auto compatibility = xim::check_target_compatibility(
+            *pkg, entry, "linux", hostArch);
+        target = compatibility.target;
+        // Supported AND not merely "we could not tell": an advisory means the
+        // recipe does not claim this arch, which is as much as an
+        // auto-install needs to hear.
+        if (compatibility.supported && compatibility.advisory.empty()) {
+            return std::nullopt;
+        }
+    }
+    return std::format(
+        "E_UNSUPPORTED_TARGET: no sandbox backend has a {} artifact", target);
+}
+
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
     // Try bwrap first (build from source, config hook sets setuid)
     log::info("installing sandbox backend...");
@@ -909,6 +957,26 @@ export int enter(const std::string& name, EventStream& stream,
     } else {
         backend = detect_backend_(p.homeDir, subos_dir);
         if (!backend) {
+            // Ask the index whether it ships a backend for this target before
+            // touching the network, so an unsupported host gets one causal
+            // error and zero download requests.
+            //
+            // This used to be `#if defined(__aarch64__)`, which is a claim
+            // about the package index frozen into the binary at compile time:
+            // the day xim-pkgindex publishes an aarch64 bwrap, every client
+            // already in the field would still refuse. Reading the on-disk
+            // index costs nothing and is right both before and after that day.
+            if (auto unavailable = backend_target_unavailable_(); unavailable) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = *unavailable,
+                    .recoverable = false,
+                    .hint = "use shell isolation, install your distribution's "
+                            "bubblewrap package, or `xlings install bwrap` to "
+                            "try anyway",
+                });
+                return 1;
+            }
             auto rc = auto_install_backend_(p.homeDir, stream);
             if (rc != 0) {
                 stream.emit(ErrorEvent{
@@ -1031,11 +1099,26 @@ export int enter(const std::string& name, EventStream& stream,
     // macOS L2: HOME redirect (dotfile isolation)
     // ═══════════════════════════════════════════════════════════════
 
-    auto shell = utils::get_env_or_default("SHELL");
-    if (shell.empty()) shell = "/bin/zsh";  // macOS default
+    // Ask the same resolver the launch is about to use. Deriving the reported
+    // shell here independently is how `subos_entering` came to announce
+    // `/bin/zsh` while the process that started was `/bin/sh`: two fallbacks
+    // for the same question, in two places, that only agree when SHELL is set.
+    // Say it where the person is, not only in the README. A user who reaches
+    // for `--sandbox` to run something they do not trust is exactly the user
+    // who did not read the isolation matrix, and on these two platforms this
+    // is a dotfile redirect -- no filesystem, network or process boundary.
+    //
+    // Only on interactive entry: a `--cmd` run is a script, and a warning it
+    // emits on every invocation is noise nobody reads. `--quiet` silences it.
+    if (cmd.empty()) {
+        log::warn("sandbox on {} redirects the home directory only -- "
+                  "it does not contain the filesystem, network or processes. "
+                  "Use an OS sandbox or a VM for untrusted code.",
+                  "macOS");
+    }
 
     payload["backend"] = "home-redirect";
-    payload["shell"] = shell;
+    payload["shell"] = platform::resolve_shell();
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
     platform::set_env_variable("HOME", sandbox_home);
@@ -1045,9 +1128,7 @@ export int enter(const std::string& name, EventStream& stream,
     platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "/.cache");
     platform::set_env_variable("XDG_STATE_HOME", sandbox_home + "/.local/state");
 
-    ::execl(shell.c_str(), shell.c_str(), "-i", static_cast<char*>(nullptr));
-    log::error("failed to exec shell '{}': {}", shell, std::strerror(errno));
-    return 127;
+    return platform::run_shell(cmd, cmd.empty());
 
 #elif defined(_WIN32)
     // ═══════════════════════════════════════════════════════════════
@@ -1057,6 +1138,20 @@ export int enter(const std::string& name, EventStream& stream,
     // Pre-create AppData structure
     fs::create_directories(fs::path(sandbox_home) / "AppData" / "Roaming");
     fs::create_directories(fs::path(sandbox_home) / "AppData" / "Local");
+
+    // Say it where the person is, not only in the README. A user who reaches
+    // for `--sandbox` to run something they do not trust is exactly the user
+    // who did not read the isolation matrix, and on these two platforms this
+    // is a dotfile redirect -- no filesystem, network or process boundary.
+    //
+    // Only on interactive entry: a `--cmd` run is a script, and a warning it
+    // emits on every invocation is noise nobody reads. `--quiet` silences it.
+    if (cmd.empty()) {
+        log::warn("sandbox on {} redirects the home directory only -- "
+                  "it does not contain the filesystem, network or processes. "
+                  "Use an OS sandbox or a VM for untrusted code.",
+                  "Windows");
+    }
 
     payload["backend"] = "home-redirect";
     stream.emit(DataEvent{"subos_entering", payload.dump()});
@@ -1070,25 +1165,7 @@ export int enter(const std::string& name, EventStream& stream,
     platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "\\.local\\share");
     platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "\\.cache");
 
-    // Windows: CreateProcess + WaitForSingleObject (same as use_spawn_shell)
-    constexpr const char* shells[] = { "pwsh.exe", "powershell.exe", "cmd.exe" };
-    for (auto* exe : shells) {
-        STARTUPINFOA si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        std::string cmdline = exe;
-        if (::CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr,
-                             TRUE, 0, nullptr, nullptr, &si, &pi)) {
-            ::WaitForSingleObject(pi.hProcess, INFINITE);
-            DWORD exitCode = 0;
-            ::GetExitCodeProcess(pi.hProcess, &exitCode);
-            ::CloseHandle(pi.hThread);
-            ::CloseHandle(pi.hProcess);
-            return static_cast<int>(exitCode);
-        }
-    }
-    log::error("could not launch any shell on Windows");
-    return 127;
+    return platform::run_shell(cmd, cmd.empty());
 #endif
 }
 

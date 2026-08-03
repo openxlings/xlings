@@ -9,7 +9,7 @@ package = {
     licenses = {"MIT"},
     type = "package",
     repo = "https://example.com/bdtool",
-    archs = {"x86_64"},
+    archs = {"x86_64", "aarch64"},
     xvm_enable = true,
 
     xpm = {

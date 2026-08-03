@@ -148,6 +148,14 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\tools\windows_release.ps1"
 
+      - name: SubOS sandbox command contract
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE\tests\e2e\subos_cmd_contract_test.ps1"'
+
+      - name: Fresh XLINGS_HOME first install
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE\tests\e2e\fresh_xlings_home_install_test.ps1"'
+
       - name: "E2E-01: Bootstrap Home (portable + installed)"
         shell: pwsh
         run: |
@@ -159,6 +167,13 @@ jobs:
           $zip = Get-ChildItem "build\xlings-*-windows-x86_64.zip" | Select-Object -First 1
           if (-not $zip) { throw "No release zip found" }
           Copy-Item $zip.FullName "build\release.zip"
+
+      - name: Candidate cold-home lifecycle
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 "build\release.zip").Hash.ToLowerInvariant()
+          "$hash  release.zip" | Set-Content "build\release.zip.sha256"
+          & "$env:GITHUB_WORKSPACE\tests\candidate-install\smoke.ps1" -Archive "build\release.zip" -Sidecar "build\release.zip.sha256"
 
       # ── Phase 3: E2E Tests ─────────────────────────────────────
 
@@ -174,24 +189,8 @@ jobs:
 
       - name: "E2E-03: Quick Install Smoke"
         shell: pwsh
-        continue-on-error: true
         run: |
-          Remove-Item Env:XLINGS_HOME -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$env:USERPROFILE\.xlings" -ErrorAction SilentlyContinue
-          Write-Host "=== Running quick install script ==="
-          irm https://raw.githubusercontent.com/openxlings/xlings/refs/heads/main/tools/other/quick_install.ps1 | iex
-          $env:Path = "$env:USERPROFILE\.xlings\subos\current\bin;$env:Path"
-          $atSubos = Test-Path "$env:USERPROFILE\.xlings\subos\current\bin\xlings.exe"
-          if (-not $atSubos) { throw "xlings not installed at .xlings\subos\current\bin" }
-          Write-Host "=== Verify quick install ==="
-          xlings -h
-          xlings config
-          xlings --version
-          $searchOut = (xlings search d 2>&1) | Out-String
-          Write-Host $searchOut
-          if ($searchOut -match "(?i)invalid task:\s*xim") { throw "FAIL: quick install search hit invalid task: xim" }
-          Write-Host "=== Cleanup quick install test ==="
-          Remove-Item -Recurse -Force "$env:USERPROFILE\.xlings" -ErrorAction SilentlyContinue
+          & "$env:GITHUB_WORKSPACE\tests\scripts\test_quick_install.ps1"
 
       - name: "E2E-04: Release Subos + d2x"
         shell: pwsh
