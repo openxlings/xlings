@@ -35,9 +35,13 @@ export bool is_builtin_shim(std::string_view name);
 export bool is_bootstrap_home_root(const fs::path& root);
 export fs::path xlings_binary_in_home(const fs::path& home_dir);
 export LinkResult create_shim(const fs::path& source, const fs::path& target);
-export void ensure_subos_shims(const fs::path& target_bin_dir,
-                               const fs::path& shim_src,
-                               const fs::path& pkg_root);
+// Returns how many shims could not be created. NOT void: every result used to
+// be discarded, so a shim that failed -- which on Windows is what a locked
+// `xlings.exe` produces -- left the caller reporting success over a repair that
+// did not happen (issue #473: "healed 3", then the same broken state).
+export std::size_t ensure_subos_shims(const fs::path& target_bin_dir,
+                                      const fs::path& shim_src,
+                                      const fs::path& pkg_root);
 export bool ensure_home_layout(const fs::path& home_dir);
 
 bool is_builtin_shim(std::string_view name) {
@@ -75,12 +79,22 @@ LinkResult create_shim(const fs::path& source, const fs::path& target) {
 
     if (!fs::exists(source, ec)) return LinkResult::Failed;
 
-    // Remove existing target (file or symlink)
-    if (fs::exists(target, ec) || fs::is_symlink(target, ec)) {
-        ec.clear();
-        fs::remove(target, ec);
-        ec.clear();
+    // Free the target path. `fs::remove` alone is not enough on Windows: it
+    // cannot delete a running executable, and the shim being rewritten here is
+    // frequently `xlings.exe` itself during `self update`. The failure was
+    // discarded, so the code went on to hard-link and copy over a path that
+    // was still occupied and reported "failed to create shim ... the process
+    // cannot access the file because it is being used by another process"
+    // (issue #473) -- with the update half-applied.
+    //
+    // displace_locked_file renames the occupant aside on Windows, which works
+    // on a running image, and is a plain unlink on POSIX.
+    if (!platform::displace_locked_file(target)) {
+        log::error("[xlings:self]: cannot free shim path {} "
+                   "(a process is holding it open)", target.string());
+        return LinkResult::Failed;
     }
+    ec.clear();
 
 #if !defined(_WIN32)
     // Unix: prefer relative symlink
@@ -110,16 +124,17 @@ LinkResult create_shim(const fs::path& source, const fs::path& target) {
     return LinkResult::Failed;
 }
 
-void ensure_subos_shims(const fs::path& target_bin_dir,
-                        const fs::path& shim_src,
-                        const fs::path& pkg_root) {
-    if (!fs::exists(shim_src)) return;
+std::size_t ensure_subos_shims(const fs::path& target_bin_dir,
+                               const fs::path& shim_src,
+                               const fs::path& pkg_root) {
+    if (!fs::exists(shim_src)) return 0;
 
     std::string ext = shim_src.extension().string();
+    std::size_t failures = 0;
 
     for (auto name : SHIM_NAMES_BASE) {
         auto dst = target_bin_dir / (std::string(name) + ext);
-        create_shim(shim_src, dst);
+        if (create_shim(shim_src, dst) == LinkResult::Failed) ++failures;
     }
 
     if (!pkg_root.empty()) {
@@ -128,7 +143,7 @@ void ensure_subos_shims(const fs::path& target_bin_dir,
             auto opt_bin = bin_dir / (std::string(name) + ext);
             if (fs::exists(opt_bin)) {
                 auto dst = target_bin_dir / (std::string(name) + ext);
-                create_shim(shim_src, dst);
+                if (create_shim(shim_src, dst) == LinkResult::Failed) ++failures;
             }
         }
     }
@@ -137,6 +152,7 @@ void ensure_subos_shims(const fs::path& target_bin_dir,
     compat::v0_4_8::cleanup_legacy_alias_shims(target_bin_dir, shim_src);
 
     platform::make_files_executable(target_bin_dir);
+    return failures;
 }
 
 static void ensure_parent_dirs_(const fs::path& file) {
@@ -289,7 +305,18 @@ bool ensure_home_layout(const fs::path& home_dir) {
     ensure_home_config_defaults_(home_dir);
 
     auto xlings_bin = xlings_binary_in_home(home_dir);
-    if (!xlings_bin.empty()) ensure_subos_shims(default_subos / "bin", xlings_bin, home_dir);
+    if (!xlings_bin.empty()) {
+        // A home whose shims could not be written is not a laid-out home. It
+        // used to report success anyway, which is how a failed Windows update
+        // produced "healed" alongside the state that made it fail.
+        if (auto failures = ensure_subos_shims(default_subos / "bin",
+                                               xlings_bin, home_dir);
+            failures != 0) {
+            log::error("[xlings:self]: {} shim(s) could not be written into {}",
+                       failures, (default_subos / "bin").string());
+            return false;
+        }
+    }
 
     return true;
 }

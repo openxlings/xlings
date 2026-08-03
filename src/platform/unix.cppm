@@ -243,6 +243,20 @@ namespace platform_impl {
     //   3. rename(tmp, dst) — atomic
     //
     // Returns true on success.
+    // Free a path so something new can be written there. POSIX unlinks by
+    // name, so a running executable's path is released immediately and the
+    // process keeps its inode -- no displacement needed. Present so callers
+    // do not have to know which platform they are on.
+    export bool displace_locked_file(const std::filesystem::path& path) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (!fs::exists(path, ec) && !fs::is_symlink(path, ec)) return true;
+        ec.clear();
+        fs::remove(path, ec);
+        ec.clear();
+        return !fs::exists(path, ec) && !fs::is_symlink(path, ec);
+    }
+
     export bool atomic_replace_executable(const std::filesystem::path& src,
                                           const std::filesystem::path& dst) {
         namespace fs = std::filesystem;

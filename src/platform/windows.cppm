@@ -407,6 +407,54 @@ namespace platform_impl {
         return true;
     }
 
+    // Free a path that another process may be holding open, so something new
+    // can be written there.
+    //
+    // On Windows you cannot delete or overwrite a running executable, but you
+    // CAN rename it: the open file object follows the name, the running
+    // process is unaffected, and the original path becomes free immediately.
+    // `xlings self update` needs exactly this -- the shim it has to rewrite is
+    // the .exe currently executing it, and a plain remove-then-copy fails with
+    // "the process cannot access the file because it is being used by another
+    // process" (issue #473).
+    //
+    // Returns true when the path is free afterwards.
+    export bool displace_locked_file(const std::filesystem::path& path) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (!fs::exists(path, ec) && !fs::is_symlink(path, ec)) return true;
+        ec.clear();
+
+        fs::remove(path, ec);
+        if (!ec && !fs::exists(path, ec)) return true;
+        ec.clear();
+
+        // Still there: it is open somewhere. Rename it aside. A distinct
+        // suffix per attempt so a home that has been updated repeatedly, with
+        // earlier casualties still mapped, does not collide with itself.
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            auto aside = path;
+            aside += attempt == 0
+                ? std::string(".xlings.old")
+                : ".xlings.old" + std::to_string(attempt);
+            if (fs::exists(aside, ec)) {
+                ec.clear();
+                if (!::DeleteFileW(aside.wstring().c_str())) continue;
+            }
+            ec.clear();
+            if (::MoveFileExW(path.wstring().c_str(), aside.wstring().c_str(),
+                              MOVEFILE_REPLACE_EXISTING)) {
+                // The displaced copy is still mapped by the running process,
+                // so it cannot be deleted now. Let the OS drop it at reboot
+                // rather than leaving it to accumulate forever.
+                ::MoveFileExW(aside.wstring().c_str(), nullptr,
+                              MOVEFILE_DELAY_UNTIL_REBOOT);
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Windows has no single-call directory swap; report unsupported so the
     // caller uses its portable manual-swap fallback. (Symmetry with the POSIX
     // atomic_swap_paths used by the index-artifact installer.)

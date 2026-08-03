@@ -220,7 +220,10 @@ export int create(const std::string& name, const fs::path& customDir,
     if (!fs::exists(xlingsBin))
         xlingsBin = p.homeDir / "bin" / "xlings";
     if (fs::exists(xlingsBin)) {
-        xself::ensure_subos_shims(dir / "bin", xlingsBin, p.homeDir);
+        if (xself::ensure_subos_shims(dir / "bin", xlingsBin, p.homeDir) != 0) {
+            log::warn("some shims could not be written into {}; commands may "
+                      "not resolve inside this subos", (dir / "bin").string());
+        }
     }
 
     // Everything above this point -- mkfs.ext4 for image storage in
@@ -531,7 +534,10 @@ export int new_from(const std::string& name, const fs::path& customDir,
     if (!fs::exists(xlingsBin))
         xlingsBin = p.homeDir / "bin" / "xlings";
     if (fs::exists(xlingsBin)) {
-        xself::ensure_subos_shims(dstDir / "bin", xlingsBin, p.homeDir);
+        if (xself::ensure_subos_shims(dstDir / "bin", xlingsBin, p.homeDir) != 0) {
+            log::warn("some shims could not be written into {}; commands may "
+                      "not resolve inside this subos", (dstDir / "bin").string());
+        }
     }
 
     nlohmann::json payload;

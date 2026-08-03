@@ -25,6 +25,30 @@ try {
   if (-not (Test-Path $installed)) { throw "installed candidate missing" }
   & $installed self doctor
   if ($LASTEXITCODE -ne 0) { throw "self doctor failed" }
+
+  # Re-install THROUGH the installed binary, so the shim being rewritten is the
+  # running image. Windows cannot delete a running executable; the code used to
+  # discard the failed delete and then hard-link and copy over an occupied path,
+  # reporting "failed to create shim ... the process cannot access the file
+  # because it is being used by another process" with the update half applied.
+  # That is issue #473, and it is the shape `xlings self update` hits every time.
+  #
+  # No synthetic file lock: a handle opened with FileShare::Read blocks the
+  # rename too, which a real running image does not, so it would fail this even
+  # when the fix is correct. Running the binary is the only faithful version.
+  Push-Location $bin.Directory.Parent.FullName
+  try { $selfUpdate = & $installed self install 2>&1 | Out-String } finally { Pop-Location }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host $selfUpdate
+    throw "self install over the running binary failed (issue #473)"
+  }
+  if ($selfUpdate -match 'failed to create shim|cannot free shim path') {
+    Write-Host $selfUpdate
+    throw "shim rewrite reported a locked path while replacing the running binary"
+  }
+  if (-not (Test-Path $installed)) { throw "the running binary was displaced without a replacement" }
+  & $installed --version | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "the replaced binary does not run" }
   $fixture = Join-Path $repoRoot "tests\candidate-install\candidate-helper.lua"
   & $installed config --add-xpkg $fixture
   if ($LASTEXITCODE -ne 0) { throw "fixture import failed" }
@@ -66,3 +90,9 @@ try {
   & $installed subos remove candidate-probe
   if ($LASTEXITCODE -ne 0) { throw "subos remove failed" }
 } finally { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
+
+# This script checks exit codes it expects to be non-zero (`-ne 37`), so land
+# an explicit success rather than leaving whatever $LASTEXITCODE happens to
+# hold: `pwsh -command ". script.ps1"` returns it as the step's exit code, and
+# the job then goes red with a passing test in the log above it.
+exit 0

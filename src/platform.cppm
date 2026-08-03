@@ -53,6 +53,7 @@ namespace platform {
     export using platform_impl::ProcessHandle;
     export using platform_impl::spawn_command;
     export using platform_impl::wait_or_kill;
+    export using platform_impl::displace_locked_file;
     export using platform_impl::atomic_replace_executable;
     export using platform_impl::atomic_swap_paths;
     export using platform_impl::FileLock;

@@ -34,6 +34,14 @@ installed="$candidate_home/bin/xlings"
 test -x "$installed"
 run_candidate "$installed" self doctor
 
+# Re-install THROUGH the installed binary, so the shim being rewritten is the
+# running image. POSIX unlinks by name so this has always worked here, but the
+# shim path is shared with Windows -- where it did not (issue #473) -- and a
+# contract only one platform checks is one the other can quietly lose.
+(cd "$package_root" && run_candidate "$installed" self install)
+test -x "$installed"
+run_candidate "$installed" --version >/dev/null
+
 # Offline package lifecycle from a working-tree recipe. This exercises the
 # candidate's catalog import, install, activation/list and remove paths rather
 # than merely executing the portable binary from the archive. Derive a unique
