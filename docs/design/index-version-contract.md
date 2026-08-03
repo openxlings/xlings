@@ -138,6 +138,9 @@ xlings 提供参考实现：`tools/merge_index_pointer.py`（可直接复用，�
 候选为空 → 报错并列出可选集，且不动本地已有索引树
 ```
 
+- `xlings index list` 区分两件事：`*` 是**磁盘上的那棵树**（客户端此刻真正在读的），
+  `>` 是**下次 `update` 会取的那个**。指针移动后、`update` 之前二者不同，
+  `--json` 里对应 `installed` 与 `current` 两个字段。排查"我的包怎么没了"时看 `installed`。
 - 用户可用 `xlings index use <name> <version>` 钉住某个快照；钉子**绕过契约检查**
   （用户明确要求），但**不绕过 sha256 校验**。
 - 钉到 `history` 之外的版本 → 报错，不回退到最新。

@@ -7,6 +7,7 @@ import xlings.core.home_config;
 import xlings.core.log;
 import xlings.core.version_order;
 import xlings.core.xim.indexfetch;
+import xlings.platform;
 import xlings.runtime;
 
 // `xlings index` — see which index snapshots exist and choose between them.
@@ -25,9 +26,25 @@ struct IndexSourceView {
     bool        hasPointer = false;
     std::string error;                  // set when the pointer could not be read
     std::vector<IndexSnapshot> snapshots;
-    std::string current;                // index_version this client would use
+    std::string current;                // index_version this client would pick NOW
+    std::string installed;              // index_version actually on disk
     bool        truncated = false;
 };
+
+// What the local index tree says it is, from the marker written at swap time.
+// Empty when the index was never fetched as an artifact (git-managed, or not
+// fetched at all) -- absent is a real answer here, not a failure.
+std::string installed_index_version(const std::filesystem::path& repoDir) {
+    std::error_code ec;
+    auto marker = repoDir / ".xlings-index-version";
+    if (!std::filesystem::exists(marker, ec)) return {};
+    try {
+        auto v = platform::read_file_to_string(marker.string());
+        while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' '))
+            v.pop_back();
+        return v;
+    } catch (...) { return {}; }
+}
 
 // Read every configured index source and resolve what this client would pick.
 // Never throws and never fails the command: a source whose pointer cannot be
@@ -39,6 +56,7 @@ std::vector<IndexSourceView> collect_index_sources() {
         IndexSourceView view;
         view.name = repo.name;
         view.pin  = repo.version;
+        view.installed = installed_index_version(Config::repo_dir_for(repo, false));
 
         auto source = artifact_source_for(repo);
         const auto& pointers = load_index_pointers(Config::mirror(),
@@ -72,6 +90,10 @@ nlohmann::json index_sources_json(const std::vector<IndexSourceView>& views) {
         entry["name"]      = view.name;
         entry["pinned"]    = view.pin;
         entry["current"]   = view.current;
+        // What is on disk, which is not the same question as what would be
+        // picked: between a pointer moving and the next `update`, the two differ
+        // and only this one describes the tree the client is actually reading.
+        entry["installed"] = view.installed;
         entry["truncated"] = view.truncated;
         if (!view.error.empty()) entry["error"] = view.error;
         entry["snapshots"] = nlohmann::json::array();
@@ -80,6 +102,8 @@ nlohmann::json index_sources_json(const std::vector<IndexSourceView>& views) {
             row["index_version"] = s.index_version;
             row["generated_at"]  = s.generated_at;
             row["current"]       = s.index_version == view.current;
+            row["installed"]     = !view.installed.empty()
+                                   && s.index_version == view.installed;
             // Verbatim. Normalising here would make xlings an interpreter of
             // contracts it does not own.
             row["requires"]      = s.requirements;
@@ -124,14 +148,27 @@ int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream) 
                 if (!req->max.empty()) note += (note.empty() ? "" : " ") + std::string("< ") + req->max;
                 note = "  requires xlings " + note;
             }
+            // `*` is the tree on disk -- the packages this client resolves
+            // against right now. `>` is what the next `update` would fetch.
+            // They differ whenever the pointer moved since the last update, and
+            // reporting only the second would answer a question the user did
+            // not ask while looking like it answered theirs.
+            const bool onDisk = !view.installed.empty()
+                                && s.index_version == view.installed;
             log::println("    {} {}{}{}",
-                         s.index_version == view.current ? "*" : " ",
+                         onDisk ? "*" : (s.index_version == view.current ? ">" : " "),
                          s.index_version,
                          s.generated_at.empty() ? "" : "  " + s.generated_at,
                          note);
         }
         if (view.truncated) {
             log::println("      … older snapshots exist but are not listed");
+        }
+        if (view.installed.empty()) {
+            log::println("      (no index on disk yet — run `xlings update`)");
+        } else if (!view.current.empty() && view.current != view.installed) {
+            log::println("      on disk: {} — run `xlings update` to move to {}",
+                         view.installed, view.current);
         }
     }
     log::println("");
