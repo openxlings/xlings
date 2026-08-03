@@ -14,6 +14,7 @@ import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.log;
 import xlings.platform;
+import xlings.platform.target;
 import xlings.core.config;
 import xlings.libs.json;
 import xlings.core.common;
@@ -939,23 +940,11 @@ bool is_archive_(const std::filesystem::path& path) {
         || filename.ends_with(".zip");
 }
 
+// The per-OS arch token used in release asset names. One definition, in
+// platform::Target, because every copy of this `#if` chain is a place the
+// build ABI and the machine's architecture can be confused for each other.
 std::string detect_arch_() {
-#if defined(__aarch64__) || defined(_M_ARM64)
-    // Per-OS arch token, matching LLVM's release naming: Linux/Windows use the
-    // GNU/uname-m spelling `aarch64` (consistent with the aarch64-linux-*
-    // toolchain triples), while Apple uses its own `arm64`.
-  #if defined(__APPLE__)
-    return "arm64";
-  #else
-    return "aarch64";
-  #endif
-#elif defined(__x86_64__) || defined(_M_X64)
-    return "x86_64";
-#elif defined(__i386__) || defined(_M_IX86)
-    return "x86";
-#else
-    return "unknown";
-#endif
+    return std::string(xlings::platform::build_arch());
 }
 
 std::string default_res_server_() {

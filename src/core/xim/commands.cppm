@@ -19,6 +19,7 @@ import xlings.runtime;
 import xlings.libs.json;
 import xlings.core.i18n;
 import xlings.platform;
+import xlings.platform.target;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
@@ -75,15 +76,7 @@ PackageCatalog& get_catalog() {
 }
 
 std::string detect_platform() {
-    #if defined(__linux__)
-        return "linux";
-    #elif defined(__APPLE__)
-        return "macosx";
-    #elif defined(_WIN32)
-        return "windows";
-    #else
-        return "unknown";
-    #endif
+    return std::string(xlings::platform::build_os());
 }
 
 // Forward declaration for deferred install request processing
@@ -127,6 +120,19 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     if (!stateLock) {
         log::error("{}", stateLock.error());
         return 1;
+    }
+
+    // An emulated build installs emulated packages -- correctly, since they
+    // have to match this process's ABI, and slowly, since every one of them
+    // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
+    // decide to switch, and cannot decide if nobody says it. Said at install
+    // time because that is when the cost is being incurred.
+    if (platform::is_emulated()) {
+        log::warn("this xlings is a {} build running on {} hardware; packages "
+                  "will match the build, not the machine. A native {} release "
+                  "avoids the emulation.",
+                  platform::build().arch, platform::host().arch,
+                  platform::host().str());
     }
     Config::reload_state();
 
@@ -576,6 +582,19 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
     if (!stateLock) {
         log::error("{}", stateLock.error());
         return 1;
+    }
+
+    // An emulated build installs emulated packages -- correctly, since they
+    // have to match this process's ABI, and slowly, since every one of them
+    // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
+    // decide to switch, and cannot decide if nobody says it. Said at install
+    // time because that is when the cost is being incurred.
+    if (platform::is_emulated()) {
+        log::warn("this xlings is a {} build running on {} hardware; packages "
+                  "will match the build, not the machine. A native {} release "
+                  "avoids the emulation.",
+                  platform::build().arch, platform::host().arch,
+                  platform::host().str());
     }
     Config::reload_state();
 

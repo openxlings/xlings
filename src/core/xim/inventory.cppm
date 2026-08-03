@@ -10,6 +10,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.types;
 import xlings.platform;
+import xlings.platform.target;
 
 // What is installed, taken from the records that decide it.
 //
@@ -282,13 +283,7 @@ std::vector<InstalledPackageRecord> assemble_inventory(
 }  // namespace detail
 
 constexpr std::string_view inventory_platform() {
-#if defined(_WIN32)
-    return "windows";
-#elif defined(__APPLE__)
-    return "macosx";
-#else
-    return "linux";
-#endif
+    return platform::build_os();
 }
 
 // `allSubos` widens which workspaces are read. `includePayloadOnly` decides

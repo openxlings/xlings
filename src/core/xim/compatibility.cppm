@@ -2,6 +2,7 @@ export module xlings.core.xim.compatibility;
 
 import std;
 import mcpplibs.xpkg;
+import xlings.platform.target;
 
 // Whether a package can be installed on this OS and architecture.
 //
@@ -55,16 +56,12 @@ struct TargetCompatibility {
     std::string advisory;
 };
 
+// The architecture PACKAGES must match: this process's ABI, not the machine's.
+// An x86_64 build running under Rosetta has to install x86_64 artifacts,
+// because those are what it can link against and exec. Kept under the old name
+// so callers do not all move at once; `platform::Target` documents the split.
 std::string host_architecture() {
-#if defined(__aarch64__) || defined(_M_ARM64)
-    return "aarch64";
-#elif defined(__x86_64__) || defined(_M_X64)
-    return "x86_64";
-#elif defined(__i386__) || defined(_M_IX86)
-    return "x86";
-#else
-    return "unknown";
-#endif
+    return std::string(platform::build_arch());
 }
 
 // The `xpm[os][version]` resource, with version aliases (`ref`) followed.
