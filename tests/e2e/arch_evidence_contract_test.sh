@@ -107,4 +107,39 @@ grep -q "E_UNSUPPORTED_TARGET.*$host_arch" <<<"$strong" \
 ! grep -Eq '"(GET|HEAD) ' "$request_log" \
   || fail "a refused target still issued download requests"
 
+# --- the same weak signal DOES stop an install nobody asked for -------------
+#
+# `--sandbox` fetches a backend implicitly. Being wrong to skip costs a skipped
+# auto-install that `xlings install bwrap` still overrides; being wrong to try
+# costs every `--sandbox` on the arch a 404 and ~45s of waiting, and a
+# diagnostic that blames the installer instead of naming the target. So the
+# weak signal is enough HERE and not enough above, and the difference is who
+# asked. Both halves are asserted in this file so the asymmetry is deliberate
+# rather than an accident of two tests that never met.
+if [[ "$(uname -s)" == Linux ]]; then
+  for backend in bwrap proot; do
+    cat > "$index/pkgs/${backend:0:1}/${backend}.lua" <<LUA
+package = { spec="1", name="$backend", type="package",
+  archs={"$foreign_arch"}, programs={"$backend"},
+  xpm={linux={ ["1.0.0"]={ url="http://127.0.0.1:$port/$backend.tar.gz" } }} }
+import("xim.libxpkg.pkginfo")
+function install() return true end
+LUA
+  done
+  rm -f "$index/.xlings-index-cache.json"
+
+  run subos new ev-probe >/dev/null
+  set +e
+  sandbox=$(run subos use ev-probe --sandbox --cmd 'exit 37' 2>&1)
+  status=$?
+  set -e
+  [[ $status -ne 0 ]] || fail "an unavailable sandbox backend was not refused: $sandbox"
+  grep -q "E_UNSUPPORTED_TARGET.*$host_arch" <<<"$sandbox" \
+    || fail "the backend refusal was not causal: $sandbox"
+  ! grep -q 'failed to install sandbox backend' <<<"$sandbox" \
+    || fail "the backend install was attempted despite the index saying no: $sandbox"
+  ! grep -Eq '"(GET|HEAD) ' "$request_log" \
+    || fail "a declined backend still issued download requests"
+fi
+
 echo "arch evidence contracts: ok ($host_arch host, $foreign_arch fixtures)"

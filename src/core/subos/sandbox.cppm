@@ -680,53 +680,51 @@ detect_backend_(const fs::path& home_dir,
     return std::nullopt;
 }
 
-// What the on-disk index says about running a sandbox backend on this host.
-// No network access: this is read before any install is attempted, and again
-// to explain one that failed.
-struct BackendTargetVerdict {
-    // Set only when a backend's recipe ENUMERATES the architectures it ships
-    // and does not list this one. That is a fact about artifacts, so it is
-    // worth refusing on, before any request is made.
-    std::optional<std::string> refusal;
-    // Set when the only signal is a package-level `archs` union that does not
-    // cover this host. Not enough to refuse -- that union went unenforced for
-    // the whole of spec V1 and is routinely under-declared -- but exactly what
-    // the user needs to read when the install does fail.
-    std::string hint;
-};
-
-BackendTargetVerdict backend_target_verdict_() {
-    BackendTargetVerdict verdict;
+// Should we even try to fetch a sandbox backend for this host? Answered from
+// the on-disk index, with no network access.
+//
+// The evidence rule here is deliberately stricter than the one `xlings
+// install` uses, and the difference is who asked. A package-level `archs`
+// union is weak evidence -- it went unenforced for all of spec V1 and is
+// routinely under-declared -- so it must never veto an install the USER named:
+// being wrong there means refusing a package that works, and the user has no
+// way around it.
+//
+// This install is one nobody asked for. `--sandbox` triggers it implicitly,
+// and being wrong costs only a skipped auto-install that
+// `xlings install bwrap` still overrides. Being wrong the other way costs
+// every `--sandbox` invocation on the arch a download that 404s, ~45s of
+// waiting, and a diagnostic that blames the installer rather than naming the
+// target. So a weak signal is enough to decline here.
+//
+// What it is NOT is a compile-time `#if defined(__aarch64__)`, which is what
+// this replaced: that freezes a claim about the package index into the binary,
+// so the day an aarch64 backend is published every client in the field still
+// refuses. This is re-read from the index on every call.
+std::optional<std::string> backend_target_unavailable_() {
     auto& catalog = xim::get_catalog();
-    if (!catalog.is_loaded()) return verdict;
+    if (!catalog.is_loaded()) return std::nullopt;
 
     const auto hostArch = xim::host_architecture();
-    bool allStrongUnsupported = true;
-    bool anyUndeclared = false;
     std::string target;
     for (const auto* name : {"bwrap", "proot"}) {
         auto match = catalog.resolve_target(name, "linux");
-        if (!match) return verdict;               // cannot say -> let it try
+        if (!match) return std::nullopt;          // cannot say -> let it try
         auto pkg = catalog.load_package(*match);
-        if (!pkg) return verdict;
+        if (!pkg) return std::nullopt;
         const auto* entry = xim::find_entry(*pkg, "linux", match->version);
         const auto compatibility = xim::check_target_compatibility(
             *pkg, entry, "linux", hostArch);
         target = compatibility.target;
-        if (compatibility.supported) allStrongUnsupported = false;
-        if (!compatibility.advisory.empty()) anyUndeclared = true;
+        // Supported AND not merely "we could not tell": an advisory means the
+        // recipe does not claim this arch, which is as much as an
+        // auto-install needs to hear.
+        if (compatibility.supported && compatibility.advisory.empty()) {
+            return std::nullopt;
+        }
     }
-    if (allStrongUnsupported) {
-        verdict.refusal = std::format(
-            "E_UNSUPPORTED_TARGET: no sandbox backend has a {} artifact",
-            target);
-    } else if (anyUndeclared) {
-        verdict.hint = std::format(
-            "no backend recipe declares a {} artifact; install your "
-            "distribution's bubblewrap package, or use shell isolation",
-            target);
-    }
-    return verdict;
+    return std::format(
+        "E_UNSUPPORTED_TARGET: no sandbox backend has a {} artifact", target);
 }
 
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
@@ -968,29 +966,24 @@ export int enter(const std::string& name, EventStream& stream,
             // the day xim-pkgindex publishes an aarch64 bwrap, every client
             // already in the field would still refuse. Reading the on-disk
             // index costs nothing and is right both before and after that day.
-            const auto verdict = backend_target_verdict_();
-            if (verdict.refusal) {
+            if (auto unavailable = backend_target_unavailable_(); unavailable) {
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::InvalidInput,
-                    .message = *verdict.refusal,
+                    .message = *unavailable,
                     .recoverable = false,
-                    .hint = "use shell isolation, or install a supported backend manually",
+                    .hint = "use shell isolation, install your distribution's "
+                            "bubblewrap package, or `xlings install bwrap` to "
+                            "try anyway",
                 });
                 return 1;
             }
             auto rc = auto_install_backend_(p.homeDir, stream);
             if (rc != 0) {
-                // When the index gave a weak signal that this host is not
-                // covered, say so here rather than pre-emptively above: the
-                // signal is not strong enough to refuse on, but it is exactly
-                // the reason the install just failed.
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::NotFound,
                     .message = "failed to install sandbox backend",
                     .recoverable = false,
-                    .hint = verdict.hint.empty()
-                        ? "manually: xlings install bwrap (or: xlings install proot)"
-                        : verdict.hint,
+                    .hint = "manually: xlings install bwrap (or: xlings install proot)",
                 });
                 return 1;
             }
