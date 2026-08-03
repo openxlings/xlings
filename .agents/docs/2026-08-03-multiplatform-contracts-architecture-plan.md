@@ -633,6 +633,77 @@ metadata = catalog.lookup_many(distinct_store_names(records))               // O
 
 ---
 
+## 7.5 实施记录 —— 已落地内容与三处对本方案的修正
+
+**PR**: [#474](https://github.com/openxlings/xlings/pull/474)（`feat/multiplatform-contracts-hardening`，
+基线 `636e0d4` = #472 head），版本 `2026.8.3.1`。10 个 commit，全部批次已实现。
+
+**验证**：`mcpp test` 32 passed / 0 failed；Linux E2E **61 passed / 0 failed /
+0 soft-failed**（新增 E2E-57 进程模型、E2E-58 arch 证据）；全部 contract 脚本绿；
+本地 musl release 构建 + candidate 冷家门禁 exit 0。
+
+**每一条新测试都验证了可证伪性**（先让它红，再让它绿）：
+
+| 测试 | 反证方式 | 反证结果 |
+|---|---|---|
+| `test_cli_spec_parity.py` | 直接跑在 #472 上 | **28 个拼写失败** |
+| `subos_use_process_model_test.sh` | 把 `exec_replace` 换回 fork+wait | `xlings pid 2396502, shell pid 2396503` |
+| `arch_evidence_contract_test.sh` | Weak 分支改回 `supported = declared` | `E_UNSUPPORTED_TARGET` |
+| `test_quick_install.sh` | 删掉 `verify_sidecar` 调用 | 篡改 sidecar 被接受 |
+| `test_release_resource_contract.py` | 生成器改回记录路径 | `sha256sum -c` 失败 |
+
+---
+
+### 修正 1：P2-1 的性能收益被本方案高估了
+
+方案 §5.1 断言 inventory 反转能显著改善 `list`/`info`。**实测不成立**：
+
+| 场景 | base (#472) | 本 PR |
+|---|---|---|
+| 1 个已装包的家：`info` | 0.04s | **0.01s** |
+| 159 个已装包的家：`list` | 1.78s | 1.68s |
+| 159 个已装包的家：`info` | 3.27s | 3.18s |
+
+原因是我判错了热点。全索引二次 `load_package` 只有约 0.3ms/配方（157 个 ≈ 50ms），
+真正的开销是**每条已装记录的 payload 探测**，两个方向都要付。所以收益与
+(索引规模 − 已装数量) 成正比：普通用户的家（<20 包）明显受益，我的开发机
+（159 装 / 157 索引）几乎没有差别。
+
+改动仍然值得做，但理由要换成方案里没写清的那三条**正确性**缺陷：
+project 作用域 storeRoot 被硬编码成全局（每个 project 包都误报
+`degraded: payload missing`）、payload-only 的可见性被错误绑定到 `--all`、
+以及 `--all` 采集了 subos 归属却从不渲染。`info` 不再与索引规模成正比是
+架构收益，不是性能收益。
+
+### 修正 2：sandbox 后端的判定，弱证据不应该抢答
+
+方案 §2.1 说把 `#if defined(__aarch64__)` 换成"运行期查索引后拒绝"。实现时发现
+索引里 `bwrap`/`proot` 给出的恰恰是 **Weak 证据**（`archs = {"x86_64"}` +
+`XLINGS_RES` 字符串），而 A3 主线的规则是弱证据只能告警。两者冲突。
+
+按主线判决：**只有 Strong 证据才预先拒绝**；弱证据不再抢答，而是在安装失败后
+用来解释失败（"没有后端配方声明 linux-aarch64 产物，请装发行版的 bubblewrap"）。
+代价是不支持的主机会多发一次 404 请求；收益是索引一旦发布 aarch64 后端，
+已在用户手上的客户端立刻可用。这比"冻结在二进制里的否定"更接近事实。
+
+### 修正 3：发布门禁的 sandbox 步骤降级为软失败
+
+方案 §5.2 说"改用预置 backend"。实现时选了**重试 3 次 + 明确告警后跳过**：
+这一步是整个 smoke 脚本里唯一触达第三方镜像的动作，而这些 job 现在是
+`create-release` 的 `needs`。其余每一步保持硬失败，同一条路径在 PR workflow 的
+E2E-25 里仍是硬性覆盖 —— 那里红一次的代价是重跑，不是挡住发布。
+
+### 一处工程教训（与方案无关，但值得记下）
+
+做 base/new 性能对比时用了 `git checkout HEAD -- src/`，把当时**尚未 commit 的
+P2-1 全部改动丢掉了**。mcpp 的 target 指纹目录在两次构建间会复用，导致
+"最新 mtime 的二进制"一度指向 base 构建 —— 与
+`reference_mcpp_fingerprint_stale_binary` 记录的是同一个坑。此后所有 base/new
+对比都改为：先把两个二进制各自 `cp` 到独立目录下的 `bin/xlings`（文件名必须是
+`xlings`，否则 argv[0] 分发会改变行为），再用一条行为探针确认哪个是哪个。
+
+---
+
 ## 8. 一句话
 
 > PR #472 把"契约"写成了文本，然后让测试去读那份文本。**把每一处契约换成一个可以被执行、
