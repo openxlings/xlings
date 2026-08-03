@@ -140,3 +140,11 @@ try {
     if ($serveJob) { Remove-Job -Job $serveJob -Force -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+
+# The last thing this script ran was an installer invocation that was SUPPOSED
+# to fail, so $LASTEXITCODE is 1. A `pwsh -command ". script.ps1"` step returns
+# that as its own exit code, which turns a passing test into a red job -- the
+# log then reads "ok" immediately above "Process completed with exit code 1".
+# Every PowerShell test here that exercises a failure path has to land its own
+# exit; test_release_candidate_gate.py checks that they all do.
+exit 0

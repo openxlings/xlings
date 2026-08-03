@@ -49,9 +49,30 @@ if "aarch64_compat_contract_test.sh" not in native_job:
     raise SystemExit("native aarch64 job does not run the runtime contract")
 if "prepare_fixture_index.sh" not in native_job:
     raise SystemExit("native aarch64 job does not prepare its package fixture")
-windows_contract = (root / "tests/e2e/subos_cmd_contract_test.ps1").read_text()
-if not windows_contract.rstrip().endswith("exit 0"):
-    raise SystemExit("Windows command contract leaks the expected exit 37")
+# A PowerShell test whose last native command is one it EXPECTED to fail leaves
+# $LASTEXITCODE non-zero, and `pwsh -command ". script.ps1"` hands that back as
+# the step's exit code -- so the job goes red with "ok" printed directly above
+# "Process completed with exit code 1". Each such script has to land its own
+# exit. This has now happened twice; the guard covers all of them rather than
+# the one that was noticed.
+for powershell_test in sorted((root / "tests").rglob("*.ps1")):
+    # tests/e2e/runtime/ holds leftover run artifacts, not tests -- including
+    # whole extracted xlings homes with their own .ps1 files.
+    if "runtime" in powershell_test.relative_to(root).parts:
+        continue
+    # Libraries are dot-sourced INTO a test; an `exit 0` there would end the
+    # caller mid-run, which is the opposite of the fix.
+    if powershell_test.stem.endswith("lib"):
+        continue
+    text = powershell_test.read_text()
+    expects_failure = any(marker in text for marker in (
+        "$LASTEXITCODE -ne 0", "-ne 37", "should fail", "must stop it",
+        "ExitCode -eq 0", "throw \"a "))
+    if expects_failure and not text.rstrip().endswith("exit 0"):
+        raise SystemExit(
+            f"{powershell_test.relative_to(root)} runs a command it expects to "
+            f"fail but does not end with `exit 0`; the leaked $LASTEXITCODE "
+            f"will fail the CI step even when the test passes")
 for powershell_test in (
     root / "tests/candidate-install/smoke.ps1",
     root / "tests/e2e/fresh_xlings_home_install_test.ps1",
