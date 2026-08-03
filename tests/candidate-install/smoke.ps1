@@ -46,6 +46,15 @@ try {
     Write-Host $selfUpdate
     throw "shim rewrite reported a locked path while replacing the running binary"
   }
+  # Positive evidence that the step ran, not merely that it did not throw.
+  # `self install` onto its own home takes the "already in target dir, fixing
+  # links" path -- which is the one that rewrites the running .exe's shim, and
+  # therefore the one under test. Without this assertion a silent no-op would
+  # look exactly like a pass.
+  if ($selfUpdate -notmatch 'fixing links|install:') {
+    Write-Host $selfUpdate
+    throw "self install over the running binary produced no evidence it ran"
+  }
   if (-not (Test-Path $installed)) { throw "the running binary was displaced without a replacement" }
   & $installed --version | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "the replaced binary does not run" }

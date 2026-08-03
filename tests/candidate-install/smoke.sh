@@ -38,7 +38,14 @@ run_candidate "$installed" self doctor
 # running image. POSIX unlinks by name so this has always worked here, but the
 # shim path is shared with Windows -- where it did not (issue #473) -- and a
 # contract only one platform checks is one the other can quietly lose.
-(cd "$package_root" && run_candidate "$installed" self install)
+self_update_out=$(cd "$package_root" && run_candidate "$installed" self install 2>&1)
+# Positive evidence the step ran: `self install` onto its own home takes the
+# "already in target dir, fixing links" path, which is the one that rewrites
+# the running binary's shim. Without this a silent no-op would look like a pass.
+grep -qE 'fixing links|install:' <<<"$self_update_out" || {
+  echo "$self_update_out"
+  fail "self install over the running binary produced no evidence it ran"
+}
 test -x "$installed"
 run_candidate "$installed" --version >/dev/null
 
