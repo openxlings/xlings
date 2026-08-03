@@ -18,6 +18,17 @@ set -euo pipefail
 DIR="${1:?usage: push_index_pointers.sh <dir>}"
 GH_REPO_SLUG="${GH_REPO_SLUG:-xlings-res/xim-index}"
 GTC_REPO_SLUG="${GTC_REPO_SLUG:-xlings-res/xim-index}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# #476: the newest xlings release, recorded at the pointer top level. A
+# client routed to an older snapshot reads that snapshot's own xlings recipe,
+# which names the `latest` of its era -- without this it could never learn a
+# newer client exists, and could never leave the snapshot it was routed to.
+CLIENT_LATEST_ARGS=""
+if [[ -n "${XLINGS_CLIENT_LATEST:-}" ]]; then
+  CLIENT_LATEST_ARGS="--client-latest=xlings=${XLINGS_CLIENT_LATEST}"
+fi
+
 
 compgen -G "$DIR/*-latest.json" >/dev/null 2>&1 || { echo "[pointers] no *-latest.json in $DIR" >&2; exit 1; }
 
@@ -36,7 +47,7 @@ for f in sorted(glob.glob(os.path.join(d, "*-latest.json"))):
     key = m.group(1) or "xim"
     try: indexes[key] = json.load(open(f, encoding="utf-8"))
     except Exception as e: print(f"[pointers] skip {name}: {e}", file=sys.stderr)
-json.dump({"format_version": 1, "indexes": indexes}, open(out, "w", encoding="utf-8"), indent=2)
+json.dump({"format_version": 2, "indexes": indexes}, open(out, "w", encoding="utf-8"), indent=2)
 print(f"[pointers] combined {len(indexes)} index(es): {', '.join(sorted(indexes))}")
 PY
 
@@ -52,18 +63,11 @@ push_one() {  # <clone-url> <label>
   # sibling indexes' keys. Each index repo (xim, awesome, scode, d2x) publishes
   # independently and must update ONLY its own key — a plain overwrite would drop
   # the others (regression seen when xim-pkgindex's per-repo CI published alone).
-  python3 - "$tmp/xim-index-pointers.json" "$COMBINED" <<'PYMERGE'
-import sys, json, os
-dst, src = sys.argv[1], sys.argv[2]
-base = {"format_version": 1, "indexes": {}}
-if os.path.exists(dst):
-    try: base = json.load(open(dst, encoding="utf-8"))
-    except Exception: base = {"format_version": 1, "indexes": {}}
-base.setdefault("indexes", {})
-base["indexes"].update(json.load(open(src, encoding="utf-8")).get("indexes", {}))
-base["format_version"] = 1
-json.dump(base, open(dst, "w", encoding="utf-8"), indent=2)
-PYMERGE
+  # #476: the merge also carries an addressable history per index and the
+  # newest client version. Extracted to a script so the retention policy is
+  # testable -- "which snapshots stay reachable" is the whole feature.
+  python3 "$SCRIPT_DIR/merge_index_pointer.py" \
+      "$tmp/xim-index-pointers.json" "$COMBINED" $CLIENT_LATEST_ARGS
   git -C "$tmp" add -A
   if git -C "$tmp" diff --cached --quiet; then
     echo "[pointers] $label: no change"; rm -rf "$tmp"; return 0

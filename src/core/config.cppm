@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.3.1";
+    static constexpr std::string_view VERSION = "2026.8.4.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -22,6 +22,11 @@ export struct IndexRepo {
     std::string url;
     std::string artifactBase;  // #377: resolved artifact base URL ("" = git-only)
     std::string source;        // #377: per-repo override: "" | "auto" | "artifact" | "git"
+    // #476: pin this repo to one published index snapshot. Empty (or "latest")
+    // means automatic routing -- the newest snapshot whose declared client
+    // contract this xlings satisfies. A pin is an override for reproducing a
+    // state, so it bypasses the contract check but never the sha256 check.
+    std::string version;
 };
 
 // #377: parse index_repos entries. `artifact` is a flat string or a region
@@ -54,6 +59,10 @@ export std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
         }
         if (it->contains("source") && (*it)["source"].is_string())
             repo.source = (*it)["source"].get<std::string>();
+        // Not validated: the version namespace belongs to the index publisher,
+        // and xlings should not have an opinion about its shape.
+        if (it->contains("version") && (*it)["version"].is_string())
+            repo.version = (*it)["version"].get<std::string>();
         out.push_back(std::move(repo));
     }
     return out;

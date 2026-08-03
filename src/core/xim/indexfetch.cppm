@@ -30,8 +30,33 @@ import xlings.core.config;
 import xlings.core.mirror;
 import xlings.platform;
 import xlings.core.xim.extract;
+import xlings.core.version_order;
 
 export namespace xlings::xim {
+
+// A client-version constraint an index snapshot declares: [min, max).
+// Both optional; empty means unbounded on that side.
+//
+// Deliberately two bare version strings and NOT a range expression. Two bounds
+// already ARE a range, and a second grammar next to semver's would drift from
+// it -- while inheriting the defect measured below. See #476 design doc §1.
+struct IndexRequirement {
+    std::string min;   // inclusive
+    std::string max;   // exclusive
+    bool empty() const { return min.empty() && max.empty(); }
+};
+
+// One addressable index snapshot: an artifact plus what it asks of its client.
+struct IndexSnapshot {
+    std::string   index_version;
+    std::string   generated_at;
+    std::string   artifact_name;
+    std::string   artifact_sha256;   // lowercase hex
+    std::uint64_t artifact_size = 0;
+    // consumer name -> {min,max}. xlings evaluates ONLY the "xlings" key; every
+    // other key is carried verbatim for whoever it belongs to.
+    nlohmann::json requirements = nlohmann::json::object();
+};
 
 struct IndexManifest {
     int           format_version = 0;
@@ -42,7 +67,53 @@ struct IndexManifest {
     std::string   artifact_name;     // e.g. xim-index-0.4.52.tar.gz
     std::string   artifact_sha256;   // lowercase hex
     std::uint64_t artifact_size = 0;
+
+    // ── #476: version contract + addressable history ──────────────────
+    // All optional. A pointer that predates them parses exactly as before,
+    // which is why they are ADDED rather than the manifest being restructured:
+    // the parser below hard-requires `artifact` at this level, so moving it
+    // under a `latest` node would make every released client reject the
+    // pointer outright.
+    nlohmann::json              requirements = nlohmann::json::object();
+    std::vector<IndexSnapshot>  history;            // newest first; [0] == this
+    bool                        history_truncated = false;
 };
+
+// The requirement `consumer` must meet, or nullopt when unconstrained.
+std::optional<IndexRequirement> requirement_for(const nlohmann::json& requirements,
+                                                std::string_view consumer);
+
+// Does `selfVersion` satisfy `req`?
+//
+// Compared with version_order::compare, NOT semver::satisfies_expr. Measured
+// on 2026-08-04: semver::Version is three components, so it cannot parse
+// xlings's own four-component YYYY.M.D.N at all --
+// `satisfies_expr("2026.8.3.2", ">=2026.8.3.1")` returns FALSE. Building the
+// contract on it would make every client fail every check and report "no
+// compatible snapshot", which reads as a publishing problem rather than a
+// parser that does not know the version scheme.
+bool satisfies_requirement(std::string_view selfVersion, const IndexRequirement& req);
+
+// Every addressable snapshot of a manifest, newest first. A manifest with no
+// history yields exactly one -- itself -- so callers have a single shape.
+std::vector<IndexSnapshot> snapshots_of(const IndexManifest& manifest);
+
+struct SnapshotChoice {
+    IndexSnapshot snapshot;
+    bool          isNewest = true;
+    std::string   reason;   // why we stepped back; empty when isNewest
+};
+
+// Pick the snapshot this client should use.
+//
+//   pin empty / "latest" -> newest snapshot whose contract this client meets
+//   pin set              -> that exact snapshot, contract check bypassed
+//                           (you asked for it) but sha256 still enforced
+//
+// Returns an error rather than falling back: silently handing back the newest
+// snapshot would give the client exactly the thing it was routing away from.
+std::expected<SnapshotChoice, std::string> choose_snapshot(
+    const IndexManifest& manifest, std::string_view selfVersion, std::string_view pin);
 
 // Parse a manifest JSON. Returns nullopt if required fields are missing/invalid.
 std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText);
@@ -104,7 +175,8 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
 bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName = {},
-                          const ArtifactSource* custom = nullptr);
+                          const ArtifactSource* custom = nullptr,
+                          std::string_view pin = {});
 
 // Reconcile leftover index temp dirs from crashed / SIGKILL'd runs: restore an
 // index dir orphaned by an interrupted swap (`<base>.old.<deadpid>` holding
@@ -262,10 +334,145 @@ std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText) {
         m.artifact_sha256 = detail_::lower_hex_(art.value("sha256", std::string{}));
         m.artifact_size   = art.value("size", std::uint64_t{0});
         if (m.artifact_name.empty() || m.artifact_sha256.empty()) return std::nullopt;
+
+        // #476, all optional: a pointer without them parses exactly as before.
+        if (j.contains("requires") && j["requires"].is_object()) {
+            m.requirements = j["requires"];
+        }
+        m.history_truncated = j.value("history_truncated", false);
+        if (j.contains("history") && j["history"].is_array()) {
+            for (const auto& e : j["history"]) {
+                if (!e.is_object() || !e.contains("artifact")
+                    || !e["artifact"].is_object()) continue;
+                const auto& ea = e["artifact"];
+                IndexSnapshot s;
+                s.index_version   = e.value("index_version", std::string{});
+                s.generated_at    = e.value("generated_at", std::string{});
+                s.artifact_name   = ea.value("name", std::string{});
+                s.artifact_sha256 = detail_::lower_hex_(ea.value("sha256", std::string{}));
+                s.artifact_size   = ea.value("size", std::uint64_t{0});
+                if (e.contains("requires") && e["requires"].is_object()) {
+                    s.requirements = e["requires"];
+                }
+                // A history entry with no artifact identity is unusable; drop it
+                // rather than carrying a row that cannot be selected.
+                if (s.index_version.empty() || s.artifact_name.empty()
+                    || s.artifact_sha256.empty()) continue;
+                m.history.push_back(std::move(s));
+            }
+        }
         return m;
     } catch (...) {
         return std::nullopt;
     }
+}
+
+std::optional<IndexRequirement> requirement_for(const nlohmann::json& requirements,
+                                                std::string_view consumer) {
+    if (!requirements.is_object()) return std::nullopt;
+    const auto it = requirements.find(std::string(consumer));
+    if (it == requirements.end() || !it->is_object()) return std::nullopt;
+    IndexRequirement req;
+    req.min = it->value("min", std::string{});
+    req.max = it->value("max", std::string{});
+    if (req.empty()) return std::nullopt;
+    return req;
+}
+
+bool satisfies_requirement(std::string_view selfVersion, const IndexRequirement& req) {
+    if (!req.min.empty() && version_order::compare(selfVersion, req.min) < 0) return false;
+    if (!req.max.empty() && version_order::compare(selfVersion, req.max) >= 0) return false;
+    return true;
+}
+
+std::vector<IndexSnapshot> snapshots_of(const IndexManifest& manifest) {
+    if (!manifest.history.empty()) return manifest.history;
+    IndexSnapshot only;
+    only.index_version   = manifest.index_version;
+    only.generated_at    = manifest.generated_at;
+    only.artifact_name   = manifest.artifact_name;
+    only.artifact_sha256 = manifest.artifact_sha256;
+    only.artifact_size   = manifest.artifact_size;
+    only.requirements    = manifest.requirements;
+    return {only};
+}
+
+namespace detail_ {
+
+std::string describe_requirement_(const IndexSnapshot& s) {
+    const auto req = requirement_for(s.requirements, "xlings");
+    if (!req) return "no requirement";
+    std::string out;
+    if (!req->min.empty()) out += ">= " + req->min;
+    if (!req->max.empty()) out += (out.empty() ? "" : " ") + std::string("< ") + req->max;
+    return out;
+}
+
+}  // namespace detail_
+
+std::expected<SnapshotChoice, std::string> choose_snapshot(
+    const IndexManifest& manifest, std::string_view selfVersion, std::string_view pin) {
+    const auto snapshots = snapshots_of(manifest);
+    if (snapshots.empty()) return std::unexpected("pointer lists no index snapshot");
+
+    const auto available = [&] {
+        std::string list;
+        for (const auto& s : snapshots) {
+            if (!list.empty()) list += ", ";
+            list += s.index_version;
+        }
+        if (manifest.history_truncated) list += ", … (history truncated)";
+        return list;
+    };
+
+    // "newest": take the head of the list whatever it requires. This is the
+    // escape hatch `self update` runs on, and it is what breaks the deadlock a
+    // routed-back client would otherwise sit in forever -- an old snapshot's
+    // own xlings recipe names an old `latest`, so a client routed there could
+    // never see, let alone install, the version that would let it move on.
+    if (pin == "newest") {
+        SnapshotChoice choice{snapshots.front(), true, {}};
+        return choice;
+    }
+
+    // Explicit pin: honour it exactly. It bypasses the contract check -- asking
+    // for a specific snapshot is a deliberate act, often to reproduce a bug --
+    // but never the sha256 check downstream.
+    if (!pin.empty() && pin != "latest") {
+        for (const auto& s : snapshots) {
+            if (s.index_version == pin) {
+                SnapshotChoice choice{s, &s == &snapshots.front(), {}};
+                if (!choice.isNewest) {
+                    choice.reason = std::format("pinned to {}", pin);
+                }
+                return choice;
+            }
+        }
+        return std::unexpected(std::format(
+            "E_INDEX_VERSION_NOT_FOUND: pinned to '{}', which the pointer does "
+            "not offer; available: {}", pin, available()));
+    }
+
+    // Automatic routing: newest snapshot whose contract this client meets.
+    for (std::size_t i = 0; i < snapshots.size(); ++i) {
+        const auto& s = snapshots[i];
+        const auto req = requirement_for(s.requirements, "xlings");
+        if (req && !satisfies_requirement(selfVersion, *req)) continue;
+        SnapshotChoice choice{s, i == 0, {}};
+        if (i != 0) {
+            choice.reason = std::format(
+                "{} requires xlings {}, this is {}",
+                snapshots.front().index_version,
+                detail_::describe_requirement_(snapshots.front()), selfVersion);
+        }
+        return choice;
+    }
+
+    return std::unexpected(std::format(
+        "E_INDEX_NO_COMPATIBLE_SNAPSHOT: this xlings is {} and no published "
+        "snapshot accepts it (newest {} requires xlings {}); available: {}",
+        selfVersion, snapshots.front().index_version,
+        detail_::describe_requirement_(snapshots.front()), available()));
 }
 
 std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
@@ -419,6 +626,26 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
     return urls;
 }
 
+namespace detail_ {
+// base -> consumer -> newest version, filled by load_index_pointers().
+inline std::map<std::string, std::map<std::string, std::string>>& client_latest_cache_() {
+    static std::map<std::string, std::map<std::string, std::string>> value;
+    return value;
+}
+}  // namespace detail_
+
+// Newest published version of `consumer` as the pointer advertises it, or ""
+// when the pointer does not say. Requires load_index_pointers() to have run
+// for the same source (fetch_index_artifact always does).
+std::string client_latest_for(std::string_view consumer, const ArtifactSource* custom) {
+    const std::string cacheKey = custom ? custom->base : std::string{};
+    const auto& all = detail_::client_latest_cache_();
+    const auto base = all.find(cacheKey);
+    if (base == all.end()) return {};
+    const auto hit = base->second.find(std::string(consumer));
+    return hit == base->second.end() ? std::string{} : hit->second;
+}
+
 // Cached fetch of the COMBINED pointer file (xim-index-pointers.json): ONE raw
 // fetch per process covering ALL indexes (main + subs). One fetch (vs one per
 // index) avoids gitcode raw rate-limiting, and is the single file a self-hosted
@@ -457,6 +684,16 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
         if (j.contains("indexes") && j["indexes"].is_object())
             for (auto it = j["indexes"].begin(); it != j["indexes"].end(); ++it)
                 if (auto m = parse_index_manifest(it.value().dump())) cache[it.key()] = *m;
+        // #476: newest CLIENT version, carried at pointer top level so it is
+        // readable no matter which index snapshot this client routes to. That
+        // is the half of the deadlock fix a routed-back client depends on: an
+        // old snapshot's own xlings recipe names an old `latest`, so without
+        // this the client could never learn a newer one exists.
+        if (j.contains("client_latest") && j["client_latest"].is_object()) {
+            auto& slot = detail_::client_latest_cache_()[cacheKey];
+            for (auto it = j["client_latest"].begin(); it != j["client_latest"].end(); ++it)
+                if (it.value().is_string()) slot[it.key()] = it.value().get<std::string>();
+        }
     } catch (...) { log::warn("[index] pointer parse failed"); }
     return cache;
 }
@@ -464,7 +701,8 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
 bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName,
-                          const ArtifactSource* custom) {
+                          const ArtifactSource* custom,
+                          std::string_view pin) {
     namespace fs = std::filesystem;
     auto mirrorKey = Config::mirror();
     std::string key = custom ? custom->key
@@ -488,6 +726,33 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
         return false;
     }
 
+    // #476: route to the newest snapshot this client's version accepts, or to
+    // an explicit pin. On failure the local index tree is left alone -- keeping
+    // the last snapshot that worked beats replacing it with a wrong one.
+    // XLINGS_INDEX_PIN overrides the per-repo pin: an escape hatch for
+    // debugging, and the mechanism `self update` uses to reach a newer client
+    // through an index this version would not otherwise route to.
+    std::string effectivePin{pin};
+    if (const auto* env = std::getenv("XLINGS_INDEX_PIN"); env && *env) {
+        effectivePin = env;
+    }
+    const auto choice = choose_snapshot(manifest, Info::VERSION, effectivePin);
+    if (!choice) { err = choice.error(); return false; }
+    const IndexSnapshot& snapshot = choice->snapshot;
+
+    // Say it when we step back. A client that silently sits on an older index
+    // looks to its user exactly like one on the newest, right up until a
+    // package it expects is missing.
+    if (!choice->isNewest) {
+        log::warn("[index] {}: using {} instead of {}", key,
+                  snapshot.index_version, manifest.index_version);
+        log::warn("[index]   {}", choice->reason);
+        if (auto newer = client_latest_for("xlings", custom);
+            !newer.empty() && version_order::compare(newer, Info::VERSION) > 0) {
+            log::warn("[index]   upgrade to {}: xlings self update", newer);
+        }
+    }
+
     std::error_code ec;
     auto tmpRoot = fs::path(destIndexDir.string() + ".artifact." +
                             std::to_string(platform::get_pid()));
@@ -497,14 +762,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     struct Cleanup { fs::path p; ~Cleanup(){ std::error_code e; fs::remove_all(p,e);} } cleanup{tmpRoot};
 
     // Artifact (sha256-pinned by the manifest); release asset, versioned name.
-    auto artifactFile = tmpRoot / manifest.artifact_name;
+    auto artifactFile = tmpRoot / snapshot.artifact_name;
     detail_::BaseOverride forcedStorage;
     const detail_::BaseOverride* forced = nullptr;
     if (custom) { forcedStorage = detail_::base_override_for_(*custom); forced = &forcedStorage; }
-    if (auto e = detail_::obtain_file(manifest.artifact_name,
-                    index_asset_urls(manifest.artifact_name, mirrorKey,
-                                     manifest.index_version, custom),
-                    artifactFile, manifest.artifact_sha256, forced); !e.empty()) {
+    if (auto e = detail_::obtain_file(snapshot.artifact_name,
+                    index_asset_urls(snapshot.artifact_name, mirrorKey,
+                                     snapshot.index_version, custom),
+                    artifactFile, snapshot.artifact_sha256, forced); !e.empty()) {
         err = std::format("fetch index artifact failed: {}", e);
         return false;
     }
@@ -537,8 +802,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
             // After the exchange, `stage` now holds the OLD tree — drop it.
             fs::remove_all(stage, ec);
             log::info("[index] updated from artifact {} ({})",
-                      manifest.artifact_name,
-                      manifest.index_version.empty() ? "?" : manifest.index_version);
+                      snapshot.artifact_name,
+                      snapshot.index_version.empty() ? "?" : snapshot.index_version);
             return true;
         }
         // Fallback (non-Linux / kernel without renameat2): manual move-aside.
@@ -558,9 +823,14 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     }
     fs::remove_all(backup, ec);
 
+    // The SNAPSHOT that landed, not the manifest's head. Reporting the head
+    // here would print `updated from xim-index-new0003` immediately after
+    // "using old0001 instead of new0003" -- and this line is what the release
+    // verification runbook greps to decide which artifact a run actually used
+    // (reference_index_publish_lag).
     log::info("[index] updated from artifact {} ({})",
-              manifest.artifact_name,
-              manifest.index_version.empty() ? "?" : manifest.index_version);
+              snapshot.artifact_name,
+              snapshot.index_version.empty() ? "?" : snapshot.index_version);
     return true;
 }
 

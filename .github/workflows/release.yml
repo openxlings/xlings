@@ -526,6 +526,11 @@ jobs:
         env:
           XLINGS_RES_TOKEN: ${{ secrets.XLINGS_RES_TOKEN }}
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          # #476: recorded at the pointer top level so a client routed to an
+          # older index snapshot can still learn a newer client exists. Without
+          # it, that client reads the old snapshot's own xlings recipe, is told
+          # it is current, and can never leave the snapshot it was routed to.
+          XLINGS_CLIENT_LATEST: ${{ steps.version.outputs.version }}
         run: bash tools/push_index_pointers.sh build/index
 
   # Mirror the xlings binaries to xlings-res/xlings on GitHub + GitCode so

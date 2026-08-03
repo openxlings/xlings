@@ -20,6 +20,7 @@
 #   XLINGS_RELEASE_PKGINDEX_REF=main    git ref to snapshot (default main)
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="" OUT_DIR="" NAME="" SRC_DIR=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -95,6 +96,25 @@ SHA="$(sha256_of "$ARTIFACT")"
 SIZE="$(wc -c < "$ARTIFACT" | tr -d ' ')"
 GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# #476: the index tree may declare which client versions it needs, in
+# `index-compat.json` at its root:
+#
+#   { "requires": { "xlings": { "min": "2026.8.4.1" } } }
+#
+# Carried into the manifest verbatim. xlings evaluates only the "xlings" key
+# and routes clients that do not satisfy it to an older snapshot; every other
+# key is passed through for whichever consumer owns it. Absent file = no
+# constraint = today's behaviour.
+REQUIRES_JSON="{}"
+# From the assembled TREE, not --src: the clone path has no SRC_DIR, and the
+# tree is what actually ships.
+COMPAT_FILE="$TREE/index-compat.json"
+if [[ -f "$COMPAT_FILE" ]]; then
+  REQUIRES_JSON="$(python3 "$SCRIPT_DIR/read_index_compat.py" "$COMPAT_FILE")" \
+    || fail "index-compat.json rejected"
+  info "  requires: $REQUIRES_JSON"
+fi
+
 MANIFEST="$OUT_DIR/${ARTIFACT_BASE}.manifest.json"
 cat > "$MANIFEST" <<JSON
 {
@@ -108,6 +128,7 @@ cat > "$MANIFEST" <<JSON
     "sha256": "${SHA}",
     "size": ${SIZE}
   },
+  "requires": ${REQUIRES_JSON},
   "signature": null
 }
 JSON

@@ -7,6 +7,7 @@ import xlings.runtime.event_stream;
 import xlings.runtime.capability;
 import xlings.libs.json;
 import xlings.core.xim.commands;
+import xlings.core.xim.index_cmd;
 import xlings.core.xvm.commands;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -237,6 +238,46 @@ public:
         payload["title"] = "xlings status";
         payload["fields"] = std::move(fields);
         stream.emit(DataEvent{"system_info", payload.dump()});
+        return exit_result(0);
+    }
+};
+
+// #476: the programmatic entry point for index snapshot selection.
+//
+// The consumer here is a program, not a person -- a build tool deciding which
+// index snapshot its own version can use. It reads the list, applies ITS OWN
+// compatibility rule to the `requires` blob (xlings interprets only the
+// "xlings" key and carries every other one verbatim), and pins with
+// `xlings index use`.
+class ListIndexVersions : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override {
+        return {
+            .name = "list_index_versions",
+            .description = "List published index snapshots and which one is in use",
+            .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"}}})",
+            .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+            .destructive = false,
+        };
+    }
+    auto execute(Params params, EventStream& stream) -> Result override {
+        auto json = nlohmann::json::parse(params, nullptr, false);
+        const auto filter = json.is_object() ? json.value("name", std::string{})
+                                             : std::string{};
+        auto views = xim::collect_index_sources();
+        if (!filter.empty()) {
+            std::erase_if(views, [&](const auto& v) { return v.name != filter; });
+            if (views.empty()) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = std::format("no index source named '{}'", filter),
+                    .recoverable = false,
+                });
+                return exit_result(1);
+            }
+        }
+        stream.emit(DataEvent{"index_versions",
+                              xim::index_sources_json(views).dump()});
         return exit_result(0);
     }
 };
@@ -547,6 +588,7 @@ export capability::Registry build_registry() {
     reg.register_capability(std::make_unique<ListVersions>());
     reg.register_capability(std::make_unique<UseVersion>());
     reg.register_capability(std::make_unique<SystemStatus>());
+    reg.register_capability(std::make_unique<ListIndexVersions>());
     // sub-OS + env (added 2026-04-26 per interface-api-v1-eval)
     reg.register_capability(std::make_unique<ListSubos>());
     reg.register_capability(std::make_unique<ListSubosShims>());

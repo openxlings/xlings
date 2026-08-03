@@ -140,6 +140,20 @@ Use the NDJSON interface
 
 Options: `--args <JSON>` — Capability arguments; `--args-file <PATH>` — Read capability arguments from a file; `--list` — List capabilities; `--version` — Show protocol version
 
+## `xlings index`
+
+Inspect and select package index snapshots
+
+## `xlings index list [name]`
+
+List published index snapshots
+
+Options: `--json` — Machine-readable output
+
+## `xlings index use <name> <version>`
+
+Pin an index source to a snapshot
+
 ## `xlings agent`
 
 Agent integration
