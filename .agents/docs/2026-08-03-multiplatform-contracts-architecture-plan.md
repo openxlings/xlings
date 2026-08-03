@@ -727,6 +727,17 @@ E2E-25 里仍是硬性覆盖 —— 那里红一次的代价是重跑，不是�
 真正运行中的映像。合成的文件句柄不行 —— `FileShare::Read` 会连改名一起挡掉，
 而真实运行映像不会，那样连修好的代码也会失败。
 
+**已知未修，需单独立项**：`self update` 的真实调用链是
+`self update` → `xlings install xlings@latest` → `xvm/commands.cppm:534`
+（激活时按 program 建 shim）/ `common.cppm:26` / `script.cppm:73`，
+**这三处都丢弃 `create_shim` 的返回值**。本次修复让 shim 真的能建成，症状消失；
+但若将来因别的原因再失败，`install` 仍会报成功——同一个 A1 形状还在。
+
+没有顺手改，是因为把它做对意味着改 `use`/`install` 的退出语义（失败要能让整个
+操作非零），那是一个有 e2e 覆盖、且在一个已经很大的 PR 末尾动它风险明显偏高的
+改动。`create_shim` 自身会 `log::error`，所以失败是**可见**的，只是不影响退出码。
+`doctor.cppm:1275` 是唯一检查了返回值的调用点。
+
 `info` 版本顺序不稳定这一条，#472 的 `version_order` 工作已经修掉了。
 "list 显示没装但命令能跑"这一条是 shim 失败的下游症状，随上面两条一起消失；
 如果用户在新版本上仍能复现，需要单独立 issue 查 workspace 记录。
