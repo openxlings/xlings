@@ -395,7 +395,7 @@ bool sync_repo_with_artifact(const IndexRepo& repo,
     std::string mode = repo.source.empty() ? globalIndexSource : repo.source;
     if (src && sub_should_attempt_artifact(false, mode, false, false, false, true)) {
         std::string ferr;
-        if (fetch_index_artifact(repoDir, ferr, repo.name, &*src)) return true;
+        if (fetch_index_artifact(repoDir, ferr, repo.name, &*src, repo.version)) return true;
         if (mode == "artifact") {
             log::error("[index] '{}' artifact fetch failed and git fallback disabled "
                        "(source=artifact): {}", repo.name, ferr);
@@ -579,7 +579,12 @@ bool sync_all_repos(bool force = false) {
 
     if (attemptArtifact) {
         std::string ferr;
-        if (fetch_index_artifact(mainDir, ferr)) {
+        // #476: the main index honours a pin the same way sub-indexes do. It is
+        // the first entry of index_repos (the primary), which is also the repo
+        // whose name namespaces bare package targets.
+        const std::string mainPin =
+            globalRepos.empty() ? std::string{} : globalRepos.front().version;
+        if (fetch_index_artifact(mainDir, ferr, {}, nullptr, mainPin)) {
             mainArtifactManaged = true;
         } else if (indexSource == "artifact") {
             log::error("[index] artifact fetch failed and git fallback disabled "
@@ -686,7 +691,8 @@ bool sync_all_repos(bool force = false) {
         if (subAttemptArtifact) {
             std::string ferr;
             ok = fetch_index_artifact(repoDir, ferr, repo.name,
-                                      customSrc ? &*customSrc : nullptr);
+                                      customSrc ? &*customSrc : nullptr,
+                                      repo.version);
             if (!ok)
                 log::warn("[index] sub-index '{}' artifact fetch failed: {}", repo.name, ferr);
         }
