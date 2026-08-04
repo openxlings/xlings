@@ -486,3 +486,25 @@ end
 ## 12. 一句话总括
 
 > **xlings 是"用户态 Linux 发行版",三分层 = kernel(host) + xlings(底座) + mcpp(主构建工具)。分发采用预构 + 源构混合(canonical build 保等价性,fingerprint 判命中)。多 glibc / 可组合发行版通过 platform manifest 承载,不做自由组合。消费者依赖从硬钉演进为 deps range + runtime_floor + platform_membership 三轴模型。与 hermetic 策略正交互补,合并后形成完整生态定位。**
+
+---
+
+## 13. 落地进展(2026-08-05 更新)
+
+本备忘录的 13 个开放问题里,只有一个已被实施推翻或确认:
+
+**Configuration 基质已落地**(slice 1,xlings **2026.8.5.1** + libxpkg **0.0.48**)。
+`subos_info.envs` 让包声明其 subos 必须导出的环境变量,补完了三层基质里唯一缺失的
+一层。这是"用户态 OS"从概念变成可检查对象的第一步:一个 subos 现在能**描述自己**
+(runtime + envs),而不只是"装了什么"的清单。
+
+详见 `2026-08-05-subos-minimum-design.md` §13 与
+`2026-08-05-subos-slice1-landing-plan.md` §7。
+
+**由此确认的一件事**:`runtime` 字段的自描述形态(`glibc@2.39` 即 Linux/glibc,
+家族由包名前缀派生而非独立存储)在实现中站得住,且天然为多 runtime 预留了位置 ——
+本备忘录 §"多 glibc" 讨论的数据模型层面已经就位,剩下的仍是索引一致性与消费者绑定
+两层(硬钉依赖尚未改造)。
+
+**未被触及的**:platform manifest、canonical build、fingerprint、deps range 三轴
+模型 —— 全部仍是开放问题,slice 1 明确不碰。

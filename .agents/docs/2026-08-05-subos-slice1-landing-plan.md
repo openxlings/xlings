@@ -169,8 +169,50 @@ xlings 二进制的 e2e 断言(模板:`tests/e2e/xvm_files_probe_compat_test.sh`
 
 ## 6. 完成判据
 
-- [ ] libxpkg 0.0.48 已发布,mcpp-index 可解析,gitcode 资源 GET 可下载
-- [ ] xlings 单 PR 含全部 slice 1 实现 + 测试 + 版本号,CI 全绿
-- [ ] 新老 client 探针差分测试通过(老二进制走 legacy 分支且不 silent-success)
-- [ ] release 产物已验证:版本条目、`latest.ref`、gitcode 资源三者一致
-- [ ] `xlings subos` 真实跑通:new → install → use → env 生效 → uninstall 清段 → doctor 干净
+- [x] libxpkg 0.0.48 已发布,mcpp-index 可解析,gitcode 资源 GET 可下载
+- [x] xlings 单 PR 含全部 slice 1 实现 + 测试 + 版本号,CI 全绿
+- [x] 新老 client 探针差分测试通过(老二进制走 legacy 分支且不 silent-success)
+- [x] release 产物已验证:版本条目、`latest.ref`、gitcode 资源三者一致
+- [x] `xlings subos` 真实跑通:new → install → use → env 生效 → uninstall 清段 → doctor 干净
+
+---
+
+## 7. 落地结果(2026-08-05)
+
+| 仓库 | 产出 | 状态 |
+|---|---|---|
+| openxlings/libxpkg | #32 → tag `0.0.48` → gitcode `mcpp-res/xpkg` | 已合并发布 |
+| mcpplibs/mcpp-index | #153(三个平台块 + CN 镜像同源校验) | 已合并,artifact 已发布 |
+| openxlings/xlings | #480 → **2026.8.5.1** | 已合并、已发布 |
+| openxlings/xim-pkgindex | #496(V2 spec:API + 新模块探针规则)、#497(latest 前移) | 均已合并 |
+
+### 7.1 计划外的两处修正
+
+**xmake 全面退场(libxpkg)**。施工中发现 `xvm.files` 在 0.0.47 只改了生成物
+`xpkg-lua-stdlib.cppm`,源 `xvm.lua` 从未有过 —— 任何人跑一次 `xmake build`,
+before_build 就会用陈旧源重新生成、**静默抹掉该特性**。按用户要求改为 mcpp 单一
+构建入口:`build.mcpp` 在构建期把 Lua stdlib 生成到 `MCPP_OUT_DIR`,生成物不再进
+版本库,两份拷贝对不上这种状态在结构上不再可能。同时清掉 `xmake.lua`、
+`CMakeLists.txt`(`mcpplibs-templates` 模板残留)与 xmake 版 `release.yml`,并把
+CI 钉子刷新到 xlings 2026.8.4.2 / mcpp 2026.8.4.1。
+
+**CI 缓存 BMI 中毒**。依赖版本变更(非仅版本号)会命中 `restore-keys` 回退,
+拿回另一套依赖图下构建的 BMI,报 `import 'std' has CRC mismatch`;失败的运行**还会
+把中毒状态按新精确键存回**,使后续所有运行精确命中它。修法两半缺一不可:回退时丢弃
+BMI(保留 payload)+ 作废 `mcpp-` 键空间为 `mcpp-v2-`。详见
+`project_ci_mcpp_cache_bmi_poisoning` 记忆。
+
+### 7.2 真实硬件验证
+
+发布版二进制 → 隔离 home → `subos new gfx --runtime glibc@2.39` → 从生产索引装入
+175 条 workspace → 一个声明 `LIBGL_DRIVERS_PATH` / `XDG_DATA_DIRS` 的包 →
+**Godot 在 RTX 4080 上开真实窗口渲染,并从自身进程环境读到这两个变量**
+(`prepend` 与宿主既有 `XDG_DATA_DIRS` 拼接而非替换)→ 卸载后 `envs: {}`、变量消失、
+doctor 干净。
+
+这正是 compat.mesa 将依赖的机制:GL 发现变量到达了一个 xlings 并不包装的进程。
+
+### 7.3 仍未做
+
+设计文档 §9.4 全部照旧。本机是 NVIDIA 闭源栈(RTX 4080),按 §9.4 属 slice 2;
+compat.mesa payload(#8~#10)仍是独立并行轨。
