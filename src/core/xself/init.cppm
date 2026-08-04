@@ -11,6 +11,7 @@ import xlings.platform;
 import xlings.core.xself.compat;
 // Generated at build time from config/shell/*.{sh,fish,ps1}; see mcpp.toml.
 import xlings.core.xself.profile_resources;
+import xlings.core.subos.manifest;
 
 namespace xlings::xself {
 
@@ -166,6 +167,38 @@ static void write_if_missing_(const fs::path& path, std::string_view content) {
     platform::write_string_to_file(path.string(), std::string(content));
 }
 
+// Give a subos directory a valid `subos_info`, preserving everything else in
+// the file. Idempotent: a block that already validates is left alone, so the
+// envs packages declared into it survive.
+static void ensure_subos_manifest_(const fs::path& subos_dir) {
+    namespace mf = xlings::subos::manifest;
+    auto path = subos_dir / ".xlings.json";
+
+    nlohmann::json json = nlohmann::json::object();
+    if (fs::exists(path)) {
+        try {
+            auto parsed = nlohmann::json::parse(
+                platform::read_file_to_string(path.string()), nullptr, false);
+            if (parsed.is_discarded() || !parsed.is_object()) {
+                // Unreadable, not absent. Overwriting would throw away a
+                // workspace we cannot see; leave it for doctor to report.
+                log::warn("[xlings:self]: {} is not readable JSON; leaving it "
+                          "alone (run `xlings self doctor`)",
+                          Config::display_path(path));
+                return;
+            }
+            json = std::move(parsed);
+        } catch (...) { return; }
+    }
+    if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
+    if (mf::validate_block(json).empty()) return;
+
+    json[std::string(mf::BLOCK)] =
+        mf::make_block(mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+    ensure_parent_dirs_(path);
+    platform::write_string_to_file(path.string(), json.dump(2));
+}
+
 // Extract the value following `# xlings-profile-version: ` on any line of
 // `text`. Returns an empty string when the marker is absent, which we
 // interpret as "legacy v1" — anything older than the time we started
@@ -286,7 +319,16 @@ bool ensure_home_layout(const fs::path& home_dir) {
     auto current_link = home_dir / "subos" / "current";
     platform::create_directory_link(current_link, default_subos);
 
-    write_if_missing_(default_subos / ".xlings.json", "{\"workspace\":{}}");
+    // Not write_if_missing_: every home that predates `subos_info` already has
+    // this file, so "missing" is exactly the case that never fires on the
+    // subos that matters most. `default` is where an ordinary user installs
+    // everything, and a default without the block would make the whole
+    // configuration layer inert on upgrade while looking installed.
+    //
+    // This is also the migration: `self init` runs on install and update, so an
+    // old home repairs its default subos on the next either. Other subos in
+    // that home are `subos doctor --fix`'s job -- init does not enumerate them.
+    ensure_subos_manifest_(default_subos);
     write_if_missing_(home_dir / "data" / "xim-index-repos" / "xim-indexrepos.json", "{}");
     // Profile content lives in xlings.core.xself.profile_resources. We use
     // the version-aware writer so users who installed an older xlings get

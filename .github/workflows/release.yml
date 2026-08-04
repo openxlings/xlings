@@ -50,14 +50,36 @@ jobs:
             xlings-deps-${{ runner.os }}-
 
       - name: Cache mcpp sandbox and project packages
+        id: mcpp-cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # `mcpp-v2-`: the v1 keyspace holds entries saved by runs that
+          # built against a fallback-restored BMI set and failed. Those are
+          # poisoned at their exact key, so the guard below -- which only fires
+          # on an INEXACT restore -- can never reach them. Retiring the prefix
+          # is what discards them; the guard is what stops it recurring.
+          key: mcpp-v2-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-v2-${{ runner.os }}-
+      # An inexact restore (the `restore-keys` fallback) brings BMIs built
+      # under a different dependency set. Mixing them with anything rebuilt
+      # here fails as `import 'std' has CRC mismatch` — which reads like a
+      # compiler bug and is a cache restored for the wrong inputs. Measured on
+      # PR #480, where `mcpplibs.xpkg` went 0.0.47 → 0.0.48: the fallback
+      # cache's tinyhttps/cmdline BMIs no longer matched the `std` the fresh
+      # xpkg build produced.
+      #
+      # Only the BMIs go. The payload store under registry/data/xpkgs is
+      # dependency-independent and is what makes the ~800 MB cache worth
+      # restoring at all.
+      - name: Drop stale BMIs when the cache key did not match exactly
+        if: steps.mcpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
 
       - name: Prepare bootstrap package index
         run: |
@@ -206,14 +228,31 @@ jobs:
             xlings-deps-${{ runner.os }}-
 
       - name: Cache mcpp sandbox and project packages
+        id: mcpp-cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # `mcpp-v2-`: the v1 keyspace holds entries saved by runs that
+          # built against a fallback-restored BMI set and failed. Those are
+          # poisoned at their exact key, so the guard below -- which only fires
+          # on an INEXACT restore -- can never reach them. Retiring the prefix
+          # is what discards them; the guard is what stops it recurring.
+          key: mcpp-v2-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-v2-${{ runner.os }}-
+      # An inexact restore brings BMIs built under a different dependency set.
+      # Mixing them with anything rebuilt here fails as `import 'std' has CRC
+      # mismatch`, which reads like a compiler bug. Only the BMIs go -- the
+      # payload store is dependency-independent and is what makes the ~800 MB
+      # cache worth restoring.
+      - name: Drop stale BMIs when the cache key did not match exactly
+        if: steps.mcpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
+
 
       - name: Prepare bootstrap package index
         run: |
@@ -297,14 +336,31 @@ jobs:
             xlings-deps-${{ runner.os }}-
 
       - name: Cache mcpp sandbox and project packages
+        id: mcpp-cache
         uses: actions/cache@v4
         with:
           path: |
             ~\.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # `mcpp-v2-`: the v1 keyspace holds entries saved by runs that
+          # built against a fallback-restored BMI set and failed. Those are
+          # poisoned at their exact key, so the guard below -- which only fires
+          # on an INEXACT restore -- can never reach them. Retiring the prefix
+          # is what discards them; the guard is what stops it recurring.
+          key: mcpp-v2-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-v2-${{ runner.os }}-
+      # An inexact restore brings BMIs built under a different dependency set.
+      # Mixing them with anything rebuilt here fails as `import 'std' has CRC
+      # mismatch`, which reads like a compiler bug. Only the BMIs go -- the
+      # payload store is dependency-independent and is what makes the ~800 MB
+      # cache worth restoring.
+      - name: Drop stale BMIs when the cache key did not match exactly
+        if: steps.mcpp-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
+
 
       - name: Prepare bootstrap package index
         shell: pwsh

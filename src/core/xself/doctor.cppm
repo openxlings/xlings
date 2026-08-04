@@ -23,6 +23,8 @@ import xlings.core.xvm.owner;
 import xlings.core.xself.repair;
 import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.profile;
+import xlings.core.subos.manifest;
+import xlings.platform.target;   // platform::host().arch for the runtime family
 
 namespace xlings::xself {
 
@@ -128,6 +130,27 @@ enum class FindingKind {
     SysrootDangling,
     BindingState,
     OtherSubos,
+    // The subos does not describe itself: no `subos_info` block, or one that
+    // cannot be read. Every configuration-layer feature is inert without it,
+    // and inert looks exactly like "no package needed anything".
+    SubosManifest,
+    // An `envs` section owned by a package that is not installed here. Left
+    // behind by an uninstall that could not write the manifest, or copied in
+    // by a fork from a home where that package existed. The values point into
+    // a payload directory that is not there.
+    SubosEnvOrphan,
+    // A declared value that still contains `${...}` after expansion, so the
+    // variable would be exported pointing at a literal placeholder. Reported
+    // rather than exported: see manifest::expand on why it is not blanked.
+    SubosEnvUnresolved,
+    // One variable claimed by several packages. Resolution is deterministic,
+    // so this is not a breakage -- but one of the two packages is not getting
+    // what it asked for, and only a human can say which should.
+    SubosEnvConflict,
+    // The subos names a runtime that is not installed in it. The payloads
+    // built against it may still run off the host's libc, which is precisely
+    // the hermetic boundary the runtime field exists to make checkable.
+    SubosRuntimeMissing,
 };
 
 enum class FindingLevel {
@@ -385,10 +408,186 @@ std::string activation_conflict_(const DoctorState& st,
     return reason;
 }
 
+// D1–D5 over the active subos's `subos_info`.
+//
+// One function, called by detection and again by the repair pass. The repair
+// acts on what this returns rather than on its own reading of the rules --
+// a reporter and a repairer that each describe the criteria end up describing
+// them differently, and then fight.
+//
+// Nothing here needs the version DB except D2 and D5, which take it as an
+// argument, so this stays checkable against a directory.
+std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
+                                            const fs::path& subosDir,
+                                            const std::string& subosName) {
+    namespace mf = xlings::subos::manifest;
+    std::vector<Finding> out;
+
+    // D1 — structure. Anything wrong here makes the rest unreadable, so it is
+    // the only finding produced when it fires.
+    if (auto structural = mf::validate(subosDir); !structural.empty()) {
+        std::string detail;
+        for (const auto& f : structural) {
+            if (!detail.empty()) detail += "; ";
+            detail += std::string(mf::describe(f.kind));
+            if (!f.detail.empty()) detail += " (" + f.detail + ")";
+        }
+        const bool unreadable = std::ranges::any_of(
+            structural, [](const auto& f) {
+                return f.kind == mf::Defect::ConfigUnreadable;
+            });
+        out.push_back({
+            .kind    = FindingKind::SubosManifest,
+            .level   = FindingLevel::Error,
+            .target  = subosName,
+            .detail  = detail,
+            // An unreadable file is not repaired: rewriting it would discard a
+            // workspace no one has managed to parse. Everything else is a
+            // missing or unusable block, which `--fix` can add.
+            .remedy  = unreadable
+                ? std::format("inspect {}",
+                              Config::display_path(mf::config_path(subosDir)))
+                : "xlings self doctor --fix",
+        });
+        return out;
+    }
+
+    auto doc = mf::read_document(subosDir);
+    if (!doc) return out;                      // D1 already covered this
+    const auto info = mf::parse(*doc);
+
+    const auto installed = [&](std::string_view binding) {
+        const auto at = binding.find('@');
+        if (at == std::string_view::npos) return false;
+        const std::string name(binding.substr(0, at));
+        const std::string version(binding.substr(at + 1));
+        const auto* vi = xvm::get_vinfo(db, name);
+        if (!vi) return false;
+        // Namespaced installs record `<ns>:<version>`, so a bare match is not
+        // enough -- compare the version tail.
+        return std::ranges::any_of(vi->versions, [&](const auto& entry) {
+            const auto& key = entry.first;
+            if (key == version) return true;
+            const auto colon = key.find(':');
+            return colon != std::string::npos && key.substr(colon + 1) == version;
+        });
+    };
+
+    // D2 — an envs section whose owner is not installed here.
+    for (const auto& provider : info.envs) {
+        if (installed(provider.binding)) continue;
+        out.push_back({
+            .kind    = FindingKind::SubosEnvOrphan,
+            .level   = FindingLevel::Error,
+            .target  = subosName,
+            .version = provider.binding,
+            .detail  = std::format(
+                "subos '{}' exports {} variable(s) for '{}', which is not "
+                "installed here", subosName, provider.decls.size(),
+                provider.binding),
+            .remedy  = "xlings self doctor --fix",
+        });
+    }
+
+    // D3/D4 — over the resolved set, so both see exactly what activation will.
+    const auto resolved = mf::resolve(info, mf::Placeholders{
+        .subosdir    = subosDir,
+        .home        = platform::get_home_dir(),
+        .xlings_home = Config::paths().homeDir,
+        .pkgdir_of   = [](std::string_view binding) -> fs::path {
+            const auto at = binding.find('@');
+            if (at == std::string_view::npos) return {};
+            const std::string name(binding.substr(0, at));
+            const std::string version(binding.substr(at + 1));
+            const auto store = Config::paths().dataDir / "xpkgs";
+            std::error_code ec;
+            if (auto direct = store / name / version;
+                fs::is_directory(direct, ec)) {
+                return direct;
+            }
+            if (!fs::is_directory(store, ec)) return {};
+            const auto suffix = "-x-" + name;
+            for (const auto& entry : platform::dir_entries(store)) {
+                if (!entry.is_directory(ec)) continue;
+                if (!entry.path().filename().string().ends_with(suffix)) continue;
+                if (auto candidate = entry.path() / version;
+                    fs::is_directory(candidate, ec)) {
+                    return candidate;
+                }
+            }
+            return {};
+        },
+    });
+
+    for (const auto& v : resolved) {
+        if (v.unresolved) {
+            out.push_back({
+                .kind    = FindingKind::SubosEnvUnresolved,
+                .level   = FindingLevel::Error,
+                .target  = subosName,
+                .version = v.var,
+                .detail  = std::format(
+                    "{} would export an unexpanded path; its provider's "
+                    "payload is missing", v.var),
+                // Reinstalling the provider is what puts the payload back.
+                // Only one is named even when several declared the variable:
+                // a remedy the user can paste beats an exhaustive one.
+                .remedy  = v.providers.empty() ? std::string{}
+                    : std::format("xlings install {}", v.providers.front()),
+            });
+        }
+        if (v.conflicted) {
+            std::string names;
+            for (const auto& b : v.providers) {
+                if (!names.empty()) names += ", ";
+                names += b;
+            }
+            out.push_back({
+                .kind    = FindingKind::SubosEnvConflict,
+                // A warning, not an error: resolution is deterministic and the
+                // subos works. What is wrong is that one of these packages is
+                // silently not getting what it asked for.
+                .level   = FindingLevel::Warning,
+                .target  = subosName,
+                .version = v.var,
+                .detail  = std::format("{} is claimed by {}", v.var, names),
+            });
+        }
+    }
+
+    // D5 — the declared runtime is not installed here.
+    if (mf::is_binding(info.runtime) && !installed(info.runtime)) {
+        out.push_back({
+            .kind    = FindingKind::SubosRuntimeMissing,
+            // Warning: binaries generally still run, off the host's libc.
+            // That is the hermetic boundary being crossed silently, which is
+            // the thing worth saying rather than failing over.
+            .level   = FindingLevel::Warning,
+            .target  = subosName,
+            .version = info.runtime,
+            .detail  = std::format(
+                "subos '{}' declares runtime {} ({}), which is not installed "
+                "here", subosName, info.runtime,
+                mf::family_of(info.runtime, platform::host().arch)),
+            .remedy  = std::format("xlings install {}", info.runtime),
+        });
+    }
+    return out;
+}
+
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     auto& p = Config::paths();
     Scan scan;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
+
+    // The subos this run is actually in. Other subos are not inspected from
+    // here for the same reason their payloads are not repaired: a second
+    // shell may be inside one right now.
+    for (auto&& f : detect_subos_manifest_(st.db, p.subosDir,
+                                           p.activeSubos.empty() ? "default"
+                                                                 : p.activeSubos)) {
+        add(std::move(f));
+    }
 
     // The PATH an aliased command would inherit. Read once, and read from
     // THIS process: doctor is normally started from the user's shell, so this
@@ -1267,6 +1466,66 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         out.notes.emplace_back(std::move(label), std::move(text));
     };
 
+    // Subos manifest repairs. Driven by the findings detection produced, not
+    // by a second reading of the rules -- so what `--fix` touches is exactly
+    // what was reported.
+    {
+        namespace mf = xlings::subos::manifest;
+        const bool wantsBlock = std::ranges::any_of(
+            scan.findings, [](const Finding& f) {
+                return f.kind == FindingKind::SubosManifest
+                       && f.remedy == "xlings self doctor --fix";
+            });
+        std::vector<std::string> orphans;
+        for (const auto& f : scan.findings)
+            if (f.kind == FindingKind::SubosEnvOrphan) orphans.push_back(f.version);
+
+        if (wantsBlock || !orphans.empty()) {
+            auto doc = mf::read_document(p.subosDir);
+            nlohmann::json document = doc ? *doc : nlohmann::json::object();
+            if (!doc && fs::exists(mf::config_path(p.subosDir))) {
+                // Unreadable rather than absent. Detection already said so and
+                // offered no `--fix` remedy; do not overwrite it here either.
+                note(glyph::mark(glyph::failed, "subos manifest"),
+                     std::format("{} is not readable JSON; left untouched",
+                                 Config::display_path(
+                                     mf::config_path(p.subosDir))));
+            } else {
+                bool changed = false;
+                if (!document.contains("workspace"))
+                    document["workspace"] = nlohmann::json::object();
+                if (wantsBlock) {
+                    document[std::string(mf::BLOCK)] = mf::make_block(
+                        mf::DEFAULT_RUNTIME,
+                        std::format("xlings {}", Info::VERSION));
+                    changed = true;
+                    note(glyph::mark(glyph::bullet, "subos manifest"),
+                         std::format("described subos '{}' (runtime {})",
+                                     p.activeSubos, mf::DEFAULT_RUNTIME));
+                }
+                for (const auto& binding : orphans) {
+                    if (!mf::remove_provider(document, binding)) continue;
+                    changed = true;
+                    note(glyph::mark(glyph::bullet, "subos env dropped"),
+                         std::format("{} is not installed here", binding));
+                }
+                if (changed) {
+                    try {
+                        platform::write_string_to_file(
+                            mf::config_path(p.subosDir).string(),
+                            document.dump(2));
+                    } catch (const std::exception& e) {
+                        note(glyph::mark(glyph::failed, "subos manifest"),
+                             std::format("could not write {}: {}",
+                                         Config::display_path(
+                                             mf::config_path(p.subosDir)),
+                                         e.what()));
+                    }
+                }
+            }
+        }
+    }
+
     for (const auto& f : scan.findings) {
         if (f.kind == FindingKind::MissingShim) {
             if (!fs::exists(st.xlingsBin)) continue;
@@ -2025,6 +2284,32 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::ReleaseAnchor:
                 if (verbose) add(glyph::mark(glyph::note, "release anchor"), f.detail);
+                break;
+            case FindingKind::SubosManifest:
+                add(glyph::mark(glyph::failed, "subos manifest"), f.detail);
+                // The remedy for an unreadable file is not `--fix`, so it has
+                // to be printed rather than left to the generic footer.
+                if (!f.remedy.empty() && f.remedy != "xlings self doctor --fix")
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::SubosEnvOrphan:
+                add(glyph::mark(glyph::failed, "subos env orphan"), f.detail);
+                break;
+            case FindingKind::SubosEnvUnresolved:
+                add(glyph::mark(glyph::failed, "subos env unresolved"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::SubosEnvConflict:
+                // Never collapsed into a count, unlike the notice categories:
+                // there is one per contested variable, the number is small,
+                // and which packages disagree is the whole content.
+                add(glyph::mark(glyph::warn, "subos env conflict"), f.detail);
+                break;
+            case FindingKind::SubosRuntimeMissing:
+                add(glyph::mark(glyph::warn, "subos runtime"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             default: break;
         }

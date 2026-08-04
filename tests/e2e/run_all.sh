@@ -109,6 +109,8 @@ TESTS=(
     "E2E-57 |subos_use_process_model_test.sh||"
     "E2E-58 |arch_evidence_contract_test.sh||"
     "E2E-59 |index_version_contract_test.sh||"
+    "E2E-60 |subos_env_declaration_test.sh||"
+    "E2E-61 |subos_env_probe_compat_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

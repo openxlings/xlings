@@ -64,7 +64,7 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source
+Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.39
 
 ## `xlings subos use <name>`
 

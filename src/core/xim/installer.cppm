@@ -25,6 +25,7 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
+import xlings.core.subos.manifest;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
@@ -1436,11 +1437,105 @@ void detach_current_subos_(const std::string& target,
     }
 }
 
+// Record a package's `subos.env` declarations into the subos it installs into.
+//
+// Provider-scoped, exactly like xvm registrations: everything lands under the
+// declaring package's binding, and uninstall drops that key. A recipe never
+// writes cleanup for it.
+//
+// Cross-package declarations are refused. A package may describe its own
+// runtime needs; letting it write a section owned by another name would make
+// uninstall unable to clean up (the owner's key is what removal keys on) and
+// would hand any recipe the ability to edit any other's environment.
+bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
+                          const PlanNode& node) {
+    namespace mf = xlings::subos::manifest;
+
+    std::vector<const mcpplibs::xpkg::XvmOp*> declarations;
+    for (const auto& op : operations)
+        if (op.op == "subos_env") declarations.push_back(&op);
+    if (declarations.empty()) return true;
+
+    const auto canonical = node.canonicalName.empty()
+        ? canonical_package_name(node.namespaceName, node.name)
+        : node.canonicalName;
+
+    const auto subosDir = Config::xvm_artifact_subos_dir();
+    auto docPath = mf::config_path(subosDir);
+    auto doc = mf::read_document(subosDir);
+    if (!doc) {
+        // Absent is recoverable (an old subos predates the block); unreadable
+        // is not, and must not be papered over by starting from {} -- that
+        // would discard a workspace we never managed to parse.
+        std::error_code ec;
+        if (std::filesystem::exists(docPath, ec)) {
+            log::error("[xim] {} is not readable JSON; refusing to record "
+                       "subos env declarations for {}@{}",
+                       docPath.string(), canonical, node.version);
+            return false;
+        }
+        nlohmann::json fresh;
+        fresh["workspace"] = nlohmann::json::object();
+        fresh[std::string(mf::BLOCK)] = mf::make_block(
+            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+        doc = std::move(fresh);
+    }
+    if (!doc->contains(std::string(mf::BLOCK))
+        || !doc->at(std::string(mf::BLOCK)).is_object()) {
+        (*doc)[std::string(mf::BLOCK)] = mf::make_block(
+            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+    }
+
+    bool changed = false;
+    for (const auto* op : declarations) {
+        if (!mf::is_binding(op->binding)) {
+            log::error("[xim] {}@{} declared env '{}' with binding '{}' "
+                       "(expected <name>@<version>); nothing recorded",
+                       canonical, node.version, op->var, op->binding);
+            return false;
+        }
+        const auto owner = mf::binding_name(op->binding);
+        if (owner != node.name && owner != canonical) {
+            log::error("[xim] {}@{} declared env '{}' for '{}', which it does "
+                       "not own; nothing recorded",
+                       canonical, node.version, op->var, op->binding);
+            return false;
+        }
+        changed |= mf::add_env(*doc, op->binding,
+                               {.var = op->var, .op = op->mode, .value = op->value});
+    }
+    if (!changed) return true;
+
+    if (auto findings = mf::validate_block(*doc); !findings.empty()) {
+        log::error("[xim] recording env declarations for {}@{} would leave an "
+                   "invalid subos manifest: {}", canonical, node.version,
+                   mf::describe(findings.front().kind));
+        return false;
+    }
+
+    try {
+        platform::write_string_to_file(docPath.string(), doc->dump(2));
+    } catch (const std::exception& e) {
+        log::error("[xim] failed to write {}: {}", docPath.string(), e.what());
+        return false;
+    }
+    log::debug("[xim] recorded {} subos env declaration(s) for {}@{}",
+               declarations.size(), canonical, node.version);
+    return true;
+}
+
 bool process_xvm_operations_(const PlanNode& node,
                              const std::filesystem::path& dataDir,
                              mcpplibs::xpkg::PackageExecutor& executor,
                              bool useAfterInstall) {
     auto xvm_ops = executor.xvm_operations();
+
+    // Before the early return below. A package that declares only env and
+    // registers nothing with xvm has an empty registration batch, and would
+    // otherwise install cleanly with its declarations dropped on the floor --
+    // the exact shape where "nothing happened" and "it worked" look alike.
+    if (!apply_subos_env_ops_(xvm_ops, node)) return false;
+
     auto& paths = Config::paths();
     auto& scopedDb = Config::versions_mut();
     auto& scopedWorkspace = Config::workspace_mut();
@@ -2789,6 +2884,50 @@ public:
                 removalResult.error().message,
                 removalResult.error().target,
                 removalResult.error().version));
+        }
+
+        // Drop this package's subos env section. Keyed by binding, so it takes
+        // exactly what the package added and leaves every other provider's
+        // alone -- the recipe's uninstall() writes nothing for this.
+        //
+        // Matched by package *name* rather than the exact binding: the removal
+        // above resolves versions through namespaces and group members, so the
+        // binding recorded at install time is not reliably reconstructible
+        // here. A home that installed two versions of the same package can
+        // hold a section for each, and leaving the other one behind would
+        // point a driver search at a payload that is being deleted.
+        {
+            namespace mf = xlings::subos::manifest;
+            if (auto doc = mf::read_document(artifactSubosDir)) {
+                bool changed = false;
+                for (const auto& binding :
+                         mf::providers_named(*doc, executingProvider)) {
+                    changed |= mf::remove_provider(*doc, binding);
+                }
+                // providers_named matches the bare name; a namespaced install
+                // records the canonical one, so ask again under it.
+                if (executingProvider != detachTarget) {
+                    for (const auto& binding :
+                             mf::providers_named(*doc, detachTarget)) {
+                        changed |= mf::remove_provider(*doc, binding);
+                    }
+                }
+                if (changed) {
+                    try {
+                        platform::write_string_to_file(
+                            mf::config_path(artifactSubosDir).string(),
+                            doc->dump(2));
+                    } catch (const std::exception& e) {
+                        // Not fatal to the uninstall -- the payload is already
+                        // going -- but it must be said. A stale section points
+                        // at a directory that no longer exists, which doctor
+                        // D2/D3 will report.
+                        log::warn("[xim] could not clear subos env "
+                                  "declarations for {}: {}",
+                                  executingProvider, e.what());
+                    }
+                }
+            }
         }
 
         for (const auto& op : xvm_ops) {
