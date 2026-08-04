@@ -56,9 +56,14 @@ jobs:
           path: |
             ~\.mcpp
             .mcpp
-          key: mcpp-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # `mcpp-v2-`: the v1 keyspace holds entries saved by runs that
+          # built against a fallback-restored BMI set and failed. Those are
+          # poisoned at their exact key, so the guard below -- which only fires
+          # on an INEXACT restore -- can never reach them. Retiring the prefix
+          # is what discards them; the guard is what stops it recurring.
+          key: mcpp-v2-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-${{ runner.os }}-
+            mcpp-v2-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
       # under a different dependency set. Mixing them with anything rebuilt
       # here fails as `import 'std' has CRC mismatch` — which reads like a
