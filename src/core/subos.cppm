@@ -31,6 +31,7 @@ import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.subos.keeper;
 import xlings.core.subos.gpu;
 import xlings.core.subos.sandbox;
+import xlings.core.subos.manifest;
 // Leaf module (std + json only). Same source for "is this a global option"
 // that the CLI validator uses, so the two cannot disagree about `--yes`.
 import xlings.cli.spec;
@@ -140,11 +141,48 @@ void update_current_symlink_(EventStream& stream,
 // ─────────────────────────────────────────────────────────────────────
 
 
+// Give a subos directory a `subos_info` block, or leave the one it has.
+//
+// Idempotent, and called from every path that produces a subos directory
+// (create, new_from, and the migration of a subos made before this block
+// existed). A subos without it violates invariant I4 and cannot be described,
+// checked or entered with its environment.
+//
+// The block is added even when `.xlings.json` already exists, which is the
+// difference from the surrounding code: the file predates the block, so
+// "the file is there" does not mean "the subos describes itself".
+bool ensure_subos_info_(const fs::path& dir, std::string_view runtime) {
+    auto json = read_config_json_(dir / ".xlings.json");
+    if (!json.is_object()) json = nlohmann::json::object();
+    if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
+
+    // Only replace a block that is absent or unusable. Rewriting a valid one
+    // would discard the envs a package declared into it.
+    if (manifest::validate_block(json).empty()) return true;
+
+    json[std::string(manifest::BLOCK)] = manifest::make_block(
+        runtime, std::format("xlings {}", Info::VERSION));
+    try {
+        write_config_json_(dir / ".xlings.json", json);
+    } catch (const std::exception& e) {
+        log::error("failed to write subos manifest {}: {}",
+                   (dir / ".xlings.json").string(), e.what());
+        return false;
+    }
+    return true;
+}
+
 // Create a subos. V6: storage mode is a creation-time property
 // (`--storage image|tmpfs|shared`). Non-shared modes force sandbox
 // entry at use-time. The sandbox-private dirs are laid down lazily.
+//
+// `runtime` is the subos's declared runtime binding ("glibc@2.39"): what its
+// binaries are built against. Empty means the built-in default. It is a
+// creation-time property because changing it after the fact would invalidate
+// every payload already installed.
 export int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
+                  const std::string& runtime,
                   EventStream& stream) {
     auto& p = Config::paths();
 
@@ -152,6 +190,21 @@ export int create(const std::string& name, const fs::path& customDir,
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = "'current' is a reserved subos name",
+            .recoverable = false,
+        });
+        return 1;
+    }
+
+    // Checked before anything is laid down. A malformed runtime that only
+    // surfaced at write time would leave a registered subos that cannot
+    // satisfy its own invariants.
+    const std::string effectiveRuntime =
+        runtime.empty() ? std::string(manifest::DEFAULT_RUNTIME) : runtime;
+    if (!manifest::is_binding(effectiveRuntime)) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "invalid --runtime '" + effectiveRuntime
+                       + "' (expected <package>@<version>, e.g. glibc@2.39)",
             .recoverable = false,
         });
         return 1;
@@ -197,7 +250,17 @@ export int create(const std::string& name, const fs::path& customDir,
             j["storage"] = sandbox::storage_to_string_(storage);
         if (storage == sandbox::StorageMode::Image)
             j["imageSize"] = imageSize;
+        j[std::string(manifest::BLOCK)] = manifest::make_block(
+            effectiveRuntime, std::format("xlings {}", Info::VERSION));
         write_config_json_(subosConfig, j);
+    } else if (!ensure_subos_info_(dir, effectiveRuntime)) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "failed to write the subos manifest for '" + name + "'",
+            .recoverable = false,
+            .hint = "check write permission on " + subosConfig.string(),
+        });
+        return 1;
     }
 
     // Image mode: create sparse ext4 image
@@ -266,18 +329,58 @@ export int create(const std::string& name, const fs::path& customDir,
         return 1;
     }
 
+    // The subos is registered; check it can actually satisfy the invariants
+    // before saying so. A creation that reports success and leaves a subos
+    // that doctor immediately condemns is the failure mode this whole slice
+    // exists to remove -- "it happened" and "it worked" must not look alike.
+    if (auto findings = manifest::validate(dir); !findings.empty()) {
+        std::string detail;
+        for (const auto& f : findings) {
+            if (!detail.empty()) detail += "; ";
+            detail += std::string(manifest::describe(f.kind));
+            if (!f.detail.empty()) detail += " (" + f.detail + ")";
+        }
+        // Roll back to the state before the command: the registry entry first,
+        // since that is what makes the name unusable a second time.
+        (void)update_home_config(p.homeDir, [&](nlohmann::json& json) {
+            if (json.contains("subos") && json["subos"].is_object())
+                json["subos"].erase(name);
+            return true;
+        });
+        std::error_code rmec;
+        fs::remove_all(dir, rmec);
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::Internal,
+            .message = "subos '" + name + "' did not come out valid: " + detail,
+            .recoverable = false,
+            .hint = rmec
+                ? "rolled back the registry entry, but " + dir.string()
+                  + " could not be removed -- delete it before retrying"
+                : "nothing was left behind; retry, or report this",
+        });
+        return 1;
+    }
+
     nlohmann::json payload;
     payload["name"] = name;
     payload["dir"]  = dir.string();
     payload["storage"] = sandbox::storage_to_string_(storage);
+    payload["runtime"] = effectiveRuntime;
     stream.emit(DataEvent{"subos_created", payload.dump()});
     return 0;
 }
 
-// Back-compat overload (no storage argument → shared).
+// Back-compat overloads. Callers that predate the runtime argument get the
+// built-in default, and callers that predate storage get shared as before.
+export int create(const std::string& name, const fs::path& customDir,
+                  sandbox::StorageMode storage, const std::string& imageSize,
+                  EventStream& stream) {
+    return create(name, customDir, storage, imageSize, "", stream);
+}
+
 export int create(const std::string& name, const fs::path& customDir,
                   EventStream& stream) {
-    return create(name, customDir, sandbox::StorageMode::Shared, "50G", stream);
+    return create(name, customDir, sandbox::StorageMode::Shared, "50G", "", stream);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -424,7 +527,8 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
 
 export int new_from(const std::string& name, const fs::path& customDir,
                     sandbox::StorageMode storage, const std::string& imageSize,
-                    const std::string& fromSpec, EventStream& stream) {
+                    const std::string& fromSpec, const std::string& runtime,
+                    EventStream& stream) {
     auto& p = Config::paths();
 
     fs::path baseDir;
@@ -498,7 +602,8 @@ export int new_from(const std::string& name, const fs::path& customDir,
     // Create target subos via standard `create`. This sets up
     // bin/lib/usr/generations, writes initial .xlings.json, optionally
     // creates home.img, and registers the subos.
-    if (auto rc = create(name, customDir, storage, imageSize, stream); rc != 0) {
+    if (auto rc = create(name, customDir, storage, imageSize, runtime, stream);
+        rc != 0) {
         return rc;
     }
 
@@ -526,6 +631,18 @@ export int new_from(const std::string& name, const fs::path& customDir,
         subosCfg["imageSize"] = imageSize;
     else
         subosCfg.erase("imageSize");
+    // Same restoration, same reason. copy_tree_ replaced the manifest create()
+    // wrote with the base's, and a base built before subos_info existed has
+    // none -- which would leave the fork registered and failing its own
+    // invariants. A base that does carry one keeps it: it describes the very
+    // content that was just copied in, envs included.
+    if (!subosCfg.contains("workspace"))
+        subosCfg["workspace"] = nlohmann::json::object();
+    if (!manifest::validate_block(subosCfg).empty()) {
+        subosCfg[std::string(manifest::BLOCK)] = manifest::make_block(
+            runtime.empty() ? manifest::DEFAULT_RUNTIME : runtime,
+            std::format("xlings {}", Info::VERSION));
+    }
     write_config_json_(subosCfgPath, subosCfg);
 
     // Re-mint subos shims (they may have been clobbered by copy_tree_
@@ -623,6 +740,87 @@ inline std::string rebuild_path_for_subos_(const std::string& orig_path,
     return out;
 }
 
+// Where a provider's payload lives, for `${pkgdir}`.
+//
+// A binding is `<name>@<version>` and carries no namespace, while the store
+// directory is `<ns>-x-<name>` (or a bare `<name>` for the primary index). So
+// the bare spelling is tried first and the namespaced ones are found by scan.
+// The scan is over the handful of bindings that actually appear in `envs`,
+// not over the whole store.
+//
+// Returning empty is meaningful: expansion then leaves `${pkgdir}` in place
+// rather than collapsing the value to a host path, and doctor D3 reports it.
+inline fs::path pkgdir_for_binding_(std::string_view binding) {
+    const auto at = binding.find('@');
+    if (at == std::string_view::npos) return {};
+    const std::string name(binding.substr(0, at));
+    const std::string version(binding.substr(at + 1));
+    if (name.empty() || version.empty()) return {};
+
+    const auto store = Config::paths().dataDir / "xpkgs";
+    std::error_code ec;
+
+    if (auto direct = store / name / version; fs::is_directory(direct, ec))
+        return direct;
+
+    if (!fs::is_directory(store, ec)) return {};
+    const auto suffix = "-x-" + name;
+    for (const auto& entry : platform::dir_entries(store)) {
+        if (!entry.is_directory(ec)) continue;
+        if (!entry.path().filename().string().ends_with(suffix)) continue;
+        if (auto candidate = entry.path() / version;
+            fs::is_directory(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+inline manifest::Placeholders placeholders_for_(const fs::path& subosDir) {
+    return manifest::Placeholders{
+        .subosdir    = subosDir,
+        .home        = platform::get_home_dir(),
+        .xlings_home = Config::paths().homeDir,
+        .pkgdir_of   = pkgdir_for_binding_,
+    };
+}
+
+// The variables a subos exports, resolved and ready to apply.
+//
+// Empty for a subos with no declarations, which is every subos until a package
+// makes one -- so both call sites below stay silent in the common case.
+inline std::vector<manifest::Resolved> subos_env_for_(const std::string& name) {
+    const auto dir = Config::subos_dir(name);
+    auto doc = manifest::read_document(dir);
+    if (!doc) return {};
+    return manifest::resolve(manifest::parse(*doc), placeholders_for_(dir));
+}
+
+// UC-2: say what was injected.
+//
+// To stderr, always -- the `--shell` path's stdout is eval'd by the caller's
+// shell, and this is a report, not code. Without it the user pipes an opaque
+// blob into `eval` and cannot tell which package changed what.
+inline void report_injected_env_(const std::string& subosName,
+                                 const std::vector<manifest::Resolved>& vars) {
+    if (vars.empty()) return;
+    std::set<std::string> providers;
+    for (const auto& v : vars)
+        providers.insert(v.providers.begin(), v.providers.end());
+
+    std::println(stderr, "[xlings] subos {}: {} env var(s) from {} package(s)",
+                 subosName, vars.size(), providers.size());
+    for (const auto& v : vars) {
+        if (v.unresolved) {
+            std::println(stderr, "[xlings]   {} — unresolved path, skipped "
+                                 "(run `xlings self doctor`)", v.var);
+        } else if (v.conflicted) {
+            std::println(stderr, "[xlings]   {} — declared by {} packages, "
+                                 "conflicting", v.var, v.providers.size());
+        }
+    }
+}
+
 } // namespace use_detail_
 
 // Internal — not exported. `xlings subos use --global <name>` and
@@ -695,6 +893,17 @@ int use_emit_shell(const std::string& name,
     bool is_pwsh = (shell_kind == "pwsh" || shell_kind == "powershell" ||
                     shell_kind == "ps1" || shell_kind == "ps");
 
+    // The subos's own declared environment (GL driver paths, EGL vendor dirs,
+    // and whatever else a package needs a *user's* binary to see). Emitted
+    // after the xvm/PATH lines so a declaration cannot displace them.
+    //
+    // UC-1 -- a variable the user already exported wins. The emitted code
+    // tests the live variable rather than what this process happens to see:
+    // `--shell` output is frequently captured once and eval'd later, in a
+    // shell whose environment has moved on.
+    const auto envVars = use_detail_::subos_env_for_(name);
+    use_detail_::report_injected_env_(name, envVars);
+
     if (is_fish) {
         std::println(R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
         std::println(R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
@@ -702,6 +911,20 @@ int use_emit_shell(const std::string& name,
         // bin. fish's $PATH is a list, so we use string match -v.
         std::println(R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
                      bin_dir.string(), p.homeDir.string());
+        for (const auto& v : envVars) {
+            if (v.unresolved) continue;
+            // R"SH(...)SH": the fish source below contains `)"`, which ends a
+            // plain R"(...)" literal early -- and the truncation compiles,
+            // because what is left is still a valid string.
+            if (v.op == manifest::OP_PREPEND) {
+                std::println(
+                    R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
+                    v.var, v.value);
+            } else {
+                std::println(R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
+                             v.var, v.value);
+            }
+        }
         return 0;
     }
     if (is_pwsh) {
@@ -709,6 +932,19 @@ int use_emit_shell(const std::string& name,
         std::println(R"($env:XLINGS_BIN = '{}')", bin_dir.string());
         std::println(R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
                      bin_dir.string(), p.homeDir.string());
+        for (const auto& v : envVars) {
+            if (v.unresolved) continue;
+            // ';' rather than ':' -- these are path lists, and on Windows the
+            // separator is the one the platform's own tools split on.
+            if (v.op == manifest::OP_PREPEND) {
+                std::println(
+                    R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
+                    v.var, v.value);
+            } else {
+                std::println(R"(if (-not $env:{0}) {{ $env:{0} = '{1}' }})",
+                             v.var, v.value);
+            }
+        }
         return 0;
     }
     // POSIX (sh/bash/zsh) default
@@ -718,6 +954,17 @@ int use_emit_shell(const std::string& name,
     std::println(R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
     std::println(R"(export XLINGS_BIN="{}";)", bin_dir.string());
     std::println(R"(export PATH="{}";)", new_path);
+    for (const auto& v : envVars) {
+        if (v.unresolved) continue;
+        if (v.op == manifest::OP_PREPEND) {
+            // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
+            // so an unset variable does not become a trailing ':' -- which an
+            // empty PATH-list element reads as "the current directory".
+            std::println(R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+        } else {
+            std::println(R"(: "${{{0}:={1}}}"; export {0};)", v.var, v.value);
+        }
+    }
     return 0;
 }
 
@@ -796,6 +1043,30 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     platform::set_env_variable("XLINGS_BIN", bin_dir.string());
     platform::set_env_variable("PATH", new_path);
+
+    // The subos's declared environment, applied to this process before it is
+    // replaced -- so the shell (or the single `--cmd`) inherits it, and so
+    // does every user binary run inside. This is the path that matters for
+    // issue #352: nothing xlings wraps needs LIBGL_DRIVERS_PATH, the user's
+    // own GL program does.
+    //
+    // UC-1 -- a variable already set in this environment is the user's, and
+    // `set` leaves it alone. `prepend` still contributes, since composing is
+    // what prepend means.
+    {
+        const auto envVars = use_detail_::subos_env_for_(name);
+        use_detail_::report_injected_env_(name, envVars);
+        for (const auto& v : envVars) {
+            if (v.unresolved) continue;
+            const auto existing = utils::get_env_or_default(v.var);
+            if (v.op == manifest::OP_PREPEND) {
+                platform::set_env_variable(
+                    v.var, existing.empty() ? v.value : v.value + ":" + existing);
+            } else if (existing.empty()) {
+                platform::set_env_variable(v.var, v.value);
+            }
+        }
+    }
 
     nlohmann::json payload;
     payload["name"] = name;
@@ -1013,9 +1284,20 @@ export int run(int argc, char* argv[], EventStream& stream) {
         // (auto-installs the base xpkg if missing); bare name is treated
         // as a local subos to fork from.
         std::string fromSpec;
+        // --runtime <binding>: what this subos's binaries are built against
+        // ("glibc@2.39"). Creation-time, because changing it later would
+        // invalidate every payload already installed. Absent → the built-in
+        // default, so existing invocations keep working unchanged.
+        std::string runtime;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
-            if (a == "--storage" && i + 1 < argc) {
+            if (a == "--runtime" && i + 1 < argc) {
+                runtime = argv[++i];
+            }
+            else if (a.rfind("--runtime=", 0) == 0) {
+                runtime = a.substr(10);
+            }
+            else if (a == "--storage" && i + 1 < argc) {
                 auto s = std::string(argv[++i]);
                 if (s == "image") storage = sandbox::StorageMode::Image;
                 else if (s == "tmpfs") storage = sandbox::StorageMode::Tmpfs;
@@ -1048,9 +1330,9 @@ export int run(int argc, char* argv[], EventStream& stream) {
             return 1;
         }
         if (!fromSpec.empty()) {
-            return new_from(name, {}, storage, imageSize, fromSpec, stream);
+            return new_from(name, {}, storage, imageSize, fromSpec, runtime, stream);
         }
-        return create(name, {}, storage, imageSize, stream);
+        return create(name, {}, storage, imageSize, runtime, stream);
     }
     if (sub == "use") {
         // Flags supported:

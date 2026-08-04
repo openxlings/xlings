@@ -159,8 +159,47 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `workspace` | `object` | 已安装工具的版本状态（见下方格式） |
+| `subos_info` | `object` | SubOS 自身的描述：运行时与环境声明（见下方） |
 | `storage` | `string` | 存储模式：`"shared"`、`"tmpfs"`、`"image"` |
 | `imageSize` | `string` | 当 storage 为 `image` 时的磁盘映像大小（如 `"4G"`） |
+
+### subos_info（2026.8.5+）
+
+`workspace` 记录的是这个 SubOS **装了什么**；`subos_info` 记录的是它**是什么** ——
+二进制针对哪个运行时构建，以及进入它的进程需要哪些环境变量。
+
+```json
+"subos_info": {
+  "schema_version": 1,
+  "runtime": "glibc@2.39",
+  "envs": {
+    "compat.mesa@25.0.0": [
+      { "var": "LIBGL_DRIVERS_PATH", "op": "set",     "value": "${pkgdir}/lib/dri" },
+      { "var": "XDG_DATA_DIRS",      "op": "prepend", "value": "${pkgdir}/share" }
+    ]
+  },
+  "created_at": "2026-08-05T14:23:11Z",
+  "created_by": "xlings 2026.8.5.1"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `schema_version` | `integer` | 当前为 `1` |
+| `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.39` 即 Linux/glibc）。由 `xlings subos new --runtime` 指定 |
+| `envs` | `object` | 以**声明包的 binding** 为键。包卸载时 xlings 删除整段；recipe 不写清理代码 |
+| `created_at` / `created_by` | `string` | 创建时间与创建者版本 |
+
+`envs` 的值由包在 `config()` 里通过 `subos.env{}` 写入（见 xim-pkgindex 的
+xpackage-spec V2）。**值必须使用占位符** —— `${pkgdir}` / `${subosdir}` /
+`${home}` / `${xlings_home}` —— 写死绝对路径会让这份描述只在写它的机器上成立。
+占位符在进入 SubOS 时展开。
+
+`envs` 为空时保留 `{}`,不省略键：缺失和空是两种写法、同一个意思,会让每个读者都要处理两遍。
+
+进入 SubOS(`xlings subos use`)时这些变量被注入进程；**用户自己已 export 的值优先**,
+`set` 不覆盖它,`prepend` 仍然与它拼接。`xlings self doctor` 检查这一段的完整性、
+与已装包的一致性、占位符可解性,以及是否有多个包争抢同一变量。
 
 ### workspace 条目格式（SubOS）
 
@@ -228,6 +267,13 @@ SubOS 工作区中每个工具支持三种值形式：
 {
   "storage": "image",
   "imageSize": "4G",
+  "subos_info": {
+    "schema_version": 1,
+    "runtime": "glibc@2.39",
+    "envs": {},
+    "created_at": "2026-08-05T14:23:11Z",
+    "created_by": "xlings 2026.8.5.1"
+  },
   "workspace": {
     "gcc": {
       "active": "16.1.0",
