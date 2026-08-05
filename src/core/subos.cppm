@@ -885,9 +885,16 @@ inline void drop_loader_coupled_dirs_(std::vector<manifest::Resolved>& vars) {
 
         std::vector<std::string> kept, dropped;
         std::error_code ec;
-        for (const auto part : std::views::split(std::string_view{v.value}, ':')) {
-            std::string entry(part.begin(), part.end());
-            if (entry.empty()) continue;
+        // Hand-rolled split/join. `views::split | ranges::to<std::string>`
+        // reads better and makes gcc 16 fail the whole module with "Bad file
+        // data" pointing at an unrelated TU; gcc 15 compiles it. Not worth a
+        // toolchain investigation for four lines.
+        for (std::size_t pos = 0; pos <= v.value.size(); ) {
+            const auto sep = v.value.find(':', pos);
+            const auto len = (sep == std::string::npos ? v.value.size() : sep) - pos;
+            std::string entry = v.value.substr(pos, len);
+            pos = (sep == std::string::npos ? v.value.size() : sep) + 1;
+            if (entry.empty()) { if (sep == std::string::npos) break; continue; }
 
             bool offends = false;
             if (is_preload) {
@@ -902,11 +909,15 @@ inline void drop_loader_coupled_dirs_(std::vector<manifest::Resolved>& vars) {
                 }
             }
             (offends ? dropped : kept).push_back(std::move(entry));
+            if (sep == std::string::npos) break;
         }
         if (dropped.empty()) continue;
 
-        v.value = kept | std::views::join_with(':')
-                       | std::ranges::to<std::string>();
+        v.value.clear();
+        for (const auto& k : kept) {
+            if (!v.value.empty()) v.value += ':';
+            v.value += k;
+        }
         for (const auto& d : dropped) {
             std::println(stderr,
                 "[xlings]   {} — dropped {} (declared by {}): it holds a libc, "
