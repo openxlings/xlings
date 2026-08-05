@@ -169,7 +169,10 @@ vendor 的 DT_NEEDED 是 `libpthread.so.0, librt.so.1, libc.so.6, libdl.so.2`(�
 
 - `libc.so.6` **既无用又致命**:vendor 是被 dlopen 进一个已在运行的进程的,它的 libc 早就绑定好了,已加载的 SONAME 不会再去搜索。所以这一项永远不会被用于它声称的目的。
 - `libpthread/librt/libdl` **必需且无害**:自 glibc 2.34 起它们是兼容桩,实现都搬进了 `libc.so.6`,分别只剩 27、13、9 个定义符号。
-- `libm` 有 1203 个符号(真正的 ABI 面),但**没人要它**。
+- `libm` 有 1203 个符号(真正的 ABI 面)。**这里原本写的是「没人要它」,那是错的**——
+  它不在 `libEGL_nvidia` 的直接 DT_NEEDED 上,但被 16 个 nvidia 库 NEED,含核心渲染器
+  `libnvidia-glcore`。我当时只取了闭包的一个入口。更正与影响见
+  `2026-08-06-subos-architecture-proposal.md` §6。
 
 最终 recipe 保留 glibc 行,只列这三个桩。
 
