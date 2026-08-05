@@ -26,7 +26,7 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 **推翻了 slice 1 设计里的一个数字**:§10 的 O4 担心 payload "可能超 800MB,是否分包"。
 实测 **241 MB**,其中 `libLLVM.so` 一家占 137 MB。
 
-**分包结论**(§2):那 137 MB 独立成 `compat.libllvm`,不埋进 mesa、也不加进现有
+**分包结论**(§2.7):那 137 MB **建议**独立成 `compat.libllvm`,不埋进 mesa、也不加进现有
 `llvm` 包 —— 索引的 llvm-subpackaging 规范明文要求"无共享 libLLVM",而 Ubuntu 的
 `libllvm20` 恰恰是一个只有两个文件、消费者全是 mesa 的纯运行时包。
 `llvm`(编译器)与 `libLLVM.so`(库)同源但消费者不同,这是两条轴。
@@ -245,30 +245,87 @@ xlings 的 `gcc` 包已经把 `libstdc++.so.6` / `libgcc_s.so.1` 注册进 xvm
 > 但要在 recipe 里钉一个下限 —— 用比 3.4.29 更老的 gcc 会在运行期缺符号。
 > 源码构建(方案 A)时用哪个 gcc 编译,就产生哪个下限,两者必须一致。
 
-### 2.6 结论:需要第四个包,但不违反 2 包规范
+### 2.6 ABI 耦合的实测:精确到 major,且 fail-closed
 
-`compat.mesa` 需要 `libLLVM.so`,而索引里没有。三个选项:
+在决定分不分包之前,先量清楚 mesa 与 libLLVM 的耦合有多紧。
 
-| 方案 | 评价 |
+```
+$ nm -D --undefined-only libgallium-25.2.8.so
+  C API 符号 (LLVM*)        : 233
+  C++ mangled 符号 (llvm::) :  97   ← 决定性
+```
+
+C++ 符号样例,注意尾部的符号版本标签:
+
+```
+llvm::DataLayout::~DataLayout()                        @LLVM_20.1
+llvm::Instruction::setMetadata(unsigned, MDNode*)      @LLVM_20.1
+llvm::LLVMContext::getOrInsertSyncScopeID(StringRef)   @LLVM_20.1
+```
+
+而 `libLLVM.so.20.1` **只导出一个符号版本节点**:`LLVM_20.1`。
+
+两条结论:
+
+1. **不是纯 C API,耦合精确到 LLVM major.minor**。用 LLVM 21 的 libLLVM 跑针对
+   20.1 构建的 mesa,97 个 C++ 符号一个都解析不了。
+2. **失配是加载期硬失败,不是静默损坏**。符号版本机制让它 fail-closed —— 这一点很重要,
+   它决定了拆包是安全的。
+
+Ubuntu 对此的表达方式:
+
+```
+mesa-libgallium Depends: … libc6 (>= 2.38), libstdc++6 (>= 11), libllvm20, …
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^   ^^^^^^^^^
+                                别的依赖都带版本区间              libllvm 没有区间
+```
+
+没有区间,是因为 **major 写在包名里**了。这就是发行版表达"精确 major、任意 patch"的办法。
+
+### 2.7 结论:拆,但理由比初稿窄
+
+**建议新增 `compat.libllvm`。** 但先撤回我在初稿里给的两条理由 —— 它们是错的:
+
+| 初稿的理由 | 实际 |
 |---|---|
-| a) vendored 进 compat.mesa | 可行,但 137 MB 埋在 mesa 里,版本不可见、不可共享 |
-| b) 扩 `llvm` 包,加回 libLLVM.so | ❌ **直接违反**验收红线,且让每个装 clang 的人多背 137 MB |
-| **c) 新增 `compat.libllvm`** | ✅ **建议** |
+| ~~"可独立升级"~~ | ❌ **假的**。`@LLVM_20.1` 符号版本意味着升 libllvm 必须同时重建 mesa |
+| ~~"将来可复用"~~ | ⚠️ 空头支票。任何未来消费者必须用**同一个 LLVM major** 才谈得上复用 |
 
-方案 c **不违反** skill 的"2 包不是 3 包":那条规则约束的是 **工具链的拆分轴**
-(core / libcxx / tools 是同一个消费者的三块)。`compat.libllvm` 在**另一条轴**上 ——
-它的消费者是 mesa,不是开发者,和 `llvm` 包零重叠。这正是 Ubuntu `libllvm20` 的模型。
+站得住的理由只有三条,但够了:
 
-命名用 `compat.` 命名空间(与 `compat.mesa` 一致,表示"第三方运行时库"),
-**不要**叫 `llvm-runtime` —— 那个名字会和 `llvm` 包混淆,而两者恰恰必须区分。
+1. **mesa patch 升级不必重下 137 MB**。mesa 稳定分支约每月一个 patch,LLVM major 一年两次。
+   拆开后 25.2.8 → 25.2.9 只动 104 MB,libllvm 原地复用。
+   这对**用户**和**发布流程**都成立 —— 后者见第 3 条。
+2. **与所有发行版的分法一致**。Ubuntu/Debian/Fedora/Arch 都把 libLLVM 单列,
+   任何打过 mesa 包的人一眼就懂这个版本关系;埋进 mesa 反而要解释。
+3. **单个资产更小**。`2026-07-15-gitcode-large-asset-mirror-runbook.md` 记录:
+   **GitHub CI runner 无法向 GitCode 上传 >~8 MiB 的资产**(跨境 15–30 KB/s,必超时),
+   >8 MiB 一律要人工从 CN 机器补传。241 MB 和 104+137 MB 都逃不掉这一步,
+   但拆开后**每次 mesa patch 只需补传 104 MB**,而 137 MB 那份一年才动两次。
+
+**代价**:compat.mesa 要硬钉 `compat:libllvm@<ver>`。这不是新负担 ——
+索引里所有 recipe 都是硬钉(`gcc.lua` 钉 `xim:glibc@2.39`),这就是现有范式。
+而且 §2.6 已经证明钉错了是加载期硬失败,不会悄悄跑出错误结果。
+
+**形态**:
 
 ```
 compat.libllvm/<ver>/
-└── lib/libLLVM.so.<ver>      ← 单一实体,X86;AMDGPU 两个 target
+└── lib/libLLVM.so.<major.minor>        ← 单一实体
+                                           -DLLVM_TARGETS_TO_BUILD=X86;AMDGPU
+                                           -DLLVM_LINK_LLVM_DYLIB=ON
 ```
 
-收益:体积可见、可独立升级、将来若有第二个 LLVM 消费者(OpenCL/clover、
-Rust 的 cranelift 替代品)可直接复用。
+命名用 `compat.` 命名空间(与 `compat.mesa` 一致,表示"第三方运行时库"),
+**不要**叫 `llvm-runtime` —— 会和 `llvm` 包混淆,而两者恰恰必须区分。
+
+它**不违反** skill 的"2 包不是 3 包":那条规则约束的是 **工具链的拆分轴**
+(core / libcxx / tools 是同一批消费者的三块)。`compat.libllvm` 在**另一条轴**上 ——
+消费者是 mesa 不是开发者,与 `llvm` 包零重叠。这正是 Ubuntu `libllvm20` 的模型。
+
+> **如果不拆**:也不是错的选择,把 137 MB vendored 进 compat.mesa 一样能跑,
+> 少一个包要维护。分界线是"会不会跟 mesa 的 patch 版本走" —— 若 xlings 只固定一个
+> mesa 版本、几乎不升级,拆包的三条理由全部失效,那就别拆。
 
 ---
 
@@ -347,7 +404,7 @@ meson setup build \
 驱动集正对应用户要的四种硬件:CPU(llvmpipe/lvp)、Intel(iris/ANV)、
 AMD(radeonsi/RADV)、NVIDIA 开源(nouveau/NVK)。
 
-**LLVM 的处置**见 §2.6:独立成 `compat.libllvm` 包,用
+**LLVM 的处置**见 §2.7:独立成 `compat.libllvm` 包,用
 `-DLLVM_TARGETS_TO_BUILD=X86;AMDGPU -DLLVM_LINK_LLVM_DYLIB=ON` 构建,
 预计 137 → 40~60 MB。
 
