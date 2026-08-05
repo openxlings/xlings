@@ -257,7 +257,64 @@ libXau ← libXdmcp ← libxcb ← libX11 ← libXext
 这也正是 `glibc.lua` 里 `fromsource-x-glibc` 那套路径改写存在的原因:
 它处理的就是"构建机路径与安装机路径不同"。
 
-### 5.2 每个包的接线要点
+### 5.2 deps 版本语法:用范围,不要硬钉
+
+**索引里现存的 recipe 全部是硬钉**(`"xim:glibc@2.39"`、`"xim:freetype@2.13.2"`),
+一个用范围的都没有。但那是习惯,不是限制 —— **解析器完整支持区间**,
+实测自 `src/core/semver.cppm` 与 `src/core/xim/resolver.cppm`:
+
+| 写法 | 含义 |
+|---|---|
+| `@2.39` | 精确 |
+| `@2` / `@2.39` 前缀 | 组件边界前缀匹配(`@3` 匹配 3.x.x) |
+| `@^1.2.3` | `>=1.2.3 <2.0.0`(major 为 0 时退化到 minor / patch) |
+| `@~1.2.3` | `>=1.2.3 <1.3.0` |
+| `@>=2.35` | 下限 |
+| `@>=1.0 <2.0` | 空格分隔的多约束 |
+| 省略 | 任意版本 |
+
+resolver 的注释把这件事说死了:
+
+> Constraint satisfaction is `semver::satisfies_expr` — the same grammar
+> `catalog.cppm` selects with — so `@3`, `@^1.2` and `>=1.0 <2.0` mean here
+> exactly what they mean there.
+
+**为什么这对本次的 30 个包尤其重要**:硬钉会让整个图形栈变成一块铁板 ——
+升一个 `libX11` 补丁版就要改十几个 recipe,而它们本来只在乎"有这个库"。
+
+**因此本设计的约定**:
+
+- **默认用下限**:`"xim:zlib@>=1.2"`、`"xim:libX11@>=1.8"`。
+  这些库 ABI 稳定,消费者要的是"存在且不太老"。
+- **glibc 例外,硬钉 `@2.39` —— 原因是客户端缺陷,不是 ABI**。
+  §2.4 测到 mesa 的实际下限是 `GLIBC_2.38`,所以 `>=2.38` 才是事实。
+  但 **2026.8.5.2 之前的 xlings 把依赖的版本部分当字面量比**
+  (`installer.cppm`:`depNode.version == dep_ver`),`@>=2.38` 匹配不到任何
+  plan 节点 → glibc 的 `exports` 进不了 `deps_exports` → elfpatch 判定
+  "no loader provider in deps" → **整个包一个 RPATH 都不写**。
+
+  这个失败没有任何输出:包报告安装成功,自己的库还带着构建期的 RPATH,
+  直到 glvnd `dlopen` mesa 的 EGL vendor、vendor 找不到 `libexpat` 才炸,
+  而 EGL 把它报成"没有任何 vendor"—— 距离真正的原因隔了三层。
+
+  glibc 是**唯一**声明 `exports.runtime.loader` 的依赖,所以只有它漏掉是致命的:
+  其余依赖漏掉 exports 时,`closure_lib_paths` 会退回 `{lib64, lib}` 约定,
+  RPATH 照样是对的。因此只钉这一条,就能让这批包在**已经发布的客户端**上可用。
+
+  xlings 侧已按 `semver::satisfies_expr` 修好(2026.8.5.2);
+  等到可以假定客户端不低于它时,这一条应改回 `>=2.38`。
+- **只有真正锁死的才硬钉** —— 目前只有一处:`mesa` → `libllvm`。
+  §3 测到 97 个带 `@LLVM_20.1` 符号版本的 C++ 符号,那是**精确到 major.minor**
+  的锁,写范围会让人以为能升。
+
+**范围不会引发无谓升级**:`pin_target_to_active` 保证 ——
+已安装且满足约束的版本**优先于索引里的最新版**。所以 `>=1.2` 不会在每次
+`xlings install` 时把已经装好的 1.2.11 换成 1.3.0。
+
+> 这一条同时是对索引现状的一个建议:现有 recipe 的硬钉大多也不是必需的,
+> 但改动它们不在本设计范围内,只在新增的这 30 个包上先立规矩。
+
+### 5.3 每个包的接线要点
 
 - `exports.runtime.libdirs` —— 让 xlings 的 elfpatch 自动给消费者补 RPATH。
   `gcc-runtime` 已经是这个范式的样板。
@@ -265,6 +322,35 @@ libXau ← libXdmcp ← libxcb ← libX11 ← libXext
   **不允许出现宿主路径** —— 这是 §8 验收的直接对象。
 - vendor JSON(glvnd EGL / Vulkan ICD)里的 `library_path` 必须在 `install()`
   里改写成绝对路径。留裸名会被宿主的 ld.so cache 解析掉,而那正是要关掉的口子。
+
+### 5.4 sysroot:头文件要合并,库要注册
+
+subos 的 `usr/include` 和 `lib` 合起来才是一个 sysroot。这两件事各踩了一个坑。
+
+**头文件:`xvm.files{ src = "include", dst = "usr/include" }` 是错的。**
+`files` 资产由 `rename(2)` 落地,`dst` 写整个目录就意味着**整体替换**:
+18 个包都这么声明,最后一个安装的包把 `usr/include` 换成指向自己 payload
+的符号链接,前面 17 个连同 **glibc 的 477 个头文件**一起消失。装完 mesa 的
+subos 编译 `#include <stdint.h>` 直接失败。
+
+索引里两个现成 helper 都表达不了这件事:`declare_headers` 按直接子项声明,
+`X11/` 作为一个资产整体落地(后写者赢);`install_headers` 跳过已存在的名字
+(先到者赢)。而 `X11/` 由 xorgproto、libX11、libXau、libXdmcp、libXext、
+libXfixes、libXxf86vm、libxshmfence **八个包共同贡献**。
+
+所以新增 `sysroot.declare_headers_tree`:**递归到叶子,只声明文件,从不声明目录**。
+xlings 会为每个资产创建父目录,于是 `usr/include/X11/` 成为真实目录,
+装着八个包各自的符号链接 —— 和发行版组装 `/usr/include` 的方式一致。
+整个图形栈 270 个节点。`install_headers_tree` 是给没有 `xvm.files` 的老客户端
+准备的同语义降级路径。
+
+**库:装了能跑,但链不上。** `exports.runtime.libdirs` + elfpatch 让
+**消费者**的 RPATH 指向 payload,所以程序能跑;但 `<subos>/lib` 里只有 glibc 的,
+`gcc -lEGL` 什么也找不到。于是 subos 处在一个奇怪的状态:
+编译器找得到头文件,却找不到库。`sysroot.declare_libs` 按 zlib / glibc 已有的
+`xvm.add(name, {type = "lib", ...})` 约定注册 `lib/*.so*` ——
+**只取直接子项**,这样 mesa 的 `lib/dri/*.so` 十二个驱动模块不会进链接路径
+(它们是靠 `LIBGL_DRIVERS_PATH` 按路径加载的,不是链接目标)。
 
 ---
 
