@@ -51,6 +51,7 @@
 - **R3 删除而非调和** —— 如果改动是**增加**一条路径而不是**移除**一条,它是 workaround。
 - **R4 对产物断言,不对意图断言** —— 在安装时失败,而不是在运行时。
 - **R5 决策必须持久化** —— 需要复现才能查看的决策不叫可追溯。
+- **R6 内部消费者绑定 payload,不绑定视图** —— 见 §1.5,这一条是本轮补上的。
 
 **提议 A1**:把这五条写进 `xim-pkgindex/docs/V2/xpackage-spec.md` 的规范正文(目前只在 xlings 的设计文档里),并给每条配一个可执行判据,比如 R3 的判据:
 
@@ -58,6 +59,53 @@
 > libxpkg 0.0.49 没通过这条(它让扫描取最高版本而不是直接失败,仍与 `pin_target_to_active` 分歧);0.0.50 通过了。
 
 **提议 A2**:契约文档里**禁止**"缺省即约定"式措辞。凡是"没有 X 就回退到 Y"的句子,要么改成"X 必须存在"(写端保证全量),要么改成"没有 X 是错误"。
+
+### 1.5 R6:内部消费者绑定 payload,不绑定视图
+
+三层模型里,前两层的**消费者不同**,而这一点从来没被写成规则:
+
+| 层 | 是什么 | 谁应该消费它 |
+|---|---|---|
+| **payload** `data/xpkgs/<pkg>/<ver>/…` | 不可变、唯一确定的产物 | **xlings 与 libxpkg 自身**;RPATH / INTERP;`resolved_deps` |
+| **subos sysroot / bin / PATH** | 给用户的**选择性视图**:可变、经 shim、受 `xlings use` 影响、可能属于别的 home | 用户,以及用户运行的程序 |
+| 每个消费者的 RPATH/INTERP | 安装时冻结的决定 | 动态加载器 |
+
+> **xlings 自己需要一个工具时,必须解析到 payload。视图只服务用户程序。**
+
+内部代码去消费第二层,是层级倒置:它把自己的正确性交给一个**用户可以随时改变**的选择。而且视图与 payload 在默认状态下**恰好一致**——又是同一个陷阱。
+
+这条规则**吞掉**了先前"借用了另一个 home 的东西"那个说法:那只是视图与 payload 分歧的**一种**方式,不是一个独立类别。
+
+#### 违反一:`locate_proot_` 的 PATH 回退
+
+已修,但修得不够彻底:当时只拒绝了位于 xlings home 内的候选。按 R6,**整条 PATH 步骤对内部使用都是错的**。真正的 `/usr/bin/proot` 属于**宿主依赖**,按 §2.8 应当是一条**显式声明**加一句可见的提示,而不是一个与 payload 平级的静默候选。
+
+#### 违反二:libxpkg 的 `_find_tool` —— 这条更严重
+
+`elfpatch` 用它找 **patchelf**,而 patchelf 正是给每一个载荷烙上 INTERP 与 RPATH 的工具。候选顺序:
+
+```
+1. subos_sysrootdir/bin/<tool>     ← 视图
+2. _RUNTIME.bin_dir/<tool>          ← 视图
+3. /usr/bin/, /usr/local/bin/       ← 宿主
+4. which <tool>                     ← PATH
+```
+
+**payload 路径根本不在候选里。**
+
+实测(`prodhome`):
+
+| 候选 | 实际是什么 |
+|---|---|
+| payload `xim-x-patchelf/0.18.0/bin/patchelf` | 唯一确定的文件,**不在列表中** |
+| 候选 1 `subos/default/bin/patchelf` | **符号链接指向 xlings 二进制**(shim),exec 时按 `XLINGS_HOME` 与活动 subos 解析 |
+| 候选 3 `/usr/bin/patchelf` | 宿主的,**这台机器上存在** |
+
+于是:**同源不变量所依赖的那把工具,身份由可变视图决定,并且带一条通往宿主的静默回退。** patchelf 各版本在动态段增长策略、`--force-rpath` 语义上都有过实际差异,所以"哪个 patchelf"不是无关紧要的细节——它决定产物长什么样。
+
+同一个函数也用于 `readelf`,问题相同。
+
+**提议 A3**:`_find_tool` 改为**优先且默认解析 payload**——通过 `pkginfo.resolved_dep()` / `build_dep()` 拿到工具包的载荷目录。视图与宿主降为显式、可见、需声明的回退,而不是排在最前的静默候选。这同时满足 R6 与规则 2。
 
 ### 1.4 下一个还没修的实例
 
