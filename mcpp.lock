@@ -31,3 +31,9 @@ version = "0.2.9"
 source  = "index+mcpplibs@0.2.9"
 hash    = "fnv1a:3465dd0bd5d7aa20"
 
+[package."mcpplibs.xpkg"]
+namespace = "mcpplibs"
+version = "0.0.50"
+source  = "index+mcpplibs@0.0.50"
+hash    = "fnv1a:2b62b03447bb9ffb"
+

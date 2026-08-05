@@ -188,16 +188,45 @@ sandbox_marker="$HOME_DIR/subos/mybox/home/$USER${marker_file#$HOME}"
   || fail "S7: sandbox marker not found at $sandbox_marker"
 log "  ✓ host \$HOME unaffected; file landed in <subos>/home/$USER/"
 
-# ── S8: ~/.xlings IS host-shared (RW bind override on top of /home)
-log "S8: ~/.xlings is the host xlings home, RW shared"
-out_xl="$(echo 'ls ~/.xlings/ 2>&1 | tr "\n" " "; echo MARKER; exit' | \
+# ── S8: the xlings home is host-shared AT ITS OWN ABSOLUTE PATH
+#
+# Not at ~/.xlings. xvm alias targets, RPATH and INTERP are absolute host
+# paths baked at install time and nothing rewrites them on the way in, so
+# the home has to answer to the same spelling inside as outside. Binding it
+# at ~/.xlings instead stranded every one of them; binding it at both made
+# one directory reachable by two real paths, which a bind mount does not
+# collapse — a shim then reports a conflict with itself. For the default
+# home the own-path bind IS ~/.xlings, which is why the remapped form went
+# unnoticed until an isolated XLINGS_HOME was used.
+log "S8: xlings home is shared at its own absolute path, one spelling"
+out_xl="$(echo 'echo "XH=$XLINGS_HOME"; echo "P1=${PATH%%:*}"; ls "$XLINGS_HOME/" 2>&1 | tr "\n" " "; echo MARKER; exit' | \
   ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
       PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
       timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
-echo "$out_xl" | grep -q "subos" \
-  || fail "S8: ~/.xlings doesn't show host content (expected to see 'subos'):
+abs_home="$(cd "$HOME_DIR" && pwd)"
+echo "$out_xl" | grep -q "XH=$abs_home" \
+  || fail "S8: XLINGS_HOME inside is not the host home path (expected $abs_home):
 $out_xl"
-log "  ✓ ~/.xlings inside sandbox is host bind (subos/, etc. visible)"
+echo "$out_xl" | grep -q "P1=$abs_home/subos/" \
+  || fail "S8: PATH[0] is spelled differently from XLINGS_HOME — a shim will
+read that as two homes and warn about a conflict with itself:
+$out_xl"
+echo "$out_xl" | grep -q "subos" \
+  || fail "S8: the home shows no host content at its own path:
+$out_xl"
+log "  ✓ home visible at $abs_home, and PATH agrees with XLINGS_HOME"
+
+# The second spelling must NOT exist: it is a distinct real path to the same
+# directory, and that is what made shim ownership ambiguous.
+out_alias="$(echo 'test -d "$HOME/.xlings" && echo SECOND_SPELLING || echo SINGLE_SPELLING; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
+echo "$out_alias" | grep -q "SINGLE_SPELLING" \
+  || fail "S8: the home is also reachable at \$HOME/.xlings — two real paths
+to one directory, which canonicalisation does not collapse:
+$out_alias"
+log "  ✓ no second spelling of the home inside the sandbox"
 
 # ── S9: /tmp is sandbox-private
 log "S9: /tmp is sandbox-private (writes don't pollute host /tmp)"
