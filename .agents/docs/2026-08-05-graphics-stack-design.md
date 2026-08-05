@@ -4,7 +4,17 @@
 **类型**: 详细设计(detailed design)
 **上游**: `2026-08-05-subos-minimum-design.md`(slice 1,已发布 2026.8.5.1)
 **范围**: 设计文档 §11 的 Task #8/#9/#10,外加原 §9.4 划给 "slice 2" 的 NVIDIA 闭源栈
-**状态**: 设计待评审;所有数字均在 2026-08-05 于一台 RTX 4080 / Ubuntu 24.04 / mesa 25.2.8 实测
+**状态**: ⚠️ **Track A 已被 `2026-08-05-graphics-stack-ecosystem-closure.md` 取代**
+
+> 本文档的 Track A 提出"方案 B:重打包宿主 mesa 二进制"作为 bootstrap。
+> **那个方向是错的** —— xlings 是用户态 OS,它的图形栈不能是"抄宿主装了什么"。
+> 生态闭环版见 `2026-08-05-graphics-stack-ecosystem-closure.md`,那里给出完整的
+> 30 个待建包清单与分层依赖图。
+>
+> **本文档仍然有效的部分**:§1 的实测事实、§2 的 gcc/llvm/libLLVM/mesa 关系梳理、
+> §5 的 NVIDIA 闭源分析 —— 这些已被新文档引用或吸收。
+
+**原状态**: 所有数字均在 2026-08-05 于一台 RTX 4080 / Ubuntu 24.04 / mesa 25.2.8 实测
 
 ---
 
@@ -568,7 +578,7 @@ end
 **注意**:`__EGL_VENDOR_LIBRARY_DIRS` 用 `set` 而不是 `prepend`。这是刻意的 ——
 prepend 会把宿主的 `/usr/share/glvnd/egl_vendor.d` 留在搜索路径里,于是宿主的
 `10_nvidia.json` 排在我们的 `50_mesa.json` 前面,hermetic 边界当场失效。
-需要同时看到两者的场景由 Track B 显式合并目录来表达(§5.4),不靠 prepend 碰运气。
+需要同时看到两者的场景由 Track B 显式合并目录来表达(§5.5),不靠 prepend 碰运气。
 
 ### 4.4 dlopen 闭包审计
 
@@ -603,7 +613,46 @@ grep -E '\.so' /tmp/trace | grep    ENOENT   # 找了但没找到 ← 缺的就�
 这与 hermetic 策略文档里的 `capabilities_host` 白名单是同一件事的具体化:
 GPU 是一个必须穿透 hermetic 边界的宿主资源,因为它的用户态与宿主内核绑定。
 
-### 5.2 先例已经存在:`libcuda-host-link`
+### 5.2 glibc 不是障碍(实测),以及各生态怎么解
+
+先排除一个看起来该有、其实没有的问题:**把宿主的 NVIDIA 库放进 subos,会不会撞 glibc?**
+
+```
+libGLX_nvidia.so.550.144.03      max GLIBC_2.4     (2006 年)
+libEGL_nvidia.so.550.144.03      max GLIBC_2.9
+libnvidia-glcore.so.550.144.03   max GLIBC_2.10
+libcuda.so.550.144.03            max GLIBC_2.9
+                    subos 提供:  glibc 2.39        ✅ 绰绰有余
+```
+
+NVIDIA 刻意针对极老的 glibc 构建。会坏的是**反方向** —— subos 的 glibc 比驱动要求的
+还老 —— 而 2.10 以下在实践中不存在。这与 #352 恰好相反:那次是宿主的**新**
+glibc(2.43)漏进来,这里是往 subos 里放**老**依赖。
+
+额外依赖只有 `libX11.so.6` / `libXext.so.6`,而 mesa 的 payload 正好提供。
+
+**那为什么不自持?** glibc 排除后还剩两道,第一道是硬的:
+
+1. **与内核模块 ABI 锁步**(与许可无关)。发 550.144.03 的用户态、宿主内核模块是 555
+   就直接失败。要自持就得**每个驱动版本发一份**(327 MB × N),按
+   `/proc/driver/nvidia/version` 选。
+2. **重分发许可**。`libcuda-host-link` 的 recipe 已表明项目立场:
+   "The NVIDIA Driver EULA forbids third-party redistribution"。本设计沿用。
+
+**各生态的解法**,可以看出这不是我们的将就而是主流选择:
+
+| 方案 | 做法 | 自持? |
+|---|---|---|
+| **NixOS** | `/run/opengl-driver/lib` —— 故意**不纯**的路径,由系统模块填入与当前内核模块匹配的驱动 | ❌ 借 |
+| **nixGL / nixglhost** | 探测宿主驱动版本;`nixglhost` 把宿主库拷进缓存目录 + `LD_LIBRARY_PATH` | ❌ 借 |
+| **nvidia-container-toolkit** | `libnvidia-container` 把宿主驱动库**挂载**进容器 | ❌ 借 |
+| **Flatpak** | `org.freedesktop.Platform.GL.nvidia-<ver>`,**每个驱动版本一个 extension** | ✅ 自持 |
+
+除 Flatpak 外全部选"借",而 Flatpak 的代价正是"每版本一份"。
+Nix 的经验尤其贴切:驱动库必须匹配内核模块,所以**不可能钉进包集** ——
+要么走不纯路径,要么按探测到的版本现场构建。
+
+### 5.3 先例已经存在:`libcuda-host-link`
 
 **这条轨不用从零设计。** 索引里已经有 `libcuda-host-link`,而它独立得出了与
 §1.6 完全相同的结论(recipe 原文注释):
@@ -628,7 +677,7 @@ GPU 是一个必须穿透 hermetic 边界的宿主资源,因为它的用户态�
 > `nvidia-runtime` 也不好 —— 它读起来像"我们分发了 NVIDIA 运行时",而这个包
 > 恰恰**什么都不分发**。`-host-link` 把"从宿主借"写在了名字里。
 
-### 5.3 `nvidia-gl-host-link` recipe
+### 5.4 `nvidia-gl-host-link` recipe
 
 命名用 `host.` 前缀,明确它**不携带 payload**,只描述一次对宿主的借用。
 
@@ -682,7 +731,7 @@ libnvidia-ptxjitcompiler.so.<ver>
 
 精确清单由 §4.4 的 strace 方法在真机上导出,**不靠这份列表**。
 
-### 5.4 与 mesa 共存
+### 5.5 与 mesa 共存
 
 两个包都用 `set` 声明 `__EGL_VENDOR_LIBRARY_DIRS` —— 按 slice 1 的冲突规则,
 doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对用户不够好**。
@@ -695,7 +744,7 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 > **本设计不预先实现它** —— 先让两个包各自能单独工作,冲突由 doctor 显式报出来,
 > 等真的有人要同机双栈时再做。列为 §7 的 O3。
 
-### 5.5 宿主驱动升级 = 悄悄断链
+### 5.6 宿主驱动升级 = 悄悄断链
 
 **这是 Track B 唯一的严重失效模式,必须设计对策。**
 
@@ -793,7 +842,7 @@ A 轨在这台机器上永远只能验到 llvmpipe。
 |---|---|---|
 | O1 | 精简 LLVM 到底能降到多少?需实测 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` | A0 的收益,以及 §1.4 的总量 |
 | O2 | aarch64 要不要一并出?驱动集不同(无 iris/radeonsi,有 panfrost/freedreno) | A3 的构建矩阵 |
-| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.4 |
+| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.5 |
 | O4 | Wayland 要不要进 slice?目前只列了 x11+wayland 两个 platform,但 wayland 的
       客户端库也要进闭包 | payload 组成 |
 | ~~O5~~ | ~~`libstdc++` 从哪来~~ **已由 §2.6 关闭**:走 `deps`(`xim:gcc`),不自带;
