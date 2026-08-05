@@ -668,3 +668,52 @@ TEST(PayloadPlatformTest, ContentClassificationIgnoresTheStamp) {
     EXPECT_EQ(pp::classify_payload_content(dir), pp::PayloadPlatform::Foreign);
     fs::remove_all(dir);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Dependency version matching for deps_exports
+//
+// A dep's version half is a range. Matching it by string equality is the
+// shape this guards: `xim:glibc@>=2.38` then matched no plan node, glibc's
+// exports never reached deps_exports, elfpatch's predicate found no loader
+// provider, and the package installed with none of its RPATHs written —
+// reporting success the whole way. The first symptom was three layers away:
+// glvnd's dlopen of mesa's EGL vendor failing to find libexpat, which EGL
+// reports as having no vendor at all.
+// ─────────────────────────────────────────────────────────────────────
+
+TEST(DepVersionMatchTest, RangeMatchesTheResolvedVersion) {
+    using xlings::xim::detail_::dep_version_matches_;
+    EXPECT_TRUE(dep_version_matches_("2.39", ">=2.38"));
+    EXPECT_TRUE(dep_version_matches_("15.1.0", ">=15"));
+    EXPECT_TRUE(dep_version_matches_("1.7.0", "^1.2"));
+    EXPECT_TRUE(dep_version_matches_("2.4.123", ">=2.4"));
+}
+
+TEST(DepVersionMatchTest, RangeRejectsAVersionBelowTheFloor) {
+    using xlings::xim::detail_::dep_version_matches_;
+    EXPECT_FALSE(dep_version_matches_("2.37", ">=2.38"));
+    EXPECT_FALSE(dep_version_matches_("14.2.0", ">=15"));
+}
+
+TEST(DepVersionMatchTest, ExactPinStillMatchesItself) {
+    using xlings::xim::detail_::dep_version_matches_;
+    EXPECT_TRUE(dep_version_matches_("2.39", "2.39"));
+    EXPECT_FALSE(dep_version_matches_("2.39", "2.38"));
+}
+
+TEST(DepVersionMatchTest, AnEmptyDepVersionMatchesAnything) {
+    using xlings::xim::detail_::dep_version_matches_;
+    EXPECT_TRUE(dep_version_matches_("2.39", ""));
+    EXPECT_TRUE(dep_version_matches_("whatever", ""));
+}
+
+// A version that is not semver at all — a date, a git hash — has to keep
+// matching itself. Equality is tried before the range parser for exactly
+// this: satisfies_expr has no opinion about "2024.1" or "deadbeef", and
+// leaning on it alone would have broken every recipe pinning one.
+TEST(DepVersionMatchTest, NonSemverVersionsMatchByEquality) {
+    using xlings::xim::detail_::dep_version_matches_;
+    EXPECT_TRUE(dep_version_matches_("2024.1", "2024.1"));
+    EXPECT_TRUE(dep_version_matches_("deadbeef", "deadbeef"));
+    EXPECT_FALSE(dep_version_matches_("deadbeef", "cafebabe"));
+}

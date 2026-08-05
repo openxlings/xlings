@@ -16,6 +16,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.platform.target;
 import xlings.core.config;
+import xlings.core.semver;
 import xlings.libs.json;
 import xlings.core.common;
 import xlings.core.xself;
@@ -832,6 +833,24 @@ bool evict_invalid_archive_cache_(
 }
 
 namespace detail_ {
+
+// Does a resolved node's version satisfy the version half of a dep spec?
+//
+// The dep half is a RANGE (`>=2.38`, `^1.2`, `~1.2.3`), not a literal, and
+// treating it as one is what this exists to prevent: matching by string
+// equality made `xim:glibc@>=2.38` match no node, which dropped glibc's
+// exports, which left elfpatch with no loader provider, which meant a package
+// installed with none of its RPATHs written and no diagnostic anywhere.
+//
+// Equality is tried first so a version that is not semver at all -- a date, a
+// git hash -- still matches itself when a recipe writes it out exactly, which
+// is what every recipe did before ranges reached this code.
+bool dep_version_matches_(std::string_view nodeVersion,
+                          std::string_view depVersion) {
+    if (depVersion.empty()) return true;
+    if (nodeVersion == depVersion) return true;
+    return semver::satisfies_expr(nodeVersion, depVersion);
+}
 
 std::filesystem::path
 configure_xpkg_execution_artifact_paths_(
@@ -2222,6 +2241,19 @@ public:
             // ours. Strip @version when matching dep_spec → dep node, so
             // a runtime_deps entry "xim:glibc@2.39" matches the plan
             // node whose canonicalName == "xim:glibc" + version "2.39".
+            //
+            // The version half is a RANGE, not a literal. `xim:glibc@>=2.38`
+            // resolves to the node at 2.39, and comparing the two as strings
+            // makes them unequal -- so the dep matched no node, contributed no
+            // exports, and elfpatch's predicate concluded "no loader provider
+            // in deps" and patched nothing at all. The package installs
+            // reporting success and is unusable: its own libraries keep a
+            // build-time RPATH, so anything dlopen'd out of it fails to find
+            // its siblings. Nothing in the output says so.
+            //
+            // Every recipe in the index pinned exactly, which is why this held
+            // for as long as it did. Ranges are the documented syntax, and the
+            // resolver already honours them -- this one comparison did not.
             for (auto& dep_spec : node.runtime_deps) {
                 std::string dep_base = dep_spec;
                 std::string dep_ver;
@@ -2233,8 +2265,11 @@ public:
                     bool name_match = (depNode.canonicalName == dep_base
                                     || depNode.name == dep_base
                                     || depNode.rawName == dep_base);
-                    bool ver_match = dep_ver.empty() || depNode.version == dep_ver;
-                    if (!name_match || !ver_match) continue;
+                    if (!name_match
+                        || !detail_::dep_version_matches_(depNode.version,
+                                                          dep_ver)) {
+                        continue;
+                    }
                     if (depNode.exports.loader.empty() && depNode.exports.libdirs.empty()) {
                         // Dep declared no exports — skip (predicate falls
                         // through to convention later).
