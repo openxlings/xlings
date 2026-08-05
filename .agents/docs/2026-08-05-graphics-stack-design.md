@@ -24,7 +24,12 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 按进程通过环境变量选厂商。这不是"slice 1 做 mesa、slice 2 做 NVIDIA"两个割裂的世界。
 
 **推翻了 slice 1 设计里的一个数字**:§10 的 O4 担心 payload "可能超 800MB,是否分包"。
-实测 **241 MB**,其中 LLVM 一家占 137 MB。**不需要分包**,但需要决定 LLVM 怎么办。
+实测 **241 MB**,其中 `libLLVM.so` 一家占 137 MB。
+
+**分包结论**(§2):那 137 MB 独立成 `compat.libllvm`,不埋进 mesa、也不加进现有
+`llvm` 包 —— 索引的 llvm-subpackaging 规范明文要求"无共享 libLLVM",而 Ubuntu 的
+`libllvm20` 恰恰是一个只有两个文件、消费者全是 mesa 的纯运行时包。
+`llvm`(编译器)与 `libLLVM.so`(库)同源但消费者不同,这是两条轴。
 
 ---
 
@@ -60,14 +65,15 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 发现走 JSON:`/usr/share/vulkan/icd.d/*.json` → `VK_DRIVER_FILES`。
 与 GL 的 `LIBGL_DRIVERS_PATH` 是**两套独立协议**,必须分别声明。
 
-### 1.3 LLVM 是最大的单项,且不能复用现有包
+### 1.3 LLVM 是最大的单项,且现有 llvm 包按设计就不含它
 
 ```
- 136.8 MB  libLLVM.so.20.1        ← libgallium 的 DT_NEEDED(llvmpipe JIT)
+ 136.8 MB  libLLVM.so.20.1        ← libgallium 的 DT_NEEDED(不是 dlopen)
 ```
 
-xlings 索引里的 `llvm@20.1.7` 是 **627 MB 的 clang 工具链,只有 `bin/` 和
-`lib/clang/`,没有 `libLLVM.so`**。不能靠 `deps` 复用,compat.mesa 必须自带运行时。
+**这一节的完整梳理见 §2「gcc / llvm / libLLVM / mesa 四者关系」** —— 结论是
+xlings 索引里的 `llvm` 包**按明文规范就不包含 `libLLVM.so`**,不是遗漏。
+compat.mesa 需要的是一个索引里目前不存在的东西。
 
 ### 1.4 payload 总量
 
@@ -123,7 +129,150 @@ subos 提供:            glibc@2.39   ✅
 
 ---
 
-## 2. 架构关键:libglvnd 让两条轨共存
+## 2. gcc / llvm / libLLVM / mesa:四者关系梳理
+
+这一节回答"那 137 MB 的 `libLLVM.so` 一般在哪里、xlings 生态该怎么放"。
+结论会改变 compat.mesa 的分包形态,所以放在架构之前。
+
+### 2.1 四个东西,不是三个
+
+最容易搞混的是 **`llvm`(编译器)** 与 **`libLLVM.so`(库)**:它们同源,但**消费者完全不同**。
+
+| | 是什么 | 谁消费 | xlings 现状 |
+|---|---|---|---|
+| **gcc** | C/C++ 编译器 **+ C++ 运行时** | 开发者;以及**任何 C++ 程序**(libstdc++) | ✅ `gcc` 包已注册 `libstdc++.so.6` / `libgcc_s.so.1` 到 xvm |
+| **llvm** | clang/lld 工具链 | 开发者 | ✅ `llvm` 包(Linux 实体 102 MB) |
+| **libLLVM.so** | LLVM 作为**共享库**(JIT / 代码生成) | 几乎只有 **mesa** | ❌ **索引里没有** |
+| **mesa** | GL/Vulkan 实现 | 图形程序 | ❌ 待做 |
+
+依赖方向:
+
+```
+    图形程序 (Godot / GLFW)
+         │
+       mesa ────────────┬──────────────┐
+         │              │              │
+   libgallium      libvulkan_*    (GL/EGL vendor)
+         │
+   libLLVM.so ← llvmpipe 的 JIT + radeonsi 的着色器编译
+         │
+   libstdc++ / libgcc_s ← 来自 gcc 包
+```
+
+**`llvm` 包不在这条链上**。mesa 不需要 clang;它需要的是 LLVM 的代码生成能力,
+以共享库形态。
+
+### 2.2 发行版怎么放:纯运行时包,消费者只有 mesa
+
+Ubuntu 上实测:
+
+```
+$ dpkg -S libLLVM.so.20.1
+libllvm20:amd64
+
+$ dpkg -L libllvm20
+/usr/lib/x86_64-linux-gnu/libLLVM.so.20.1      ← 就这一个实体
+/usr/lib/x86_64-linux-gnu/libLLVM-20.so        ← 加一个符号链接
+
+$ apt-cache rdepends --installed libllvm20
+  libosmesa6
+  mesa-vulkan-drivers
+  mesa-libgallium
+```
+
+`libllvm20` 是一个**只有两个文件的纯运行时包**,而它的反向依赖**全是 mesa**。
+发行版早就沿"运行时库 vs 工具链"这条轴切开了,原因就是消费者不同。
+
+### 2.3 xim-pkgindex 的 llvm 划分:2 包模型,明文排除 libLLVM
+
+索引仓自带规范:`.agents/skills/llvm-subpackaging/SKILL.md`。要点:
+
+- **2 包,不是 3 包**。历史上曾拆 `llvm-core` + `llvm-libcxx` + `llvm-tools`
+  (commit `9db2ba94`),随后 `99b004dc` **主动把 libc++ 并回 `llvm`**,并写明
+  旧资产"不再使用、不要复活"。
+- 当前模型:
+  - **`llvm`** = slim 自包含工具链(clang + lld + binutils + libc++ + compiler-rt)
+  - **`llvm-tools`** = clang-format / clang-tidy / clangd
+- **上游没有现成分包**(单体 1.4–2 GB),两个包都是 xlings-res 下游 carve 的。
+- **验收红线,原文**:
+
+  > 目标二进制静态自包含。clang 驱动、`lld`、`clang-format`/`tidy`/`clangd` 都
+  > **静态链接 LLVM,只依赖系统库;无共享 `libLLVM`**。
+  >
+  > Linux:`ldd` 只能是系统库(**不应出现 `libLLVM.so`**)。
+
+- 明确丢弃:全部 `.a` 静态库、`libclang-cpp`、`liblldb*`、MLIR、docs。
+
+实测印证(Linux `llvm` payload,102 MB):`find -name "libLLVM*"` **零结果**,
+`clang-20` 无任何 `libLLVM` 的 `DT_NEEDED`。
+
+> **更正**:本文档初稿写的是"llvm 包 627 MB 只有 bin/ 和 lib/clang/"。那个 627 MB
+> 是本机上一份 **Windows PE32+ payload**(27 个 `.exe`,交叉工具链残留),不是 Linux 版。
+> 结论(不能复用)是对的,但依据错了 —— 真正的依据是上面这条**明文规范**,
+> 比一次偶然的目录观察强得多。
+
+### 2.4 mesa 到底用 LLVM 的什么(实测,非推测)
+
+对 `libgallium` 做未定义符号分析:
+
+```
+$ nm -D --undefined-only libgallium-25.2.8.so | grep -oE 'LLVMInitialize[A-Za-z]+' | sort -u
+LLVMInitializeAMDGPUAsmParser     LLVMInitializeAMDGPUTarget
+LLVMInitializeAMDGPUAsmPrinter    LLVMInitializeAMDGPUTargetInfo
+LLVMInitializeAMDGPUDisassembler  LLVMInitializeAMDGPUTargetMC
+LLVMInitializeX86...              (27 处 AMDGPU 相关符号)
+```
+
+需要且只需要两个 target:
+
+| target | 服务于 | 对应用户要的硬件 |
+|---|---|---|
+| **X86** | llvmpipe(GL)/ lavapipe(Vulkan)的 JIT | **CPU** |
+| **AMDGPU** | radeonsi 的着色器编译 | **AMD** |
+
+Intel(iris/ANV)和 NVIDIA 开源(nouveau/NVK)**不经过 LLVM** —— 它们用 NIR 自带后端。
+所以 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` 是实测结论,不是保守猜测;
+砍掉其余十几个 target 是安全的。
+
+### 2.5 mesa 与 gcc:O5 有答案了
+
+`libgallium` 需要的最高 C++ 符号版本是 **`GLIBCXX_3.4.29`**。
+xlings 的 `gcc` 包已经把 `libstdc++.so.6` / `libgcc_s.so.1` 注册进 xvm
+(`gcc.lua` 的 lib 清单),本机 gcc 11.5.0 提供 `libstdc++.so.6.0.29`
+= `GLIBCXX_3.4.29`,**正好够**。
+
+> **O5 关闭**:libstdc++ 走 `deps`(`xim:gcc@<ver>`),compat.mesa **不自带**。
+> 但要在 recipe 里钉一个下限 —— 用比 3.4.29 更老的 gcc 会在运行期缺符号。
+> 源码构建(方案 A)时用哪个 gcc 编译,就产生哪个下限,两者必须一致。
+
+### 2.6 结论:需要第四个包,但不违反 2 包规范
+
+`compat.mesa` 需要 `libLLVM.so`,而索引里没有。三个选项:
+
+| 方案 | 评价 |
+|---|---|
+| a) vendored 进 compat.mesa | 可行,但 137 MB 埋在 mesa 里,版本不可见、不可共享 |
+| b) 扩 `llvm` 包,加回 libLLVM.so | ❌ **直接违反**验收红线,且让每个装 clang 的人多背 137 MB |
+| **c) 新增 `compat.libllvm`** | ✅ **建议** |
+
+方案 c **不违反** skill 的"2 包不是 3 包":那条规则约束的是 **工具链的拆分轴**
+(core / libcxx / tools 是同一个消费者的三块)。`compat.libllvm` 在**另一条轴**上 ——
+它的消费者是 mesa,不是开发者,和 `llvm` 包零重叠。这正是 Ubuntu `libllvm20` 的模型。
+
+命名用 `compat.` 命名空间(与 `compat.mesa` 一致,表示"第三方运行时库"),
+**不要**叫 `llvm-runtime` —— 那个名字会和 `llvm` 包混淆,而两者恰恰必须区分。
+
+```
+compat.libllvm/<ver>/
+└── lib/libLLVM.so.<ver>      ← 单一实体,X86;AMDGPU 两个 target
+```
+
+收益:体积可见、可独立升级、将来若有第二个 LLVM 消费者(OpenCL/clover、
+Rust 的 cranelift 替代品)可直接复用。
+
+---
+
+## 3. 架构关键:libglvnd 让两条轨共存
 
 宿主上 GL 的实际结构:
 
@@ -160,9 +309,9 @@ libGLX_mesa.so.0        libGLX_nvidia.so.550.144.03  ← 厂商实现,可并存
 
 ---
 
-## 3. Track A:compat.mesa
+## 4. Track A:compat.mesa
 
-### 3.1 构建方法论(Task #8)
+### 4.1 构建方法论(Task #8)
 
 两条路,结论是**分两阶段**:
 
@@ -198,15 +347,18 @@ meson setup build \
 驱动集正对应用户要的四种硬件:CPU(llvmpipe/lvp)、Intel(iris/ANV)、
 AMD(radeonsi/RADV)、NVIDIA 开源(nouveau/NVK)。
 
-**LLVM 的处置** —— 三选一,建议第 2:
+**LLVM 的处置**见 §2.6:独立成 `compat.libllvm` 包,用
+`-DLLVM_TARGETS_TO_BUILD=X86;AMDGPU -DLLVM_LINK_LLVM_DYLIB=ON` 构建,
+预计 137 → 40~60 MB。
 
-1. 用发行版的 `libLLVM.so`(137 MB,全 target)—— 简单,但体积最大
-2. **专门构建一个精简 libLLVM**:`-DLLVM_TARGETS_TO_BUILD=X86;AMDGPU`
-   (AMDGPU 是 radeonsi 需要的),预计可降到 40~60 MB。**建议**
-3. `-Dllvm=disabled` —— 省 137 MB,但**同时失去 llvmpipe 和 radeonsi**,
-   即失去 "CPU" 和 "AMD" 两种目标硬件。不可接受
+不能走的两条路,记下来免得再被提起:
 
-### 3.2 payload 布局
+- **`-Dllvm=disabled`** —— 省 137 MB,但 §2.4 已经证明这会**同时失去 llvmpipe 和
+  radeonsi**,即失去"CPU"和"AMD"两种目标硬件。不可接受。
+- **把 libLLVM 加回 `llvm` 包** —— 违反索引的 llvm-subpackaging 验收红线,
+  且让每个只想要 clang 的人多背 137 MB。
+
+### 4.2 payload 布局
 
 ```
 compat.mesa/<ver>/
@@ -228,7 +380,7 @@ compat.mesa/<ver>/
 时要把 JSON 里的路径改写成 `${pkgdir}` 展开后的绝对路径。**这是最容易漏的一步**,
 漏了的表现是 EGL 静默回落到别的 vendor —— 又一个 silent-success。
 
-### 3.3 recipe 骨架(Task #9)
+### 4.3 recipe 骨架(Task #9)
 
 ```lua
 package = {
@@ -245,7 +397,7 @@ import("xim.libxpkg.xvm")
 import("xim.libxpkg.subos")
 
 function install()
-    -- 解包;把 JSON 里的 library_path 改写为绝对路径(见 §3.2)
+    -- 解包;把 JSON 里的 library_path 改写为绝对路径(见 §4.2)
     __rewrite_vendor_jsons(pkginfo.install_dir())
     return true
 end
@@ -279,9 +431,9 @@ end
 **注意**:`__EGL_VENDOR_LIBRARY_DIRS` 用 `set` 而不是 `prepend`。这是刻意的 ——
 prepend 会把宿主的 `/usr/share/glvnd/egl_vendor.d` 留在搜索路径里,于是宿主的
 `10_nvidia.json` 排在我们的 `50_mesa.json` 前面,hermetic 边界当场失效。
-需要同时看到两者的场景由 Track B 显式合并目录来表达(§4.3),不靠 prepend 碰运气。
+需要同时看到两者的场景由 Track B 显式合并目录来表达(§5.3),不靠 prepend 碰运气。
 
-### 3.4 dlopen 闭包审计
+### 4.4 dlopen 闭包审计
 
 `readelf -d` 只能看到 `DT_NEEDED`。mesa 还会 dlopen:
 
@@ -304,9 +456,9 @@ grep -E '\.so' /tmp/trace | grep    ENOENT   # 找了但没找到 ← 缺的就�
 
 ---
 
-## 4. Track B:NVIDIA 闭源栈
+## 5. Track B:NVIDIA 闭源栈
 
-### 4.1 为什么形态完全不同
+### 5.1 为什么形态完全不同
 
 不能发布(§1.6),所以唯一可行的是:**在安装时探测宿主,把宿主的用户态桥接进 subos,
 并把"桥接了哪个版本"记账**。
@@ -314,7 +466,7 @@ grep -E '\.so' /tmp/trace | grep    ENOENT   # 找了但没找到 ← 缺的就�
 这与 hermetic 策略文档里的 `capabilities_host` 白名单是同一件事的具体化:
 GPU 是一个必须穿透 hermetic 边界的宿主资源,因为它的用户态与宿主内核绑定。
 
-### 4.2 `host.nvidia` recipe
+### 5.2 `host.nvidia` recipe
 
 命名用 `host.` 前缀,明确它**不携带 payload**,只描述一次对宿主的借用。
 
@@ -366,9 +518,9 @@ libnvidia-ptxjitcompiler.so.<ver>
 + nvidia_icd.json
 ```
 
-精确清单由 §3.4 的 strace 方法在真机上导出,**不靠这份列表**。
+精确清单由 §4.4 的 strace 方法在真机上导出,**不靠这份列表**。
 
-### 4.3 与 compat.mesa 共存
+### 5.3 与 compat.mesa 共存
 
 两个包都用 `set` 声明 `__EGL_VENDOR_LIBRARY_DIRS` —— 按 slice 1 的冲突规则,
 doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对用户不够好**。
@@ -381,7 +533,7 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 > **本设计不预先实现它** —— 先让两个包各自能单独工作,冲突由 doctor 显式报出来,
 > 等真的有人要同机双栈时再做。列为 §7 的 O3。
 
-### 4.4 宿主驱动升级 = 悄悄断链
+### 5.4 宿主驱动升级 = 悄悄断链
 
 **这是 Track B 唯一的严重失效模式,必须设计对策。**
 
@@ -403,7 +555,7 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 
 ---
 
-## 5. bwrap 空 host 冒烟测试(Task #10)
+## 6. bwrap 空 host 冒烟测试(Task #10)
 
 **这是 compat.mesa 自洽性的唯一可证伪断言**,也是这台开发机上唯一能做的
 compat.mesa 验证(RTX 4080 + 闭源驱动不属于 Track A 的四种目标硬件)。
@@ -423,7 +575,7 @@ bwrap \
 
 | # | 断言 | 失败意味着 |
 |---|---|---|
-| S1 | 进程不因加载器错误退出 | 闭包缺库(§3.4 的 ENOENT 列) |
+| S1 | 进程不因加载器错误退出 | 闭包缺库(§4.4 的 ENOENT 列) |
 | S2 | renderer 字符串含 `llvmpipe` | 选中的是软件渲染,即 payload 自洽 |
 | S3 | renderer **不含** `NVIDIA` | 宿主栈漏进来了,hermetic 边界破了 |
 | S4 | 真的画出东西(读回像素) | 只报字符串不证明能渲染 |
@@ -439,7 +591,7 @@ S4 用一个最小 EGL surfaceless 程序读回 framebuffer,比对期望颜色 �
 
 ---
 
-## 6. 任务拆分与依赖
+## 7. 任务拆分与依赖
 
 ```
 A1 补 12 个构建依赖 xpkg ──┐
@@ -473,26 +625,29 @@ A 轨在这台机器上永远只能验到 llvmpipe。
 
 ---
 
-## 7. 开放问题
+## 8. 开放问题
 
 | # | 问题 | 阻塞谁 |
 |---|---|---|
-| O1 | 精简 LLVM 到底能降到多少?需实测 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` | A5 的收益 |
+| O1 | 精简 LLVM 到底能降到多少?需实测 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` | A0 的收益,以及 §1.4 的总量 |
 | O2 | aarch64 要不要一并出?驱动集不同(无 iris/radeonsi,有 panfrost/freedreno) | A3 的构建矩阵 |
-| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §4.3 |
+| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.3 |
 | O4 | Wayland 要不要进 slice?目前只列了 x11+wayland 两个 platform,但 wayland 的
       客户端库也要进闭包 | payload 组成 |
-| O5 | `libstdc++` 从哪来?libgallium/libLLVM 都需要 GLIBCXX/CXXABI;
-      是自带还是依赖 xlings 的 gcc 包 | 闭包完整性 |
+| ~~O5~~ | ~~`libstdc++` 从哪来~~ **已由 §2.5 关闭**:走 `deps`(`xim:gcc`),不自带;
+        需在 recipe 钉 `GLIBCXX_3.4.29` 下限 | — |
+| O6 | `compat.libllvm` 的版本策略:跟随 mesa 的 LLVM 需求,还是独立 major 线? | A0 |
 
-O5 是最容易被漏的一个:它不在 §1.4 的 241 MB 里,而 gcc 的 libstdc++ 已经在
-xlings 索引里,大概率应该走 `deps` 而不是自带。
+O6 是新的:mesa 每个大版本对 LLVM 的最低要求会前移(25.x 要 ≥15),而
+`compat.libllvm` 一旦有第二个消费者就不能只跟着 mesa 走。倾向按 LLVM 自己的 major
+线发版(`compat.libllvm@20`),由 mesa 的 recipe 声明区间。
 
 ---
 
-## 8. 一句话总括
+## 9. 一句话总括
 
-> **两条轨约束相反:mesa 能发布但要自己构建(241 MB,LLVM 占一半,可精简到 ~150 MB);
+> **两条轨约束相反:mesa 能发布但要自己构建(241 MB,其中 `libLLVM.so` 137 MB 独立成
+> `compat.libllvm`,按 X86;AMDGPU 两个 target 精简后预计 ~150 MB 总量);
 > NVIDIA 闭源不能发布只能从宿主借(0 MB payload,但宿主升级会悄悄断链,需要记账 +
 > doctor)。libglvnd 让两者在同一个 subos 里共存,选谁由 slice 1 已交付的环境变量机制
 > 按进程决定。关键路径不是 mesa,是它的 12 个构建依赖;而唯一能证伪 payload 自洽性的
