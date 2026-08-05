@@ -13,7 +13,7 @@
 | 架构问题 | 已产出的缺陷 | 还会产出什么 |
 |---|---|---|
 | P1 一个问题有多个回答者 | 依赖版本(8-05)、home 在哪里(8-06 四个回答者) | 每加一个"缺省即约定"的契约,就多一批 |
-| P2 用进程全局机制满足单库需求 | libc 上 `LD_LIBRARY_PATH` 杀死 shell | 每个 host-link 类包都会重演,且各自答案不同 |
+| P2 用进程全局机制满足单库需求 | libc 上 `LD_LIBRARY_PATH` 杀死 shell | 每个 host-link 类包都会重演,且各自答案不同 —— **已找到机制层面的出路并端到端验证,见 §2.3** |
 | P3 subos 层没有"恰好一个"的执行点 | 同一 subos 绑定两个 mesa | 任何"装第二个版本"的操作 |
 
 另有一个横切属性:**沉默成功**——"没发生"和"成功了"输出相同。它不是第四个问题,而是让上面三个都变得难以发现的原因。
@@ -61,7 +61,8 @@
 
 ### 1.4 下一个还没修的实例
 
-**"一个 dlopen 进来的宿主文件,去哪里找它的依赖?"** 目前有三个答案,见 §2。
+**"一个 dlopen 进来的宿主文件,去哪里找它的依赖?"** 今天有三个答案(recipe 的手写表、宿主默认搜索、什么都不做),见 §2。
+§2.3 给出的 shim 机制把它收敛为一个:**链接期依赖由我们拥有的对象上的 DT_RPATH 回答,运行时 dlopen 由宿主回答**,两者界线可判定。
 
 ---
 
@@ -104,57 +105,118 @@
 
 `__nvidia_entries` 遵守了这条,依赖表没有。**同一个文件里的两套标准。**
 
-### 2.3 三个方案
+### 2.3 找到了机制层面的出路
 
-#### 方案 A:推导闭包,保留机制
+先说为什么前一版的推荐(修正表内容 + 加护栏)不合格:按本文档 §1.3 的 **R3** 判据——"如果改动是**增加**一条路径而不是**移除**一条,它是 workaround"——那两条都没有删掉任何回答者。内容修正只是把错的表改对,护栏只是限制损害。`LD_LIBRARY_PATH` 这个进程全局机制仍在。
 
-安装时读 vendor 的实际 DT_NEEDED,求**传递闭包**,在已解析依赖的 payload 里查找,减去"每个进程必然已加载的那一对"(`libc.so.6` + loader)。
+出路来自一条被忽略的 ELF 性质:
+
+> **DT_RPATH 沿加载链传递,DT_RUNPATH 不传递。**
+
+这条性质意味着:我们不必修改宿主的文件,也能决定它的依赖去哪里解析——只要在**它和加载器之间放一个我们拥有的对象**,把策略放在那个对象上。
+
+#### 合成实验:先证伪
+
+构造一个"我们不能修改的宿主 vendor"(无 rpath,NEED 一个只存在于我们目录里的库):
+
+| 加载方式 | 结果 |
+|---|---|
+| 直接 dlopen 该 vendor | **失败** —— 依赖找不到 |
+| 经过一个我们拥有的 shim,shim 带 **DT_RUNPATH** | **失败** |
+| 经过同一个 shim,shim 带 **DT_RPATH** | **成功**,`LD_DEBUG` 显示依赖从我们的目录解析 |
+
+RUNPATH 与 RPATH 的对照是关键:两者只差一个 patchelf `--force-rpath`,结果相反。**这条性质是承重的,不是巧合。**
+并且 `dlsym(shim_handle, ...)` 能取到 vendor 的符号——dlsym 搜索句柄的整个依赖树,所以 glvnd 拿到的仍是真 vendor 的入口。
+
+#### 真实 NVIDIA 栈:A/B
+
+同一个探针二进制,同一份 `LD_LIBRARY_PATH`(只含应用自己需要的 X11 目录,**故意不含 glibc**),唯一差别是 vendor JSON 指向谁:
+
+| JSON 指向 | 结果 |
+|---|---|
+| 宿主 vendor 本身(今天的机制,去掉 `xlings-deps`) | `DEVICE_COUNT=0` —— vendor 加载不了 |
+| 我们的 shim(DT_RPATH 指向闭包) | `DEVICE_COUNT=1` |
+
+`LD_DEBUG` 确认:vendor 的 `libdl / libm / libpthread / librt` 从 **我们的 glibc 载荷**解析,而全局搜索路径上没有 glibc。
+
+#### 机制的边界(实测,不是推测)
+
+shim 组能枚举出设备,但 `eglInitialize` 失败。`strace` 对比工作组与 shim 组打开的文件,差异是:
 
 ```
-需要提供的集合
-  = 传递闭包(所有 nvidia 入口的 DT_NEEDED)
-  ∩ 我们的依赖载荷能提供的
-  − {libc.so.6, ld-linux*/ld-musl*}
+libnvidia-glsi / libnvidia-eglcore / libnvidia-egl-gbm
+libnvidia-egl-wayland / libdbus-1
 ```
 
-- 消灭两张手写表(SONAME 列表、包→文件名映射)。
-- 换驱动版本自动跟上——这正是 `__nvidia_entries` 已经在做的事,只是把它贯彻到依赖侧。
-- 排除规则从"一张清单"降为**一条有理由的规则**:凡是每个动态进程在到达任何 dlopen 之前必然已绑定的,搜索路径上放它没有意义;而它恰好也是放上去会致命的那一个。
-- 顺带补上五个泄漏。
+vendor 在**运行时按裸 SONAME `dlopen` 自己的兄弟库**。于是边界是:
 
-代价:安装时要跑 N 次 `patchelf --print-needed`(recipe 已可直接调用 patchelf,`godot.lua` 有先例)。NVIDIA 用户态约 80 个文件,一次安装内可接受。
+> **DT_RPATH 的传递性覆盖链接期依赖(DT_NEEDED),不覆盖运行时 dlopen。**
 
-**不解决 P2 本身**——`LD_LIBRARY_PATH` 仍是进程全局的,只是内容正确了。
+运行时 dlopen 没有链接链可依附,任何 RPATH 机制都服务不了它。这是这条路线的硬边界。
 
-#### 方案 B:拷贝 + RPATH,消灭机制
+#### 边界恰好落在正确的地方
 
-把 vendor 库**拷贝**进我们的 payload,我们就拥有副本,可以 patchelf 打 RPATH。于是完全不需要 `LD_LIBRARY_PATH`,每个库只找自己的依赖,不对任何其他进程施加任何东西。
+那些运行时 dlopen 找的是 **NVIDIA 自己的兄弟库**——宿主的文件,而且**必须**与宿主内核模块匹配。它们本来就该来自宿主。于是问题按同一条线切开:
 
-**不推荐**,两个理由:
+| 要找什么 | 由谁提供 | 为什么这是对的 |
+|---|---|---|
+| vendor 对**我们的**库的 DT_NEEDED | **shim 的 DT_RPATH** | 作用域是链接链,per-consumer,不向任何其他进程施加任何东西 |
+| vendor 运行时 dlopen **它自己的**兄弟库 | 宿主驱动目录放在 `LD_LIBRARY_PATH` | 全是宿主文件,宿主二进制本来就能解析到同一批;我们的库一个都不在上面 |
 
-1. **327MB**(实测宿主 NVIDIA 用户态体积)。
-2. 更关键:**打破用户态与内核模块的版本耦合**。NVIDIA 用户态必须与正在运行的内核驱动严格匹配。符号链接总是跟随宿主;拷贝会在宿主更新驱动后失配,表现为运行时错误而不是安装时错误。这个包叫 `host-link` 正是因为这个耦合是它的设计核心。
+这条线正是这个包自己已经画的那条线("`lib/` 是宿主的,`xlings-deps/` 是我们的")。
 
-方案 B 用"驱动更新后的正确性"换"隔离性"。这个交换在这里不划算,**但结论应当写进 recipe**,否则下一个人会重新讨论一遍。
+#### 端到端验证
 
-#### 方案 C:承认是结构性妥协,收窄爆炸半径
+`LD_LIBRARY_PATH` 上**只有宿主驱动目录**,`xlings-deps` 完全不参与:
 
-`xlings-deps` 上 `LD_LIBRARY_PATH` 是**结构性妥协,不是实现细节**。既然妥协要保留,就必须把它的爆炸半径限定住并且可见:
+```
+DEV0_EGL_VENDOR   = NVIDIA
+DEV0_GL_RENDERER  = NVIDIA GeForce RTX 4080/PCIe/SSE2
+DEV0_GL_VERSION   = 4.6.0 NVIDIA 550.144.03
+DEV2_GL_RENDERER  = llvmpipe (LLVM 20.1.7, 256 bits)     ← 软件回退同时可用
+```
 
-- xlings 侧拒绝把含 libc 的目录放上全局搜索路径(已实现,commit `e486364`)。这不是第二个回答者——它不**决定**任何事,它**拒绝**。属于 R4"对产物断言"。
-- 目录粒度是诚实边界:`LD_LIBRARY_PATH` 只能整目录取舍。要做到文件级就得物化一个过滤后的镜像目录,那会成为"vendor 的依赖在哪里"的**第三个回答者**——正是 P1 在拆的东西。
+- 宿主 `/bin/bash` 在同样的 `LD_LIBRARY_PATH` 下正常(那目录里没有我们的任何东西)。
+- shim 体积 **27KB**(对照:拷贝整套用户态 327MB)。
+- 仍是符号链接指向宿主文件,**用户态/内核模块的版本耦合完整保留**。
+- **不需要安装时的编译器**:已验证用 patchelf 对一个预置空 stub 做 `--add-needed` + `--set-rpath --force-rpath` 即可产出可用 shim。
 
-### 2.4 推荐
+### 2.4 这解决了什么,以及为什么它不是 workaround
 
-**A + C 落地,B 记录为不采纳及理由。**
+1. **`xlings-deps` 整个消失**,两张硬编码表随之消失。shim 的 DT_RPATH 从已解析依赖推导,而 `resolved_deps` 已经是 xlings 记录的权威记录(R1 已经做过了)。§2.2 漏掉的五个库不需要"补进表里"——表没有了。
+2. **我们的库永远不出现在任何进程全局搜索路径上。** libc 那一类缺陷从"被护栏挡住"变成**结构上不可能**。
+3. **删掉了一个回答者**,而不是增加。这是 R3 意义上的解决。
+4. xlings 侧的护栏保留,但它的角色变了:从"防止损害"变成 **R4 意义上的断言——它应当永远不触发**。触发即说明某个 recipe 又走回了老路。
 
-**提议 B1**:`nvidia-gl-host-link.lua` 的依赖收拢改为闭包推导(方案 A),排除规则表述为一条规则而非一张清单。
+### 2.5 提议
 
-**提议 B2**:把闭包推导做成 **libxpkg 的公共能力**而不是 recipe 的私有代码。`libcuda-host-link` 是同一模式的第二个实例——实测它**既不收拢依赖也不声明 `LD_LIBRARY_PATH`**,也就是说它的依赖今天全部来自宿主。两个 sentinel,同一个问题,两个不同答案:这已经是 P1 在这一层的实例。一个 `elfpatch.host_link_closure(opts)` 让两者共用一个实现。
+**提议 B1(替换 B1/B2 旧版)**:把这个机制做成 **libxpkg 的公共能力**,而不是 recipe 的私有代码:
 
-**提议 B3**:规范里写明——**任何 `subos.env` 对 `LD_LIBRARY_PATH` / `LD_PRELOAD` 的声明都是特权操作**,需要在 recipe 里写明为什么 RPATH 不适用。目前全索引只有 1 处这样的声明(实测:`LD_LIBRARY_PATH` × 1,其余是 `LIBGL_DRIVERS_PATH`、`__EGL_VENDOR_LIBRARY_DIRS` × 2、`XDG_DATA_DIRS`),现在立规则的成本最低。
+```
+elfpatch.host_link_shim{
+    vendor  = "<宿主 vendor 的绝对路径或 SONAME>",
+    deps    = <从 resolved_deps 推导的载荷 libdir 列表>,
+    out     = "<我们 payload 里的 shim 路径>",
+    soname  = "<需要时,例如 GLX 要求 libGLX_nvidia.so.0>",
+}
+```
 
----
+`nvidia-gl-host-link` 与 `libcuda-host-link` 共用它——后者实测**既不收拢依赖也不声明 `LD_LIBRARY_PATH`**,今天依赖全部来自宿主,是同一个问题的第二个答案。一个实现,两个消费者。
+
+**提议 B2**:`nvidia-gl-host-link` 的 `LD_LIBRARY_PATH` 声明收窄为**只有宿主驱动目录**,并在注释里写明它为什么是安全的(里面没有我们的任何文件)。`xlings-deps` 目录删除。
+
+**提议 B3(不变)**:规范里写明,任何 `subos.env` 对 `LD_LIBRARY_PATH` / `LD_PRELOAD` 的声明都是特权操作,需要写明为什么 RPATH 不适用。有了 shim 机制,"RPATH 不适用"的真实场景只剩**运行时按裸 SONAME dlopen 宿主自己的文件**这一种。
+
+**方案 B(拷贝 327MB + RPATH)正式否决**,理由写进 recipe:它打破用户态与内核模块的版本耦合,而 shim 用 27KB 拿到了同样的隔离性。
+
+### 2.6 还需要验证的
+
+诚实列出,不要当成已完成:
+
+- **GLX 路径**:`libGLX_nvidia` 的 vendor 选择走的是按 SONAME 模式 `libGLX_%s.so.0` 查找,shim 需要顶替这个文件名。机制应当相同,但没有单独验证过。
+- **Vulkan ICD**:同理,ICD JSON 指向文件路径,预期可用,未验证。
+- **`dlsym` 语义**:合成实验证明句柄依赖树可见;glvnd 是否对 vendor 做过 SONAME 或路径上的额外校验,未穷尽。
+- **预置 stub 的分发**:每个 arch 一个,归属 libxpkg 还是索引,未定。
 
 ## 3. P3:subos 层没有"恰好一个"的执行点
 
@@ -267,16 +329,30 @@ subos manifest 里两个 binding 都在,两者都在贡献 `__EGL_VENDOR_LIBRARY
 依赖关系决定顺序,不是优先级:
 
 ```
-D3 (host-link 解析结果持久化)  ─┐
-                                ├─→ B1/B2 (闭包推导)  ─→  补齐五个泄漏
-D2 (三个数的报告)              ─┘
+E1/E2 (隔离 home + 契约断言)  ─→  独立,应当最先做:它决定后面所有验证是否可信
+A1/A2 (规范化五条规则)        ─→  独立,成本最低,防止新回答者被引入
+E3    (双工具链门禁)          ─→  独立
+
+§2.6 的四项验证 (GLX / Vulkan / dlsym 语义 / stub 分发)
+        │
+        ▼
+B1 (libxpkg 的 host_link_shim 能力)
+        │
+        ├─→ B2 (nvidia-gl-host-link 切换到 shim,删除 xlings-deps)
+        └─→ B2' (libcuda-host-link 用同一能力,关掉它今天的全量宿主泄漏)
+        │
+        ▼
+B3 (规范:LD_LIBRARY_PATH 声明是特权操作)   ← 有了 shim 才写得出"什么时候才真的需要它"
 
 C3 (doctor 报双绑定)  ─→  C1 (单版本执行点)  ─→  C2 (envs 派生)
 
-E1/E2 (隔离 home + 契约断言)  ─→  独立,应当最先做,因为它决定后面所有验证是否可信
-
-A1/A2 (规范化五条规则)  ─→  独立,成本最低,防止新缺陷
-E3 (双工具链门禁)      ─→  独立
+D1/D2/D3 (可观测性)   ─→  D3 可与 B1 一起做(shim 的解析结果正是要持久化的东西)
 ```
 
-**建议先做 E1/E2 和 A1/A2**:前者让后续所有验证可信,后者阻止新的回答者被引入。B 和 C 两条线可以并行。
+**先做 E1/E2 与 A1/A2**:前者让后续所有验证可信,后者阻止新的回答者被引入。
+
+**B 线在 §2.6 四项验证完成前不要动代码**——GLX 与 Vulkan 两条路径没验证过,现在实现等于把一个未经检验的假设写进公共能力里。这正是上一轮"逐库测量但取样不足"的教训:机制在 EGL 上成立,不等于在 GLX 上成立。
+
+**C 线与 B 线可并行**,内部顺序不可换:先能报告,再改行为。
+
+**已落地的四个修复(D1–D4)保持不变**,它们与本提案不冲突:§2 的 shim 机制会让 xlings 侧的 libc 护栏永远不触发,但护栏本身作为 R4 断言应当保留。
