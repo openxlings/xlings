@@ -56,14 +56,21 @@ jobs:
           path: |
             ~/.mcpp
             .mcpp
-          # `mcpp-v2-`: the v1 keyspace holds entries saved by runs that
+          # `mcpp-v3-`: retired v2 on 2026-08-06. The key already hashes
+          # mcpp.toml, so a dependency bump misses it exactly -- but
+          # `restore-keys` then falls back to the newest v2 entry, whose
+          # registry carries the mcpp-index snapshot from BEFORE the bump.
+          # `mcpplibs.xpkg@0.0.50` was published and resolvable from a clean
+          # home while three CI jobs insisted it did not exist. Retiring the
+          # prefix is what stops the fallback reaching those entries.
+          # `mcpp-v3-`: the v1 keyspace holds entries saved by runs that
           # built against a fallback-restored BMI set and failed. Those are
           # poisoned at their exact key, so the guard below -- which only fires
           # on an INEXACT restore -- can never reach them. Retiring the prefix
           # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v2-${{ runner.os }}-dt110-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          key: mcpp-v3-${{ runner.os }}-dt110-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-v2-${{ runner.os }}-dt110-
+            mcpp-v3-${{ runner.os }}-dt110-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
       # under a different dependency set. Mixing them with anything rebuilt
       # here fails as `import 'std' has CRC mismatch` — which reads like a
@@ -90,6 +97,15 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings config --mirror GLOBAL
+          # Refresh the index before resolving anything out of it.
+          #
+          # Without this the run resolves against whatever index snapshot the
+          # bootstrap shipped with, which is not the one this PR needs: a
+          # freshly published `mcpplibs.xpkg@0.0.50` reported as "not found"
+          # while older entries from the same index downloaded fine. The
+          # failure names the package, so it reads as an unpublished
+          # dependency rather than as an index nobody refreshed.
+          xlings update || true
           xlings install -y
           mcpp --version
           mcpp self version

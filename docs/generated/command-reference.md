@@ -44,6 +44,10 @@ Show package information
 
 Options: `--all-versions` — Show every available version
 
+## `xlings why <package> [dep]`
+
+Show why a dependency resolved to the version it did
+
 ## `xlings use <target> [version]`
 
 Switch tool version

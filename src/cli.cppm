@@ -1102,6 +1102,17 @@ export int run(int argc, char* argv[]) {
                                      args.is_flag_set("all-versions"));
             }))
 
+        // why — the resolution record, read back
+        .subcommand("why")
+            .description("Show why a dependency resolved to the version it did")
+            .arg("package").required().help("Installed package name")
+            .arg("dep").help("Optional dependency name to filter by")
+            .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
+                apply_global_opts_(args);
+                return xim::cmd_why(args.value("package").value_or(""),
+                                    args.value("dep").value_or(""), stream);
+            }))
+
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`
         // (one-shot form, matching install/remove). Bare `<name>` switches
         // when exactly one version is installed and lists them (exit 0) when

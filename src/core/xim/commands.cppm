@@ -108,6 +108,79 @@ bool index_refresh_cooldown_elapsed() {
 // even when another version is already active. Default behavior preserves
 // the existing active version; this flag opts back into the legacy
 // "install also switches" behavior on a per-invocation basis.
+// Why a package's dependency resolved the way it did.
+//
+// Reads the record the install wrote, not the recipe: the recipe says
+// `>=2.38`, which is a question, and this answers it. Also reads the ELF on
+// disk, so the answer is checked against what actually shipped rather than
+// against what was intended -- those two have differed, and the difference
+// is what this whole area exists to prevent.
+int cmd_why(const std::string& target, const std::string& dep,
+            EventStream& stream) {
+    namespace fs = std::filesystem;
+    const auto store = Config::paths().dataDir / "xpkgs";
+    std::error_code ec;
+    if (!fs::is_directory(store, ec)) {
+        stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                               .message = "no packages are installed",
+                               .recoverable = false});
+        return 1;
+    }
+
+    auto bare = target;
+    if (auto at = bare.find('@'); at != std::string::npos) bare.resize(at);
+    if (auto colon = bare.find(':'); colon != std::string::npos)
+        bare = bare.substr(colon + 1);
+
+    // Every installed version of the named package: a home can hold more
+    // than one, and "which one did you mean" is better answered by showing
+    // both than by picking.
+    std::vector<fs::path> records;
+    for (const auto& pkgDir : platform::dir_entries(store)) {
+        if (!pkgDir.is_directory()) continue;
+        const auto storeName = pkgDir.path().filename().string();
+        // `<ns>-x-<name>`; match the name half.
+        auto marker = storeName.find("-x-");
+        if (marker == std::string::npos) continue;
+        if (storeName.substr(marker + 3) != bare) continue;
+        for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
+            auto rec = verDir.path() / ".xlings-resolution.json";
+            if (fs::is_regular_file(rec, ec)) records.push_back(rec);
+        }
+    }
+    if (records.empty()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = std::format("no resolution record for '{}'", bare),
+            .recoverable = false,
+            .hint = "records are written at install time; reinstall the "
+                    "package to produce one"});
+        return 1;
+    }
+
+    for (const auto& recPath : records) {
+        auto content = platform::read_file_to_string(recPath.string());
+        auto json = nlohmann::json::parse(content, nullptr, false);
+        if (json.is_discarded()) continue;
+        std::println("{}", json.value("package", std::string{}));
+        for (const auto& d : json.value("deps", nlohmann::json::array())) {
+            const auto spec = d.value("spec", std::string{});
+            if (!dep.empty() && spec.find(dep) == std::string::npos) continue;
+            std::println("  {}", spec);
+            std::println("    resolved  {}   (source: {})",
+                         d.value("version", std::string{}),
+                         d.value("source", std::string{}));
+            std::println("    payload   {}",
+                         Config::display_path(d.value("install_dir", std::string{})));
+            for (const auto& l : d.value("libdirs", nlohmann::json::array())) {
+                std::println("    libdir    {}",
+                             Config::display_path(l.get<std::string>()));
+            }
+        }
+    }
+    return 0;
+}
+
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                 EventStream& stream, bool forceGlobal = false,
                 CancellationToken* cancel = nullptr, bool dryRun = false,

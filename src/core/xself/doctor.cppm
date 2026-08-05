@@ -12,6 +12,7 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
+import xlings.core.elf_same_source;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
@@ -151,6 +152,13 @@ enum class FindingKind {
     // built against it may still run off the host's libc, which is precisely
     // the hermetic boundary the runtime field exists to make checkable.
     SubosRuntimeMissing,
+    // A binary whose interpreter and whose libc come from different payloads
+    // of the same package. `ld.so` and `libc.so.6` are two halves of one
+    // build, talking over GLIBC_PRIVATE symbols that promise nothing across
+    // versions -- so this does not degrade, it faults before main with a
+    // message naming neither package nor version. Installs cannot produce it
+    // any more; this finds the ones already on disk.
+    LoaderLibcSplit,
 };
 
 enum class FindingLevel {
@@ -1285,6 +1293,44 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             }
         }
 
+        // Loader and libc from one payload, over what is already on disk.
+        //
+        // The install path refuses to create a split, so anything found here
+        // predates that check or was written by hand. Scanned per payload
+        // rather than per subos because the fault lives in the payload: one
+        // bad binary is bad in every subos that uses it.
+        //
+        // Same implementation the installer asserts with -- deliberately.
+        // Report and repair have drifted three times in this repo, and it
+        // always looks the same from outside: doctor keeps reporting what
+        // `--fix` claims to have fixed.
+        {
+            std::error_code sec;
+            const auto store = Config::paths().dataDir / "xpkgs";
+            if (fs::is_directory(store, sec)) {
+                for (const auto& pkgDir : platform::dir_entries(store)) {
+                    if (!pkgDir.is_directory()) continue;
+                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
+                        if (!verDir.is_directory()) continue;
+                        for (const auto& f :
+                                 elfcheck::scan_payload(verDir.path())) {
+                            add({
+                                .kind   = FindingKind::LoaderLibcSplit,
+                                .level  = FindingLevel::Error,
+                                .target = pkgDir.path().filename().string(),
+                                .version = verDir.path().filename().string(),
+                                .detail = elfcheck::describe(f),
+                                .remedy = std::format(
+                                    "xlings install {}@{} --force",
+                                    pkgDir.path().filename().string(),
+                                    verDir.path().filename().string()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         for (const auto& scanRoot : sysrootRoots) {
             const bool isActive = scanRoot.name.empty();
             for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
@@ -2095,6 +2141,12 @@ Counts count_(const Scan& scan) {
                 if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
             case FindingKind::OtherSubos:      ++c.otherSubos; break;
+            case FindingKind::LoaderLibcSplit:
+                // Counted as broken, so it reaches the exit code. A finding
+                // that prints and then exits 0 is how a check gets ignored by
+                // every script that wraps it.
+                ++c.broken;
+                break;
         }
     }
     return c;
@@ -2308,6 +2360,15 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::SubosRuntimeMissing:
                 add(glyph::mark(glyph::warn, "subos runtime"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::LoaderLibcSplit:
+                // Not collapsed into a count, and never abbreviated: the two
+                // paths ARE the finding. A reader who gets only "1 problem"
+                // has to reproduce the whole investigation this check exists
+                // to remove.
+                add(glyph::mark(glyph::failed, "loader/libc split"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;

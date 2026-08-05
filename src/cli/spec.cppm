@@ -58,6 +58,8 @@ const CommandSpec& root() {
                 {{"-a, --all", "Show every subos"}}, {}},
             {"info", "Show package information", {}, {{"package", "Package name", true}, {"version", "Optional version", false}},
                 {{"--all-versions", "Show every available version"}}, {}},
+            {"why", "Show why a dependency resolved to the version it did", {},
+                {{"package", "Installed package name", true}, {"dep", "Optional dependency name", false}}, {}, {}},
             {"use", "Switch tool version", {}, {{"target", "Tool name", true}, {"version", "Optional version", false}},
                 {{"-a, --all", "Show every subos"}, {"--strict", "Require a coherent release"}}, {}},
             {"config", "Show or modify configuration", {}, {},
