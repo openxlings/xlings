@@ -344,11 +344,14 @@ export int unmount_image_(const fs::path& mountpoint) {
 
 
 // Probe order for the proot binary:
-//   1. ~/.xlings/data/xpkgs/xim-x-proot/<active>/bin/proot   (xpkg-managed,
-//      future once xim:proot ships)
-//   2. ~/.xlings/runtimedir/proot                            (auto-fetch
-//      cache, populated on first sandbox use)
-//   3. PATH-resolved `proot`                                 (system pkg)
+//   1. <home>/data/xpkgs/xim-x-proot/<ver>/bin/proot   the PAYLOAD
+//   2. <home>/runtimedir/proot                         auto-fetch cache
+//   3. /usr/bin/proot, /usr/local/bin/proot            the HOST (reported)
+//
+// PATH is deliberately absent -- see (3) below. The same rule, in the same
+// shape, as libxpkg's elfpatch tool lookup: payload, then a named fallback
+// that says so. Both implement R6 (internal consumers bind the payload, not
+// the view), .agents/docs/2026-08-06-subos-architecture-proposal.md §1.5.
 //
 // Returns the path to a usable proot, or unexpected with a hint string.
 std::expected<fs::path, std::string>
@@ -390,42 +393,38 @@ locate_proot_(const fs::path& home_dir) {
     auto runtime_proot = home_dir / "runtimedir" / "proot";
     if (fs::is_regular_file(runtime_proot, ec)) return runtime_proot;
 
-    // (3) PATH-resolved — a real system proot, and only that.
+    // (3) The host's proot, at the two paths a distribution puts it.
     //
-    // A `proot` on PATH that lives inside an xlings home is not a system
-    // proot: it is one of our shims, and running it re-enters xlings, which
-    // anchors to the home that owns the shim and re-exports XLINGS_HOME to
-    // match. The sandbox then runs against THAT home. An isolated
-    // XLINGS_HOME with no backend installed would silently borrow the
-    // developer's real home -- including its packages -- and every
+    // There is no PATH step. An earlier version walked PATH and rejected the
+    // candidates that turned out to be xlings shims; that fixed the symptom
+    // and left the cause. By R6 the whole step is wrong for internal use: PATH
+    // is a *view*, it is what the user selected, and letting it decide which
+    // proot runs makes the sandbox's own identity depend on the environment
+    // the sandbox was launched from. A shim on PATH is the worst case -- it
+    // re-enters xlings, anchors to the home that owns it, and re-exports
+    // XLINGS_HOME to match, so an isolated home with no backend installed
+    // would silently run against the developer's real home, and every
     // measurement taken inside would be of the wrong home while looking
     // exactly like a measurement of the right one.
     //
-    // Skipping any home's shim, not just other homes': ours would work, but
-    // reaching it through PATH rather than through (1) means PATH decided
-    // which version runs.
-    if (auto* path_env = std::getenv("PATH"); path_env && *path_env) {
-        std::string_view pv = path_env;
-        std::size_t start = 0;
-        while (start <= pv.size()) {
-            auto end = pv.find(':', start);
-            auto seg = pv.substr(start, end == std::string_view::npos
-                                        ? pv.size() - start : end - start);
-            if (!seg.empty()) {
-                auto candidate = fs::path(seg) / "proot";
-                if (fs::is_regular_file(candidate, ec)) {
-                    if (auto owner = xvm::resolve_owner_home(candidate)) {
-                        log::debug("skipping {}: an xlings shim owned by {}, "
-                                   "not a system proot",
-                                   candidate.string(), owner->string());
-                    } else {
-                        return candidate;
-                    }
-                }
-            }
-            if (end == std::string_view::npos) break;
-            start = end + 1;
+    // These two paths are different in kind: they are the host's, they are
+    // named here rather than discovered, and using one is reported. Per §2.8
+    // of the architecture proposal, depending on the host is allowed when it
+    // is DECLARED -- what is not allowed is depending on it by accident.
+    for (const auto* p : {"/usr/bin/proot", "/usr/local/bin/proot"}) {
+        auto candidate = fs::path(p);
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        // Defensive: a home that installed itself under /usr/local would put
+        // a shim on one of these paths, and it is still a shim.
+        if (auto owner = xvm::resolve_owner_home(candidate)) {
+            log::debug("skipping {}: an xlings shim owned by {}, not the "
+                       "host's proot", candidate.string(), owner->string());
+            continue;
         }
+        log::warn("using the host's proot ({}) -- no proot payload in {}. "
+                  "Run `xlings install proot` to make this deterministic.",
+                  candidate.string(), home_dir.string());
+        return candidate;
     }
 
     // Naming the home rather than "~/.xlings": with an isolated XLINGS_HOME
@@ -433,11 +432,11 @@ locate_proot_(const fs::path& home_dir) {
     // reader who follows it lands on the very home this search excluded.
     return std::unexpected(std::format(
         "proot not found in {}. Run `xlings install proot`, or place a proot "
-        "binary at {}/runtimedir/proot. A system proot ({}) is also used if "
-        "present -- but a `proot` on PATH belonging to another xlings home is "
-        "not, because running it would move the whole session to that home.",
-        home_dir.string(), home_dir.string(),
-        "e.g. `sudo apt install proot`"));
+        "binary at {}/runtimedir/proot. The host's proot at /usr/bin/proot is "
+        "used when present (`sudo apt install proot`), but PATH is not "
+        "searched: a `proot` on PATH may be an xlings shim, and running it "
+        "would move the whole session to whichever home owns it.",
+        home_dir.string(), home_dir.string()));
 }
 
 // ── Unified bind list (shared by proot + bwrap) ──────────────────────

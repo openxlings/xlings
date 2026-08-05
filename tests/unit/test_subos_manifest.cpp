@@ -343,3 +343,101 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     EXPECT_TRUE(info.envs.empty());
     EXPECT_FALSE(info.created_at.empty());
 }
+
+// ── the subos layer's "exactly one" ──────────────────────────────────
+//
+// The predicate C3's report and C3's --fix both call. It is a function rather
+// than two pieces of equivalent logic because every report/repair pair in this
+// repo has drifted at least once, and the shape it takes is a finding that
+// repairing does not clear.
+
+TEST(SubosDuplicateBindings, OneVersionPerPackageIsNotADuplicate) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7", {"V", "prepend", "a"});
+    m::add_env(d, "fontconfig@2.15.0", {"W", "prepend", "b"});
+
+    EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
+}
+
+// The measured case: mesa@25.0.7 and mesa@25.0.7.1 both bound in `default`,
+// both contributing to __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the device
+// twice, and `xlings self doctor` reporting nothing.
+TEST(SubosDuplicateBindings, TwoVersionsOfOnePackageAreReported) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+    m::add_env(d, "fontconfig@2.15.0", {"W", "prepend", "c"});
+
+    auto dups = m::duplicate_bindings(m::parse(d));
+    ASSERT_EQ(dups.size(), 1u);
+    EXPECT_EQ(dups[0].name, "mesa");
+    ASSERT_EQ(dups[0].bindings.size(), 2u);
+    EXPECT_EQ(dups[0].bindings[0], "mesa@25.0.7");
+    EXPECT_EQ(dups[0].bindings[1], "mesa@25.0.7.1");
+}
+
+// A package whose name is a prefix of another's must not merge with it.
+// "mesa" and "mesa-utils" are two packages; a substring match would report a
+// duplicate that does not exist, and --fix would then unbind a live package.
+TEST(SubosDuplicateBindings, NamesAreComparedWhole) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",       {"V", "prepend", "a"});
+    m::add_env(d, "mesa-utils@9.0.0",  {"W", "prepend", "b"});
+
+    EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
+}
+
+// ── privileged declarations (B5) ─────────────────────────────────────
+//
+// Default-deny by variable NAME. Listing the dangerous variables instead would
+// be a hand-written list of what we happened to think of -- the anti-pattern
+// R7 names, and the one that already cost five missing entries in
+// nvidia-gl-host-link's dependency table.
+
+TEST(SubosPrivilegedEnv, TheLoaderVariablesArePrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${pkgdir}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_PRELOAD", "${pkgdir}/lib/libx.so"));
+}
+
+// These bypass the dynamic loader entirely -- libglvnd and mesa read them
+// themselves -- so no RPATH mechanism can reach them and the loader-only guard
+// never saw them. Measured: a HOST binary linked against the host's libEGL
+// drops from the NVIDIA GPU to llvmpipe under these declarations, loading our
+// libm and libstdc++ into a process running on the host's libc.
+TEST(SubosPrivilegedEnv, VariablesLibrariesReadThemselvesAreAlsoPrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("__EGL_VENDOR_LIBRARY_DIRS",
+                                     "${pkgdir}/share/glvnd/egl_vendor.d"));
+    EXPECT_TRUE(m::is_privileged_env("LIBGL_DRIVERS_PATH", "${pkgdir}/lib/dri"));
+}
+
+// The point of default-deny: a variable nobody has classified reads as
+// privileged. If this test ever needs changing, someone has decided a new
+// variable is safe -- which is a decision, and belongs in names_only_data.
+TEST(SubosPrivilegedEnv, AnUnclassifiedVariableReadsAsPrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("SOME_FUTURE_PLUGIN_PATH",
+                                     "${pkgdir}/lib/plugins"));
+}
+
+// AD-3: the line is "causes code to be loaded" vs "causes data to be found",
+// not "is it process-global". subos supplying a default that the user can
+// override is how Linux works.
+TEST(SubosPrivilegedEnv, DataVariablesAreNotPrivileged) {
+    EXPECT_FALSE(m::is_privileged_env("XDG_DATA_DIRS", "${pkgdir}/share"));
+    EXPECT_FALSE(m::is_privileged_env("MANPATH", "${pkgdir}/share/man"));
+    EXPECT_FALSE(m::is_privileged_env("PKG_CONFIG_PATH", "${pkgdir}/lib/pkgconfig"));
+}
+
+// PATH is a third category: it does not inject code into a running process, it
+// decides which executable runs. That is R6/AD-1's business, not this guard's.
+TEST(SubosPrivilegedEnv, PathIsGovernedElsewhere) {
+    EXPECT_FALSE(m::is_privileged_env("PATH", "${pkgdir}/bin"));
+}
+
+// A value pointing outside our store cannot put OUR code anywhere. The host's
+// own driver directory on LD_LIBRARY_PATH is the case that has to stay
+// available: it is the one thing an interposer cannot cover, because the
+// driver dlopen's its siblings by bare SONAME at runtime.
+TEST(SubosPrivilegedEnv, AValueOutsideOurStoreIsNotPrivileged) {
+    EXPECT_FALSE(m::is_privileged_env("LD_LIBRARY_PATH",
+                                      "/usr/lib/x86_64-linux-gnu"));
+}
