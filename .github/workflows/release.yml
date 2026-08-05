@@ -97,6 +97,15 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings config --mirror GLOBAL
+          # Refresh the index before resolving anything out of it.
+          #
+          # Without this the run resolves against whatever index snapshot the
+          # bootstrap shipped with, which is not the one this PR needs: a
+          # freshly published `mcpplibs.xpkg@0.0.50` reported as "not found"
+          # while older entries from the same index downloaded fine. The
+          # failure names the package, so it reads as an unpublished
+          # dependency rather than as an index nobody refreshed.
+          xlings update || true
           xlings install -y
           mcpp --version
           mcpp self version
@@ -270,6 +279,15 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           xlings config --mirror GLOBAL
+          # Refresh the index before resolving anything out of it.
+          #
+          # Without this the run resolves against whatever index snapshot the
+          # bootstrap shipped with, which is not the one this PR needs: a
+          # freshly published `mcpplibs.xpkg@0.0.50` reported as "not found"
+          # while older entries from the same index downloaded fine. The
+          # failure names the package, so it reads as an unpublished
+          # dependency rather than as an index nobody refreshed.
+          xlings update || true
           xlings install -y
           mcpp --version
           mcpp self version

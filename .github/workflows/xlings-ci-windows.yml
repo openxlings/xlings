@@ -105,6 +105,12 @@ jobs:
         run: |
           Set-Location $env:GITHUB_WORKSPACE
           xlings config --mirror GLOBAL
+          # Refresh the index before resolving out of it. Without this the run
+          # resolves against the snapshot the bootstrap shipped with, and a
+          # freshly published dependency reads as "not found" while older
+          # entries from the same index download fine.
+          xlings update
+          $global:LASTEXITCODE = 0
           xlings install -y
           mcpp --version
           mcpp self version
