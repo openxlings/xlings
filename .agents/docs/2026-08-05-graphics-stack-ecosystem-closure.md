@@ -363,6 +363,41 @@ CI 的安装测试正是用 `--add-xpkg` 注册被改动的 recipe。这就是�
 **只取直接子项**,这样 mesa 的 `lib/dri/*.so` 十二个驱动模块不会进链接路径
 (它们是靠 `LIBGL_DRIVERS_PATH` 按路径加载的,不是链接目标)。
 
+### 5.5 构建期工具:三条与"产物"相反的规则
+
+打出来的库要 `$ORIGIN`,而构建过程中**要被执行**的工具需要相反的东西。
+wayland 是第一个撞上的(`wayland-scanner` 既是产物又是下游构建要跑的工具),
+三条规则都是它逼出来的:
+
+**一、DT_RPATH,不是 DT_RUNPATH。** `-Wl,--disable-new-dtags`。
+RUNPATH **不传递** —— 只对一个对象的直接依赖生效。
+`wayland-scanner` 链 libxml2,libxml2 需要 libm,于是 libm 在**没有任何路径**
+的情况下查找,落到 ld.so 的内建默认路径 —— 而那是**编译已发布 glibc 的那台机器**
+的 prefix(`/home/xlings/.xlings_data/...`)。报错说的是 libm,
+而 `objdump -p` 明明显示 RUNPATH 里就有它。
+
+**二、不能用 LD_LIBRARY_PATH 代替。** 构建自己的工具链
+(meson / ninja / python)**没有被 elfpatch** —— python 的 INTERP 是宿主的
+`/lib64/ld-linux`。任何 xlings 的 libc 排在它们前面,都会让它们在 vDSO 里
+(`__vdso_time`)段错误,**一个字都来不及打印**,看起来像工具链坏了。
+
+**三、装进 subos 的那一份和打包的那一份,RPATH 不同。**
+payload 的 `$ORIGIN` 由 xlings 的 elfpatch 在真实安装时重定位;
+构建 subos 里的那份没人重定位,必须直接写 subos 路径
+(且要 `patchelf --force-rpath`,同样因为传递性)。
+
+**顺带补上的一个真空档**:RPATH 重写和宿主泄漏检查原本只匹配 `*.so*`。
+payload 里的**可执行文件**两边都看不见 —— 而它们恰恰是带着构建期路径的那些。
+现在按 ELF 魔数匹配。
+
+### 5.6 mesa 的版本号为什么是 25.0.7.1
+
+上游是 25.0.7,第四段是我们的。GitCode 的 release 资产**写一次就不能删**,
+所以内容变了的 payload 必须换版本号,否则同一个名字下会有两个不同的 tarball。
+tarball 内部的顶层目录仍是上游的 `mesa-25.0.7` —— `install()` 里 `os.mv`
+要用哪个名字,是这次踩到的一个静默失败:移错了名字,payload 目录变成下载缓存,
+**而 install() 依然返回成功**,装出一个连 `lib/` 都没有的包。
+
 ---
 
 ## 6. NVIDIA 闭源:唯一保留的用户态宿主依赖
