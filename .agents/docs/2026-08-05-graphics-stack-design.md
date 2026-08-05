@@ -26,10 +26,13 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 **推翻了 slice 1 设计里的一个数字**:§10 的 O4 担心 payload "可能超 800MB,是否分包"。
 实测 **241 MB**,其中 `libLLVM.so` 一家占 137 MB。
 
-**分包结论**(§2.8):那 137 MB **建议**独立成 **`llvm-runtime`**(xim-pkgindex,
-默认 `xim` 命名空间),照抄索引里**已经存在**的 `gcc-runtime` —— 后者正是为
-"只想运行 C++ 程序、不需要 1.1 GB 编译器"而拆出来的。`llvm`(编译器)与
-`libLLVM.so`(库)同源但消费者不同,这是两条轴。
+**分包结论**(§2.8):那 137 MB **建议**独立成 **`libllvm`**(xim-pkgindex,默认 `xim`
+命名空间)。`llvm`(编译器)与 `libLLVM.so`(库)同源但消费者不同,这是两条轴 ——
+拆分的正当性照 `gcc-runtime`,命名照索引里库包的惯例(`libffi`/`libpng`/`libxml2`)
+与业界(Debian `libllvm20`)。
+
+**Track B 也不用从零设计**:索引里的 `libcuda-host-link` 已经是同一模式的 sentinel 包,
+并且独立得出了"不可重分发 + 与内核模块 ABI 锁步"的同一结论。
 
 ---
 
@@ -316,7 +319,7 @@ mesa-libgallium Depends: … libc6 (>= 2.38), libstdc++6 (>= 11), libllvm20, …
 
 ### 2.8 结论:拆,但理由比初稿窄
 
-**建议新增 `llvm-runtime`。** 但先撤回我在初稿里给的两条理由 —— 它们是错的:
+**建议新增 `libllvm`。** 但先撤回我在初稿里给的两条理由 —— 它们是错的:
 
 | 初稿的理由 | 实际 |
 |---|---|
@@ -342,32 +345,57 @@ mesa-libgallium Depends: … libc6 (>= 2.38), libstdc++6 (>= 11), libllvm20, …
 **形态**:
 
 ```
-llvm-runtime/<ver>/
+libllvm/<ver>/
 └── lib/libLLVM.so.<major.minor>        ← 单一实体
                                            -DLLVM_TARGETS_TO_BUILD=X86;AMDGPU
                                            -DLLVM_LINK_LLVM_DYLIB=ON
 ```
 
-**命名遵循索引里已有的先例,而不是 Ubuntu 的。** xim-pkgindex 里已经有
-`gcc-runtime`,它存在的理由与这里逐字对应(原文注释):
+**命名:`libllvm`,不是 `llvm-runtime`。**
+
+索引里库包的实际惯例是**用上游库的真名加 `lib` 前缀**:
+
+```
+libffi   libpng   libxml2   libcuda-host-link
+```
+
+`gcc-runtime` 是**唯一**的 `*-runtime`,而且它是个**例外**:那个包是 libstdc++ +
+libgcc_s + libgomp + libatomic + libitm + libquadmath + libssp **七个库的 bundle**,
+没有单一上游名可用,只能造一个。
+
+libLLVM 不是这种情况 —— 它是**单一文件、有确切上游名 `libLLVM.so`**,
+所以按索引惯例就该叫 `libllvm`。
+
+业界也一致:
+
+| 发行版 | 包名 |
+|---|---|
+| Debian / Ubuntu | `libllvm20` |
+| openSUSE | `libLLVM20` |
+| Fedora / Arch / Alpine | `llvm-libs` |
+
+`lib` 前缀是多数派,而**没有任何一家叫它 `llvm-runtime`**。
+
+> **更正**:我先前用"和 `gcc-runtime` 对称"论证过 `llvm-runtime`。**那个论证是弱的** ——
+> `gcc-runtime` 本身就是 xlings 自造的名字(Arch 叫 `gcc-libs`,Debian/Fedora 按库拆成
+> `libgcc`/`libstdc++`),拿一个本地发明的名字要求对称,理由不成立。
+> 该对齐的是索引里**库包**的惯例(`libffi`/`libpng`/`libxml2`)和业界惯例,两者都指向 `libllvm`。
+>
+> 也不带 major(不是 `libllvm20`):Debian 把 major 写进包名是因为其 policy 要求
+> SONAME 进包名以便共存,而 xlings 的共存靠版本轴(`xim-x-libllvm/20.1.7/`)已经解决,
+> 所以与 `libpng`/`libxml2` 一致 —— 名字不带版本,版本在版本位。
+
+从 `gcc-runtime` 那里该借的不是名字,是**拆分的正当性**(recipe 原文注释):
 
 > * `xim:gcc` is the full compiler (~1.1 GB)
 > * The runtime libs are ~25 MB
 > * Tools that only need to **run** C++ binaries don't need cc1/cc1plus/headers/`*.a`
 
-`gcc`(编译器)/ `gcc-runtime`(运行时库)这对区分在这个索引里早就立住了,
-`llvm` / `llvm-runtime` 完全平行,一眼可懂。
-
-> **更正**:我先前写过"不要叫 `llvm-runtime`,会和 `llvm` 包混淆"。**说反了** ——
-> 有 `gcc-runtime` 这个先例在,`llvm-runtime` 恰恰是最不会被误解的名字。
-> 也不要用 `compat.` 前缀:那是 **mcpp-index** 的命名空间(`compat.freetype`、
-> `compat.glfw`、`compat.glx-runtime`),而 xim-pkgindex 的包名**没有一个带点**,
-> 命名空间只有默认的 `xim` 和 8 个 `config` 包。
+把 `gcc` 换成 `llvm`、`25 MB` 换成 `137 MB`,这段话一字不改就成立。
 
 它**不违反** llvm-subpackaging skill 的"2 包不是 3 包":那条规则约束的是
-**工具链的拆分轴**(core / libcxx / tools 是同一批消费者的三块)。`llvm-runtime`
+**工具链的拆分轴**(core / libcxx / tools 是同一批消费者的三块)。`libllvm`
 在**另一条轴**上 —— 消费者是 mesa 不是开发者,与 `llvm` 包零重叠。
-`gcc-runtime` 就是这条轴上已经存在的那一个。
 
 **与 `gcc-runtime` 的一处关键差异,不能照抄**:`gcc-runtime` 的注释说
 "libstdc++ is forward-compatible; one gcc-runtime version covers every binary
@@ -456,7 +484,7 @@ meson setup build \
 驱动集正对应用户要的四种硬件:CPU(llvmpipe/lvp)、Intel(iris/ANV)、
 AMD(radeonsi/RADV)、NVIDIA 开源(nouveau/NVK)。
 
-**LLVM 的处置**见 §2.8:独立成 `llvm-runtime` 包,用
+**LLVM 的处置**见 §2.8:独立成 `libllvm` 包,用
 `-DLLVM_TARGETS_TO_BUILD=X86;AMDGPU -DLLVM_LINK_LLVM_DYLIB=ON` 构建,
 预计 137 → 40~60 MB。
 
@@ -540,7 +568,7 @@ end
 **注意**:`__EGL_VENDOR_LIBRARY_DIRS` 用 `set` 而不是 `prepend`。这是刻意的 ——
 prepend 会把宿主的 `/usr/share/glvnd/egl_vendor.d` 留在搜索路径里,于是宿主的
 `10_nvidia.json` 排在我们的 `50_mesa.json` 前面,hermetic 边界当场失效。
-需要同时看到两者的场景由 Track B 显式合并目录来表达(§5.3),不靠 prepend 碰运气。
+需要同时看到两者的场景由 Track B 显式合并目录来表达(§5.4),不靠 prepend 碰运气。
 
 ### 4.4 dlopen 闭包审计
 
@@ -575,12 +603,37 @@ grep -E '\.so' /tmp/trace | grep    ENOENT   # 找了但没找到 ← 缺的就�
 这与 hermetic 策略文档里的 `capabilities_host` 白名单是同一件事的具体化:
 GPU 是一个必须穿透 hermetic 边界的宿主资源,因为它的用户态与宿主内核绑定。
 
-### 5.2 `nvidia-runtime` recipe
+### 5.2 先例已经存在:`libcuda-host-link`
+
+**这条轨不用从零设计。** 索引里已经有 `libcuda-host-link`,而它独立得出了与
+§1.6 完全相同的结论(recipe 原文注释):
+
+> **DOES NOT**: Redistribute `libcuda.so.1`. The NVIDIA Driver EULA forbids
+> third-party redistribution, and even if it didn't, the userspace lib is in
+> **strict ABI lockstep with the kernel module** — versioning it as an xpkg is
+> impossible.
+
+它确立的模式,直接照搬:
+
+| 它做的 | 为什么 |
+|---|---|
+| **sentinel 包**:只装一个指向宿主库的符号链接 | "where is host libcuda" 的**单一真相源**,消费者不必各自重写 ldconfig 探测 |
+| 宿主没驱动时**故意留悬空链接** | 用户之后装了驱动,重装本包即可,消费者链自动恢复 |
+| 消费者链到**本包的链接**,不直连宿主 | 重装一次,所有下游的传递链接一起生效 |
+
+`nvidia-gl-host-link` 就是同一模式换一组库:`libcuda.so.1` 换成 GL/EGL/Vulkan 那一组。
+
+> **命名**:跟 `libcuda-host-link` 的 `-host-link` 后缀走。
+> 我先前提的 `host.nvidia` 是错的(带点,且 `host.` 不是 xim-pkgindex 的命名空间);
+> `nvidia-runtime` 也不好 —— 它读起来像"我们分发了 NVIDIA 运行时",而这个包
+> 恰恰**什么都不分发**。`-host-link` 把"从宿主借"写在了名字里。
+
+### 5.3 `nvidia-gl-host-link` recipe
 
 命名用 `host.` 前缀,明确它**不携带 payload**,只描述一次对宿主的借用。
 
 ```lua
-package = { name = "nvidia-runtime", namespace = "host", type = "package", … }
+package = { name = "nvidia-gl-host-link", namespace = "host", type = "package", … }
 
 function installed()
     -- 探测:内核模块在不在,版本是多少
@@ -601,7 +654,7 @@ function install()
 end
 
 function config()
-    local d, tag = pkginfo.install_dir(), "nvidia-runtime@" .. pkginfo.version()
+    local d, tag = pkginfo.install_dir(), "nvidia-gl-host-link@" .. pkginfo.version()
     if type(subos.env) == "function" then
         subos.env{ var = "__EGL_VENDOR_LIBRARY_DIRS", op = "set",
                    value = "${pkgdir}/share/glvnd/egl_vendor.d", binding = tag }
@@ -629,7 +682,7 @@ libnvidia-ptxjitcompiler.so.<ver>
 
 精确清单由 §4.4 的 strace 方法在真机上导出,**不靠这份列表**。
 
-### 5.3 与 mesa 共存
+### 5.4 与 mesa 共存
 
 两个包都用 `set` 声明 `__EGL_VENDOR_LIBRARY_DIRS` —— 按 slice 1 的冲突规则,
 doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对用户不够好**。
@@ -642,7 +695,7 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 > **本设计不预先实现它** —— 先让两个包各自能单独工作,冲突由 doctor 显式报出来,
 > 等真的有人要同机双栈时再做。列为 §7 的 O3。
 
-### 5.4 宿主驱动升级 = 悄悄断链
+### 5.5 宿主驱动升级 = 悄悄断链
 
 **这是 Track B 唯一的严重失效模式,必须设计对策。**
 
@@ -654,12 +707,12 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 
 对策,三层:
 
-1. **记账**:`nvidia-runtime` 把探测到的版本写进自己的 payload(一个 `HOST_DRIVER` 文件),
-   并作为包版本的一部分(`nvidia-runtime@550.144.03`)。
+1. **记账**:`nvidia-gl-host-link` 把探测到的版本写进自己的 payload(一个 `HOST_DRIVER` 文件),
+   并作为包版本的一部分(`nvidia-gl-host-link@550.144.03`)。
 2. **doctor 新检查**:比对 `/proc/driver/nvidia/version` 与记账值,不一致就报
-   `xlings install nvidia-runtime` 重建链接。**这条要新写**,既有的 `SysrootDangling`
+   `xlings install nvidia-gl-host-link` 重建链接。**这条要新写**,既有的 `SysrootDangling`
    只看链接是否悬空,看不出"版本漂移但恰好新版本也有同名文件"的情况。
-3. **不缓存 payload**:`nvidia-runtime` 的 payload 是纯符号链接,重装成本 <1s,
+3. **不缓存 payload**:`nvidia-gl-host-link` 的 payload 是纯符号链接,重装成本 <1s,
    所以修复动作可以无脑推荐重装。
 
 ---
@@ -719,7 +772,7 @@ A2 方案 B bootstrap ──┐         ▲
                  A5 精简 LLVM 构建
                  (X86;AMDGPU,137→~50MB)
 
-B1 nvidia-runtime 探测+桥接 ──▶ B2 doctor 版本漂移检查 ──▶ B3 真机验证(本机可做)
+B1 nvidia-gl-host-link 探测+桥接 ──▶ B2 doctor 版本漂移检查 ──▶ B3 真机验证(本机可做)
 
 O3 vendor JSON 合并目录 ── 仅当出现同机双栈需求
 ```
@@ -740,23 +793,23 @@ A 轨在这台机器上永远只能验到 llvmpipe。
 |---|---|---|
 | O1 | 精简 LLVM 到底能降到多少?需实测 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` | A0 的收益,以及 §1.4 的总量 |
 | O2 | aarch64 要不要一并出?驱动集不同(无 iris/radeonsi,有 panfrost/freedreno) | A3 的构建矩阵 |
-| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.3 |
+| O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.4 |
 | O4 | Wayland 要不要进 slice?目前只列了 x11+wayland 两个 platform,但 wayland 的
       客户端库也要进闭包 | payload 组成 |
 | ~~O5~~ | ~~`libstdc++` 从哪来~~ **已由 §2.6 关闭**:走 `deps`(`xim:gcc`),不自带;
         需在 recipe 钉 `GLIBCXX_3.4.29` 下限 | — |
-| O6 | `llvm-runtime` 的版本策略:跟随 mesa 的 LLVM 需求,还是独立 major 线? | A0 |
+| O6 | `libllvm` 的版本策略:跟随 mesa 的 LLVM 需求,还是独立 major 线? | A0 |
 
 O6 是新的:mesa 每个大版本对 LLVM 的最低要求会前移(25.x 要 ≥15),而
-`llvm-runtime` 一旦有第二个消费者就不能只跟着 mesa 走。倾向按 LLVM 自己的 major
-线发版(`llvm-runtime@20`),由 mesa 的 recipe 声明区间。
+`libllvm` 一旦有第二个消费者就不能只跟着 mesa 走。倾向按 LLVM 自己的 major
+线发版(`libllvm@20`),由 mesa 的 recipe 声明区间。
 
 ---
 
 ## 9. 一句话总括
 
 > **两条轨约束相反:mesa 能发布但要自己构建(241 MB,其中 `libLLVM.so` 137 MB 独立成
-> `llvm-runtime`,按 X86;AMDGPU 两个 target 精简后预计 ~150 MB 总量);
+> `libllvm`,按 X86;AMDGPU 两个 target 精简后预计 ~150 MB 总量);
 > NVIDIA 闭源不能发布只能从宿主借(0 MB payload,但宿主升级会悄悄断链,需要记账 +
 > doctor)。libglvnd 让两者在同一个 subos 里共存,选谁由 slice 1 已交付的环境变量机制
 > 按进程决定。关键路径不是 mesa,是它的 12 个构建依赖;而唯一能证伪 payload 自洽性的
