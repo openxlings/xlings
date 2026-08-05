@@ -514,7 +514,7 @@ uninstall(pkg):
 | O1 | `--shell fish` 与 bash 的语义等价 fixture 是否需要? | 测试 |
 | O2 | Runtime 未装且用户拒绝 `--yes` 时的具体退出码语义 | subos new UX |
 | O3 | Doctor D4(env 冲突)是 warning 还是 error?判据严格性统一 | doctor |
-| O4 | `compat.mesa` payload 实际 size(可能超 800MB,是否分包)| pkgindex 侧 slice 1 |
+| O4 | ~~`compat.mesa` payload 实际 size(可能超 800MB,是否分包)~~ **已关闭**:实测 241 MB(mesa 103 + LLVM 137),不分包 | ~~pkgindex 侧 slice 1~~ |
 | O5 | subos 迁移/克隆场景下 `${pkgdir}` 是否需要在 subos_info 里持久化解析结果? | 未来 subos 迁移能力 |
 
 不阻塞 slice 1 起步,施工时定。
@@ -568,7 +568,11 @@ Slice 1 的 xlings + libxpkg 两侧已实现并验证。落地拆分见
 ### 13.4 仍未做
 
 §9.4 全部照旧。§10 的 O1(fish/bash 等价 fixture)已由 E2E-60 覆盖 bash 侧,
-fish emitter 只有构造正确性、无行为断言;O4、O5 仍开放,随 compat.mesa 一起定。
+fish emitter 只有构造正确性、无行为断言;O4 已由 `2026-08-05-graphics-stack-design.md`
+实测关闭(241 MB,不分包);O5 仍开放。
+
+compat.mesa 与 NVIDIA 闭源栈的详细设计见
+`2026-08-05-graphics-stack-design.md`。
 
 ---
 
