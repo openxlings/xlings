@@ -42,23 +42,29 @@
 
 `XLINGS_HOME` 是同一句话的另一种写法:"没设就用 `$HOME/.xlings`"。默认路径把四个独立计算变成了同一个字符串。
 
-### 1.3 已经在用的五条规则,建议提升为规范
+### 1.3 七条规则,建议提升为规范
 
-`2026-08-05-dependency-resolution-single-source.md` 里推导出的五条,实际上是通用的:
+`2026-08-05-dependency-resolution-single-source.md` 里推导出五条,本轮补上两条。七条都是通用的:
 
 - **R1 权威记录必须是全量的** —— 每一项都记,不只是"声明了东西的那些"。值通常本来就算出来了,只是被 `break` 扔掉。
 - **R2 约定只在写端应用** —— 读端永远不猜。
 - **R3 删除而非调和** —— 如果改动是**增加**一条路径而不是**移除**一条,它是 workaround。
 - **R4 对产物断言,不对意图断言** —— 在安装时失败,而不是在运行时。
 - **R5 决策必须持久化** —— 需要复现才能查看的决策不叫可追溯。
-- **R6 内部消费者绑定 payload,不绑定视图** —— 见 §1.5,这一条是本轮补上的。
+- **R6 内部消费者绑定 payload,不绑定视图** —— 见 §1.5(本轮补上)。
+- **R7 闭包完整** —— 关于"需要什么 / 引用了什么"的测量必须覆盖传递闭包,不能只取一个入口。见 AD-14(本轮补上)。
 
-**提议 A1**:把这五条写进 `xim-pkgindex/docs/V2/xpackage-spec.md` 的规范正文(目前只在 xlings 的设计文档里),并给每条配一个可执行判据,比如 R3 的判据:
+**提议 A1**:把这七条写进 `xim-pkgindex/docs/V2/xpackage-spec.md` 的规范正文(目前只在 xlings 的设计文档里),并给每条配一个可执行判据,比如 R3 的判据:
 
 > 一个修复如果只是让两个独立答案**更可能一致**,它是 workaround。只有**删掉第二个回答者**才是解决。
 > libxpkg 0.0.49 没通过这条(它让扫描取最高版本而不是直接失败,仍与 `pin_target_to_active` 分歧);0.0.50 通过了。
 
 **提议 A2**:契约文档里**禁止**"缺省即约定"式措辞。凡是"没有 X 就回退到 Y"的句子,要么改成"X 必须存在"(写端保证全量),要么改成"没有 X 是错误"。
+
+### 1.4 下一个还没修的实例
+
+**"一个 dlopen 进来的宿主文件,去哪里找它的依赖?"** 今天有三个答案(recipe 的手写表、宿主默认搜索、什么都不做),见 §2。
+§2.3 给出的 interposer 机制把它收敛为一个:**链接期依赖由我们拥有的对象上的 DT_RPATH 回答,运行时 dlopen 由宿主回答**,两者界线可判定。
 
 ### 1.5 R6:内部消费者绑定 payload,不绑定视图
 
@@ -79,6 +85,8 @@
 #### 违反一:`locate_proot_` 的 PATH 回退
 
 已修,但修得不够彻底:当时只拒绝了位于 xlings home 内的候选。按 R6,**整条 PATH 步骤对内部使用都是错的**。真正的 `/usr/bin/proot` 属于**宿主依赖**,按 §2.8 应当是一条**显式声明**加一句可见的提示,而不是一个与 payload 平级的静默候选。
+
+**提议 A4**:`locate_proot_` 去掉 PATH 步骤;宿主 proot 作为显式声明的回退保留,并在使用时打印一行说明。
 
 #### 违反二:libxpkg 的 `_find_tool` —— 这条更严重
 
@@ -106,13 +114,6 @@
 同一个函数也用于 `readelf`,问题相同。
 
 **提议 A3**:`_find_tool` 改为**优先且默认解析 payload**——通过 `pkginfo.resolved_dep()` / `build_dep()` 拿到工具包的载荷目录。视图与宿主降为显式、可见、需声明的回退,而不是排在最前的静默候选。这同时满足 R6 与规则 2。
-
-### 1.4 下一个还没修的实例
-
-**"一个 dlopen 进来的宿主文件,去哪里找它的依赖?"** 今天有三个答案(recipe 的手写表、宿主默认搜索、什么都不做),见 §2。
-§2.3 给出的 shim 机制把它收敛为一个:**链接期依赖由我们拥有的对象上的 DT_RPATH 回答,运行时 dlopen 由宿主回答**,两者界线可判定。
-
----
 
 ## 2. P2:用进程全局机制满足单库需求
 
@@ -155,6 +156,10 @@
 
 ### 2.3 找到了机制层面的出路
 
+> **术语**:本文档把这个新引入的对象称为 **interposer(插入库)**,不叫 shim。
+> `shim` 在 xlings 里已经有确定含义——`subos/<name>/bin/` 下那些指向 xlings 二进制的多调用符号链接。见 AD-6。
+
+
 先说为什么前一版的推荐(修正表内容 + 加护栏)不合格:按本文档 §1.3 的 **R3** 判据——"如果改动是**增加**一条路径而不是**移除**一条,它是 workaround"——那两条都没有删掉任何回答者。内容修正只是把错的表改对,护栏只是限制损害。`LD_LIBRARY_PATH` 这个进程全局机制仍在。
 
 出路来自一条被忽略的 ELF 性质:
@@ -170,11 +175,11 @@
 | 加载方式 | 结果 |
 |---|---|
 | 直接 dlopen 该 vendor | **失败** —— 依赖找不到 |
-| 经过一个我们拥有的 shim,shim 带 **DT_RUNPATH** | **失败** |
-| 经过同一个 shim,shim 带 **DT_RPATH** | **成功**,`LD_DEBUG` 显示依赖从我们的目录解析 |
+| 经过一个我们拥有的 interposer,它带 **DT_RUNPATH** | **失败** |
+| 经过同一个 interposer,它带 **DT_RPATH** | **成功**,`LD_DEBUG` 显示依赖从我们的目录解析 |
 
 RUNPATH 与 RPATH 的对照是关键:两者只差一个 patchelf `--force-rpath`,结果相反。**这条性质是承重的,不是巧合。**
-并且 `dlsym(shim_handle, ...)` 能取到 vendor 的符号——dlsym 搜索句柄的整个依赖树,所以 glvnd 拿到的仍是真 vendor 的入口。
+并且 `dlsym(interposer_handle, ...)` 能取到 vendor 的符号——dlsym 搜索句柄的整个依赖树,所以 glvnd 拿到的仍是真 vendor 的入口。
 
 #### 真实 NVIDIA 栈:A/B
 
@@ -183,13 +188,13 @@ RUNPATH 与 RPATH 的对照是关键:两者只差一个 patchelf `--force-rpath`
 | JSON 指向 | 结果 |
 |---|---|
 | 宿主 vendor 本身(今天的机制,去掉 `xlings-deps`) | `DEVICE_COUNT=0` —— vendor 加载不了 |
-| 我们的 shim(DT_RPATH 指向闭包) | `DEVICE_COUNT=1` |
+| 我们的 interposer(DT_RPATH 指向闭包) | `DEVICE_COUNT=1` |
 
 `LD_DEBUG` 确认:vendor 的 `libdl / libm / libpthread / librt` 从 **我们的 glibc 载荷**解析,而全局搜索路径上没有 glibc。
 
 #### 机制的边界(实测,不是推测)
 
-shim 组能枚举出设备,但 `eglInitialize` 失败。`strace` 对比工作组与 shim 组打开的文件,差异是:
+interposer 组能枚举出设备,但 `eglInitialize` 失败。`strace` 对比工作组与 interposer 组打开的文件,差异是:
 
 ```
 libnvidia-glsi / libnvidia-eglcore / libnvidia-egl-gbm
@@ -208,7 +213,7 @@ vendor 在**运行时按裸 SONAME `dlopen` 自己的兄弟库**。于是边界�
 
 | 要找什么 | 由谁提供 | 为什么这是对的 |
 |---|---|---|
-| vendor 对**我们的**库的 DT_NEEDED | **shim 的 DT_RPATH** | 作用域是链接链,per-consumer,不向任何其他进程施加任何东西 |
+| vendor 对**我们的**库的 DT_NEEDED | **interposer 的 DT_RPATH** | 作用域是链接链,per-consumer,不向任何其他进程施加任何东西 |
 | vendor 运行时 dlopen **它自己的**兄弟库 | 宿主驱动目录放在 `LD_LIBRARY_PATH` | 全是宿主文件,宿主二进制本来就能解析到同一批;我们的库一个都不在上面 |
 
 这条线正是这个包自己已经画的那条线("`lib/` 是宿主的,`xlings-deps/` 是我们的")。
@@ -225,26 +230,26 @@ DEV2_GL_RENDERER  = llvmpipe (LLVM 20.1.7, 256 bits)     ← 软件回退同时�
 ```
 
 - 宿主 `/bin/bash` 在同样的 `LD_LIBRARY_PATH` 下正常(那目录里没有我们的任何东西)。
-- shim 体积 **27KB**(对照:拷贝整套用户态 327MB)。
+- interposer 体积 **27KB**(对照:拷贝整套用户态 327MB)。
 - 仍是符号链接指向宿主文件,**用户态/内核模块的版本耦合完整保留**。
-- **不需要安装时的编译器**:已验证用 patchelf 对一个预置空 stub 做 `--add-needed` + `--set-rpath --force-rpath` 即可产出可用 shim。
+- **不需要安装时的编译器**:已验证用 patchelf 对一个预置空 stub 做 `--add-needed` + `--set-rpath --force-rpath` 即可产出可用的 interposer。
 
 ### 2.4 这解决了什么,以及为什么它不是 workaround
 
-1. **`xlings-deps` 整个消失**,两张硬编码表随之消失。shim 的 DT_RPATH 从已解析依赖推导,而 `resolved_deps` 已经是 xlings 记录的权威记录(R1 已经做过了)。§2.2 漏掉的五个库不需要"补进表里"——表没有了。
+1. **`xlings-deps` 整个消失**,两张硬编码表随之消失。interposer 的 DT_RPATH 从已解析依赖推导,而 `resolved_deps` 已经是 xlings 记录的权威记录(R1 已经做过了)。§2.2 漏掉的五个库不需要"补进表里"——表没有了。
 2. **我们的库永远不出现在任何进程全局搜索路径上。** libc 那一类缺陷从"被护栏挡住"变成**结构上不可能**。
 3. **删掉了一个回答者**,而不是增加。这是 R3 意义上的解决。
 4. xlings 侧的护栏保留,但它的角色变了:从"防止损害"变成 **R4 意义上的断言——它应当永远不触发**。触发即说明某个 recipe 又走回了老路。
 
 ### 2.5 提议
 
-**提议 B1(替换 B1/B2 旧版)**:把这个机制做成 **libxpkg 的公共能力**,而不是 recipe 的私有代码:
+**提议 B1**:把这个机制做成 **libxpkg 的公共能力**,而不是 recipe 的私有代码:
 
 ```
-elfpatch.host_link_shim{
+elfpatch.host_link_interposer{
     vendor  = "<宿主 vendor 的绝对路径或 SONAME>",
     deps    = <从 resolved_deps 推导的载荷 libdir 列表>,
-    out     = "<我们 payload 里的 shim 路径>",
+    out     = "<我们 payload 里的 interposer 路径>",
     soname  = "<需要时,例如 GLX 要求 libGLX_nvidia.so.0>",
 }
 ```
@@ -253,18 +258,18 @@ elfpatch.host_link_shim{
 
 **提议 B2**:`nvidia-gl-host-link` 的 `LD_LIBRARY_PATH` 声明收窄为**只有宿主驱动目录**,并在注释里写明它为什么是安全的(里面没有我们的任何文件)。`xlings-deps` 目录删除。
 
-**提议 B3(不变)**:规范里写明,任何 `subos.env` 对 `LD_LIBRARY_PATH` / `LD_PRELOAD` 的声明都是特权操作,需要写明为什么 RPATH 不适用。有了 shim 机制,"RPATH 不适用"的真实场景只剩**运行时按裸 SONAME dlopen 宿主自己的文件**这一种。
+**提议 B3(不变)**:规范里写明,任何 `subos.env` 对 `LD_LIBRARY_PATH` / `LD_PRELOAD` 的声明都是特权操作,需要写明为什么 RPATH 不适用。有了 interposer 机制,"RPATH 不适用"的真实场景只剩**运行时按裸 SONAME dlopen 宿主自己的文件**这一种。
 
-**方案 B(拷贝 327MB + RPATH)正式否决**,理由写进 recipe:它打破用户态与内核模块的版本耦合,而 shim 用 27KB 拿到了同样的隔离性。
+**方案 B(拷贝 327MB + RPATH)正式否决**,理由写进 recipe:它打破用户态与内核模块的版本耦合,而 interposer 用 27KB 拿到了同样的隔离性。
 
-### 2.6 shim 修不了的另一半:被库自己读的搜索变量
+### 2.6 interposer 修不了的另一半:被库自己读的搜索变量
 
 `LD_LIBRARY_PATH` 不是唯一一个进程全局的搜索变量。`subos.env` 目前声明的四个里,有两个是**同一个形状**:
 
 - `__EGL_VENDOR_LIBRARY_DIRS` —— libglvnd 自己读
 - `LIBGL_DRIVERS_PATH` —— mesa 自己读
 
-它们不经过动态加载器,所以 shim 的 DT_RPATH 完全够不到,xlings 侧的 libc 护栏也看不见(护栏只检查 loader 读的变量)。
+它们不经过动态加载器,所以 interposer 的 DT_RPATH 完全够不到,xlings 侧的 libc 护栏也看不见(护栏只检查 loader 读的变量)。
 
 **实测。** 一个**宿主**二进制(`INTERP=/lib64/ld-linux-x86-64.so.2`,宿主 loader、宿主 libc),编译时只链接宿主的 `libEGL`:
 
@@ -288,9 +293,16 @@ elfpatch.host_link_shim{
 - 宿主的 libglvnd 用宿主的默认目录,拿到宿主的 vendor——**规则 1 与规则 2 同时成立**;
 - `subos.env` 里只剩 `XDG_DATA_DIRS` 这类真正属于"用户可见约定"的变量。
 
-**提议 B4**:mesa 与 libglvnd 的构建把 vendor 目录 / DRI 目录设为自身载荷路径,删除这两条 `subos.env` 声明。这比 shim 更直接——那两个库是我们的,不存在"不能修改宿主文件"的约束,当初用环境变量只是因为没有把"决定应当由产物携带"当成规则。
+**提议 B4**:mesa 与 libglvnd 的构建把 vendor 目录 / DRI 目录设为自身载荷路径,删除这两条 `subos.env` 声明。这比 interposer 更直接——那两个库是我们的,不存在"不能修改宿主文件"的约束,当初用环境变量只是因为没有把"决定应当由产物携带"当成规则。
 
-**提议 B5**:xlings 侧的护栏目前只检查 loader 读的变量(`LD_LIBRARY_PATH` / `LD_PRELOAD`)。扩展为:**任何 `subos.env` 声明,如果它的值指向我们的载荷目录,都要在安装时报告**——因为进程全局的环境变量没有"只对我们的进程生效"这种作用域。报告而非拒绝:`XDG_DATA_DIRS` 这类是正当的。
+**提议 B5**(已按 AD-3 收窄):xlings 侧的护栏目前只检查**加载器**读的变量(`LD_LIBRARY_PATH` / `LD_PRELOAD`)。扩展到**所有会导致代码被载入进程的变量**——`__EGL_VENDOR_LIBRARY_DIRS`、`LIBGL_DRIVERS_PATH`,以及将来同类的。
+
+分界线不是"是不是进程全局",而是"会不会让代码进到别人的进程里":
+
+| 类别 | 例子 | 处理 |
+|---|---|---|
+| 导致**代码**被载入 | `LD_LIBRARY_PATH`、`LD_PRELOAD`、`__EGL_VENDOR_LIBRARY_DIRS`、`LIBGL_DRIVERS_PATH` | 值指向我们的载荷时安装期报告 |
+| 导致**数据**被找到 | `XDG_DATA_DIRS` | 不管。subos 给默认、用户可覆盖是正常做法(AD-3) |
 
 ### 2.7 还需要验证的
 
@@ -298,12 +310,13 @@ elfpatch.host_link_shim{
 
 诚实列出,不要当成已完成:
 
-- **GLX 路径**:`libGLX_nvidia` 的 vendor 选择走的是按 SONAME 模式 `libGLX_%s.so.0` 查找,shim 需要顶替这个文件名。机制应当相同,但没有单独验证过。
+- **GLX 路径**:`libGLX_nvidia` 的 vendor 选择走的是按 SONAME 模式 `libGLX_%s.so.0` 查找,interposer 需要顶替这个文件名。机制应当相同,但没有单独验证过。
 - **Vulkan ICD**:同理,ICD JSON 指向文件路径,预期可用,未验证。
 - **`dlsym` 语义**:合成实验证明句柄依赖树可见;glvnd 是否对 vendor 做过 SONAME 或路径上的额外校验,未穷尽。
 - **预置 stub 的分发**:每个 arch 一个,归属 libxpkg 还是索引,未定。
 
-## 2.8 规则 2 缺的是执行点,不是意图
+### 2.8 规则 2 缺的是执行点,不是意图
+
 
 > "vendor 的 libm / libdrm / libgbm / libgcc_s / libwayland 为什么要用宿主的?"
 
@@ -313,7 +326,7 @@ elfpatch.host_link_shim{
 
 这就是为什么规则 2("能不依赖宿主就不依赖")**不能靠意图成立**。它需要一个执行点:让"我们没提供"成为**硬错误**,而不是回退。
 
-### 现状实测
+#### 现状实测
 
 对 `prodhome` 的 483 个 ELF 求 DT_NEEDED,统计有多少落到宿主:
 
@@ -324,7 +337,7 @@ elfpatch.host_link_shim{
 
 **483 个 ELF 里只有 1 处真漏。** 我们自己构建的载荷状态其实相当好——nvidia 那五个之所以严重,是因为漏的那个文件是**宿主的 vendor 库**,它不在我们的载荷里,所以任何只扫自己载荷的检查都看不见它。
 
-### 提议 D4:安装期的闭包断言
+#### 提议 O4:安装期的闭包断言
 
 `elfcheck::scan_payload` 已经在做同源断言(§R4)。同一个位置扩展一条:
 
@@ -346,7 +359,7 @@ exports = {
 
 这样"依赖宿主"从**意外**变成**声明**:
 
-- 五个漏掉的库会在安装时报错,而不是安静地从宿主拿——它们本来就该由 §2.3 的 shim 提供;
+- 五个漏掉的库会在安装时报错,而不是安静地从宿主拿——它们本来就该由 §2.3 的 interposer 提供;
 - `libxml2` 这处会立刻暴露(要么给 wayland 声明 libxml2 依赖,要么写进 `host_deps` 并说明理由);
 - 驱动用户态那个**不可解**的洞变成一行有理由的声明,而不是一个没人知道的事实;
 - 规则 2 第一次有了可执行判据:**未声明的宿主依赖 = 安装失败**。
@@ -359,7 +372,7 @@ exports = {
 
 ### 3.1 现状
 
-你定的三层模型:
+三层模型(见验收报告 §3):
 
 | 层 | 版本数 |
 |---|---|
@@ -424,11 +437,19 @@ subos manifest 里两个 binding 都在,两者都在贡献 `__EGL_VENDOR_LIBRARY
 
 ### 4.2 提议
 
-**提议 D1(规则)**:凡是"因为条件不满足所以没做"的分支,输出必须与"做了"不同。这条已经在 `project_silent_success_pattern` 里记录,建议提升为**代码评审清单项**:任何新增的 `if (...) continue;` / `if not X then return end`,评审时必须回答"跳过时用户看到什么"。
+> **编号说明**:本节的提议编号为 **O**(observability)。
+> `D1`–`D5` 在验收报告 `2026-08-06-subos-matrix-verification.md` 里指**缺陷**,本文档沿用那个含义,不用于提议。
 
-**提议 D2(机制)**:host-link 类包安装结束时,报告**三个数**:命中我们载荷的、落回宿主的、无人提供的。今天用户只看到 "N libraries ✓",而 N 里既有真链接也有静默跳过。
 
-**提议 D3(判据)**:`§1.3 R5` 的持久化已经有了 `.xlings-resolution.json` 和 `xlings why`。建议把 host-link 的解析结果也写进同一个文件——"哪个 SONAME 来自哪里"是一个事后必然会被问到的问题,现在需要重建 store 状态才能回答。
+**提议 O1(机制,不是清单)**:凡是"因为条件不满足所以没做"的分支,输出必须与"做了"不同。
+
+这条**不需要新机制**,它是 R1 的推论(AD-10):只要权威记录是**全量**的——每个输入项都必须有一条记录,哪怕标记为 `skipped`——那么 `declared` 与 `recorded` 的差集就是**自动可查**的,不依赖任何人记得写日志。`.xlings-resolution.json` 已经是这个形状,把它推广到每一个遍历声明项的循环即可。
+
+评审清单是兜底,不是主要手段:新增的 `if (...) continue` / `if not X then return end` 若发生在遍历声明项的循环里,必须先写记录再 `continue`。
+
+**提议 O2**:host-link 类包安装结束时,报告**三个数**:命中我们载荷的、落回宿主的、无人提供的。今天用户只看到 "N libraries ✓",而 N 里既有真链接也有静默跳过。
+
+**提议 O3**:`§1.3 R5` 的持久化已经有了 `.xlings-resolution.json` 和 `xlings why`。建议把 host-link 的解析结果也写进同一个文件——"哪个 SONAME 来自哪里"是一个事后必然会被问到的问题,现在需要重建 store 状态才能回答。
 
 ---
 
@@ -461,9 +482,10 @@ subos manifest 里两个 binding 都在,两者都在贡献 `__EGL_VENDOR_LIBRARY
 
 ---
 
-## 6.5 架构决策记录(由 sunrisepeak 定)
+## 7. 架构决策记录(AD-1 ~ AD-14)
 
-以下是 review 中定下的决策,连同它们否掉的我的错误判断。
+本节记录 review 中由 sunrisepeak 定下的架构决策,连同它们否掉的我的错误判断。
+决策按定下的先后编号,内容按主题排列。
 
 ### AD-1:subos 同时是编译期与运行期概念,优先级规则是"能直连 payload 就直连"
 
@@ -484,7 +506,7 @@ subos manifest 里两个 binding 都在,两者都在贡献 `__EGL_VENDOR_LIBRARY
 
 不需要更复杂的机制。
 
-剩余的真实边界要写明:**refcount 只覆盖包对包的引用,覆盖不了用户自己编译的产物**——那些二进制的 RPATH 指向 payload,但它们不在 store 里,没有任何计数会知道它们。所以"没有包引用它"不等于"删了安全"。这正是强制删除必须告警的原因,而告警文案应当说清这一点。
+告警的范围见 AD-9:只针对 xlings 自己记录的包引用。
 
 ### AD-3:`XDG_DATA_DIRS` 类变量不属于问题域
 
@@ -495,9 +517,10 @@ subos 提供默认值、用户可覆盖,这就是 Linux 的常规做法,没有�
 | 类别 | 例子 | 为什么危险 / 不危险 |
 |---|---|---|
 | **导致代码被载入进程** | `LD_LIBRARY_PATH`、`LD_PRELOAD`、`__EGL_VENDOR_LIBRARY_DIRS`、`LIBGL_DRIVERS_PATH` | 把我们的库塞进宿主进程 → ABI 耦合 → 崩溃或静默降级 |
-| **导致数据被找到** | `XDG_DATA_DIRS`、`PATH`(某种程度) | 最坏是宿主程序看到我们的一个 `.desktop` 或图标。没有 ABI 面 |
+| **导致数据被找到** | `XDG_DATA_DIRS` | 最坏是宿主程序看到我们的一个 `.desktop` 或图标。没有 ABI 面 |
+| **决定哪个可执行文件被运行** | `PATH` | 不往已有进程里塞代码,但决定跑的是谁 —— 归 R6 / AD-1 管,不归这道护栏管 |
 
-§2.6 的提议 B5(护栏扩展到"任何指向我们载荷的声明")按这条重写:**只管第一类**。
+§2.6 的提议 B5 已按这条重写:护栏只管第一类。
 
 ### AD-4:更正 —— glibc 默认搜索路径不是"靠意外维持的承重属性"
 
@@ -507,8 +530,6 @@ subos 提供默认值、用户可覆盖,这就是 Linux 的常规做法,没有�
 2. 更重要:对一个**可重定位**的包,构建期 `--prefix` 永远不可能等于运行时安装路径。默认搜索路径**必然**指向不存在的位置——这是结构性保证,不是运气。"一切必须靠 RPATH"因此是结构决定的。
 
 真正剩下的是**可追溯性问题**:那个字符串泄漏了构建机的 home 布局(`.xlings_data` 是早已废弃的运行时布局)。与任务 #35(libxml2 的 `.pc` 写着构建机)同类,应当统一处理为"产物里不得出现构建机路径,除非是刻意保留的占位前缀"。
-
-## 6.7 第二轮决策(AD-5 ~ AD-9)
 
 ### AD-5:ld.so 的默认搜索路径保持"必然不存在",并把它显式化
 
@@ -584,8 +605,53 @@ interposer 的作用是让第 2 类落到**我们的**库上,同时不向任何�
 
 接受。"沉默跳过"不需要新机制:只要权威记录是**全量**的(每个输入项都必须有一条记录,哪怕标记为 skipped),`declared` 与 `recorded` 的差集就是自动可查的,不依赖人记得写日志。`.xlings-resolution.json` 已经是这个形状,推广到每一个遍历声明项的循环即可。
 
-## 6.6 追查 AD-4 时发现的真实缺陷:glibc 的路径重写既没做到,又弄坏了文件
+### AD-11:占位前缀
 
+构建 glibc(以及任何会把 `--prefix` 烙进产物的包)时使用:
+
+```
+/nonexistent/xlings-use-rpath-not-default-search
+```
+
+选择理由:
+
+- **必然不存在**,而且是刻意的。`/nonexistent` 有发行版先例(Debian 用它作系统用户的 home),不会有人误建。
+- **自解释**。下一个读到它的人不需要查文档就知道这是故意的、以及为什么——避免有人"顺手把这个奇怪的路径修好"。
+- 它同时决定 glibc 自身产物的 INTERP。未打补丁的二进制因此 `execve` 报 ENOENT——**响亮失败**,而不是指向宿主 loader 后在 GLIBC_PRIVATE 层静默配错。
+
+`--prefix` 与 `DESTDIR` 分离是标准做法,不影响安装布局。
+
+### AD-12:interposer 的预置 stub 作为索引里的一个包
+
+不由 libxpkg 携带。理由是 AD-1 的"能直连 payload 就直连":做成包之后
+
+- 每个 arch 一份,走正常的索引/镜像/校验流程;
+- 消费它的 recipe 通过 `pkginfo.resolved_dep()` 拿到**payload 路径**,与 R6 一致;
+- 版本可独立演进,不必跟着 libxpkg 发版。
+
+### AD-13:驱动耦合的提示出现在两处
+
+1. **`xlings self doctor`** —— 主动跑时报告,不打扰日常使用;
+2. **安装 host-link 类包时报一次** —— 用户第一次把 subos 绑到宿主驱动的那一刻,正是他需要知道这件事的时刻。
+
+不在每次进入 subos 时报——那会变成噪音,而噪音会训练用户忽略它。
+
+### AD-14:R7 —— 涉及依赖/引用的测量必须覆盖传递闭包
+
+写进规范,与 R1–R6 并列:
+
+> **R7 闭包完整**:任何关于"需要什么 / 引用了什么"的测量,必须覆盖**传递闭包**,不能只取一个入口。
+
+这一条来自本轮两次真实的错误判断,都是同一个原因:
+
+- 判断"`libm` 没人需要"——只看了 `libEGL_nvidia` 的直接 DT_NEEDED。实际被 16 个 nvidia 库 NEED,含核心渲染器 `libnvidia-glcore`。
+- 推荐"修正表内容 + 加护栏就够了"——没有对整个用户态求闭包,因而没看到表还漏了 `libdrm` / `libgbm` / `libgcc_s` / `libwayland-*`。
+
+判据可执行:一份依赖清单如果是**手写**的,它就没有通过 R7;必须是从产物**枚举**出来的。这也解释了为什么 §2.2 的手写表、§6.6 的 `relocate_files` 清单、§1.5 的 `_find_tool` 候选表是同一个反模式的三个实例。
+
+R7 与 R1 的关系:R1 要求记录全量(写下每一项),R7 要求**输入集合本身**是完整的(不漏项)。记录得再全量,输入取样不足一样得出错误结论。
+
+## 8. 追查决策时发现的真实缺陷:glibc 的路径重写
 问题从"为什么 `ld.so` 里烙着 `/home/xlings/.xlings_data/...`"开始。答案不是 gcc specs,也不是旧产物:
 
 - glibc 是**下载预构建产物**,tarball 里带着构建流水线的 `--prefix`(那台机器用的是早已废弃的 `.xlings_data` home 布局);
@@ -647,35 +713,50 @@ TEXTDOMAINDIR=/home/xlings/.xlings_data/.../fromsource-x-glibc/2.44/share/locale
 
 第 3 条是关键——它把"改写"从一个**期望**变成一个**可验证的结果**。以上三条都不依赖对 glibc 的了解,可以直接做成 libxpkg 的通用重定位能力,供所有下载预构建产物的 recipe 使用。
 
-## 7. 落地顺序
+## 9. 落地顺序
 
-依赖关系决定顺序,不是优先级:
+依赖关系决定顺序,不是优先级。已定的决策见 §7。
+
+### 第一批:立即开始,不依赖任何未决事项
+
+| 项 | 内容 | 为什么排在最前 |
+|---|---|---|
+| **#42** | glibc 路径重写:枚举取代清单、锚定路径 token、改完断言(§8) | **正在发布坏文件**——`ldd` 连 `bash -n` 都过不了 |
+| **A3** | `_find_tool` 走 payload(R6 / §1.5) | 它决定所有产物的烙印工具是谁 |
+| **A4** | `locate_proot_` 去掉 PATH 步骤,宿主 proot 降为显式声明(§1.5) | 同一条规则,改动小 |
+| **E1/E2** | 隔离 home 成为 subos/沙箱测试默认环境;断言写契约不写实现(§5) | 决定后面所有验证是否可信 |
+| **A1/A2** | 七条规则(R1–R7)写进 `xpackage-spec.md`,并禁止"缺省即约定"措辞(§1.3) | 成本最低,阻止新回答者被引入 |
+
+### 第二批:两条并行
 
 ```
-E1/E2 (隔离 home + 契约断言)  ─→  独立,应当最先做:它决定后面所有验证是否可信
-A1/A2 (规范化五条规则)        ─→  独立,成本最低,防止新回答者被引入
-E3    (双工具链门禁)          ─→  独立
-
-§2.6 的四项验证 (GLX / Vulkan / dlsym 语义 / stub 分发)
-        │
+B 线(P2:把决定搬进产物)
+  §2.7 四项验证 —— GLX / Vulkan ICD / dlsym 语义 / stub 分发
+        │  ← 门禁:未验完不写代码(AD-14 的直接应用)
         ▼
-B1 (libxpkg 的 host_link_shim 能力)
-        │
-        ├─→ B2 (nvidia-gl-host-link 切换到 shim,删除 xlings-deps)
-        └─→ B2' (libcuda-host-link 用同一能力,关掉它今天的全量宿主泄漏)
-        │
+  AD-12  interposer stub 作为索引包发布
         ▼
-B3 (规范:LD_LIBRARY_PATH 声明是特权操作)   ← 有了 shim 才写得出"什么时候才真的需要它"
+  B1  libxpkg 的 elfpatch.host_link_interposer 能力
+        ├─→ B2  nvidia-gl-host-link 切换,删除 xlings-deps
+        └─→ B2' libcuda-host-link 用同一能力,关掉它今天的全量宿主泄漏
+        ▼
+  B3  规范:LD_LIBRARY_PATH / LD_PRELOAD 声明是特权操作
+  B4  mesa / libglvnd 把 vendor 与 DRI 目录编进产物,删除那两条 subos.env(§2.6)
+        └─ B4 不依赖 interposer,可与 §2.7 验证并行
 
-C3 (doctor 报双绑定)  ─→  C1 (单版本执行点)  ─→  C2 (envs 派生)
-
-D1/D2/D3 (可观测性)   ─→  D3 可与 B1 一起做(shim 的解析结果正是要持久化的东西)
+C 线(P3:subos 层的"恰好一个")
+  C3 doctor 报双绑定 ─→ C1 单版本执行点 ─→ C2 envs 从绑定集合派生
+  顺序不可换:先能报告,再改行为(§3.4)
 ```
 
-**先做 E1/E2 与 A1/A2**:前者让后续所有验证可信,后者阻止新的回答者被引入。
+### 第三批:依赖第一批的产物
 
-**B 线在 §2.6 四项验证完成前不要动代码**——GLX 与 Vulkan 两条路径没验证过,现在实现等于把一个未经检验的假设写进公共能力里。这正是上一轮"逐库测量但取样不足"的教训:机制在 EGL 上成立,不等于在 GLX 上成立。
+- **O4** 安装期闭包断言 + `host_deps` 显式清单(§2.8)——需要 R7 的枚举能力先到位
+- **O2/O3** 安装报告三个数、host-link 解析结果持久化(§4.2)
+- **AD-13** 驱动耦合提示:`doctor` + 安装 host-link 包时报一次
+- **AD-11** 构建流水线换占位前缀 `/nonexistent/xlings-use-rpath-not-default-search`——**不在这三个仓库里**,需要单独安排
+- **AD-2/AD-9** refcount 强制删除的告警
 
-**C 线与 B 线可并行**,内部顺序不可换:先能报告,再改行为。
+### 已落地、与本提案不冲突
 
-**已落地的四个修复(D1–D4)保持不变**,它们与本提案不冲突:§2 的 shim 机制会让 xlings 侧的 libc 护栏永远不触发,但护栏本身作为 R4 断言应当保留。
+验收报告里那四个已落地的缺陷修复(该文档的 D1–D4)保持不变。§2 的 interposer 机制会让 xlings 侧的 libc 护栏**永远不触发**,但护栏本身作为 R4 断言应当保留——触发即说明某个 recipe 又走回了老路。
