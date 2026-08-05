@@ -28,7 +28,8 @@
 #      it, because a silent drop is indistinguishable from a recipe that never
 #      declared anything
 #   4. a directory with no libc in it is untouched (the guard is not a ban on
-#      LD_LIBRARY_PATH)
+#      LD_LIBRARY_PATH), and neither is one holding only glibc's 2.34+
+#      compatibility stubs, which packages legitimately have to offer
 
 set -uo pipefail
 
@@ -89,6 +90,16 @@ function install()
     io.writefile(path.join(dir, "poisoned", "libfixture.so.1"), "\n")
     os.mkdir(path.join(dir, "clean"))
     io.writefile(path.join(dir, "clean", "libfixture.so.1"), "\n")
+    -- The glibc 2.34+ compatibility stubs. A package may legitimately have to
+    -- offer these -- nvidia-gl-host-link does, and without them the NVIDIA
+    -- device vanishes from EGL enumeration -- and they are nearly empty,
+    -- their implementations having moved into libc.so.6. A guard that swept
+    -- up "everything glibc ships" would break that while preventing nothing.
+    os.mkdir(path.join(dir, "stubs"))
+    for _, n in ipairs({"libpthread.so.0", "librt.so.1", "libdl.so.2",
+                        "libm.so.6"}) do
+        io.writefile(path.join(dir, "stubs", n), "\n")
+    end
     return true
 end
 
@@ -96,7 +107,7 @@ function config()
     if type(subos.env) == "function" then
         local binding = package.name .. "@" .. pkginfo.version()
         subos.env{ var = "LD_LIBRARY_PATH", op = "prepend",
-                   value = "${pkgdir}/poisoned:${pkgdir}/clean",
+                   value = "${pkgdir}/poisoned:${pkgdir}/clean:${pkgdir}/stubs",
                    binding = binding }
         -- Same directory, a variable the loader does not read. Nothing may be
         -- dropped here: the hazard is the variable, not the directory.
@@ -165,7 +176,17 @@ echo "$RUN" | grep -q "libcguardfixture@1.0.0" \
 $RUN"
 log "  ✓ reported, naming both the directory and the declaring package"
 
-# 4. a variable the loader does not read is untouched
+# 4. the glibc stubs are not swept up with the libc
+echo "$RUN" | grep -q "LDLP=.*$PKGDIR/stubs" \
+  || fail "a directory of glibc compatibility stubs was dropped. They are not
+libc: their implementations moved into libc.so.6 and what is left is a handful
+of symbols. Dropping them breaks packages that must offer them -- the NVIDIA
+vendor library names libpthread, librt and libdl, and loses its device without
+them -- while preventing no crash:
+$RUN"
+log "  ✓ glibc compatibility stubs (libpthread/librt/libdl/libm) survived"
+
+# 5. a variable the loader does not read is untouched
 echo "$RUN" | grep -q "CTRL=\[$PKGDIR/poisoned\]" \
   || fail "the guard reached a variable the dynamic loader never reads:
 $RUN"
