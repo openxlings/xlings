@@ -1,4 +1,4 @@
-# 图形栈详细设计:compat.mesa(开源栈)与 NVIDIA 闭源栈
+# 图形栈详细设计:mesa(开源栈)与 NVIDIA 闭源栈
 
 **日期**: 2026-08-05
 **类型**: 详细设计(detailed design)
@@ -13,7 +13,7 @@
 Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达用户自己的进程。
 **机制侧不再是阻塞项**。剩下的是把 payload 做出来,而这分两条**约束完全不同**的轨:
 
-| | Track A:compat.mesa | Track B:NVIDIA 闭源 |
+| | Track A:mesa | Track B:NVIDIA 闭源 |
 |---|---|---|
 | 能否分发 | ✅ MIT,可构建可发布 | ❌ 许可禁止重分发 |
 | 版本耦合 | 与 subos 的 glibc 绑定 | 与**宿主内核模块**逐位绑定 |
@@ -26,10 +26,10 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 **推翻了 slice 1 设计里的一个数字**:§10 的 O4 担心 payload "可能超 800MB,是否分包"。
 实测 **241 MB**,其中 `libLLVM.so` 一家占 137 MB。
 
-**分包结论**(§2.7):那 137 MB **建议**独立成 `compat.libllvm`,不埋进 mesa、也不加进现有
-`llvm` 包 —— 索引的 llvm-subpackaging 规范明文要求"无共享 libLLVM",而 Ubuntu 的
-`libllvm20` 恰恰是一个只有两个文件、消费者全是 mesa 的纯运行时包。
-`llvm`(编译器)与 `libLLVM.so`(库)同源但消费者不同,这是两条轴。
+**分包结论**(§2.8):那 137 MB **建议**独立成 **`llvm-runtime`**(xim-pkgindex,
+默认 `xim` 命名空间),照抄索引里**已经存在**的 `gcc-runtime` —— 后者正是为
+"只想运行 C++ 程序、不需要 1.1 GB 编译器"而拆出来的。`llvm`(编译器)与
+`libLLVM.so`(库)同源但消费者不同,这是两条轴。
 
 ---
 
@@ -73,7 +73,7 @@ Slice 1 补完了 Configuration 基质:包能声明环境变量,变量能到达�
 
 **这一节的完整梳理见 §2「gcc / llvm / libLLVM / mesa 四者关系」** —— 结论是
 xlings 索引里的 `llvm` 包**按明文规范就不包含 `libLLVM.so`**,不是遗漏。
-compat.mesa 需要的是一个索引里目前不存在的东西。
+mesa 需要的是一个索引里目前不存在的东西。
 
 ### 1.4 payload 总量
 
@@ -132,7 +132,7 @@ subos 提供:            glibc@2.39   ✅
 ## 2. gcc / llvm / libLLVM / mesa:四者关系梳理
 
 这一节回答"那 137 MB 的 `libLLVM.so` 一般在哪里、xlings 生态该怎么放"。
-结论会改变 compat.mesa 的分包形态,所以放在架构之前。
+结论会改变 mesa 的分包形态,所以放在架构之前。
 
 ### 2.1 四个东西,不是三个
 
@@ -140,7 +140,8 @@ subos 提供:            glibc@2.39   ✅
 
 | | 是什么 | 谁消费 | xlings 现状 |
 |---|---|---|---|
-| **gcc** | C/C++ 编译器 **+ C++ 运行时** | 开发者;以及**任何 C++ 程序**(libstdc++) | ✅ `gcc` 包已注册 `libstdc++.so.6` / `libgcc_s.so.1` 到 xvm |
+| **gcc** | C/C++ 编译器(~1.1 GB) | 开发者 | ✅ `gcc` 包 |
+| **gcc-runtime** | libstdc++ / libgcc_s 等(~25 MB) | **任何 C++ 程序**,含 mesa | ✅ **已存在**,正是本文要照抄的先例 |
 | **llvm** | clang/lld 工具链 | 开发者 | ✅ `llvm` 包(Linux 实体 102 MB) |
 | **libLLVM.so** | LLVM 作为**共享库**(JIT / 代码生成) | 几乎只有 **mesa** | ❌ **索引里没有** |
 | **mesa** | GL/Vulkan 实现 | 图形程序 | ❌ 待做 |
@@ -156,13 +157,31 @@ subos 提供:            glibc@2.39   ✅
          │
    libLLVM.so ← llvmpipe 的 JIT + radeonsi 的着色器编译
          │
-   libstdc++ / libgcc_s ← 来自 gcc 包
+   libstdc++ / libgcc_s ← 来自 gcc-runtime 包(~25 MB,不是 1.1 GB 的 gcc)
 ```
 
 **`llvm` 包不在这条链上**。mesa 不需要 clang;它需要的是 LLVM 的代码生成能力,
 以共享库形态。
 
-### 2.2 发行版怎么放:纯运行时包,消费者只有 mesa
+### 2.2 这些包落在哪个索引:xim-pkgindex,不是 mcpp-index
+
+先划清层,因为这条线是本文初稿命名出错的原因。
+
+| 索引 | 装什么 | 命名 |
+|---|---|---|
+| **xim-pkgindex** | 装进 subos 的**运行时 payload** | 默认命名空间 `xim`,包名 kebab-case **不带点**(`gcc-runtime`、`jdk-temurin`、`mingw-gcc`);另有 8 个 `config` 包 |
+| **mcpp-index** | mcpp **构建**时消费的 C/C++ 库 | `compat` 命名空间(`compat.freetype`、`compat.glfw`、`compat.glx-runtime`) |
+
+图形栈的 payload 是**给图形程序在 subos 里跑的**,不是给 mcpp 链的 →
+全部进 **xim-pkgindex**,用默认 `xim` 命名空间。
+
+> mcpp-index 那边已经有 `compat.glx-runtime` —— 一个**无 payload 的宿主适配器**,
+> 通过 `mcpp.runtime.capabilities = {"x11.display", "opengl.glx.driver"}` 从宿主借 GL。
+> 那是**另一层**的东西:它解决"mcpp 应用怎么声明自己需要 GL",本文解决"subos 里
+> 到底有没有 GL"。两者将来会接上(有了 `mesa`,mcpp 应用就能从 subos 拿 GL 而不是
+> 宿主,那正是 #352 的根治),但不是同一个包、也不在同一个索引。
+
+### 2.3 发行版怎么放:纯运行时包,消费者只有 mesa
 
 Ubuntu 上实测:
 
@@ -183,7 +202,7 @@ $ apt-cache rdepends --installed libllvm20
 `libllvm20` 是一个**只有两个文件的纯运行时包**,而它的反向依赖**全是 mesa**。
 发行版早就沿"运行时库 vs 工具链"这条轴切开了,原因就是消费者不同。
 
-### 2.3 xim-pkgindex 的 llvm 划分:2 包模型,明文排除 libLLVM
+### 2.4 xim-pkgindex 的 llvm 划分:2 包模型,明文排除 libLLVM
 
 索引仓自带规范:`.agents/skills/llvm-subpackaging/SKILL.md`。要点:
 
@@ -211,7 +230,7 @@ $ apt-cache rdepends --installed libllvm20
 > 结论(不能复用)是对的,但依据错了 —— 真正的依据是上面这条**明文规范**,
 > 比一次偶然的目录观察强得多。
 
-### 2.4 mesa 到底用 LLVM 的什么(实测,非推测)
+### 2.5 mesa 到底用 LLVM 的什么(实测,非推测)
 
 对 `libgallium` 做未定义符号分析:
 
@@ -234,18 +253,31 @@ Intel(iris/ANV)和 NVIDIA 开源(nouveau/NVK)**不经过 LLVM** —— 它们用
 所以 `LLVM_TARGETS_TO_BUILD=X86;AMDGPU` 是实测结论,不是保守猜测;
 砍掉其余十几个 target 是安全的。
 
-### 2.5 mesa 与 gcc:O5 有答案了
+### 2.6 mesa 与 gcc:依赖 `gcc-runtime`,不是 `gcc`
 
 `libgallium` 需要的最高 C++ 符号版本是 **`GLIBCXX_3.4.29`**。
-xlings 的 `gcc` 包已经把 `libstdc++.so.6` / `libgcc_s.so.1` 注册进 xvm
-(`gcc.lua` 的 lib 清单),本机 gcc 11.5.0 提供 `libstdc++.so.6.0.29`
-= `GLIBCXX_3.4.29`,**正好够**。
 
-> **O5 关闭**:libstdc++ 走 `deps`(`xim:gcc@<ver>`),compat.mesa **不自带**。
-> 但要在 recipe 里钉一个下限 —— 用比 3.4.29 更老的 gcc 会在运行期缺符号。
-> 源码构建(方案 A)时用哪个 gcc 编译,就产生哪个下限,两者必须一致。
+索引里**已经有** `gcc-runtime`,专门为这种场景存在:
 
-### 2.6 ABI 耦合的实测:精确到 major,且 fail-closed
+```
+gcc-runtime@15.1.0  →  lib64/libstdc++.so.6.0.34   (= GLIBCXX_3.4.34)
+                       libgcc_s.so.1 / libgomp / libatomic / …
+                       exports.runtime.libdirs = { "lib64" }   ← elfpatch 自动接上
+```
+
+3.4.34 ≥ 3.4.29,**覆盖有余**;而 libstdc++ 是**前向兼容**的,所以一个
+`gcc-runtime` 版本能同时服务针对更老 GCC 构建的一切产物。
+
+> **O5 关闭**:走 `deps = { "xim:gcc-runtime@<ver>" }`,mesa **不自带**。
+>
+> **不要依赖 `xim:gcc`** —— 那是 ~1.1 GB 的完整编译器,而 mesa 在**运行期**
+> 只需要那 ~25 MB 的运行时库,`cc1`/`cc1plus`/头文件/`*.a` 一样都用不上。
+> 这正是 `gcc-runtime` 被单独拆出来的理由。
+>
+> 仍需在 recipe 里钉下限:源码构建(方案 A)用哪个 GCC 编译,就产生哪个
+> `GLIBCXX_*` 下限,`deps` 里的 `gcc-runtime` 版本必须不低于它。
+
+### 2.7 ABI 耦合的实测:精确到 major,且 fail-closed
 
 在决定分不分包之前,先量清楚 mesa 与 libLLVM 的耦合有多紧。
 
@@ -282,9 +314,9 @@ mesa-libgallium Depends: … libc6 (>= 2.38), libstdc++6 (>= 11), libllvm20, …
 
 没有区间,是因为 **major 写在包名里**了。这就是发行版表达"精确 major、任意 patch"的办法。
 
-### 2.7 结论:拆,但理由比初稿窄
+### 2.8 结论:拆,但理由比初稿窄
 
-**建议新增 `compat.libllvm`。** 但先撤回我在初稿里给的两条理由 —— 它们是错的:
+**建议新增 `llvm-runtime`。** 但先撤回我在初稿里给的两条理由 —— 它们是错的:
 
 | 初稿的理由 | 实际 |
 |---|---|
@@ -303,27 +335,47 @@ mesa-libgallium Depends: … libc6 (>= 2.38), libstdc++6 (>= 11), libllvm20, …
    >8 MiB 一律要人工从 CN 机器补传。241 MB 和 104+137 MB 都逃不掉这一步,
    但拆开后**每次 mesa patch 只需补传 104 MB**,而 137 MB 那份一年才动两次。
 
-**代价**:compat.mesa 要硬钉 `compat:libllvm@<ver>`。这不是新负担 ——
+**代价**:mesa 要硬钉 `compat:libllvm@<ver>`。这不是新负担 ——
 索引里所有 recipe 都是硬钉(`gcc.lua` 钉 `xim:glibc@2.39`),这就是现有范式。
-而且 §2.6 已经证明钉错了是加载期硬失败,不会悄悄跑出错误结果。
+而且 §2.7 已经证明钉错了是加载期硬失败,不会悄悄跑出错误结果。
 
 **形态**:
 
 ```
-compat.libllvm/<ver>/
+llvm-runtime/<ver>/
 └── lib/libLLVM.so.<major.minor>        ← 单一实体
                                            -DLLVM_TARGETS_TO_BUILD=X86;AMDGPU
                                            -DLLVM_LINK_LLVM_DYLIB=ON
 ```
 
-命名用 `compat.` 命名空间(与 `compat.mesa` 一致,表示"第三方运行时库"),
-**不要**叫 `llvm-runtime` —— 会和 `llvm` 包混淆,而两者恰恰必须区分。
+**命名遵循索引里已有的先例,而不是 Ubuntu 的。** xim-pkgindex 里已经有
+`gcc-runtime`,它存在的理由与这里逐字对应(原文注释):
 
-它**不违反** skill 的"2 包不是 3 包":那条规则约束的是 **工具链的拆分轴**
-(core / libcxx / tools 是同一批消费者的三块)。`compat.libllvm` 在**另一条轴**上 ——
-消费者是 mesa 不是开发者,与 `llvm` 包零重叠。这正是 Ubuntu `libllvm20` 的模型。
+> * `xim:gcc` is the full compiler (~1.1 GB)
+> * The runtime libs are ~25 MB
+> * Tools that only need to **run** C++ binaries don't need cc1/cc1plus/headers/`*.a`
 
-> **如果不拆**:也不是错的选择,把 137 MB vendored 进 compat.mesa 一样能跑,
+`gcc`(编译器)/ `gcc-runtime`(运行时库)这对区分在这个索引里早就立住了,
+`llvm` / `llvm-runtime` 完全平行,一眼可懂。
+
+> **更正**:我先前写过"不要叫 `llvm-runtime`,会和 `llvm` 包混淆"。**说反了** ——
+> 有 `gcc-runtime` 这个先例在,`llvm-runtime` 恰恰是最不会被误解的名字。
+> 也不要用 `compat.` 前缀:那是 **mcpp-index** 的命名空间(`compat.freetype`、
+> `compat.glfw`、`compat.glx-runtime`),而 xim-pkgindex 的包名**没有一个带点**,
+> 命名空间只有默认的 `xim` 和 8 个 `config` 包。
+
+它**不违反** llvm-subpackaging skill 的"2 包不是 3 包":那条规则约束的是
+**工具链的拆分轴**(core / libcxx / tools 是同一批消费者的三块)。`llvm-runtime`
+在**另一条轴**上 —— 消费者是 mesa 不是开发者,与 `llvm` 包零重叠。
+`gcc-runtime` 就是这条轴上已经存在的那一个。
+
+**与 `gcc-runtime` 的一处关键差异,不能照抄**:`gcc-runtime` 的注释说
+"libstdc++ is forward-compatible; one gcc-runtime version covers every binary
+built against an equal-or-older GCC"。**libLLVM 没有这个性质** —— §2.7 测到的
+`@LLVM_20.1` 符号版本让它精确锁 major.minor。所以包的**形状**照抄 `gcc-runtime`,
+**版本策略**不能照抄:消费者必须硬钉,不能像 libstdc++ 那样"装个新的就都覆盖了"。
+
+> **如果不拆**:也不是错的选择,把 137 MB vendored 进 mesa 一样能跑,
 > 少一个包要维护。分界线是"会不会跟 mesa 的 patch 版本走" —— 若 xlings 只固定一个
 > mesa 版本、几乎不升级,拆包的三条理由全部失效,那就别拆。
 
@@ -348,7 +400,7 @@ libGLX_mesa.so.0        libGLX_nvidia.so.550.144.03  ← 厂商实现,可并存
 
 **这决定了整个设计**:
 
-- compat.mesa 只需提供 **glvnd + mesa vendor**,不必也不应该覆盖 `libGL.so.1` 的语义。
+- mesa 只需提供 **glvnd + mesa vendor**,不必也不应该覆盖 `libGL.so.1` 的语义。
 - NVIDIA 桥接只需让 **`libGLX_nvidia` / `libEGL_nvidia` 对同一个 glvnd 可见**。
 - 选谁由**环境变量按进程决定** —— 这正是 slice 1 交付的能力。
 
@@ -366,7 +418,7 @@ libGLX_mesa.so.0        libGLX_nvidia.so.550.144.03  ← 厂商实现,可并存
 
 ---
 
-## 4. Track A:compat.mesa
+## 4. Track A:mesa
 
 ### 4.1 构建方法论(Task #8)
 
@@ -404,13 +456,13 @@ meson setup build \
 驱动集正对应用户要的四种硬件:CPU(llvmpipe/lvp)、Intel(iris/ANV)、
 AMD(radeonsi/RADV)、NVIDIA 开源(nouveau/NVK)。
 
-**LLVM 的处置**见 §2.7:独立成 `compat.libllvm` 包,用
+**LLVM 的处置**见 §2.8:独立成 `llvm-runtime` 包,用
 `-DLLVM_TARGETS_TO_BUILD=X86;AMDGPU -DLLVM_LINK_LLVM_DYLIB=ON` 构建,
 预计 137 → 40~60 MB。
 
 不能走的两条路,记下来免得再被提起:
 
-- **`-Dllvm=disabled`** —— 省 137 MB,但 §2.4 已经证明这会**同时失去 llvmpipe 和
+- **`-Dllvm=disabled`** —— 省 137 MB,但 §2.5 已经证明这会**同时失去 llvmpipe 和
   radeonsi**,即失去"CPU"和"AMD"两种目标硬件。不可接受。
 - **把 libLLVM 加回 `llvm` 包** —— 违反索引的 llvm-subpackaging 验收红线,
   且让每个只想要 clang 的人多背 137 MB。
@@ -418,7 +470,7 @@ AMD(radeonsi/RADV)、NVIDIA 开源(nouveau/NVK)。
 ### 4.2 payload 布局
 
 ```
-compat.mesa/<ver>/
+mesa/<ver>/
 ├── lib/
 │   ├── libGLX_mesa.so.0        libEGL_mesa.so.0        libgbm.so.1
 │   ├── libgallium-<ver>.so     libLLVM.so.<ver>
@@ -441,7 +493,7 @@ compat.mesa/<ver>/
 
 ```lua
 package = {
-    spec = "2", name = "compat.mesa", namespace = "compat",
+    spec = "2", name = "mesa", namespace = "compat",
     description = "Mesa 3D — GL/EGL/Vulkan for CPU, Intel, AMD and NVIDIA-open",
     licenses = {"MIT"}, type = "package", archs = {"x86_64", "aarch64"},
     categories = {"graphics"},
@@ -523,12 +575,12 @@ grep -E '\.so' /tmp/trace | grep    ENOENT   # 找了但没找到 ← 缺的就�
 这与 hermetic 策略文档里的 `capabilities_host` 白名单是同一件事的具体化:
 GPU 是一个必须穿透 hermetic 边界的宿主资源,因为它的用户态与宿主内核绑定。
 
-### 5.2 `host.nvidia` recipe
+### 5.2 `nvidia-runtime` recipe
 
 命名用 `host.` 前缀,明确它**不携带 payload**,只描述一次对宿主的借用。
 
 ```lua
-package = { name = "host.nvidia", namespace = "host", type = "package", … }
+package = { name = "nvidia-runtime", namespace = "host", type = "package", … }
 
 function installed()
     -- 探测:内核模块在不在,版本是多少
@@ -549,7 +601,7 @@ function install()
 end
 
 function config()
-    local d, tag = pkginfo.install_dir(), "host.nvidia@" .. pkginfo.version()
+    local d, tag = pkginfo.install_dir(), "nvidia-runtime@" .. pkginfo.version()
     if type(subos.env) == "function" then
         subos.env{ var = "__EGL_VENDOR_LIBRARY_DIRS", op = "set",
                    value = "${pkgdir}/share/glvnd/egl_vendor.d", binding = tag }
@@ -577,7 +629,7 @@ libnvidia-ptxjitcompiler.so.<ver>
 
 精确清单由 §4.4 的 strace 方法在真机上导出,**不靠这份列表**。
 
-### 5.3 与 compat.mesa 共存
+### 5.3 与 mesa 共存
 
 两个包都用 `set` 声明 `__EGL_VENDOR_LIBRARY_DIRS` —— 按 slice 1 的冲突规则,
 doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对用户不够好**。
@@ -602,20 +654,20 @@ doctor 会报 warning,且 binding 序后者胜出。**这是对的行为,但对�
 
 对策,三层:
 
-1. **记账**:`host.nvidia` 把探测到的版本写进自己的 payload(一个 `HOST_DRIVER` 文件),
-   并作为包版本的一部分(`host.nvidia@550.144.03`)。
+1. **记账**:`nvidia-runtime` 把探测到的版本写进自己的 payload(一个 `HOST_DRIVER` 文件),
+   并作为包版本的一部分(`nvidia-runtime@550.144.03`)。
 2. **doctor 新检查**:比对 `/proc/driver/nvidia/version` 与记账值,不一致就报
-   `xlings install host.nvidia` 重建链接。**这条要新写**,既有的 `SysrootDangling`
+   `xlings install nvidia-runtime` 重建链接。**这条要新写**,既有的 `SysrootDangling`
    只看链接是否悬空,看不出"版本漂移但恰好新版本也有同名文件"的情况。
-3. **不缓存 payload**:`host.nvidia` 的 payload 是纯符号链接,重装成本 <1s,
+3. **不缓存 payload**:`nvidia-runtime` 的 payload 是纯符号链接,重装成本 <1s,
    所以修复动作可以无脑推荐重装。
 
 ---
 
 ## 6. bwrap 空 host 冒烟测试(Task #10)
 
-**这是 compat.mesa 自洽性的唯一可证伪断言**,也是这台开发机上唯一能做的
-compat.mesa 验证(RTX 4080 + 闭源驱动不属于 Track A 的四种目标硬件)。
+**这是 mesa 自洽性的唯一可证伪断言**,也是这台开发机上唯一能做的
+mesa 验证(RTX 4080 + 闭源驱动不属于 Track A 的四种目标硬件)。
 
 ```bash
 # 容器里没有任何宿主 GL:不 bind /usr/lib、不 bind /usr/share/glvnd
@@ -643,7 +695,7 @@ S3 是最重要的一条:一个能跑通但其实用了宿主 libGL 的测试,�
 S4 用一个最小 EGL surfaceless 程序读回 framebuffer,比对期望颜色 —— 
 `eglinfo` 打印正常但 `eglMakeCurrent` 失败是常见形态。
 
-**在 CI 里的位置**:pkgindex 的 build-sanity,每次 compat.mesa 版本变更时跑。
+**在 CI 里的位置**:pkgindex 的 build-sanity,每次 mesa 版本变更时跑。
 不进 xlings 的 e2e —— 它测的是 payload,不是 xlings。
 
 ---
@@ -656,7 +708,7 @@ A1 补 12 个构建依赖 xpkg ──┐
     zstd/elfutils/libxcb/  │
     libx11/wayland/…)      │
                            ▼
-                    A3 compat.mesa 源码构建(方案 A)
+                    A3 mesa 源码构建(方案 A)
 A2 方案 B bootstrap ──┐         ▲
    重打包 Ubuntu 二进制 │         │ 替换
    +env 声明          ▼         │
@@ -667,7 +719,7 @@ A2 方案 B bootstrap ──┐         ▲
                  A5 精简 LLVM 构建
                  (X86;AMDGPU,137→~50MB)
 
-B1 host.nvidia 探测+桥接 ──▶ B2 doctor 版本漂移检查 ──▶ B3 真机验证(本机可做)
+B1 nvidia-runtime 探测+桥接 ──▶ B2 doctor 版本漂移检查 ──▶ B3 真机验证(本机可做)
 
 O3 vendor JSON 合并目录 ── 仅当出现同机双栈需求
 ```
@@ -691,20 +743,20 @@ A 轨在这台机器上永远只能验到 llvmpipe。
 | O3 | 同机双栈(mesa + NVIDIA 闭源)是否是真需求?若是,vendor JSON 合并目录怎么做 | §5.3 |
 | O4 | Wayland 要不要进 slice?目前只列了 x11+wayland 两个 platform,但 wayland 的
       客户端库也要进闭包 | payload 组成 |
-| ~~O5~~ | ~~`libstdc++` 从哪来~~ **已由 §2.5 关闭**:走 `deps`(`xim:gcc`),不自带;
+| ~~O5~~ | ~~`libstdc++` 从哪来~~ **已由 §2.6 关闭**:走 `deps`(`xim:gcc`),不自带;
         需在 recipe 钉 `GLIBCXX_3.4.29` 下限 | — |
-| O6 | `compat.libllvm` 的版本策略:跟随 mesa 的 LLVM 需求,还是独立 major 线? | A0 |
+| O6 | `llvm-runtime` 的版本策略:跟随 mesa 的 LLVM 需求,还是独立 major 线? | A0 |
 
 O6 是新的:mesa 每个大版本对 LLVM 的最低要求会前移(25.x 要 ≥15),而
-`compat.libllvm` 一旦有第二个消费者就不能只跟着 mesa 走。倾向按 LLVM 自己的 major
-线发版(`compat.libllvm@20`),由 mesa 的 recipe 声明区间。
+`llvm-runtime` 一旦有第二个消费者就不能只跟着 mesa 走。倾向按 LLVM 自己的 major
+线发版(`llvm-runtime@20`),由 mesa 的 recipe 声明区间。
 
 ---
 
 ## 9. 一句话总括
 
 > **两条轨约束相反:mesa 能发布但要自己构建(241 MB,其中 `libLLVM.so` 137 MB 独立成
-> `compat.libllvm`,按 X86;AMDGPU 两个 target 精简后预计 ~150 MB 总量);
+> `llvm-runtime`,按 X86;AMDGPU 两个 target 精简后预计 ~150 MB 总量);
 > NVIDIA 闭源不能发布只能从宿主借(0 MB payload,但宿主升级会悄悄断链,需要记账 +
 > doctor)。libglvnd 让两者在同一个 subos 里共存,选谁由 slice 1 已交付的环境变量机制
 > 按进程决定。关键路径不是 mesa,是它的 12 个构建依赖;而唯一能证伪 payload 自洽性的

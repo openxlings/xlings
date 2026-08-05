@@ -2,7 +2,7 @@
 
 **日期**: 2026-08-05
 **类型**: 详细设计(detailed design)—— slice 1 可实施规格
-**范围**: xlings 侧新增最小机制,让 `compat.mesa` 端到端可装可跑;不引入 platform 抽象、不引入新 CLI 动词
+**范围**: xlings 侧新增最小机制,让 `mesa` 端到端可装可跑;不引入 platform 抽象、不引入新 CLI 动词
 **关联**:
 - `2026-08-05-userspace-distro-hermetic-strategy.md`(运行时边界策略)
 - `2026-08-05-ecosystem-three-tier-and-composable-distro.md`(生态定位讨论)
@@ -15,7 +15,7 @@
 
 **问题**:issue #352 类场景——xlings 的 subos 缺 Configuration 基质,GL/Vulkan/字体等子系统的发现协议(env vars + config 目录)没有 per-subos 承载。
 
-**Slice 1 目标**:在 xlings 侧引入最小机制补完 Configuration 基质,让 `compat.mesa` payload 装进 subos 后 GLFW 用户程序能跑起来。
+**Slice 1 目标**:在 xlings 侧引入最小机制补完 Configuration 基质,让 `mesa` payload 装进 subos 后 GLFW 用户程序能跑起来。
 
 **核心决策**:
 - Manifest 新增单块 `subos_info`(对齐 `xlings subos info` CLI)
@@ -143,7 +143,7 @@ family_of(runtime_binding) →
 
 ```json
 "envs": {
-  "compat.mesa@25.0.0": [
+  "mesa@25.0.0": [
     { "var": "LIBGL_DRIVERS_PATH",        "op": "set",     "value": "${pkgdir}/lib/dri" },
     { "var": "__EGL_VENDOR_LIBRARY_DIRS", "op": "set",     "value": "${pkgdir}/share/glvnd/egl_vendor.d" },
     { "var": "XDG_DATA_DIRS",             "op": "prepend", "value": "${pkgdir}/share" }
@@ -295,7 +295,7 @@ subos.env{
     var     = "LIBGL_DRIVERS_PATH",
     op      = "set",                                    -- 或 "prepend"
     value   = "${pkgdir}/lib/dri",
-    binding = "compat.mesa@" .. pkginfo.version()
+    binding = "mesa@" .. pkginfo.version()
 }
 ```
 
@@ -371,9 +371,9 @@ Bash 输出示例:
 export PATH="..."
 
 # Slice 1 新增:subos_info.envs 展开
-export LIBGL_DRIVERS_PATH="/home/user/.xlings/subos/default/pkg/compat.mesa-25.0.0/lib/dri"
-export __EGL_VENDOR_LIBRARY_DIRS="/home/user/.xlings/subos/default/pkg/compat.mesa-25.0.0/share/glvnd/egl_vendor.d"
-export XDG_DATA_DIRS="/home/user/.xlings/subos/default/pkg/compat.mesa-25.0.0/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+export LIBGL_DRIVERS_PATH="/home/user/.xlings/subos/default/pkg/mesa-25.0.0/lib/dri"
+export __EGL_VENDOR_LIBRARY_DIRS="/home/user/.xlings/subos/default/pkg/mesa-25.0.0/share/glvnd/egl_vendor.d"
+export XDG_DATA_DIRS="/home/user/.xlings/subos/default/pkg/mesa-25.0.0/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
 ```
 
 **注入规则**:
@@ -409,7 +409,7 @@ export XDG_DATA_DIRS="/home/user/.xlings/subos/default/pkg/compat.mesa-25.0.0/sh
 ```
 [xlings] subos: default (runtime glibc@2.39)
 [xlings] env: 3 vars from 1 packages
-[xlings]   compat.mesa: LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_DIRS, XDG_DATA_DIRS
+[xlings]   mesa: LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_DIRS, XDG_DATA_DIRS
 ```
 
 避免用户 `eval` 后不清楚加了什么。
@@ -488,7 +488,7 @@ uninstall(pkg):
 
 ### 9.3 Slice 1 新增(xim-pkgindex 侧)
 
-- `compat.mesa` recipe(独立设计,见 task #8~9)
+- `mesa` recipe(独立设计,见 task #8~9)
 - 一份预构建 tarball 上传 xlings-res
 - dlopen 闭包一次性人工审计
 - 一份 bwrap 空 host smoke test
@@ -514,7 +514,7 @@ uninstall(pkg):
 | O1 | `--shell fish` 与 bash 的语义等价 fixture 是否需要? | 测试 |
 | O2 | Runtime 未装且用户拒绝 `--yes` 时的具体退出码语义 | subos new UX |
 | O3 | Doctor D4(env 冲突)是 warning 还是 error?判据严格性统一 | doctor |
-| O4 | ~~`compat.mesa` payload 实际 size(可能超 800MB,是否分包)~~ **已关闭**:实测 241 MB(mesa 103 + LLVM 137),不分包 | ~~pkgindex 侧 slice 1~~ |
+| O4 | ~~`mesa` payload 实际 size(可能超 800MB,是否分包)~~ **已关闭**:实测 241 MB(mesa 103 + LLVM 137),不分包 | ~~pkgindex 侧 slice 1~~ |
 | O5 | subos 迁移/克隆场景下 `${pkgdir}` 是否需要在 subos_info 里持久化解析结果? | 未来 subos 迁移能力 |
 
 不阻塞 slice 1 起步,施工时定。
@@ -529,7 +529,7 @@ uninstall(pkg):
 4. **Task #5**:`xlings subos use --shell` env emitter (bash 优先,~5 天)
 5. **Task #6**:`xlings subos use --cmd` env 注入(2 天)
 6. **Task #7**:uninstall 清理 + doctor D1~D5(3~5 天)
-7. 并行 **Task #8~10**:pkgindex 侧 compat.mesa(2~3 周)
+7. 并行 **Task #8~10**:pkgindex 侧 mesa(2~3 周)
 8. 集成 + e2e smoke test(1 周)
 
 **总估算 4~6 周**。
@@ -571,11 +571,11 @@ Slice 1 的 xlings + libxpkg 两侧已实现并验证。落地拆分见
 fish emitter 只有构造正确性、无行为断言;O4 已由 `2026-08-05-graphics-stack-design.md`
 实测关闭(241 MB,不分包);O5 仍开放。
 
-compat.mesa 与 NVIDIA 闭源栈的详细设计见
+mesa 与 NVIDIA 闭源栈的详细设计见
 `2026-08-05-graphics-stack-design.md`。
 
 ---
 
 ## 12. 一句话总括
 
-> **Slice 1 = 一个 `subos_info` 块 + 一个 `subos.env{}` API + `xlings subos use --shell/--cmd` 两处扩展。总代码 ~800~1200 行。补完 Configuration 基质,让 compat.mesa 端到端可跑;所有更大的野心(platform、多 runtime、canonical build 等)明确挂到后续 slice,不阻塞当前工作。**
+> **Slice 1 = 一个 `subos_info` 块 + 一个 `subos.env{}` API + `xlings subos use --shell/--cmd` 两处扩展。总代码 ~800~1200 行。补完 Configuration 基质,让 mesa 端到端可跑;所有更大的野心(platform、多 runtime、canonical build 等)明确挂到后续 slice,不阻塞当前工作。**
