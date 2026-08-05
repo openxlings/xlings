@@ -209,7 +209,44 @@ elfpatch.host_link_shim{
 
 **方案 B(拷贝 327MB + RPATH)正式否决**,理由写进 recipe:它打破用户态与内核模块的版本耦合,而 shim 用 27KB 拿到了同样的隔离性。
 
-### 2.6 还需要验证的
+### 2.6 shim 修不了的另一半:被库自己读的搜索变量
+
+`LD_LIBRARY_PATH` 不是唯一一个进程全局的搜索变量。`subos.env` 目前声明的四个里,有两个是**同一个形状**:
+
+- `__EGL_VENDOR_LIBRARY_DIRS` —— libglvnd 自己读
+- `LIBGL_DRIVERS_PATH` —— mesa 自己读
+
+它们不经过动态加载器,所以 shim 的 DT_RPATH 完全够不到,xlings 侧的 libc 护栏也看不见(护栏只检查 loader 读的变量)。
+
+**实测。** 一个**宿主**二进制(`INTERP=/lib64/ld-linux-x86-64.so.2`,宿主 loader、宿主 libc),编译时只链接宿主的 `libEGL`:
+
+| 运行环境 | `GL_RENDERER` |
+|---|---|
+| 不带 subos 声明 | `NVIDIA GeForce RTX 4080/PCIe/SSE2` |
+| 带 subos 声明 | `llvmpipe (LLVM 20.1.7, 256 bits)` |
+
+`LD_DEBUG` 显示它加载进来的是**我们的** `libm.so.6`(glibc 2.39 载荷)、`libgcc_s`、`libstdc++`、`libxcb`、`libxshmfence`——全都进了一个跑在宿主 libc 上的进程。
+
+两个后果:
+
+1. **规则 1 违反**:宿主的东西依赖了我们的。这台机器宿主 glibc 恰好也是 2.39 所以没崩;换一台旧 glibc 的机器就是 `version 'GLIBC_2.xx' not found`。和 libc 那次是同一个形状,只是慢一拍。
+2. **功能上是静默降级**:宿主程序从硬件加速掉到软件渲染,没有任何提示。用户会认为"进了 subos 之后 GL 变慢了"而查不到原因。
+
+**这一条是可以彻底解决的,而且解法就是本文档的主线**:这两个变量存在的唯一目的,是告诉**我们的** GL 栈它自己的驱动在哪里。而 libglvnd 与 mesa **是我们自己构建的**——完全可以把路径**编进产物**(构建时的默认 vendor 目录 / DRI 目录,或 `$ORIGIN` 相对路径),不必经过环境。
+
+一旦编进产物:
+
+- 我们的 GL 栈自己知道去哪里找,不需要任何环境变量;
+- 宿主的 libglvnd 用宿主的默认目录,拿到宿主的 vendor——**规则 1 与规则 2 同时成立**;
+- `subos.env` 里只剩 `XDG_DATA_DIRS` 这类真正属于"用户可见约定"的变量。
+
+**提议 B4**:mesa 与 libglvnd 的构建把 vendor 目录 / DRI 目录设为自身载荷路径,删除这两条 `subos.env` 声明。这比 shim 更直接——那两个库是我们的,不存在"不能修改宿主文件"的约束,当初用环境变量只是因为没有把"决定应当由产物携带"当成规则。
+
+**提议 B5**:xlings 侧的护栏目前只检查 loader 读的变量(`LD_LIBRARY_PATH` / `LD_PRELOAD`)。扩展为:**任何 `subos.env` 声明,如果它的值指向我们的载荷目录,都要在安装时报告**——因为进程全局的环境变量没有"只对我们的进程生效"这种作用域。报告而非拒绝:`XDG_DATA_DIRS` 这类是正当的。
+
+### 2.7 还需要验证的
+
+
 
 诚实列出,不要当成已完成:
 
