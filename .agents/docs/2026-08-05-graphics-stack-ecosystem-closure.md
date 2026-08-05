@@ -344,6 +344,17 @@ xlings 会为每个资产创建父目录,于是 `usr/include/X11/` 成为真实�
 整个图形栈 270 个节点。`install_headers_tree` 是给没有 `xvm.files` 的老客户端
 准备的同语义降级路径。
 
+**一个必须知道的测试盲区**:`config --add-xpkg` 把 recipe 复制进**本地索引**,
+而 `import("xim.pkgindex.sysroot")` 是按 recipe 所属索引解析的。本地索引没有
+`libs/`,于是 import 落到未知模块的桩上 —— **桩的每个字段都是真值且可调用**,
+所以 recipe 里每一次 sysroot 调用都"成功"且什么也没做,
+连 `if not sysroot.declare_headers_tree(...)` 的 else 分支都不会走。
+
+CI 的安装测试正是用 `--add-xpkg` 注册被改动的 recipe。这就是为什么
+"把整个 subos sysroot 换成指向某个包 payload 的符号链接"这样的改动能全绿通过:
+**要测的那段代码在测试里根本没运行**,只有发布之后才会跑。
+修法在 `.github/scripts/posix-test.sh`:注册前先把本仓库的 `libs/` 拷进本地索引。
+
 **库:装了能跑,但链不上。** `exports.runtime.libdirs` + elfpatch 让
 **消费者**的 RPATH 指向 payload,所以程序能跑;但 `<subos>/lib` 里只有 glibc 的,
 `gcc -lEGL` 什么也找不到。于是 subos 处在一个奇怪的状态:
@@ -402,6 +413,50 @@ Nix 的经验最贴切:**驱动库必须匹配内核模块,所以不可能钉进
 **唯一严重失效模式**:宿主 `apt upgrade` 换驱动 → 符号链接悬空,
 而悬空链接**通过所有 `[ -e ]` 检查**。对策:包记账宿主驱动版本,
 doctor 比对 `/proc/driver/nvidia/version`,不一致就提示重装。
+
+#### 实现后补录:照抄 sentinel 模式不够,还有三件事
+
+**一、必须链**整套**,不是两个 vendor 入口。**
+`libGLX_nvidia.so.0` 的 DT_NEEDED 原文是
+`libnvidia-glsi.so.550.144.03  libnvidia-tls.so.550.144.03  libnvidia-glcore.so.550.144.03`
+—— 私有半边**把驱动版本写进 SONAME**,只有同名符号链接才解析得了。
+只链两个入口做出来的东西在宿主上能加载(靠 ld.so cache),
+在我们关心的任何地方都不能。所以按前缀枚举整个目录(本机 50 个文件)。
+
+**二、vendor JSON 要重写,不能链。**
+宿主的 `10_nvidia.json` 写的是裸 SONAME `libEGL_nvidia.so.0` ——
+在有 cache 的宿主上正确,在别处就是**给宿主栈留的一扇门**。
+和 mesa 重写 `50_mesa.json` 是同一件事、同一个理由。
+
+**三、这是全栈唯一需要"搜索路径"而不是 RPATH 的地方。**
+glvnd 用绝对路径 dlopen vendor,vendor 的依赖随后按**进程的搜索路径**解析;
+而 vendor 是宿主的文件,我们**不能给不属于自己的文件写 RPATH**。
+所以只能给 `LD_LIBRARY_PATH`,问题变成"指哪个目录":
+
+- **不指 `${subosdir}/lib`**。全栈其余部分都通过 payload 目录解析,
+  payload 目录由依赖图钉死;subos 的 lib 目录装的是"这个 subos 恰好装了什么"。
+  装进一个没有 libX11 的 subos,`${subosdir}/lib` 就会安静地缺一块。
+- **指本包自己的目录**,并由 `install()` 把它补成自足的:
+  `lib/` 只放宿主的 NVIDIA 文件,`lib/xlings-deps/` 放我们这边它需要的 12 个。
+  两者分开,因为 `exports.runtime.libdirs` 只应该把宿主那一半给消费者。
+- **必须补到传递闭包**。`DT_RUNPATH` **不传递**:libX11 一旦从
+  `LD_LIBRARY_PATH` 找到,它自己的 libxcb 就按同一条路径找,而不是按
+  加载者的 RUNPATH。少补一层,剩下的就从宿主解析 —— 而且是静默的,
+  因为宿主有 libxcb 的机器看起来一切正常。
+
+为什么必须"集中"而不是把依赖的 payload 目录直接列进 `LD_LIBRARY_PATH`:
+`subos.env` 的 `${pkgdir}` 只能解析**声明者本身**的目录,
+没有"某个依赖的 payload 目录"这种写法;把绝对路径写进 value 则正好放弃了
+占位符存在的意义 —— manifest 要能描述不止写它的那台机器。
+
+**实测(RTX 4080 / 550.144.03)**:`EGL_DEVICE_COUNT` 2 → 3,
+`EGL_VENDOR=NVIDIA`,`GL_RENDERER=NVIDIA GeForce RTX 4080/PCIe/SSE2`,
+`GL_VERSION=4.6.0 NVIDIA 550.144.03`,像素回读正确。
+
+**探针要另写一个。** `glprobe` 走 `EGL_PLATFORM_SURFACELESS_MESA`,
+那是 mesa 的扩展,NVIDIA 不提供 —— 拿它测 NVIDIA 会在第一步失败,
+且**对 vendor 是否可用什么都没说**。NVIDIA 的无头路径是
+`EGL_EXT_platform_device`,所以有 `nvprobe.c`。
 
 ---
 
