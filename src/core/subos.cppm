@@ -361,6 +361,57 @@ export int create(const std::string& name, const fs::path& customDir,
         return 1;
     }
 
+    // A declared runtime is installed, not merely recorded.
+    //
+    // `--runtime glibc@2.39` names what this subos runs on. Writing it to the
+    // manifest and stopping there leaves the subos empty, and the first
+    // package to arrive decides the actual glibc — a subos declaring 2.39 ends
+    // up on 2.44 because something's `>=2.38` resolved higher. The flag then
+    // describes an intention the subos does not hold, which is worse than not
+    // having the flag: it reads as a guarantee.
+    //
+    // Only when asked. `subos new` without --runtime stays what it was, a
+    // local directory operation that cannot fail on a network — the default
+    // subos that `self install` creates goes through that path.
+    if (!runtime.empty()) {
+        // Both, and that is not belt-and-braces. The override is what
+        // recomputes Config's cached paths, and XLINGS_ACTIVE_SUBOS is what
+        // the activation path re-reads for itself. Setting only the override
+        // put the payload in the right subos and then reported
+        // "'glibc' is not installed in this subos" from the reader that had
+        // not been told — a command that succeeds narrating a failure.
+        auto prevEnv = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+        auto prev = Config::set_active_subos_override(name);
+        std::vector<std::string> targets{effectiveRuntime};
+        // useAfterInstall stays FALSE. The payload is usually already in the
+        // store — another subos has it — so cmd_install takes its
+        // "already installed" path, and the activation that flag triggers
+        // runs before the registration for THIS subos has landed. It fails,
+        // prints three [error] lines and a [warn], and the subos ends up
+        // correct anyway. A command that succeeds must not narrate a failure.
+        const int rc = xim::cmd_install(targets, /*yes=*/true,
+                                        /*noDeps=*/false, stream);
+        (void)Config::set_active_subos_override(prev);
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
+        if (rc != 0) {
+            // The subos exists and is valid; it just does not have what it
+            // says it runs on. Reported rather than rolled back, because the
+            // directory is usable and deleting it would throw away a
+            // successful create over a failed download.
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "subos '" + name + "' was created but its declared "
+                           "runtime " + effectiveRuntime
+                           + " could not be installed",
+                .recoverable = true,
+                .hint = "run: xlings subos use " + name
+                        + " && xlings install " + effectiveRuntime,
+            });
+            return rc;
+        }
+    }
+
     nlohmann::json payload;
     payload["name"] = name;
     payload["dir"]  = dir.string();

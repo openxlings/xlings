@@ -13,7 +13,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.5.2";
+    static constexpr std::string_view VERSION = "2026.8.5.3";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -132,6 +132,7 @@ private:
     xvm::WorkspaceInstalled globalInstalled_;
     xvm::WorkspaceInstalled projectSubosInstalled_;
     bool hasProjectConfig_ = false;
+    std::string activeSubosOverride_;
     bool forceGlobalScope_ = false;
     std::filesystem::path projectDir_;      // directory containing project .xlings.json
     std::vector<IndexRepo> globalIndexRepos_;
@@ -517,6 +518,14 @@ private:
     // another is not a bug that can be fixed at a call site; it is what having
     // two authorities means.
     [[nodiscard]] SubosScope resolve_subos_scope_() const {
+        // An explicit override wins over everything, including a project
+        // config. It exists for the case where a command must act on a subos
+        // it just created rather than on the one the user is standing in —
+        // `subos new --runtime` installing what it declared.
+        if (!activeSubosOverride_.empty()) {
+            return {activeSubosOverride_,
+                    paths_.homeDir / "subos" / activeSubosOverride_};
+        }
         const bool useProject = hasProjectConfig_ && !forceGlobalScope_;
         if (useProject && projectSubosMode_ == ProjectSubosMode::Named
             && !projectSubosName_.empty()) {
@@ -1181,6 +1190,25 @@ public:
         if (self.forceGlobalScope_ == force) return;
         self.forceGlobalScope_ = force;
         self.update_effective_paths_();
+    }
+
+    // Act on a named subos for the rest of this call, then hand back the
+    // previous override so the caller can restore it. Same recompute as the
+    // scope flag above and for the same reason: paths_ is derived state, and
+    // a setter that does not refresh it is honored by one reader and ignored
+    // by the next.
+    static std::string set_active_subos_override(std::string name) {
+        auto& self = instance_();
+        auto previous = self.activeSubosOverride_;
+        if (previous == name) return previous;
+        self.activeSubosOverride_ = std::move(name);
+        // reload_state_, not just update_effective_paths_: the paths are
+        // derived state but so is the WORKSPACE, and that one is read by the
+        // activation path. Recomputing only the paths put a package in the
+        // right subos and then reported it absent, because the two readers
+        // were looking at different subos.
+        self.reload_state_();
+        return previous;
     }
 
     static std::filesystem::path subos_dir(const std::string& name) {

@@ -17,6 +17,7 @@ import xlings.platform;
 import xlings.platform.target;
 import xlings.core.config;
 import xlings.core.semver;
+import xlings.core.elf_same_source;
 import xlings.libs.json;
 import xlings.core.common;
 import xlings.core.xself;
@@ -2270,15 +2271,57 @@ public:
                                                           dep_ver)) {
                         continue;
                     }
-                    if (depNode.exports.loader.empty() && depNode.exports.libdirs.empty()) {
-                        // Dep declared no exports — skip (predicate falls
-                        // through to convention later).
-                        break;
-                    }
                     auto depRoot = depNode.storeRoot.empty()
                         ? (dataDir / "xpkgs") : depNode.storeRoot;
                     auto depInstallDir = depRoot
                         / detail_::effective_store_name_(depNode) / depNode.version;
+
+                    // Recorded for EVERY runtime dep, declared exports or not.
+                    //
+                    // This used to `break` here when a dep declared nothing,
+                    // throwing away the depInstallDir just computed — and the
+                    // consumer then re-derived it from the dep's name, which
+                    // is a second answer to a question that has one. With two
+                    // versions of a package installed the two answers differ,
+                    // and the product is a binary whose interpreter comes from
+                    // one payload and whose RUNPATH from another. It faults
+                    // before main and blames a GLIBC_PRIVATE symbol.
+                    //
+                    // Design and the six edge cases the assertion below must
+                    // honour:
+                    // .agents/docs/2026-08-05-dependency-resolution-single-source.md
+                    mcpplibs::xpkg::ResolvedDep r;
+                    r.spec        = dep_spec;
+                    r.name        = depNode.canonicalName.empty()
+                                        ? depNode.name : depNode.canonicalName;
+                    r.version     = depNode.version;
+                    r.install_dir = depInstallDir.string();
+                    r.source      = dep_ver.empty()            ? "plan-any"
+                                  : dep_ver == depNode.version ? "plan-exact"
+                                                               : "plan-range";
+                    if (!depNode.exports.libdirs.empty()) {
+                        for (auto& d : depNode.exports.libdirs) {
+                            r.libdirs.push_back((depInstallDir / d).string());
+                        }
+                    } else {
+                        // The {lib64, lib} convention, applied HERE and only
+                        // here. It used to be applied by each consumer, which
+                        // is how a convention becomes a second resolver.
+                        for (const auto* sub : {"lib64", "lib"}) {
+                            auto cand = depInstallDir / sub;
+                            if (std::filesystem::is_directory(cand)) {
+                                r.libdirs.push_back(cand.string());
+                                break;
+                            }
+                        }
+                    }
+                    ctx.resolved_deps[dep_spec] = std::move(r);
+
+                    if (depNode.exports.loader.empty() && depNode.exports.libdirs.empty()) {
+                        // Nothing declared: no DepExport entry, by design.
+                        // The resolved record above is what consumers use.
+                        break;
+                    }
                     mcpplibs::xpkg::DepExport e;
                     if (!depNode.exports.loader.empty()) {
                         e.loader = (depInstallDir / depNode.exports.loader).string();
@@ -2595,6 +2638,62 @@ public:
                     log::debug("{}: elfpatch auto: {}", node.name, epResult.output);
                 } else if (!epResult.success) {
                     log::debug("{}: elfpatch auto failed: {}", node.name, epResult.error);
+                }
+
+                // The invariant, checked on what elfpatch actually wrote
+                // rather than on what it was asked to write.
+                //
+                // Everything above is supposed to make a violation
+                // unconstructible. This is the layer that does not take that
+                // on trust — and it is cheap, a string compare per ELF. What
+                // it replaces is a segmentation fault in the user's terminal
+                // days later, reported as an undefined GLIBC_PRIVATE symbol
+                // that names neither a package nor a version.
+                // The decision, kept as data next to what it produced.
+                //
+                // A log line answers "why is it 2.39 here" only for as long
+                // as someone still has the log and the store has not moved
+                // on. Anything that has to be reproduced to be inspected is
+                // not traceable — and reproducing THIS means recreating a
+                // store state, which is the thing that varies.
+                if (!ctx.resolved_deps.empty()) {
+                    nlohmann::json rec;
+                    rec["package"] = std::format("{}@{}", node.name, node.version);
+                    rec["deps"] = nlohmann::json::array();
+                    // Sorted, so two installs of the same plan produce the
+                    // same bytes and a diff between homes means something.
+                    std::vector<std::string> specs;
+                    for (const auto& [spec, _] : ctx.resolved_deps)
+                        specs.push_back(spec);
+                    std::ranges::sort(specs);
+                    for (const auto& spec : specs) {
+                        const auto& r = ctx.resolved_deps.at(spec);
+                        rec["deps"].push_back({
+                            {"spec",        r.spec},
+                            {"name",        r.name},
+                            {"version",     r.version},
+                            {"install_dir", r.install_dir},
+                            {"libdirs",     r.libdirs},
+                            {"source",      r.source},
+                        });
+                    }
+                    std::error_code wec;
+                    if (std::filesystem::is_directory(ctx.install_dir, wec)) {
+                        std::ofstream out(ctx.install_dir / ".xlings-resolution.json");
+                        if (out) out << rec.dump(2) << '\n';
+                    }
+                }
+
+                if (auto bad = elfcheck::scan_payload(ctx.install_dir);
+                    !bad.empty()) {
+                    for (const auto& f : bad) {
+                        log::error("{}", elfcheck::describe(f));
+                    }
+                    log::error("  this is a resolution defect, not a bad "
+                               "payload -- report it with the two paths above");
+                    return std::unexpected(std::format(
+                        "{}@{}: loader/libc payload mismatch in {} binary(ies)",
+                        node.name, node.version, bad.size()));
                 }
             }
 
