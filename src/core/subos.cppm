@@ -836,6 +836,84 @@ inline manifest::Placeholders placeholders_for_(const fs::path& subosDir) {
     };
 }
 
+// Is this the name of a library that is welded to a particular ld.so?
+//
+// ld.so and libc.so.6 are two halves of one build and talk to each other over
+// GLIBC_PRIVATE. Pairing halves from different builds does not fail to load --
+// it segfaults before main, naming nothing. The rest of the glibc set is cut
+// from the same build and carries the same coupling; musl's equivalents are
+// listed for the same reason.
+inline bool is_loader_coupled_soname_(std::string_view file) {
+    static constexpr std::string_view exact[] = {
+        "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2",
+        "librt.so.1", "libresolv.so.2", "libutil.so.1", "libnsl.so.1",
+    };
+    for (auto n : exact) if (file == n) return true;
+    return file.starts_with("ld-linux") || file.starts_with("ld-musl")
+        || file.starts_with("libc.musl-");
+}
+
+// Refuse to put a libc on a process-global search path.
+//
+// LD_LIBRARY_PATH and LD_PRELOAD are inherited by every child, and most
+// children in a subos are HOST binaries running under the HOST loader. A
+// directory of ours holding libc.so.6 hands them our half of a pair whose
+// other half is the host's, which is the loader/libc split the rest of this
+// codebase exists to prevent -- arrived at from the one direction the
+// same-source assertion cannot see, because nothing we installed is wrong.
+// `xlings subos use` returned a /bin/bash that died of SIGSEGV before
+// printing a character, on a host whose glibc was the same upstream version
+// as ours and merely a different build.
+//
+// Dropping the offending entry rather than the whole variable: the other
+// directories on it are usually the point of the declaration, and a package
+// that gathers dependencies into one directory has no way to ask for "all of
+// these except the libc" today.
+inline void drop_loader_coupled_dirs_(std::vector<manifest::Resolved>& vars) {
+    for (auto& v : vars) {
+        const bool is_preload = v.var == "LD_PRELOAD"
+                             || v.var == "DYLD_INSERT_LIBRARIES";
+        if (v.var != "LD_LIBRARY_PATH" && v.var != "DYLD_LIBRARY_PATH"
+            && !is_preload) continue;
+
+        std::vector<std::string> kept, dropped;
+        std::error_code ec;
+        for (const auto part : std::views::split(std::string_view{v.value}, ':')) {
+            std::string entry(part.begin(), part.end());
+            if (entry.empty()) continue;
+
+            bool offends = false;
+            if (is_preload) {
+                offends = is_loader_coupled_soname_(
+                    fs::path(entry).filename().string());
+            } else if (fs::is_directory(entry, ec)) {
+                for (const auto& e : platform::dir_entries(entry)) {
+                    if (is_loader_coupled_soname_(e.path().filename().string())) {
+                        offends = true;
+                        break;
+                    }
+                }
+            }
+            (offends ? dropped : kept).push_back(std::move(entry));
+        }
+        if (dropped.empty()) continue;
+
+        v.value = kept | std::views::join_with(':')
+                       | std::ranges::to<std::string>();
+        for (const auto& d : dropped) {
+            std::println(stderr,
+                "[xlings]   {} — dropped {} (declared by {}): it holds a libc, "
+                "and this variable is inherited by host binaries running under "
+                "the host loader",
+                v.var, d,
+                v.providers.empty() ? std::string{"?"} : v.providers.front());
+        }
+    }
+    std::erase_if(vars, [](const manifest::Resolved& v) {
+        return v.value.empty() && !v.unresolved;
+    });
+}
+
 // The variables a subos exports, resolved and ready to apply.
 //
 // Empty for a subos with no declarations, which is every subos until a package
@@ -844,7 +922,9 @@ inline std::vector<manifest::Resolved> subos_env_for_(const std::string& name) {
     const auto dir = Config::subos_dir(name);
     auto doc = manifest::read_document(dir);
     if (!doc) return {};
-    return manifest::resolve(manifest::parse(*doc), placeholders_for_(dir));
+    auto vars = manifest::resolve(manifest::parse(*doc), placeholders_for_(dir));
+    drop_loader_coupled_dirs_(vars);
+    return vars;
 }
 
 // UC-2: say what was injected.
