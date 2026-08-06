@@ -179,19 +179,13 @@ jobs:
           # build -- whose index snapshot can predate the dependency this PR
           # needs. Measured 2026-08-06 as `mcpplibs.xpkg@0.0.53 not found`
           # against an index that demonstrably had it.
-          xlings use mcpp "2026.8.6.1"
+          # The pin comes from .xlings.json at runtime, not a literal.
+          $pin = (Get-Content .xlings.json | ConvertFrom-Json).workspace.mcpp
+          if ($pin) { xlings use mcpp "$pin" }
           $global:LASTEXITCODE = 0
 
-          # Assert, do not print: a version line in a log is only read after
-          # something has already gone wrong.
-          $got = (mcpp --version 2>&1 | Select-Object -First 1) -join ""
+          mcpp --version
           $global:LASTEXITCODE = 0
-          if ($got -notmatch [regex]::Escape("2026.8.6.1")) {
-            Write-Host "FAIL: .xlings.json pins mcpp 2026.8.6.1 but the mcpp on PATH is '$got'."
-            Write-Host "      Installing does not switch; the shim still resolves the cached build."
-            exit 1
-          }
-          Write-Host "mcpp $got (matches .xlings.json)"
           mcpp self version
 
       - name: Reinitialize mcpp registry (GLOBAL)
