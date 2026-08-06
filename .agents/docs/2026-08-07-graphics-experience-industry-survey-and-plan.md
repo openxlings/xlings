@@ -904,14 +904,31 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 `/usr/share/glvnd`)。§A2 里"没有它就静默落 llvmpipe"这句话对这台宿主不成立,
 已在此更正。
 
-**二、空 host 判据 S1 现在失败,而且不是本次改动引入的。**
-`selfcontained-check.sh` 报 `RESULT=fail:no-display`、`egl error 0x300c`。
-**用改动前的 env 形式(mesa 载荷目录)跑,失败完全相同**,所以与 A1/A2 无关。
-`LD_DEBUG` 显示 `libEGL_mesa.so.0` **确实被加载**(它的 RUNPATH 搜索都在),
-失败在 `eglGetPlatformDisplay(surfaceless)` 返回 `EGL_BAD_PARAMETER`。
-自 #501 那次 S1–S4 全绿之后,这台 home 里多了 NVIDIA sentinel 与 gcc ——
-**需要单独定位,本轮没有重新验证 S1–S4。** 这条必须写在这里而不是留白:
-一个曾经绿过的判据现在红了,是本轮最重要的未解项。
+**二、空 host 判据 S1 失败 —— 而查下去发现,它现在证明不了它被造出来要证明的事。**
+
+`selfcontained-check.sh` 报 `RESULT=fail:no-display`、`egl error 0x300c`、
+`EGL_CLIENT_EXTENSIONS=` 为空(即**一个 vendor 都没载入**)。逐步排除:
+
+| 测的是什么 | 结果 |
+|---|---|
+| 改动前的 env 形式(mesa 载荷目录) | **失败完全相同** → 与 A1/A2 无关 |
+| 容器内 vendor 的 DT_NEEDED 闭包(用我们的 loader `--list`) | **0 个未解析** → 闭包是完整的 |
+| 容器内 vendor JSON 与 vendor `.so` 是否可读 | **都可读**,内容正确 |
+| **不进任何容器**,直接跑 subos 里编出来的同一个探针 | **`GL_RENDERER=llvmpipe (LLVM 20.1.7)`、`RESULT=ok`**,`EGL_MESA_platform_surfaceless` 在客户端扩展里 |
+| 逐个 namespace(不 unshare / net / user / all) | **四种全部同样失败** |
+| 额外挂上 `/usr` + `/etc` + `/lib` 符号链接 | **仍然失败** |
+
+也就是说:**栈本身在容器外是好的,而容器内的失败既不来自 namespace,也不来自
+"没有 `/usr`"** —— 后者正是这个测试被设计来隔离的那一个变量。
+
+**结论要比"S1 红了"更准确:`selfcontained-check.sh` 当前的失败是无信息的。**
+它无法区分"栈不自持"和"探针在 bwrap 里跑不起来",而这正是 S1–S4 存在的全部意义。
+所以本轮**既没有重新验证 S1–S4,也不能把这次失败当作反面证据** —— 要先修测试,
+再用它判栈。
+
+(顺带踩到并确认了脚本自己注释里那条:`--tmpfs /tmp` 必须排在把一个位于 `/tmp` 下的
+home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这么错的,四种 namespace
+全部"无输出",看起来像是崩溃,实际是 home 消失了。)
 
 **三、`>=` 范围无法匹配 mesa 的四段版本号。**
 `xim:mesa@>=25.0.7` 与 `@>=25.0.7.1` 都报 **package not found**;
