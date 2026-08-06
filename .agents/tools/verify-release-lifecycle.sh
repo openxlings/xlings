@@ -105,14 +105,64 @@ ok "bin/ldd passes bash -n"
 grep -q "RTLDLIST=\"" "$G/bin/ldd" || fail "RTLDLIST was swallowed by the rewrite"
 ok "RTLDLIST survived the rewrite"
 
-step "4. doctor is clean"
+step "4. a subos of its own, entered, with its environment"
+x subos new relverify >/dev/null 2>&1 || fail "subos new failed"
+x subos use relverify >/dev/null 2>&1 || true
+
+# The graphics stack is the real consumer of subos.env, but it is large and not
+# present on every machine. glibc is: it registers with xvm, so `subos use`
+# has something to resolve and PATH has something to carry.
+OUT="$(x subos use relverify --cmd 'echo "IN=[$XLINGS_HOME]"; echo "P0=[${PATH%%:*}]"' 2>&1)"
+echo "$OUT" | grep -q "IN=\[$HOME_DIR\]" \
+    || fail "inside the subos, XLINGS_HOME is not the home under test.
+A session that re-anchors to another home makes every measurement taken inside
+it a measurement of the wrong home, while looking exactly like the right one:
+$OUT"
+ok "subos session anchors to the home under test"
+
+echo "$OUT" | grep -q "P0=\[$HOME_DIR/subos/relverify/bin\]" \
+    || fail "PATH[0] inside the subos is not this subos's bin:
+$OUT"
+ok "PATH[0] is this subos's bin"
+
+step "5. one package, one live version"
+# Two versions of glibc exist in the index. Installing both must leave the
+# environment naming exactly one -- the contract E2E-64 states, checked here
+# against a released binary and the real index rather than a fixture.
+x install xim:glibc@2.44 -y >/dev/null 2>&1 || true
+MAN="$HOME_DIR/subos/relverify/.xlings.json"
+if [[ -f "$MAN" ]]; then
+    DUP="$(python3 - "$MAN" <<'PY'
+import json, sys, collections
+d = json.load(open(sys.argv[1]))
+envs = d.get("subos_info", {}).get("envs", {})
+by = collections.Counter(k.split("@")[0] for k in envs)
+ws  = d.get("workspace", {})
+bad = [n for n, c in by.items()
+       if c > 1 and not ws.get(n, {}).get("active")]
+print(" ".join(bad))
+PY
+)"
+    [[ -z "$DUP" ]] || fail "a package is bound at several versions with no
+active version, so every one of them contributes: $DUP"
+    ok "no contested binding"
+fi
+
+step "6. doctor, from inside the subos"
+OUT="$(x subos use relverify --cmd "$BIN self doctor" 2>&1 || true)"
+echo "$OUT" | grep -qiE "double binding|loader/libc split" \
+    && fail "doctor reports a structural defect on a freshly built home:
+$OUT"
+ok "no structural findings from inside the subos"
+
+step "7. doctor is clean"
 OUT="$(x self doctor 2>&1 || true)"
 echo "$OUT" | grep -qiE "double binding|env orphan|loader/libc split" \
     && fail "doctor reports a defect on a freshly built home:
 $OUT"
 ok "no findings"
 
-step "5. the real home was never written"
+step "8. the real home was never written"
 if [[ -d "$REAL/data/xpkgs" ]]; then
     NEWER="$(find "$REAL/data/xpkgs" -newer "$MARKER" -print -quit 2>/dev/null)"
     [[ -z "$NEWER" ]] || fail "the real store changed during this run: $NEWER"
