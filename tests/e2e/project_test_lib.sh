@@ -65,9 +65,40 @@ require_fixture_index() {
   [[ -d "$FIXTURE_INDEX_DIR/pkgs" ]] || fail "fixture index repo not found at $FIXTURE_INDEX_DIR"
 }
 
+# Where a test's isolated XLINGS_HOME lives.
+#
+# NOT under $ROOT_DIR by default. Four home-related defects in the 2026-08-06
+# review were asymptomatic under `~/.xlings`, and the repo checkout is usually
+# under $HOME too -- so a test home there shares a long prefix with the real
+# one, and every "did we use the right home?" bug stays invisible in exactly
+# the same way.
+#
+# The 2026-08-06 measurements happened to use a path under /tmp, which put the
+# home BELOW a directory the sandbox privatises before binding it. That was an
+# accident, and it was the hardest ordering in the bind list. Making it
+# deliberate is the point of E1.
+#
+# E2E_RUNTIME_ROOT overrides it -- CI runners with a small /tmp need that --
+# but the default has to be the awkward path, not the comfortable one.
+E2E_RUNTIME_ROOT="${E2E_RUNTIME_ROOT:-${TMPDIR:-/tmp}/xlings-e2e-$(id -u)}"
+
 runtime_home_dir() {
   local name="$1"
-  printf '%s\n' "$ROOT_DIR/tests/e2e/runtime/$name"
+  printf '%s\n' "$E2E_RUNTIME_ROOT/$name"
+}
+
+# Assert the isolation the test relies on, rather than assume it. A home that
+# shares a prefix with $HOME cannot distinguish "we used the home under test"
+# from "we used the developer's" -- which is the entire class E1 exists for.
+assert_home_is_isolated() {
+  local home_dir="$1"
+  local real="${HOME%/}/.xlings"
+  case "$home_dir" in
+    "$real"|"$real"/*) fail "the test home IS the real home: $home_dir" ;;
+  esac
+  [[ "$home_dir" == "${HOME%/}"/* ]] \
+    && log "  note: test home shares a prefix with \$HOME ($home_dir)"
+  return 0
 }
 
 prepare_scenario() {

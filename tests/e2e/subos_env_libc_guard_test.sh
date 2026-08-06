@@ -38,7 +38,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
 require_fixture_index
 
-RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_env_libc_guard"
+RUNTIME_DIR="$(runtime_home_dir subos_env_libc_guard)"
 LOCAL_INDEX_DIR="$RUNTIME_DIR/xim-pkgindex"
 HOME_DIR="$RUNTIME_DIR/home"
 
@@ -47,6 +47,7 @@ trap cleanup EXIT
 cleanup
 mkdir -p "$RUNTIME_DIR"
 
+assert_home_is_isolated "$HOME_DIR"
 BIN="$(find_xlings_bin)"
 log "client: $("$BIN" --version 2>&1 | head -1)"
 
