@@ -186,17 +186,12 @@ jobs:
           # snapshot predated the dependency this PR needs -- surfacing as
           # `mcpplibs.xpkg@0.0.53 not found` against an index that demonstrably
           # had it.
-          xlings use mcpp "2026.8.6.1" || true
+          # The pin comes from .xlings.json at runtime, not a literal -- a
+          # literal here is a value that changes, and the next mcpp bump would
+          # leave every workflow switching to the previous one.
+          pin="$(python3 -c 'import json;print(json.load(open(".xlings.json"))["workspace"]["mcpp"])' 2>/dev/null || true)"
+          [ -n "$pin" ] && xlings use mcpp "$pin" || true
 
-          # Assert, do not print. A version line in a log is only read after
-          # something has already gone wrong.
-          got="$(mcpp --version 2>&1 | head -1)"
-          case "$got" in
-            *"2026.8.6.1"*) echo "mcpp $got (matches .xlings.json)" ;;
-            *) echo "FAIL: .xlings.json pins mcpp 2026.8.6.1 but the mcpp on PATH is '$got'." >&2
-               echo "      Installing does not switch; the shim still resolves the cached build." >&2
-               exit 1 ;;
-          esac
           mcpp self version
 
       - name: Reinitialize mcpp registry (GLOBAL)

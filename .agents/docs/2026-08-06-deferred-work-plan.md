@@ -475,7 +475,7 @@ DOC="$(x self doctor 2>&1)"     # doctor 现在返回非零 → set -e 直接终
 `healed=2`。写它时又踩了一次 `set -e`——`out=$(...)` 在非零退出时直接终止脚本,
 而非零退出正是这条场景要断言的东西。
 
-### 7.4 #55 —— 未开始,前置未完成
+### 7.4 #55 —— 未开始,前置未完成(已被 §7.6–§7.8 取代)
 
 图形栈正在装进隔离 home。**门禁已过不等于可以写 B1**:没有装好的栈就没有基线,
 B2 的"切换后仍是 NVIDIA"证明不了是切换的功劳。
@@ -623,3 +623,76 @@ vendor 的 dlopen 由**调用方**的搜索路径服务,而 `libGLX.so.0` 自己
 X 连接正常、GLX 扩展正常,却一个 vendor 都找不到。
 
 > 消费者必须携带 **DT_RPATH**(`--force-rpath`),不能是 DT_RUNPATH。
+
+### 7.8 收尾:四仓的实际执行顺序,与两个新发现(2026-08-06)
+
+#### 跨仓依赖顺序 —— 计划与实际
+
+§5 给的顺序是「libxpkg → xlings → 索引」。实际执行时它被拆得更细,因为
+**mcpp-index 是一个此前没有画进依赖图的中间环节**:xlings 的构建从 mcpp 的
+registry 解析 `mcpplibs.xpkg`,而那条链有自己的发布与镜像。真实顺序:
+
+```
+libxpkg PR 合并
+   → 打 tag        (GitHub 的 archive tarball 即产物)
+   → gtc 镜像到 gitcode.com/mcpp-res/xpkg   (CN,与 GLOBAL 同一份字节)
+   → mcpp-index 加条目 + 合并
+   → Publish Index Artifact                  (滚动指针 mcpp-index-pointers.json)
+   → xlings 才能 pin 这个版本并通过 CI
+   → xlings release
+   → xim-pkgindex bump(xlings)               (bump_index.sh 自动开 PR)
+```
+
+**这一环走了两遍**(0.0.52、0.0.53),第二遍是因为 #487 的诊断修复要一起发。
+每一遍都要等 artifact 发布,xlings CI 才拿得到。把它画进依赖图是这次最该记下的
+东西 —— 之前的「libxpkg → xlings」看起来是一条边,实际是六步。
+
+#### 发布结果(2026.8.6.3)
+
+| 环节 | 结果 |
+|---|---|
+| xlings PR #490 CI | 8/8 |
+| release | 全 job 成功,4 平台 |
+| GitHub 资产 | 8/8(4 tarball + 4 sha256) |
+| GitCode | 补齐后 8/8,4 个 tarball 与 GitHub 哈希逐一致 |
+| 索引 `latest` | 三平台均 2026.8.6.3(#536,13/13) |
+| 生命周期验证 | PASS 8/8,发布二进制 + 隔离 home,`~/.xlings` 未被写 |
+| B 线真实验证 | 11/12,RTX 4080 + 驱动 550.144.03 |
+
+`mirror-binaries` 这一次只传了 4 个 `.sha256` 边车,**tarball 本体 404**。用本地
+gtc 补齐后独立复验(GET,不用 HEAD —— GitCode 对 HEAD 返 401)。这与
+[[project-release-cancel-recovery]] 记的是同一个缺口,再次出现。
+
+#### 新发现一:`subos` 与 `subos use` 对同一个 subos 给出相反答案(#491)
+
+B 线 12 项里唯一失败的那项,追下去不是图形栈的问题:
+
+- `xlings subos`(列表)枚举 `<home>/subos/` 下的**目录**
+- `xlings subos use` 查的是**状态 JSON**(`subos.cppm:743`)
+
+装包会建出 `subos/<name>/lib`、`usr`(sysroot 链接)却不把这个 subos 注册进
+JSON。于是目录侧说存在、JSON 侧说不存在,而提示语把「记录缺失」说成
+「你还没创建」。**同一个问题两个答案源**,与本文档 §6 那条自查是同一形状。
+
+#### 新发现二:pmwrapper 时代的依赖名指向空气(#534)
+
+`project-graph` 的 `deps = { "webkit2gtk" }` 在索引里没有对应包,recipe 顶部还留
+着当时的 TODO。pmwrapper 模式已经不用,所以这条依赖现在什么都解析不到。之所以
+一直没暴露:install-test 只测 changed-files 里的 recipe,而这个包很久没被改过 ——
+是本轮给它加平台差异标注时才第一次被测到。
+
+已排期为**从源码自建**(不用 host-link sentinel),完整功能档,建在钉死
+glibc 2.39 的 `xlings subos` sandbox 里。约 19 个缺失硬依赖 + WebKit 本体。
+
+#### 本轮真正的产出不是修了几个 bug
+
+七个「看起来成功」的东西被更严的测量逐一推翻:空载荷装成功、`glxinfo` 报出
+RTX 4080 而全部对象来自 `/usr/lib`、`interposer: yes` 而四个入口只覆盖一个、
+`deps.build` 声明了却没装、CI 报绿而零个包被测、我加的诊断从不运行、断言里写死
+了会变的版本号。
+
+其中最后一类的根因——**一次 bump 只落进 `xpm.linux`**——现在由两个索引仓库的
+CI 规则挡着(`check_platform_version_parity.lua` /
+`test_platform_version_parity.py`),提交前都对修复前的文件证伪过。真实差异用
+`platform_versions_diverge = true` 显式声明退出,那是**有人特意做出的主张**,与
+遗漏的区别就在这里。
