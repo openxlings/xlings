@@ -299,4 +299,64 @@ n_final="$(issue_count)"
 [[ "$n_final" -le "$n1" ]] \
   || fail "S6: the run ended worse than S3 started ($n1 → $n_final)"
 
+
+# ── S7: an Error-level subos finding reaches the exit code, and healed
+#        accounts for it ──────────────────────────────────────────────
+#
+# Three findings were Error-level and absent from count_(): SubosManifest,
+# SubosEnvOrphan and SubosEnvUnresolved. doctor printed `✗ subos env orphan …`
+# and then exited 0, so every script wrapping it saw success.
+#
+# The second consequence is quieter and is what this scenario pins: `healed` is
+# before-minus-after over that same count, so --fix repairing an orphan reported
+# "healed 0" — the repairer acted and the reporter said nothing. Asserting
+# `healed > 0` checks BOTH ends at once, and those two ends are exactly where
+# this repo has drifted three times.
+log "S7: an Error-level subos finding fails the run, and --fix reports healing it"
+
+MANIFEST7="$HOME_DIR/subos/default/.xlings.json"
+python3 - "$MANIFEST7" <<'PY'
+import json, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+d = json.loads(p.read_text()) if p.exists() else {"workspace": {}}
+blk = d.setdefault("subos_info", {
+    "schema_version": 1, "runtime": "glibc@2.39", "envs": {},
+    "created_at": "2026-08-06T00:00:00Z", "created_by": "e2e",
+})
+blk.setdefault("envs", {})
+# A provider whose package is not installed here: the orphan case.
+blk["envs"]["neverinstalled@9.9.9"] = [
+    {"var": "E2E_S7_DIRS", "op": "prepend", "value": "${pkgdir}/share"}
+]
+p.write_text(json.dumps(d, indent=2))
+PY
+
+# `rc=0` then `|| rc=$?`, not `; rc=$?`: the shared lib sets `set -e`, so an
+# assignment whose command exits non-zero kills the script before the next
+# statement runs -- and a non-zero exit is precisely what this scenario is
+# asserting.
+rc7=0
+out7="$(RUN self doctor 2>&1)" || rc7=$?
+[[ $rc7 -ne 0 ]] \
+  || fail "S7: doctor printed an Error-level finding and exited 0 — every
+script wrapping it sees success:
+$out7"
+echo "$out7" | strip_ansi | grep -q "subos env orphan" \
+  || fail "S7: the orphan was not reported at all:
+$out7"
+log "  ✓ an Error-level subos finding fails the run"
+
+out7fix="$(RUN self doctor --fix 2>&1)" || true
+healed7="$(echo "$out7fix" | strip_ansi | sed -n 's/.*healed[^0-9]*\([0-9][0-9]*\).*/\1/p' | tail -1)"
+[[ -n "$healed7" && "$healed7" -gt 0 ]] \
+  || fail "S7: --fix repaired the orphan but reported healed='${healed7:-<none>}'.
+The repairer acted and the reporter said nothing — the same split, arrived at
+from the counting side:
+$out7fix"
+log "  ✓ --fix reports healed=$healed7"
+
+RUN self doctor >/dev/null 2>&1 \
+  || fail "S7: doctor still fails after --fix cleared the finding"
+log "  ✓ doctor is clean afterwards"
+
 log "all scenarios passed"

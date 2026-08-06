@@ -105,7 +105,50 @@ jobs:
       # Only the BMIs go. The payload store under registry/data/xpkgs is
       # dependency-independent and is what makes the ~800 MB cache worth
       # restoring at all.
+      # Evidence for task #56, gathered where the failure actually happens.
+      #
+      # Four hypotheses were refuted on a developer machine (2026-08-06): two
+      # toolchains sharing one BMI store; the tar round trip destroying
+      # metadata (the .gcm set survives byte-for-byte, mtimes included); a full
+      # project rebuild against restored BMIs; and prune_registry running after
+      # the restore. None reproduces it locally, so the next honest step is to
+      # record what CI has that a laptop does not, rather than guess a fifth
+      # hypothesis.
+      #
+      # What to look for: two entries that disagree on driver_identity or
+      # sysroot for the same cpp_standard. That would mean the restored set is
+      # internally inconsistent, which is the answer.
+      #
+      # continue-on-error on purpose: a diagnostic must never be the reason a
+      # release is blocked. Set XLINGS_KEEP_RESTORED_BMIS=1 on a throwaway
+      # branch to skip the wipe below and let the failure happen with this
+      # record in hand.
+      - name: Record the restored BMI set (diagnostic for #56)
+        shell: bash
+        continue-on-error: true
+        run: |
+          echo "cache-hit: ${{ steps.mcpp-cache.outputs.cache-hit }}"
+          for d in ~/.mcpp/bmi .mcpp/bmi ~/.mcpp/build-cache .mcpp/build-cache; do
+            if [ -d "$d" ]; then
+              echo "  $d: $(du -sh "$d" 2>/dev/null | cut -f1), $(find "$d" -name '*.gcm' 2>/dev/null | wc -l) .gcm"
+            else
+              echo "  $d: absent"
+            fi
+          done
+          echo "  --- build identity per BMI dir (first 40) ---"
+          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null | head -40 |
+          while read -r f; do
+            printf '  %-18s %s %s\n' \
+              "$(basename "$(dirname "$f")")" \
+              "$(grep -o '"cpp_standard": *"[^"]*"' "$f" | cut -d'"' -f4)" \
+              "$(grep -o '"driver_identity": *"[^"]*"' "$f" | cut -d'"' -f4)"
+          done
+          echo "  --- distinct driver identities ---"
+          find ~/.mcpp/bmi .mcpp/bmi -name std-module.json 2>/dev/null |
+            xargs -r grep -ho '"driver_identity": *"[^"]*"' | sort -u
+
       - name: Drop restored BMIs
+        if: env.XLINGS_KEEP_RESTORED_BMIS != '1'
         shell: bash
         run: |
           rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
