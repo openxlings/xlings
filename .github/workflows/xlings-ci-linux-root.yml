@@ -21,7 +21,7 @@ env:
   XLINGS_RELEASE_MIRROR: GLOBAL
   # Keep in sync with xlings-ci-linux.yml.
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
-  XIM_PKGINDEX_REF: 20e53c6a4967346282af21c8fd2af91e6af75cc7
+  XIM_PKGINDEX_REF: bf969a651caae4539eea8e92e3d14cb60e0eaf53
 
 jobs:
   # ── Build the latest xlings from source via mcpp ──────────────────
