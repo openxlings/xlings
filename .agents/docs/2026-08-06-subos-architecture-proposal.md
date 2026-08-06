@@ -527,7 +527,7 @@ repairer_predicate_drift`)。
 
 ## 4. 横切:沉默成功是这个代码库的默认失败模式
 
-### 4.1 本轮遇到的全部实例
+### 4.1 实例清单
 
 | 现象 | "没发生"与"成功了"如何变得不可区分 |
 |---|---|
@@ -538,7 +538,25 @@ repairer_predicate_drift`)。
 | 隔离 home 借用宿主 proot | 沙箱正常进入 = 用的是这个 home **或** 用的是另一个 home |
 | e2e S3 的 skip 分支 | PASS = 测过了 **或** 跳过了整个特性 |
 
-`subos_sandbox_test.sh` 的 S3 分支里已经有人意识到了这个问题并写了注释("Reporting PASS while silently skipping the entire feature under test is how a real regression would reach a release looking exactly like an unattended laptop")——但那是一个人在一个地方的自觉,不是机制。
+**实现期又发现四个**(2026-08-06),形状完全一样:
+
+| 现象 | 两种结果为什么输出相同 | 怎么被发现的 |
+|---|---|---|
+| `elfpatch._find_tool` 的宿主回退 | 用了 payload 的 patchelf = 用了 `/usr/bin/patchelf`,产物看起来都正常 | 读代码时发现 payload 根本不在候选表里 |
+| `slice-real-home.sh` 不重定向索引缓存 | 改了 recipe 生效 = **在读宿主 home 的 recipe** | 同一个改动**做了两遍都没反应**,而且两次都没有任何诊断输出 |
+| e2e S12 钉住修复前的拼写 | 断言失败 = 代码坏了 **或** 断言写的是旧行为 | CI:S1–S11 全过、S12 拒绝了**正确**的值 |
+| CI 缓存守卫只在非精确恢复时删 BMI | 换 key 前缀"修好了" = 前缀是根因 **或** 换前缀恰好触发了守卫 | 同一 workflow 连续两轮的步骤结论:`success` → 通过,`skipped` → 挂 |
+
+最后一条值得单独说:它让**三次**独立的"修复"都看起来成立,而每次只管用一轮。这是这个
+失败模式最贵的形态 —— 它不只掩盖缺陷,还伪造出修复成功的证据。
+
+`subos_sandbox_test.sh` 的 S3 分支里已经有人意识到了这个问题并写了注释("Reporting PASS
+while silently skipping the entire feature under test is how a real regression would reach
+a release looking exactly like an unattended laptop")——但那是一个人在一个地方的自觉,
+不是机制。
+
+**四个里有三个,是靠"同一测量做两遍,结果不一致"发现的。** 这本身就是 O1 的论据:
+差集必须是**自动可查**的,而不是靠人恰好做了第二遍。
 
 ### 4.2 提议
 
