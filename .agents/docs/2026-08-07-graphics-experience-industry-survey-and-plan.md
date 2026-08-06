@@ -946,6 +946,9 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 | **不进任何容器**,直接跑 subos 里编出来的同一个探针 | **`GL_RENDERER=llvmpipe (LLVM 20.1.7)`、`RESULT=ok`**,`EGL_MESA_platform_surfaceless` 在客户端扩展里 |
 | 逐个 namespace(不 unshare / net / user / all) | **四种全部同样失败** |
 | 额外挂上 `/usr` + `/etc` + `/lib` 符号链接 | **仍然失败** |
+| `--dev-bind /dev /dev`(整个 /dev,不只 dri) | **仍然失败** |
+| 去掉 `/sys` / 保留 `/sys` | 无差别 |
+| `EGL_LOG_LEVEL=debug` `MESA_DEBUG=1` `LIBGL_DEBUG=verbose` | **mesa 一行都没打** —— 说明 vendor 在 mesa 自己的代码跑起来之前就被 glvnd 丢掉了 |
 
 也就是说:**栈本身在容器外是好的,而容器内的失败既不来自 namespace,也不来自
 "没有 `/usr`"** —— 后者正是这个测试被设计来隔离的那一个变量。
@@ -953,7 +956,16 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 **结论要比"S1 红了"更准确:`selfcontained-check.sh` 当前的失败是无信息的。**
 它无法区分"栈不自持"和"探针在 bwrap 里跑不起来",而这正是 S1–S4 存在的全部意义。
 所以本轮**既没有重新验证 S1–S4,也不能把这次失败当作反面证据** —— 要先修测试,
-再用它判栈。
+再用它判栈。测试已改:先跑一次宿主全挂的对照,对照失败就 `exit 2` 报
+`INCONCLUSIVE`(§A 的清单里那条)。
+
+**下一步该怎么查(留给下一个人,上面那张表已经把这些排除掉了)。**
+剩下的事实是:vendor 的 `.so` 和 JSON 都可读、闭包 0 未解析、mesa 一行日志都没有
+—— 所以怀疑点应该落在 **glvnd 加载 vendor 之后、调用 `__egl_Main` 那一步**:
+vendor 载入成功但入口返回失败,glvnd 会静默丢弃它,结果正是"零 vendor +
+客户端扩展为空 + 任何 platform 都 `EGL_BAD_PARAMETER`"。
+验证办法不是再加 bwrap 参数(那条路已经走到头了),而是写一个最小 C 程序,
+在容器里 `dlopen` vendor 并直接调 `__egl_Main`,把它的返回值打出来。
 
 (顺带踩到并确认了脚本自己注释里那条:`--tmpfs /tmp` 必须排在把一个位于 `/tmp` 下的
 home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这么错的,四种 namespace
