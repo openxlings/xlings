@@ -245,6 +245,30 @@ jobs:
           mcpp test || {
             status=$?
             echo "::group::mcpp build diagnostics"
+
+            # What index does this runner actually hold?
+            #
+            # `mcpplibs.xpkg@<ver> not found` has been diagnosed five times
+            # from the outside -- index content, artifact, rolling pointer,
+            # releases/latest, publish lag, the mcpp version pin, install-vs-
+            # use, and the lockfile hash were each checked and each was
+            # correct. All of that was inference about a file only the runner
+            # can see. Print it.
+            for idx in "$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua" \
+                       "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"; do
+              if [[ -f "$idx" ]]; then
+                echo "--- $idx"
+                grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6
+              else
+                echo "--- $idx : ABSENT"
+              fi
+            done
+            for snap in "$HOME/.mcpp/registry/index-snapshots" \
+                        "$GITHUB_WORKSPACE/.mcpp/registry/index-snapshots"; do
+              [[ -d "$snap" ]] && { echo "--- snapshots in $snap"; ls -1 "$snap"/* 2>/dev/null | head -8; }
+            done
+            mcpp self version 2>&1 | head -3 || true
+
             ninja_bin="$(command -v ninja || true)"
             if [[ -z "$ninja_bin" ]]; then
               ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
