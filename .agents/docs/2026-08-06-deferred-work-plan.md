@@ -491,3 +491,58 @@ B2 的"切换后仍是 NVIDIA"证明不了是切换的功劳。
 | #56 | 能按需重现 | ❌ **未达成**,四个假设被排除 |
 
 两项达成、一项没有。没达成的那项**没有被当作达成**,这本身就是这条规矩的用处。
+
+### 7.6 #55 B 线:核心命题已在真实栈上验证(2026-08-06)
+
+图形栈用 `xlings config --mirror CN` 装进隔离 home(22 个包)。**先前两次判它
+"网络不可行/卡住"都是错的** —— 第一次是隔离 home 默认 GLOBAL 镜像,第二次是我用
+"20 秒零字节"给一个正在下载与解压之间的安装下了死刑。用单目录短时增长判定长任务,
+不是测量。
+
+#### 基线(glprobe,渲染并读回像素)
+
+| 环境 | `GL_RENDERER` | `PIXEL` |
+|---|---|---|
+| 宿主 | NVIDIA GeForce RTX 4080/PCIe/SSE2 | 336699 |
+| **进 subos(今天的 `LD_LIBRARY_PATH` 方案)** | **llvmpipe (LLVM 20.1.7)** | 336699 |
+
+**§2.6 的缺陷被实测到了**:同一个链接宿主 libEGL 的二进制,进 subos 后从 GPU 掉到
+软件渲染,没有任何提示。两边像素都对 —— 所以"能不能渲染"这个检查抓不住它,只有
+渲染器名字能。
+
+#### interposer 对照
+
+27 KB,patchelf 三步(`--set-soname` / `--add-needed <宿主 vendor 绝对路径>` /
+`--set-rpath --force-rpath <从载荷推导的闭包>`),安装期不需要编译器。
+
+| | `GL_RENDERER` | `LD_LIBRARY_PATH` |
+|---|---|---|
+| interposer + **我们的** loader | **NVIDIA GeForce RTX 4080/PCIe/SSE2**,`PIXEL=336699`,`RESULT=ok` | **只有 `/usr/lib/x86_64-linux-gnu`** |
+
+`lib/xlings-deps` 完全不参与。**B2 的验收判据当场满足。**
+
+#### 边界:interposer 只对跑在我们 loader 上的消费者安全
+
+同一个 interposer 给**宿主二进制**(宿主 loader、宿主 libc)用:
+
+```
+librt.so.1: undefined symbol: __pointer_chk_guard, version GLIBC_PRIVATE
+```
+
+正是 8-05 那次崩溃的同一条错误。原因清楚:interposer 的 RPATH 指向**我们的**
+glibc,而消费者的 libc 是宿主的 —— §2.3 说的"两半来自不同构建"。
+
+**这不是缺陷,是适用域**,而且与 §2.3 的推断一致:vendor 被 dlopen 进的那个进程
+本来就该是我们的(INTERP 指向我们的 glibc)。但它给 B1 加了一条**必须写进契约**的
+前置条件:
+
+> `host_link_interposer` 产出的对象,只可由 INTERP 指向我们载荷的消费者加载。
+> 宿主二进制必须继续走宿主自己的 vendor。
+
+这条正是 §2.6/B4 存在的理由:把 vendor 目录编进**我们自己构建的** libglvnd,宿主的
+libglvnd 就用宿主默认目录,两条路径天然分开。
+
+#### 与门禁验证的关系
+
+门禁(§2.7)证明的是**机制可行**(DT_RPATH 传递、dlsym 穿透、GLX 无需全局变量);
+这一节证明的是**在真实 NVIDIA 栈上有效**,并测出了适用域。两者都不能替代对方。

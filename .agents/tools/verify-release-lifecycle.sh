@@ -61,6 +61,21 @@ echo "version: $(x --version 2>&1 | head -1)"
 
 step "1. the client anchors to the home under test"
 x self init >/dev/null 2>&1 || true
+
+# The mirror, before anything downloads.
+#
+# A fresh home defaults to GLOBAL, and on a CN-routed machine that is the
+# difference between a two-minute run and an hour of stalls -- the first
+# attempt at this script sat at 140 MB for over an hour and I misread it as a
+# hung process. The default here follows the DEVELOPER's own home rather than
+# a hardcoded region: whatever route works for them works for the verification.
+if [[ -z "${XLINGS_VERIFY_MIRROR:-}" ]] && [[ -f "$REAL/.xlings.json" ]]; then
+    XLINGS_VERIFY_MIRROR="$(sed -n 's/.*"mirror"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                            "$REAL/.xlings.json" | head -1)"
+fi
+XLINGS_VERIFY_MIRROR="${XLINGS_VERIFY_MIRROR:-GLOBAL}"
+x config --mirror "$XLINGS_VERIFY_MIRROR" >/dev/null 2>&1 || true
+echo "  mirror: $XLINGS_VERIFY_MIRROR"
 GOT="$(x self config 2>&1)"
 echo "$GOT" | grep -q "$HOME_DIR" \
     || fail "the client reports a home other than the one under test.
