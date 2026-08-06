@@ -24,7 +24,22 @@ set -euo pipefail
 PROJ="${1:?usage: bump_index.sh <project> <version>}"
 VER="${2:?usage: bump_index.sh <project> <version>}"
 INDEX_REPO="${INDEX_REPO:-openxlings/xim-pkgindex}"
-BRANCH="bump/${PROJ}-${VER}"
+# NOT `bump/${PROJ}-${VER}`. The force-push below is described as idempotent,
+# and with the version in the branch name that was true only for a re-run of
+# the SAME version -- across versions every release opened a NEW branch and a
+# NEW PR, and they stacked.
+#
+# Measured 2026-08-06: #503 (2026.8.5.2), #520 (2026.8.5.3) and #524
+# (2026.8.6.1) were all open at once, and the index's `latest` sat at
+# 2026.8.5.1 -- two releases behind -- while every release job reported
+# success. Worse, each PR's diff was generated against whatever `latest` was
+# when it ran, so merging an OLDER one after a NEWER one moves the pointer
+# BACKWARDS. That is not a merge-order rule anyone can be expected to
+# remember; it is a mechanism that should not exist.
+#
+# One branch means the force-push genuinely supersedes: there is always
+# exactly one open PR and it always carries the newest release.
+BRANCH="bump/${PROJ}"
 TOKEN="${PKGINDEX_TOKEN:?PKGINDEX_TOKEN required (write to $INDEX_REPO)}"
 
 info() { echo "[bump] $*"; }
@@ -88,15 +103,27 @@ Applied via version-check.py --apply --only ${PROJ}."
 info "pushing $BRANCH (force — bot branch)"
 git push -q -f "https://x-access-token:${TOKEN}@github.com/${INDEX_REPO}.git" "$BRANCH"
 
-# Open PR — idempotent: a force-push updates an already-open PR in place.
+# Open or UPDATE the PR. With one branch the force-push above genuinely
+# supersedes the previous release's diff, so the PR's title and body have to
+# move with it -- otherwise the branch would carry 2026.8.6.1 under a title
+# saying 2026.8.5.3, and the record would disagree with the change it
+# describes. That is the same defect class this pipeline exists to avoid, one
+# level up.
 export GH_TOKEN="$TOKEN"
-if gh pr view "$BRANCH" -R "$INDEX_REPO" >/dev/null 2>&1; then
-  info "PR already open for $BRANCH (updated by force-push)"
-else
-  gh pr create -R "$INDEX_REPO" --base main --head "$BRANCH" \
-    --title "bump(${PROJ}): track ${VER} as latest" \
-    --body "Automated by the ${PROJ} release pipeline. Bumps \`pkgs/*/${PROJ}.lua\` \`latest.ref\` to \`${VER}\` and appends the new version entry (via \`version-check.py --apply --only ${PROJ}\`).
+PR_TITLE="bump(${PROJ}): track ${VER} as latest"
+PR_BODY="Automated by the ${PROJ} release pipeline. Bumps \`pkgs/*/${PROJ}.lua\` \`latest.ref\` to \`${VER}\` and appends every released version that the index is still missing (via \`version-check.py --apply --only ${PROJ}\`).
+
+This branch is \`${BRANCH}\` — **not** per-version. Each release force-pushes over it, so there is always exactly one open bump PR and it always carries the newest release. Merging is therefore order-free: there is no older PR that could move \`latest\` backwards.
 
 Merge to publish into the official index — the index repo then republishes its artifact and gitee-sync mirrors the change. Binaries are already live on \`xlings-res/${PROJ}\` (GitHub + GitCode)."
+
+if gh pr view "$BRANCH" -R "$INDEX_REPO" >/dev/null 2>&1; then
+  info "PR already open for $BRANCH — updating title and body to $VER"
+  gh pr edit "$BRANCH" -R "$INDEX_REPO" \
+    --title "$PR_TITLE" --body "$PR_BODY" \
+    || info "WARN: could not update the PR's title/body; the diff is correct but the description still names an older version"
+else
+  gh pr create -R "$INDEX_REPO" --base main --head "$BRANCH" \
+    --title "$PR_TITLE" --body "$PR_BODY"
   info "PR opened"
 fi

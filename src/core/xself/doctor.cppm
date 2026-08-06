@@ -2222,10 +2222,33 @@ Counts count_(const Scan& scan) {
                 // is computed as before-minus-after over this count, so an
                 // uncounted finding that --fix repairs reports "healed 0" --
                 // repair and report disagreeing about whether anything
-                // happened. Note that the other Subos* findings are NOT
-                // counted here today, which is a pre-existing instance of the
-                // same gap; see task #53.
+                // happened.
                 ++c.broken;
+                break;
+            // The three below were Error-level and absent from this switch, so
+            // doctor printed `✗ subos env orphan …` and then exited 0. Two
+            // consequences, and the second is the quieter one:
+            //
+            //   1. every script wrapping `xlings self doctor` saw success;
+            //   2. `healed` is before-minus-after over this count, so --fix
+            //      repairing an orphan reported "healed 0" -- the repairer
+            //      acted and the reporter said nothing. That is the
+            //      reporter/repairer split this repo has produced three times,
+            //      arrived at from the counting side rather than the
+            //      predicate side.
+            case FindingKind::SubosManifest:
+            case FindingKind::SubosEnvOrphan:
+            case FindingKind::SubosEnvUnresolved:
+                ++c.broken;
+                break;
+            // Warnings, so deliberately NOT in issues() and not in the exit
+            // code. They are counted because the summary line should account
+            // for every finding it printed -- a report whose numbers do not
+            // add up to its own list is how "broken payloads 1" with nothing
+            // in the list to explain it happened before.
+            case FindingKind::SubosEnvConflict:
+            case FindingKind::SubosRuntimeMissing:
+                ++c.warnings;
                 break;
         }
     }
