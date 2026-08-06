@@ -974,31 +974,40 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
 | **发布链** | **被 GitHub Actions 的故障挡住,不是被本轮工作挡住**。githubstatus:Actions "Major outage / Critical",官方说明 "webhook triggers remain throttled … many push and pull request events **aren't triggering new workflow runs**"。实测吻合:三个 `openxlings/*` PR **零个 run**,`mcpp-index#177` 三个 check 在 QUEUED 卡了 40 分钟没有 runner 领取。已排除审批门、Actions 未启用、路径过滤、权限 |
 | **空 host S1–S4 复测** | 见 §10.2 第二条 |
 
-#### 为什么 mesa 重建不能在一个装好图形栈的 home 里做(实测)
+#### 我先前在这里写的"构建环境无法重建"是错的,两处都错
 
-装了全部 22 个包的 subos 里,`build-in-subos.sh` 需要的东西**几乎都不在**:
+原文的依据是这个:
 
 ```
 PKG_CONFIG_LIBDIR=<subos>/usr/lib/pkgconfig
   expat ok | libdrm zlib libxcb x11 wayland-client libelf 全部 MISSING
-<subos>/usr/bin/glslangValidator            MISSING
-<subos>/bin/{ninja,python3}                 MISSING
 ```
 
-原因是结构性的:`sysroot.declare_libs` 只取 `lib/*.so*`,`declare_headers_tree`
-只取头文件,**没有任何机制把 `pkgconfig/` 声明进 sysroot**。运行期需要的东西齐了,
-构建期需要的 `.pc` 一个都没有。而 `build-in-subos.sh` 故意把 `PKG_CONFIG_LIBDIR`
-钉在 subos 上(注释写明:让缺的依赖在 configure 阶段大声失败,而不是被宿主悄悄满足)
-—— 所以它现在正确地失败了。
+**结论下早了。** 再查两步就翻了:
 
-上一轮之所以能构建,是因为那个 `gfxbuild` subos 里每一层都是**由构建脚本自己
-`make install` 进 `$SUBOS/usr` 的**,`.pc` 是构建产物的一部分。要重建 mesa 就得
-重跑整条 `tiers.sh` T1→T4,那是几小时的连续构建,不是本轮能挤进来的一步。
+1. **`.pc` 文件是有的** —— `data/xpkgs` 下 18 个 `pkgconfig` 目录、**88 个 `.pc`**,
+   libdrm / libxcb / libX11 / wayland / zlib / expat / elfutils / xorgproto /
+   libglvnd 全在。它们只是不在 **subos 视图**里。
+   (顺带:上面那行 `libxcb MISSING` 也是我自己测错的 —— 它的 pkg-config 名是
+   `xcb`,不是 `libxcb`。)
+2. **`build-in-subos.sh` 早就有用它们的机制** —— `--deps <名字>` 会把每个载荷的
+   `pkgconfig`(并重写 `prefix=`)、`include`、以及一份打好 RPATH 的 `lib` 拷贝
+   接进构建。脚本自己的注释把这件事说得很清楚:
 
-**这条本身是一个可以修的缺口**:如果 `sysroot` 增加一个 `declare_pkgconfig`
-(与 `declare_headers_tree` 同形),一个装了栈的 home 就同时是一个能构建栈的 home。
-值得单开。**A9 的 recipe 侧已全部完成并验证**,缺的只是载荷里的
-`d3d12_dri.so` / `iris_dri.so`。
+   > "Adding the payload directly is not a hole in the isolation: the whole point
+   > of PKG_CONFIG_LIBDIR pointing only at the subos is to keep the HOST out, and
+   > a path under `data/xpkgs/` is as much ours as the sysroot is."
+
+我只对着 subos 视图跑了一次裸 `pkg-config` 就收工了,**没有读到脚本里那段已经解决
+了这个问题的代码**。这是本轮我自己犯的第二个"测量停得太早"——第一个是把 gcc 安装
+失败归给 `gcc-specs-config`。
+
+真正缺的只是构建期工具本身 —— subos 里的 `cmake` / `ninja` / `python`,以及
+`glslangValidator`(Vulkan 驱动构建期要用)。前三个 `xlings install` 就有,
+glslang 用同一个脚本从源码建。**所以 A5+A9b 没有被环境挡住**,只是没做完。
+
+`sysroot.declare_pkgconfig` 仍然值得加(它能让 `--deps` 那一长串不必手写),
+但它是**便利**,不是**阻塞**。
 
 ---
 
