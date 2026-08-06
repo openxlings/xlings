@@ -1030,10 +1030,27 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    distribution**"。`llvm` 和 `libllvm` 都是从完整发行版里切出来的子集,
    而 mesa 的 `config-tool` 探测要的正是被切掉的那部分。
 
-   **所以重建 mesa 需要的是完整的上游 LLVM 发行版**(或一份带
-   `LLVM_LINK_LLVM_DYLIB=ON` 且保留组件库的自建),不是索引里这两个包中的任何一个。
-   这才是"重建 mesa 要几小时"的**准确**版本 —— 我最早那句是猜的,中间那句
-   ("没被挡住")是乐观的,这一句是测出来的。
+   **而上游发行版也顶不上。** 拉了 `LLVM-20.1.7-Linux-X64.tar.xz`(173 MB 压缩、
+   解开 11 GB)实测:`llvm-config --libs <mesa 要的那 15 个模块>` 完整解析、
+   `--shared-mode` 返回 `static` —— 但
+
+   ```
+   $ llvm-config --link-shared --libs core
+   llvm-config: error: libLLVM-20.so is missing
+   ```
+
+   **上游 release 是纯静态的,没有共享 libLLVM。** 而 mesa 这个 recipe 要的是
+   `-Dshared-llvm=enabled`(libgallium 引用 `@LLVM_20.1` 版本化符号,并把
+   `libllvm@20.1.7` 声明成运行期依赖);改成静态链会把 LLVM 焊进 libgallium,
+   那是另一个包,不是这个包的新版本。
+
+   **结论(测出来的,不是猜的)**:重建 mesa 的前置是**自建一份
+   `LLVM_LINK_LLVM_DYLIB=ON` 且保留组件库的 LLVM 20.1.7** —— 索引里的两个包是切片,
+   上游 release 是静态,两条捷径都不通。这就是那句"要几小时"的准确版本。
+
+   这句话我说了三次,精度递增:最早"要几小时"(猜)→ 中间"根本没被挡住"
+   (发现 `--deps` 后的乐观)→ 现在这句。中间那次错得有用 —— 它把 pkgconfig
+   那个问题真的问清楚了 —— 但少算了 LLVM 这一大截。
 
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
