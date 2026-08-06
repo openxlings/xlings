@@ -937,6 +937,23 @@ home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这�
 于是"用下界不要钉死"这条对 mesa **不可能**做到。`graphics` 与 `wsl-gl-host-link`
 因此对 mesa 用**裸名**,并在 recipe 里记下测得的原因。
 
+### 10.2b CI 无法运行时,在本地跑了 CI 会跑的那几步
+
+因为远端 CI 起不来(见 §10.4),把每个仓 CI 里**不需要全新安装**的步骤在本地跑了一遍,
+这样"CI 会过"是有证据的而不是假设的:
+
+| 仓 | 跑了什么 | 结果 |
+|---|---|---|
+| xim-pkgindex | `check-no-direct-ld-libpath.sh`(CI 的 lint 步) | PASS |
+| xim-pkgindex | `.github/scripts/test_version_check.py`(CI 步) | All tests passed |
+| xim-pkgindex | 全部静态 pytest | **792 passed, 9 skipped** |
+| xlings | `mcpp test` | **35 个测试二进制全过** |
+| libxpkg | `mcpp test` | 55 个 executor 测试等全过 |
+| mcpp-index | `validate.yml` 调的四个 lua check | 全过 |
+
+CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件事本轮**是在真实 subos
+里做过的**(§10.1):`xlings install graphics` 装了 26 个包,godot 也装了。
+
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
 1. **`files` 资产目标不合规时静默不放置** —— 已在 §C 记为本体 bug 候选。
@@ -954,7 +971,7 @@ home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这�
 |---|---|
 | **A5+A9b mesa 重建**(iris/crocus/d3d12) | **不是"时间不够",而是构建环境无法从已安装的载荷重建**,见下 |
 | **A4 vulkan-loader** | 同上,需要一次构建。顺带实测到一条相关证据:强制 mesa vendor 时 `MESA: error: ZINK: failed to load libvulkan.so.1` —— zink 确实因为没有 loader 而是死的,与 §A4 的判断一致 |
-| **发布链** | libxpkg 0.0.54 → mcpp-index → xlings pin → 发布 → xim-pkgindex bump。libxpkg 与 xlings 均已提交并测试通过,尚未 tag |
+| **发布链** | **被 GitHub Actions 的故障挡住,不是被本轮工作挡住**。githubstatus:Actions "Major outage / Critical",官方说明 "webhook triggers remain throttled … many push and pull request events **aren't triggering new workflow runs**"。实测吻合:三个 `openxlings/*` PR **零个 run**,`mcpp-index#177` 三个 check 在 QUEUED 卡了 40 分钟没有 runner 领取。已排除审批门、Actions 未启用、路径过滤、权限 |
 | **空 host S1–S4 复测** | 见 §10.2 第二条 |
 
 #### 为什么 mesa 重建不能在一个装好图形栈的 home 里做(实测)
