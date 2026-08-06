@@ -221,13 +221,23 @@ mesa 是 `lib/dri` 的唯一 owner,而放置是目录符号链接(A1 前置 2),�
 **顺带收一个好处**:`subos.env{}` 那三条也改成同样的 `${subosdir}` 相对值之后,
 **S2 与 S3 的值由构造相同**,而不是靠两处各写一遍碰巧一致。
 
-**判据**(这条必须是差分,不能只看"能跑"):
+**判据 —— 已实测,而且结果推翻了这里原本写的那条**(详见 §10.2 第一条):
+
+原本写的是"经 shim 与直接跑载荷二进制,GL_RENDERER 必须**不同**"。实测在这台宿主上
+**完全相同**:mesa 25.x 相对自身位置找 dri 模块,EGL vendor 又从宿主自己的
+`/usr/share/glvnd/egl_vendor.d` 读到(其中的 bare SONAME 经我们的 RPATH 解析到我们的
+interposer)。所以这两个变量在**有自己 glvnd 配置的宿主上不是决定性的**。
+
+因此 A2 的正确判据是**记录而非渲染**:
+
 ```
-# 普通登录 shell(不进 subos)
-env -u LIBGL_DRIVERS_PATH -u __EGL_VENDOR_LIBRARY_DIRS godot --version   # 经 shim
-# → GL_RENDERER 正确;直接跑载荷里的绝对路径二进制 → 落 llvmpipe
+# 1. 消费者的节点确实带上了 subos 相对的三条(这是 S2 成立的定义)
+#    → godot 的 envs 记录 ${XLINGS_DYNAMIC_SUBOS_DIR}/{usr/lib/dri,share/...,share}
+# 2. subos shell 侧解析出同样的值,且没有残留 ${pkgdir}、没有重复项
+# 3. 它成为必需的场景是密闭的那个:空 host 里没有宿主 glvnd 配置可读
 ```
-两者输出必须**不同**。相同就说明测的不是 shim 路径。
+
+1 与 2 已通过。3 见 §10.2 第二条 —— 空 host 判据当前是红的,且**不是本次改动引入的**。
 
 **已知边界**(要写进文档,不是缺陷):`.desktop` 启动器的 `Exec=` 必须指向 shim;
 用户拿绝对路径直接跑载荷二进制不走 shim,拿不到环境 —— 与 Nix wrapper 同样的边界。
@@ -855,6 +865,80 @@ W2 是这一条的 S3:**"渲染器名字对"在借对了和借错了时可以完
 WSL2 的宿主 mesa 也会报 D3D12。
 
 **W5 不能省。** 这个包会进 `graphics` 的 deps,也就是**每一台**装图形栈的机器都会装它。
+
+---
+
+## 10. 执行结果(2026-08-07,同日)
+
+四仓落地。**真实验证在一台 RTX 4080 / 驱动 550.144.03 的隔离 home 里跑**,用的是
+本次构建的 xlings。逐条列出,包括**三条被实测推翻的**。
+
+### 10.1 已落地并实测通过
+
+| 项 | 证据 |
+|---|---|
+| **A8** `libs/hostlib.lua` | 10/10 断言,跑在**伪造的 biarch 宿主**上(`/usr/lib` 放 32 位、`/usr/lib64` 放真的),即 #352 的形状。779 静态测试通过 |
+| **A1** 共享 vendor 目录 | `<subos>/share/glvnd/egl_vendor.d/` 里**同时**有 `10_nvidia.json` 与 `50_mesa.json`,而 `__EGL_VENDOR_LIBRARY_DIRS` **只有一个目录** |
+| **A2** dri 进 subos | `<subos>/usr/lib/dri/` 六个驱动模块齐;`LIBGL_DRIVERS_PATH` 解析为单一 subos 路径 |
+| **A2** shim 携带 env | godot 的节点记录了三条 `${XLINGS_DYNAMIC_SUBOS_DIR}` 相对值 |
+| **A3** `graphics` 元包 | `xlings install graphics` → 26 个包,报 `NVIDIA proprietary driver 550.144.03 — GL renders on the GPU` |
+| **A9r** WSL sentinel(W5) | 非 WSL 宿主上:`not a WSL2 host with D3D12 userspace — nothing to link`,零声明、零影响 |
+| **A6** stamp + 自检 | `xlings-gl-doctor` 经 shim 运行,报 `built for 550.144.03 / host now 550.144.03 / 4/4 / ok`。**改假 stamp → 退出码 1 并给出修复命令**(否证方向成立) |
+| **A7** godot 上新栈 | 日志 `GL comes from the xlings graphics stack; not adding host library directories`,RPATH 里宿主目录数 = **0** |
+| **A8m** mcpp#352 问题 2 | 在伪造 biarch 宿主上,两个 required 链接都落到 `/usr/lib64` 且都是 ELF64;旧的 `ln -sf` 循环在同一 fixture 上落到 `/usr/lib` |
+| **B1** interposer | libxpkg 55 个 executor 测试通过,新增一个用「对 vendor 与对产物返回不同 `--print-needed`」的假 patchelf,警告带分数 |
+| **C1** `/dev/dxg` | xlings 35 个测试二进制通过,`SubosGpu` 6 个 |
+| **核心两处修复** | `SubosManifestEnv` 7 个测试;端到端确认无残留 `${pkgdir}`、无重复项 |
+| **verify-host-link** | **12/12**,check 4 现在打印**探测到的**目录(`/lib/x86_64-linux-gnu`),不再是写死的那个 |
+
+### 10.2 被实测推翻的三条
+
+**一、A2 的两个变量在这台宿主上都不是决定性的。**
+`glprobe` 同一个二进制,带与不带 `LIBGL_DRIVERS_PATH` / `__EGL_VENDOR_LIBRARY_DIRS`,
+**渲染器完全相同**。原因两条:mesa 25.x 相对自身位置找 dri 模块;而 EGL vendor 在
+这台宿主上是从**宿主自己的** `/usr/share/glvnd/egl_vendor.d` 读到的,里面的 bare
+SONAME 又经我们的 RPATH 解析到**我们的** interposer。
+
+所以 A2 正确的说法**不是**"修好了一个坏掉的场景",而是:把声明从 shell 搬到程序,
+使它**在 subos shell 之外也成立**;而它成为必需的场景是密闭的那个(空 host 无
+`/usr/share/glvnd`)。§A2 里"没有它就静默落 llvmpipe"这句话对这台宿主不成立,
+已在此更正。
+
+**二、空 host 判据 S1 现在失败,而且不是本次改动引入的。**
+`selfcontained-check.sh` 报 `RESULT=fail:no-display`、`egl error 0x300c`。
+**用改动前的 env 形式(mesa 载荷目录)跑,失败完全相同**,所以与 A1/A2 无关。
+`LD_DEBUG` 显示 `libEGL_mesa.so.0` **确实被加载**(它的 RUNPATH 搜索都在),
+失败在 `eglGetPlatformDisplay(surfaceless)` 返回 `EGL_BAD_PARAMETER`。
+自 #501 那次 S1–S4 全绿之后,这台 home 里多了 NVIDIA sentinel 与 gcc ——
+**需要单独定位,本轮没有重新验证 S1–S4。** 这条必须写在这里而不是留白:
+一个曾经绿过的判据现在红了,是本轮最重要的未解项。
+
+**三、`>=` 范围无法匹配 mesa 的四段版本号。**
+`xim:mesa@>=25.0.7` 与 `@>=25.0.7.1` 都报 **package not found**;
+`@25.0.7.1` 与裸 `xim:mesa` 都能解析。其他范围(`@>=0.1`、`@>=1.8`、`@>=2.39`)
+全部正常,所以问题只在**四段版本**。mesa 的第四段是本项目自己加的(见那个 recipe),
+于是"用下界不要钉死"这条对 mesa **不可能**做到。`graphics` 与 `wsl-gl-host-link`
+因此对 mesa 用**裸名**,并在 recipe 里记下测得的原因。
+
+### 10.3 顺带发现的两件事(与图形栈无关)
+
+1. **`files` 资产目标不合规时静默不放置** —— 已在 §C 记为本体 bug 候选。
+   本轮踩到:`dst = "lib/dri"` 会安装成功而什么都不放。改成 `usr/lib/dri`。
+2. **一个 home 的 `bin/xlings` 缺失时,所有包的 shim 都不生成,而报错指向别处** ——
+   本轮先把它误判成"`gcc-specs-config` script 型包的缺陷";实际是我复制测试 home 时
+   没带 `bin/xlings`(`slice-real-home.sh` 会带)。补上后 gcc 与
+   `xlings-gl-doctor` 的 shim 立刻都出现。**这条是我的误判,记下来是因为报错
+   ("installed but registered none of the programs it declares")指向包而不是指向
+   home,下一个人会走同一条弯路。**
+
+### 10.4 本轮未做
+
+| 项 | 为什么 |
+|---|---|
+| **A5+A9b mesa 重建**(iris/crocus/d3d12) | 需要在 subos 里完整构建 mesa,再把 ~100 MB 载荷发到 xlings-res 并镜像到 GitCode。是本方案里唯一的长构建 + 发布权限项。**recipe 侧的 A9 已全部完成并验证**,缺的只是载荷里的 `d3d12_dri.so` / `iris_dri.so` |
+| **A4 vulkan-loader** | 同上,需要一次构建。顺带实测到一条相关证据:强制 mesa vendor 时 `MESA: error: ZINK: failed to load libvulkan.so.1` —— zink 确实因为没有 loader 而是死的,与 §A4 的判断一致 |
+| **发布链** | libxpkg 0.0.54 → mcpp-index → xlings pin → 发布 → xim-pkgindex bump。libxpkg 与 xlings 均已提交并测试通过,尚未 tag |
+| **空 host S1–S4 复测** | 见 §10.2 第二条 |
 
 ---
 
