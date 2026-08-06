@@ -114,9 +114,13 @@ openxlings/xim-pkgindex     recipe + 规范 + 构建流水线
 
 | 仓库 | PR | 版本 | 内容 |
 |---|---|---|---|
-| libxpkg | 1 | 0.0.50 → 0.0.51 | L1 L2 L3 L4 |
-| xlings | 1 | 2026.8.5.3 → 2026.8.6.1 | X1–X9 + xpkg pin 0.0.51 |
-| xim-pkgindex | 1 | (无版本号) | P1–P8 |
+| libxpkg | [#35](https://github.com/openxlings/libxpkg/pull/35) | 0.0.50 → 0.0.51 | L1 A3 · L2 relocate_build_paths |
+| xlings | 本 PR | 2026.8.5.3 → 2026.8.6.1 | A3(第二个站点)· A4 · B5 · C1/C2/C3 · E1/E2 + xpkg pin 0.0.51 |
+| xim-pkgindex | 待开 | (无版本号) | #42-glibc · A1/A2/B3 规范 |
+
+**B 线(B1/B2/AD-12)不在本轮。** §2.7 的四项门禁 2026-08-06 全部通过,结论记录在提案
+§2.7,但实现需要图形栈装好才能端到端验证,而本机的 home 里 mesa / libglvnd /
+nvidia-gl-host-link 都没装。见任务 #55。
 
 三个 PR 都带完整测试,CI 各自全绿后按链顺序合并、发布。
 
