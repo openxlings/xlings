@@ -32,7 +32,12 @@ INDEX_REPO="${INDEX_REPO:-openxlings/xim-pkgindex}"
 # Measured 2026-08-06: #503 (2026.8.5.2), #520 (2026.8.5.3) and #524
 # (2026.8.6.1) were all open at once, and the index's `latest` sat at
 # 2026.8.5.1 -- two releases behind -- while every release job reported
-# success. Worse, each PR's diff was generated against whatever `latest` was
+# success.
+#
+# And that was only what was still OPEN. The index carries 49 stale `bump/*`
+# branches -- 36 for mcpp, 12 for xlings, one for mingw-cross-gcc -- one per
+# release since this script was written. Every one of them is a branch this
+# code created and then abandoned. Worse, each PR's diff was generated against whatever `latest` was
 # when it ran, so merging an OLDER one after a NEWER one moves the pointer
 # BACKWARDS. That is not a merge-order rule anyone can be expected to
 # remember; it is a mechanism that should not exist.
