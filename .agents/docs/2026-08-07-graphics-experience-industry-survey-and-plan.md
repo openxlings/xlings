@@ -1013,6 +1013,28 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    解释器之后**失败一模一样** —— 假设被自己的下一次运行否掉了。记在这里是因为
    这个错误信息会把任何人送去查 mako。)*
 
+5. **索引里的两个 LLVM 包都喂不饱 mesa,而且原因同一个:它们是"切"出来的。**
+
+   | 包 | 有什么 | 缺什么 |
+   |---|---|---|
+   | `libllvm@20.1.7` | 只有 `lib/` | 没有 `llvm-config`,没有 `.pc` |
+   | `llvm@20.1.7` | 有 `llvm-config`(报 20.1.7) | **没有各组件的静态 `.a`** |
+
+   第二个的症状很有迷惑性:`llvm-config found: YES … 20.1.7` 之后紧跟
+   `Run-time dependency LLVM … found: NO (tried config-tool)`。真因在 meson 日志
+   深处 —— `llvm-config: error: missing: …/libLLVMX86CodeGen.a`(以及几十个),
+   于是 `llvm-config --shared-mode returned an error`。
+
+   根因是设计使然:`.agents/tools/build-llvm-subpkg.sh` 的第一行就写着它是
+   "**carve** an xlings-res LLVM sub-package … **out of a full upstream LLVM
+   distribution**"。`llvm` 和 `libllvm` 都是从完整发行版里切出来的子集,
+   而 mesa 的 `config-tool` 探测要的正是被切掉的那部分。
+
+   **所以重建 mesa 需要的是完整的上游 LLVM 发行版**(或一份带
+   `LLVM_LINK_LLVM_DYLIB=ON` 且保留组件库的自建),不是索引里这两个包中的任何一个。
+   这才是"重建 mesa 要几小时"的**准确**版本 —— 我最早那句是猜的,中间那句
+   ("没被挡住")是乐观的,这一句是测出来的。
+
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
 1. **`files` 资产目标不合规时静默不放置** —— 已在 §C 记为本体 bug 候选。
