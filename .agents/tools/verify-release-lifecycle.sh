@@ -60,9 +60,14 @@ echo "home:   $HOME_DIR"
 echo "version: $(x --version 2>&1 | head -1)"
 
 step "1. the client anchors to the home under test"
-GOT="$(x self info 2>&1 | grep -iE "home" | head -1)"
+x self init >/dev/null 2>&1 || true
+GOT="$(x self config 2>&1)"
 echo "$GOT" | grep -q "$HOME_DIR" \
-    || fail "the client reports a home other than the one under test:
+    || fail "the client reports a home other than the one under test.
+That is the failure this whole script exists to make visible: a shim rewrites
+XLINGS_HOME to whichever home owns it, so every measurement taken afterwards
+would describe the developer's home while looking exactly like a measurement of
+this one.
 $GOT"
 ok "XLINGS_HOME is honoured"
 
@@ -77,11 +82,24 @@ x install glibc -y >/dev/null 2>&1 || x install xim:glibc -y >/dev/null 2>&1 \
     || fail "install glibc failed"
 G="$(ls -d "$HOME_DIR"/data/xpkgs/*-x-glibc/* 2>/dev/null | head -1)"
 [[ -n "$G" ]] || fail "no glibc payload"
-LEFT="$(grep -rl "xlings_data\|/nonexistent/xlings-use-rpath" "$G" 2>/dev/null \
+# TEXT files only, and that distinction is the point rather than a shortcut.
+#
+# ld.so has the build prefix compiled into it as its default library search
+# path, and after AD-11 that is `/nonexistent/xlings-use-rpath-not-default-
+# search` -- deliberately a path that cannot exist, so that everything must
+# come from DT_RPATH and an unpatched binary fails loudly instead of quietly
+# picking up the host's loader. A marker inside a binary is the design; the
+# same marker inside a shell script or a .pc file is the defect.
+#
+# `.xpkg.lua` is the recipe copied in as a record, and it mentions the marker
+# in prose.
+LEFT="$(grep -rlI "xlings_data" "$G" 2>/dev/null \
         | grep -v '\.xpkg\.lua$' || true)"
-[[ -z "$LEFT" ]] || fail "build paths remain in the payload:
-$LEFT"
-ok "no build path in the payload"
+if [[ -n "$LEFT" ]]; then
+    echo "$LEFT" | head -10 >&2
+    fail "$(echo "$LEFT" | wc -l) text file(s) in the payload still name the build machine"
+fi
+ok "no build path in any text file"
 bash -n "$G/bin/ldd" 2>/dev/null || fail "the ldd we ship does not parse"
 ok "bin/ldd passes bash -n"
 grep -q "RTLDLIST=\"" "$G/bin/ldd" || fail "RTLDLIST was swallowed by the rewrite"
