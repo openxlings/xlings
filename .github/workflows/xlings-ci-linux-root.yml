@@ -61,21 +61,26 @@ jobs:
           path: |
             ~/.mcpp
             .mcpp
-          # `mcpp-v3-`: retired v2 on 2026-08-06. The key already hashes
-          # mcpp.toml, so a dependency bump misses it exactly -- but
-          # `restore-keys` then falls back to the newest v2 entry, whose
-          # registry carries the mcpp-index snapshot from BEFORE the bump.
-          # `mcpplibs.xpkg@0.0.50` was published and resolvable from a clean
-          # home while three CI jobs insisted it did not exist. Retiring the
-          # prefix is what stops the fallback reaching those entries.
-          # `mcpp-v3-`: the v1 keyspace holds entries saved by runs that
-          # built against a fallback-restored BMI set and failed. Those are
-          # poisoned at their exact key, so the guard below -- which only fires
-          # on an INEXACT restore -- can never reach them. Retiring the prefix
-          # is what discards them; the guard is what stops it recurring.
-          key: mcpp-v3-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
+          # The key names the WORKFLOW that produced it, and that is
+          # load-bearing rather than tidy. Three Linux workflows previously
+          # shared `mcpp-v3-Linux-<hash>`: the hash covers mcpp.toml, but
+          # mcpp.toml declares BOTH the dev toolchain (gcc@16.1.0) and the
+          # release target (gcc@15.1.0-musl), so a CI build and a release build
+          # produced the same key from different toolchains. Whichever finished
+          # first wrote the exact key and the others restored its BMIs, failing
+          # as `import 'std' has CRC mismatch` -- which reads like a compiler
+          # bug and is one cache key with several writers.
+          #
+          # The guard below cannot catch it: those restores are EXACT hits.
+          # Prefix history, kept short: v2 was retired because `restore-keys`
+          # reached entries whose registry predated an index publish, and v3
+          # because entries saved by a failed build sit at the exact key where
+          # the guard below cannot reach them. v4 is the split above. Each
+          # retirement discarded what was already poisoned; none of them
+          # stopped the next kind, which is why the key now names its writer.
+          key: mcpp-v4-ci-linux-root-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
-            mcpp-v3-${{ runner.os }}-
+            mcpp-v4-ci-linux-root-${{ runner.os }}-
       # An inexact restore (the `restore-keys` fallback) brings BMIs built
       # under a different dependency set. Mixing them with anything rebuilt
       # here fails as `import 'std' has CRC mismatch` — which reads like a
