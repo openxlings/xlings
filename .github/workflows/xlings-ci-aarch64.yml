@@ -92,7 +92,13 @@ jobs:
           xlings config --mirror GLOBAL
           xlings update -y 2>/dev/null || xlings update 2>/dev/null || true
           xlings install mcpp -y
-          mcpp --version
+          # Installing is not switching -- see the note in xlings-ci-linux.yml.
+          xlings use mcpp "2026.8.6.1" || true
+          got="$(mcpp --version 2>&1 | head -1)"
+          case "$got" in
+            *"2026.8.6.1"*) echo "mcpp $got (matches .xlings.json)" ;;
+            *) echo "FAIL: .xlings.json pins mcpp 2026.8.6.1 but PATH has '$got'" >&2; exit 1 ;;
+          esac
 
       - name: Build cross-capable mcpp from source (mcpp main)
         run: |

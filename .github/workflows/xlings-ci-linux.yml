@@ -177,7 +177,28 @@ jobs:
           # dependency rather than as an index nobody refreshed.
           xlings update || true
           xlings install -y
-          mcpp --version
+
+          # Installing is not switching, and this cache makes the difference
+          # visible. `xlings install` lays the payload down; the shim keeps
+          # resolving whatever version was already active -- the client says so
+          # ("installed, but 'x' still resolves to ..."), and with ~/.mcpp
+          # restored from a cache that line is the ONLY sign that the mcpp
+          # about to run is the old one. Measured 2026-08-06: .xlings.json
+          # pinned 2026.8.6.1 while the run used the cached build, whose index
+          # snapshot predated the dependency this PR needs -- surfacing as
+          # `mcpplibs.xpkg@0.0.53 not found` against an index that demonstrably
+          # had it.
+          xlings use mcpp "2026.8.6.1" || true
+
+          # Assert, do not print. A version line in a log is only read after
+          # something has already gone wrong.
+          got="$(mcpp --version 2>&1 | head -1)"
+          case "$got" in
+            *"2026.8.6.1"*) echo "mcpp $got (matches .xlings.json)" ;;
+            *) echo "FAIL: .xlings.json pins mcpp 2026.8.6.1 but the mcpp on PATH is '$got'." >&2
+               echo "      Installing does not switch; the shim still resolves the cached build." >&2
+               exit 1 ;;
+          esac
           mcpp self version
 
       - name: Reinitialize mcpp registry (GLOBAL)
