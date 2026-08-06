@@ -102,6 +102,135 @@ std::string_view binding_name(std::string_view binding) {
     return at == std::string_view::npos ? binding : binding.substr(0, at);
 }
 
+std::string_view binding_version(std::string_view binding) {
+    const auto at = binding.find('@');
+    return at == std::string_view::npos ? std::string_view{}
+                                        : binding.substr(at + 1);
+}
+
+// ── the subos layer's "exactly one" ─────────────────────────────────────
+//
+// One package, one version, per subos. The three-layer model has always said
+// so -- the xpkg store holds many versions by design, each consumer freezes one
+// into its own RPATH/INTERP, and the subos sysroot in between is the layer that
+// is supposed to hold exactly one -- but nothing anywhere enforced it.
+//
+// Measured on a real home: `xlings list` showed mesa@25.0.7 and mesa@25.0.7.1
+// both bound in `default`, both contributing to __EGL_VENDOR_LIBRARY_DIRS, and
+// EGL duly enumerated the device twice. `xlings self doctor` said nothing.
+//
+// This is P1 wearing a different hat. "What is in this subos" has two records
+// -- the xvm registration and this manifest's envs section -- and installing a
+// second version appends to both. They agree, which is why nothing complained;
+// they agree on an answer the model forbids.
+//
+// ONE function, used by the report and by --fix. Every previous report/repair
+// pair in this repo has drifted, and the shape it takes is a finding that
+// repairing does not clear, so the predicate lives here rather than in doctor.
+struct DuplicateBinding {
+    std::string              name;
+    std::vector<std::string> bindings;   // every binding for that name, sorted
+};
+
+std::vector<DuplicateBinding> duplicate_bindings(const Info& info) {
+    std::map<std::string, std::vector<std::string>> byName;
+    for (const auto& p : info.envs) {
+        if (!is_binding(p.binding)) continue;
+        byName[std::string(binding_name(p.binding))].push_back(p.binding);
+    }
+    std::vector<DuplicateBinding> out;
+    for (auto& [name, bindings] : byName) {
+        if (bindings.size() < 2) continue;
+        std::ranges::sort(bindings);
+        bindings.erase(std::ranges::unique(bindings).begin(), bindings.end());
+        if (bindings.size() < 2) continue;   // one version listed twice is not two
+        out.push_back({.name = name, .bindings = std::move(bindings)});
+    }
+    return out;
+}
+
+// Which version of each package THIS subos has active.
+//
+// Read from the same file as the declarations. `subos/<name>/.xlings.json`
+// holds both `workspace` (name -> active/installed) and `subos_info.envs`
+// (binding -> declarations) -- two records of "what is in this subos", in one
+// file. That is the whole of P1 in eleven lines of JSON.
+std::map<std::string, std::string> active_versions(const nlohmann::json& doc) {
+    std::map<std::string, std::string> out;
+    if (!doc.contains("workspace") || !doc["workspace"].is_object()) return out;
+    for (auto it = doc["workspace"].begin(); it != doc["workspace"].end(); ++it) {
+        if (!it.value().is_object()) continue;
+        auto active = it.value().value("active", std::string{});
+        if (!active.empty()) out[it.key()] = std::move(active);
+    }
+    return out;
+}
+
+// True when `version` is the one `active` names, allowing for the `<ns>:<ver>`
+// form a namespaced install records.
+inline bool version_is_active(std::string_view version, std::string_view active) {
+    if (version == active) return true;
+    const auto colon = active.find(':');
+    return colon != std::string_view::npos && active.substr(colon + 1) == version;
+}
+
+// The providers that actually take effect, out of everything the manifest
+// records.
+//
+// A package installed at two versions keeps BOTH provider sections -- the
+// dormant one has to survive so that `xlings use pkg@<older>` restores its
+// environment without reinstalling. What must not happen is both contributing
+// at once, which is how one GPU came to be enumerated as two.
+//
+// Which one is live is not a decision made here: xvm already made it, and its
+// answer is in this same file. Re-deriving it (highest version? last
+// installed?) would be a second answerer to a question that has one -- the
+// exact defect this function exists to remove.
+//
+// A package with NO active version keeps every provider, and that default
+// matters more than it looks: filtering on a record that turns out to be absent
+// would silently delete a package's whole environment, which is the failure
+// mode this file exists to prevent, arrived at from the other side. Measured
+// before choosing it -- a bare `xvm.add(name)` does record an active version,
+// so this is the salvage path for a manifest whose workspace record was lost
+// (pruned, copied between homes, hand-edited), not the common case. Where
+// several versions are declared with no active one, nothing can say which is
+// meant; that state is reported rather than guessed at.
+Info select_effective(const Info& info,
+                      const std::map<std::string, std::string>& active) {
+    Info out = info;
+    out.envs.clear();
+    for (const auto& p : info.envs) {
+        if (is_binding(p.binding)) {
+            const auto it = active.find(std::string(binding_name(p.binding)));
+            if (it != active.end()
+                && !version_is_active(binding_version(p.binding), it->second)) {
+                continue;
+            }
+        }
+        out.envs.push_back(p);
+    }
+    return out;
+}
+
+// A package bound at several versions with nothing able to say which is meant.
+//
+// NOT the same as duplicate_bindings: two versions where one is active is
+// ordinary -- the dormant declarations are how `xlings use` can switch back.
+// This is the subset that has no active version -- every one of them
+// contributes, so the subos exports each variable several times over. Reaching
+// it takes a lost workspace record, not an ordinary install.
+std::vector<DuplicateBinding>
+contested_bindings(const Info& info,
+                   const std::map<std::string, std::string>& active) {
+    std::vector<DuplicateBinding> out;
+    for (auto& dup : duplicate_bindings(info)) {
+        if (active.contains(dup.name)) continue;
+        out.push_back(std::move(dup));
+    }
+    return out;
+}
+
 // ── invariants ──────────────────────────────────────────────────────────
 
 enum class Defect {
@@ -405,6 +534,73 @@ std::string expand(std::string_view value, std::string_view binding,
 // because an unexpanded value is a defect regardless of what is on disk.
 bool has_unresolved(std::string_view expanded) {
     return expanded.find("${") != std::string_view::npos;
+}
+
+// ── privileged declarations ─────────────────────────────────────────────
+//
+// A `subos.env` declaration whose value points at OUR payload is one of two
+// very different things, and the difference is not "is it process-global":
+//
+//   causes CODE to be loaded    LD_LIBRARY_PATH, LD_PRELOAD,
+//     into someone's process    __EGL_VENDOR_LIBRARY_DIRS, LIBGL_DRIVERS_PATH,
+//                               VK_ICD_FILENAMES, and every future variable
+//                               some library invents for finding its plugins
+//   causes DATA to be found     XDG_DATA_DIRS, MANPATH, PKG_CONFIG_PATH
+//
+// The first class is dangerous because every child of the subos shell inherits
+// it, and most of those children are HOST binaries under the HOST loader.
+// Measured: a host binary linked against the host's libEGL drops from the
+// NVIDIA GPU to llvmpipe under our declarations, and LD_DEBUG shows it loading
+// OUR libm, libgcc_s, libstdc++ and libxcb into a process running on the host's
+// libc. On this machine the host glibc happened to match; on an older one that
+// is `version 'GLIBC_2.xx' not found`. The second class is ordinary — subos
+// supplies a default, the user can override it, that is how Linux works (AD-3).
+// `PATH` is a third thing again: it does not inject code into an existing
+// process, it decides which executable runs, and it is governed by R6/AD-1
+// rather than by this guard.
+//
+// The list below is the BENIGN one -- named for what it asserts, since PATH is
+// on it and PATH plainly does not name only data. The check is default-deny. Listing the
+// dangerous set instead would be a hand-written list of "what we happened to
+// think of" — the exact anti-pattern R7 names, and the one that already cost us
+// five missing entries in nvidia-gl-host-link's dependency table. A variable
+// nobody has classified reads as privileged, which fails toward a report.
+//
+// Adding to this list is a deliberate act: it asserts the variable cannot cause
+// code to enter a process.
+inline bool never_loads_code(std::string_view var) {
+    return var == "XDG_DATA_DIRS"   || var == "XDG_CONFIG_DIRS"
+        || var == "XDG_DATA_HOME"   || var == "XDG_CONFIG_HOME"
+        || var == "XDG_CACHE_HOME"  || var == "XDG_STATE_HOME"
+        || var == "MANPATH"         || var == "INFOPATH"
+        || var == "PKG_CONFIG_PATH" || var == "PKG_CONFIG_LIBDIR"
+        || var == "ACLOCAL_PATH"    || var == "TERMINFO"
+        || var == "FONTCONFIG_PATH" || var == "FONTCONFIG_FILE"
+        || var == "SSL_CERT_FILE"   || var == "SSL_CERT_DIR"
+        || var == "GIT_SSL_CAINFO"  || var == "CURL_CA_BUNDLE"
+        || var == "LOCPATH"         || var == "TZDIR"
+        || var == "PATH";  // R6/AD-1's business, not this guard's
+}
+
+// A declaration is privileged when it can put code from our payload into a
+// process we do not own.
+//
+// The placeholders are checked as well as an expanded store path, because at
+// install time -- the moment this most needs to be reported -- the value has
+// not been expanded yet.
+//
+// `${subosdir}` counts. The subos sysroot is a VIEW onto our payloads, made of
+// symlinks into them, so a directory under it on a loader search path delivers
+// our libraries just as surely as the store path does. Checking only
+// `${pkgdir}` would have let the same declaration through in its other spelling
+// -- one hazard with two names, which is the shape this whole review is about.
+inline bool is_privileged_env(std::string_view var, std::string_view value) {
+    if (never_loads_code(var)) return false;
+    for (const auto* needle : {"${pkgdir}", "${subosdir}", "${xlings_home}",
+                               "/xpkgs/"}) {
+        if (value.find(needle) != std::string_view::npos) return true;
+    }
+    return false;
 }
 
 // ── resolution ──────────────────────────────────────────────────────────

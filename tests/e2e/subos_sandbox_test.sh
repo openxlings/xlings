@@ -29,13 +29,21 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_sandbox"
+# Under $TMPDIR, not the checkout. E1: the checkout is normally under $HOME,
+# so a home there shares a long prefix with the real one and every "which home
+# did we actually use?" defect stays invisible -- which is how all four of the
+# 2026-08-06 home defects survived. It also puts the home BELOW a directory the
+# sandbox privatises before binding, which is the hardest ordering in the bind
+# list and the one S8 exists to pin down. The 2026-08-06 measurements hit that
+# ordering by accident; here it is deliberate.
+RUNTIME_DIR="$(runtime_home_dir subos_sandbox)"
 HOME_DIR="$RUNTIME_DIR/home"
 
 cleanup() { rm -rf "$RUNTIME_DIR"; }
 trap cleanup EXIT
 cleanup
 
+assert_home_is_isolated "$HOME_DIR"
 XLINGS_BIN="$(find_xlings_bin)"
 
 mkdir -p "$HOME_DIR/subos/default/bin" "$HOME_DIR/runtimedir"
@@ -188,16 +196,45 @@ sandbox_marker="$HOME_DIR/subos/mybox/home/$USER${marker_file#$HOME}"
   || fail "S7: sandbox marker not found at $sandbox_marker"
 log "  ✓ host \$HOME unaffected; file landed in <subos>/home/$USER/"
 
-# ── S8: ~/.xlings IS host-shared (RW bind override on top of /home)
-log "S8: ~/.xlings is the host xlings home, RW shared"
-out_xl="$(echo 'ls ~/.xlings/ 2>&1 | tr "\n" " "; echo MARKER; exit' | \
+# ── S8: the xlings home is host-shared AT ITS OWN ABSOLUTE PATH
+#
+# Not at ~/.xlings. xvm alias targets, RPATH and INTERP are absolute host
+# paths baked at install time and nothing rewrites them on the way in, so
+# the home has to answer to the same spelling inside as outside. Binding it
+# at ~/.xlings instead stranded every one of them; binding it at both made
+# one directory reachable by two real paths, which a bind mount does not
+# collapse — a shim then reports a conflict with itself. For the default
+# home the own-path bind IS ~/.xlings, which is why the remapped form went
+# unnoticed until an isolated XLINGS_HOME was used.
+log "S8: xlings home is shared at its own absolute path, one spelling"
+out_xl="$(echo 'echo "XH=$XLINGS_HOME"; echo "P1=${PATH%%:*}"; ls "$XLINGS_HOME/" 2>&1 | tr "\n" " "; echo MARKER; exit' | \
   ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
       PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
       timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
-echo "$out_xl" | grep -q "subos" \
-  || fail "S8: ~/.xlings doesn't show host content (expected to see 'subos'):
+abs_home="$(cd "$HOME_DIR" && pwd)"
+echo "$out_xl" | grep -q "XH=$abs_home" \
+  || fail "S8: XLINGS_HOME inside is not the host home path (expected $abs_home):
 $out_xl"
-log "  ✓ ~/.xlings inside sandbox is host bind (subos/, etc. visible)"
+echo "$out_xl" | grep -q "P1=$abs_home/subos/" \
+  || fail "S8: PATH[0] is spelled differently from XLINGS_HOME — a shim will
+read that as two homes and warn about a conflict with itself:
+$out_xl"
+echo "$out_xl" | grep -q "subos" \
+  || fail "S8: the home shows no host content at its own path:
+$out_xl"
+log "  ✓ home visible at $abs_home, and PATH agrees with XLINGS_HOME"
+
+# The second spelling must NOT exist: it is a distinct real path to the same
+# directory, and that is what made shim ownership ambiguous.
+out_alias="$(echo 'test -d "$HOME/.xlings" && echo SECOND_SPELLING || echo SINGLE_SPELLING; exit' | \
+  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
+      PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
+echo "$out_alias" | grep -q "SINGLE_SPELLING" \
+  || fail "S8: the home is also reachable at \$HOME/.xlings — two real paths
+to one directory, which canonicalisation does not collapse:
+$out_alias"
+log "  ✓ no second spelling of the home inside the sandbox"
 
 # ── S9: /tmp is sandbox-private
 log "S9: /tmp is sandbox-private (writes don't pollute host /tmp)"
@@ -254,15 +291,29 @@ log "  ✓ <subos>/subos/ marker exists"
 # xlings profile; non-interactive shells (`bash -c`, scripts) skip the
 # rc files. Both paths should still see the per-subos bin first because
 # we set PATH explicitly in env before exec proot.
+#
+# The expected value is derived from the home UNDER TEST, not written out as
+# `/home/<user>/.xlings/...`. That literal was this assertion until CI caught
+# it: S8's own fix made the home visible at its own absolute path, and S12 was
+# left asserting the spelling from before that fix -- so it demanded
+# `$HOME/.xlings` from a run whose home is somewhere else entirely. The value
+# it rejected was the correct one.
+#
+# This is E2 in one assertion: a test can not only miss a defect, it can pin
+# one, and the pin outlives the fix because changing a test assertion looks
+# suspicious in review. Deriving the expectation from $HOME_DIR makes the
+# assertion true of any home rather than of the default one.
 log "S12: PATH front-loads <subos>/bin even in non-interactive shell"
 out_path="$(echo 'echo "PATH:$PATH"; exit' | \
   ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
       PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
       timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
-echo "$out_path" | grep -q "PATH:/home/$USER/.xlings/subos/mybox/bin:" \
-  || fail "S12: PATH first segment is NOT <home>/.xlings/subos/mybox/bin:
+expect_bin="$(cd "$HOME_DIR" && pwd)/subos/mybox/bin"
+echo "$out_path" | grep -q "PATH:$expect_bin:" \
+  || fail "S12: PATH's first segment is not this home's subos bin
+  expected first: $expect_bin
 $out_path"
-log "  ✓ PATH starts with /home/$USER/.xlings/subos/mybox/bin"
+log "  ✓ PATH starts with $expect_bin"
 
 # ── S13: seeded shell rc files exist (interactive prompt-pill plumbing)
 # init_sandbox_dirs_ writes minimal .bashrc / .profile / config.fish

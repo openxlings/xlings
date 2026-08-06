@@ -836,6 +836,102 @@ inline manifest::Placeholders placeholders_for_(const fs::path& subosDir) {
     };
 }
 
+// Is this the name of a library that is welded to a particular ld.so?
+//
+// ld.so and libc.so.6 are two halves of one build and talk to each other over
+// GLIBC_PRIVATE. Pairing halves from different builds does not fail to load --
+// it segfaults before main, naming nothing.
+//
+// This list is deliberately just those two, and not the rest of the glibc set.
+// The argument for a wider list is that libm and friends come from the same
+// build; the argument against is measured. nvidia-gl-host-link has to offer
+// the vendor library libpthread/librt/libdl, which since glibc 2.34 are
+// compatibility stubs with 27, 13 and 9 defined symbols -- their
+// implementations moved into libc.so.6 -- and without them the NVIDIA device
+// disappears from EGL enumeration entirely. Flagging those would break a
+// working configuration to prevent nothing. libm has real surface (1203
+// symbols), but a host binary that picks up a mismatched libm dies with
+// "version `GLIBC_2.38' not found" and names the file. Loud and diagnosable
+// is not what this guard is for; it is for the failure that names nothing.
+inline bool is_loader_coupled_soname_(std::string_view file) {
+    return file == "libc.so.6"
+        || file.starts_with("libc.musl-")
+        || file.starts_with("ld-linux")
+        || file.starts_with("ld-musl");
+}
+
+// Refuse to put a libc on a process-global search path.
+//
+// LD_LIBRARY_PATH and LD_PRELOAD are inherited by every child, and most
+// children in a subos are HOST binaries running under the HOST loader. A
+// directory of ours holding libc.so.6 hands them our half of a pair whose
+// other half is the host's, which is the loader/libc split the rest of this
+// codebase exists to prevent -- arrived at from the one direction the
+// same-source assertion cannot see, because nothing we installed is wrong.
+// `xlings subos use` returned a /bin/bash that died of SIGSEGV before
+// printing a character, on a host whose glibc was the same upstream version
+// as ours and merely a different build.
+//
+// Dropping the offending entry rather than the whole variable: the other
+// directories on it are usually the point of the declaration, and a package
+// that gathers dependencies into one directory has no way to ask for "all of
+// these except the libc" today.
+inline void drop_loader_coupled_dirs_(std::vector<manifest::Resolved>& vars) {
+    for (auto& v : vars) {
+        const bool is_preload = v.var == "LD_PRELOAD"
+                             || v.var == "DYLD_INSERT_LIBRARIES";
+        if (v.var != "LD_LIBRARY_PATH" && v.var != "DYLD_LIBRARY_PATH"
+            && !is_preload) continue;
+
+        std::vector<std::string> kept, dropped;
+        std::error_code ec;
+        // Hand-rolled split/join. `views::split | ranges::to<std::string>`
+        // reads better and makes gcc 16 fail the whole module with "Bad file
+        // data" pointing at an unrelated TU; gcc 15 compiles it. Not worth a
+        // toolchain investigation for four lines.
+        for (std::size_t pos = 0; pos <= v.value.size(); ) {
+            const auto sep = v.value.find(':', pos);
+            const auto len = (sep == std::string::npos ? v.value.size() : sep) - pos;
+            std::string entry = v.value.substr(pos, len);
+            pos = (sep == std::string::npos ? v.value.size() : sep) + 1;
+            if (entry.empty()) { if (sep == std::string::npos) break; continue; }
+
+            bool offends = false;
+            if (is_preload) {
+                offends = is_loader_coupled_soname_(
+                    fs::path(entry).filename().string());
+            } else if (fs::is_directory(entry, ec)) {
+                for (const auto& e : platform::dir_entries(entry)) {
+                    if (is_loader_coupled_soname_(e.path().filename().string())) {
+                        offends = true;
+                        break;
+                    }
+                }
+            }
+            (offends ? dropped : kept).push_back(std::move(entry));
+            if (sep == std::string::npos) break;
+        }
+        if (dropped.empty()) continue;
+
+        v.value.clear();
+        for (const auto& k : kept) {
+            if (!v.value.empty()) v.value += ':';
+            v.value += k;
+        }
+        for (const auto& d : dropped) {
+            std::println(stderr,
+                "[xlings]   {} — dropped {} (declared by {}): it holds a libc, "
+                "and this variable is inherited by host binaries running under "
+                "the host loader",
+                v.var, d,
+                v.providers.empty() ? std::string{"?"} : v.providers.front());
+        }
+    }
+    std::erase_if(vars, [](const manifest::Resolved& v) {
+        return v.value.empty() && !v.unresolved;
+    });
+}
+
 // The variables a subos exports, resolved and ready to apply.
 //
 // Empty for a subos with no declarations, which is every subos until a package
@@ -844,7 +940,16 @@ inline std::vector<manifest::Resolved> subos_env_for_(const std::string& name) {
     const auto dir = Config::subos_dir(name);
     auto doc = manifest::read_document(dir);
     if (!doc) return {};
-    return manifest::resolve(manifest::parse(*doc), placeholders_for_(dir));
+    // C2: only the providers that can take effect. A package installed at two
+    // versions keeps both sections -- the dormant one is what lets `xlings use`
+    // switch back without a reinstall -- but only the active one contributes.
+    // Which is active is xvm's answer, recorded in this same file; nothing here
+    // re-derives it. See manifest::select_effective.
+    auto info = manifest::select_effective(manifest::parse(*doc),
+                                           manifest::active_versions(*doc));
+    auto vars = manifest::resolve(info, placeholders_for_(dir));
+    drop_loader_coupled_dirs_(vars);
+    return vars;
 }
 
 // UC-2: say what was injected.
@@ -868,6 +973,35 @@ inline void report_injected_env_(const std::string& subosName,
         } else if (v.conflicted) {
             std::println(stderr, "[xlings]   {} — declared by {} packages, "
                                  "conflicting", v.var, v.providers.size());
+        }
+    }
+}
+
+// Put a subos's declared variables into THIS process's environment.
+//
+// Shared by the shell-spawn path and the sandbox path. Both hand their
+// environment to a child -- `run_shell` to a shell, the sandbox to
+// proot/bwrap, which pass it through -- so a variable only one of them sets
+// makes the same subos two different environments depending on how it was
+// entered. It did: `subos use` had LIBGL_DRIVERS_PATH and
+// __EGL_VENDOR_LIBRARY_DIRS, `subos use --sandbox` had neither, and a GL
+// program inside the sandbox fell back to whatever the host offered without
+// anything saying so.
+//
+// UC-1 -- a variable already set in this environment is the user's, and `set`
+// leaves it alone. `prepend` still contributes, since composing is what
+// prepend means.
+inline void apply_subos_env_(const std::string& name) {
+    const auto envVars = subos_env_for_(name);
+    report_injected_env_(name, envVars);
+    for (const auto& v : envVars) {
+        if (v.unresolved) continue;
+        const auto existing = utils::get_env_or_default(v.var);
+        if (v.op == manifest::OP_PREPEND) {
+            platform::set_env_variable(
+                v.var, existing.empty() ? v.value : v.value + ":" + existing);
+        } else if (existing.empty()) {
+            platform::set_env_variable(v.var, v.value);
         }
     }
 }
@@ -1063,7 +1197,16 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // M3: `cmd` non-empty switches to non-interactive single-command
     // execution — `shell -c <cmd>` instead of an interactive shell.
     // Useful for scripts and agent workflows.
-    if (sandbox) return sandbox::enter(name, stream, sandbox_backend, gpu, cmd);
+    if (sandbox) {
+        // Before entering, not inside: the sandbox module cannot import this
+        // one (this one imports it), and proot/bwrap pass our environment
+        // through to the shell anyway. The home is bound at its own absolute
+        // path, so the payload paths in these values mean the same thing on
+        // both sides of the boundary.
+        if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+        use_detail_::apply_subos_env_(name);
+        return sandbox::enter(name, stream, sandbox_backend, gpu, cmd);
+    }
     warn_storage_dormant_on_shell_(name);
 
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
@@ -1104,20 +1247,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // UC-1 -- a variable already set in this environment is the user's, and
     // `set` leaves it alone. `prepend` still contributes, since composing is
     // what prepend means.
-    {
-        const auto envVars = use_detail_::subos_env_for_(name);
-        use_detail_::report_injected_env_(name, envVars);
-        for (const auto& v : envVars) {
-            if (v.unresolved) continue;
-            const auto existing = utils::get_env_or_default(v.var);
-            if (v.op == manifest::OP_PREPEND) {
-                platform::set_env_variable(
-                    v.var, existing.empty() ? v.value : v.value + ":" + existing);
-            } else if (existing.empty()) {
-                platform::set_env_variable(v.var, v.value);
-            }
-        }
-    }
+    use_detail_::apply_subos_env_(name);
 
     nlohmann::json payload;
     payload["name"] = name;

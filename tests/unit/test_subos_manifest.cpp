@@ -343,3 +343,205 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     EXPECT_TRUE(info.envs.empty());
     EXPECT_FALSE(info.created_at.empty());
 }
+
+// ── the subos layer's one live version ───────────────────────────────
+//
+// The store holds many versions by design, each consumer freezes one into its
+// own RPATH, and the subos in between is live at exactly one. Nothing enforced
+// that middle line: installing a second version appended a second provider
+// section and BOTH contributed. Measured on a real home as mesa@25.0.7 and
+// mesa@25.0.7.1 both on __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the device
+// twice, and doctor silent -- two records agreeing on an answer the model
+// forbids.
+//
+// The fix is not that a second install unbinds the first. `install` adds to
+// the store and `use` selects; making install a second selector would be one
+// more answerer to a question that already has one. It is that activation
+// reads xvm's answer, which is recorded in the same file as the declarations.
+
+TEST(SubosActiveVersions, ReadsTheWorkspaceFromTheSameDocument) {
+    auto d = doc_with(nlohmann::json::object());
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"},
+                              {"installed", {"25.0.7", "25.0.7.1"}}};
+    d["workspace"]["nothing"] = {{"installed", {"1.0"}}};   // no active key
+
+    auto active = m::active_versions(d);
+    EXPECT_EQ(active.size(), 1u);
+    EXPECT_EQ(active.at("mesa"), "25.0.7.1");
+    EXPECT_FALSE(active.contains("nothing"));
+}
+
+TEST(SubosSelectEffective, OnlyTheActiveVersionContributes) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7.1");
+}
+
+// The dormant section is the feature, not the defect: it is what lets
+// `xlings use pkg@<older>` restore an environment without a reinstall.
+TEST(SubosSelectEffective, TheDormantSectionSurvivesInTheRecord) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    EXPECT_EQ(m::parse(d).envs.size(), 2u);   // the record keeps both
+
+    d["workspace"]["mesa"] = {{"active", "25.0.7"}};
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7");
+}
+
+// A namespaced install records `<ns>:<version>` as the active key.
+TEST(SubosSelectEffective, MatchesTheVersionTailOfANamespacedActiveKey) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "local:25.0.7"}};
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7");
+}
+
+// The direction this must fail in. Filtering on a record that turns out to be
+// absent would silently delete a package's whole environment -- the same
+// failure this file exists to prevent, arrived at from the other side.
+TEST(SubosSelectEffective, NoActiveRecordKeepsEverything) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    // no workspace entry for mesa at all
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    EXPECT_EQ(eff.envs.size(), 2u);
+}
+
+TEST(SubosDuplicateBindings, OneVersionPerPackageIsNotADuplicate) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7", {"V", "prepend", "a"});
+    m::add_env(d, "fontconfig@2.15.0", {"W", "prepend", "b"});
+
+    EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
+}
+
+TEST(SubosDuplicateBindings, TwoVersionsOfOnePackageAreFound) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+    m::add_env(d, "fontconfig@2.15.0", {"W", "prepend", "c"});
+
+    auto dups = m::duplicate_bindings(m::parse(d));
+    ASSERT_EQ(dups.size(), 1u);
+    EXPECT_EQ(dups[0].name, "mesa");
+    ASSERT_EQ(dups[0].bindings.size(), 2u);
+    EXPECT_EQ(dups[0].bindings[0], "mesa@25.0.7");
+    EXPECT_EQ(dups[0].bindings[1], "mesa@25.0.7.1");
+}
+
+// A package whose name is a prefix of another's must not merge with it.
+// "mesa" and "mesa-utils" are two packages; a substring match would report a
+// duplicate that does not exist, and a repair would unbind a live package.
+TEST(SubosDuplicateBindings, NamesAreComparedWhole) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",       {"V", "prepend", "a"});
+    m::add_env(d, "mesa-utils@9.0.0",  {"W", "prepend", "b"});
+
+    EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
+}
+
+// What doctor reports is the SUBSET with no active version -- the state where
+// every provider contributes and nothing in the home can say which was meant.
+// Reporting every duplicate would train users to delete the dormant sections
+// that make `xlings use` work.
+TEST(SubosContestedBindings, ADuplicateWithAnActiveVersionIsNotContested) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    EXPECT_TRUE(m::contested_bindings(m::parse(d), m::active_versions(d)).empty());
+}
+
+TEST(SubosContestedBindings, ADuplicateWithNoActiveVersionIsContested) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+
+    auto contested = m::contested_bindings(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(contested.size(), 1u);
+    EXPECT_EQ(contested[0].name, "mesa");
+}
+
+// ── privileged declarations (B5) ─────────────────────────────────────
+//
+// Default-deny by variable NAME. Listing the dangerous variables instead would
+// be a hand-written list of what we happened to think of -- the anti-pattern
+// R7 names, and the one that already cost five missing entries in
+// nvidia-gl-host-link's dependency table.
+
+TEST(SubosPrivilegedEnv, TheLoaderVariablesArePrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${pkgdir}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_PRELOAD", "${pkgdir}/lib/libx.so"));
+}
+
+// These bypass the dynamic loader entirely -- libglvnd and mesa read them
+// themselves -- so no RPATH mechanism can reach them and the loader-only guard
+// never saw them. Measured: a HOST binary linked against the host's libEGL
+// drops from the NVIDIA GPU to llvmpipe under these declarations, loading our
+// libm and libstdc++ into a process running on the host's libc.
+TEST(SubosPrivilegedEnv, VariablesLibrariesReadThemselvesAreAlsoPrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("__EGL_VENDOR_LIBRARY_DIRS",
+                                     "${pkgdir}/share/glvnd/egl_vendor.d"));
+    EXPECT_TRUE(m::is_privileged_env("LIBGL_DRIVERS_PATH", "${pkgdir}/lib/dri"));
+}
+
+// The point of default-deny: a variable nobody has classified reads as
+// privileged. If this test ever needs changing, someone has decided a new
+// variable is safe -- which is a decision, and belongs in names_only_data.
+TEST(SubosPrivilegedEnv, AnUnclassifiedVariableReadsAsPrivileged) {
+    EXPECT_TRUE(m::is_privileged_env("SOME_FUTURE_PLUGIN_PATH",
+                                     "${pkgdir}/lib/plugins"));
+}
+
+// AD-3: the line is "causes code to be loaded" vs "causes data to be found",
+// not "is it process-global". subos supplying a default that the user can
+// override is how Linux works.
+TEST(SubosPrivilegedEnv, DataVariablesAreNotPrivileged) {
+    EXPECT_FALSE(m::is_privileged_env("XDG_DATA_DIRS", "${pkgdir}/share"));
+    EXPECT_FALSE(m::is_privileged_env("MANPATH", "${pkgdir}/share/man"));
+    EXPECT_FALSE(m::is_privileged_env("PKG_CONFIG_PATH", "${pkgdir}/lib/pkgconfig"));
+}
+
+// The same hazard in its other spelling. The subos sysroot is a VIEW onto our
+// payloads, made of symlinks into them, so a directory under it on a loader
+// search path delivers our libraries just as surely as the store path does.
+// Checking only ${pkgdir} would let one hazard through under two names -- the
+// shape this whole review is about.
+TEST(SubosPrivilegedEnv, TheSubosViewCountsAsOurPayload) {
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${subosdir}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${xlings_home}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH",
+                                     "/home/u/.xlings/data/xpkgs/xim-x-a/1/lib"));
+}
+
+// PATH is a third category: it does not inject code into a running process, it
+// decides which executable runs. That is R6/AD-1's business, not this guard's.
+TEST(SubosPrivilegedEnv, PathIsGovernedElsewhere) {
+    EXPECT_FALSE(m::is_privileged_env("PATH", "${pkgdir}/bin"));
+}
+
+// A value pointing outside our store cannot put OUR code anywhere. The host's
+// own driver directory on LD_LIBRARY_PATH is the case that has to stay
+// available: it is the one thing an interposer cannot cover, because the
+// driver dlopen's its siblings by bare SONAME at runtime.
+TEST(SubosPrivilegedEnv, AValueOutsideOurStoreIsNotPrivileged) {
+    EXPECT_FALSE(m::is_privileged_env("LD_LIBRARY_PATH",
+                                      "/usr/lib/x86_64-linux-gnu"));
+}

@@ -190,16 +190,55 @@ import os, pathlib, sys
 src, dst = sys.argv[1].rstrip('/'), sys.argv[2].rstrip('/')
 root = pathlib.Path(dst)
 targets = [root / '.xlings.json'] + sorted(root.glob('subos/*/.xlings.json'))
-n = 0
-for path in targets:
-    if not path.is_file() or path.is_symlink():
+
+# The index cache maps every package name to the ABSOLUTE path of its recipe.
+# Left alone it points at the real home, so the slice installs packages by
+# reading the real home's recipes -- and a recipe change under test is silently
+# not the one being tested. Measured: editing glibc.lua in the slice's own
+# data/xim-pkgindex changed nothing at all, twice, with no diagnostic; the
+# install kept running the version in ~/.xlings.
+#
+# That is the trap this whole tool exists to avoid, one level deeper than the
+# payload store: an experiment that reports on a home other than the one it
+# claims to. Enumerated per directory rather than by a `data/**` glob, because
+# `data/xpkgs` is tens of gigabytes and holds JSON belonging to payloads, which
+# must keep whatever paths they were installed with.
+for d in ('', 'data', 'data/xim-pkgindex', 'data/xim-index-repos'):
+    base = root / d if d else root
+    if not base.is_dir():
         continue
+    targets += sorted(p for p in base.glob('*.json') if p.is_file())
+    targets += sorted(p for p in base.glob('.*.json') if p.is_file())
+
+n = 0
+seen = set()
+for path in targets:
+    if path in seen or not path.is_file() or path.is_symlink():
+        continue
+    seen.add(path)
     text = path.read_text(encoding='utf-8')
     if src not in text:
         continue
     path.write_text(text.replace(src, dst), encoding='utf-8')
     n += 1
 print(f"    rewrote {n} state file(s)")
+
+# Assert it, rather than trust the list above. A new state file that nobody
+# added to that list would otherwise keep pointing at the real home, and the
+# only symptom would be a measurement that quietly describes the wrong home.
+missed = []
+for d in ('', 'data', 'data/xim-pkgindex', 'data/xim-index-repos'):
+    base = root / d if d else root
+    if not base.is_dir():
+        continue
+    for path in list(base.glob('*.json')) + list(base.glob('.*.json')):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if src in path.read_text(encoding='utf-8', errors='replace'):
+            missed.append(str(path))
+if missed:
+    raise SystemExit("slice-real-home: these still name the real home after "
+                     "repointing: " + ", ".join(missed))
 
 # The sysroot is made of symlinks INTO the payload store, and `cp -a` copies a
 # symlink's text verbatim -- so every one of them still points at the real

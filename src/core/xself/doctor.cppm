@@ -159,6 +159,12 @@ enum class FindingKind {
     // message naming neither package nor version. Installs cannot produce it
     // any more; this finds the ones already on disk.
     LoaderLibcSplit,
+    // One package bound at two versions in the same subos. The store holds
+    // many versions by design; the subos in between is the layer that is
+    // supposed to hold exactly one, and until now nothing enforced it. Both
+    // versions contribute their env declarations, so a GL stack bound twice
+    // enumerates its device twice.
+    SubosDoubleBinding,
 };
 
 enum class FindingLevel {
@@ -498,7 +504,14 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     }
 
     // D3/D4 — over the resolved set, so both see exactly what activation will.
-    const auto resolved = mf::resolve(info, mf::Placeholders{
+    //
+    // select_effective first, for the same reason: a dormant provider (a second
+    // version whose sibling is the active one) contributes nothing, so
+    // reporting that it "would export an unexpanded path" describes an export
+    // that will not happen. D2 above deliberately stays over the FULL set --
+    // "recorded here but not installed here" is true of a dormant section too.
+    const auto effective = mf::select_effective(info, mf::active_versions(*doc));
+    const auto resolved = mf::resolve(effective, mf::Placeholders{
         .subosdir    = subosDir,
         .home        = platform::get_home_dir(),
         .xlings_home = Config::paths().homeDir,
@@ -561,6 +574,55 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 .detail  = std::format("{} is claimed by {}", v.var, names),
             });
         }
+    }
+
+    // D6 — a package bound at several versions with nothing able to say which.
+    //
+    // Not every duplicate: two versions where one is active is ordinary, and
+    // the dormant section is exactly what lets `xlings use pkg@<older>` restore
+    // an environment without reinstalling. Activation already drops it
+    // (manifest::select_effective).
+    //
+    // What is reportable is the subset with NO active version -- `xvm.add(name)`
+    // with no version registers a root without one, which is what mesa,
+    // libglvnd and nvidia-gl-host-link do. For those every provider
+    // contributes, so a second version really does export every variable twice.
+    // That is the state that enumerated one GPU as two.
+    //
+    // The predicate is mf::contested_bindings, and --fix calls that same
+    // function rather than an equivalent one written here. Three report/repair
+    // pairs in this repo have drifted, each showing up as a finding that
+    // repairing does not clear.
+    const auto activeInSubos = mf::active_versions(*doc);
+    for (const auto& dup : mf::contested_bindings(info, activeInSubos)) {
+        std::string names;
+        for (const auto& b : dup.bindings) {
+            if (!names.empty()) names += ", ";
+            names += b;
+        }
+        out.push_back({
+            .kind    = FindingKind::SubosDoubleBinding,
+            // Error: the observable effect -- a device enumerated twice, a
+            // search path with two of everything -- is a wrong result, not a
+            // cosmetic one.
+            .level   = FindingLevel::Error,
+            .target  = subosName,
+            .version = dup.name,
+            .detail  = std::format(
+                "'{}' is bound {} times in subos '{}' ({}) and has no active "
+                "version, so every one of them contributes",
+                dup.name, dup.bindings.size(), subosName, names),
+            // Naming the versions in the remedy: the user is otherwise left
+            // choosing between two strings with nothing to tell them apart.
+            .remedy  = std::format("xlings use {}@<one of: {}>", dup.name, [&] {
+                std::string vs;
+                for (const auto& b : dup.bindings) {
+                    if (!vs.empty()) vs += ", ";
+                    vs += std::string(mf::binding_version(b));
+                }
+                return vs;
+            }()),
+        });
     }
 
     // D5 — the declared runtime is not installed here.
@@ -1526,6 +1588,13 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         for (const auto& f : scan.findings)
             if (f.kind == FindingKind::SubosEnvOrphan) orphans.push_back(f.version);
 
+        // A contested binding is deliberately NOT repaired here. It is reported
+        // precisely because nothing can say which version was meant -- the
+        // package has no active version -- and picking the highest, or the
+        // newest on disk, would be this codebase's recurring defect rather than
+        // a repair: a second answerer invented at the read end. Its remedy is
+        // `xlings use`, which makes the choice a decision someone took.
+
         if (wantsBlock || !orphans.empty()) {
             auto doc = mf::read_document(p.subosDir);
             nlohmann::json document = doc ? *doc : nlohmann::json::object();
@@ -1555,6 +1624,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     note(glyph::mark(glyph::bullet, "subos env dropped"),
                          std::format("{} is not installed here", binding));
                 }
+
                 if (changed) {
                     try {
                         platform::write_string_to_file(
@@ -2147,6 +2217,16 @@ Counts count_(const Scan& scan) {
                 // every script that wraps it.
                 ++c.broken;
                 break;
+            case FindingKind::SubosDoubleBinding:
+                // Counted for the same reason, and for a second one: `healed`
+                // is computed as before-minus-after over this count, so an
+                // uncounted finding that --fix repairs reports "healed 0" --
+                // repair and report disagreeing about whether anything
+                // happened. Note that the other Subos* findings are NOT
+                // counted here today, which is a pre-existing instance of the
+                // same gap; see task #53.
+                ++c.broken;
+                break;
         }
     }
     return c;
@@ -2346,6 +2426,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::SubosEnvOrphan:
                 add(glyph::mark(glyph::failed, "subos env orphan"), f.detail);
+                break;
+            case FindingKind::SubosDoubleBinding:
+                // Not collapsed into a count: which versions are bound is the
+                // finding, and there is at most a handful.
+                add(glyph::mark(glyph::failed, "subos double binding"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             case FindingKind::SubosEnvUnresolved:
                 add(glyph::mark(glyph::failed, "subos env unresolved"), f.detail);

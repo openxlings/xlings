@@ -5,6 +5,7 @@ export module xlings.core.elf_same_source;
 import std;
 import xlings.platform;
 import xlings.core.log;
+import xlings.core.version_order;
 
 // A binary's loader and its libc must come from the same payload.
 //
@@ -106,6 +107,85 @@ inline std::string describe(const Finding& f) {
         f.binary, f.provider, f.interpPayload, f.rpathPayload);
 }
 
+// The store root (`.../xpkgs`) containing a path, or empty.
+//
+// Derived from the scanned directory rather than from XLINGS_HOME: the two
+// agree in the default configuration and diverge exactly when it matters --
+// a shim rewrites XLINGS_HOME to the home that owns it, so a helper invoked
+// through one sees the real home rather than the isolated one under test.
+// The directory being scanned cannot lie about which store it is in.
+inline std::string store_root_of(std::string_view p) {
+    const auto marker = std::string("/xpkgs/");
+    auto pos = p.rfind(marker);
+    if (pos == std::string_view::npos) return {};
+    return std::string(p.substr(0, pos + marker.size() - 1));
+}
+
+// The patchelf that stamped these fields, resolved from the payload.
+//
+// R6 (see .agents/docs/2026-08-06-subos-architecture-proposal.md §1.5): when
+// xlings itself needs a tool it resolves the payload, never the view. This
+// used to be `command -v patchelf`, which inside a subos session hits one of
+// our shims -- re-entering xlings and anchoring to whichever home owns it --
+// and outside one hits whatever `/usr/bin/patchelf` the machine happens to
+// have. patchelf versions differ in how they grow the dynamic segment and in
+// `--force-rpath` semantics, so a reader that is not the writer can report a
+// mismatch that does not exist, or miss one that does.
+//
+// Highest installed version, which is the same choice libxpkg's resolver
+// makes for an unpinned dependency -- these two have to agree, and agreeing by
+// construction is the only way that holds.
+//
+// Returns empty when there is no payload and no host tool. The caller treats
+// that as "unverifiable", not as "clean".
+inline std::string locate_patchelf(const std::filesystem::path& scanned) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    auto store = store_root_of(scanned.string());
+    if (!store.empty()) {
+        std::string bestVer, bestPath;
+        for (auto it = fs::directory_iterator(fs::path(store), ec);
+             !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            const auto name = it->path().filename().string();
+            if (name != "patchelf" && !name.ends_with("-x-patchelf")) continue;
+            std::error_code vec;
+            for (auto vit = fs::directory_iterator(it->path(), vec);
+                 !vec && vit != fs::directory_iterator(); vit.increment(vec)) {
+                // A separate error_code: sharing the outer loop's would let a
+                // single unreadable entry set it and end the iteration, which
+                // reads as "no payload here" and silently falls through to the
+                // host tool.
+                std::error_code fec;
+                auto candidate = vit->path() / "bin" / "patchelf";
+                if (!fs::is_regular_file(candidate, fec)) continue;
+                const auto ver = vit->path().filename().string();
+                if (bestVer.empty()
+                    || version_order::compare(ver, bestVer) > 0) {
+                    bestVer = ver;
+                    bestPath = candidate.string();
+                }
+            }
+        }
+        if (!bestPath.empty()) return bestPath;
+    }
+
+    // No payload in this store. Fall back so that an older home stays
+    // verifiable, and say so -- landing here means the fields are being read
+    // by a tool that did not write them.
+    auto [rc, out] = platform::run_command_capture(
+        "command -v patchelf 2>/dev/null");
+    if (rc != 0) return {};
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+        out.pop_back();
+    }
+    if (!out.empty()) {
+        log::debug("elfcheck: no patchelf payload under {}; reading with {}",
+                   store.empty() ? scanned.string() : store, out);
+    }
+    return out;
+}
+
 // Every ELF under DIR whose loader and libc come from different payloads.
 //
 // Reads the two fields with patchelf, which is the same tool that wrote them
@@ -122,23 +202,19 @@ scan_payload(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return out;
 
-    // `command -v`, the same way the rest of this file locates tools. PATH
-    // already has the subos bin dir prepended by the caller.
     auto trim = [](std::string v) {
         while (!v.empty() && (v.back() == '\n' || v.back() == '\r')) v.pop_back();
         return v;
     };
-    auto [rcWhich, whichOut] =
-        platform::run_command_capture("command -v patchelf 2>/dev/null");
-    if (rcWhich != 0) return out;
-    const auto patchelf = trim(whichOut);
+    const auto patchelf = locate_patchelf(dir);
     if (patchelf.empty()) return out;
 
-    // run_command_capture merges stderr into stdout, and `patchelf` here is
-    // usually an xlings shim that prints its own advisory lines. Taking the
-    // whole capture as the value put a log message where a path belongs. The
-    // value is the last line that looks like one; everything a shim emits is
-    // bracketed log output, and it comes first.
+    // run_command_capture merges stderr into stdout. On the payload path
+    // `patchelf` is the real binary and prints only its answer; on the
+    // fallback path it can still be one of our shims, which emit their own
+    // bracketed advisory lines first, and taking the whole capture as the
+    // value put a log message where a path belongs. The value is therefore the
+    // last line that looks like one -- correct for both.
     auto run = [&](const std::string& args) -> std::string {
         auto [rc, o] = platform::run_command_capture(
             std::format("\"{}\" {}", patchelf, args));

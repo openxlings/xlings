@@ -26,6 +26,7 @@ import xlings.core.utils;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.xim.compatibility;
 import xlings.core.subos.gpu;
+import xlings.core.xvm.shim;   // resolve_owner_home: reject another home's shim
 
 // Runtime isolation for a subos: proot/bwrap backends, storage images, GPU
 // passthrough, and entering an isolated session.
@@ -149,23 +150,61 @@ inline constexpr std::string_view kEtcNsswitch =
 // files that just chain into the host xlings profile; user can edit
 // these to add their own customizations later (they're sandbox-private
 // so they won't pollute host).
+// $XLINGS_HOME, not $HOME/.xlings.
+//
+// The sandbox already carries XLINGS_HOME in, correctly. These rc files did
+// not read it, so a subos living in a non-default home sourced the DEFAULT
+// home's profile and came up with `PATH[0]=$HOME/.xlings/subos/<name>/bin` —
+// a directory that does not exist there. The shell starts fine and the first
+// command reports `cannot execute: required file not found`, naming a path
+// the user never asked for.
+//
+// Two readers of "which home is this", one taking the environment and one
+// assuming the default. They agree for everybody using ~/.xlings, which is
+// why it went unnoticed.
 inline constexpr std::string_view kSandboxBashrc =
-    "# xlings sandbox bashrc — chains to host xlings profile so PATH /\n"
-    "# prompt pill / XLINGS_BIN are set up. Edit this file to add your\n"
+    "# xlings sandbox bashrc — chains to the xlings profile of THIS home so\n"
+    "# PATH / prompt pill / XLINGS_BIN are set up. Edit this file to add your\n"
     "# own customizations (it's sandbox-private at <subos>/home/<user>).\n"
-    "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
-    "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
-    "fi\n";
+    "_xlings_profile=\"${XLINGS_HOME:-$HOME/.xlings}/config/shell/xlings-profile.sh\"\n"
+    "if [ -r \"$_xlings_profile\" ]; then\n"
+    "    . \"$_xlings_profile\"\n"
+    "fi\n"
+    "unset _xlings_profile\n";
 inline constexpr std::string_view kSandboxProfile =
     "# xlings sandbox profile (sourced by sh / bash login shells)\n"
     "if [ -r \"$HOME/.bashrc\" ]; then\n"
     "    . \"$HOME/.bashrc\"\n"
     "fi\n";
 inline constexpr std::string_view kSandboxFishConfig =
-    "# xlings sandbox fish config — chains to host xlings profile\n"
-    "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
-    "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
+    "# xlings sandbox fish config — chains to the xlings profile of THIS home\n"
+    "set -l _xlings_home $XLINGS_HOME\n"
+    "test -n \"$_xlings_home\"; or set _xlings_home \"$HOME/.xlings\"\n"
+    "if test -r \"$_xlings_home/config/shell/xlings-profile.fish\"\n"
+    "    source \"$_xlings_home/config/shell/xlings-profile.fish\"\n"
     "end\n";
+
+
+// Every shell's rc for one sandbox home, written from ONE set of templates.
+//
+// These files existed in three places with three copies of the same text, and
+// the copies drifted: fixing the profile path in one left the other two
+// pointing at `$HOME/.xlings`, so a subos in a non-default home still sourced
+// the wrong profile. Duplication was not the bug, but it is what made the bug
+// survive a fix.
+inline void write_sandbox_rc_(const fs::path& home_dir) {
+    auto try_write = [](const fs::path& path, std::string_view body) {
+        if (fs::exists(path)) return;   // never clobber user edits
+        platform::write_string_to_file(path.string(), std::string(body));
+    };
+    fs::create_directories(home_dir);
+    try_write(home_dir / ".bashrc",  kSandboxBashrc);
+    try_write(home_dir / ".zshrc",   kSandboxBashrc);
+    try_write(home_dir / ".profile", kSandboxProfile);
+    auto fish_dir = home_dir / ".config" / "fish";
+    fs::create_directories(fish_dir);
+    try_write(fish_dir / "config.fish", kSandboxFishConfig);
+}
 
 // Initialize the sandbox-specific dirs / templates inside an existing
 // subos. Idempotent: only writes files that don't yet exist, so a
@@ -231,8 +270,7 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
 
     // Seed shell rc files so the xlings profile gets sourced (PATH +
     // prompt pill). Sandbox-private; user can edit freely.
-    try_write(user_home / ".bashrc", kSandboxBashrc);
-    try_write(user_home / ".profile", kSandboxProfile);
+    write_sandbox_rc_(user_home);
     auto fish_config_dir = user_home / ".config" / "fish";
     fs::create_directories(fish_config_dir);
     try_write(fish_config_dir / "config.fish", kSandboxFishConfig);
@@ -306,11 +344,14 @@ export int unmount_image_(const fs::path& mountpoint) {
 
 
 // Probe order for the proot binary:
-//   1. ~/.xlings/data/xpkgs/xim-x-proot/<active>/bin/proot   (xpkg-managed,
-//      future once xim:proot ships)
-//   2. ~/.xlings/runtimedir/proot                            (auto-fetch
-//      cache, populated on first sandbox use)
-//   3. PATH-resolved `proot`                                 (system pkg)
+//   1. <home>/data/xpkgs/xim-x-proot/<ver>/bin/proot   the PAYLOAD
+//   2. <home>/runtimedir/proot                         auto-fetch cache
+//   3. /usr/bin/proot, /usr/local/bin/proot            the HOST (reported)
+//
+// PATH is deliberately absent -- see (3) below. The same rule, in the same
+// shape, as libxpkg's elfpatch tool lookup: payload, then a named fallback
+// that says so. Both implement R6 (internal consumers bind the payload, not
+// the view), .agents/docs/2026-08-06-subos-architecture-proposal.md §1.5.
 //
 // Returns the path to a usable proot, or unexpected with a hint string.
 std::expected<fs::path, std::string>
@@ -352,27 +393,50 @@ locate_proot_(const fs::path& home_dir) {
     auto runtime_proot = home_dir / "runtimedir" / "proot";
     if (fs::is_regular_file(runtime_proot, ec)) return runtime_proot;
 
-    // (3) PATH-resolved
-    if (auto* path_env = std::getenv("PATH"); path_env && *path_env) {
-        std::string_view pv = path_env;
-        std::size_t start = 0;
-        while (start <= pv.size()) {
-            auto end = pv.find(':', start);
-            auto seg = pv.substr(start, end == std::string_view::npos
-                                        ? pv.size() - start : end - start);
-            if (!seg.empty()) {
-                auto candidate = fs::path(seg) / "proot";
-                if (fs::is_regular_file(candidate, ec)) return candidate;
-            }
-            if (end == std::string_view::npos) break;
-            start = end + 1;
+    // (3) The host's proot, at the two paths a distribution puts it.
+    //
+    // There is no PATH step. An earlier version walked PATH and rejected the
+    // candidates that turned out to be xlings shims; that fixed the symptom
+    // and left the cause. By R6 the whole step is wrong for internal use: PATH
+    // is a *view*, it is what the user selected, and letting it decide which
+    // proot runs makes the sandbox's own identity depend on the environment
+    // the sandbox was launched from. A shim on PATH is the worst case -- it
+    // re-enters xlings, anchors to the home that owns it, and re-exports
+    // XLINGS_HOME to match, so an isolated home with no backend installed
+    // would silently run against the developer's real home, and every
+    // measurement taken inside would be of the wrong home while looking
+    // exactly like a measurement of the right one.
+    //
+    // These two paths are different in kind: they are the host's, they are
+    // named here rather than discovered, and using one is reported. Per §2.8
+    // of the architecture proposal, depending on the host is allowed when it
+    // is DECLARED -- what is not allowed is depending on it by accident.
+    for (const auto* p : {"/usr/bin/proot", "/usr/local/bin/proot"}) {
+        auto candidate = fs::path(p);
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        // Defensive: a home that installed itself under /usr/local would put
+        // a shim on one of these paths, and it is still a shim.
+        if (auto owner = xvm::resolve_owner_home(candidate)) {
+            log::debug("skipping {}: an xlings shim owned by {}, not the "
+                       "host's proot", candidate.string(), owner->string());
+            continue;
         }
+        log::warn("using the host's proot ({}) -- no proot payload in {}. "
+                  "Run `xlings install proot` to make this deterministic.",
+                  candidate.string(), home_dir.string());
+        return candidate;
     }
 
-    return std::unexpected(
-        "proot not found. Install via your package manager "
-        "(e.g. `sudo apt install proot` / `sudo dnf install proot`) "
-        "or place a proot binary at ~/.xlings/runtimedir/proot");
+    // Naming the home rather than "~/.xlings": with an isolated XLINGS_HOME
+    // the tilde form points somewhere the caller is not using, and a
+    // reader who follows it lands on the very home this search excluded.
+    return std::unexpected(std::format(
+        "proot not found in {}. Run `xlings install proot`, or place a proot "
+        "binary at {}/runtimedir/proot. The host's proot at /usr/bin/proot is "
+        "used when present (`sudo apt install proot`), but PATH is not "
+        "searched: a `proot` on PATH may be an xlings shim, and running it "
+        "would move the whole session to whichever home owns it.",
+        home_dir.string(), home_dir.string()));
 }
 
 // ── Unified bind list (shared by proot + bwrap) ──────────────────────
@@ -439,8 +503,19 @@ sandbox_binds_(const fs::path& subos_dir,
     }
     // tmpfs: home and tmp handled by bwrap --tmpfs (no bind needed)
 
-    // xlings shared — always bound regardless of storage mode
-    binds.push_back({host_xlings_home.string(), user_home + "/.xlings", false});
+    // xlings shared — always bound regardless of storage mode, and always
+    // at its OWN absolute path.
+    //
+    // xvm alias targets, RPATH and INTERP are absolute host paths baked at
+    // install time, and nothing rewrites them on the way in; the home has
+    // to answer to the same spelling in here that it does outside. Mapping
+    // it to <user_home>/.xlings instead strands all of them, and mapping it
+    // to both makes one directory reachable by two real paths — which a
+    // bind mount does not collapse, so canonicalising does not save you and
+    // a shim ends up reporting a conflict with itself. For the default home
+    // this bind IS <user_home>/.xlings; that coincidence is the only reason
+    // the remapped form ever appeared to work.
+    binds.push_back({host_xlings_home.string(), host_xlings_home.string(), false});
 
     // ── Sandbox: NSS templates ──
     binds.push_back({(etc / "passwd").string(), "/etc/passwd", false});
@@ -803,30 +878,7 @@ export int enter(const std::string& name, EventStream& stream,
     if (storage == StorageMode::Shared) {
         auto user_home_dir = subos_dir / "home" / user;
         fs::create_directories(user_home_dir);
-        auto try_write = [](const fs::path& path, std::string_view body) {
-            if (fs::exists(path)) return;
-            platform::write_string_to_file(path.string(), std::string(body));
-        };
-        try_write(user_home_dir / ".bashrc",
-            "# xlings sandbox bashrc\n"
-            "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
-            "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
-            "fi\n");
-        try_write(user_home_dir / ".profile",
-            "# xlings sandbox profile\n"
-            "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
-        auto fish_dir = user_home_dir / ".config" / "fish";
-        fs::create_directories(fish_dir);
-        try_write(fish_dir / "config.fish",
-            "# xlings sandbox fish config\n"
-            "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
-            "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
-            "end\n");
-        try_write(user_home_dir / ".zshrc",
-            "# xlings sandbox zshrc\n"
-            "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
-            "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
-            "fi\n");
+        write_sandbox_rc_(user_home_dir);
     }
 #endif
 
@@ -890,30 +942,7 @@ export int enter(const std::string& name, EventStream& stream,
         if (storage == StorageMode::Image) {
             auto mp_home = image_mountpoint / user;
             fs::create_directories(mp_home);
-            auto try_write = [](const fs::path& path, std::string_view body) {
-                if (fs::exists(path)) return;
-                platform::write_string_to_file(path.string(), std::string(body));
-            };
-            try_write(mp_home / ".bashrc",
-                "# xlings sandbox bashrc\n"
-                "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
-                "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
-                "fi\n");
-            try_write(mp_home / ".profile",
-                "# xlings sandbox profile\n"
-                "if [ -r \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n");
-            auto fish_dir = mp_home / ".config" / "fish";
-            fs::create_directories(fish_dir);
-            try_write(fish_dir / "config.fish",
-                "# xlings sandbox fish config\n"
-                "if test -r \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
-                "    source \"$HOME/.xlings/config/shell/xlings-profile.fish\"\n"
-                "end\n");
-            try_write(mp_home / ".zshrc",
-                "# xlings sandbox zshrc\n"
-                "if [ -r \"$HOME/.xlings/config/shell/xlings-profile.sh\" ]; then\n"
-                "    . \"$HOME/.xlings/config/shell/xlings-profile.sh\"\n"
-                "fi\n");
+            write_sandbox_rc_(mp_home);
         }
     }
 
@@ -950,6 +979,7 @@ export int enter(const std::string& name, EventStream& stream,
                 .code = ErrorCode::NotFound,
                 .message = std::move(bin).error(),
                 .recoverable = false,
+                .hint = "run: xlings install proot",
             });
             return 1;
         }
@@ -1041,9 +1071,18 @@ export int enter(const std::string& name, EventStream& stream,
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
     platform::set_env_variable("HOME", user_home);
+    // Pin the home explicitly rather than relying on inheritance: it is
+    // reachable at its own absolute path in here (see sandbox_binds_), and
+    // every path baked at install time — xvm targets, RPATH, INTERP —
+    // assumes exactly that spelling.
+    platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
+    // Same spelling as XLINGS_HOME above. A shim decides which home owns it
+    // by comparing the path it was invoked through against XLINGS_HOME as
+    // strings; spelling the home two ways here makes it warn about a
+    // conflict with itself.
     platform::set_env_variable("PATH", std::format(
-        "{}/.xlings/subos/{}/bin:{}/.xlings/bin:/usr/local/bin:/usr/bin:/bin",
-        user_home, name, user_home));
+        "{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
+        p.homeDir.string(), name));
     // bwrap `sh -i` prints prompts/job-control warnings into piped CI
     // commands; keep `-i` only for real terminal sessions.
     const bool interactive_shell = ::isatty(STDIN_FILENO) == 1;
