@@ -447,6 +447,56 @@ bool add_env(nlohmann::json& doc, std::string_view binding, const EnvDecl& decl)
     return true;
 }
 
+// Replace a provider's whole section with what it declared THIS run.
+//
+// add_env alone cannot express this, and the gap is not theoretical. Its
+// contract is idempotence per (var, op, value) triple, which holds a re-run of
+// the SAME declarations steady -- and silently accumulates two generations when
+// the recipe's declarations CHANGE. Measured while moving mesa's discovery paths
+// from `${pkgdir}` to `${subosdir}`: the section ended up holding both, so
+// LIBGL_DRIVERS_PATH resolved to the new subos directory followed by a stale
+// payload path, and __EGL_VENDOR_LIBRARY_DIRS listed the shared vendor directory
+// twice. Nothing reported it, and once that payload is collected the stale entry
+// is a directory the loader walks past.
+//
+// A recipe is the sole owner of its binding's section -- that is the ownership
+// rule the whole `envs` design rests on, and the reason uninstall needs no
+// cleanup code in the recipe. Owning it means being able to REMOVE a
+// declaration, not only add one.
+//
+// Returns whether the document changed, so a caller can skip a write. Order is
+// preserved as declared: `prepend` composition depends on it.
+bool set_env_section(nlohmann::json& doc, std::string_view binding,
+                     const std::vector<EnvDecl>& decls) {
+    auto& b = doc[std::string(BLOCK)];
+    if (!b.is_object()) b = nlohmann::json::object();
+    if (!b.contains("envs") || !b["envs"].is_object())
+        b["envs"] = nlohmann::json::object();
+
+    auto next = nlohmann::json::array();
+    for (const auto& d : decls) {
+        // Within one run a package may legitimately compute the same
+        // declaration twice (a shared helper called from two places); recording
+        // it twice would double the value in the resolved variable.
+        bool dup = false;
+        for (const auto& existing : next) {
+            if (existing.value("var", std::string{}) == d.var
+                && existing.value("op", std::string{}) == d.op
+                && existing.value("value", std::string{}) == d.value) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup)
+            next.push_back({{"var", d.var}, {"op", d.op}, {"value", d.value}});
+    }
+
+    auto& section = b["envs"][std::string(binding)];
+    if (section == next) return false;
+    section = std::move(next);
+    return true;
+}
+
 // Drop a provider's whole section — the uninstall counterpart of add_env. The
 // package never writes cleanup code for this; ownership is by binding, so
 // removing the key removes exactly what that package added and nothing else.
@@ -668,7 +718,21 @@ std::vector<Resolved> resolve(const Info& info, const Placeholders& ph) {
             r.op = std::string(OP_PREPEND);
             // Later provider nearer the front, matching "the newest thing
             // installed is found first".
+            //
+            // De-duplicated, because two providers naming the same directory is
+            // not a mistake to preserve -- it is the intended arrangement. mesa
+            // and nvidia-gl-host-link both declare the SHARED glvnd vendor
+            // directory precisely so that either package being absent does not
+            // remove it for the other, and joining them verbatim put that path
+            // on __EGL_VENDOR_LIBRARY_DIRS twice.
+            //
+            // The shim side already did this (xvm/shim.cppm
+            // merge_shim_env_value, added when a doubled GIT_SSL_CAINFO broke
+            // every HTTPS git transport). Two answers to one question; this is
+            // the second one agreeing with the first.
+            std::set<std::string> seen;
             for (auto it = a.prepends.rbegin(); it != a.prepends.rend(); ++it) {
+                if (!seen.insert(*it).second) continue;
                 if (!r.value.empty()) r.value += ':';
                 r.value += *it;
             }

@@ -1559,6 +1559,10 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     }
 
     bool changed = false;
+    // Collected per binding first, so each section can be written as a whole.
+    // std::map, not unordered: the write order of sections shows up in the file
+    // a user reads and in diffs of it.
+    std::map<std::string, std::vector<mf::EnvDecl>> perBinding;
     for (const auto* op : declarations) {
         if (!mf::is_binding(op->binding)) {
             log::error("[xim] {}@{} declared env '{}' with binding '{}' "
@@ -1592,8 +1596,33 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
                       "this only where RPATH cannot reach (a library that opens "
                       "its plugins itself), and say why in the recipe.");
         }
-        changed |= mf::add_env(*doc, op->binding,
-                               {.var = op->var, .op = op->mode, .value = op->value});
+        perBinding[op->binding].push_back(
+            {.var = op->var, .op = op->mode, .value = op->value});
+    }
+
+    // Written as a REPLACEMENT of each binding's section, not a union with it.
+    //
+    // `add_env` is idempotent per (var, op, value) triple, which keeps a re-run
+    // of the same declarations steady and silently accumulates a second
+    // generation when the recipe's declarations CHANGE. Measured while moving
+    // mesa's discovery paths from `${pkgdir}` to `${subosdir}`: the section held
+    // both, so LIBGL_DRIVERS_PATH resolved to the new subos directory followed
+    // by a stale payload path and __EGL_VENDOR_LIBRARY_DIRS listed one directory
+    // twice -- with nothing reporting it, and the stale entry becoming a dead
+    // directory as soon as that payload is collected.
+    //
+    // Only bindings that declared something THIS run are touched. A binding
+    // belonging to another package keeps its section; that is the same
+    // ownership-by-binding rule that lets uninstall need no recipe cleanup.
+    //
+    // A package that stops declaring env entirely is NOT handled here and must
+    // not be: `declarations` is empty then, this function returns before the
+    // ownership checks, and the stale section is removed by uninstall or by
+    // `superseded` above. Clearing on an empty batch would delete a live
+    // section every time an unrelated dependent's install re-ran a hook that
+    // happens to declare nothing.
+    for (const auto& [binding, decls] : perBinding) {
+        changed |= mf::set_env_section(*doc, binding, decls);
     }
 
     // Only now that every declaration passed. Reported at info level, not

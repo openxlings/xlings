@@ -176,6 +176,85 @@ TEST(SubosManifestEnv, IsIdempotentOnTheWholeTriple) {
     EXPECT_EQ(d["subos_info"]["envs"]["compat.mesa@25.0.0"].size(), 2u);
 }
 
+// The gap the test above documents rather than closes: `add_env` records "a
+// different value for the same variable" as a NEW declaration, so when a
+// recipe's declarations change, the section holds both generations forever.
+//
+// Measured while moving mesa's discovery paths from `${pkgdir}` to
+// `${subosdir}`: LIBGL_DRIVERS_PATH resolved to the new subos directory followed
+// by a stale payload path, and __EGL_VENDOR_LIBRARY_DIRS listed one directory
+// twice. Nothing reported it, and once that payload is collected the stale entry
+// is a dead directory the loader walks past.
+//
+// A recipe owns its binding's section -- that is what lets uninstall need no
+// cleanup code in the recipe -- and owning it has to include removing a
+// declaration.
+TEST(SubosManifestEnv, SetSectionReplacesRatherThanAccumulating) {
+    auto d = doc_with(nlohmann::json::object());
+    const std::string b = "mesa@25.0.7.1";
+
+    ASSERT_TRUE(m::set_env_section(d, b, {
+        {"LIBGL_DRIVERS_PATH", "prepend", "${pkgdir}/lib/dri"},
+        {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", "${pkgdir}/share/glvnd/egl_vendor.d"},
+    }));
+    ASSERT_EQ(d["subos_info"]["envs"][b].size(), 2u);
+
+    // The recipe changes where it points. The OLD rows must be gone, not joined.
+    ASSERT_TRUE(m::set_env_section(d, b, {
+        {"LIBGL_DRIVERS_PATH", "prepend", "${subosdir}/usr/lib/dri"},
+        {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", "${subosdir}/share/glvnd/egl_vendor.d"},
+    }));
+    ASSERT_EQ(d["subos_info"]["envs"][b].size(), 2u);
+    const auto dumped = d["subos_info"]["envs"][b].dump();
+    EXPECT_EQ(dumped.find("${pkgdir}"), std::string::npos) << dumped;
+    EXPECT_NE(dumped.find("${subosdir}/usr/lib/dri"), std::string::npos) << dumped;
+
+    // Unchanged input reports no change, so a caller can skip the write.
+    EXPECT_FALSE(m::set_env_section(d, b, {
+        {"LIBGL_DRIVERS_PATH", "prepend", "${subosdir}/usr/lib/dri"},
+        {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", "${subosdir}/share/glvnd/egl_vendor.d"},
+    }));
+
+    // Another package's section is untouched: ownership is by binding.
+    m::add_env(d, "nvidia-gl-host-link@0.1.0",
+               {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", "${subosdir}/share/glvnd/egl_vendor.d"});
+    ASSERT_TRUE(m::set_env_section(d, b, {
+        {"XDG_DATA_DIRS", "prepend", "${subosdir}/share"},
+    }));
+    EXPECT_EQ(d["subos_info"]["envs"]["nvidia-gl-host-link@0.1.0"].size(), 1u);
+}
+
+// Two providers naming the SAME directory is the intended arrangement, not a
+// mistake to preserve: mesa and nvidia-gl-host-link both declare the shared
+// glvnd vendor directory so that either one being absent does not remove it for
+// the other. Joined verbatim, that path appeared on
+// __EGL_VENDOR_LIBRARY_DIRS twice.
+//
+// The shim side already de-duplicated (xvm/shim.cppm merge_shim_env_value, added
+// when a doubled GIT_SSL_CAINFO broke every HTTPS git transport). This is the
+// second answerer agreeing with the first.
+TEST(SubosManifestEnv, IdenticalPrependsFromTwoProvidersAppearOnce) {
+    auto d = doc_with(nlohmann::json::object());
+    const std::string shared = "${subosdir}/share/glvnd/egl_vendor.d";
+    m::add_env(d, "mesa@25.0.7.1", {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", shared});
+    m::add_env(d, "nvidia-gl-host-link@0.1.0",
+               {"__EGL_VENDOR_LIBRARY_DIRS", "prepend", shared});
+
+    auto info = m::parse(d);
+    auto resolved = m::resolve(info, m::Placeholders{
+        .subosdir = "/home/u/.xlings/subos/default",
+        .pkgdir_of = [](std::string_view) { return std::filesystem::path{"/payload"}; },
+    });
+    ASSERT_EQ(resolved.size(), 1u);
+    const auto& v = resolved.front();
+    EXPECT_EQ(v.var, "__EGL_VENDOR_LIBRARY_DIRS");
+    EXPECT_EQ(v.value, "/home/u/.xlings/subos/default/share/glvnd/egl_vendor.d")
+        << "the shared directory must appear once, not once per provider";
+    // Both providers are still recorded -- de-duplication is about the resolved
+    // value, not about forgetting who asked.
+    EXPECT_EQ(v.providers.size(), 2u);
+}
+
 TEST(SubosManifestEnv, RemovingAProviderTakesItsWholeSectionAndNothingElse) {
     auto d = doc_with(nlohmann::json::object());
     m::add_env(d, "compat.mesa@25.0.0", {"LIBGL_DRIVERS_PATH", "set", "a"});

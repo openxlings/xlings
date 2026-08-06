@@ -56,6 +56,17 @@ inline std::vector<std::string> passthrough_args(
     // DRM (covers AMD/Intel render nodes too, plus NVIDIA display).
     add_dev("/dev/dri");
 
+    // WSL2's GPU. `dxgkrnl` exposes the Windows GPU as /dev/dxg and there is
+    // no DRM node for it, so a sandbox with /dev/dri bound and this one missing
+    // has no GPU at all on that platform -- which the skip below then reports
+    // the same way as a machine that has no GPU. `libdxcore.so` is what talks
+    // to it, reached by mesa's d3d12 driver through `wsl-gl-host-link`.
+    //
+    // This is the contract, not a special case: the function's job is to expose
+    // the host's GPU character devices, and a platform's device node missing
+    // from the list is the contract unfulfilled.
+    add_dev("/dev/dxg");
+
     // /sys is required for libcuda / nvml PCI enumeration. Unconditional
     // when --gpu is set — /sys always exists on a Linux userspace host.
     out.push_back("--ro-bind");
