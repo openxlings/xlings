@@ -116,7 +116,8 @@ openxlings/xim-pkgindex     recipe + 规范 + 构建流水线
 |---|---|---|---|
 | libxpkg | [#35](https://github.com/openxlings/libxpkg/pull/35) | 0.0.50 → 0.0.51 | L1 A3 · L2 relocate_build_paths |
 | xlings | 本 PR | 2026.8.5.3 → 2026.8.6.1 | A3(第二个站点)· A4 · B5 · C1/C2/C3 · E1/E2 + xpkg pin 0.0.51 |
-| xim-pkgindex | 待开 | (无版本号) | #42-glibc · A1/A2/B3 规范 |
+| mcpp-index | [#164](https://github.com/mcpplibs/mcpp-index/pull/164) | — | xpkg 0.0.51 条目(GLOBAL+CN+sha256 ×3 平台) |
+| xim-pkgindex | [#522](https://github.com/openxlings/xim-pkgindex/pull/522) | (无版本号) | #42-glibc · A1/A2/B3 规范 · AD-11 构建前缀 |
 
 **B 线(B1/B2/AD-12)不在本轮。** §2.7 的四项门禁 2026-08-06 全部通过,结论记录在提案
 §2.7,但实现需要图形栈装好才能端到端验证,而本机的 home 里 mesa / libglvnd /
@@ -146,14 +147,17 @@ nvidia-gl-host-link 都没装。见任务 #55。
 
 ### 3.2 最终真实验证
 
-在隔离 `XLINGS_HOME` 下,用**发布产物**(不是 dev build)跑完整生命周期:
+`.agents/tools/verify-release-lifecycle.sh --bin <released xlings>`。
 
-```
-self install → subos create → install 图形栈 → subos use → 探针
-             → 双版本安装(C1)→ doctor → uninstall → doctor
-```
+在隔离 `XLINGS_HOME` 下,用**发布产物**(不是 dev build)跑完整生命周期,并断言两件
+一般测试不断言的事:
 
-宿主 `~/.xlings` 全程不得被写入——用 `.agents/tools/slice-real-home.sh` 的 `verify-untouched` 核对。
+1. **被测 home 不是开发者的**,且与 `$HOME` 无共同前缀。shim 会把 `XLINGS_HOME` 改写
+   成拥有它的那个 home,所以"我们跑在隔离 home 里"是一个需要**核对**的断言,不是前提。
+2. **真实 `~/.xlings` 事后逐字节未变**。不是"我们没打算动它",是查过。
+
+做成脚本而不是清单,是因为手工执行的清单只测一次;8-06 那四个 home 缺陷里有三个,
+是靠同一测量做了两遍、结果不一致才发现的。
 
 ---
 
