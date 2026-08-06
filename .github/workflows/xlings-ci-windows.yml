@@ -55,24 +55,37 @@ jobs:
         with:
           path: |
             ~\.mcpp
+            !~\.mcpp/bmi
+            !~\.mcpp/build-cache
             .mcpp
-          # The key names the WORKFLOW that produced it, and that is
-          # load-bearing rather than tidy. Three Linux workflows previously
-          # shared `mcpp-v3-Linux-<hash>`: the hash covers mcpp.toml, but
-          # mcpp.toml declares BOTH the dev toolchain (gcc@16.1.0) and the
-          # release target (gcc@15.1.0-musl), so a CI build and a release build
-          # produced the same key from different toolchains. Whichever finished
-          # first wrote the exact key and the others restored its BMIs, failing
-          # as `import 'std' has CRC mismatch` -- which reads like a compiler
-          # bug and is one cache key with several writers.
+            !.mcpp/bmi
+            !.mcpp/build-cache
+          # BMIs are NOT cached, and are deleted after every restore. That
+          # is the fix, and it took three prefix retirements to find.
           #
-          # The guard below cannot catch it: those restores are EXACT hits.
-          # Prefix history, kept short: v2 was retired because `restore-keys`
-          # reached entries whose registry predated an index publish, and v3
-          # because entries saved by a failed build sit at the exact key where
-          # the guard below cannot reach them. v4 is the split above. Each
-          # retirement discarded what was already poisoned; none of them
-          # stopped the next kind, which is why the key now names its writer.
+          # A restored BMI set never works. `import 'std' has CRC mismatch`
+          # follows, which reads like a compiler bug. What hid it is that the
+          # old guard wiped the BMIs on an INEXACT restore -- so retiring the
+          # key prefix forced an inexact restore, fired the guard, and produced
+          # one clean run. Each retirement therefore looked like a fix and was
+          # an accident; the next run got an exact hit, skipped the guard, and
+          # failed again. Read straight off two consecutive runs of THIS
+          # workflow: the one that passed shows "Drop stale BMIs" as `success`,
+          # the one that failed shows it `skipped`.
+          #
+          # So the wipe is unconditional now, and the BMI directories are
+          # excluded from the cache as well -- the exclusion is an optimisation
+          # (do not store bytes we delete on arrival), the unconditional wipe is
+          # the guarantee, and it cannot depend on exclude-pattern semantics.
+          #
+          # What the cache is FOR is `registry/data/xpkgs`: ~800 MB of payloads
+          # that are toolchain-independent and survive a round trip fine.
+          #
+          # The key still names the workflow that produced it. mcpp.toml
+          # declares both the dev toolchain (gcc@16.1.0) and the release target
+          # (gcc@15.1.0-musl), so a CI build and a release build hash the same
+          # -- sharing one key across workflows is wrong on its own terms even
+          # though it was not what caused this.
           key: mcpp-v4-ci-windows-${{ runner.os }}-${{ hashFiles('mcpp.toml', 'mcpp.lock', '.xlings.json') }}-${{ env.BOOTSTRAP_XLINGS_VERSION }}
           restore-keys: |
             mcpp-v4-ci-windows-${{ runner.os }}-
@@ -87,8 +100,7 @@ jobs:
       # Only the BMIs go. The payload store under registry/data/xpkgs is
       # dependency-independent and is what makes the ~800 MB cache worth
       # restoring at all.
-      - name: Drop stale BMIs when the cache key did not match exactly
-        if: steps.mcpp-cache.outputs.cache-hit != 'true'
+      - name: Drop restored BMIs
         shell: bash
         run: |
           rm -rf ~/.mcpp/bmi ~/.mcpp/build-cache .mcpp/bmi .mcpp/build-cache
