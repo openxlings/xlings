@@ -117,12 +117,26 @@ This branch is \`${BRANCH}\` — **not** per-version. Each release force-pushes 
 
 Merge to publish into the official index — the index repo then republishes its artifact and gitee-sync mirrors the change. Binaries are already live on \`xlings-res/${PROJ}\` (GitHub + GitCode)."
 
-if gh pr view "$BRANCH" -R "$INDEX_REPO" >/dev/null 2>&1; then
+# `--json state`, not a bare `gh pr view`. With one branch the same head is
+# reused release after release, so `gh pr view $BRANCH` also matches the
+# PREVIOUS release's MERGED pr. Editing that one and skipping `pr create`
+# would leave the new commits sitting on the branch with no open PR at all --
+# a bump that reports success and is never reviewed.
+PR_STATE="$(gh pr view "$BRANCH" -R "$INDEX_REPO" --json state -q .state 2>/dev/null || true)"
+if [[ "$PR_STATE" == "OPEN" ]]; then
   info "PR already open for $BRANCH — updating title and body to $VER"
   gh pr edit "$BRANCH" -R "$INDEX_REPO" \
     --title "$PR_TITLE" --body "$PR_BODY" \
     || info "WARN: could not update the PR's title/body; the diff is correct but the description still names an older version"
 else
+  # Plain `if`. (Checked rather than assumed: `[[ … ]] && info …` does NOT
+  # abort under `set -e` -- an AND-list's failure is exempt. The assignment
+  # form `out=$(cmd)` is the one that aborts, because that is a simple command
+  # failing. Same flag, opposite answers, so it is worth knowing which is
+  # which.)
+  if [[ -n "$PR_STATE" ]]; then
+    info "previous PR for $BRANCH is $PR_STATE — opening a new one"
+  fi
   gh pr create -R "$INDEX_REPO" --base main --head "$BRANCH" \
     --title "$PR_TITLE" --body "$PR_BODY"
   info "PR opened"
