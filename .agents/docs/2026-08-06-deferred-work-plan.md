@@ -456,8 +456,20 @@ mingw-cross-gcc 1 个 —— 这个脚本每发一次版就创建一个、然后
 
 三个 Error 计入 `count_()`,两个 Warning 计入 `c.warnings`。
 
-**先量后开**这一步有回报:四个 doctor e2e(含两个明确断言 `doctor` 退出 0 的)**全部
-仍然通过**,所以过渡版本不需要。
+**先量后开**这一步有回报,但**我第一次的量取样不足** —— 只跑了文件名带 `doctor` 的
+四个,CI 随后在 `subos_env_declaration_test.sh` 上失败:
+
+```sh
+DOC="$(x self doctor 2>&1)"     # doctor 现在返回非零 → set -e 直接终止脚本
+```
+
+它写于 doctor 对 orphan 返回 0 的年代,和 S12 是同一形状 —— **测试把旧行为编进了
+控制流**,而不是断言里。
+
+按 R7 重新枚举:**12 个** e2e 会跑 doctor,不是 4 个。全部跑过后 12/12 通过,
+过渡版本仍然不需要。判断没变,但先前那个判断**当时没有证据支持**。
+
+`|| true` 加在捕获上,因为断言的是**报告**,不是**判决**。
 
 判据 `healed > 0` 落为 `doctor_fix_convergence_test.sh` 的 S7,实测
 `healed=2`。写它时又踩了一次 `set -e`——`out=$(...)` 在非零退出时直接终止脚本,

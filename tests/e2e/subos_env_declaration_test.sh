@@ -202,7 +202,14 @@ grep -q "^X=.*/share:/user/share$" <<<"$OVERRIDE" \
 log "  ✓ the user's value survives 'set' and is kept by 'prepend'"
 
 # ── 5. doctor is clean ──────────────────────────────────────────────────
-DOC="$(x self doctor 2>&1)"
+#
+# `|| true` on every capture below. Since 2026.8.6.2 an orphaned env section
+# reaches the exit code -- before that doctor printed the finding and exited 0,
+# and this test was written against that. Under `set -e` the assignment form
+# `DOC="$(cmd)"` aborts the whole script when cmd fails, so the second capture
+# below killed the run silently after the last ✓ printed. What is asserted is
+# the REPORT, not the verdict.
+DOC="$(x self doctor 2>&1 || true)"
 grep -qiE "subos env (orphan|unresolved)" <<<"$DOC" \
   && { echo "$DOC" >&2; fail "doctor reports a defect on a healthy subos"; }
 log "  ✓ doctor is clean while the package is installed"
@@ -217,7 +224,7 @@ d["subos_info"]["envs"]["ghost@9.9.9"] = [
     {"var": "GHOST", "op": "set", "value": "${pkgdir}/lib"}]
 json.dump(d, open(p, "w"), indent=2)
 PY
-DOC="$(x self doctor 2>&1)"
+DOC="$(x self doctor 2>&1 || true)"
 grep -qi "subos env orphan" <<<"$DOC" \
   || { echo "$DOC" >&2; fail "doctor missed an orphaned env section"; }
 x self doctor --fix >/dev/null 2>&1
