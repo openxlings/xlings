@@ -291,15 +291,29 @@ log "  ✓ <subos>/subos/ marker exists"
 # xlings profile; non-interactive shells (`bash -c`, scripts) skip the
 # rc files. Both paths should still see the per-subos bin first because
 # we set PATH explicitly in env before exec proot.
+#
+# The expected value is derived from the home UNDER TEST, not written out as
+# `/home/<user>/.xlings/...`. That literal was this assertion until CI caught
+# it: S8's own fix made the home visible at its own absolute path, and S12 was
+# left asserting the spelling from before that fix -- so it demanded
+# `$HOME/.xlings` from a run whose home is somewhere else entirely. The value
+# it rejected was the correct one.
+#
+# This is E2 in one assertion: a test can not only miss a defect, it can pin
+# one, and the pin outlives the fix because changing a test assertion looks
+# suspicious in review. Deriving the expectation from $HOME_DIR makes the
+# assertion true of any home rather than of the default one.
 log "S12: PATH front-loads <subos>/bin even in non-interactive shell"
 out_path="$(echo 'echo "PATH:$PATH"; exit' | \
   ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL=/bin/sh \
       PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
       timeout 10 "$XLINGS_BIN" subos use mybox --sandbox ) 2>&1 || true)"
-echo "$out_path" | grep -q "PATH:/home/$USER/.xlings/subos/mybox/bin:" \
-  || fail "S12: PATH first segment is NOT <home>/.xlings/subos/mybox/bin:
+expect_bin="$(cd "$HOME_DIR" && pwd)/subos/mybox/bin"
+echo "$out_path" | grep -q "PATH:$expect_bin:" \
+  || fail "S12: PATH's first segment is not this home's subos bin
+  expected first: $expect_bin
 $out_path"
-log "  ✓ PATH starts with /home/$USER/.xlings/subos/mybox/bin"
+log "  ✓ PATH starts with $expect_bin"
 
 # ── S13: seeded shell rc files exist (interactive prompt-pill plumbing)
 # init_sandbox_dirs_ writes minimal .bashrc / .profile / config.fish
