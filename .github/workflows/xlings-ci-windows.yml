@@ -215,6 +215,20 @@ jobs:
           Prune-Registry "$env:GITHUB_WORKSPACE\.mcpp\registry"
           mcpp self config --mirror GLOBAL
 
+          # Force the index refresh, then assert what landed -- see the note
+          # in xlings-ci-linux.yml. Calling update without checking leaves
+          # "refreshed" and "still stale" producing identical output.
+          mcpp index update
+          $global:LASTEXITCODE = 0
+          mcpp index status
+          $global:LASTEXITCODE = 0
+          $idx = Join-Path $env:USERPROFILE ".mcpp\registry\data\mcpplibs\pkgs\x\xpkg.lua"
+          if ((Test-Path $idx) -and -not (Select-String -Path $idx -Pattern '\["0.0.53"\]' -Quiet)) {
+            Write-Host "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it."
+            mcpp index status
+            exit 1
+          }
+
       - name: Prepare unit fixture index repo
         shell: bash
         run: |

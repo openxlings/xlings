@@ -215,6 +215,31 @@ jobs:
           prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
           mcpp self config --mirror GLOBAL
 
+          # Force the index refresh, then ASSERT what landed.
+          #
+          # The prune above drops the resolved indexes, and mcpp's own
+          # re-fetch happily uses whatever it finds in the restored cache --
+          # so a freshly published dependency reads as "not found" against an
+          # index that demonstrably has it. Measured 2026-08-06:
+          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+          # published artifact, the rolling pointer and releases/latest all
+          # carried the entry.
+          #
+          # `mcpp index update` is the refresh; `mcpp index status` prints the
+          # revision each index is actually at. Calling update alone would
+          # leave "refreshed" and "still stale" producing identical output,
+          # which is the failure mode this whole step exists to end.
+          mcpp index update || true
+          mcpp index status || true
+          idx="$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"
+          if [ -f "$idx" ] && ! grep -q '\["0.0.53"\]' "$idx"; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it." >&2
+            echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
+            echo "      versions present:" >&2
+            grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2
+            exit 1
+          fi
+
       - name: Prepare fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh
@@ -281,6 +306,31 @@ jobs:
           # already-installed mcpp bootstraps the source tree.
           mv .xlings.json .xlings.json.bootstrap
           mcpp self config --mirror GLOBAL
+
+          # Force the index refresh, then ASSERT what landed.
+          #
+          # The prune above drops the resolved indexes, and mcpp's own
+          # re-fetch happily uses whatever it finds in the restored cache --
+          # so a freshly published dependency reads as "not found" against an
+          # index that demonstrably has it. Measured 2026-08-06:
+          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+          # published artifact, the rolling pointer and releases/latest all
+          # carried the entry.
+          #
+          # `mcpp index update` is the refresh; `mcpp index status` prints the
+          # revision each index is actually at. Calling update alone would
+          # leave "refreshed" and "still stale" producing identical output,
+          # which is the failure mode this whole step exists to end.
+          mcpp index update || true
+          mcpp index status || true
+          idx="$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"
+          if [ -f "$idx" ] && ! grep -q '\["0.0.53"\]' "$idx"; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it." >&2
+            echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
+            echo "      versions present:" >&2
+            grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2
+            exit 1
+          fi
           mcpp build
           MCPP=$(realpath "$(find target -type f -name mcpp -printf '%T@ %p\n' | sort -rn | head -1 | cut -d' ' -f2)")
           test -x "$MCPP"
@@ -464,6 +514,31 @@ jobs:
           prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
           mcpp self config --mirror GLOBAL
 
+          # Force the index refresh, then ASSERT what landed.
+          #
+          # The prune above drops the resolved indexes, and mcpp's own
+          # re-fetch happily uses whatever it finds in the restored cache --
+          # so a freshly published dependency reads as "not found" against an
+          # index that demonstrably has it. Measured 2026-08-06:
+          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+          # published artifact, the rolling pointer and releases/latest all
+          # carried the entry.
+          #
+          # `mcpp index update` is the refresh; `mcpp index status` prints the
+          # revision each index is actually at. Calling update alone would
+          # leave "refreshed" and "still stale" producing identical output,
+          # which is the failure mode this whole step exists to end.
+          mcpp index update || true
+          mcpp index status || true
+          idx="$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"
+          if [ -f "$idx" ] && ! grep -q '\["0.0.53"\]' "$idx"; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it." >&2
+            echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
+            echo "      versions present:" >&2
+            grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2
+            exit 1
+          fi
+
       - name: Build (macos_release)
         env:
           # macOS min-version support: floor 14.0 (the official LLVM
@@ -608,6 +683,31 @@ jobs:
           Remove-Item -Recurse -Force "$env:USERPROFILE\.mcpp\registry" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE\.mcpp\registry" -ErrorAction SilentlyContinue
           mcpp self config --mirror GLOBAL
+
+          # Force the index refresh, then ASSERT what landed.
+          #
+          # The prune above drops the resolved indexes, and mcpp's own
+          # re-fetch happily uses whatever it finds in the restored cache --
+          # so a freshly published dependency reads as "not found" against an
+          # index that demonstrably has it. Measured 2026-08-06:
+          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+          # published artifact, the rolling pointer and releases/latest all
+          # carried the entry.
+          #
+          # `mcpp index update` is the refresh; `mcpp index status` prints the
+          # revision each index is actually at. Calling update alone would
+          # leave "refreshed" and "still stale" producing identical output,
+          # which is the failure mode this whole step exists to end.
+          mcpp index update || true
+          mcpp index status || true
+          idx="$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"
+          if [ -f "$idx" ] && ! grep -q '\["0.0.53"\]' "$idx"; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it." >&2
+            echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
+            echo "      versions present:" >&2
+            grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2
+            exit 1
+          fi
 
       - name: Build (windows_release)
         shell: pwsh
