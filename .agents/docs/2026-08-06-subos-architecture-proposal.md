@@ -203,9 +203,13 @@ libnvidia-egl-wayland / libdbus-1
 
 vendor 在**运行时按裸 SONAME `dlopen` 自己的兄弟库**。于是边界是:
 
-> **DT_RPATH 的传递性覆盖链接期依赖(DT_NEEDED),不覆盖运行时 dlopen。**
+> **运行时 dlopen 由发起它的那个对象的 DT_RPATH 服务。**
+> 那个对象是我们的,就服务得了;是宿主的文件,就服务不了。
 
-运行时 dlopen 没有链接链可依附,任何 RPATH 机制都服务不了它。这是这条路线的硬边界。
+(此处原写作"任何 RPATH 机制都服务不了运行时 dlopen"。§2.7 的门禁验证证明那句话
+不准确:调用方对象的 DT_RPATH **确实**参与裸 SONAME 的 dlopen 解析。之所以在这个
+场景里服务不了,是因为发起 dlopen 的是宿主的 vendor 库——我们不能给它打 RPATH。
+这个更正把 GLX 从"做不到"变成"做得到,且不需要全局变量",见 §2.7 V1。)
 
 #### 边界恰好落在正确的地方
 
@@ -258,7 +262,7 @@ elfpatch.host_link_interposer{
 
 **提议 B2**:`nvidia-gl-host-link` 的 `LD_LIBRARY_PATH` 声明收窄为**只有宿主驱动目录**,并在注释里写明它为什么是安全的(里面没有我们的任何文件)。`xlings-deps` 目录删除。
 
-**提议 B3(不变)**:规范里写明,任何 `subos.env` 对 `LD_LIBRARY_PATH` / `LD_PRELOAD` 的声明都是特权操作,需要写明为什么 RPATH 不适用。有了 interposer 机制,"RPATH 不适用"的真实场景只剩**运行时按裸 SONAME dlopen 宿主自己的文件**这一种。
+**提议 B3**:规范里写明,任何 `subos.env` 对**会导致代码被载入进程**的变量的声明都是特权操作,需要写明为什么 RPATH 不适用。按 §2.7 的更正,"RPATH 不适用"的真实场景只剩一种:**发起 dlopen 的是宿主自己的文件**(我们不能给它打 RPATH)。已写入 `xpackage-spec.md`。
 
 **方案 B(拷贝 327MB + RPATH)正式否决**,理由写进 recipe:它打破用户态与内核模块的版本耦合,而 interposer 用 27KB 拿到了同样的隔离性。
 
@@ -304,16 +308,92 @@ elfpatch.host_link_interposer{
 | 导致**代码**被载入 | `LD_LIBRARY_PATH`、`LD_PRELOAD`、`__EGL_VENDOR_LIBRARY_DIRS`、`LIBGL_DRIVERS_PATH` | 值指向我们的载荷时安装期报告 |
 | 导致**数据**被找到 | `XDG_DATA_DIRS` | 不管。subos 给默认、用户可覆盖是正常做法(AD-3) |
 
-### 2.7 还需要验证的
+### 2.7 门禁验证:已完成(2026-08-06)
 
+四项都跑了,结论**比 §2.3 当时的推断更好**,并且更正了 §2.3 的一处边界判断。
 
+#### 更正:边界不是"运行时 dlopen 服务不了",而是"由发起 dlopen 的那个对象服务"
 
-诚实列出,不要当成已完成:
+§2.3 写的是:
 
-- **GLX 路径**:`libGLX_nvidia` 的 vendor 选择走的是按 SONAME 模式 `libGLX_%s.so.0` 查找,interposer 需要顶替这个文件名。机制应当相同,但没有单独验证过。
-- **Vulkan ICD**:同理,ICD JSON 指向文件路径,预期可用,未验证。
-- **`dlsym` 语义**:合成实验证明句柄依赖树可见;glvnd 是否对 vendor 做过 SONAME 或路径上的额外校验,未穷尽。
-- **预置 stub 的分发**:每个 arch 一个,归属 libxpkg 还是索引,未定。
+> DT_RPATH 的传递性覆盖链接期依赖(DT_NEEDED),不覆盖运行时 dlopen。
+
+**这句话不准确。** 合成实验(宿主 glibc 13.3.0 工具链,三组对照):
+
+| 发起 `dlopen("libGLX_probe.so.0")` 的库 | 结果 |
+|---|---|
+| 无 RPATH / RUNPATH | 失败 |
+| 带 **DT_RUNPATH** 指向目标目录 | **成功** |
+| 带 **DT_RPATH** 指向目标目录 | **成功** |
+
+运行时按裸 SONAME 的 dlopen **确实**用调用方对象自己的 DT_RPATH/RUNPATH。
+上一轮之所以观察到"服务不了",是因为当时发起 dlopen 的是**宿主的 vendor 库**
+——宿主的文件,我们不能给它打 RPATH。正确的表述是:
+
+> **运行时 dlopen 由发起它的那个对象的 RPATH 服务。那个对象是我们的就行,是宿主的就不行。**
+
+(第一次测量用 PATH 上的 `gcc` 跑,解析到了 musl 工具链,三组全失败 ——
+musl 的 dlopen 语义不同。这本身是 R6 的一个实例:`gcc` 在 PATH 上是**视图**。)
+
+#### V1 — GLX:通过,而且不需要任何进程全局变量
+
+GLX 没有 vendor JSON。`libGLX.so.0` 用 `libGLX_%s.so.0` 拼出文件名后
+`dlopen`,所以"把 JSON 指向绝对路径"这条路不存在。但按上面的更正,它不需要:
+
+同一份代码,同一个环境,**`LD_LIBRARY_PATH` 完全没有设置**,唯一差别是发起
+dlopen 的那个库有没有指向我们目录的 DT_RPATH:
+
+| 进程 | `dlopen("libGLX_nvidia.so.0")` 解析到 |
+|---|---|
+| **我们的**(dispatcher 带 DT_RPATH → 我们的目录) | `<我们的>/libGLX_nvidia.so.0`,`__glx_Main` 可达 |
+| **宿主的**(同样的代码,没有我们的 RPATH) | `/lib/x86_64-linux-gnu/libGLX_nvidia.so.0` |
+
+**规则 1 与规则 2 同时成立,没有任何全局变量参与。** 条件是我们自己构建的
+`libglvnd` 载荷里的 `libGLX.so.0` 带一条覆盖 interposer 目录的 DT_RPATH ——
+它本来就该有,而且是我们的文件。
+
+#### V2 — Vulkan ICD:同一个文件,同一个机制
+
+实测:`libGLX_nvidia.so.0` **同时**导出 `__glx_Main`、
+`vk_icdGetInstanceProcAddr`、`vk_icdNegotiateLoaderICDInterfaceVersion` ——
+GLX vendor 和 Vulkan ICD 是**同一个文件**,这正是
+`/usr/share/vulkan/icd.d/nvidia_icd.json` 里写着 `libGLX_nvidia.so.0` 的原因。
+
+所以 interposer 一个文件同时服务两条路径,V3 已证明三个入口点都能透过它取到。
+剩下的只是 ICD JSON 的**发现**方式(`VK_DRIVER_FILES` / `XDG_DATA_DIRS`),那属于
+§2.6 提议 B4 的范畴(把默认目录编进我们自己构建的 loader),与 interposer 无关。
+
+#### V3 — dlsym 语义:通过
+
+glvnd 与 Vulkan loader 在 vendor 句柄上查的就是上面那三个符号。25 KB 的
+interposer 与真 vendor 对照:
+
+| 句柄 | `__glx_Main` | `vk_icdGetInstanceProcAddr` | `vk_icdNegotiate…` |
+|---|---|---|---|
+| 宿主 vendor 本身(对照) | found | found | found |
+| 我们的 interposer | found | found | found |
+
+`dlsym` 搜索句柄的整个依赖树,所以 glvnd 拿到的仍是真 vendor 的入口。
+
+#### V4 — stub 分发:AD-12,且生产方式已实测
+
+用 **patchelf 一把工具**就能从一个预置空 stub 产出可用的 interposer,安装期
+不需要编译器:
+
+```
+patchelf --set-soname libGLX_nvidia.so.0            <stub>
+patchelf --add-needed <宿主 vendor 的绝对路径>       <stub>
+patchelf --set-rpath <闭包目录> --force-rpath        <stub>
+```
+
+产物 **25 KB**,仍是指向宿主文件的引用,用户态/内核模块的版本耦合完整保留。
+按 AD-12,预置 stub 作为索引里的一个包分发(每 arch 一份)。
+
+#### 门禁结论
+
+四项全部通过,B 线可以开工。B1 的能力签名不变,但文档里"运行时 dlopen 够不到"
+那句要按上面的更正改写 —— 它决定了 B3 里"RPATH 不适用的真实场景"到底还剩几种:
+**只剩一种,即发起 dlopen 的是宿主自己的文件**。
 
 ### 2.8 规则 2 缺的是执行点,不是意图
 
@@ -732,7 +812,8 @@ TEXTDOMAINDIR=/home/xlings/.xlings_data/.../fromsource-x-glibc/2.44/share/locale
 ```
 B 线(P2:把决定搬进产物)
   §2.7 四项验证 —— GLX / Vulkan ICD / dlsym 语义 / stub 分发
-        │  ← 门禁:未验完不写代码(AD-14 的直接应用)
+        │  ← 门禁:2026-08-06 全部通过,见 §2.7。GLX 不需要任何全局变量;
+        │     GLX vendor 与 Vulkan ICD 是同一个文件,一个 interposer 服务两条路径
         ▼
   AD-12  interposer stub 作为索引包发布
         ▼
