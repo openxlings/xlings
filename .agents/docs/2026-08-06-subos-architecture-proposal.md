@@ -654,7 +654,7 @@ subos 提供默认值、用户可覆盖,这就是 Linux 的常规做法,没有�
 
 所以这条路径**应该**不存在。唯一要改的是让它**刻意**而非**偶然**:构建流水线把 `--prefix` 换成一个显式保留的占位前缀,理由写在构建脚本里,产物中不再出现任何构建机的痕迹。
 
-与任务 #35(libxml2 的 `.pc` 写着构建机)合并为一条规范:**产物中不得出现构建机路径,除非是刻意保留的占位前缀**;检查方式见 §6.6 的第 3 条断言。
+与任务 #35(libxml2 的 `.pc` 写着构建机)合并为一条规范:**产物中不得出现构建机路径,除非是刻意保留的占位前缀**;检查方式见 §8「修法」的第 3 条断言。
 
 ### AD-6:采用 interposer + DT_RPATH,把 deprecated 的风险写进文档,以后再优化
 
@@ -670,7 +670,7 @@ vendor 被 dlopen 进的那个进程**是我们的**(INTERP 指向我们的 glib
 
 interposer 的作用是让第 2 类落到**我们的**库上,同时不向任何其他进程施加任何东西。
 
-**决策**:采用 interposer + `DT_RPATH`。`DT_RPATH` 已被标记 deprecated 是已知风险,**在设计文档与 recipe 注释中写明**,glibc 目前没有移除迹象;若将来失效,回退路径是 §6.7/AD-7 的 wrapper 方案。先落地,后优化。
+**决策**:采用 interposer + `DT_RPATH`。`DT_RPATH` 已被标记 deprecated 是已知风险,**在设计文档与 recipe 注释中写明**,glibc 目前没有移除迹象;若将来失效,回退路径是 AD-7 的 wrapper 方案。先落地,后优化。
 
 命名:这个东西在本文档中称 **interposer(插入库)**,不叫 shim——`shim` 在 xlings 里已经指 `subos/<name>/bin/` 下那些指向 xlings 二进制的多调用符号链接,复用会造成混淆。
 
@@ -752,7 +752,7 @@ interposer 的作用是让第 2 类落到**我们的**库上,同时不向任何�
 - 判断"`libm` 没人需要"——只看了 `libEGL_nvidia` 的直接 DT_NEEDED。实际被 16 个 nvidia 库 NEED,含核心渲染器 `libnvidia-glcore`。
 - 推荐"修正表内容 + 加护栏就够了"——没有对整个用户态求闭包,因而没看到表还漏了 `libdrm` / `libgbm` / `libgcc_s` / `libwayland-*`。
 
-判据可执行:一份依赖清单如果是**手写**的,它就没有通过 R7;必须是从产物**枚举**出来的。这也解释了为什么 §2.2 的手写表、§6.6 的 `relocate_files` 清单、§1.5 的 `_find_tool` 候选表是同一个反模式的三个实例。
+判据可执行:一份依赖清单如果是**手写**的,它就没有通过 R7;必须是从产物**枚举**出来的。这也解释了为什么 §2.2 的手写表、§8 的 `relocate_files` 清单、§1.5 的 `_find_tool` 候选表是同一个反模式的三个实例。
 
 R7 与 R1 的关系:R1 要求记录全量(写下每一项),R7 要求**输入集合本身**是完整的(不漏项)。记录得再全量,输入取样不足一样得出错误结论。
 
@@ -818,50 +818,60 @@ TEXTDOMAINDIR=/home/xlings/.xlings_data/.../fromsource-x-glibc/2.44/share/locale
 
 第 3 条是关键——它把"改写"从一个**期望**变成一个**可验证的结果**。以上三条都不依赖对 glibc 的了解,可以直接做成 libxpkg 的通用重定位能力,供所有下载预构建产物的 recipe 使用。
 
-## 9. 落地顺序
+## 9. 落地顺序与实际状态
 
 依赖关系决定顺序,不是优先级。已定的决策见 §7。
+**2026-08-06 更新:第一批已全部落地,B 线门禁已通过。**
 
-### 第一批:立即开始,不依赖任何未决事项
+### 第一批 —— 已落地(2026.8.6.1 / libxpkg 0.0.51)
 
-| 项 | 内容 | 为什么排在最前 |
+| 项 | 内容 | 落在哪 |
 |---|---|---|
-| **#42** | glibc 路径重写:枚举取代清单、锚定路径 token、改完断言(§8) | **正在发布坏文件**——`ldd` 连 `bash -n` 都过不了 |
-| **A3** | `_find_tool` 走 payload(R6 / §1.5) | 它决定所有产物的烙印工具是谁 |
-| **A4** | `locate_proot_` 去掉 PATH 步骤,宿主 proot 降为显式声明(§1.5) | 同一条规则,改动小 |
-| **E1/E2** | 隔离 home 成为 subos/沙箱测试默认环境;断言写契约不写实现(§5) | 决定后面所有验证是否可信 |
-| **A1/A2** | 七条规则(R1–R7)写进 `xpackage-spec.md`,并禁止"缺省即约定"措辞(§1.3) | 成本最低,阻止新回答者被引入 |
+| **#42** | glibc 路径重写:枚举取代清单、锚定路径 token、改完断言(§8) | libxpkg `elfpatch.relocate_build_paths` + index glibc recipe |
+| **A3** | `_find_tool` 走 payload(R6 / §1.5),**以及** xlings 侧同源断言的 `command -v patchelf` | libxpkg `pkginfo.tool_payload_dir` + xlings `elfcheck::locate_patchelf` |
+| **A4** | `locate_proot_` 去掉 PATH 步骤,宿主 proot 降为具名回退 | xlings |
+| **E1/E2** | 隔离 home 成为默认(`$TMPDIR`,与 `$HOME` 无共同前缀)+ `assert_home_is_isolated` | xlings 测试库 |
+| **A1/A2/B3** | R1–R7 写进 `xpackage-spec.md`,每条带可执行判据;禁止"缺省即约定"措辞 | index 规范 |
+| **B5** | 护栏扩到所有**会导致代码被载入**的变量,默认拒绝 | xlings `manifest::is_privileged_env` |
+| **C 线** | 见 §3.3 —— C1 按提议是错的,实际落地为 C2(激活时读 xvm 的答案)+ C3(只报无活动版本的子集) | xlings |
+| **AD-11** | 占位前缀 `/nonexistent/xlings-use-rpath-not-default-search`,并在构建后断言它确实烙进去了 | index `build-glibc.sh` |
 
-### 第二批:两条并行
+顺带修掉的两个:`slice-real-home.sh` 的索引缓存指向真实 home(任何针对 slice 的 recipe
+实验其实都在读宿主的索引);CI 的 mcpp cache key 一个 key 多个写入者。
+
+### 第二批:B 线门禁已开,实现待做(任务 #55)
 
 ```
-B 线(P2:把决定搬进产物)
-  §2.7 四项验证 —— GLX / Vulkan ICD / dlsym 语义 / stub 分发
-        │  ← 门禁:2026-08-06 全部通过,见 §2.7。GLX 不需要任何全局变量;
-        │     GLX vendor 与 Vulkan ICD 是同一个文件,一个 interposer 服务两条路径
+ §2.7 四项验证 —— 2026-08-06 全部通过,见 §2.7
+        │  结论比原推断更好:GLX 不需要任何全局变量;
+        │  GLX vendor 与 Vulkan ICD 是同一个文件
         ▼
-  AD-12  interposer stub 作为索引包发布
+ AD-12  interposer stub 作为索引包(每 arch 一份)
         ▼
-  B1  libxpkg 的 elfpatch.host_link_interposer 能力
+ B1  libxpkg 的 elfpatch.host_link_interposer
         ├─→ B2  nvidia-gl-host-link 切换,删除 xlings-deps
-        └─→ B2' libcuda-host-link 用同一能力,关掉它今天的全量宿主泄漏
+        └─→ B2' libcuda-host-link 用同一能力
         ▼
-  B3  规范:LD_LIBRARY_PATH / LD_PRELOAD 声明是特权操作
-  B4  mesa / libglvnd 把 vendor 与 DRI 目录编进产物,删除那两条 subos.env(§2.6)
-        └─ B4 不依赖 interposer,可与 §2.7 验证并行
-
-C 线(P3:subos 层的"恰好一个")
-  C3 doctor 报双绑定 ─→ C1 单版本执行点 ─→ C2 envs 从绑定集合派生
-  顺序不可换:先能报告,再改行为(§3.4)
+ B4  mesa / libglvnd 把 vendor 与 DRI 目录编进产物,删除那两条 subos.env
 ```
 
-### 第三批:依赖第一批的产物
+**为什么不在本轮**:B1/B2 需要图形栈装好才能端到端验证,而本机的 home 里 mesa /
+libglvnd / nvidia-gl-host-link 都没装。门禁验证本身不需要它们(用合成实验 + 宿主的
+vendor 库就够),所以先做了。
 
-- **O4** 安装期闭包断言 + `host_deps` 显式清单(§2.8)——需要 R7 的枚举能力先到位
-- **O2/O3** 安装报告三个数、host-link 解析结果持久化(§4.2)
+### 第三批:依赖 R7 的枚举能力
+
+- **O4** 安装期闭包断言 + `host_deps` 显式清单(§2.8)
+- **O2/O3** 安装报三个数、host-link 解析结果持久化(§4.2)
 - **AD-13** 驱动耦合提示:`doctor` + 安装 host-link 包时报一次
-- **AD-11** 构建流水线换占位前缀 `/nonexistent/xlings-use-rpath-not-default-search`——**不在这三个仓库里**,需要单独安排
 - **AD-2/AD-9** refcount 强制删除的告警
+- **B4 的产物**:需要重新构建 mesa / libglvnd 并重新发布 tarball
+
+### 另记
+
+- 任务 **#53**:`SubosManifest` / `SubosEnvOrphan` / `SubosEnvUnresolved` 是 Error 级
+  但不计入退出码,`healed` 也因此算不出来。本轮只把新增的 `SubosDoubleBinding` 计了进去
+  ——把其余几条打开会改变现有 home 的退出码,需要单独验一遍。
 
 ### 已落地、与本提案不冲突
 
