@@ -113,6 +113,7 @@ TESTS=(
     "E2E-61 |subos_env_probe_compat_test.sh||"
     "E2E-62 |loader_libc_same_source_test.sh||"
     "E2E-63 |subos_env_libc_guard_test.sh||"
+    "E2E-64 |subos_single_version_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

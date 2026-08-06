@@ -1506,33 +1506,47 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
             mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
     }
 
-    // C1 -- the subos layer's "exactly one", enforced where the record is
-    // WRITTEN rather than reconciled later by whoever reads it (R2).
+    // C1 -- the subos layer's "exactly one", for the case where nothing else
+    // can supply it.
     //
-    // The store keeps many versions of a package by design; each consumer
-    // freezes one into its own RPATH; the subos in between holds exactly one.
-    // Nothing enforced that middle line, so installing a second version simply
-    // appended a second provider section, and both contributed their variables.
-    // Measured: mesa@25.0.7 and mesa@25.0.7.1 both bound in one subos, both on
-    // __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the device twice, doctor
-    // silent. The two records agreed -- on an answer the model forbids.
+    // The store keeps many versions by design; each consumer freezes one into
+    // its own RPATH; the subos in between holds exactly one. Nothing enforced
+    // that, so installing a second version appended a second provider section
+    // and BOTH contributed. Measured: mesa@25.0.7 and mesa@25.0.7.1 both bound
+    // in one subos, both on __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the
+    // device twice, doctor silent. The two records agreed -- on an answer the
+    // model forbids.
     //
-    // Replace, do not refuse: `xlings install mesa@25.0.7.1` on a subos holding
-    // 25.0.7 is an upgrade, which is the ordinary case. Coexistence is still
-    // available and still explicit -- a different subos. What is gone is
-    // reaching it by accident, through install order.
+    // The live version is normally decided by xvm and read back at activation
+    // (manifest::select_effective), so a package WITH an active version needs
+    // nothing here: installing a second version leaves the first live until
+    // `xlings use` says otherwise, which is what install and use have meant
+    // since 2026.7.31. Superseding here as well would make install a second
+    // selector -- another answerer to a question that has one, which is the
+    // defect, not the fix.
+    //
+    // What is left is the case where xvm has no answer at all. Measured: a bare
+    // `xvm.add(name)` DOES record an active version, so an ordinary install
+    // never reaches this branch -- it covers a manifest whose workspace record
+    // was lost while its declarations survived (a payload pruned out from under
+    // it, a subos config copied between homes, a hand edit). There every
+    // provider contributes, so a second version really does double the
+    // environment, and the only moment anything can choose is now, while a
+    // human is naming a version. So: supersede only when nothing else can.
     //
     // Before the ownership checks below, deliberately: those return false on a
-    // malformed declaration, and unbinding first would then leave the subos
-    // holding neither version.
+    // malformed declaration, and unbinding first would leave the subos holding
+    // neither version.
     std::vector<std::string> superseded;
     {
+        const auto active = mf::active_versions(*doc);
         std::set<std::string> ownNames;
         for (const auto* op : declarations) {
             if (!mf::is_binding(op->binding)) continue;
             ownNames.insert(std::string(mf::binding_name(op->binding)));
         }
         for (const auto& name : ownNames) {
+            if (active.contains(name)) continue;   // xvm decides, not install
             for (const auto& existing : mf::providers_named(*doc, name)) {
                 const bool sameBinding = std::ranges::any_of(
                     declarations, [&](const auto* op) {
@@ -1588,7 +1602,8 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     for (const auto& binding : superseded) {
         if (!mf::remove_provider(*doc, binding)) continue;
         changed = true;
-        log::info("[xim] subos '{}' now holds {}@{}; unbound {}",
+        log::info("[xim] subos '{}' now holds {}@{}; unbound {} (it declares no "
+                  "xvm version, so nothing else could say which is live)",
                   Config::paths().activeSubos.empty()
                       ? std::string{"default"} : Config::paths().activeSubos,
                   canonical, node.version, binding);

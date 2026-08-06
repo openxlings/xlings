@@ -432,7 +432,6 @@ std::string activation_conflict_(const DoctorState& st,
 // Nothing here needs the version DB except D2 and D5, which take it as an
 // argument, so this stays checkable against a directory.
 std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
-                                            const xvm::Workspace& ws,
                                             const fs::path& subosDir,
                                             const std::string& subosName) {
     namespace mf = xlings::subos::manifest;
@@ -570,37 +569,52 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         }
     }
 
-    // D6 — one package, two versions, one subos.
+    // D6 — a package bound at several versions with nothing able to say which.
     //
-    // The predicate is mf::duplicate_bindings, and --fix calls that same
+    // Not every duplicate: two versions where one is active is ordinary, and
+    // the dormant section is exactly what lets `xlings use pkg@<older>` restore
+    // an environment without reinstalling. Activation already drops it
+    // (manifest::select_effective).
+    //
+    // What is reportable is the subset with NO active version -- `xvm.add(name)`
+    // with no version registers a root without one, which is what mesa,
+    // libglvnd and nvidia-gl-host-link do. For those every provider
+    // contributes, so a second version really does export every variable twice.
+    // That is the state that enumerated one GPU as two.
+    //
+    // The predicate is mf::contested_bindings, and --fix calls that same
     // function rather than an equivalent one written here. Three report/repair
     // pairs in this repo have drifted, each showing up as a finding that
     // repairing does not clear.
-    for (const auto& dup : mf::duplicate_bindings(info)) {
+    const auto activeInSubos = mf::active_versions(*doc);
+    for (const auto& dup : mf::contested_bindings(info, activeInSubos)) {
         std::string names;
         for (const auto& b : dup.bindings) {
             if (!names.empty()) names += ", ";
             names += b;
         }
-        // Which one is meant to stay is a fact xvm already holds: the active
-        // version. Naming it in the remedy so the user is not left choosing
-        // between two strings with no way to tell them apart.
-        const std::string keep = xvm::get_active_version(ws, dup.name);
         out.push_back({
             .kind    = FindingKind::SubosDoubleBinding,
-            // Error: the model says exactly one, and the observable effect --
-            // a device enumerated twice, a search path with two of everything
-            // -- is a wrong result, not a cosmetic one.
+            // Error: the observable effect -- a device enumerated twice, a
+            // search path with two of everything -- is a wrong result, not a
+            // cosmetic one.
             .level   = FindingLevel::Error,
             .target  = subosName,
             .version = dup.name,
             .detail  = std::format(
-                "'{}' is bound {} times in subos '{}' ({}); the subos layer "
-                "holds exactly one version of a package{}",
-                dup.name, dup.bindings.size(), subosName, names,
-                keep.empty() ? std::string{}
-                             : std::format(", and xvm has {} active", keep)),
-            .remedy  = "xlings self doctor --fix",
+                "'{}' is bound {} times in subos '{}' ({}) and has no active "
+                "version, so every one of them contributes",
+                dup.name, dup.bindings.size(), subosName, names),
+            // Naming the versions in the remedy: the user is otherwise left
+            // choosing between two strings with nothing to tell them apart.
+            .remedy  = std::format("xlings use {}@<one of: {}>", dup.name, [&] {
+                std::string vs;
+                for (const auto& b : dup.bindings) {
+                    if (!vs.empty()) vs += ", ";
+                    vs += std::string(mf::binding_version(b));
+                }
+                return vs;
+            }()),
         });
     }
 
@@ -632,7 +646,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     // The subos this run is actually in. Other subos are not inspected from
     // here for the same reason their payloads are not repaired: a second
     // shell may be inside one right now.
-    for (auto&& f : detect_subos_manifest_(st.db, st.ws, p.subosDir,
+    for (auto&& f : detect_subos_manifest_(st.db, p.subosDir,
                                            p.activeSubos.empty() ? "default"
                                                                  : p.activeSubos)) {
         add(std::move(f));
@@ -1567,16 +1581,14 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         for (const auto& f : scan.findings)
             if (f.kind == FindingKind::SubosEnvOrphan) orphans.push_back(f.version);
 
-        // The package names detection reported as bound more than once. Only
-        // the names come from the findings; WHICH bindings to drop is answered
-        // below by mf::duplicate_bindings -- the same function detection used,
-        // so the two cannot drift into disagreeing.
-        std::vector<std::string> doubled;
-        for (const auto& f : scan.findings)
-            if (f.kind == FindingKind::SubosDoubleBinding)
-                doubled.push_back(f.version);
+        // A contested binding is deliberately NOT repaired here. It is reported
+        // precisely because nothing can say which version was meant -- the
+        // package has no active version -- and picking the highest, or the
+        // newest on disk, would be this codebase's recurring defect rather than
+        // a repair: a second answerer invented at the read end. Its remedy is
+        // `xlings use`, which makes the choice a decision someone took.
 
-        if (wantsBlock || !orphans.empty() || !doubled.empty()) {
+        if (wantsBlock || !orphans.empty()) {
             auto doc = mf::read_document(p.subosDir);
             nlohmann::json document = doc ? *doc : nlohmann::json::object();
             if (!doc && fs::exists(mf::config_path(p.subosDir))) {
@@ -1604,52 +1616,6 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     changed = true;
                     note(glyph::mark(glyph::bullet, "subos env dropped"),
                          std::format("{} is not installed here", binding));
-                }
-
-                // One package, one version, per subos.
-                //
-                // The manifest's envs section is the only record that held two:
-                // xvm's workspace maps a name to exactly one active version
-                // already, and the store is the layer where several versions
-                // are correct. So dropping the non-active providers here is the
-                // whole repair, not a partial one.
-                if (!doubled.empty()) {
-                    const auto info = mf::parse(document);
-                    for (const auto& dup : mf::duplicate_bindings(info)) {
-                        if (std::ranges::find(doubled, dup.name) == doubled.end())
-                            continue;
-                        const auto active = xvm::get_active_version(st.ws,
-                                                                    dup.name);
-                        if (active.empty()) {
-                            // No active version means nothing here can say which
-                            // one was meant. Guessing (highest? newest?) would
-                            // be a convention applied at the read end, which is
-                            // the rule this whole change exists to enforce.
-                            note(glyph::mark(glyph::failed, "subos double binding"),
-                                 std::format("'{}' is bound more than once and "
-                                             "xvm has no active version; run "
-                                             "`xlings use {}@<version>` to say "
-                                             "which one this subos holds",
-                                             dup.name, dup.name));
-                            continue;
-                        }
-                        for (const auto& binding : dup.bindings) {
-                            const auto ver = mf::binding_version(binding);
-                            // Namespaced installs record `<ns>:<version>`, so
-                            // compare the version tail as `installed` does.
-                            const auto colon = active.find(':');
-                            const bool isActive =
-                                ver == active
-                                || (colon != std::string::npos
-                                    && ver == active.substr(colon + 1));
-                            if (isActive) continue;
-                            if (!mf::remove_provider(document, binding)) continue;
-                            changed = true;
-                            note(glyph::mark(glyph::bullet, "subos env dropped"),
-                                 std::format("{} — this subos holds {}@{}",
-                                             binding, dup.name, active));
-                        }
-                    }
                 }
 
                 if (changed) {

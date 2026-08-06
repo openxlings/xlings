@@ -149,6 +149,88 @@ std::vector<DuplicateBinding> duplicate_bindings(const Info& info) {
     return out;
 }
 
+// Which version of each package THIS subos has active.
+//
+// Read from the same file as the declarations. `subos/<name>/.xlings.json`
+// holds both `workspace` (name -> active/installed) and `subos_info.envs`
+// (binding -> declarations) -- two records of "what is in this subos", in one
+// file. That is the whole of P1 in eleven lines of JSON.
+std::map<std::string, std::string> active_versions(const nlohmann::json& doc) {
+    std::map<std::string, std::string> out;
+    if (!doc.contains("workspace") || !doc["workspace"].is_object()) return out;
+    for (auto it = doc["workspace"].begin(); it != doc["workspace"].end(); ++it) {
+        if (!it.value().is_object()) continue;
+        auto active = it.value().value("active", std::string{});
+        if (!active.empty()) out[it.key()] = std::move(active);
+    }
+    return out;
+}
+
+// True when `version` is the one `active` names, allowing for the `<ns>:<ver>`
+// form a namespaced install records.
+inline bool version_is_active(std::string_view version, std::string_view active) {
+    if (version == active) return true;
+    const auto colon = active.find(':');
+    return colon != std::string_view::npos && active.substr(colon + 1) == version;
+}
+
+// The providers that actually take effect, out of everything the manifest
+// records.
+//
+// A package installed at two versions keeps BOTH provider sections -- the
+// dormant one has to survive so that `xlings use pkg@<older>` restores its
+// environment without reinstalling. What must not happen is both contributing
+// at once, which is how one GPU came to be enumerated as two.
+//
+// Which one is live is not a decision made here: xvm already made it, and its
+// answer is in this same file. Re-deriving it (highest version? last
+// installed?) would be a second answerer to a question that has one -- the
+// exact defect this function exists to remove.
+//
+// A package with NO active version keeps every provider, and that default
+// matters more than it looks: filtering on a record that turns out to be absent
+// would silently delete a package's whole environment, which is the failure
+// mode this file exists to prevent, arrived at from the other side. Measured
+// before choosing it -- a bare `xvm.add(name)` does record an active version,
+// so this is the salvage path for a manifest whose workspace record was lost
+// (pruned, copied between homes, hand-edited), not the common case. Where
+// several versions are declared with no active one, nothing can say which is
+// meant; that state is reported rather than guessed at.
+Info select_effective(const Info& info,
+                      const std::map<std::string, std::string>& active) {
+    Info out = info;
+    out.envs.clear();
+    for (const auto& p : info.envs) {
+        if (is_binding(p.binding)) {
+            const auto it = active.find(std::string(binding_name(p.binding)));
+            if (it != active.end()
+                && !version_is_active(binding_version(p.binding), it->second)) {
+                continue;
+            }
+        }
+        out.envs.push_back(p);
+    }
+    return out;
+}
+
+// A package bound at several versions with nothing able to say which is meant.
+//
+// NOT the same as duplicate_bindings: two versions where one is active is
+// ordinary -- the dormant declarations are how `xlings use` can switch back.
+// This is the subset that has no active version -- every one of them
+// contributes, so the subos exports each variable several times over. Reaching
+// it takes a lost workspace record, not an ordinary install.
+std::vector<DuplicateBinding>
+contested_bindings(const Info& info,
+                   const std::map<std::string, std::string>& active) {
+    std::vector<DuplicateBinding> out;
+    for (auto& dup : duplicate_bindings(info)) {
+        if (active.contains(dup.name)) continue;
+        out.push_back(std::move(dup));
+    }
+    return out;
+}
+
 // ── invariants ──────────────────────────────────────────────────────────
 
 enum class Defect {

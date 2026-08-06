@@ -344,12 +344,84 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     EXPECT_FALSE(info.created_at.empty());
 }
 
-// ── the subos layer's "exactly one" ──────────────────────────────────
+// ── the subos layer's one live version ───────────────────────────────
 //
-// The predicate C3's report and C3's --fix both call. It is a function rather
-// than two pieces of equivalent logic because every report/repair pair in this
-// repo has drifted at least once, and the shape it takes is a finding that
-// repairing does not clear.
+// The store holds many versions by design, each consumer freezes one into its
+// own RPATH, and the subos in between is live at exactly one. Nothing enforced
+// that middle line: installing a second version appended a second provider
+// section and BOTH contributed. Measured on a real home as mesa@25.0.7 and
+// mesa@25.0.7.1 both on __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the device
+// twice, and doctor silent -- two records agreeing on an answer the model
+// forbids.
+//
+// The fix is not that a second install unbinds the first. `install` adds to
+// the store and `use` selects; making install a second selector would be one
+// more answerer to a question that already has one. It is that activation
+// reads xvm's answer, which is recorded in the same file as the declarations.
+
+TEST(SubosActiveVersions, ReadsTheWorkspaceFromTheSameDocument) {
+    auto d = doc_with(nlohmann::json::object());
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"},
+                              {"installed", {"25.0.7", "25.0.7.1"}}};
+    d["workspace"]["nothing"] = {{"installed", {"1.0"}}};   // no active key
+
+    auto active = m::active_versions(d);
+    EXPECT_EQ(active.size(), 1u);
+    EXPECT_EQ(active.at("mesa"), "25.0.7.1");
+    EXPECT_FALSE(active.contains("nothing"));
+}
+
+TEST(SubosSelectEffective, OnlyTheActiveVersionContributes) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7.1");
+}
+
+// The dormant section is the feature, not the defect: it is what lets
+// `xlings use pkg@<older>` restore an environment without a reinstall.
+TEST(SubosSelectEffective, TheDormantSectionSurvivesInTheRecord) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    EXPECT_EQ(m::parse(d).envs.size(), 2u);   // the record keeps both
+
+    d["workspace"]["mesa"] = {{"active", "25.0.7"}};
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7");
+}
+
+// A namespaced install records `<ns>:<version>` as the active key.
+TEST(SubosSelectEffective, MatchesTheVersionTailOfANamespacedActiveKey) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    d["workspace"]["mesa"] = {{"active", "local:25.0.7"}};
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(eff.envs.size(), 1u);
+    EXPECT_EQ(eff.envs[0].binding, "mesa@25.0.7");
+}
+
+// The direction this must fail in. Filtering on a record that turns out to be
+// absent would silently delete a package's whole environment -- the same
+// failure this file exists to prevent, arrived at from the other side.
+TEST(SubosSelectEffective, NoActiveRecordKeepsEverything) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "old"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "new"});
+    // no workspace entry for mesa at all
+
+    auto eff = m::select_effective(m::parse(d), m::active_versions(d));
+    EXPECT_EQ(eff.envs.size(), 2u);
+}
 
 TEST(SubosDuplicateBindings, OneVersionPerPackageIsNotADuplicate) {
     auto d = doc_with(nlohmann::json::object());
@@ -359,10 +431,7 @@ TEST(SubosDuplicateBindings, OneVersionPerPackageIsNotADuplicate) {
     EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
 }
 
-// The measured case: mesa@25.0.7 and mesa@25.0.7.1 both bound in `default`,
-// both contributing to __EGL_VENDOR_LIBRARY_DIRS, EGL enumerating the device
-// twice, and `xlings self doctor` reporting nothing.
-TEST(SubosDuplicateBindings, TwoVersionsOfOnePackageAreReported) {
+TEST(SubosDuplicateBindings, TwoVersionsOfOnePackageAreFound) {
     auto d = doc_with(nlohmann::json::object());
     m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
     m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
@@ -378,13 +447,36 @@ TEST(SubosDuplicateBindings, TwoVersionsOfOnePackageAreReported) {
 
 // A package whose name is a prefix of another's must not merge with it.
 // "mesa" and "mesa-utils" are two packages; a substring match would report a
-// duplicate that does not exist, and --fix would then unbind a live package.
+// duplicate that does not exist, and a repair would unbind a live package.
 TEST(SubosDuplicateBindings, NamesAreComparedWhole) {
     auto d = doc_with(nlohmann::json::object());
     m::add_env(d, "mesa@25.0.7",       {"V", "prepend", "a"});
     m::add_env(d, "mesa-utils@9.0.0",  {"W", "prepend", "b"});
 
     EXPECT_TRUE(m::duplicate_bindings(m::parse(d)).empty());
+}
+
+// What doctor reports is the SUBSET with no active version -- the state where
+// every provider contributes and nothing in the home can say which was meant.
+// Reporting every duplicate would train users to delete the dormant sections
+// that make `xlings use` work.
+TEST(SubosContestedBindings, ADuplicateWithAnActiveVersionIsNotContested) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+    d["workspace"]["mesa"] = {{"active", "25.0.7.1"}};
+
+    EXPECT_TRUE(m::contested_bindings(m::parse(d), m::active_versions(d)).empty());
+}
+
+TEST(SubosContestedBindings, ADuplicateWithNoActiveVersionIsContested) {
+    auto d = doc_with(nlohmann::json::object());
+    m::add_env(d, "mesa@25.0.7",   {"V", "prepend", "a"});
+    m::add_env(d, "mesa@25.0.7.1", {"V", "prepend", "b"});
+
+    auto contested = m::contested_bindings(m::parse(d), m::active_versions(d));
+    ASSERT_EQ(contested.size(), 1u);
+    EXPECT_EQ(contested[0].name, "mesa");
 }
 
 // ── privileged declarations (B5) ─────────────────────────────────────

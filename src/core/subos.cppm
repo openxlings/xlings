@@ -940,7 +940,14 @@ inline std::vector<manifest::Resolved> subos_env_for_(const std::string& name) {
     const auto dir = Config::subos_dir(name);
     auto doc = manifest::read_document(dir);
     if (!doc) return {};
-    auto vars = manifest::resolve(manifest::parse(*doc), placeholders_for_(dir));
+    // C2: only the providers that can take effect. A package installed at two
+    // versions keeps both sections -- the dormant one is what lets `xlings use`
+    // switch back without a reinstall -- but only the active one contributes.
+    // Which is active is xvm's answer, recorded in this same file; nothing here
+    // re-derives it. See manifest::select_effective.
+    auto info = manifest::select_effective(manifest::parse(*doc),
+                                           manifest::active_versions(*doc));
+    auto vars = manifest::resolve(info, placeholders_for_(dir));
     drop_loader_coupled_dirs_(vars);
     return vars;
 }
