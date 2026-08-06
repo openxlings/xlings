@@ -559,7 +559,8 @@ bool has_unresolved(std::string_view expanded) {
 // process, it decides which executable runs, and it is governed by R6/AD-1
 // rather than by this guard.
 //
-// The list below is the BENIGN one, and the check is default-deny. Listing the
+// The list below is the BENIGN one -- named for what it asserts, since PATH is
+// on it and PATH plainly does not name only data. The check is default-deny. Listing the
 // dangerous set instead would be a hand-written list of "what we happened to
 // think of" — the exact anti-pattern R7 names, and the one that already cost us
 // five missing entries in nvidia-gl-host-link's dependency table. A variable
@@ -567,7 +568,7 @@ bool has_unresolved(std::string_view expanded) {
 //
 // Adding to this list is a deliberate act: it asserts the variable cannot cause
 // code to enter a process.
-inline bool names_only_data(std::string_view var) {
+inline bool never_loads_code(std::string_view var) {
     return var == "XDG_DATA_DIRS"   || var == "XDG_CONFIG_DIRS"
         || var == "XDG_DATA_HOME"   || var == "XDG_CONFIG_HOME"
         || var == "XDG_CACHE_HOME"  || var == "XDG_STATE_HOME"
@@ -584,13 +585,22 @@ inline bool names_only_data(std::string_view var) {
 // A declaration is privileged when it can put code from our payload into a
 // process we do not own.
 //
-// `${pkgdir}` is checked as well as an expanded store path, because at install
-// time -- the moment this most needs to be reported -- the value has not been
-// expanded yet, and `${pkgdir}` is by definition our payload.
+// The placeholders are checked as well as an expanded store path, because at
+// install time -- the moment this most needs to be reported -- the value has
+// not been expanded yet.
+//
+// `${subosdir}` counts. The subos sysroot is a VIEW onto our payloads, made of
+// symlinks into them, so a directory under it on a loader search path delivers
+// our libraries just as surely as the store path does. Checking only
+// `${pkgdir}` would have let the same declaration through in its other spelling
+// -- one hazard with two names, which is the shape this whole review is about.
 inline bool is_privileged_env(std::string_view var, std::string_view value) {
-    if (names_only_data(var)) return false;
-    return value.find("${pkgdir}") != std::string_view::npos
-        || value.find("/xpkgs/")   != std::string_view::npos;
+    if (never_loads_code(var)) return false;
+    for (const auto* needle : {"${pkgdir}", "${subosdir}", "${xlings_home}",
+                               "/xpkgs/"}) {
+        if (value.find(needle) != std::string_view::npos) return true;
+    }
+    return false;
 }
 
 // ── resolution ──────────────────────────────────────────────────────────

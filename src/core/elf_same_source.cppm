@@ -152,8 +152,13 @@ inline std::string locate_patchelf(const std::filesystem::path& scanned) {
             std::error_code vec;
             for (auto vit = fs::directory_iterator(it->path(), vec);
                  !vec && vit != fs::directory_iterator(); vit.increment(vec)) {
+                // A separate error_code: sharing the outer loop's would let a
+                // single unreadable entry set it and end the iteration, which
+                // reads as "no payload here" and silently falls through to the
+                // host tool.
+                std::error_code fec;
                 auto candidate = vit->path() / "bin" / "patchelf";
-                if (!fs::is_regular_file(candidate, ec)) continue;
+                if (!fs::is_regular_file(candidate, fec)) continue;
                 const auto ver = vit->path().filename().string();
                 if (bestVer.empty()
                     || version_order::compare(ver, bestVer) > 0) {

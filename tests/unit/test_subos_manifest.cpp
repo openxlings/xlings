@@ -519,6 +519,18 @@ TEST(SubosPrivilegedEnv, DataVariablesAreNotPrivileged) {
     EXPECT_FALSE(m::is_privileged_env("PKG_CONFIG_PATH", "${pkgdir}/lib/pkgconfig"));
 }
 
+// The same hazard in its other spelling. The subos sysroot is a VIEW onto our
+// payloads, made of symlinks into them, so a directory under it on a loader
+// search path delivers our libraries just as surely as the store path does.
+// Checking only ${pkgdir} would let one hazard through under two names -- the
+// shape this whole review is about.
+TEST(SubosPrivilegedEnv, TheSubosViewCountsAsOurPayload) {
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${subosdir}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH", "${xlings_home}/lib"));
+    EXPECT_TRUE(m::is_privileged_env("LD_LIBRARY_PATH",
+                                     "/home/u/.xlings/data/xpkgs/xim-x-a/1/lib"));
+}
+
 // PATH is a third category: it does not inject code into a running process, it
 // decides which executable runs. That is R6/AD-1's business, not this guard's.
 TEST(SubosPrivilegedEnv, PathIsGovernedElsewhere) {

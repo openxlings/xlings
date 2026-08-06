@@ -504,7 +504,14 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     }
 
     // D3/D4 — over the resolved set, so both see exactly what activation will.
-    const auto resolved = mf::resolve(info, mf::Placeholders{
+    //
+    // select_effective first, for the same reason: a dormant provider (a second
+    // version whose sibling is the active one) contributes nothing, so
+    // reporting that it "would export an unexpanded path" describes an export
+    // that will not happen. D2 above deliberately stays over the FULL set --
+    // "recorded here but not installed here" is true of a dormant section too.
+    const auto effective = mf::select_effective(info, mf::active_versions(*doc));
+    const auto resolved = mf::resolve(effective, mf::Placeholders{
         .subosdir    = subosDir,
         .home        = platform::get_home_dir(),
         .xlings_home = Config::paths().homeDir,
