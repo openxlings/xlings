@@ -33,7 +33,7 @@ hash    = "fnv1a:3465dd0bd5d7aa20"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
-version = "0.0.51"
-source  = "index+mcpplibs@0.0.51"
-hash    = "fnv1a:71031031ffb66224"
+version = "0.0.52"
+source  = "index+mcpplibs@0.0.52"
+hash    = "fnv1a:542243625c3f1e62"
 
