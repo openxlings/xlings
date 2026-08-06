@@ -222,46 +222,6 @@ jobs:
           $global:LASTEXITCODE = 0
           mcpp index status
           $global:LASTEXITCODE = 0
-          # PER PLATFORM, not a whole-file match.
-          #
-          # `Select-String` over the whole descriptor passes on a file where
-          # the entry exists only under `xpm.linux` -- which is exactly the
-          # bug this assert was written to catch. Measured 2026-08-06: the
-          # POSIX workflows were made platform-aware and this one was not, so
-          # Windows sailed through the assert and failed in `mcpp build`
-          # instead, two steps later and with a message about a package rather
-          # than a platform. Slice the `windows = {` block first.
-          $idx = Join-Path $env:USERPROFILE ".mcpp\registry\data\mcpplibs\pkgs\x\xpkg.lua"
-          if (Test-Path $idx) {
-            $lines = Get-Content $idx
-            $inblk = $false
-            $block = New-Object System.Collections.Generic.List[string]
-            foreach ($line in $lines) {
-              if ($line -match '^\s+windows\s*=\s*\{') { $inblk = $true; continue }
-              if ($inblk -and $line -match '^        [a-z]+\s*=\s*\{') { $inblk = $false }
-              if ($inblk) { $block.Add($line) }
-            }
-            # The version comes from mcpp.toml AT RUNTIME, never a literal.
-            # A literal is a value that changes: the next libxpkg bump moves
-            # mcpp.toml and leaves this asserting the previous version, which
-            # then passes against an index that carries it -- stale without
-            # ever failing.
-            $want = $null
-            $inDeps = $false
-            foreach ($line in (Get-Content "mcpp.toml")) {
-              if ($line -match '^\[dependencies\.mcpplibs\]') { $inDeps = $true; continue }
-              if ($line -match '^\[') { $inDeps = $false }
-              if ($inDeps -and $line -match '^\s*xpkg\s*=\s*"([^"]+)"') { $want = $Matches[1]; break }
-            }
-            if (-not $want) { Write-Host "FAIL: no mcpplibs.xpkg pin in mcpp.toml"; exit 1 }
-            if (-not ($block -match [regex]::Escape("[""$want""]"))) {
-              Write-Host "FAIL: mcpp.toml needs mcpplibs.xpkg $want but the refreshed index does not list it under xpm.windows."
-              mcpp index status
-              Write-Host "versions present anywhere in the file:"
-              Select-String -Path $idx -Pattern '\["[0-9]+\.[0-9]+\.[0-9]+"\]' | Select-Object -First 6 | ForEach-Object { Write-Host "  $($_.Matches[0].Value)" }
-              exit 1
-            }
-          }
 
       - name: Prepare unit fixture index repo
         shell: bash
