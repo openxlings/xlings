@@ -305,7 +305,36 @@ closure §7 把 `VK_DRIVER_FILES` 写进了目标形态,那是多余的:`VK_DRIV
 `/usr/share/vulkan/icd.d/nvidia_icd.json` 处理掉(它内含 SONAME,与
 `10_nvidia.json` 同样的问题;**这是 A4 的第二半,不要漏**)。
 
-#### A5 —— Intel iris:调研推翻了"需要 libclc"
+#### A5 —— Intel iris:**构建推翻了调研,原来的判断才是对的**
+
+> **2026-08-07 实测更正,读这一节之前先看这里。** 下面"调研推翻了需要 libclc"
+> 这个结论**是错的**,已由一次真实的 `meson setup` 推翻。mesa 25.0.7 的
+> `meson.build:841`:
+>
+> ```meson
+> with_clc = get_option('mesa-clc') != 'auto' or with_microsoft_clc or
+>            with_drivers_clc or with_gallium_iris or with_intel_vk or ...
+> if with_gallium_clover or with_clc
+>   dep_clc = dependency('libclc')      -- 硬依赖,configure 直接失败
+> ```
+>
+> **`with_gallium_iris` 单独一项就会拉起 `libclc`。** 我搞混了两个 option:
+> `intel-clc` 确实默认 `disabled` 且只关光追,但决定 libclc 的是
+> `mesa-clc` / `with_gallium_iris`,是另一回事。**closure §4.2 原来的说法
+> ("iris 需要 libclc")是对的**,我基于文档的"更正"才是错的。
+>
+> 同一次构建也确认了两件正面的事:
+> * **`d3d12` 不在那张表里** —— WSL2 支持不需要 libclc(A9 成立)。
+> * **DirectX-Headers 由 meson subproject fallback 自动解决**
+>   (`Found DirectX-Headers 1.614.1 (overridden)`),不需要新包,与 §A9 的预判一致。
+>
+> 所以 Intel 的缺口**没有**变便宜:它的前置是先把 `libclc` 打包(而 libclc 要
+> clang + SPIR-V,不只是 libllvm)。本轮的构建改为 `crocus`(Gen4–7)+ `d3d12`,
+> 现代 Intel(Gen8+/Xe,即 iris)仍然落 llvmpipe。
+>
+> 这条正是 §A5 判据里"**先跑构建,再改文档**"存在的理由 —— 而我上一版正是先改了文档。
+
+以下为原文,保留以便对照:
 
 **现状**:载荷 `lib/dri/` 实测只有
 `swrast / kms_swrast / libdril / nouveau / radeonsi / zink`。**没有 iris**。
@@ -953,6 +982,36 @@ home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这�
 
 CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件事本轮**是在真实 subos
 里做过的**(§10.1):`xlings install graphics` 装了 26 个包,godot 也装了。
+
+### 10.2c 重建 mesa 时踩到的四件事(都是可复用的)
+
+1. **T0 层确实还没建。** closure §4.2 把 `meson / pkgconf / bison / flex / zstd`
+   列为"待建",一年后仍然是:`xlings install meson` 报
+   `package 'meson' not found`。所以构建环境只能靠宿主工具 + `pip`,而不是靠索引。
+   这也解释了为什么"装了栈的 home 能不能构建栈"这个问题一开始看起来是死的。
+2. **`iris` 需要 libclc,`d3d12` 不需要。** 见 §A5 顶部的更正。判据就在
+   `meson.build:841` 那个 `with_clc` 的或表里 —— 一次 `meson setup` 就能读到,
+   而我之前是去读文档。
+3. **DirectX-Headers 由 meson subproject fallback 自动解决**
+   (`YES 1.614.1 (overridden)`),不需要新包。§A9 对这一条的预判是对的。
+4. **mesa 报 `mako module >= 0.8.0 required`,而缺的根本不是 mako。**
+   同一个解释器 `python3 -c "import mako"` 成功(1.4.1,就装在载荷的
+   site-packages 里)。真因在 `meson.build:943`,那段检查是这么写的:
+
+   ```python
+   try:    from packaging.version import Version
+   except: from distutils.version import StrictVersion as Version
+   import mako
+   assert Version(mako.__version__) >= Version("0.8.0")
+   ```
+
+   **Python 3.13 删掉了 `distutils`。** 所以在没有 `packaging` 的 3.13 上,`try`
+   和 `except` 两条路都抛异常,整段的 returncode 非零,而 mesa 把它一律报成
+   "mako 缺失"。装上 `packaging` 即通过。
+
+   *(我第一次把它归因成"`python3` 走 shim 干扰了 meson 的探测",换成载荷里的真
+   解释器之后**失败一模一样** —— 假设被自己的下一次运行否掉了。记在这里是因为
+   这个错误信息会把任何人送去查 mako。)*
 
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
