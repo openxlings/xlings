@@ -935,10 +935,36 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 
 | 项 | 为什么 |
 |---|---|
-| **A5+A9b mesa 重建**(iris/crocus/d3d12) | 需要在 subos 里完整构建 mesa,再把 ~100 MB 载荷发到 xlings-res 并镜像到 GitCode。是本方案里唯一的长构建 + 发布权限项。**recipe 侧的 A9 已全部完成并验证**,缺的只是载荷里的 `d3d12_dri.so` / `iris_dri.so` |
+| **A5+A9b mesa 重建**(iris/crocus/d3d12) | **不是"时间不够",而是构建环境无法从已安装的载荷重建**,见下 |
 | **A4 vulkan-loader** | 同上,需要一次构建。顺带实测到一条相关证据:强制 mesa vendor 时 `MESA: error: ZINK: failed to load libvulkan.so.1` —— zink 确实因为没有 loader 而是死的,与 §A4 的判断一致 |
 | **发布链** | libxpkg 0.0.54 → mcpp-index → xlings pin → 发布 → xim-pkgindex bump。libxpkg 与 xlings 均已提交并测试通过,尚未 tag |
 | **空 host S1–S4 复测** | 见 §10.2 第二条 |
+
+#### 为什么 mesa 重建不能在一个装好图形栈的 home 里做(实测)
+
+装了全部 22 个包的 subos 里,`build-in-subos.sh` 需要的东西**几乎都不在**:
+
+```
+PKG_CONFIG_LIBDIR=<subos>/usr/lib/pkgconfig
+  expat ok | libdrm zlib libxcb x11 wayland-client libelf 全部 MISSING
+<subos>/usr/bin/glslangValidator            MISSING
+<subos>/bin/{ninja,python3}                 MISSING
+```
+
+原因是结构性的:`sysroot.declare_libs` 只取 `lib/*.so*`,`declare_headers_tree`
+只取头文件,**没有任何机制把 `pkgconfig/` 声明进 sysroot**。运行期需要的东西齐了,
+构建期需要的 `.pc` 一个都没有。而 `build-in-subos.sh` 故意把 `PKG_CONFIG_LIBDIR`
+钉在 subos 上(注释写明:让缺的依赖在 configure 阶段大声失败,而不是被宿主悄悄满足)
+—— 所以它现在正确地失败了。
+
+上一轮之所以能构建,是因为那个 `gfxbuild` subos 里每一层都是**由构建脚本自己
+`make install` 进 `$SUBOS/usr` 的**,`.pc` 是构建产物的一部分。要重建 mesa 就得
+重跑整条 `tiers.sh` T1→T4,那是几小时的连续构建,不是本轮能挤进来的一步。
+
+**这条本身是一个可以修的缺口**:如果 `sysroot` 增加一个 `declare_pkgconfig`
+(与 `declare_headers_tree` 同形),一个装了栈的 home 就同时是一个能构建栈的 home。
+值得单开。**A9 的 recipe 侧已全部完成并验证**,缺的只是载荷里的
+`d3d12_dri.so` / `iris_dri.so`。
 
 ---
 
