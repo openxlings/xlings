@@ -29,13 +29,21 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_sandbox"
+# Under $TMPDIR, not the checkout. E1: the checkout is normally under $HOME,
+# so a home there shares a long prefix with the real one and every "which home
+# did we actually use?" defect stays invisible -- which is how all four of the
+# 2026-08-06 home defects survived. It also puts the home BELOW a directory the
+# sandbox privatises before binding, which is the hardest ordering in the bind
+# list and the one S8 exists to pin down. The 2026-08-06 measurements hit that
+# ordering by accident; here it is deliberate.
+RUNTIME_DIR="$(runtime_home_dir subos_sandbox)"
 HOME_DIR="$RUNTIME_DIR/home"
 
 cleanup() { rm -rf "$RUNTIME_DIR"; }
 trap cleanup EXIT
 cleanup
 
+assert_home_is_isolated "$HOME_DIR"
 XLINGS_BIN="$(find_xlings_bin)"
 
 mkdir -p "$HOME_DIR/subos/default/bin" "$HOME_DIR/runtimedir"
