@@ -231,9 +231,25 @@ jobs:
           # which is the failure mode this whole step exists to end.
           mcpp index update || true
           mcpp index status || true
+          # PER PLATFORM, not a whole-file grep.
+          #
+          # A grep for `["0.0.53"]` passes on a file where the entry exists
+          # only under `xpm.linux` -- which is exactly the bug this assert was
+          # written to catch and did not: both bumps edited the linux section
+          # alone, linux CI went green, and macOS/Windows failed against a
+          # file that literally contains the string. Slice the section for
+          # THIS platform first.
           idx="$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"
-          if [ -f "$idx" ] && ! grep -q '\["0.0.53"\]' "$idx"; then
-            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it." >&2
+          case "$(uname -s)" in
+            Darwin) plat=macosx ;;
+            Linux)  plat=linux ;;
+            *)      plat=linux ;;
+          esac
+          if [ -f "$idx" ] && ! awk -v p="$plat" '
+                $0 ~ "^ +" p " = \\{" {inblk=1; next}
+                inblk && /^        [a-z]+ = \{/ {inblk=0}
+                inblk' "$idx" | grep -q '\["0.0.53"\]'; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it under xpm.$plat." >&2
             echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
             echo "      versions present:" >&2
             grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2
