@@ -253,11 +253,20 @@ jobs:
             Linux)  plat=linux ;;
             *)      plat=linux ;;
           esac
+          # The version comes from mcpp.toml AT RUNTIME, never a literal.
+          #
+          # A literal here is a value that changes: the next libxpkg bump moves
+          # mcpp.toml and leaves every workflow asserting the previous version,
+          # which then passes against an index that carries it -- the check
+          # goes stale without ever failing. Read the pin from its one source
+          # of truth instead, so the only constant is where that source lives.
+          want="$(awk '/^\[dependencies\.mcpplibs\]/{s=1;next} /^\[/{s=0} s && /^[[:space:]]*xpkg[[:space:]]*=/{if (match($0, /"[^"]+"/)) {print substr($0, RSTART+1, RLENGTH-2); exit}}' mcpp.toml)"
+          [ -n "$want" ] || { echo "FAIL: no mcpplibs.xpkg pin in mcpp.toml" >&2; exit 1; }
           if [ -f "$idx" ] && ! awk -v p="$plat" '
                 $0 ~ "^ +" p " = \\{" {inblk=1; next}
                 inblk && /^        [a-z]+ = \{/ {inblk=0}
-                inblk' "$idx" | grep -q '\["0.0.53"\]'; then
-            echo "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it under xpm.$plat." >&2
+                inblk' "$idx" | grep -q "\[\"$want\"\]"; then
+            echo "FAIL: mcpp.toml needs mcpplibs.xpkg $want but the refreshed index does not list it under xpm.$plat." >&2
             echo "      index revision:" >&2; mcpp index status 2>&1 | sed 's/^/      /' >&2
             echo "      versions present:" >&2
             grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -6 | sed 's/^/      /' >&2

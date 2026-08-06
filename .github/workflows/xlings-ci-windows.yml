@@ -241,8 +241,21 @@ jobs:
               if ($inblk -and $line -match '^        [a-z]+\s*=\s*\{') { $inblk = $false }
               if ($inblk) { $block.Add($line) }
             }
-            if (-not ($block -match '\["0.0.53"\]')) {
-              Write-Host "FAIL: mcpp.toml needs mcpplibs.xpkg 0.0.53 but the refreshed index does not list it under xpm.windows."
+            # The version comes from mcpp.toml AT RUNTIME, never a literal.
+            # A literal is a value that changes: the next libxpkg bump moves
+            # mcpp.toml and leaves this asserting the previous version, which
+            # then passes against an index that carries it -- stale without
+            # ever failing.
+            $want = $null
+            $inDeps = $false
+            foreach ($line in (Get-Content "mcpp.toml")) {
+              if ($line -match '^\[dependencies\.mcpplibs\]') { $inDeps = $true; continue }
+              if ($line -match '^\[') { $inDeps = $false }
+              if ($inDeps -and $line -match '^\s*xpkg\s*=\s*"([^"]+)"') { $want = $Matches[1]; break }
+            }
+            if (-not $want) { Write-Host "FAIL: no mcpplibs.xpkg pin in mcpp.toml"; exit 1 }
+            if (-not ($block -match [regex]::Escape("[""$want""]"))) {
+              Write-Host "FAIL: mcpp.toml needs mcpplibs.xpkg $want but the refreshed index does not list it under xpm.windows."
               mcpp index status
               Write-Host "versions present anywhere in the file:"
               Select-String -Path $idx -Pattern '\["[0-9]+\.[0-9]+\.[0-9]+"\]' | Select-Object -First 6 | ForEach-Object { Write-Host "  $($_.Matches[0].Value)" }
