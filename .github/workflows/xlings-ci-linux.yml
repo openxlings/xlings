@@ -18,7 +18,7 @@ env:
   # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
   # Must contain the mcpp version pinned in .xlings.json (2026.8.3.3).
-  XIM_PKGINDEX_REF: 20e53c6a4967346282af21c8fd2af91e6af75cc7
+  XIM_PKGINDEX_REF: bf969a651caae4539eea8e92e3d14cb60e0eaf53
 
 jobs:
   build-and-test:
@@ -177,7 +177,28 @@ jobs:
           # dependency rather than as an index nobody refreshed.
           xlings update || true
           xlings install -y
-          mcpp --version
+
+          # Installing is not switching, and this cache makes the difference
+          # visible. `xlings install` lays the payload down; the shim keeps
+          # resolving whatever version was already active -- the client says so
+          # ("installed, but 'x' still resolves to ..."), and with ~/.mcpp
+          # restored from a cache that line is the ONLY sign that the mcpp
+          # about to run is the old one. Measured 2026-08-06: .xlings.json
+          # pinned 2026.8.6.1 while the run used the cached build, whose index
+          # snapshot predated the dependency this PR needs -- surfacing as
+          # `mcpplibs.xpkg@0.0.53 not found` against an index that demonstrably
+          # had it.
+          xlings use mcpp "2026.8.6.1" || true
+
+          # Assert, do not print. A version line in a log is only read after
+          # something has already gone wrong.
+          got="$(mcpp --version 2>&1 | head -1)"
+          case "$got" in
+            *"2026.8.6.1"*) echo "mcpp $got (matches .xlings.json)" ;;
+            *) echo "FAIL: .xlings.json pins mcpp 2026.8.6.1 but the mcpp on PATH is '$got'." >&2
+               echo "      Installing does not switch; the shim still resolves the cached build." >&2
+               exit 1 ;;
+          esac
           mcpp self version
 
       - name: Reinitialize mcpp registry (GLOBAL)
@@ -204,6 +225,31 @@ jobs:
           prune_registry "$GITHUB_WORKSPACE/.mcpp/registry"
           mcpp self config --mirror GLOBAL
 
+          # Force the index refresh, then ASSERT what landed.
+          #
+          # The prune above drops the resolved indexes, and mcpp's own
+          # re-fetch happily uses whatever it finds in the restored cache --
+          # so a freshly published dependency reads as "not found" against an
+          # index that demonstrably has it. Measured 2026-08-06:
+          # `mcpplibs.xpkg@0.0.53 not found`, while the index commit, the
+          # published artifact, the rolling pointer and releases/latest all
+          # carried the entry.
+          #
+          # `mcpp index update` is the refresh; `mcpp index status` prints the
+          # revision each index landed on, which is the one datum that makes a
+          # stale-index failure readable instead of surfacing two layers away
+          # as `<pkg>@<ver> not found`.
+          mcpp index update || true
+          mcpp index status || true
+          # PER PLATFORM, not a whole-file grep.
+          #
+          # A grep for `["0.0.53"]` passes on a file where the entry exists
+          # only under `xpm.linux` -- which is exactly the bug this assert was
+          # written to catch and did not: both bumps edited the linux section
+          # alone, linux CI went green, and macOS/Windows failed against a
+          # file that literally contains the string. Slice the section for
+          # THIS platform first.
+
       - name: Prepare unit fixture index repo
         run: |
           bash tests/e2e/prepare_fixture_index.sh ../xim-pkgindex
@@ -224,6 +270,7 @@ jobs:
           mcpp test || {
             status=$?
             echo "::group::mcpp build diagnostics"
+
             ninja_bin="$(command -v ninja || true)"
             if [[ -z "$ninja_bin" ]]; then
               ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
@@ -240,6 +287,44 @@ jobs:
             echo "::endgroup::"
             exit "$status"
           }
+
+      # A separate step, `if: failure()`, and not an `|| { ... }` on one
+      # command.
+      #
+      # The diagnostics used to hang off `mcpp test || { ... }` with
+      # `mcpp build` running unguarded above it. The shell is `bash -e`, so a
+      # failing `mcpp build` aborted the step before the block was ever
+      # reached: the diagnostic existed, never ran, and the failure looked
+      # exactly the same as if it had. Measured 2026-08-06 -- a whole CI round
+      # spent adding index-content output that could not print.
+      - name: Diagnose a failed mcpp build
+        if: failure()
+        run: |
+          # What index does this runner actually hold? `mcpplibs.xpkg@<ver>
+          # not found` was diagnosed repeatedly from the outside -- index
+          # commit, published artifact, rolling pointer, releases/latest,
+          # publish lag, the mcpp version pin, install-vs-use, and the
+          # lockfile hash were each checked and each was correct. All of that
+          # is inference about a file only the runner can see.
+          for idx in "$HOME/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua" \
+                     "$GITHUB_WORKSPACE/.mcpp/registry/data/mcpplibs/pkgs/x/xpkg.lua"; do
+            if [ -f "$idx" ]; then
+              echo "--- $idx"
+              grep -oE '\["[0-9]+\.[0-9]+\.[0-9]+"\]' "$idx" | head -8
+            else
+              echo "--- $idx : ABSENT"
+            fi
+          done
+          for root in "$HOME/.mcpp/registry" "$GITHUB_WORKSPACE/.mcpp/registry"; do
+            [ -d "$root" ] || continue
+            echo "--- $root"
+            ls -1 "$root" 2>/dev/null | head -8
+            ls -1 "$root/data" 2>/dev/null | head -8
+            ls -1 "$root/index-snapshots" 2>/dev/null | head -8
+          done
+          mcpp --version 2>&1 | head -2 || true
+          mcpp self version 2>&1 | head -3 || true
+          xlings --version 2>&1 | head -2 || true
 
       - name: Multiplatform contract scripts
         run: |

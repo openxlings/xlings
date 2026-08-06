@@ -491,3 +491,135 @@ B2 的"切换后仍是 NVIDIA"证明不了是切换的功劳。
 | #56 | 能按需重现 | ❌ **未达成**,四个假设被排除 |
 
 两项达成、一项没有。没达成的那项**没有被当作达成**,这本身就是这条规矩的用处。
+
+### 7.6 #55 B 线:核心命题已在真实栈上验证(2026-08-06)
+
+图形栈用 `xlings config --mirror CN` 装进隔离 home(22 个包)。**先前两次判它
+"网络不可行/卡住"都是错的** —— 第一次是隔离 home 默认 GLOBAL 镜像,第二次是我用
+"20 秒零字节"给一个正在下载与解压之间的安装下了死刑。用单目录短时增长判定长任务,
+不是测量。
+
+#### 基线(glprobe,渲染并读回像素)
+
+| 环境 | `GL_RENDERER` | `PIXEL` |
+|---|---|---|
+| 宿主 | NVIDIA GeForce RTX 4080/PCIe/SSE2 | 336699 |
+| **进 subos(今天的 `LD_LIBRARY_PATH` 方案)** | **llvmpipe (LLVM 20.1.7)** | 336699 |
+
+**§2.6 的缺陷被实测到了**:同一个链接宿主 libEGL 的二进制,进 subos 后从 GPU 掉到
+软件渲染,没有任何提示。两边像素都对 —— 所以"能不能渲染"这个检查抓不住它,只有
+渲染器名字能。
+
+#### interposer 对照
+
+27 KB,patchelf 三步(`--set-soname` / `--add-needed <宿主 vendor 绝对路径>` /
+`--set-rpath --force-rpath <从载荷推导的闭包>`),安装期不需要编译器。
+
+| | `GL_RENDERER` | `LD_LIBRARY_PATH` |
+|---|---|---|
+| interposer + **我们的** loader | **NVIDIA GeForce RTX 4080/PCIe/SSE2**,`PIXEL=336699`,`RESULT=ok` | **只有 `/usr/lib/x86_64-linux-gnu`** |
+
+`lib/xlings-deps` 完全不参与。**B2 的验收判据当场满足。**
+
+#### 边界:interposer 只对跑在我们 loader 上的消费者安全
+
+同一个 interposer 给**宿主二进制**(宿主 loader、宿主 libc)用:
+
+```
+librt.so.1: undefined symbol: __pointer_chk_guard, version GLIBC_PRIVATE
+```
+
+正是 8-05 那次崩溃的同一条错误。原因清楚:interposer 的 RPATH 指向**我们的**
+glibc,而消费者的 libc 是宿主的 —— §2.3 说的"两半来自不同构建"。
+
+**这不是缺陷,是适用域**,而且与 §2.3 的推断一致:vendor 被 dlopen 进的那个进程
+本来就该是我们的(INTERP 指向我们的 glibc)。但它给 B1 加了一条**必须写进契约**的
+前置条件:
+
+> `host_link_interposer` 产出的对象,只可由 INTERP 指向我们载荷的消费者加载。
+> 宿主二进制必须继续走宿主自己的 vendor。
+
+这条正是 §2.6/B4 存在的理由:把 vendor 目录编进**我们自己构建的** libglvnd,宿主的
+libglvnd 就用宿主默认目录,两条路径天然分开。
+
+#### 与门禁验证的关系
+
+门禁(§2.7)证明的是**机制可行**(DT_RPATH 传递、dlsym 穿透、GLX 无需全局变量);
+这一节证明的是**在真实 NVIDIA 栈上有效**,并测出了适用域。两者都不能替代对方。
+
+### 7.7 #55 B 线落地:三个"看起来成功"的东西被逐一测穿(2026-08-06)
+
+§7.6 证明了机制。落地时,每一步都先给出一个通过的结果,再被更严的测量推翻。
+
+#### 一:载荷是空的,而断言救了场
+
+`interposer-stub` 装完,payload 目录空无一物。install hook 自己的断言把它拦下并
+点名了包和路径。根因不是解包布局,是 **resource 声明位置错了** ——
+`url_template` 被我嵌进了版本条目里,而它是版本表的**兄弟**;带 per-arch sha256
+的条目要用 `x86_64 = { url, sha256 }` 子表(`aria2-next` 是样板)。解析器对此只
+说了一句 `resource has neither url nor source`,然后什么也没下载。
+
+**如果 install hook 没写那句断言,这个包会"安装成功"并留下一个空目录。**
+
+#### 二:`glxinfo` 报出 RTX 4080,而它证明的是宿主栈
+
+subos 里跑 `glxinfo -B`:
+
+```
+OpenGL renderer string: NVIDIA GeForce RTX 4080/PCIe/SSE2
+```
+
+看着是 B 线成了。实际上 `command -v glxinfo` = `/usr/bin/glxinfo`,
+`patchelf --print-interpreter` = `/lib64/ld-linux-x86-64.so.2` —— **宿主二进制跑在
+宿主 loader 上**,我们的载荷一个字节都没参与。这行输出在 B 线成功与彻底没发生时
+**完全一致**。
+
+改成从 `/proc/self/maps` 报出每个 GL 对象的**实际来源路径**后,真相立刻可读。
+两个探针现在都这么做,harness 断言我们的 interposer 在其中。
+
+#### 三:`interposer: yes`,而四个入口点只覆盖了一个
+
+glvnd **按名字 dlopen** 每个 vendor 库,所以 `libEGL_nvidia.so.0`、
+`libGLX_nvidia.so.0`、`libGLESv1_CM_nvidia.so.1`、`libGLESv2_nvidia.so.2`
+各是一条独立载入链的**根**。DT_RPATH 只沿链**向下**传递,永远不会横跨到另一个根。
+
+只 interpose 了 libEGL 时:EGL 在 4080 上渲染,GLX 的整个闭包仍来自 `/usr/lib`。
+而安装日志说的是 `interposer: yes`。
+
+现在四个入口点全部 interpose,日志报的是**分数** `4/4`。`libGLX_nvidia.so.0`
+同时是 Vulkan ICD,所以这一个根承载两套 API。
+
+#### 四:`deps.build` 声明了,patchelf 没装(libxpkg loader 缺陷)
+
+`deps` 表只要有数组部分,loader 就走 legacy 分支:**`build` 子表被丢弃,数组项
+被复制进 `build_deps` 顶替**。声明照写、安装照样报成功、两件事都没做。症状出现在
+两层之外 —— elfpatch 警告 "patchelf 解析到 host"。
+
+libxpkg 0.0.52 修了混合形状,但**索引不能依赖这个修复**:它要服务所有版本的
+客户端,而 recipe 里没有办法探测 loader 的形状能力(不像 Lua 函数可以 `type()`
+探测)。所以 recipe 改用纯 split 形式,并加了一条静态测试禁止混合形状 ——
+括号配对判断,不是正则(`deps` 表里几乎总有嵌套表和注释)。
+
+#### 顺带纠正一处我自己的错话
+
+我曾说"约 30 个用 elfpatch 的 recipe 在静默回落到宿主 patchelf"。两处都错:
+`_find_tool` 的顺序是 **payload → subos view → home bin → host**,回落时**会警告**
+(那句警告正是 A3 加的),且 `tool_payload_dir` 会**扫整个 store** —— 只要 home 里
+装过 patchelf 就走载荷,与是否声明无关。真实缺口只剩一个窄口子:**从未装过
+patchelf 的 home**。声明 build dep 堵的是这个。
+
+#### 最终验证
+
+`.agents/tools/graphics/verify-host-link.sh`,真实 RTX 4080(驱动 550.144.03),
+隔离 home,**12/12**:四个入口点形状正确、EGL 渲染出像素、GLX 渲染、两者都经过
+**我们的** interposer、宿主真 vendor 由绝对 DT_NEEDED 拉入、`LD_LIBRARY_PATH` 为空、
+宿主驱动文件未被改动。
+
+#### 这次落地新增的一条契约前置
+
+vendor 的 dlopen 由**调用方**的搜索路径服务,而 `libGLX.so.0` 自己的 RPATH 是
+`$ORIGIN` —— 它看不到 vendor 包。真正让它解析成功的是:**DT_RPATH 会沿载入链向上
+一直搜到可执行文件**。DT_RUNPATH 不会 —— 同一个探针用 `--enable-new-dtags` 构建,
+X 连接正常、GLX 扩展正常,却一个 vendor 都找不到。
+
+> 消费者必须携带 **DT_RPATH**(`--force-rpath`),不能是 DT_RUNPATH。

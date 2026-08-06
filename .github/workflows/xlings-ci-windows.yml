@@ -18,7 +18,7 @@ env:
   # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
   # Must contain the mcpp version pinned in .xlings.json (2026.8.3.3).
-  XIM_PKGINDEX_REF: 20e53c6a4967346282af21c8fd2af91e6af75cc7
+  XIM_PKGINDEX_REF: bf969a651caae4539eea8e92e3d14cb60e0eaf53
 
 jobs:
   build-and-test:
@@ -172,7 +172,26 @@ jobs:
           xlings update
           $global:LASTEXITCODE = 0
           xlings install -y
-          mcpp --version
+
+          # Installing is not switching. `xlings install` lays the payload
+          # down; the shim keeps resolving whatever version was already
+          # active, and with ~/.mcpp restored from a cache that is the old
+          # build -- whose index snapshot can predate the dependency this PR
+          # needs. Measured 2026-08-06 as `mcpplibs.xpkg@0.0.53 not found`
+          # against an index that demonstrably had it.
+          xlings use mcpp "2026.8.6.1"
+          $global:LASTEXITCODE = 0
+
+          # Assert, do not print: a version line in a log is only read after
+          # something has already gone wrong.
+          $got = (mcpp --version 2>&1 | Select-Object -First 1) -join ""
+          $global:LASTEXITCODE = 0
+          if ($got -notmatch [regex]::Escape("2026.8.6.1")) {
+            Write-Host "FAIL: .xlings.json pins mcpp 2026.8.6.1 but the mcpp on PATH is '$got'."
+            Write-Host "      Installing does not switch; the shim still resolves the cached build."
+            exit 1
+          }
+          Write-Host "mcpp $got (matches .xlings.json)"
           mcpp self version
 
       - name: Reinitialize mcpp registry (GLOBAL)
@@ -195,6 +214,14 @@ jobs:
           Prune-Registry "$env:USERPROFILE\.mcpp\registry"
           Prune-Registry "$env:GITHUB_WORKSPACE\.mcpp\registry"
           mcpp self config --mirror GLOBAL
+
+          # Force the index refresh, then assert what landed -- see the note
+          # in xlings-ci-linux.yml. Calling update without checking leaves
+          # "refreshed" and "still stale" producing identical output.
+          mcpp index update
+          $global:LASTEXITCODE = 0
+          mcpp index status
+          $global:LASTEXITCODE = 0
 
       - name: Prepare unit fixture index repo
         shell: bash
