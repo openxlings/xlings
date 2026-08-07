@@ -1328,18 +1328,18 @@ exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是
 
 | # | 缺口 | 阻塞点 |
 |---|---|---|
-| 1 | Intel iris 无载荷 | **`libclc`**,见 §11.6。**不是** LLVM 的问题 |
+| 1 | Intel iris 无载荷 | **`libclc`**,见 §11.5。**不是** LLVM 的问题 |
 | 1b | WSL2 d3d12 无载荷 | `DirectX-Headers`,同样是缺包而非缺能力 |
 | 2 | `libdbus-1.so.3` | godot 唯一剩下的非致命 dlopen |
 | 3 | Wayland 探针 | 不存在;本机 `WAYLAND_DISPLAY` 未设,写了也测不了 |
-| 4 | CN 镜像缺 3 个包 | `gtc` 能发 release,不能创建 GitCode 项目 |
+| 4 | ~~CN 镜像缺 3 个包~~ **已完成** | `gtc repo create` 是存在的;真正的坑是空项目没有 `main` 分支,打 tag 会报 `main is not exist`,先推一个 README 即可。三个包已建库、发布、并**下载回来比对 sha256** |
 | 5 | **没有 CI 守卫这次的缺陷** | 下一个新包会照样忘记调 `selfcontain.seal`。应该加一条:比对包的 declared deps 与其载荷真实 DT_NEEDED |
 
 **本机物理上测不了**(需要有对应硬件的人):AMD radeonsi、Intel iris、nouveau、
 WSL2 d3d12、Wayland。矩阵把这五格显式标成"不可测"并说明原因,而不是算作通过——
 `verify-stack.sh --json` 可以拿去在别的机器上跑同一张表。
 
-### 11.6 更正:iris 的阻塞点不是 LLVM
+### 11.5 更正:iris 的阻塞点不是 LLVM
 
 前面几节(以及 §A5)把 Intel iris 记成"卡在需要一个 `LLVM_LINK_LLVM_DYLIB=ON`
 的 LLVM"。**这是错的**,而且错得有迹可循:那段调查确实为真,但它属于**另一个
@@ -1419,11 +1419,15 @@ LLVM API 头 ───────────┘
 LLVM API 头,说明那次构建**用的是宿主的 LLVM 头**。这一条没有被任何测试覆盖,
 应该单独查。
 
-### 11.5 一句话结论
+### 11.6 一句话结论
 
 图形栈**在 NVIDIA + X11 + 软件渲染这条路径上是可用的、自持的、可自检的**,
-体验上已经追平容器方案而不需要容器;**Intel 与 WSL2 这两条最常见的路径今天仍然
-静默落 llvmpipe**,且卡在一个明确的、非环境性的构建决策上。
+体验上已经追平容器方案而不需要容器。
+
+**AMD(radeonsi)和 nouveau 的载荷是完整的**,只差一台对应的机器——它们不是待做
+项,是待验项。真正还缺载荷的只有 **Intel(iris,四个包)**和 **WSL2(d3d12,
+一个 header-only 包)**,两者今天都静默落 llvmpipe,而两者都是明确的打包工作,
+没有需要先拍板的取舍。
 
 ---
 
