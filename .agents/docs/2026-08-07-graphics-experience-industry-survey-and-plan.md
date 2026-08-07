@@ -959,13 +959,48 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 再用它判栈。测试已改:先跑一次宿主全挂的对照,对照失败就 `exit 2` 报
 `INCONCLUSIVE`(§A 的清单里那条)。
 
-**下一步该怎么查(留给下一个人,上面那张表已经把这些排除掉了)。**
-剩下的事实是:vendor 的 `.so` 和 JSON 都可读、闭包 0 未解析、mesa 一行日志都没有
-—— 所以怀疑点应该落在 **glvnd 加载 vendor 之后、调用 `__egl_Main` 那一步**:
-vendor 载入成功但入口返回失败,glvnd 会静默丢弃它,结果正是"零 vendor +
-客户端扩展为空 + 任何 platform 都 `EGL_BAD_PARAMETER`"。
-验证办法不是再加 bwrap 参数(那条路已经走到头了),而是写一个最小 C 程序,
-在容器里 `dlopen` vendor 并直接调 `__egl_Main`,把它的返回值打出来。
+#### 后续:按上面那条建议写了探针,S1 是对的,我错了
+
+写了那个最小 C 程序(`dlopen` vendor + `dlsym __egl_Main`),第一次运行就给出了答案,
+而且答案不在我预测的那一步:
+
+```
+DLOPEN=fail
+ERR=libXau.so.6: cannot open shared object file: No such file or directory
+```
+
+**vendor 根本没载入**,`__egl_Main` 那一步从来没到达过。加上
+`LD_LIBRARY_PATH=<subos>/lib` 之后 `DLOPEN=ok` / `EGL_MAIN=present` —— 所以缺的
+不是入口点,是**一个库找不到**。
+
+完整链条,每一环都实测:
+
+| 事实 | 证据 |
+|---|---|
+| `libxcb.so.1` **NEEDs** `libXau.so.6` | `patchelf --print-needed` |
+| libxcb 的 RUNPATH **只有 `$ORIGIN`** | 即它自己的载荷目录 |
+| `libXau.so.6` 在**另一个**载荷目录 | `xim-x-libXau/1.0.11/lib` |
+| **DT_RUNPATH 不传递** | libxcb 之上的任何 RPATH 都帮不了它 |
+| → `libXau` 只能来自**宿主** | 探针在容器内外**同样失败**(不给 LD_LIBRARY_PATH 时) |
+
+**所以这个栈一直不是自持的,而且缺的那一环是第二层依赖。**`<subos>/lib` 里有
+`libXau.so.6`,但 libxcb 的搜索路径上没有任何一项指向那里 —— 文件在,路径不在。
+在容器外没人发现,因为每一台 Linux 机器的 `ld.so.cache` 里都有 libXau。
+空 host 容器里没有那个 cache,于是 vendor 载入失败 → 零 vendor →
+客户端扩展为空 → 任何 platform 都 `EGL_BAD_PARAMETER`。
+
+**这正是 S3("renderer 不能含 NVIDIA")那条断言想抓的东西,只是发生在更底下一层**
+—— 不是 GL 渲染器来自宿主,而是 X11 的一个二级依赖来自宿主。
+
+**我上一节写的"S1 的失败是无信息的"因此是错的。** 对照运行确实也失败了,但那不代表
+测试坏了,而代表**两次都因为同一个真缺陷失败**。我把"对照也红"读成了"测试不可信",
+应该读成"这个缺陷连宿主齐全时也在"。`INCONCLUSIVE` 那道闸门本身仍然值得留着 ——
+它把一个会诬赖闭包的错误信息变成了一个诚实的"测不了" —— 但这一次闭包**确实**不完整。
+
+**修法的方向(未做,爆炸半径需要评估)**:elfpatch 给可执行文件写全闭包 RPATH,却给
+这些载荷库只留了 `$ORIGIN`。要么让每个载荷库的 RPATH 覆盖它自己的依赖闭包,要么把
+`<subos>/lib` 追加到每个载荷库的 RPATH 上 —— 后者正是 §B1 给 interposer 做的事,
+而这里说明同一条道理适用于**整个栈**,不只是 interposer。
 
 (顺带踩到并确认了脚本自己注释里那条:`--tmpfs /tmp` 必须排在把一个位于 `/tmp` 下的
 home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这么错的,四种 namespace
@@ -1025,12 +1060,57 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    解释器之后**失败一模一样** —— 假设被自己的下一次运行否掉了。记在这里是因为
    这个错误信息会把任何人送去查 mako。)*
 
-5. **索引里的两个 LLVM 包都喂不饱 mesa,而且原因同一个:它们是"切"出来的。**
+5. **索引里的两个 LLVM 包合起来仍喂不饱 mesa —— 但缺的不是我第一次说的那样。**
 
-   | 包 | 有什么 | 缺什么 |
-   |---|---|---|
-   | `libllvm@20.1.7` | 只有 `lib/` | 没有 `llvm-config`,没有 `.pc` |
-   | `llvm@20.1.7` | 有 `llvm-config`(报 20.1.7) | **没有各组件的静态 `.a`** |
+   > **2026-08-07 更正。** 我先写的是"两个包都缺组件 `.a`,上游 release 又是纯静态
+   > 缺共享库,所以必须自建 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM"。**前半句把
+   > `libllvm` 说错了** —— 它恰恰**就是**那个共享库。逐个查过之后:
+
+   | 包 | 实际内容 |
+   |---|---|
+   | `libllvm@20.1.7` | **只有** `lib/libLLVM.so.20.1`(129 MB 共享库)+ `.so` 链接 |
+   | `llvm@20.1.7` | `bin/`(36 个工具,含 `llvm-config`)、`include/{c++,x86_64-unknown-linux-gnu}`(**libc++ 头,不是 LLVM API 头**)、`lib/`、`share/` |
+
+   所以真正缺的是**整个"开发半边"**:
+
+   * **LLVM API 头文件在索引里根本不存在** —— `llvm-config --includedir` 指向的目录
+     里没有 `llvm/Config/llvm-config.h`。libgallium 要 include LLVM 头来编 JIT。
+   * `llvm-config --shared-mode` 仍失败:把 `libLLVM-20.so` 软链进它的 libdir 之后
+     它还是报缺组件 `.a`(实测)。
+
+   **然后这个"便宜得多"的结论也被实测推翻了(同日,第三次)。**
+
+   拉了完整上游 `LLVM-20.1.7-Linux-X64`(1.9 GB 压缩 / 11 GB 解开),它**头文件、
+   组件 `.a`、`llvm-config` 三样俱全**。把 `libllvm` 的共享库软链进它的 libdir,
+   试了 `libLLVM-20.so` / `libLLVM-20.1.so` / `libLLVM.so.20.1` /
+   `libLLVM-20.1.7.so` / `libLLVM.so` **五个名字**,每一个都回同一句:
+
+   ```
+   llvm-config: error: libLLVM-20.so is missing
+   ```
+
+   五个名字得到**逐字相同**的错误,说明 `llvm-config` **根本没有去看文件系统**。
+   `--shared-mode` 返回 `static`,那是它**编译期**记下来的事实:上游 release 构建时
+   `LLVM_LINK_LLVM_DYLIB=OFF`。这是一个烧进 llvm-config 的属性,不是一次文件探测,
+   所以从外面放什么文件进去都改变不了它。
+
+   **所以最初那句"必须自建 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM"是对的 —— 但我给的
+   理由一直是错的。** 不是"缺组件 `.a`",不是"缺共享库",而是:
+
+   > 索引里的 `libllvm` 提供共享库却没有 llvm-config;上游的 llvm-config 编译期就
+   > 声明了自己是 static 构建。**生态里不存在一个 shared-mode 为 `shared` 的
+   > llvm-config**,而 mesa 的 recipe 要 `-Dshared-llvm=enabled`。
+
+   一个 `llvm-dev` 切片**解决不了**这条 —— 从一份 static 构建里切出来的 llvm-config
+   仍然是 static。要么真的自建一份 dylib 模式的 LLVM,要么把 mesa 改成
+   `-Dshared-llvm=disabled`(把 LLVM 静态焊进 libgallium:少一个运行期依赖、少一处
+   `@LLVM_20.1` 精确耦合,代价是体积,并且那是改一个**已发布包的架构**,不该在一次
+   发布中途单方面决定)。
+
+   这句判断我一共说了四次,每次理由都不同,只有第一次的结论碰巧对:
+   "要几小时"(猜)→ "没被挡住"(发现 `--deps` 后的乐观)→ "缺组件 .a / 缺共享库"
+   (查了包但没查 llvm-config 的行为)→ 现在这条(测了五个文件名才看出它压根不看
+   文件系统)。**前三次都是在测量停下来得太早。**
 
    第二个的症状很有迷惑性:`llvm-config found: YES … 20.1.7` 之后紧跟
    `Run-time dependency LLVM … found: NO (tried config-tool)`。真因在 meson 日志
@@ -1063,6 +1143,38 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    这句话我说了三次,精度递增:最早"要几小时"(猜)→ 中间"根本没被挡住"
    (发现 `--deps` 后的乐观)→ 现在这句。中间那次错得有用 —— 它把 pkgconfig
    那个问题真的问清楚了 —— 但少算了 LLVM 这一大截。
+
+### 10.2d 验证从"三个脚本各测一片"变成一张矩阵(xim-pkgindex#543)
+
+上面 §10.1 那张表是**这台机器**的结果,而"生态可用"不是一台机器能证明的。原来的
+验证是三个互不相识的脚本各覆盖一片:`verify-host-link.sh`(只管 NVIDIA)、
+`selfcontained-check.sh`(只管空 host)、以及当天随手敲的命令。三者的并集从来没有
+被记录在任何地方 —— 于是"生态能用"实际上只压在一台 RTX 4080 上,其余每一格都以
+**完全没有输出**的方式未被测试。
+
+`.agents/tools/graphics/verify-stack.sh` 建一个 subos、装 `graphics`、走完整矩阵:
+软件渲染 / NVIDIA 闭源(转交给 provenance 验证器)/ radeonsi / iris / nouveau /
+WSL2 d3d12 / Vulkan / X11 / Wayland / **真实 GUI 程序** / 空 host 自持。
+
+**关键是第三种结果。** 本机跑不了的格子会被打印、计数、并在末尾**带原因**再列一遍。
+skip 不判失败(把"我没有 AMD 卡"算失败会让这个脚本对所有人都没用),但**永远不静默**
+—— 因为"没这硬件"和"能用"不能长得一样。末尾那份 skip 清单就是**招募清单**:
+没有一台机器同时有 NVIDIA、AMD、Intel 和 WSL2,所以覆盖率是不同人跑出来的**并集**,
+`--json` 就是为了让这些结果能被汇总。
+
+**写它的当时就抓到了它自己的两个假绿**,而且都是它存在的理由那个形状:
+
+* `nouveau` 在本机报 PASS。`MESA_LOADER_DRIVER_OVERRIDE=nouveau` 确实渲染成功了
+  —— 在 **llvmpipe 上** —— 而那一格只检查了 `RESULT=ok`。现在硬件格子必须断言
+  渲染器不是软件回退;而在闭源 `nvidia.ko` 占着这块卡时,nouveau 被正确地报成
+  "本机测不了"。
+* `xlings install graphics` 打印 `0 package(s)` 却算 PASS。那正是"重跑一次"的样子。
+  现在它说 "already satisfied",而不是给一个读起来像覆盖率的计数 —— 与 CI 里
+  #532 是同一个坑。
+
+首次运行(RTX 4080 / 550.144.03):**pass 13,fail 0,not-exercised 6**
+(amd、intel、WSL2、Vulkan、Wayland,以及空 host 那格 —— 它按自己的对照运行报
+`INCONCLUSIVE`)。
 
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
@@ -1118,6 +1230,119 @@ glslang 用同一个脚本从源码建。**所以 A5+A9b 没有被环境挡住**
 
 `sysroot.declare_pkgconfig` 仍然值得加(它能让 `--deps` 那一长串不必手写),
 但它是**便利**,不是**阻塞**。
+
+---
+
+## 11. 综合评估与横向对标(2026-08-07,实测)
+
+### 11.1 S1 的真正原因:一个零调用者的公开 API
+
+前面几轮把 S1(空宿主自持性)记成"控制组也失败,因此不可判定"。那个判断是错的
+——**两组都失败,是因为它们都撞上了同一个真实缺陷**,而不是因为测试写坏了。
+
+链条只有一句话长:
+
+```
+libxcb.so.1   DT_NEEDED   libXau.so.6 …
+              DT_RUNPATH  $ORIGIN          ← libXau 不在这里,它在另一个 payload
+```
+
+它一直能跑,是因为宿主的 `/etc/ld.so.cache` 里有 `libXau.so.6`——而任何一台桌面
+Linux 都有。**图形栈从来没有自持过,而每一格测试都报 pass。**
+
+为什么 `<subos>/lib` 那片符号链接农场救不了它?因为 ld.so 的搜索顺序里有一句:
+**一个对象只要有 DT_RUNPATH,解析它自己的依赖时就完全不看任何祖先的 DT_RPATH。**
+消费者(godot、glprobe)的 RPATH 确实是可传递的、确实指向农场,但 libxcb 有自己的
+RUNPATH,于是这条路在 libxcb 这里断掉,直接落到宿主缓存。
+
+而机制其实一直存在:
+
+| 声明 | 谁读它 | 状态 |
+|---|---|---|
+| `exports.runtime.libdirs = {"lib"}` | 依赖它的**下游**包 | 每个 recipe 都写了 |
+| `elfpatch.closure_lib_paths()` | 包**自己**,用来消费上游的 exports | **全生态零调用者** |
+
+`gcc-runtime.lua` 的注释甚至写着"consumer's RPATH (set by elfpatch via
+exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是 xlings 反复出现的
+那个 bug class 的最纯形态:声明了、文档了、没人调用,而失败与成功输出完全一致。
+
+密封 bwrap(完全没有 `/usr`)下的 A/B:
+
+| | 结果 |
+|---|---|
+| 出厂状态 | `EGL_CLIENT_EXTENSIONS=` 空、`surfaceless refused 0x300c`,exit 1 |
+| 打上闭包 | `GL_RENDERER=llvmpipe (LLVM 20.1.7)`、`PIXEL=336699`、`RESULT=ok`,exit 0 |
+
+修法在**包侧**:`libs/selfcontain.lua` 包一层,28 个 recipe 在 `install()` 里调用;
+同时把少声明的直接依赖补齐(`runtime_deps` 是直接依赖,不是传递闭包,闭包再准也只
+和 deps 列表一样准)。glibc 不打——它是根,而"用 patchelf 改写 ld.so 自己"正是本轮
+调查中差点把测试环境毁掉的那一步。
+
+矩阵从 **pass 13 / fail 0 / 不可测 6** 变成 **pass 14 / fail 0 / 不可测 5**,
+第 6 格自诞生以来第一次给出结论:`✓ empty-host self-containment — S1-S4 pass`。
+
+### 11.2 可用性:今天到底能用到什么程度
+
+在这台机器(RTX 4080 / 550.144.03 / X11)上实测:
+
+| 维度 | 状态 |
+|---|---|
+| 用户要输入的命令 | `xlings install graphics`,然后直接跑程序 |
+| 需要设的环境变量 | 零(S2 走 shim,不依赖 `subos use`) |
+| NVIDIA 专有驱动 | ✅ godot 实跑 `OpenGL API 3.3.0 NVIDIA 550.144.03` |
+| 软件渲染 | ✅ llvmpipe,像素正确 |
+| Vulkan | ✅ loader + 我们自己的 ICD(不是宿主的) |
+| 自持性 | ✅ 无 `/usr` 密封环境可渲染 |
+| 自检 | ✅ `xlings-gl-doctor`,含驱动版本漂移检测 |
+| 磁盘 | 343 MB(其中 libllvm 131 MB、mesa 63 MB);NVIDIA 侧只有 **196 KB** interposer,不复制那 33 MB 宿主驱动 |
+| 未验证硬件 | AMD、Intel、nouveau、WSL2、Wayland —— 本机物理上测不了 |
+
+### 11.3 横向对标
+
+轴选的是"用户真会撞到的地方",不是特性清单:
+
+| | xlings(今天) | Nix / NixOS | Flatpak | Snap | Steam Runtime | conda-forge |
+|---|---|---|---|---|---|---|
+| 复用宿主专有驱动 | **interposer,196 KB** | `/run/opengl-driver` 农场 | 按驱动版本下发 extension | `gpu-2404` content snap | `capsule-capture-libs` 抓进 `/overrides` | **不管**,交给系统包管理器 |
+| 需要 root / 守护进程 | 否 | NixOS 是发行版;非 NixOS 需 `nix-system-graphics` | 需 flatpak 运行时 | 需 snapd | 需容器 | 否 |
+| 需要容器 / 命名空间 | 否 | 否 | 是 | 是 | 是 | 否 |
+| 驱动版本漂移 | 版本戳 + doctor 报警 | 农场随系统重建 | extension 版本必须匹配,否则挂 | content snap 跟随 | 每次启动重抓 | N/A |
+| 多 vendor 并存 | glvnd 共享目录(与发行版同构) | glvnd | glvnd | glvnd | glvnd | N/A |
+| 配置作用域 | 对象 / 程序 / shell 三层,默认落在**程序**层 | 程序层(`makeWrapper`) | 容器层 | `command-chain` 程序层 | 容器层 | N/A |
+| 自持性 | ✅(本轮才真正成立) | ✅ | ✅ | ✅ | ✅ | ⚠️ 依赖宿主 GL |
+| 非 root 装到任意目录 | ✅ | ⚠️ 需 `/nix` 或 daemon | ❌ | ❌ | ❌ | ✅ |
+
+**xlings 的位置**:它是这张表里唯一同时做到"不要 root、不要容器、不要守护进程"
+和"自持 + 复用宿主专有驱动"的。conda-forge 在前一栏和它一样,但直接放弃了 GL——
+官方 FAQ 就是"交给系统包管理器"。其余四家都靠容器或发行版级别的机制换来自持性。
+
+代价也清楚:interposer 方案要求宿主**已经装好**驱动(Flatpak/Snap 会替你下发),
+而 343 MB 里 131 MB 是 libllvm——这是 mesa 动态链接 LLVM 的直接后果,Nix/发行版
+同样如此。
+
+### 11.4 诚实的剩余缺口
+
+按"能不能被本机证伪"分两类。
+
+**能修但没修:**
+
+| # | 缺口 | 阻塞点 |
+|---|---|---|
+| 1 | Intel iris / WSL2 d3d12 无载荷 | 需要一个 `LLVM_LINK_LLVM_DYLIB=ON` 的 llvm-config;`libllvm` 有 `libLLVM.so`,但没有能报 `shared-mode=shared` 的 llvm-config。**这是架构决策**:要么重建 LLVM,要么 mesa 改 `-Dshared-llvm=disabled`(静态链接,体积涨) |
+| 2 | `libdbus-1.so.3` | godot 唯一剩下的非致命 dlopen |
+| 3 | Wayland 探针 | 不存在;本机 `WAYLAND_DISPLAY` 未设,写了也测不了 |
+| 4 | CN 镜像缺 3 个包 | `gtc` 能发 release,不能创建 GitCode 项目 |
+| 5 | **没有 CI 守卫这次的缺陷** | 下一个新包会照样忘记调 `selfcontain.seal`。应该加一条:比对包的 declared deps 与其载荷真实 DT_NEEDED |
+
+**本机物理上测不了**(需要有对应硬件的人):AMD radeonsi、Intel iris、nouveau、
+WSL2 d3d12、Wayland。矩阵把这五格显式标成"不可测"并说明原因,而不是算作通过——
+`verify-stack.sh --json` 可以拿去在别的机器上跑同一张表。
+
+### 11.5 一句话结论
+
+图形栈**在 NVIDIA + X11 + 软件渲染这条路径上是可用的、自持的、可自检的**,
+体验上已经追平容器方案而不需要容器;**Intel 与 WSL2 这两条最常见的路径今天仍然
+静默落 llvmpipe**,且卡在一个明确的、非环境性的构建决策上。
 
 ---
 
