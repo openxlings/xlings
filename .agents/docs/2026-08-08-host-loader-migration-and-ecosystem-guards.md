@@ -78,6 +78,44 @@ python 这一格只需 `xlings install python` 重装。
 **C3 是唯一真正会咬人的**,而且它的失败方式是安静的——用户名查不到、DNS 解析不了,
 不报错只是行为不对。这也是发行版从不让人乱换 loader 的原因。
 
+### L.1b 实现阶段推翻的两条:切了 loader 就没有宿主兜底
+
+这是本轮最重要的发现,它改写了上面 C1–C4 的判据。
+
+我们 glibc 的 `ld.so` 里编进去的 cache 路径是**构建机的**:
+
+```
+$ strings <our ld.so> | grep ld.so.cache
+/home/xlings/.xlings_data/xim/xpkgs/fromsource-x-glibc/2.44/etc/ld.so.cache   ← 任何机器上都不存在
+$ strings /lib64/ld-linux-x86-64.so.2 | grep ld.so.cache
+/etc/ld.so.cache
+```
+
+multiarch 发行版上,宿主库几乎全在 `/usr/lib/x86_64-linux-gnu`,**只能通过这个 cache
+找到**。所以一旦 `PT_INTERP` 指向我们,**宿主库整体不可达**——不是"我们没打包的那些
+不可达",是全部。
+
+(这是设计意图:2.44 的构建前缀就叫 `/nonexistent/xlings-use-rpath-not-default-search`。)
+
+**于是 C2 必须升级:闭包要覆盖它可能加载的每一个库,包括 `dlopen` 的软依赖。**
+我原来写的"缺的只是按需 dlopen 的组件,降级程度和今天一样"是错的——
+**今天它们从宿主解析,切完之后它们哪儿也解析不到。**
+
+实测(带对照组,同一台机器,`DISPLAY=:1`):
+
+| jdk-temurin 25.0.4+7 | `Toolkit.getDefaultToolkit()` |
+|---|---|
+| 未打补丁(宿主 INTERP) | ok, 2560x1440 |
+| 打补丁到我们的 loader | `UnsatisfiedLinkError: libawt_xawt.so: libX11.so.6: cannot open shared object file` |
+
+无头侧完全正常:`java -version`、`javac`、libzip、libnet、`InetAddress.getByName`、
+NSS `user.name`、UTF-8 全过。**所以不是"能用/不能用",是"无头能用,任何 dlopen 宿主
+库的路径直接死"**——恰好是冒烟测试看不见的那一类。
+
+顺带纠正 L0 的数字:`llvm-tools` 的"0 个不满足"是**用"home 里存在"算的,不是"已声明"**。
+它真实需要 `libstdc++`/`libgcc_s`/`libz`,所以是 `glibc + gcc-runtime + zlib` 三个,
+不是 glibc 一个。这正是 G1 要挡的那类差异,我自己先踩了一次。
+
 ### L.2 实测结果
 
 我们的 `glibc@2.44`,NSS 模块有 `compat db dns files hesiod`;
@@ -142,22 +180,23 @@ xpm = {
 > (`opts.loader and not loader` 为假,警告分支进不去)。低层 API 在这里既不必要
 > 也危险,声明式路径才是对的。
 
-**L1 — 两个 JDK(补两个包后做)**
+**L1 — 两个 JDK(本轮不切,阻塞在两个包上)**
 
-同样是加 `deps = { "xim:glibc" }`,但**多一个必须做的动作**:
+原计划说"补包和切 loader 不要互相阻塞,先切"。**这条作废**——按 L.1b,不补包就切
+等于砍掉 AWT。顺序反过来了:**必须先有 `libXtst` 和 `libasound`。**
 
-```lua
-elfpatch.set({ extra_rpath = { "$ORIGIN", "$ORIGIN/../lib" } })
-```
+`libX11 / libXext / libXi / libXrender` 图形栈这轮已经有了,缺的就这两个。补齐后
+JDK 的改动是 `deps = { "xim:glibc", ...那六个 }`,Zulu 另加 `xim:zlib`
+(它的 `libjli.so` 需要 `libz`,Temurin 的不需要;libjli 是 `bin/java` 启动即加载的,
+所以那是**硬依赖**,漏了直接起不来)。
 
-原因:predicate 路径最终走 `patchelf --set-rpath`,是**替换**不是追加,而
-`bin/java` 出厂就带 `$ORIGIN:$ORIGIN/../lib`(实测),`libjli.so` 靠它找到。
-`closure_lib_paths()` 只 push `<install_dir>/lib` 这一层绝对路径,**不含 `lib/server`**
-(`libjvm.so` 在那里,靠 libjli 显式拼路径加载,所以不致命,但把 `$ORIGIN` 留住是
-零成本的正确做法)。
+`extra_rpath` 那条也作废,而且它本身有个坑值得记下来:`elfpatch.set()` 不带
+`interpreter`/`interp_from` 时,`_apply` 会走"用户只要 rpath"分支,
+**根本不换 INTERP**(elfpatch.lua:1029-1037)。所以那个写法会静默地把 L1 变成空操作。
 
-`libXtst`、`libasound` 打包是**独立的、可以不做**的事——不做的差别只是 AWT/声音继续
-落宿主,而那正是现状。**两件事不要互相阻塞。**
+实测下来也不需要它:closure 里的 `<install_dir>/lib` 已经覆盖 `$ORIGIN/../lib`;
+`lib/` 里 14 个库 DT_NEEDED `libjvm.so`(在 `lib/server/`)照样解析,因为 libjli
+早把它加载进全局作用域了。打完补丁的真实副本 `java`/`javac` 全绿。
 
 **L2 — `python`(已修好,只需重装)**
 
@@ -206,6 +245,15 @@ CI 装完一个包后,枚举其载荷所有 `.so`/可执行文件的 `DT_NEEDED`
 - 少的(声明了但没用到)→ 告警
 
 这一条如果早存在,上一轮的核心缺陷在提交时就会被挡住。
+
+**实现时按 L.1b 补了第二条断言 D2**:如果载荷的 `PT_INTERP` 指向我们,那么
+**任何"索引里没人提供"的 soname 都是 fail**,不是提示——因为我们的 loader 背后
+没有宿主兜底。这条正是今天我在 JDK 上差点犯的错,现在由 CI 挡。
+
+严格程度按载荷自身状态区分,而不是一刀切:只有当载荷**确实在从我们的树解析**
+(INTERP 指向我们,或对象的 RPATH 指进 `xpkgs`)时才强制。
+`code` 和两个 JDK 这种有意用宿主的,报告但不判失败——否则会要求它们为一个根本没
+在用的 libc 声明 `xim:glibc`,而**一个会在正确 recipe 上报错的检查,一周内就会被关掉**。
 
 ### G2. 构建输入侧的宿主泄漏检查(挡住 #5)
 

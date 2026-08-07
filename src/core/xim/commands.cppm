@@ -80,7 +80,8 @@ std::string detect_platform() {
 }
 
 // Forward declaration for deferred install request processing
-int cmd_remove(const std::string& target, bool yes, EventStream& stream);
+int cmd_remove(const std::string& target, bool yes, EventStream& stream,
+               bool force = false);
 
 // Debounce on-demand index refreshes triggered by install misses (C2 / #366
 // UX): returns true at most once per cooldown window so a tight loop of
@@ -598,7 +599,11 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                                 useAfterInstall);
                 } else if (req.op == "remove") {
                     log::debug("removing sub-dependency: {}", req.target);
-                    cmd_remove(req.target, /*yes=*/true, stream);
+                    // force: an xpkg hook asking for a removal has already
+                    // reasoned about what it is replacing. Letting the
+                    // reverse-dep guard veto it would break recipes that
+                    // legitimately swap one provider for another mid-install.
+                    cmd_remove(req.target, /*yes=*/true, stream, /*force=*/true);
                 }
             }
         },
@@ -646,7 +651,8 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 // (pkgmanager.remove inside an xpkg) always pass yes=true: the user already
 // approved the parent install, so the connected uninstall is implicit.
 // CLI-driven `xlings remove <pkg>` defaults to yes=false and bails on n.
-int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
+int cmd_remove(const std::string& target, bool yes, EventStream& stream,
+               bool force) {
     // Serialize against any other xlings mutating this home, then re-read
     // state under the lock: Config loaded it at process start, outside the
     // lock, so acting on that snapshot is how two commands lose each other's
@@ -831,6 +837,104 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream) {
                     match->canonicalName);
                 return 2;
             }
+        }
+    }
+
+    // Reverse-dependency guard.
+    //
+    // `xlings remove libxml2` succeeds while llvm depends on it, and the next
+    // `ld.lld` does not start. The error names a soname, so it reads as a
+    // broken llvm install rather than as the consequence of the removal two
+    // commands earlier — and reinstalling llvm does not fix it, because llvm
+    // was never the thing that changed.
+    //
+    // Refuse and name the dependents. `--force` is the escape hatch, because
+    // there are legitimate reasons to break a link deliberately (replacing a
+    // package with another provider, pruning a home you are about to rebuild).
+    //
+    // Only DIRECT dependents are consulted, and that is not a shortcut: a
+    // dependency's libdirs enter a payload's RPATH closure only when it is
+    // named as a direct dep (elfpatch's closure_lib_paths reads the direct
+    // list). A package two hops away does not have this payload on any search
+    // path, so removing it cannot break that package through the loader.
+    // Deliberately NOT conditioned on `match`. The catalog fails to resolve a
+    // target whenever two repos provide the name -- `local:glibc` alongside
+    // `xim:glibc` is an ordinary state in a home that has ever registered a
+    // recipe locally -- and removal proceeds anyway, by bare name, further
+    // down. Gating the guard on a successful resolve made it skip in exactly
+    // the homes most likely to need it, and skip silently: same output as a
+    // clean pass. Take the bare name the way the subos-membership check above
+    // already does, and check regardless.
+    if (!force) {
+        struct Dependent { std::string name; std::string version; };
+        std::vector<Dependent> dependents;
+
+        const auto platform = detect_platform();
+        const auto bare_of = [](const std::string& s) {
+            auto noVer = s.substr(0, s.find('@'));
+            return noVer.substr(noVer.rfind(':') + 1);
+        };
+        const auto targetBare =
+            match ? bare_of(match->canonicalName) : bare_of(target);
+
+        // Current subos only. A package installed in another subos resolves
+        // through that subos's own payloads; removing it here detaches rather
+        // than deletes, which is exactly the case that must NOT be blocked.
+        for (const auto& rec : collect_inventory(catalog, /*allSubos=*/false)) {
+            // By bare name: the same package can be installed under two
+            // namespaces, and neither of them is "not the target".
+            if (bare_of(rec.canonicalName) == targetBare) continue;
+
+            auto depMatch = catalog.resolve_target(
+                rec.canonicalName + "@" + rec.version, platform);
+            if (!depMatch) continue;
+            auto depPkg = catalog.load_package(*depMatch);
+            if (!depPkg) continue;
+
+            // runtime first, falling back to the legacy union `deps` — the
+            // same precedence `info` uses. Build deps are irrelevant here:
+            // they are not on the consumer's runtime search path.
+            const std::vector<std::string>* list = nullptr;
+            if (auto it = depPkg->xpm.runtime_deps.find(platform);
+                it != depPkg->xpm.runtime_deps.end() && !it->second.empty()) {
+                list = &it->second;
+            } else if (auto it2 = depPkg->xpm.deps.find(platform);
+                       it2 != depPkg->xpm.deps.end() && !it2->second.empty()) {
+                list = &it2->second;
+            }
+            if (!list) continue;
+
+            for (const auto& dep : *list) {
+                // "xim:zlib@1.3.1" -> "zlib". Compare bare names: the
+                // namespace a consumer writes is not always the one the
+                // target resolved under, and a version range must not make
+                // a real dependency invisible to this check.
+                if (bare_of(dep) == targetBare) {
+                    dependents.push_back({rec.canonicalName, rec.version});
+                    break;
+                }
+            }
+        }
+
+        if (!dependents.empty()) {
+            log::error("{}@{} is required by {} installed package(s) in subos '{}':",
+                       displayName, displayVersion, dependents.size(), subos);
+            for (const auto& d : dependents) {
+                log::println("    {}@{}", d.name, d.version);
+            }
+            log::println("  remove those first, or re-run with --force to break the link "
+                         "anyway.");
+
+            nlohmann::json blockedPayload;
+            blockedPayload["subos"] = subos;
+            blockedPayload["name"] = displayName;
+            blockedPayload["version"] = displayVersion;
+            auto& arr = blockedPayload["required_by"] = nlohmann::json::array();
+            for (const auto& d : dependents) {
+                arr.push_back({{"name", d.name}, {"version", d.version}});
+            }
+            stream.emit(DataEvent{"remove_blocked", blockedPayload.dump()});
+            return 2;
         }
     }
 
