@@ -22,7 +22,7 @@ Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed
 
 Remove a package
 
-Options: `-g, --global` — Use global scope
+Options: `-g, --global` — Use global scope; `--force` — Remove even if installed packages depend on it
 
 ## `xlings update [package] [version]`
 
