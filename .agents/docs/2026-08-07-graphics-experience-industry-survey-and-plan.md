@@ -1109,6 +1109,38 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    (发现 `--deps` 后的乐观)→ 现在这句。中间那次错得有用 —— 它把 pkgconfig
    那个问题真的问清楚了 —— 但少算了 LLVM 这一大截。
 
+### 10.2d 验证从"三个脚本各测一片"变成一张矩阵(xim-pkgindex#543)
+
+上面 §10.1 那张表是**这台机器**的结果,而"生态可用"不是一台机器能证明的。原来的
+验证是三个互不相识的脚本各覆盖一片:`verify-host-link.sh`(只管 NVIDIA)、
+`selfcontained-check.sh`(只管空 host)、以及当天随手敲的命令。三者的并集从来没有
+被记录在任何地方 —— 于是"生态能用"实际上只压在一台 RTX 4080 上,其余每一格都以
+**完全没有输出**的方式未被测试。
+
+`.agents/tools/graphics/verify-stack.sh` 建一个 subos、装 `graphics`、走完整矩阵:
+软件渲染 / NVIDIA 闭源(转交给 provenance 验证器)/ radeonsi / iris / nouveau /
+WSL2 d3d12 / Vulkan / X11 / Wayland / **真实 GUI 程序** / 空 host 自持。
+
+**关键是第三种结果。** 本机跑不了的格子会被打印、计数、并在末尾**带原因**再列一遍。
+skip 不判失败(把"我没有 AMD 卡"算失败会让这个脚本对所有人都没用),但**永远不静默**
+—— 因为"没这硬件"和"能用"不能长得一样。末尾那份 skip 清单就是**招募清单**:
+没有一台机器同时有 NVIDIA、AMD、Intel 和 WSL2,所以覆盖率是不同人跑出来的**并集**,
+`--json` 就是为了让这些结果能被汇总。
+
+**写它的当时就抓到了它自己的两个假绿**,而且都是它存在的理由那个形状:
+
+* `nouveau` 在本机报 PASS。`MESA_LOADER_DRIVER_OVERRIDE=nouveau` 确实渲染成功了
+  —— 在 **llvmpipe 上** —— 而那一格只检查了 `RESULT=ok`。现在硬件格子必须断言
+  渲染器不是软件回退;而在闭源 `nvidia.ko` 占着这块卡时,nouveau 被正确地报成
+  "本机测不了"。
+* `xlings install graphics` 打印 `0 package(s)` 却算 PASS。那正是"重跑一次"的样子。
+  现在它说 "already satisfied",而不是给一个读起来像覆盖率的计数 —— 与 CI 里
+  #532 是同一个坑。
+
+首次运行(RTX 4080 / 550.144.03):**pass 13,fail 0,not-exercised 6**
+(amd、intel、WSL2、Vulkan、Wayland,以及空 host 那格 —— 它按自己的对照运行报
+`INCONCLUSIVE`)。
+
 ### 10.3 顺带发现的两件事(与图形栈无关)
 
 1. **`files` 资产目标不合规时静默不放置** —— 已在 §C 记为本体 bug 候选。
