@@ -959,13 +959,48 @@ SONAME 又经我们的 RPATH 解析到**我们的** interposer。
 再用它判栈。测试已改:先跑一次宿主全挂的对照,对照失败就 `exit 2` 报
 `INCONCLUSIVE`(§A 的清单里那条)。
 
-**下一步该怎么查(留给下一个人,上面那张表已经把这些排除掉了)。**
-剩下的事实是:vendor 的 `.so` 和 JSON 都可读、闭包 0 未解析、mesa 一行日志都没有
-—— 所以怀疑点应该落在 **glvnd 加载 vendor 之后、调用 `__egl_Main` 那一步**:
-vendor 载入成功但入口返回失败,glvnd 会静默丢弃它,结果正是"零 vendor +
-客户端扩展为空 + 任何 platform 都 `EGL_BAD_PARAMETER`"。
-验证办法不是再加 bwrap 参数(那条路已经走到头了),而是写一个最小 C 程序,
-在容器里 `dlopen` vendor 并直接调 `__egl_Main`,把它的返回值打出来。
+#### 后续:按上面那条建议写了探针,S1 是对的,我错了
+
+写了那个最小 C 程序(`dlopen` vendor + `dlsym __egl_Main`),第一次运行就给出了答案,
+而且答案不在我预测的那一步:
+
+```
+DLOPEN=fail
+ERR=libXau.so.6: cannot open shared object file: No such file or directory
+```
+
+**vendor 根本没载入**,`__egl_Main` 那一步从来没到达过。加上
+`LD_LIBRARY_PATH=<subos>/lib` 之后 `DLOPEN=ok` / `EGL_MAIN=present` —— 所以缺的
+不是入口点,是**一个库找不到**。
+
+完整链条,每一环都实测:
+
+| 事实 | 证据 |
+|---|---|
+| `libxcb.so.1` **NEEDs** `libXau.so.6` | `patchelf --print-needed` |
+| libxcb 的 RUNPATH **只有 `$ORIGIN`** | 即它自己的载荷目录 |
+| `libXau.so.6` 在**另一个**载荷目录 | `xim-x-libXau/1.0.11/lib` |
+| **DT_RUNPATH 不传递** | libxcb 之上的任何 RPATH 都帮不了它 |
+| → `libXau` 只能来自**宿主** | 探针在容器内外**同样失败**(不给 LD_LIBRARY_PATH 时) |
+
+**所以这个栈一直不是自持的,而且缺的那一环是第二层依赖。**`<subos>/lib` 里有
+`libXau.so.6`,但 libxcb 的搜索路径上没有任何一项指向那里 —— 文件在,路径不在。
+在容器外没人发现,因为每一台 Linux 机器的 `ld.so.cache` 里都有 libXau。
+空 host 容器里没有那个 cache,于是 vendor 载入失败 → 零 vendor →
+客户端扩展为空 → 任何 platform 都 `EGL_BAD_PARAMETER`。
+
+**这正是 S3("renderer 不能含 NVIDIA")那条断言想抓的东西,只是发生在更底下一层**
+—— 不是 GL 渲染器来自宿主,而是 X11 的一个二级依赖来自宿主。
+
+**我上一节写的"S1 的失败是无信息的"因此是错的。** 对照运行确实也失败了,但那不代表
+测试坏了,而代表**两次都因为同一个真缺陷失败**。我把"对照也红"读成了"测试不可信",
+应该读成"这个缺陷连宿主齐全时也在"。`INCONCLUSIVE` 那道闸门本身仍然值得留着 ——
+它把一个会诬赖闭包的错误信息变成了一个诚实的"测不了" —— 但这一次闭包**确实**不完整。
+
+**修法的方向(未做,爆炸半径需要评估)**:elfpatch 给可执行文件写全闭包 RPATH,却给
+这些载荷库只留了 `$ORIGIN`。要么让每个载荷库的 RPATH 覆盖它自己的依赖闭包,要么把
+`<subos>/lib` 追加到每个载荷库的 RPATH 上 —— 后者正是 §B1 给 interposer 做的事,
+而这里说明同一条道理适用于**整个栈**,不只是 interposer。
 
 (顺带踩到并确认了脚本自己注释里那条:`--tmpfs /tmp` 必须排在把一个位于 `/tmp` 下的
 home 绑进去之前,否则 tmpfs 会盖掉它。我第一版 bisect 就是这么错的,四种 namespace
