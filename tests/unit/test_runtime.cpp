@@ -1535,12 +1535,25 @@ TEST(SubosGpu, BindsDriWhenPresent) {
                                 "/dev/dri", "/dev/dri"));
 }
 
+// WSL2: the GPU is /dev/dxg and there is NO DRM node for it, so a host where
+// only this exists is a host with a GPU. Before /dev/dxg was in the list, such
+// a sandbox got the /sys-only degradation -- byte-identical to the output for a
+// machine with no GPU at all.
+TEST(SubosGpu, BindsDxgWhenPresent) {
+    auto args = xlings::subos::gpu::passthrough_args(
+        [](const std::string& p) { return p == "/dev/dxg"; });
+    EXPECT_TRUE(contains_triple(args, "--dev-bind",
+                                "/dev/dxg", "/dev/dxg"));
+    // And it must not be mistaken for the no-GPU case: /sys plus one bind.
+    EXPECT_GT(args.size(), 3u);
+}
+
 TEST(SubosGpu, FullHostBindsAllKnownNodes) {
     auto args = xlings::subos::gpu::passthrough_args(
         [](const std::string&) { return true; });
     for (auto path : {"/dev/nvidiactl", "/dev/nvidia-uvm",
                       "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset",
-                      "/dev/dri"}) {
+                      "/dev/dri", "/dev/dxg"}) {
         EXPECT_TRUE(contains_triple(args, "--dev-bind", path, path))
             << "missing --dev-bind for " << path;
     }
