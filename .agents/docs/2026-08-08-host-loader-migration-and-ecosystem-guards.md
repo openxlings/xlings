@@ -371,9 +371,24 @@ doctor 对两个 glibc 都报 `✓ nss resolution`。
 ### V.1 顺带挖出来的两个既有缺陷(已提 issue)
 
 `xlings#500` —— 在没有 subos 的 home 里执行 install,会**副作用地造出半个 subos**:
-`subos list` 能看见它,`subos use` 说 not found;而且此时
-`xlings use <pkg> <ver>` **打印成功但没有写任何 shim**(压根没有 `bin/` 目录)。
-同一个根因:`list` 读目录,`use` 读注册表,两边不一致。上面那次假通过就是它造成的。
+`subos list` 能看见它(读目录),`subos use` 说 not found(读注册表),两边不一致。
+
+> **我在这条 issue 里多报了一个并不存在的症状,已更正。**原文还说
+> `xlings use <pkg> <ver>` 打印成功但不写 shim。**是错的** —— 真实 home 里
+> `subos new tmp-python` → `xlings use python 3` → `which python` 明明白白指向
+> `subos/tmp-python/bin/python`。
+>
+> 我实际撞上的是**嵌套 home**:我的 `XLINGS_HOME` 是真实 home 底下的一个临时目录,
+> 而真实 home 已经占着这些 shim 名字,xlings 于是拒绝写入**并且明确告诉了我**:
+>
+> ```
+> [warn] shim 'python3' owned by /home/speak/.xlings is also resolvable in
+>        XLINGS_HOME=…; using the owner home
+> ```
+>
+> 这是有意为之的行为。我把 xlings 已经印出来的一条警告,当成了 `use` 的缺陷上报,
+> 而且**没跑那个唯一能区分两者的对照**:一个非嵌套 home 里的正常 subos。
+> 上面那次沙箱假通过,也是这条 decline 造成的,不是 `use` 坏了。
 
 `configure-project-installer` 的 macOS 段 `ref = "linux"` 连 deps 一起继承了,
 而 `make`/`gcc` 在索引里**没有 macosx 段**。裸名字解析不到时被容忍,所以这条声明
