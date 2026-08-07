@@ -23,6 +23,43 @@
 **60/67 是两个 JDK。**这不是"生态三分之一坏了",是五个包没迁移完。下面的方案基于
 实测,不是推断。
 
+**一处必须先更正的测量偏差:`python` 那两个不是缺陷,是陈旧载荷。**
+`xim:python` 在 2026-08-05 就修好了(pkgindex#507,已在无 `/usr` 的 bwrap 里验证);
+本机两个 python 载荷装于 3 月和 6 月,**早于修复**。对真实 home 的静态扫描测的是
+"装的时候是什么样",不是"现在装会是什么样"——这两者在这个生态里不是一回事。
+python 这一格只需 `xlings install python` 重装。
+
+同一个 commit 已经把这个类识别出来了:「索引 106 个 linux 载荷 recipe 里,94 个没有
+声明 glibc,因此同样触发不了 predicate」。**所以下面的 L 部分不是新发现,是 #507
+那句话的执行**。
+
+---
+
+## R. 这份方案要改哪些仓库
+
+按「能在 xpkg 包侧做的就不动 xlings 本体」这条约束逐项核对过源码,结论:
+
+| 项 | xim-pkgindex | libxpkg | xlings 本体 | 说明 |
+|---|:---:|:---:|:---:|---|
+| L0 `llvm-tools` | ✅ | — | — | 加 `deps = { "xim:glibc" }`,predicate 自动生效 |
+| L1 两个 JDK | ✅ | — | — | 同上 + `elfpatch.set({extra_rpath=...})` |
+| L2 `python` | — | — | — | **已修好**,只需重装复测 |
+| L3 `code` | ✅ | — | — | recipe 注释定性为"有意依赖宿主" |
+| NSS 覆盖告警 | ✅ | — | — | `glibc.lua` 的 `install()` 里比对 nsswitch |
+| G1 deps↔DT_NEEDED | ✅ | — | — | CI workflow + 脚本 |
+| G2 构建输入泄漏 | ✅ | — | — | `.agents/tools/graphics/build-in-subos.sh` |
+| G3 三态退出码 | ✅ | — | — | `.agents/tools/` 规范 + 现有脚本 |
+| G5 裸依赖名 | ✅ | — | — | CI 检查 + 62 处 recipe |
+| E1 回收矩阵 | ✅ | — | — | 文档 + 汇总页 |
+| **G4 `remove` 反向依赖** | — | — | **必须** | `src/core/xvm/removal.cppm`,包侧无法拦截 |
+| **doctor `getpwuid` 格** | — | — | **必须** | 诊断命令在 `src/core/xself/` |
+
+**11 项里 9 项纯 pkgindex,2 项必须动 xlings 本体。**这两项都不是绕不开包侧才去动
+本体——它们本身就是本体的职责:一个是卸载命令的语义,一个是诊断命令的一格。
+
+`libxpkg` 一行都不用改:loader 切换所需的 predicate、`closure_lib_paths()`、
+`extra_rpath` 全都已经在 `elfpatch.lua` 里了。
+
 ---
 
 ## L. 宿主 loader 迁移
@@ -84,29 +121,54 @@ clangd/clang-format/clang-tidy  ✓
 
 **L0 — `llvm-tools`(零风险,先做)**
 
-0 个不满足项。在 recipe 的 `install()` 里:
+0 个不满足项。**不需要写任何 `install()` 代码**——加一行依赖声明就够了:
 
 ```lua
-elfpatch.patch_elf_loader_rpath(pkginfo.install_dir(), {
-    bins   = { "bin" },
-    loader = "auto",                                   -- 解析到 xim:glibc 的 ld.so
-    rpath  = elfpatch.closure_lib_paths(),
-})
+xpm = {
+    linux = {
+        deps = { "xim:glibc" },   -- ← 全部改动
+        ...
 ```
 
-这条路径 libxpkg 早就有,和 `selfcontain.seal` 是同一套机制的 bins 侧。
+机制在 `libxpkg/elfpatch.lua`:`_resolve_predicate()` 扫描本包的 runtime deps,
+只要其中有包 export 了 `runtime.loader`(`glibc.lua` 正是这么声明的:
+`exports.runtime.loader = "lib64/ld-linux-x86-64.so.2"`),xlings 就在 post-install
+自动改写 `PT_INTERP` 并把 `closure_lib_paths()` 写成 RPATH。**这是 xlings 已有的
+默认行为,recipe 侧不声明依赖才是它不生效的原因。**
+
+> 我上一版这里写的是 `elfpatch.patch_elf_loader_rpath(..., loader = "auto")` —— **错的**。
+> `_resolve_loader()` 只认 `"system"` / `"subos"`,其它值原样当作绝对路径回传,
+> 于是会执行 `patchelf --set-interpreter auto`,**把二进制打坏而且不报错**
+> (`opts.loader and not loader` 为假,警告分支进不去)。低层 API 在这里既不必要
+> 也危险,声明式路径才是对的。
 
 **L1 — 两个 JDK(补两个包后做)**
 
-先把 `libXtst`、`libasound` 打包(`libX11/libXext/libXi/libXrender` 图形栈这轮已经
-有了),然后同样切 `bins`。**即使这两个包不做也可以切**——差别只在 AWT/声音继续
-落宿主,而那是现状。建议:**先切 loader,再补包**,两件事不要互相阻塞。
+同样是加 `deps = { "xim:glibc" }`,但**多一个必须做的动作**:
 
-**L2 — `python`(只补 `libcrypt`)**
+```lua
+elfpatch.set({ extra_rpath = { "$ORIGIN", "$ORIGIN/../lib" } })
+```
 
-12 个不满足项里,只有 `libcrypt.so.1` 是 CPython 标准库(`crypt` 模块)要的;
-`libmpi/libucp/libfabric/libibverbs/libtbb` 全是 numpy/scipy 在有 HPC 环境时才
-`dlopen` 的加速后端,没有就走通用路径。补 `libxcrypt` 一个包即可。
+原因:predicate 路径最终走 `patchelf --set-rpath`,是**替换**不是追加,而
+`bin/java` 出厂就带 `$ORIGIN:$ORIGIN/../lib`(实测),`libjli.so` 靠它找到。
+`closure_lib_paths()` 只 push `<install_dir>/lib` 这一层绝对路径,**不含 `lib/server`**
+(`libjvm.so` 在那里,靠 libjli 显式拼路径加载,所以不致命,但把 `$ORIGIN` 留住是
+零成本的正确做法)。
+
+`libXtst`、`libasound` 打包是**独立的、可以不做**的事——不做的差别只是 AWT/声音继续
+落宿主,而那正是现状。**两件事不要互相阻塞。**
+
+**L2 — `python`(已修好,只需重装)**
+
+见 §0 的更正:recipe 侧 2026-08-05 已经加了 `deps = { "xim:glibc@>=2.39" }`,
+本机测到的是 3 月/6 月的旧载荷。**本项无代码改动**,只需 `xlings install python`
+重装并复测 `readelf -p .interp`。
+
+(原先根据旧载荷得出的"12 个不满足项、需补 `libxcrypt`"仍然成立于那份载荷,但
+其中只有 `libcrypt.so.1` 是 CPython 标准库要的,`libmpi/libucp/libfabric/libibverbs/
+libtbb` 都是 numpy/scipy 在 HPC 环境才 `dlopen` 的加速后端。补 `libxcrypt` 是
+**可选增强**,不是 loader 迁移的前置。)
 
 **L3 — `code`(明确不切,并写进 recipe 注释)**
 
