@@ -1328,8 +1328,8 @@ exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是
 
 | # | 缺口 | 阻塞点 |
 |---|---|---|
-| 1 | Intel iris 无载荷 | **`libclc`**,见 §11.5。**不是** LLVM 的问题 |
-| 1b | WSL2 d3d12 无载荷 | `DirectX-Headers`,同样是缺包而非缺能力 |
+| 1 | Intel iris 无载荷 | 前置是**索引缺可用的 LLVM 开发包**,见 §11.7;libclc 排在它之后 |
+| 1b | WSL2 d3d12 无载荷 | DirectX-Headers **已建好**;卡在同一个 LLVM 前置(mesa 重建不了),见 §11.7 |
 | 2 | `libdbus-1.so.3` | godot 唯一剩下的非致命 dlopen |
 | 3 | Wayland 探针 | 不存在;本机 `WAYLAND_DISPLAY` 未设,写了也测不了 |
 | 4 | ~~CN 镜像缺 3 个包~~ **已完成** | `gtc repo create` 是存在的;真正的坑是空项目没有 `main` 分支,打 tag 会报 `main is not exist`,先推一个 README 即可。三个包已建库、发布、并**下载回来比对 sha256** |
@@ -1418,6 +1418,45 @@ LLVM API 头 ───────────┘
 顺带一提:mesa 现在能编出 `radeonsi`/`llvmpipe`(两者都要 LLVM)而索引里又没有
 LLVM API 头,说明那次构建**用的是宿主的 LLVM 头**。这一条没有被任何测试覆盖,
 应该单独查。
+
+### 11.7 再更正:两次都错了,真正的阻塞是索引里没有可用的 LLVM 开发包
+
+§11.5 说"LLVM 这一关早就过了,iris 只差 libclc"。**这句也是错的**,错法值得记
+下来:我是从**已发布的载荷里有 radeonsi 和 llvmpipe**倒推出"LLVM 能用",却没有
+去查那次构建到底链的是谁的 LLVM。
+
+真去重建 mesa(为了加 d3d12)就撞上了:
+
+```
+llvm-config: error: missing: …/xim-x-llvm/20.1.7/lib/libLLVMXRay.a   (还有约 40 个)
+llvm-config --shared-mode returned an error
+Run-time dependency LLVM (modules: amdgpu, bitreader, …) found: NO  (tried config-tool)
+meson.build:1785: ERROR: Neither a subproject directory nor a llvm.wrap file was found.
+```
+
+索引的 `llvm@20.1.7` **发了 `llvm-config`,却没发它引用的组件 `.a`**,也没发
+LLVM API 头。于是 `--shared-mode` 直接报错,mesa 的 `dependency('LLVM',
+method: config-tool)` 整个失败——**不是 iris 的问题,是任何 mesa 重建都过不去**。
+
+所以最初 §A5 那句"必须有一个 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM"**方向是对的**
+(llvm-config 把 shared-mode 烧成 OFF,又缺静态组件),是我的 §11.5 推翻错了。
+
+| 说法 | 出处 | 判定 |
+|---|---|---|
+| 需要 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM | §A5 原文 | **方向正确** |
+| LLVM 早就能用,iris 只差 libclc | §11.5(我) | **错**:由"已发布载荷里有 radeonsi"倒推,没验证构建来源 |
+| 索引没有可用的 LLVM 开发包,任何 mesa 重建都过不去 | 本节,由一次真实失败的构建得出 | 当前结论 |
+
+推论 —— **已发布的 mesa 25.0.7.1 不是用索引的 `llvm` 包构建的**,只能来自宿主的
+LLVM(同一次配置里 meson 也确实找到了 `/usr/bin/pkg-config`)。也就是说**图形栈
+的运行期自持已经证明了,构建期还没有**:一台从零开始的机器目前重建不出这个
+mesa。这一条没有任何测试覆盖——`build-in-subos.sh` 的 host-leak 检查看的是**产
+物**,不是**构建输入**。
+
+**因此 iris 和 d3d12 共用同一个前置**:先要一个真正可用的 LLVM 开发包(组件库 +
+API 头 + 能报 shared-mode 的 llvm-config)。libclc / SPIRV / DirectX-Headers 都
+排在它后面。DirectX-Headers 本身已经建好并通过 host-leak 检查
+(`no host references`,sha256 `11ff1564…`),只是还没有能消费它的 mesa 构建。
 
 ### 11.6 一句话结论
 
