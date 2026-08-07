@@ -1233,6 +1233,119 @@ glslang 用同一个脚本从源码建。**所以 A5+A9b 没有被环境挡住**
 
 ---
 
+## 11. 综合评估与横向对标(2026-08-07,实测)
+
+### 11.1 S1 的真正原因:一个零调用者的公开 API
+
+前面几轮把 S1(空宿主自持性)记成"控制组也失败,因此不可判定"。那个判断是错的
+——**两组都失败,是因为它们都撞上了同一个真实缺陷**,而不是因为测试写坏了。
+
+链条只有一句话长:
+
+```
+libxcb.so.1   DT_NEEDED   libXau.so.6 …
+              DT_RUNPATH  $ORIGIN          ← libXau 不在这里,它在另一个 payload
+```
+
+它一直能跑,是因为宿主的 `/etc/ld.so.cache` 里有 `libXau.so.6`——而任何一台桌面
+Linux 都有。**图形栈从来没有自持过,而每一格测试都报 pass。**
+
+为什么 `<subos>/lib` 那片符号链接农场救不了它?因为 ld.so 的搜索顺序里有一句:
+**一个对象只要有 DT_RUNPATH,解析它自己的依赖时就完全不看任何祖先的 DT_RPATH。**
+消费者(godot、glprobe)的 RPATH 确实是可传递的、确实指向农场,但 libxcb 有自己的
+RUNPATH,于是这条路在 libxcb 这里断掉,直接落到宿主缓存。
+
+而机制其实一直存在:
+
+| 声明 | 谁读它 | 状态 |
+|---|---|---|
+| `exports.runtime.libdirs = {"lib"}` | 依赖它的**下游**包 | 每个 recipe 都写了 |
+| `elfpatch.closure_lib_paths()` | 包**自己**,用来消费上游的 exports | **全生态零调用者** |
+
+`gcc-runtime.lua` 的注释甚至写着"consumer's RPATH (set by elfpatch via
+exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是 xlings 反复出现的
+那个 bug class 的最纯形态:声明了、文档了、没人调用,而失败与成功输出完全一致。
+
+密封 bwrap(完全没有 `/usr`)下的 A/B:
+
+| | 结果 |
+|---|---|
+| 出厂状态 | `EGL_CLIENT_EXTENSIONS=` 空、`surfaceless refused 0x300c`,exit 1 |
+| 打上闭包 | `GL_RENDERER=llvmpipe (LLVM 20.1.7)`、`PIXEL=336699`、`RESULT=ok`,exit 0 |
+
+修法在**包侧**:`libs/selfcontain.lua` 包一层,28 个 recipe 在 `install()` 里调用;
+同时把少声明的直接依赖补齐(`runtime_deps` 是直接依赖,不是传递闭包,闭包再准也只
+和 deps 列表一样准)。glibc 不打——它是根,而"用 patchelf 改写 ld.so 自己"正是本轮
+调查中差点把测试环境毁掉的那一步。
+
+矩阵从 **pass 13 / fail 0 / 不可测 6** 变成 **pass 14 / fail 0 / 不可测 5**,
+第 6 格自诞生以来第一次给出结论:`✓ empty-host self-containment — S1-S4 pass`。
+
+### 11.2 可用性:今天到底能用到什么程度
+
+在这台机器(RTX 4080 / 550.144.03 / X11)上实测:
+
+| 维度 | 状态 |
+|---|---|
+| 用户要输入的命令 | `xlings install graphics`,然后直接跑程序 |
+| 需要设的环境变量 | 零(S2 走 shim,不依赖 `subos use`) |
+| NVIDIA 专有驱动 | ✅ godot 实跑 `OpenGL API 3.3.0 NVIDIA 550.144.03` |
+| 软件渲染 | ✅ llvmpipe,像素正确 |
+| Vulkan | ✅ loader + 我们自己的 ICD(不是宿主的) |
+| 自持性 | ✅ 无 `/usr` 密封环境可渲染 |
+| 自检 | ✅ `xlings-gl-doctor`,含驱动版本漂移检测 |
+| 磁盘 | 343 MB(其中 libllvm 131 MB、mesa 63 MB);NVIDIA 侧只有 **196 KB** interposer,不复制那 33 MB 宿主驱动 |
+| 未验证硬件 | AMD、Intel、nouveau、WSL2、Wayland —— 本机物理上测不了 |
+
+### 11.3 横向对标
+
+轴选的是"用户真会撞到的地方",不是特性清单:
+
+| | xlings(今天) | Nix / NixOS | Flatpak | Snap | Steam Runtime | conda-forge |
+|---|---|---|---|---|---|---|
+| 复用宿主专有驱动 | **interposer,196 KB** | `/run/opengl-driver` 农场 | 按驱动版本下发 extension | `gpu-2404` content snap | `capsule-capture-libs` 抓进 `/overrides` | **不管**,交给系统包管理器 |
+| 需要 root / 守护进程 | 否 | NixOS 是发行版;非 NixOS 需 `nix-system-graphics` | 需 flatpak 运行时 | 需 snapd | 需容器 | 否 |
+| 需要容器 / 命名空间 | 否 | 否 | 是 | 是 | 是 | 否 |
+| 驱动版本漂移 | 版本戳 + doctor 报警 | 农场随系统重建 | extension 版本必须匹配,否则挂 | content snap 跟随 | 每次启动重抓 | N/A |
+| 多 vendor 并存 | glvnd 共享目录(与发行版同构) | glvnd | glvnd | glvnd | glvnd | N/A |
+| 配置作用域 | 对象 / 程序 / shell 三层,默认落在**程序**层 | 程序层(`makeWrapper`) | 容器层 | `command-chain` 程序层 | 容器层 | N/A |
+| 自持性 | ✅(本轮才真正成立) | ✅ | ✅ | ✅ | ✅ | ⚠️ 依赖宿主 GL |
+| 非 root 装到任意目录 | ✅ | ⚠️ 需 `/nix` 或 daemon | ❌ | ❌ | ❌ | ✅ |
+
+**xlings 的位置**:它是这张表里唯一同时做到"不要 root、不要容器、不要守护进程"
+和"自持 + 复用宿主专有驱动"的。conda-forge 在前一栏和它一样,但直接放弃了 GL——
+官方 FAQ 就是"交给系统包管理器"。其余四家都靠容器或发行版级别的机制换来自持性。
+
+代价也清楚:interposer 方案要求宿主**已经装好**驱动(Flatpak/Snap 会替你下发),
+而 343 MB 里 131 MB 是 libllvm——这是 mesa 动态链接 LLVM 的直接后果,Nix/发行版
+同样如此。
+
+### 11.4 诚实的剩余缺口
+
+按"能不能被本机证伪"分两类。
+
+**能修但没修:**
+
+| # | 缺口 | 阻塞点 |
+|---|---|---|
+| 1 | Intel iris / WSL2 d3d12 无载荷 | 需要一个 `LLVM_LINK_LLVM_DYLIB=ON` 的 llvm-config;`libllvm` 有 `libLLVM.so`,但没有能报 `shared-mode=shared` 的 llvm-config。**这是架构决策**:要么重建 LLVM,要么 mesa 改 `-Dshared-llvm=disabled`(静态链接,体积涨) |
+| 2 | `libdbus-1.so.3` | godot 唯一剩下的非致命 dlopen |
+| 3 | Wayland 探针 | 不存在;本机 `WAYLAND_DISPLAY` 未设,写了也测不了 |
+| 4 | CN 镜像缺 3 个包 | `gtc` 能发 release,不能创建 GitCode 项目 |
+| 5 | **没有 CI 守卫这次的缺陷** | 下一个新包会照样忘记调 `selfcontain.seal`。应该加一条:比对包的 declared deps 与其载荷真实 DT_NEEDED |
+
+**本机物理上测不了**(需要有对应硬件的人):AMD radeonsi、Intel iris、nouveau、
+WSL2 d3d12、Wayland。矩阵把这五格显式标成"不可测"并说明原因,而不是算作通过——
+`verify-stack.sh --json` 可以拿去在别的机器上跑同一张表。
+
+### 11.5 一句话结论
+
+图形栈**在 NVIDIA + X11 + 软件渲染这条路径上是可用的、自持的、可自检的**,
+体验上已经追平容器方案而不需要容器;**Intel 与 WSL2 这两条最常见的路径今天仍然
+静默落 llvmpipe**,且卡在一个明确的、非环境性的构建决策上。
+
+---
+
 ## 参考
 
 - Steam Runtime / pressure-vessel 容器运行时:<https://gitlab.steamos.cloud/steamrt/steam-runtime-tools>(`/overrides`、`capsule-capture-libs`)
