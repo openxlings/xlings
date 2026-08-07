@@ -329,6 +329,60 @@ G3(规范,最便宜) → G1(差分,挡住核心缺陷类) → G5(裸依赖名)
 
 ---
 
+## V. 实施后的真实验证(2026-08-08)
+
+全部在**全新隔离 home** 里做,不是读 diff。
+
+**L2 python** — 真装(真下载 + 真跑 install hook):
+
+```
+INTERP: <home>/data/xpkgs/xim-x-glibc/2.44/lib64/ld-linux-x86-64.so.2   ← 已切
+python 3.13.12 · ssl OpenSSL 3.5.5 · user = speak(NSS 通)· enc = utf-8
+```
+
+**L0 llvm-tools** — 用改后的 recipe 真装:
+
+```
+INTERP: <home>/.../xim-x-glibc/2.44/lib64/ld-linux-x86-64.so.2
+RPATH : <self>/lib : glibc/lib64 : gcc-runtime/lib64 : zlib/lib : subos/default/lib
+```
+
+RPATH **恰好等于声明的闭包**,一个不多一个不少。G1 对着 xlings 亲手产出的这个载荷跑:
+`3 ELF, 6 external soname(s), all accounted for`,exit 0。
+
+**沙箱内**(`xlings subos use l0check --sandbox --cmd ...`):
+
+```
+py 3.13.12 ssl 3.5.5 user speak
+clangd 22.1.8 / clang-format 22.1.8 / clang-tidy 22.1.8
+```
+
+**这一步差点变成假通过,值得记下来。**第一次跑沙箱,`python3 -c ...` 输出
+`py ok speak OpenSSL 3.0.13` —— 看着是过的,其实跑的是**宿主的 python**
+(`/usr/bin/python3`,3.12.3)。因为 shim 没激活、PATH 落到 `/usr/bin`,而
+`--sandbox` 在这里并没有封掉 `/usr`。
+**断言"跑起来了"会通过;断言"跑的是谁"才不会。**
+识别出来靠的是 OpenSSL 版本对不上(我们的 3.5.5 vs 宿主 3.0.13)。
+
+**G4 / doctor** 在真 home 上:remove 守卫 exit 2 并列出 11 个依赖方,
+`--force` 放行到确认提示,无依赖的包不被拦,全程没有真的删掉任何东西;
+doctor 对两个 glibc 都报 `✓ nss resolution`。
+
+### V.1 顺带挖出来的两个既有缺陷(已提 issue)
+
+`xlings#500` —— 在没有 subos 的 home 里执行 install,会**副作用地造出半个 subos**:
+`subos list` 能看见它,`subos use` 说 not found;而且此时
+`xlings use <pkg> <ver>` **打印成功但没有写任何 shim**(压根没有 `bin/` 目录)。
+同一个根因:`list` 读目录,`use` 读注册表,两边不一致。上面那次假通过就是它造成的。
+
+`configure-project-installer` 的 macOS 段 `ref = "linux"` 连 deps 一起继承了,
+而 `make`/`gcc` 在索引里**没有 macosx 段**。裸名字解析不到时被容忍,所以这条声明
+一直是**空的而不是对的**;加上 `xim:` 前缀后变成硬解析,macos-install-test 第一次
+就红了。**这不是 G5 引入的回归,是 G5 让一个一直存在的错误第一次可见**——
+也正是加这个守卫的意义。
+
+---
+
 ## 附:本方案里每个数字的来源
 
 | 数字 | 怎么来的 |
