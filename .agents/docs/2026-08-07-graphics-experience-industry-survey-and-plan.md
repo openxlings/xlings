@@ -1025,12 +1025,57 @@ CI 里剩下的步骤是"把改动的 recipe 装进一个全新 home",而那件�
    解释器之后**失败一模一样** —— 假设被自己的下一次运行否掉了。记在这里是因为
    这个错误信息会把任何人送去查 mako。)*
 
-5. **索引里的两个 LLVM 包都喂不饱 mesa,而且原因同一个:它们是"切"出来的。**
+5. **索引里的两个 LLVM 包合起来仍喂不饱 mesa —— 但缺的不是我第一次说的那样。**
 
-   | 包 | 有什么 | 缺什么 |
-   |---|---|---|
-   | `libllvm@20.1.7` | 只有 `lib/` | 没有 `llvm-config`,没有 `.pc` |
-   | `llvm@20.1.7` | 有 `llvm-config`(报 20.1.7) | **没有各组件的静态 `.a`** |
+   > **2026-08-07 更正。** 我先写的是"两个包都缺组件 `.a`,上游 release 又是纯静态
+   > 缺共享库,所以必须自建 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM"。**前半句把
+   > `libllvm` 说错了** —— 它恰恰**就是**那个共享库。逐个查过之后:
+
+   | 包 | 实际内容 |
+   |---|---|
+   | `libllvm@20.1.7` | **只有** `lib/libLLVM.so.20.1`(129 MB 共享库)+ `.so` 链接 |
+   | `llvm@20.1.7` | `bin/`(36 个工具,含 `llvm-config`)、`include/{c++,x86_64-unknown-linux-gnu}`(**libc++ 头,不是 LLVM API 头**)、`lib/`、`share/` |
+
+   所以真正缺的是**整个"开发半边"**:
+
+   * **LLVM API 头文件在索引里根本不存在** —— `llvm-config --includedir` 指向的目录
+     里没有 `llvm/Config/llvm-config.h`。libgallium 要 include LLVM 头来编 JIT。
+   * `llvm-config --shared-mode` 仍失败:把 `libLLVM-20.so` 软链进它的 libdir 之后
+     它还是报缺组件 `.a`(实测)。
+
+   **然后这个"便宜得多"的结论也被实测推翻了(同日,第三次)。**
+
+   拉了完整上游 `LLVM-20.1.7-Linux-X64`(1.9 GB 压缩 / 11 GB 解开),它**头文件、
+   组件 `.a`、`llvm-config` 三样俱全**。把 `libllvm` 的共享库软链进它的 libdir,
+   试了 `libLLVM-20.so` / `libLLVM-20.1.so` / `libLLVM.so.20.1` /
+   `libLLVM-20.1.7.so` / `libLLVM.so` **五个名字**,每一个都回同一句:
+
+   ```
+   llvm-config: error: libLLVM-20.so is missing
+   ```
+
+   五个名字得到**逐字相同**的错误,说明 `llvm-config` **根本没有去看文件系统**。
+   `--shared-mode` 返回 `static`,那是它**编译期**记下来的事实:上游 release 构建时
+   `LLVM_LINK_LLVM_DYLIB=OFF`。这是一个烧进 llvm-config 的属性,不是一次文件探测,
+   所以从外面放什么文件进去都改变不了它。
+
+   **所以最初那句"必须自建 `LLVM_LINK_LLVM_DYLIB=ON` 的 LLVM"是对的 —— 但我给的
+   理由一直是错的。** 不是"缺组件 `.a`",不是"缺共享库",而是:
+
+   > 索引里的 `libllvm` 提供共享库却没有 llvm-config;上游的 llvm-config 编译期就
+   > 声明了自己是 static 构建。**生态里不存在一个 shared-mode 为 `shared` 的
+   > llvm-config**,而 mesa 的 recipe 要 `-Dshared-llvm=enabled`。
+
+   一个 `llvm-dev` 切片**解决不了**这条 —— 从一份 static 构建里切出来的 llvm-config
+   仍然是 static。要么真的自建一份 dylib 模式的 LLVM,要么把 mesa 改成
+   `-Dshared-llvm=disabled`(把 LLVM 静态焊进 libgallium:少一个运行期依赖、少一处
+   `@LLVM_20.1` 精确耦合,代价是体积,并且那是改一个**已发布包的架构**,不该在一次
+   发布中途单方面决定)。
+
+   这句判断我一共说了四次,每次理由都不同,只有第一次的结论碰巧对:
+   "要几小时"(猜)→ "没被挡住"(发现 `--deps` 后的乐观)→ "缺组件 .a / 缺共享库"
+   (查了包但没查 llvm-config 的行为)→ 现在这条(测了五个文件名才看出它压根不看
+   文件系统)。**前三次都是在测量停下来得太早。**
 
    第二个的症状很有迷惑性:`llvm-config found: YES … 20.1.7` 之后紧跟
    `Run-time dependency LLVM … found: NO (tried config-tool)`。真因在 meson 日志
