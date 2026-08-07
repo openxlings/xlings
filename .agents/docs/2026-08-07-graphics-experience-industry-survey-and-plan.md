@@ -1328,7 +1328,8 @@ exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是
 
 | # | 缺口 | 阻塞点 |
 |---|---|---|
-| 1 | Intel iris / WSL2 d3d12 无载荷 | 需要一个 `LLVM_LINK_LLVM_DYLIB=ON` 的 llvm-config;`libllvm` 有 `libLLVM.so`,但没有能报 `shared-mode=shared` 的 llvm-config。**这是架构决策**:要么重建 LLVM,要么 mesa 改 `-Dshared-llvm=disabled`(静态链接,体积涨) |
+| 1 | Intel iris 无载荷 | **`libclc`**,见 §11.6。**不是** LLVM 的问题 |
+| 1b | WSL2 d3d12 无载荷 | `DirectX-Headers`,同样是缺包而非缺能力 |
 | 2 | `libdbus-1.so.3` | godot 唯一剩下的非致命 dlopen |
 | 3 | Wayland 探针 | 不存在;本机 `WAYLAND_DISPLAY` 未设,写了也测不了 |
 | 4 | CN 镜像缺 3 个包 | `gtc` 能发 release,不能创建 GitCode 项目 |
@@ -1337,6 +1338,86 @@ exports.runtime.libdirs)"——**描述了一个没有接线的机制**。这是
 **本机物理上测不了**(需要有对应硬件的人):AMD radeonsi、Intel iris、nouveau、
 WSL2 d3d12、Wayland。矩阵把这五格显式标成"不可测"并说明原因,而不是算作通过——
 `verify-stack.sh --json` 可以拿去在别的机器上跑同一张表。
+
+### 11.6 更正:iris 的阻塞点不是 LLVM
+
+前面几节(以及 §A5)把 Intel iris 记成"卡在需要一个 `LLVM_LINK_LLVM_DYLIB=ON`
+的 LLVM"。**这是错的**,而且错得有迹可循:那段调查确实为真,但它属于**另一个
+时间点**——后来 T5 的构建行已经带着 `-Dshared-llvm=enabled` 成功编出了
+`radeonsi` 和 `llvmpipe`,两个都要 LLVM。**LLVM 这一关早就过了。**
+
+从载荷反查(`pub-home`,发布索引装出来的):
+
+```
+usr/lib/dri/  kms_swrast_dri.so  libdril_dri.so  nouveau_dri.so
+              radeonsi_dri.so    swrast_dri.so   zink_dri.so
+```
+
+于是分成三种完全不同的状况,而之前它们被混成一句"硬件没验":
+
+| 驱动 | 载荷里有吗 | 差什么 |
+|---|---|---|
+| **radeonsi**(AMD) | **有** | 只差一台 AMD 机器 |
+| **nouveau** | **有** | 只差一台跑 nouveau 的机器 |
+| llvmpipe / zink / swrast | 有 | 已验证 |
+| **iris**(Intel) | **没有** | `libclc` |
+| **d3d12**(WSL2) | 没有 | `DirectX-Headers` |
+
+**AMD 和 nouveau 的载荷是完整的**——`verify-stack` 那两格写 "not here: no amd
+GPU",说的是这台机器没有那块卡,不是我们没建。之前把它们和 Intel 并列成"未做",
+低估了已有的覆盖面。
+
+iris 真正的条件,从 mesa 25.0.7 `meson.build:841` 读出来:
+
+```meson
+with_clc = get_option('mesa-clc') != 'auto' or \
+           with_microsoft_clc or with_drivers_clc or \
+           with_gallium_iris or with_intel_vk or ...
+...
+if with_gallium_clover or with_clc
+  dep_clc = dependency('libclc')
+```
+
+`with_gallium_iris` 直接蕴含 `with_clc`,`with_clc` 直接要 `libclc`。
+`.agents/tools/graphics/tiers.sh` 的注释其实一直写着这一点
+("iris pulls in libclc"),是 §11.4 没有去读它。
+
+#### 实际动手之后:链条比"缺一个 libclc"长
+
+上面那句"subos 里已经全有"只看了**可执行文件**。真去配 libclc 才发现要的是
+**开发件**,而 `llvm` 载荷里没有:
+
+| 需要 | `xim-x-llvm/20.1.7` 里 |
+|---|---|
+| `clang` / `llvm-as` / `llvm-link` 可执行文件 | ✅ 有 |
+| `libclang-cpp.so`(mesa `dep_clang`) | ❌ **没有** |
+| clang 静态模块(`libclangBasic.a` …,`dep_clang` 的退路) | ❌ **没有** |
+| LLVM API 头(`llvm/Config/llvm-config.h`) | ❌ **没有** |
+| SPIRV-Tools / SPIRV-LLVM-Translator(libclc 的 `*-mesa3d-` 目标) | ❌ **没有** |
+
+而 mesa 用 libclc 的方式不是"拿头文件"——`src/compiler/clc/meson.build:43` 是
+`dep_clc.get_variable(pkgconfig : 'libexecdir')`,**要的是编好的 bitcode**,
+所以 libclc 必须真的构建出 `spirv-mesa3d-` / `spirv64-mesa3d-` 目标,而那两个
+目标 CMake 直接拒绝:`SPIR-V targets requested, but spirv-tools is not installed`。
+
+配置时还有一个坑:`-DLLVM_CONFIG=` 没被 libclc 20 采纳,它自己 `find_package`
+到了**宿主的 llvm-config 18.1.3**,而 subos 里是 20.1.7。要么打补丁,要么把宿主
+llvm 从 PATH 上摘掉。
+
+所以完整链条是:
+
+```
+SPIRV-LLVM-Translator ─┐
+clang 开发件(libclang-cpp / 静态模块)─┼─→ libclc ─→ mesa(+iris)
+LLVM API 头 ───────────┘
+```
+
+**四个包,不是一个。** 但仍然不是"架构决策",也仍然和 `LLVM_LINK_LLVM_DYLIB`
+无关——每一项都是明确的打包工作,没有需要先拍板的取舍。
+
+顺带一提:mesa 现在能编出 `radeonsi`/`llvmpipe`(两者都要 LLVM)而索引里又没有
+LLVM API 头,说明那次构建**用的是宿主的 LLVM 头**。这一条没有被任何测试覆盖,
+应该单独查。
 
 ### 11.5 一句话结论
 
