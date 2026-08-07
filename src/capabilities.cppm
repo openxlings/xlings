@@ -116,7 +116,9 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override {
         auto json = nlohmann::json::parse(params, nullptr, false);
         bool yes = json.value("yes", false);
-        return exit_result(xim::cmd_remove(json.value("target", ""), yes, stream));
+        bool force = json.value("force", false);
+        return exit_result(
+            xim::cmd_remove(json.value("target", ""), yes, stream, force));
     }
 };
 

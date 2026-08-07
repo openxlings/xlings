@@ -1037,6 +1037,7 @@ export int run(int argc, char* argv[]) {
         .subcommand("remove")
             .description("Remove a package")
             .option(cmdline::Option("global").short_name('g').help("Act on the global scope (not the project-local subos)"))
+            .option(cmdline::Option("force").help("Remove even if installed packages depend on it"))
             .arg("package").required().help("Package to remove (name or name@ver)")
             .arg("version").help("Optional version (alternative to name@ver form)")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
@@ -1047,7 +1048,12 @@ export int run(int argc, char* argv[]) {
                 std::string target;
                 if (!parse_target_spec_(args, target)) return 1;
                 bool yes = args.is_flag_set("yes");
-                return xim::cmd_remove(target, yes, stream);
+                // Separate from `yes`, deliberately. `-y` says "do not ask me",
+                // which is a statement about prompting; breaking a dependency
+                // link is a different decision and a scripted `remove -y`
+                // should still be stopped by it.
+                bool force = args.is_flag_set("force");
+                return xim::cmd_remove(target, yes, stream, force);
             }))
 
         // update

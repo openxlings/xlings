@@ -222,6 +222,27 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 - **执行阶段错误**：通过事件流中的 `error` 事件报告。`recoverable=true` 表示执行未中断；`recoverable=false` 后通常紧跟 `result` 终止行。
 - **内部异常**：code 为 `E_INTERNAL`，exitCode=1。
 - **取消**：exitCode=130。
+- **被策略拒绝**：exitCode=2。命令是合法的、也没有出错，但 xlings 拒绝执行它。
+  与 1 分开，是因为客户端对这两者该做的事不同：1 是"出问题了"，2 是"你要的这件事
+  我不做，除非你明确覆盖"。
+
+### 8.1 `remove_package` 的反向依赖拒绝（2026.8.8.1+）
+
+当活跃 subos 里有已安装的包**直接依赖**移除目标时，`remove_package` 会拒绝执行，
+先发一条 `remove_blocked`,再以 exitCode=2 结束：
+
+```json
+{"kind":"data","dataKind":"remove_blocked","payload":{
+  "subos":"default","name":"glibc","version":"2.39",
+  "required_by":[{"name":"xim:binutils","version":"2.42"},
+                 {"name":"xim:llvm","version":"22.1.8"}]}}
+{"kind":"result","exitCode":2}
+```
+
+传 `{"force": true}` 可越过这一检查（`remove_plan` / `remove_summary` 照常）。
+
+只看**直接**依赖:依赖方的 libdirs 只有在被直接声明时才会进入其载荷的 RPATH 闭包，
+所以隔了一跳的包并没有把这个载荷放在任何搜索路径上，删掉它不会经由 loader 影响到它。
 
 ## 9. 完整会话示例
 

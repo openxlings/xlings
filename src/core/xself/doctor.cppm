@@ -1,3 +1,12 @@
+module;
+
+// The NSS cell needs the caller's effective uid. `import std;` does not pull
+// POSIX in, and a named module's purview forbids including it there, so it
+// goes in the global module fragment -- same arrangement as subos/sandbox.cppm.
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 export module xlings.core.xself.doctor;
 
 import std;
@@ -165,6 +174,23 @@ enum class FindingKind {
     // versions contribute their env declarations, so a GL stack bound twice
     // enumerates its device twice.
     SubosDoubleBinding,
+    // Name resolution under OUR glibc, which is not the same question as name
+    // resolution on this machine.
+    //
+    // glibc does not link its name-service backends; it dlopens
+    // `libnss_<mod>.so.2` on the first lookup, and the module has to come from
+    // the same glibc as the caller. So the moment a payload's PT_INTERP points
+    // at ours, `getpwnam`, `getaddrinfo` and every group lookup stop using the
+    // host's modules and start using the ones we ship -- compat, db, dns,
+    // files, hesiod. A host configured with systemd's, Avahi's or NIS's
+    // backends names modules that are simply not there.
+    //
+    // The failure is silent by construction: NSS answers "no such user"
+    // exactly as it would for a user who does not exist. Nothing errors. What
+    // the user sees is a home directory that came out as `/`, a numeric name
+    // in a prompt, or an ssh that will not authorise -- none of which mentions
+    // libc, let alone xlings.
+    NssResolution,
 };
 
 enum class FindingLevel {
@@ -1393,6 +1419,118 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             }
         }
 
+        // Name resolution under our own glibc.
+        //
+        // Run for real rather than inferred, and this is the one place where
+        // that distinction is cheap: the glibc payload ships `bin/getent`, so
+        // executing it under its own loader exercises the exact dlopen path a
+        // switched payload will take. Reading the module list off disk would
+        // only tell us which files exist.
+        //
+        // Doing it in-process was the obvious shortcut and it is wrong: this
+        // binary has its own libc (a static musl build has no NSS at all), so
+        // an in-process getpwuid answers a question about xlings rather than
+        // about the payload every other package is about to depend on.
+        //
+        // Notice, not Error, when it works: this is the cell that is supposed
+        // to be boring. When it fails it is an Error, because a home whose
+        // packages resolve no users is broken in a way nothing else reports.
+#ifdef __linux__
+        {
+            std::error_code sec;
+            const auto store = Config::paths().dataDir / "xpkgs";
+            if (fs::is_directory(store, sec)) {
+                for (const auto& pkgDir : platform::dir_entries(store)) {
+                    if (!pkgDir.is_directory()) continue;
+                    const auto storeName = pkgDir.path().filename().string();
+                    // `<ns>-x-glibc`, any namespace.
+                    if (!storeName.ends_with("-x-glibc")) continue;
+                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
+                        if (!verDir.is_directory()) continue;
+                        const auto lib64  = verDir.path() / "lib64";
+                        const auto loader = lib64 / "ld-linux-x86-64.so.2";
+                        const auto getent = verDir.path() / "bin" / "getent";
+                        if (!fs::is_regular_file(loader, sec)) continue;
+                        if (!fs::is_regular_file(getent, sec)) continue;
+
+                        const auto version = verDir.path().filename().string();
+                        const auto cmd = std::format(
+                            "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
+                            loader.string(), lib64.string(), getent.string(),
+                            ::geteuid());
+                        auto [rc, out] = platform::run_command_capture(cmd);
+
+                        if (rc == 0 && !out.empty()) {
+                            add({
+                                .kind    = FindingKind::NssResolution,
+                                .level   = FindingLevel::Notice,
+                                .target  = storeName,
+                                .version = version,
+                                .detail  = std::format(
+                                    "glibc {}: resolves the current user "
+                                    "(getent passwd {} under our loader)",
+                                    version, ::geteuid()),
+                            });
+                            continue;
+                        }
+
+                        // Which backends this host asks for that we do not
+                        // ship. Part of the finding, not a separate check: it
+                        // is the only actionable thing about the failure.
+                        std::string missing;
+                        {
+                            std::ifstream nss("/etc/nsswitch.conf");
+                            std::set<std::string> seen;
+                            for (std::string line; std::getline(nss, line);) {
+                                if (auto h = line.find('#'); h != std::string::npos)
+                                    line.resize(h);
+                                auto colon = line.find(':');
+                                if (colon == std::string::npos) continue;
+                                auto rest = line.substr(colon + 1);
+                                // `[NOTFOUND=return]` is control flow, not a
+                                // module; reporting it as missing would send
+                                // the reader looking for libnss_NOTFOUND.
+                                while (true) {
+                                    auto ob = rest.find('[');
+                                    if (ob == std::string::npos) break;
+                                    auto cb = rest.find(']', ob);
+                                    if (cb == std::string::npos) { rest.resize(ob); break; }
+                                    rest.erase(ob, cb - ob + 1);
+                                }
+                                std::istringstream toks(rest);
+                                for (std::string mod; toks >> mod;) {
+                                    if (!seen.insert(mod).second) continue;
+                                    if (!fs::is_regular_file(
+                                            lib64 / ("libnss_" + mod + ".so.2"), sec)) {
+                                        if (!missing.empty()) missing += ", ";
+                                        missing += mod;
+                                    }
+                                }
+                            }
+                        }
+
+                        add({
+                            .kind    = FindingKind::NssResolution,
+                            .level   = FindingLevel::Error,
+                            .target  = storeName,
+                            .version = version,
+                            .detail  = std::format(
+                                "glibc {}: does NOT resolve the current user "
+                                "under our loader{}. Any package switched to "
+                                "this interpreter will see no user, silently.",
+                                version,
+                                missing.empty()
+                                    ? std::string{}
+                                    : std::format(
+                                        " -- /etc/nsswitch.conf names backend(s) "
+                                        "this payload does not ship: {}", missing)),
+                        });
+                    }
+                }
+            }
+        }
+#endif
+
         for (const auto& scanRoot : sysrootRoots) {
             const bool isActive = scanRoot.name.empty();
             for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
@@ -2217,6 +2355,13 @@ Counts count_(const Scan& scan) {
                 // every script that wraps it.
                 ++c.broken;
                 break;
+            case FindingKind::NssResolution:
+                // Only the failing one counts. The passing case is a Notice
+                // that exists to say the cell RAN -- counting it would make a
+                // healthy home report a problem, and a cell that cries wolf
+                // gets read as noise by the second week.
+                if (f.level == FindingLevel::Error) ++c.broken;
+                break;
             case FindingKind::SubosDoubleBinding:
                 // Counted for the same reason, and for a second one: `healed`
                 // is computed as before-minus-after over this count, so an
@@ -2481,6 +2626,12 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "loader/libc split"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::NssResolution:
+                add(f.level == FindingLevel::Error
+                        ? glyph::mark(glyph::failed, "nss resolution")
+                        : glyph::mark(glyph::done, "nss resolution"),
+                    f.detail);
                 break;
             default: break;
         }
