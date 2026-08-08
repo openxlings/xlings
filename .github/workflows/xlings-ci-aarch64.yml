@@ -30,6 +30,11 @@ env:
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
   # The build tool, pinned for the same reason the index is.
   MCPP_REF: 463dedfa5a36a510df57108a9c562d350d6f9967
+  # The package index, pinned to the same ref release.yml and the Windows CI
+  # already trust. This job resolved it from `main` -- the last unpinned input
+  # after MCPP_REF -- which is why an index bump could break a cross-build that
+  # contains none of our commits. Bump together with BOOTSTRAP_XLINGS_VERSION.
+  XIM_PKGINDEX_REF: bf969a651caae4539eea8e92e3d14cb60e0eaf53
 
 jobs:
   native-contracts:
@@ -80,6 +85,20 @@ jobs:
           echo "XLINGS_HOME=$HOME/.xlings"       >> "$GITHUB_ENV"
           echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.xlings/bin"               >> "$GITHUB_PATH"
+
+      - name: Prepare pinned package index
+        run: |
+          # The same helper release.yml and the Windows CI use, so all three
+          # resolve packages from one known-good index rather than from whatever
+          # `main` happens to be mid-run.
+          rm -rf "$HOME/.xlings/data/xim-pkgindex"
+          bash tests/e2e/prepare_fixture_index.sh "$HOME/.xlings/data/xim-pkgindex"
+          test -d "$HOME/.xlings/data/xim-pkgindex/pkgs" \
+            || { echo "pinned index has no pkgs/"; exit 1; }
+          # Assert the pin actually landed. A silently-wrong ref would look like
+          # a normal build until something in the index moved under it -- which is
+          # exactly the failure this step exists to prevent.
+          echo "index at $(git -C "$HOME/.xlings/data/xim-pkgindex" rev-parse HEAD)"
 
       - name: Cache xlings package payloads
         uses: actions/cache@v4
