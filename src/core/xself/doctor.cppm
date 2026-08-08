@@ -1748,13 +1748,20 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 if (!document.contains("workspace"))
                     document["workspace"] = nlohmann::json::object();
                 if (wantsBlock) {
+                    // A broken block can still carry a valid runtime binding.
+                    // Rewriting with DEFAULT_RUNTIME here used to re-declare
+                    // the subos against whatever the current default is — a
+                    // repair must not change what the subos IS.
+                    const auto keptRuntime =
+                        mf::preserved_runtime(document, mf::DEFAULT_RUNTIME);
                     document[std::string(mf::BLOCK)] = mf::make_block(
-                        mf::DEFAULT_RUNTIME,
-                        std::format("xlings {}", Info::VERSION));
+                        keptRuntime,
+                        std::format("xlings {}", Info::VERSION),
+                        platform::host_glibc_version());
                     changed = true;
                     note(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",
-                                     p.activeSubos, mf::DEFAULT_RUNTIME));
+                                     p.activeSubos, keptRuntime));
                 }
                 for (const auto& binding : orphans) {
                     if (!mf::remove_provider(document, binding)) continue;

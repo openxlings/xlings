@@ -66,7 +66,7 @@ const CommandSpec& root() {
             {"config", "Show or modify configuration", {}, {},
                 {{"--lang <LANG>", "Set language"}, {"--mirror <MIRROR>", "Set mirror"}, {"--add-xpkg <FILE>", "Add package recipe"}, {"--index-repo <NS:URL>", "Add index repository"}}, {}},
             {"subos", "Manage SubOS environments", {}, {}, {}, {
-                {"new", "Create a SubOS", {}, {{"name", "SubOS name", true}}, {{"--storage <MODE>", "shared, tmpfs or image"}, {"--image-size <SIZE>", "Image size"}, {"--from <SOURCE>", "Fork source"}, {"--runtime <SPEC>", "Runtime binding, e.g. glibc@2.39"}}, {}},
+                {"new", "Create a SubOS", {}, {{"name", "SubOS name", true}}, {{"--storage <MODE>", "shared, tmpfs or image"}, {"--image-size <SIZE>", "Image size"}, {"--from <SOURCE>", "Fork source"}, {"--runtime <SPEC>", "Runtime binding, e.g. glibc@2.44"}}, {}},
                 {"use", "Enter a SubOS", {}, {{"name", "SubOS name", true}}, {{"--global", "Persist the active SubOS"}, {"--shell [KIND]", "Emit shell activation code"}, {"--sandbox [BACKEND]", "Enable sandbox (bwrap or proot on Linux)"}, {"--cmd <COMMAND>", "Run one command"}, {"--keep", "Keep the namespace keeper"}, {"--no-keep", "Disable the namespace keeper"}, {"--ttl <SECONDS>", "Keeper idle timeout"}, {"--gpu", "Expose GPU devices (bwrap only)"}}, {}},
                 {"list", "List SubOS environments", {"ls"}, {}, {}, {}},
                 {"remove", "Remove a SubOS", {"rm"}, {{"name", "SubOS name", true}}, {}, {}},

@@ -194,7 +194,9 @@ static void ensure_subos_manifest_(const fs::path& subos_dir) {
     if (mf::validate_block(json).empty()) return;
 
     json[std::string(mf::BLOCK)] =
-        mf::make_block(mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+        mf::make_block(mf::preserved_runtime(json, mf::DEFAULT_RUNTIME),
+                       std::format("xlings {}", Info::VERSION),
+                       platform::host_glibc_version());
     ensure_parent_dirs_(path);
     platform::write_string_to_file(path.string(), json.dump(2));
 }

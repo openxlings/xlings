@@ -180,6 +180,38 @@ namespace platform {
         return platform_impl::run_command_capture(cmd);
     }
 
+    // The host's C library version ("2.39"), probed at subos creation and
+    // recorded in the subos manifest (`subos_info.host_glibc`). Rule A of the
+    // closure contract -- our_glibc >= host_glibc whenever any host object can
+    // enter a process -- needs the right-hand side as of when the subos was
+    // laid down; probing later answers about a host that may have moved.
+    //
+    // Absolute path on purpose: `getconf` resolved through PATH can be a shim
+    // into a payload (the payload's `ldd` demonstrably is), and a probe that
+    // answers with our own glibc's version defeats its reason to exist.
+    // Empty means "unknown" -- non-glibc hosts, missing getconf, any parse
+    // surprise -- and callers must treat unknown as unprovable, never as a
+    // number to compare against.
+    export [[nodiscard]] std::string host_glibc_version() {
+#if defined(__linux__)
+        auto [rc, out] = run_command_capture(
+            "/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null");
+        if (rc != 0) return {};
+        const auto pos = out.find("glibc ");
+        if (pos == std::string::npos) return {};
+        std::string v = out.substr(pos + 6);
+        while (!v.empty() && (v.back() == '\n' || v.back() == '\r'
+                              || v.back() == ' '))
+            v.pop_back();
+        if (v.empty()
+            || v.find_first_not_of("0123456789.") != std::string::npos)
+            return {};
+        return v;
+#else
+        return {};
+#endif
+    }
+
     // When true, a TUI exclusively owns the terminal — suppress all stdout/stderr
     // from child processes, log output, download renderers, etc.
     inline std::atomic<bool> tui_mode_{false};

@@ -40,7 +40,20 @@ inline constexpr std::string_view BLOCK          = "subos_info";
 // a lookup: slice 1 ships one runtime, and inventing a "pick the newest libc
 // present" rule would make two homes with the same command produce different
 // subos.
-inline constexpr std::string_view DEFAULT_RUNTIME = "glibc@2.39";
+//
+// 2.44 since 2026.8.9.1 (C1 of the closure contract). The 2.39 floor was a
+// systematic error, not a conservative default: `*-host-link` packages carry
+// host-built libraries into our closure permanently, those need the host
+// glibc's symbol versions, so `our_glibc >= host_glibc` is a standing
+// constraint -- and 2.39 loses it on every distro newer than Ubuntu 24.04
+// (mcpp-community/mcpp#392 is that failure verbatim). Backward compatibility
+// makes the move safe: every 2.39-built payload runs under 2.44.
+//
+// Scope: NEW subos only. The binding is a creation-time property persisted in
+// each subos's own manifest, and rebuild paths preserve a valid recorded
+// binding (see preserved_runtime), so no existing subos changes runtime by
+// this constant moving.
+inline constexpr std::string_view DEFAULT_RUNTIME = "glibc@2.44";
 
 inline constexpr std::string_view OP_SET     = "set";
 inline constexpr std::string_view OP_PREPEND = "prepend";
@@ -68,6 +81,10 @@ struct Info {
     std::vector<Provider> envs;      // sorted by binding; see resolve()
     std::string           created_at;
     std::string           created_by;
+    // Host glibc version ("2.39") probed when the block was written. Empty =
+    // unknown: pre-C1 manifests, non-glibc hosts, failed probe. Rule A's
+    // right-hand side; a reader must treat unknown as unprovable, not as 0.
+    std::string           host_glibc;
 };
 
 // ── runtime family ──────────────────────────────────────────────────────
@@ -378,6 +395,7 @@ Info parse(const nlohmann::json& doc) {
     info.runtime        = b.value("runtime", std::string{});
     info.created_at     = b.value("created_at", std::string{});
     info.created_by     = b.value("created_by", std::string{});
+    info.host_glibc     = b.value("host_glibc", std::string{});
 
     if (b.contains("envs") && b["envs"].is_object()) {
         for (auto it = b["envs"].begin(); it != b["envs"].end(); ++it) {
@@ -410,14 +428,35 @@ std::string utc_now_iso() {
 }
 
 // The block a freshly created subos gets. `envs` is an explicit empty object.
-nlohmann::json make_block(std::string_view runtime, std::string_view createdBy) {
+// `hostGlibc` is written only when known — an absent key is the documented
+// spelling of "unknown", so a pre-C1 manifest and a failed probe read the
+// same way.
+nlohmann::json make_block(std::string_view runtime, std::string_view createdBy,
+                          std::string_view hostGlibc = {}) {
     nlohmann::json b;
     b["schema_version"] = SCHEMA_VERSION;
     b["runtime"]        = std::string(runtime);
     b["envs"]           = nlohmann::json::object();
     b["created_at"]     = utc_now_iso();
     b["created_by"]     = std::string(createdBy);
+    if (!hostGlibc.empty()) b["host_glibc"] = std::string(hostGlibc);
     return b;
+}
+
+// The runtime a REBUILT block should carry. A block can be invalid for
+// reasons that have nothing to do with its runtime (schema_version, envs,
+// provenance), and every rebuild path used to reset the runtime to the
+// caller's fallback as a side effect. After a default bump that side effect
+// silently re-declares an existing subos against a libc its payloads were
+// never built for — the exact "changed underneath you" C1 forbids. Keep a
+// valid recorded binding; fall back only when there is nothing to keep.
+std::string preserved_runtime(const nlohmann::json& doc,
+                              std::string_view fallback) {
+    if (doc.contains(std::string(BLOCK)) && doc[std::string(BLOCK)].is_object()) {
+        const auto r = doc[std::string(BLOCK)].value("runtime", std::string{});
+        if (is_binding(r)) return r;
+    }
+    return std::string(fallback);
 }
 
 // ── env declarations ────────────────────────────────────────────────────
