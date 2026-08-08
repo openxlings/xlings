@@ -46,20 +46,27 @@ IndexManifest with_history(std::vector<IndexSnapshot> history) {
 
 }  // namespace
 
-// THE MEASUREMENT THIS WHOLE CONTRACT RESTS ON.
+// THE MEASUREMENT THIS CONTRACT ORIGINALLY RESTED ON — updated 2026.8.9.2.
 //
-// semver::Version is three components; xlings's own version is four
-// (YYYY.M.D.N). semver cannot parse it, and satisfies_expr answers FALSE rather
-// than erroring -- so a contract built on it would make every client fail every
-// check and report "no compatible snapshot", which reads as a publishing
-// problem instead of a parser that does not know the version scheme.
-TEST(IndexContract, SemverCannotExpressXlingsOwnVersion) {
-    EXPECT_FALSE(xlings::semver::parse("2026.8.3.1").has_value())
-        << "if semver learns 4-component versions, revisit the design note";
-    EXPECT_FALSE(xlings::semver::satisfies_expr("2026.8.3.2", ">=2026.8.3.1"))
-        << "this is the wrong answer, and the reason the contract does not use it";
+// When this contract was designed, semver::Version was three components and
+// xlings's own version is four (YYYY.M.D.N): semver could not parse it, and
+// satisfies_expr answered FALSE rather than erroring. That measurement is
+// why the contract carries its own satisfies_requirement instead of semver
+// ranges — a correct decision on the day it was made.
+//
+// The 2026.8.9.2 grammar generalization made semver parse N components, so
+// the original rationale is gone. The contract KEEPS its own predicate — a
+// min-inclusive/max-exclusive pair is a simpler, sharper shape than a range
+// grammar, and stability of the published pointer format matters more than
+// deduplication — but the two must now AGREE on the versions both can see,
+// or we are back to two comparators giving two answers.
+TEST(IndexContract, SemverNowExpressesXlingsOwnVersion) {
+    EXPECT_TRUE(xlings::semver::parse("2026.8.3.1").has_value())
+        << "the 2026.8.9.2 grammar generalization regressed";
+    EXPECT_TRUE(xlings::semver::satisfies_expr("2026.8.3.2", ">=2026.8.3.1"));
+    EXPECT_FALSE(xlings::semver::satisfies_expr("2026.8.3.1", ">=2026.8.3.2"));
 
-    // What the contract actually uses gets it right.
+    // The contract's own predicate, unchanged and still authoritative here.
     EXPECT_TRUE(satisfies_requirement("2026.8.3.2", {.min = "2026.8.3.1"}));
     EXPECT_FALSE(satisfies_requirement("2026.8.3.1", {.min = "2026.8.3.2"}));
     EXPECT_TRUE(satisfies_requirement("2026.8.3.1", {.min = "0.4.69"}))

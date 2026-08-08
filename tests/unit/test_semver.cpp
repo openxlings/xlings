@@ -299,3 +299,94 @@ TEST(SemverSatisfiesExpr, FlavorTagSatisfiesTheNumericRange) {
     EXPECT_TRUE(satisfies_expr("15.1.0-musl", "15"));
     EXPECT_FALSE(satisfies_expr("15.1.0-musl", "16"));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Generalized grammar (2026.8.9.2): N-segment versions and alpha segments
+//  are IN the grammar — ranges, selection and ordering all see them.
+//
+//  The motivating production failure: fontconfig 2.15.0.1 was a resolvable
+//  KEY but `>=2.15.0.1` matched nothing and select_best skipped the version
+//  entirely (xim-pkgindex#582) — writable, installable, unselectable.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(SemverGeneralized, FourComponentsParse) {
+    auto v = parse("2.15.0.1");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(v->major, 2);
+    EXPECT_EQ(v->minor, 15);
+    EXPECT_EQ(v->patch, 0);
+    EXPECT_EQ(v->components, 4);
+    EXPECT_EQ(to_string(*v), "2.15.0.1");
+}
+
+TEST(SemverGeneralized, FourComponentRangesResolve) {
+    EXPECT_TRUE(satisfies_expr("2.15.0.1", ">=2.15.0.1"));
+    EXPECT_FALSE(satisfies_expr("2.15.0", ">=2.15.0.1"));   // the old gap
+    EXPECT_TRUE(satisfies_expr("2.16.0", ">=2.15.0.1"));
+    EXPECT_TRUE(satisfies_expr("2.15.0.1", ">=2.15.0"));
+    EXPECT_TRUE(satisfies_expr("2026.8.9.2", ">2026.8.9.1"));
+    EXPECT_FALSE(satisfies_expr("2026.8.9.1", ">2026.8.9.1"));
+}
+
+TEST(SemverGeneralized, SelectBestSeesFourComponents) {
+    std::vector<std::string> available{"2.15.0", "2.15.0.1", "latest"};
+    // Every one of these returned "" or the unsealed 2.15.0 under the old
+    // grammar, because 2.15.0.1 was skipped as unparseable.
+    EXPECT_EQ(select_best(available, ">=2.15.0"), "2.15.0.1");
+    EXPECT_EQ(select_best(available, ">=2.15.0.1"), "2.15.0.1");
+    EXPECT_EQ(select_best(available, "2.15.0.1"), "2.15.0.1");
+    EXPECT_EQ(select_best(available, ">=2.15.0.2"), "");
+}
+
+TEST(SemverGeneralized, CaretAndTildeOnFourComponents) {
+    EXPECT_TRUE(satisfies_expr("2026.9.0", "^2026.8.9.1"));
+    EXPECT_FALSE(satisfies_expr("2027.0.0", "^2026.8.9.1"));
+    EXPECT_TRUE(satisfies_expr("2.15.9", "~2.15.0.1"));
+    EXPECT_FALSE(satisfies_expr("2.16.0", "~2.15.0.1"));
+}
+
+TEST(SemverGeneralized, AlphaSegmentsAreANaturalSort) {
+    // Boundary-splitting is what makes this numeric where it counts.
+    EXPECT_GT(compare("6.5rc10", "6.5rc9"), 0);
+    EXPECT_LT(compare("6.5rc2", "6.5rc10"), 0);
+    EXPECT_LT(compare("1.0.alpha", "1.0.beta"), 0);
+}
+
+TEST(SemverGeneralized, NumericBeatsAlpha) {
+    EXPECT_GT(compare("1.0", "1.rc"), 0);
+    // A missing segment reads as numeric 0, which also beats alpha:
+    // 6.5 is the release, 6.5rc1 came before it.
+    EXPECT_GT(compare("6.5", "6.5rc1"), 0);
+    EXPECT_GT(compare("1.0.0", "1.0.beta"), 0);
+}
+
+TEST(SemverGeneralized, AlphaRangesWork) {
+    EXPECT_TRUE(satisfies_expr("6.5rc9", ">=6.5rc2"));
+    EXPECT_TRUE(satisfies_expr("6.5rc10", ">=6.5rc9"));
+    EXPECT_TRUE(satisfies_expr("6.5", ">=6.5rc1"));
+    EXPECT_FALSE(satisfies_expr("6.5rc1", ">=6.5"));
+}
+
+TEST(SemverGeneralized, PureAlphaStaysAName) {
+    // "latest" and friends are sentinels; a version must contain at least
+    // one numeric segment, or every sentinel becomes an (absurdly high or
+    // low) version and sorts among the real ones.
+    EXPECT_FALSE(parse("latest").has_value());
+    EXPECT_FALSE(parse("abc").has_value());
+    EXPECT_FALSE(parse("gcc-15").has_value());   // name, not version
+    EXPECT_GT(compare("0.0.1", "latest"), 0);    // parseable always wins
+}
+
+TEST(SemverGeneralized, MixedFieldsKeepFieldCountSemantics) {
+    // "6.5rc1" is two FIELDS (bare → prefix range), four segments.
+    auto v = parse("6.5rc1");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(v->components, 2);
+    // NOT inside [6.5, 6.6): rc1 sorts BELOW the 6.5 release (alpha loses
+    // to the missing-segment zero), the same way semver keeps 1.0.0-rc1
+    // out of ">=1.0.0". One ordering, one answer — a version cannot be
+    // both below 6.5 in a sort and inside a range that starts at 6.5.
+    EXPECT_FALSE(satisfies_expr("6.5rc1", "6.5"));
+    EXPECT_TRUE(satisfies_expr("6.5.1", "6.5"));
+    EXPECT_FALSE(satisfies_expr("6.6", "6.5"));
+}
