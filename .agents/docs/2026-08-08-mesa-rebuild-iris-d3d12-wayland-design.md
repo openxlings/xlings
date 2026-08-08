@@ -407,6 +407,72 @@ recipe 没错、payload 没错、O4 probe 也确实证明运行时 7/7 全是我
 最后一条值得单独说:**一份跑不通的构建记录比没有记录更糟** —— 它让下一个人付同样的代价,
 而且看起来权威。
 
+### 再往下两层:spirv-tools,以及「上游版本会对着移动的 sysroot 过期」
+
+配置过了 llvm-config 之后,又倒在两处。
+
+**一、`SPIRV-Tools` 也不在索引里。**
+
+```
+meson.build:1887  dependency('SPIRV-Tools', required : with_clc, version : '>= 2022.1')
+```
+
+`required : with_clc`,而 iris 打开 with_clc —— 所以 iris 没它编不了。`glslang` 不提供:
+那个包是特意用 `-DENABLE_OPT=OFF` 建的,就为了把 SPIRV-Tools 排除掉(见 tiers.sh T4),
+当时是对的 —— glslang 的优化器服务它自己的命令行,mesa 没要。**现在 mesa 从另一扇门要了。**
+
+SPIRV-Headers 装进同一个 payload,因为 SPIRV-Tools 不 vendor 它,而是在 `DEPS` 里钉一个
+revision。那个 revision 是**从 DEPS 读出来的,不是选的**:SPIRV-Tools 跟着未定稿的
+SPIR-V grammar 走,头文件版本不配会在代码生成深处报「未知 opcode」。
+
+静态,并且断言。`SPIRV-Tools-shared` 是它自己的 cmake target,`-DBUILD_SHARED_LIBS=OFF`
+管不到它 —— 第一次跑就被断言抓住了。这不是整洁问题:这个包是 `dev`,不在 mesa 的运行时依赖
+里、永远不会装到用户机器上,所以一个漏进链接行的 `.so` 就变成 libgallium 里一条**没人声明过
+的 DT_NEEDED**,症状是运行时 dlopen 失败。
+
+**二、mesa 25.0.7 编不过 glibc 2.44。**
+
+```
+error: conflicting types for 'once_flag'; have 'pthread_once_t' {aka 'int'}
+error: conflicting types for 'call_once'; have 'void(int *, void (*)(void))'
+```
+
+ISO C23 把 `once_flag`/`call_once` 挪进了 `<stdlib.h>`,glibc >= 2.42 跟进,而 mesa 自己的
+`src/c11` shim 在 `_GNU_SOURCE` 下重复定义了两者。**25.0.7 是该系列最后一个版本**,上游没有
+修这个的 release。
+
+这条的形状比这条本身重要:**同样的源码、同样的命令、同样的 flag,造出了现役
+mesa 25.0.7.1,现在却编不过** —— 因为那次构建跑在 sysroot 还是 glibc 2.39 的时候。我们的
+sysroot 是一个会升级的包,所以每一个钉住的上游版本都是这类问题的候选;本轮开头那个 gcc
+fixincludes 的 bug,是同一件事的另一个方向。
+
+于是加了 `patches/<name>-<version>-*.patch` 约定,`patch -p1 --forward` 排序应用,调用处
+不需要声明任何东西。**失败即致命** —— 补丁打不上意味着源码在它下面动了,继续构建就是在造
+一个没人描述过的东西。
+
+补丁把 mesa 的 shim 守在 `ONCE_FLAG_INIT` 上,而且是在 mesa **自己的
+`#include <stdlib.h>` 之后**判断,所以这个检查是确定的,不依赖各个翻译单元的 include 顺序。
+
+> 顺带又一次同源事故:补丁钩子第一版引用了未定义的 `$HERE`,展开成 `/patches`,glob 匹配
+> 零个文件、没有补丁被应用、构建照旧倒在补丁本该消掉的那个错误上。**缺一个补丁是无声的** ——
+> 模式匹配不到文件时不会有「patch not found」。所以 `HERE` 现在从 `BASH_SOURCE` 显式取,
+> 理由写在旁边。
+
+### 到这里,iris 的前置链一共有五层
+
+```
+mesa + iris/d3d12
+├── directx-headers   (d3d12)          从没打包
+├── wayland-protocols (wayland)        打包了,但没接线
+├── spirv-tools       (iris → clc)     从没打包
+├── llvm-dev + AMDGPU (iris → clc)     建过,但漏了 AMDGPU
+│   └── gcc #560                       挡住 gcc 15 建 LLVM
+└── mesa 源码 vs glibc 2.44            上游过期,需要补丁
+```
+
+方案原文说的是「只差一次 mesa 重建」。**每一层都只有在跑通上一层之后才看得见** —— 这是这份
+方案最该记住的一条:前置依赖的深度无法靠读代码估出来,只能靠真的去构建。
+
 ---
 
 ## 附:每条结论的证据
