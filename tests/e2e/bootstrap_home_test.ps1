@@ -35,7 +35,17 @@ if (Test-Path $RUNTIME_DIR) { Remove-Item -Recurse -Force $RUNTIME_DIR }
 New-Item -ItemType Directory -Force -Path "$PORTABLE_DIR\bin" | Out-Null
 New-Item -ItemType Directory -Force -Path $INSTALL_USER | Out-Null
 
-Copy-Item $BIN_SRC "$PORTABLE_DIR\bin\xlings.exe"
+if (-not (Test-Path $BIN_SRC -PathType Leaf)) {
+    Fail "source binary is not a file: $BIN_SRC"
+}
+Copy-Item $BIN_SRC "$PORTABLE_DIR\bin\xlings.exe" -Force
+# Assert the copy landed as a non-empty FILE. Without this the next failure is
+# `.\bin\xlings.exe is not recognized`, which reads as "never built" and sends
+# you looking at the build instead of at this line.
+$copied = Get-Item "$PORTABLE_DIR\bin\xlings.exe" -ErrorAction SilentlyContinue
+if (-not $copied -or $copied.PSIsContainer -or $copied.Length -eq 0) {
+    Fail "copy did not produce a usable binary at $PORTABLE_DIR\bin\xlings.exe (src=$BIN_SRC)"
+}
 
 # Write bootstrap config
 @{

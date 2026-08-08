@@ -31,17 +31,47 @@ function Require-ReleaseArchive($path) {
 }
 
 function Find-XlingsBinary {
-    if ($env:XLINGS_BIN -and (Test-Path $env:XLINGS_BIN)) {
-        return (Resolve-Path $env:XLINGS_BIN).Path
+    # `target\<triple>\<fingerprint>\bin\xlings.exe` -- the fingerprint changes
+    # whenever a build input does (toolchain, mcpp version, .xlings.json), so a
+    # run can leave MORE THAN ONE of these behind. `Select-Object -First 1` over
+    # an unsorted Get-ChildItem then picks by directory-enumeration order, which
+    # is not the newest and not stable. Sort by write time and take the newest.
+    #
+    # Everything here also insists on a FILE. Test-Path and Get-ChildItem both
+    # match directories, and a directory reaches the caller as a path that
+    # PowerShell reports as
+    #
+    #   The term '.\bin\xlings.exe' is not recognized as ... executable program
+    #
+    # which reads as "the binary was never built" rather than "we picked the
+    # wrong thing" -- the same misdirection as an ENOENT that names the binary
+    # instead of its missing loader.
+    if ($env:XLINGS_BIN) {
+        if (-not (Test-Path $env:XLINGS_BIN -PathType Leaf)) {
+            Fail "XLINGS_BIN is set but is not a file: $env:XLINGS_BIN"
+        }
+        $p = (Resolve-Path $env:XLINGS_BIN).Path
+        Write-Host "  [lib] xlings binary (XLINGS_BIN): $p"
+        return $p
     }
 
-    $targetBin = Get-ChildItem "$ROOT_DIR\target\*\*\bin\xlings.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($targetBin) { return $targetBin.FullName }
+    foreach ($glob in @("$ROOT_DIR\target\*\*\bin\xlings.exe",
+                        "$ROOT_DIR\build\*\*\release\xlings.exe")) {
+        $found = @(Get-ChildItem $glob -File -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime -Descending)
+        if ($found.Count -gt 0) {
+            if ($found.Count -gt 1) {
+                Write-Host "  [lib] $($found.Count) candidate binaries; taking the newest:"
+                $found | ForEach-Object {
+                    Write-Host ("        {0}  {1}" -f $_.LastWriteTime.ToString('s'), $_.FullName)
+                }
+            }
+            Write-Host "  [lib] xlings binary: $($found[0].FullName)"
+            return $found[0].FullName
+        }
+    }
 
-    $buildBin = Get-ChildItem "$ROOT_DIR\build\*\*\release\xlings.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($buildBin) { return $buildBin.FullName }
-
-    Fail "xlings.exe binary not found; set XLINGS_BIN"
+    Fail "xlings.exe binary not found under target\ or build\; set XLINGS_BIN"
 }
 
 function Expand-ReleaseArchive($path, $name) {
