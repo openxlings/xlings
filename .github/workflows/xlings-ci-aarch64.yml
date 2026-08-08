@@ -28,6 +28,8 @@ concurrency:
 
 env:
   BOOTSTRAP_XLINGS_VERSION: v0.4.69
+  # The build tool, pinned for the same reason the index is.
+  MCPP_REF: 463dedfa5a36a510df57108a9c562d350d6f9967
 
 jobs:
   native-contracts:
@@ -96,10 +98,51 @@ jobs:
           # exists to catch cross-build breakage against the current client.
           mcpp --version
 
-      - name: Build cross-capable mcpp from source (mcpp main)
+      - name: Build cross-capable mcpp from source (pinned)
         run: |
-          git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
-          cd /tmp/mcpp-src
+          # PINNED, not `main`. This is the build TOOL, and it was the one
+          # unpinned input in workflows that pin everything else -- the bootstrap
+          # xlings and the package index both have refs.
+          #
+          # It broke on 2026-08-08 and the bisect window contains nothing of ours:
+          # xlings main went from green at 2026-08-07T18:29Z to red at
+          # 08-08T07:45Z with exactly ONE commit in between -- docs only -- and
+          # neither mcpp.toml nor mcpp.lock moved (`xpkg = "0.0.54"` before and
+          # after). What moved was mcpp main, which this step cloned unpinned.
+          #
+          # The symptom is silent, which is why it cost a bisect rather than a
+          # glance:
+          #
+          #   Resolved host toolchain for build.mcpp: gcc 16.1.0 (x86_64-linux-gnu)
+          #   build.mcpp compiling
+          #   build.mcpp running
+          #   error: dependency 'xpkg': build.mcpp exited with 127
+          #   posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2):
+          #   No such file or directory
+          #
+          # "compiling", then "running" a second later, then ENOENT on the output:
+          # the compile failed and said nothing, so the first visible error names
+          # a missing FILE instead of a failed COMPILE.
+          #
+          # Likely culprit is mcpp fdad165b ("编译器是能力,不是配置 -- payload
+          # 版本权威 + specs 污染", 08-08T03:34Z): it is in the compiler-resolution
+          # code this step depends on and lands 43 minutes before the first
+          # failure. Correlation, not proof -- and it barely matters, because the
+          # fix is the same whichever commit did it. A build tool that can change
+          # under a tagged release is not a reproducible build.
+          #
+          # TO BUMP: change MCPP_REF and let this job be the gate. If it goes red,
+          # the new mcpp broke cross-compilation -- that is a finding to report
+          # upstream, not a reason to go back to `main`.
+          #
+          # Shallow AND exact: `--depth 1` cannot check out an arbitrary SHA, so
+          # fetch that one commit instead of the whole history.
+          mkdir -p /tmp/mcpp-src && cd /tmp/mcpp-src
+          git init -q
+          git remote add origin https://github.com/mcpp-community/mcpp
+          git fetch -q --depth 1 origin "$MCPP_REF"
+          git checkout -q FETCH_HEAD
+          echo "mcpp source pinned at $MCPP_REF"
           # We are bootstrapping mcpp itself with the already-installed mcpp.
           # Do not let the cloned project's .xlings.json recursively request
           # an older mcpp version that may have left the rolling package index.
