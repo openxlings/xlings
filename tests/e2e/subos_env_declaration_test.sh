@@ -201,6 +201,36 @@ grep -q "^X=.*/share:/user/share$" <<<"$OVERRIDE" \
   || { echo "$OVERRIDE" >&2; fail "'prepend' did not compose with the user's value"; }
 log "  ✓ the user's value survives 'set' and is kept by 'prepend'"
 
+# ── 4b. an EMPTY user value is still the user's value ───────────────────
+#
+# `export FOO=` is a choice, not an absence. Three of the four backends used
+# to disagree: only fish kept it. POSIX emitted `${VAR:=v}` (the colon form
+# assigns when null too), pwsh tested `-not $env:VAR` (true for ""), and the
+# in-process path tested `existing.empty()` -- which cannot tell unset from
+# empty at all. So the same declaration produced different environments
+# depending on how the subos was entered, and said nothing.
+#
+# `env VAR=` exports it set-and-empty, which is exactly the case at issue.
+EMPTY_OUT="$( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
+              XLINGS_HOME="$HOME_DIR" \
+              E2E_DRIVERS_PATH= \
+              "$BIN" subos use default \
+              --cmd 'echo "D=[$E2E_DRIVERS_PATH]"' 2>/dev/null )"
+grep -q "^D=\[\]$" <<<"$EMPTY_OUT" \
+  || { echo "$EMPTY_OUT" >&2
+       fail "'set' overwrote an exported-but-empty value (empty must count as set)"; }
+log "  ✓ 'set' yields to an exported-but-empty value"
+
+# And the emitted shell code must agree with the in-process path -- the two
+# entry points are the thing that diverged.
+EMPTY_SH="$( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
+             XLINGS_HOME="$HOME_DIR" E2E_DRIVERS_PATH= \
+             "$BIN" subos use default --shell sh 2>/dev/null )"
+grep -q '\${E2E_DRIVERS_PATH=' <<<"$EMPTY_SH" \
+  || { echo "$EMPTY_SH" >&2
+       fail "--shell sh emitted the ':=' form, which overwrites an empty value"; }
+log "  ✓ --shell sh emits the '=' form, not ':='"
+
 # ── 5. doctor is clean ──────────────────────────────────────────────────
 #
 # `|| true` on every capture below. Since 2026.8.6.2 an orphaned env section
