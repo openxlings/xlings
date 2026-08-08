@@ -332,3 +332,136 @@ local pkgindex_dir = _PKGINDEX_DIR or (_RUNTIME and _RUNTIME.pkgindex_dir)
 
 **能立刻用的一条规则**:凡是断言「X 没有生效」,先找出系统里**打印 X 实际做了什么**的那一行;
 找不到就先加上它,再下结论。
+
+---
+
+## 8. 收尾:D3 的残留、§6 的答案、D5 的真实状态,以及 aarch64 红格
+
+§7 之后又做了四件事。**其中三件推翻了「已经好了」的默认假设** —— 两件是我的,一件是 CI 的。
+
+### 8.1 aarch64 CI:四次「修复」全错,错在同一个地方
+
+这一格红了 16 次,期间提交了四个「修复」——pin mcpp、pin 索引、去掉源码构建 mcpp、
+去掉载荷缓存。**四个全都没改变任何东西**,失败输出一字不差:
+
+```
+build.mcpp compiling / build.mcpp running
+error: posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2)
+```
+
+四次都是**在 runner 之外推断**的。没有一次去 runner 上量。加了一个 `if: failure()`
+的诊断步骤之后,一轮就出来了:
+
+```
+build.mcpp.bin	287360 bytes        ← 它被产出来了,编译从来没失败
+interp = /home/xlings/.xlings_data/subos/linux/lib/ld-linux-x86-64.so.2
+interp MISSING -> this is the ENOENT. The loader, not the binary.
+```
+
+**`execve` 在 PT_INTERP 不存在时返回 ENOENT,而且报的是「二进制」不是「缺的 loader」。**
+所以这条错误读起来像「构建脚本没产出」,实际上它好好地躺在那里。四次修复全在追一个
+根本不存在的编译失败。
+
+那个 interp 是**打包机器的路径**:用户 `xlings`、已废弃的 `.xlings_data` 家目录布局、
+已废弃的 `subos/linux` 命名。确认它来自发布的载荷本身 —— 下载
+`gcc-16.1.0-linux-x86_64.tar.gz`,它就写在
+
+```
+lib/gcc/x86_64-linux-gnu/16.1.0/specs
+```
+
+里,用这个未经改动的载荷编译 hello.c 能一比一复现。**tarball 里不含 stamp**,
+所以 `gcc.lua` 的 stamp 闸门不是原因。
+
+真正的原因:**CI 的 bootstrap 客户端是 `v0.4.69`** —— 旧版本号体系的产物,比整个
+loader/INTERP 系列早了几个月。`gcc.lua` 的 `config()` 本来就是干这件事的
+(`__rewrite_specs_linux`,注释写着「this is mandatory」),旧客户端上它没有发生。
+把七个 workflow 的 `BOOTSTRAP_XLINGS_VERSION` 换成 `v2026.8.8.1` 之后这一格**绿了**,
+并且是真绿:交叉构建、`file` 断言 ARM/static、qemu 跑 `--version`、产物上传、
+以及依赖它的原生 aarch64 contracts job 全部通过。
+
+**mcpp 不背这个锅**,两点都要说清楚:它为项目目标**在构建时生成链接参数**而不是读
+gcc 的 specs;而且该 job 用的已经是最新的 mcpp(2026.8.8.4,日志可查)。唯一吃 specs
+的是宿主侧的 `build.mcpp` 编译 —— 恰好就是失败的那一步。
+
+### 8.2 顺带挖出来的第二个缺陷:`gcc-specs-config` 不幂等
+
+本机复现时撞到另一个:
+
+```
+INTERP  = .../xim-x-glibc/2.39/lib64/ld-linux-x86-64.so.2
+RUNPATH = .../xim-x-glibc/2.44/lib64:...
+→ libc.so.6: undefined symbol: __pointer_chk_guard, version GLIBC_PRIVATE
+```
+
+`gcc-specs-config.lua` 每次运行:
+
+- **rpath 段是前插**(`*link:\n` → rpath + `*link:\n`),所以**每跑一次就多一条**;
+  本机 specs 里已经堆了几十条,包括早就删掉的 `/tmp/tmp.*/mcpphome/...`
+- **dynamic-linker 是一次性替换**:它找的是原始字面量 `/lib64/ld-linux-x86-64.so.2`,
+  第一次替换后这个字面量就没了,**之后永远不再更新**
+
+净效果:rpath 漂到最新的 glibc,interp 冻结在第一次配置的那个,两者迟早对不上,
+报出来是 `GLIBC_PRIVATE` 符号错误 —— 一个完全不指向病因的现象。这是本文档主线的
+同一族:一个动作被执行了、被记为成功,而它没有做到它声称的事。
+
+### 8.3 §6 的答案:env 声明**确实**跟随 `use`
+
+§6 说这条未验证,并且提醒不要假设它跟 files 一样对(两个不同的存储)。现在量了:
+一个 fixture 包、两个版本、同一个变量声明为 `${pkgdir}/marker`:
+
+```
+use envswitch 1.0.0  ->  .../envswitch/1.0.0/marker
+use envswitch 2.0.0  ->  .../envswitch/2.0.0/marker
+```
+
+**跟随。** 已固化为 `tests/e2e/subos_env_use_switch_test.sh`,并带两个防空转断言:
+切换前先断言两个版本各自都注册了 env 段(只注册一个的话后面全部空过),以及两次切换
+的结果必须不同。
+
+写它时踩了一个值得记的坑:`subos_info` 是 **subos 级**状态,在
+`subos/<name>/.xlings.json`,不在家目录的 manifest。读错文件会得到「0 个 env 段」——
+和「声明被静默丢弃」长得一模一样。
+
+### 8.4 D3 的残留是真的,而且比「命名」更严重
+
+§7 判定 `op = "set"` 本来就是条件式,#508 关闭,残留只是命名问题。**命名确实是问题,
+但底下还压着一个真缺陷**:四个后端对「空值算不算已设置」不一致。
+
+| 后端 | `export FOO=` 时 |
+|------|------------------|
+| POSIX `${VAR:=v}` | **覆盖**(`:=` 连空值一起赋) |
+| pwsh `-not $env:VAR` | **覆盖**(`-not` 对空串为真) |
+| 进程内 `existing.empty()` | **覆盖**(根本分不出未设置与空) |
+| fish `set -q` | 保留 |
+
+同一个声明,进 subos 的方式不同,环境就不同,而且不出声 —— 正是 §3 那条主线。
+已统一为**空值算已设置,用户的值赢**:`export FOO=` 是用户做的选择,不是「没设置」。
+新增 `utils::env_is_set`(`get_env_or_default` 结构上答不了这个问题,它对两种情况
+都返回 `""`)。e2e 加了空值用例,并**验证过可证伪**:对上一个构建跑,它失败。
+
+命名维持 `set`:未知 op 在安装期即 `EnvDeclMalformed`,改名会让任何用新名字的 recipe
+在所有已发布的旧客户端上装不上。语义写进了 `docs/spec/xlings-json-schema.md`。
+
+### 8.5 D5:包对了,验收还不成立
+
+`xim-pkgindex#570` 已合并,`libXtst` 与 `alsa-lib` 都在 subos sysroot 里,而且
+**闭包自洽** —— 两个库的 NEEDED 全部能在 subos 内解析。
+
+但 §4/D5 写的验收是「切 JDK 的 loader 之后,headless 起 `Toolkit.getDefaultToolkit()`
+必须成功」,**这一条现在还测不了,而且天真地测会得到一个假通过**:
+
+```
+sandbox: LOAD_OK awt / awt_xawt / jsound        ← 看起来全好
+sandbox: MAPPED /lib/x86_64-linux-gnu/libXtst.so.6.1.0
+         MAPPED /lib/x86_64-linux-gnu/libasound.so.2.0.0   ← 来自宿主,不是我们的包
+```
+
+JDK 的 `java` 现在 PT_INTERP 仍是 `/lib64/ld-linux-x86-64.so.2`,**loader 还没切**,
+所以宿主回退还在,那两个库是宿主提供的。`libawt_xawt.so` 的 RPATH 只有 `$ORIGIN`,
+指不到 subos。把 `LD_LIBRARY_PATH` 指向 subos 强行让它用我们的库 → **段错误**,
+这是两套 libc 混用的预期结果,不是包的缺陷。
+
+**结论:D5 的打包这一半完成且正确;验收这一半阻塞在 JDK 的 loader 切换上**,那是
+`2026-08-08-host-loader-migration-and-ecosystem-guards.md` 的工作。在切换之前,任何
+「AWT 起来了」的验证都是宿主在兜底 —— 也就是说,**它验的恰好不是它要验的东西**。
