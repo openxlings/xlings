@@ -247,3 +247,88 @@ D1 排第一不是因为它最重要,而是因为**它是唯一一条不修就�
 
 - **env 声明是否跟随 `use` 切换,仍未验证。** files 节点在 xvm DB 里(§2.6 已证跟随),而 env 声明在 `subos_info` 里、按 binding 键值组织 —— **是两个不同的存储**。我尝试测量时被 `--add-xpkg` 的 stub 污染了(D1 修好后就能干净地测)。在验证之前,不要假设它跟 files 一样是对的。
 - **图形栈六个 gallium 驱动里只有 llvmpipe 真跑过。** radeonsi / nouveau / iris / d3d12 / zink 全部只是「载荷就位、闭包干净」。这不靠加包解决,只能靠别人的机器 —— 见 `collect-matrix.md`。
+
+
+---
+
+## 7. 实施后的更正:D2、D3 不存在,D1 的修复位置我写错了
+
+方案写完就去实现了,过程中又有三处被测量改写。**这一节写在最后而不是回头改上面**,因为「当初怎么判断的」和「后来发现什么」都是证据。
+
+### D2(mirror 合流)—— 不是缺陷,#505 已关闭
+
+§2.3 我用 `strace -e connect` 的端点列表下结论。**方法错了** —— 日志会直接打印 URL:
+
+```
+[debug] downloading xim:xtrans@1.5.2 from
+        https://gitcode.com/xlings-res/xtrans/releases/download/1.5.2/...
+```
+
+只有配置、没有 env,载荷走的就是 **gitcode**。`cmd_install` 本来就设
+`dlConfig.preferredMirror = Config::mirror()`(`commands.cppm:529`)。
+
+我看到的 GitHub 连接是**索引拉取的 GLOBAL 兜底,而且源码里写着为什么**:
+
+```cpp
+// Always include GLOBAL (github) servers as fallback for the index — even
+// under CN. Unlike package binaries (where the regional mirror is
+// authoritative), the index must stay reachable if the regional mirror
+// lacks the asset ...
+```
+
+self-install 也保留既有设置(`if (!envMirror && !overwriteDataSubos && !existingMirror.empty()) return;`)。
+
+**两次运行差的不止我以为的那一个变量** —— env 那次不需要拉索引,所以没有 GitHub 连接。57.6 KB/s 只是 gitcode 当时慢。
+
+### D3(`default` op)—— 不是缺陷,#508 已关闭
+
+`op = "set"` **本来就是** conditional,四个后端一致:
+
+| 后端 | 代码 |
+|---|---|
+| POSIX | `: "${VAR:=value}"; export VAR;` |
+| fish | `if not set -q VAR; set -gx VAR …; end` |
+| pwsh | `if (-not $env:VAR) { … }` |
+| 进程内 | `else if (existing.empty()) { set_env_variable(...) }` |
+
+注入一个合成声明实测:
+
+```
+生成:  : "${XLINGS_SET_PROBE:=PACKAGE_VALUE}"; export XLINGS_SET_PROBE;
+结果:  XLINGS_SET_PROBE=USER_VALUE          ← 用户的值赢
+```
+
+所以 `wsl-gl-host-link.lua` 那句「用户 export 的值会保留」**对 xlings 是对的**,我在 `xim-pkgindex#565` 里说它不存在,那半撤回。真正被覆盖的是 **mcpp 应用 subos_info 的实现**,报告者自己就猜到了 —— 已在 mcpp#382 说明。
+
+**残留的真问题是命名**:一个叫 `set` 却不 set 的 op,把报告者和我先后骗了。这是文档问题,不是语义问题。
+
+### D1 —— 结论对,位置错了两次
+
+方案说「让 stub 出声」。实现时先改 `ctx.pkgindex_dir`,不生效;查到 libxpkg 的模块加载器:
+
+```lua
+local pkgindex_dir = _PKGINDEX_DIR or (_RUNTIME and _RUNTIME.pkgindex_dir)
+```
+
+`ctx.pkgindex_dir` 只喂 `_RUNTIME.pkgindex_dir`,而它**只在钩子调用时被查**;recipe 的 `import` 在顶层,用的是 `_PKGINDEX_DIR`,由 mcpplibs::xpkg 内部设置 —— 在第三个仓库。
+
+**真正的修法在源头**:`cmd_add_xpkg` 造出的本地索引只有 `pkgs/`。给它 symlink 一份主索引的 `libs/` 就行,全部在 xlings 侧。
+
+验收(同一个 recipe,真索引的同类包做基准):
+
+| | 注册的 xvm 节点 |
+|---|---|
+| 真索引 `libXi` | `libXi`、`.files.1/2`、`libXi.so`、`.so.6`、`.so.6.1.0` |
+| 本地 **修前** `libXtst` | `libXtst` |
+| 本地 **修后** `libXtst` | `libXtst`、`.files.1/2`、`libXtst.so`、`.so.6`、`.so.6.1.0` |
+
+### 结账
+
+七条里 **四条是假问题,而这四条里四条都是我先前自己写的描述**。
+
+这个比例不是运气不好,是方法问题:每一条错误都来自「读了一个看起来对的地方就下结论」——
+端点列表而不是 URL 日志、op 名字而不是 op 实现、`config()` 调用而不是它是否落库。§0 里我已经
+写过一次同样的教训,然后又犯了四次。
+
+**能立刻用的一条规则**:凡是断言「X 没有生效」,先找出系统里**打印 X 实际做了什么**的那一行;
+找不到就先加上它,再下结论。
