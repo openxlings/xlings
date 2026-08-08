@@ -862,6 +862,78 @@ configure_xpkg_execution_artifact_paths_(
     return subosDir;
 }
 
+// The index root a recipe's `xim.pkgindex.*` modules are loaded from.
+//
+// Normally three levels up from `<index>/pkgs/<letter>/<name>.lua`. That is wrong
+// for one important case: a recipe added with `xlings config --add-xpkg` lives in
+// `xim-pkgindex-local`, and `cmd_add_xpkg` copies the recipe and NOTHING else --
+// no `libs/`. So every `import("xim.pkgindex.X")` there resolves to a permissive
+// stub whose calls evaporate.
+//
+// That is not a cosmetic gap. Measured 2026-08-08, installing mesa through
+// `--add-xpkg`:
+//
+//   xvm.add(package.name)      [xim.libxpkg.xvm]        -> registered
+//   graphics.declare_dri(...)  [xim.pkgindex.graphics]  -> absent from the DB
+//   sysroot.declare_libs(...)  [xim.pkgindex.sysroot]   -> absent from the DB
+//
+// Every libxpkg call landed and every pkgindex call vanished, silently. So a
+// local install cannot verify the part of a graphics recipe most likely to be
+// wrong -- driver directories, EGL/Vulkan manifests, sysroot assets -- and it
+// reports success. It cost a bug report filed against `xlings use` (#507) for a
+// defect that did not exist.
+//
+// The local index is an OVERLAY on the same ecosystem rather than a separate one,
+// so it should see the same modules. Fall back to the primary index root when the
+// derived root has no `libs/`.
+//
+// Returns the root, and reports through `outHasLibs` whether the caller can
+// expect pkgindex modules to resolve at all -- so the one remaining silent case
+// (no index anywhere) can be made loud instead of inferred.
+std::string pkgindex_root_for_(const std::filesystem::path& pkgFile,
+                               bool* outHasLibs = nullptr) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    auto derived = pkgFile.parent_path().parent_path().parent_path();
+    if (fs::is_directory(derived / "libs", ec)) {
+        if (outHasLibs) *outHasLibs = true;
+        return derived.string();
+    }
+
+    // Only the primary index. Not "any index that happens to have libs": picking
+    // between several would be a guess about which ecosystem a recipe belongs to,
+    // and `xim.pkgindex.*` is one shared namespace by construction.
+    auto primary = Config::global_data_dir() / "xim-pkgindex";
+    if (fs::is_directory(primary / "libs", ec)) {
+        log::debug("pkgindex modules: {} has no libs/, using {}",
+                   derived.string(), primary.string());
+        if (outHasLibs) *outHasLibs = true;
+        return primary.string();
+    }
+
+    if (outHasLibs) *outHasLibs = false;
+    return derived.string();
+}
+
+// Did this package register any xvm version at all?
+//
+// `type = "config"` and `type = "script"` packages are in that state BY DESIGN,
+// and so is any recipe that delegates its install to another package. Measured
+// across xim-pkgindex 2026-08-08, four Linux recipes delegate and call `xvm.add`
+// zero times: cpp.lua, mcpp-vscode-clangd.lua (config) and
+// linux-sysroot-create.lua, configure-project-installer.lua (script).
+//
+// So "no version registered" is a normal shape, not a fault -- see
+// target_registers_no_version_'s single caller for why removal must not fail on
+// it (openxlings/xlings#506).
+bool target_registers_no_version_(const xvm::VersionDB& db,
+                                  std::string_view target) {
+    auto it = db.find(std::string(target));
+    if (it == db.end()) return true;
+    return it->second.versions.empty();
+}
+
 std::string effective_store_name_(std::string_view namespaceName, std::string_view name) {
     return package_store_name(namespaceName, name);
 }
@@ -2335,9 +2407,18 @@ public:
             ctx.project_data_dir = Config::project_data_dir();
             // pkgindex_dir: package index repo root (for custom module loading).
             // pkgFile layout: <pkgindex>/pkgs/<letter>/<name>.lua → 3 levels up.
-            ctx.pkgindex_dir = node.pkgFile.parent_path()
-                                           .parent_path()
-                                           .parent_path().string();
+            bool pkgindexHasLibs = false;
+            ctx.pkgindex_dir =
+                detail_::pkgindex_root_for_(node.pkgFile, &pkgindexHasLibs);
+            if (!pkgindexHasLibs) {
+                // Loud, because the alternative is a package that installs
+                // "successfully" with none of its sysroot assets declared.
+                log::warn("{}: no pkgindex libs/ found -- every "
+                          "`xim.pkgindex.*` call in this recipe will be a "
+                          "silent no-op (sysroot assets, driver dirs and "
+                          "EGL/Vulkan manifests will NOT be declared)",
+                          node.name);
+            }
             ctx.deps_list = node.deps;                  // legacy union (compat)
             ctx.runtime_deps_list = node.runtime_deps;  // split form
             ctx.build_deps_list   = node.build_deps;
@@ -3011,21 +3092,53 @@ public:
             ? resolvedMatch->version
             : xvm::strip_namespace(detachVersion);
 
-        auto removalContext = snapshot_xpkg_removal_context(
+        auto removalSnapshot = snapshot_xpkg_removal_context(
             Config::versions_mut(), Config::workspace(), {},
             executingProvider, executingProviderVersion,
             detachTarget, detachVersion);
-        if (!removalContext) {
+
+        // Removing a package that registered no version is a NO-OP, not a
+        // failure (openxlings/xlings#506).
+        //
+        // The old code failed here with
+        //
+        //   xvm removal selection failed for local:gcc@15.1.0:
+        //   exact removal version is not registered (target='gcc', ...)
+        //
+        // and returned before the recipe's `uninstall()` hook could run -- so the
+        // package could be installed but never removed, and its own cleanup never
+        // executed.
+        //
+        // The asymmetry is the argument: the package registered no version at
+        // INSTALL time and install succeeded. Failing removal over the same fact
+        // punishes a shape the installer already accepted. `type = "config"` and
+        // `type = "script"` recipes are in that state by design.
+        //
+        // Narrow deliberately: only VersionNotFound, and only when the target has
+        // no versions AT ALL. A package that registered some other version must
+        // still fail loudly -- that is a real mismatch, and swallowing it would
+        // hide exactly the bug this check is shaped like.
+        xvm::RemovalContext removalContext;
+        if (removalSnapshot) {
+            removalContext = std::move(*removalSnapshot);
+        } else if (removalSnapshot.error().kind
+                       == xvm::RemovalErrorKind::VersionNotFound
+                   && detail_::target_registers_no_version_(
+                          Config::versions_mut(), detachTarget)) {
+            log::info("{}: registers no xvm version; running its uninstall hook "
+                      "and removing the payload",
+                      executingProvider);
+        } else {
             return std::unexpected(std::format(
                 "xvm removal selection failed for {}@{}: {} "
                 "(target='{}', version='{}')",
                 executingProvider, executingProviderVersion,
-                removalContext.error().message,
-                removalContext.error().target,
-                removalContext.error().version));
+                removalSnapshot.error().message,
+                removalSnapshot.error().target,
+                removalSnapshot.error().version));
         }
-        if (auto memberIt = removalContext->members.find(detachTarget);
-            memberIt != removalContext->members.end()) {
+        if (auto memberIt = removalContext.members.find(detachTarget);
+            memberIt != removalContext.members.end()) {
             detachVersion = memberIt->second;
         }
 
@@ -3071,9 +3184,7 @@ public:
                 ctx);
         ctx.install_dir = installDir;
         ctx.xpkg_dir = pkgFile.parent_path();
-        ctx.pkgindex_dir = pkgFile.parent_path()
-                                  .parent_path()
-                                  .parent_path().string();
+        ctx.pkgindex_dir = detail_::pkgindex_root_for_(pkgFile);
 
         bool useDefaultRemoval = false;
         if (executor.has_hook(mcpplibs::xpkg::HookType::Uninstall)) {
@@ -3122,7 +3233,7 @@ public:
             Config::workspace_mut(),
             Config::workspace_installed_mut(),
             xvm_ops,
-            *removalContext,
+            removalContext,
             xvm::RemovalBatchOptions{
                 .purgeSelection = true,
             });

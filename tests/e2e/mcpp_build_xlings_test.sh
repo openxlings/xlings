@@ -98,8 +98,15 @@ while true; do
   sleep 5
 done
 
-XLINGS_MCPP_BIN="$(find "$ROOT_DIR/target/$MCPP_TARGET" -path '*/bin/xlings' -type f -executable | head -1)"
+# Newest, not first. The path is target/<triple>/<fingerprint>/bin/xlings and
+# the fingerprint changes with any build input (toolchain, mcpp version,
+# .xlings.json), so several can coexist. `head -1` takes whatever find happens
+# to walk first, which means this test can assert that a binary built BEFORE
+# the change under test still runs -- passing while proving nothing.
+XLINGS_MCPP_BIN="$(find "$ROOT_DIR/target/$MCPP_TARGET" -path '*/bin/xlings' -type f -executable \
+  -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
 [[ -n "$XLINGS_MCPP_BIN" ]] || fail "mcpp build did not produce a target/*/bin/xlings binary"
+log "mcpp-built binary: $XLINGS_MCPP_BIN"
 
 HELP_OUTPUT_FILE="$RUNTIME_DIR/help.out"
 env -u XLINGS_PROJECT_DIR XLINGS_HOME="$XLINGS_HOME_DIR" "$XLINGS_MCPP_BIN" -h > "$HELP_OUTPUT_FILE"

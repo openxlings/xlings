@@ -1000,7 +1000,9 @@ inline void apply_subos_env_(const std::string& name) {
         if (v.op == manifest::OP_PREPEND) {
             platform::set_env_variable(
                 v.var, existing.empty() ? v.value : v.value + ":" + existing);
-        } else if (existing.empty()) {
+        } else if (!utils::env_is_set(v.var)) {
+            // Not `existing.empty()`: an exported-but-empty variable is a value
+            // the user chose, and `set` yields to the user's value.
             platform::set_env_variable(v.var, v.value);
         }
     }
@@ -1126,7 +1128,10 @@ int use_emit_shell(const std::string& name,
                     R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
                     v.var, v.value);
             } else {
-                std::println(R"(if (-not $env:{0}) {{ $env:{0} = '{1}' }})",
+                // `$null -eq`, not `-not`: PowerShell's `-not` is true for an
+                // empty string too, which would overwrite a value the user
+                // deliberately set to "".
+                std::println(R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
                              v.var, v.value);
             }
         }
@@ -1147,7 +1152,9 @@ int use_emit_shell(const std::string& name,
             // empty PATH-list element reads as "the current directory".
             std::println(R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
-            std::println(R"(: "${{{0}:={1}}}"; export {0};)", v.var, v.value);
+            // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
+            // is set-but-empty, which would overwrite a value the user chose.
+            std::println(R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
         }
     }
     return 0;
