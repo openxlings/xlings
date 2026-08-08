@@ -715,20 +715,20 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
         bool in_installed = wsi.contains(bareName) && !wsi.at(bareName).empty();
 
         if (!in_active && !in_installed) {
-            // Idempotent no-op: matching the existing "remove what isn't
-            // there is success" convention (covered by S4 of
-            // remove_multi_version_test.sh — it explicitly asserts
-            // exit 0 + no `removed.*subos` summary). We exit 0 with a
-            // visible diagnostic so humans see what happened without
-            // breaking scripts that re-run `remove` defensively.
-            log::warn("xlings: '{}' is not installed in current subos '{}'",
-                      bareName, subos);
-
-            // Helpful diagnostic: which subos(es) DO have this package?
+            // Which subos(es) DO have this package? Computed first, because it
+            // is what separates the two cases below.
             auto referencing = xlings::profile::find_subos_referencing(
                 Config::paths().homeDir, bareName);
             std::erase(referencing, subos);
+
             if (!referencing.empty()) {
+                // The case this guard was written for (0.4.19+): the package
+                // lives in ANOTHER subos. Removing it here detaches rather
+                // than removes, and the cross-subos refcount path would then
+                // report "✓ removed (subos: tmp)" for a version the user never
+                // had. Refuse, and say where it actually lives.
+                log::warn("xlings: '{}' is not installed in current subos '{}'",
+                          bareName, subos);
                 std::string list;
                 for (auto& n : referencing) {
                     if (!list.empty()) list += ", ";
@@ -737,8 +737,61 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                 log::warn("  installed in subos: {}", list);
                 log::warn("  hint: `xlings subos use {}` then `xlings remove {}`",
                           referencing.front(), bareName);
+                return 0;
             }
-            return 0;
+
+            // No subos claims it. Ask the disk before concluding it is absent
+            // -- the two workspace tables are bookkeeping, and a payload can
+            // outlive them (openxlings/xlings#511).
+            //
+            // Answering "not installed" here while a payload sits in xpkgs/ is
+            // not a harmless no-op: `install` treats a present payload
+            // directory as already installed and skips the install AND its
+            // config() hook. So `install -> remove (success) -> install` leaves
+            // a package whose config() never runs again. That is the same
+            // cascade that produced the aarch64 failure in #509, where an
+            // unconfigured gcc payload emitted binaries carrying the packaging
+            // machine's PT_INTERP and the error named the wrong file entirely.
+            bool payloadOnDisk = false;
+            {
+                namespace fs = std::filesystem;
+                const auto store = Config::paths().dataDir / "xpkgs";
+                std::error_code pec;
+                if (fs::is_directory(store, pec)) {
+                    for (const auto& pkgDir : platform::dir_entries(store)) {
+                        if (!pkgDir.is_directory()) continue;
+                        const auto storeName = pkgDir.path().filename().string();
+                        auto marker = storeName.find("-x-");
+                        if (marker == std::string::npos) continue;
+                        if (storeName.substr(marker + 3) != bareName) continue;
+                        for (const auto& verDir :
+                             platform::dir_entries(pkgDir.path())) {
+                            if (!verDir.is_directory()) continue;
+                            if (payload_has_content(verDir.path())) {
+                                payloadOnDisk = true;
+                                break;
+                            }
+                        }
+                        if (payloadOnDisk) break;
+                    }
+                }
+            }
+
+            if (!payloadOnDisk) {
+                // Genuinely absent. Here the "remove what isn't there is
+                // success" convention is right (S4 of
+                // remove_multi_version_test.sh asserts exit 0 and no
+                // `removed.*subos` summary), so keep it -- with a visible
+                // diagnostic, and without breaking scripts that re-run
+                // `remove` defensively.
+                log::warn("xlings: '{}' is not installed in current subos '{}'",
+                          bareName, subos);
+                return 0;
+            }
+
+            log::warn("xlings: '{}' is not registered in subos '{}', but a "
+                      "payload is on disk; removing it for real",
+                      bareName, subos);
         }
     }
 
