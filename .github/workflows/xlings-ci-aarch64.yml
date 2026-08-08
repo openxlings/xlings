@@ -79,32 +79,29 @@ jobs:
           echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.xlings/bin"               >> "$GITHUB_PATH"
 
-      # NO payload cache here, deliberately.
+      # NO payload cache here.
       #
-      # It used to cache `~/.xlings/data/xpkgs` -- the package PAYLOADS -- while
-      # the xvm registry that records what is installed lives in
-      # `~/.xlings/.xlings.json`, which was NOT cached. On a cache hit the runner
-      # therefore had payload directories on disk with no version registered for
-      # any of them.
+      # The reason is sound on its own: caching `~/.xlings/data/xpkgs` (the
+      # PAYLOADS) without `~/.xlings/.xlings.json` (the xvm registry that records
+      # what is installed) leaves the runner with payload directories that no
+      # version is registered for. `xlings install` then treats a present payload
+      # directory as already installed and skips the install AND its config()
+      # hook. Either cache both halves or neither; caching both would restore
+      # registrations pointing at payloads a different `.xlings.json` would have
+      # changed, so neither is the safe choice.
       #
-      # That is unsound by construction, and it is the shape this ecosystem keeps
-      # producing: `xlings install` treats a present payload directory as already
-      # installed, so it skips the install AND the config() hook. For gcc that hook
-      # is what rewrites the specs; without it the compiler cannot produce a working
-      # binary, and the first visible symptom is a build script that 'compiled' and
-      # left no output:
+      # BUT: dropping this cache did NOT fix the red cell, so it was not the
+      # cause. Four changes were committed here as fixes -- pinning mcpp, pinning
+      # the package index, dropping the from-source mcpp build, and dropping this
+      # cache -- and ALL FOUR left the failure identical:
       #
       #   build.mcpp compiling / build.mcpp running
       #   error: posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2)
       #
-      # The same command with the same released mcpp succeeds on a machine whose
-      # home has both halves, which is what narrowed it here after three wrong
-      # diagnoses (mcpp main moving, the index being unpinned, the source build).
-      #
-      # Either cache both halves or neither. Caching both would restore
-      # registrations that may point at payloads a different `.xlings.json` would
-      # have changed, so neither is the safe choice -- paid for in download time on
-      # a job that already spends minutes cross-compiling.
+      # Each was an inference from outside the runner. None was measured there.
+      # The `if: failure()` diagnostic at the end of this job exists to end that:
+      # it prints what the host toolchain actually produced, which is the one
+      # thing none of the four diagnoses ever looked at.
       - name: Bootstrap mcpp + GLOBAL mirror
         run: |
           xlings config --mirror GLOBAL
@@ -120,29 +117,26 @@ jobs:
           # not one built from source here.
           #
           # This step used to clone mcpp and build it, on the premise that a
-          # released mcpp could not cross-compile. That premise is now false, and
-          # the source build was the cause of a red cell that outlived two wrong
-          # diagnoses: it failed while compiling a dependency's build script, and
-          # failed silently --
+          # released mcpp could not cross-compile. That premise is false: the
+          # released client cross-compiles fine. Removing the source build was
+          # still right, but it did NOT fix the red cell -- see the note above the
+          # bootstrap step for the four diagnoses that all failed.
           #
-          #   build.mcpp compiling
-          #   build.mcpp running
-          #   error: posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2)
+          # Do not "fix" this cell by pinning mcpp. This job deliberately takes the
+          # LATEST mcpp -- it exists to catch cross-build breakage against the
+          # current client, and pinning would quietly retire the canary. If a
+          # future released mcpp cannot cross-compile, this cell going red is the
+          # intended signal.
           #
-          # What settled it was running this exact command locally with the
-          # INSTALLED mcpp 2026.8.8.2, which succeeds and produces a real artifact:
+          # Measured locally against released mcpp 2026.8.8.4, both with a warm
+          # sandbox and with a wiped one (fresh MCPP_HOME, cold build.mcpp
+          # compile): both succeed and produce
           #
           #   ELF 64-bit LSB executable, ARM aarch64, statically linked
           #
-          # So the defect is in the source build -- not in xlings, not in the
-          # package index, not in the dependency versions. Two pins were added
-          # chasing those (mcpp main, then the index) and NEITHER fixed it.
-          #
-          # Both pins are deliberately NOT kept here. This job's own comment says
-          # it "takes the LATEST mcpp, not the pin -- it exists to catch cross-build
-          # breakage against the current client", and pinning would have quietly
-          # retired the canary. If a future released mcpp cannot cross-compile,
-          # this cell going red is the intended signal.
+          # So the failure is environmental to the runner, not in mcpp, xlings,
+          # the index, or the dependency versions. That is what the diagnostic
+          # below is for.
           MCPP_TARGET=aarch64-linux-musl \
             SKIP_RUN_VERIFY=1 SKIP_NETWORK_VERIFY=1 \
             bash tools/linux_release.sh
@@ -159,6 +153,61 @@ jobs:
           ver=$(qemu-aarch64-static "$bin" --version)
           echo "$ver"
           echo "$ver" | grep -q "xlings" || { echo "xlings --version failed under qemu"; exit 1; }
+
+      # Runs ONLY on failure, as its own step.
+      #
+      # A previous diagnostic here never executed: it hung off the build command
+      # with `||`, and under `bash -e` the failing build aborted the step before
+      # the diagnostic could print. A whole CI round produced output that could
+      # not print. Hence `if: failure()` and a separate step.
+      #
+      # What it is for: `mcpp` reports the build.mcpp failure as
+      #
+      #   posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2)
+      #
+      # which reads as "the binary is missing". It usually is not. `execve`
+      # returns ENOENT when a binary's PT_INTERP -- its dynamic loader -- does
+      # not exist, and names the BINARY, not the missing loader. The xlings gcc
+      # rewrites PT_INTERP to an absolute path inside whichever home configured
+      # its specs, so a loader path that is valid on the packaging machine can
+      # be absent on a runner. This step prints that path and whether it exists.
+      - name: Why the host build script could not run (diagnostic)
+        if: failure()
+        run: |
+          echo "=== build.mcpp artifacts ==="
+          find target/.build-mcpp -maxdepth 3 \( -name 'build.mcpp.bin' -o -name '*.cache' \) -printf '%p\t%s bytes\n' 2>/dev/null || echo "(no target/.build-mcpp)"
+
+          bin=$(find target/.build-mcpp -name 'build.mcpp.bin' 2>/dev/null | head -1)
+          if [ -n "$bin" ]; then
+            echo "=== PT_INTERP of $bin ==="
+            interp=$(readelf -p .interp "$bin" 2>/dev/null | sed -n 's/.*\]  //p' | head -1)
+            echo "interp = ${interp:-<none/static>}"
+            if [ -n "$interp" ]; then
+              if [ -e "$interp" ]; then
+                echo "interp EXISTS -> ENOENT was NOT the loader"
+              else
+                echo "interp MISSING -> this is the ENOENT. The loader, not the binary."
+              fi
+            fi
+            echo "=== can it run? ==="
+            "$bin" --help >/dev/null 2>&1; echo "exit=$?"
+          else
+            echo "build.mcpp.bin was never produced -> the host COMPILE failed, not the exec"
+          fi
+
+          echo "=== host gcc as the sandbox resolved it ==="
+          mcpp self env || true
+          for root in "$HOME/.mcpp/registry/data/xpkgs" "$HOME/.xlings/data/xpkgs"; do
+            echo "--- $root ---"
+            ls "$root" 2>/dev/null | grep -E 'gcc|glibc' || echo "(none)"
+            for specs in "$root"/xim-x-gcc/*/lib/gcc/*/*/specs; do
+              [ -f "$specs" ] || continue
+              echo "specs: $specs"
+              grep -aoE '/[^ }%]*ld-linux-x86-64\.so\.2' "$specs" | sort -u | while read -r p; do
+                [ -e "$p" ] && echo "  OK      $p" || echo "  MISSING $p"
+              done
+            done
+          done
 
       - name: Upload aarch64 candidate
         uses: actions/upload-artifact@v4
