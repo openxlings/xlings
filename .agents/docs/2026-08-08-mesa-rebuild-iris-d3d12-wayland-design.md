@@ -308,6 +308,107 @@ $ ls pkgs/d/directx-headers.lua                      → 不存在
 
 ---
 
+## 9. 实施记录二:真去跑 mesa 构建,推翻了 §8 的一条和本文的两条
+
+`xim-pkgindex#563`。**§8 的「推翻一」本身被推翻了**,而且方向相反。
+
+### 已交付(两个新包 + 一个 gcc 修复)
+
+| | |
+|---|---|
+| `pkgs/g/gcc.lua` | 剪掉 fixincludes 冻结的头 —— **#560 的根因修复** |
+| `pkgs/d/directx-headers.lua` | 新,1.614.1,432K,两区已发布 |
+| `pkgs/w/wayland-protocols.lua` | 加 1.45(**1.38 早就在**,见下) |
+| `build-directx-headers.sh` / `build-wayland-protocols.sh` | 新,各带输入审计 |
+| `build-in-subos.sh` | meson 解析、python 模块、dep bin 上 PATH、build-only pkgconfig |
+| `tiers.sh` | T5 的 deps 字段改对(原来那条跑不通) |
+
+两个包都装进隔离 home,**从已安装的 payload** 过 pkg-config 验过:`${pcfiledir}` 落在
+payload 里、两种拼写都解析、`pkgdatadir` 里 57 个 XML。
+
+### 推翻 §8 的「推翻一」:gcc 15.1.0 不是建不了,是被一个能删的文件挡住
+
+§8 说「gcc 15.1.0 在这个生态里根本建不了 LLVM」,并据此让 llvm-dev 依赖
+`xim:gcc@16.1.0`。**症状是真的,归因只差最后一步。**
+
+那个 `include-fixed/pthread.h` 不是「随便哪台机器的 glibc」,banner 写着它来自
+**我们自己的 sysroot**:
+
+```
+It has been auto-edited by fixincludes from:
+    "/home/xlings/.xlings_data/subos/linux/usr/include/pthread.h"
+```
+
+即 gcc 构建时的 glibc **2.39**。现在 sysroot 是 **2.44**,而 2.44 改了
+`pthread_cond_t` 的布局。所以这不是宿主泄漏,是**对我们自己 glibc 的版本漂移** ——
+每次 glibc 升级都会重演。
+
+`include-fixed` 里只有两个文件(`README` 和这个 `pthread.h`),删掉即可。已在
+`gcc.lua` 的 `install()` 里按 **fixincludes banner** 判定剪除(不按文件名白名单:gcc
+真正生成的 `limits.h`/`syslimits.h` 没有 banner,必须留)。
+
+> 中间我还错过一次:第一次测「删掉有没有用」时用的是 subos 的 shim,而它当时指向
+> gcc 16 —— **等于用 gcc 16 证明了 gcc 15 没问题**。选对 15.1.0 重测才拿到双向证据:
+> 有该文件 1 个错误、`-H` 显示 include-fixed 胜出;删掉 0 个错误、sysroot 胜出。
+
+### 推翻二:llvm-dev 必须带 AMDGPU —— libllvm 根本不能当构建输入
+
+§3 把两个包的分工写成「运行时库」与「构建期工具」。**分错了。**
+
+```
+$ ls <libllvm payload>/
+lib
+```
+
+没有头文件、没有 `lib/cmake/llvm/LLVMConfig.cmake`、没有 `bin/llvm-config`。meson 找
+LLVM 只有两条路(config tool 或 cmake 包),libllvm **一条都不提供**。
+
+后果不是「找不到就报错」,而是**静默换人**:
+
+```
+llvm-config found: YES (/usr/bin/llvm-config) 18.1.3
+```
+
+拿了宿主的 LLVM 18,而索引发布的是 20.1.7。这样链出来的 libgallium 需要
+`libLLVM.so.18.1` —— 索引里没有,**payload 根本载不起来**。
+
+所以两条轴是「用户加载的那个 .so」和「构建需要的一切」,后者必须覆盖前者的每个
+target。llvm-dev 改为 `X86;AMDGPU;SPIRV`,而 AMDGPU 正是让 gcc 16 ICE 的那个文件 ——
+**于是必须用 gcc 15,而这恰好由上面的 #560 修复解锁**。两个 LLVM 脚本终于对编译器口径
+一致了,它们本来就没有理由不一致。
+
+### 推翻三:wayland-protocols「不在索引里」—— 在,而且没被用
+
+我先断言它不在索引里,并且**用 Write 覆盖了一个已发布的 recipe**(已完整恢复:
+`spec = "2"`、`status = "stable"`、1.38 条目保留,1.45 追加)。
+
+真相比我原来的说法更值得记:**它 1.38 早在 2026-08-05 就发布到两区了,而现役 mesa
+仍然是拿宿主那份 XML 生成的。**
+
+```
+$ ls /home/speak/.xlings/data/xpkgs/*wayland-protocols*   → 什么都没有
+```
+
+recipe 没错、payload 没错、O4 probe 也确实证明运行时 7/7 全是我们的。缺的只有**接线**:
+它从没在构建那个 home 里装过,T5 那行也既没 `--deps` 也没给 pkgconfig 路径。
+
+**没接线的构建期输入,和已满足的输入长得一模一样。**运行时自包含和构建期自包含是两个
+性质,而只有前者有守卫。这条比「缺个包」有价值得多,已写进 recipe、脚本和 tiers.sh。
+
+### 顺带发现的四个「记录与事实不符」
+
+| | 事实 |
+|---|---|
+| 索引里没有 `meson` | `build-in-subos.sh` 却无条件调 `$SUBOS/bin/meson` —— 这条路径在任何 home 都不存在,**mesa 在内的每次 meson 构建都是宿主 meson 驱动的**(`#562`) |
+| mesa 报「缺 mako」 | 真凶是 `packaging`:它的探测先 `import packaging.version`,回退 `distutils.version` —— 而 **Python 3.12 删掉了 distutils**,3.13 上回退分支同样抛异常,于是 mako 装好了也报缺 mako |
+| glslang 装了却「找不到」 | payload 里 `bin/glslangValidator` 和 `bin/glslang` 并排,recipe 只注册了 anchor,**mesa 要的那个名字不可达** |
+| T5 的 `deps` 是 `libxml2 expat` | 照着重跑直接死在 `ERROR: Dependency "libglvnd" not found`。**记录下来的命令不是当初那条命令。**已补全 18 个包 |
+
+最后一条值得单独说:**一份跑不通的构建记录比没有记录更糟** —— 它让下一个人付同样的代价,
+而且看起来权威。
+
+---
+
 ## 附:每条结论的证据
 
 | 结论 | 怎么来的 |
