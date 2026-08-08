@@ -114,6 +114,12 @@ TESTS=(
     "E2E-62 |loader_libc_same_source_test.sh||"
     "E2E-63 |subos_env_libc_guard_test.sh||"
     "E2E-64 |subos_single_version_test.sh||"
+    # E2E-65/66 existed since 2026.8.8.2 but were never registered here --
+    # they passed locally once and then never ran again anywhere.
+    "E2E-65 |remove_orphan_payload_test.sh||"
+    "E2E-66 |subos_env_use_switch_test.sh||"
+    "E2E-67 |subos_runtime_binding_test.sh||"
+    "E2E-68 |closure_guard_differential_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

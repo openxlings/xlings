@@ -171,7 +171,8 @@
 ```json
 "subos_info": {
   "schema_version": 1,
-  "runtime": "glibc@2.39",
+  "runtime": "glibc@2.44",
+  "host_glibc": "2.39",
   "envs": {
     "compat.mesa@25.0.0": [
       { "var": "LIBGL_DRIVERS_PATH", "op": "set",     "value": "${pkgdir}/lib/dri" },
@@ -179,16 +180,23 @@
     ]
   },
   "created_at": "2026-08-05T14:23:11Z",
-  "created_by": "xlings 2026.8.5.1"
+  "created_by": "xlings 2026.8.9.1"
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `schema_version` | `integer` | 当前为 `1` |
-| `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.39` 即 Linux/glibc）。由 `xlings subos new --runtime` 指定 |
+| `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.44` 即 Linux/glibc）。由 `xlings subos new --runtime` 指定；缺省用内置默认（2026.8.9.1 起为 `glibc@2.44`，此前为 `glibc@2.39`） |
+| `host_glibc` | `string` | **（2026.8.9+，可选）** 写入该块时探测到的宿主 glibc 版本（如 `"2.39"`）。缺失 = 未知（旧 manifest、非 glibc 宿主、探测失败），读者必须把未知当"不可证"，不得当 0 比较。供闭环规则 A（`our_glibc >= host_glibc`）判定 |
 | `envs` | `object` | 以**声明包的 binding** 为键。包卸载时 xlings 删除整段；recipe 不写清理代码 |
 | `created_at` / `created_by` | `string` | 创建时间与创建者版本 |
+
+**`runtime` 是创建期属性，默认值变更只影响新建 SubOS。** 绑定持久化在每个
+SubOS 自己的 manifest 里；修复路径（`self doctor --fix`、块重铸）**保留合法的
+已记录 binding**，只在 binding 本身缺失/畸形时才落回默认值。依赖解析侧由
+pin-to-active 保证：已激活的 glibc 版本在满足约束时压过索引最新，所以已有
+SubOS 不会因默认值或索引 `latest` 的变化被拉上新 runtime。
 
 `envs` 的值由包在 `config()` 里通过 `subos.env{}` 写入（见 xim-pkgindex 的
 xpackage-spec V2）。**值必须使用占位符** —— `${pkgdir}` / `${subosdir}` /

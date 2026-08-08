@@ -18,6 +18,7 @@ import xlings.platform.target;
 import xlings.core.config;
 import xlings.core.semver;
 import xlings.core.elf_same_source;
+import xlings.core.closure_check;
 import xlings.libs.json;
 import xlings.core.common;
 import xlings.core.xself;
@@ -1569,13 +1570,15 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         nlohmann::json fresh;
         fresh["workspace"] = nlohmann::json::object();
         fresh[std::string(mf::BLOCK)] = mf::make_block(
-            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
         doc = std::move(fresh);
     }
     if (!doc->contains(std::string(mf::BLOCK))
         || !doc->at(std::string(mf::BLOCK)).is_object()) {
         (*doc)[std::string(mf::BLOCK)] = mf::make_block(
-            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION));
+            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
     }
 
     // C1 -- the subos layer's "exactly one", for the case where nothing else
@@ -2366,6 +2369,20 @@ public:
             }
         }
 
+        // The host glibc this subos recorded at creation, for rule A of the
+        // closure check below. Read once per plan: the manifest cannot change
+        // mid-install, and unknown (empty) stays unknown.
+        std::optional<std::string> hostGlibcCache;
+        auto host_glibc_recorded = [&]() -> const std::string& {
+            if (!hostGlibcCache) {
+                namespace mf = xlings::subos::manifest;
+                hostGlibcCache.emplace();
+                if (auto doc = mf::read_document(Config::xvm_artifact_subos_dir()))
+                    *hostGlibcCache = mf::parse(*doc).host_glibc;
+            }
+            return *hostGlibcCache;
+        };
+
         // Phase 2: Install each package in topological order
         for (auto& node : plan.nodes) {
             // Refused by a gate in phase 1. Skipping here rather than there
@@ -2959,6 +2976,25 @@ public:
                                    snapshot.error() });
                     }
                     continue;
+                }
+            }
+
+            // C2, execution point 2 (warn-only): the closure predicate the
+            // index CI enforces, evaluated where the payload actually lands.
+            // mcpp#392 happened on a machine no CI ever saw. Fresh installs
+            // only -- a re-mapped payload was scanned when it first arrived,
+            // and re-scanning a 400MB payload on every dependent install
+            // would price the check out of existence.
+            if (!payloadInstalled && node.pkgType != 3 /* Config */) {
+                const auto rep = closurecheck::scan_payload(
+                    ctx.install_dir, dataDir / "xpkgs", host_glibc_recorded());
+                for (const auto& m : rep.missing) {
+                    log::warn("[{}@{}] {}", node.name, node.version,
+                              closurecheck::describe_missing(m));
+                }
+                if (rep.floor) {
+                    log::warn("[{}@{}] {}", node.name, node.version,
+                              closurecheck::describe_floor(*rep.floor));
                 }
             }
 

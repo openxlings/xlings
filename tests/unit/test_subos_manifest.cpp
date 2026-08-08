@@ -423,6 +423,65 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     EXPECT_FALSE(info.created_at.empty());
 }
 
+// The default is a value the tests must not pin (it moves with the packaged
+// glibc), but it must always be a well-formed binding — a malformed default
+// would make every fresh subos fail its own validation.
+TEST(SubosManifestBlock, DefaultRuntimeIsAWellFormedBinding) {
+    EXPECT_TRUE(m::is_binding(m::DEFAULT_RUNTIME));
+}
+
+// host_glibc: written when known, absent when not. Absent and unknown must
+// read identically, so a pre-C1 manifest needs no migration.
+TEST(SubosManifestBlock, HostGlibcIsRecordedWhenKnown) {
+    nlohmann::json d;
+    d["workspace"]  = nlohmann::json::object();
+    d["subos_info"] = m::make_block(m::DEFAULT_RUNTIME, "xlings test", "2.39");
+
+    EXPECT_TRUE(m::validate_block(d).empty());
+    EXPECT_EQ(m::parse(d).host_glibc, "2.39");
+}
+
+TEST(SubosManifestBlock, HostGlibcIsOmittedWhenUnknown) {
+    nlohmann::json d;
+    d["workspace"]  = nlohmann::json::object();
+    d["subos_info"] = m::make_block(m::DEFAULT_RUNTIME, "xlings test");
+
+    EXPECT_FALSE(d["subos_info"].contains("host_glibc"));
+    EXPECT_TRUE(m::parse(d).host_glibc.empty());
+    EXPECT_TRUE(m::validate_block(d).empty());
+}
+
+// ── rebuild keeps the declared runtime ───────────────────────────────
+//
+// A block can be invalid for reasons that have nothing to do with its
+// runtime. Rebuilding used to reset the runtime to the caller's fallback,
+// which after a default bump silently re-declares an existing subos against
+// a libc its payloads were never built for.
+
+TEST(SubosManifestPreserve, KeepsAValidRuntimeThroughARebuild) {
+    nlohmann::json d;
+    d["subos_info"] = {
+        {"schema_version", 99},          // invalid on purpose
+        {"runtime", "glibc@2.39"},       // valid, and not the default
+        {"envs", 42},                    // invalid on purpose
+    };
+    EXPECT_FALSE(m::validate_block(d).empty());
+    EXPECT_EQ(m::preserved_runtime(d, m::DEFAULT_RUNTIME), "glibc@2.39");
+}
+
+TEST(SubosManifestPreserve, FallsBackWhenTheRuntimeItselfIsMalformed) {
+    nlohmann::json d;
+    d["subos_info"] = { {"runtime", "glibc"} };   // no version half
+    EXPECT_EQ(m::preserved_runtime(d, "glibc@2.44"), "glibc@2.44");
+
+    nlohmann::json absent;
+    absent["subos_info"] = nlohmann::json::object();
+    EXPECT_EQ(m::preserved_runtime(absent, "glibc@2.44"), "glibc@2.44");
+
+    nlohmann::json noBlock = nlohmann::json::object();
+    EXPECT_EQ(m::preserved_runtime(noBlock, "glibc@2.44"), "glibc@2.44");
+}
+
 // ── the subos layer's one live version ───────────────────────────────
 //
 // The store holds many versions by design, each consumer freezes one into its

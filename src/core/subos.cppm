@@ -160,8 +160,13 @@ bool ensure_subos_info_(const fs::path& dir, std::string_view runtime) {
     // would discard the envs a package declared into it.
     if (manifest::validate_block(json).empty()) return true;
 
+    // An unusable block can still carry a valid runtime binding, and that
+    // binding — not the caller's fallback — is what the subos was declared
+    // against. preserved_runtime keeps it through the rebuild.
     json[std::string(manifest::BLOCK)] = manifest::make_block(
-        runtime, std::format("xlings {}", Info::VERSION));
+        manifest::preserved_runtime(json, runtime),
+        std::format("xlings {}", Info::VERSION),
+        platform::host_glibc_version());
     try {
         write_config_json_(dir / ".xlings.json", json);
     } catch (const std::exception& e) {
@@ -251,7 +256,8 @@ export int create(const std::string& name, const fs::path& customDir,
         if (storage == sandbox::StorageMode::Image)
             j["imageSize"] = imageSize;
         j[std::string(manifest::BLOCK)] = manifest::make_block(
-            effectiveRuntime, std::format("xlings {}", Info::VERSION));
+            effectiveRuntime, std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
         write_config_json_(subosConfig, j);
     } else if (!ensure_subos_info_(dir, effectiveRuntime)) {
         stream.emit(ErrorEvent{
@@ -691,8 +697,11 @@ export int new_from(const std::string& name, const fs::path& customDir,
         subosCfg["workspace"] = nlohmann::json::object();
     if (!manifest::validate_block(subosCfg).empty()) {
         subosCfg[std::string(manifest::BLOCK)] = manifest::make_block(
-            runtime.empty() ? manifest::DEFAULT_RUNTIME : runtime,
-            std::format("xlings {}", Info::VERSION));
+            manifest::preserved_runtime(
+                subosCfg,
+                runtime.empty() ? manifest::DEFAULT_RUNTIME : runtime),
+            std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
     }
     write_config_json_(subosCfgPath, subosCfg);
 
