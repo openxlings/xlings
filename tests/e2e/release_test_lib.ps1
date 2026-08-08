@@ -46,13 +46,31 @@ function Find-XlingsBinary {
     # which reads as "the binary was never built" rather than "we picked the
     # wrong thing" -- the same misdirection as an ENOENT that names the binary
     # instead of its missing loader.
+    # XLINGS_BIN is NOT ours. xlings exports it itself when a subos is entered,
+    # where it means the subos BIN DIRECTORY:
+    #
+    #   export XLINGS_BIN="<home>/subos/current/bin"
+    #
+    # and the harness uses the same name for "path to the xlings executable".
+    # So the variable may already hold a directory that has nothing to do with
+    # the build under test. Require a FILE and otherwise fall through to the
+    # target glob -- exactly what find_xlings_bin() in project_test_lib.sh has
+    # always done with `[[ -f ... && -x ... ]]`, which is why Linux never hit
+    # this and Windows did.
+    #
+    # Bare Test-Path accepts a directory. That is how this failed: the
+    # directory was returned as the "binary", Copy-Item without -Recurse then
+    # created a DIRECTORY named xlings.exe, and pwsh reported
+    # "'.\bin\xlings.exe' is not recognized as ... executable program" -- which
+    # reads as a broken build. It only appeared once the bootstrap client was
+    # bumped to a version new enough to export XLINGS_BIN at all.
     if ($env:XLINGS_BIN) {
-        if (-not (Test-Path $env:XLINGS_BIN -PathType Leaf)) {
-            Fail "XLINGS_BIN is set but is not a file: $env:XLINGS_BIN"
+        if (Test-Path $env:XLINGS_BIN -PathType Leaf) {
+            $p = (Resolve-Path $env:XLINGS_BIN).Path
+            Write-Host "  [lib] xlings binary (XLINGS_BIN): $p"
+            return $p
         }
-        $p = (Resolve-Path $env:XLINGS_BIN).Path
-        Write-Host "  [lib] xlings binary (XLINGS_BIN): $p"
-        return $p
+        Write-Host "  [lib] ignoring XLINGS_BIN (not a file, likely xlings' own subos bindir): $env:XLINGS_BIN"
     }
 
     foreach ($glob in @("$ROOT_DIR\target\*\*\bin\xlings.exe",
