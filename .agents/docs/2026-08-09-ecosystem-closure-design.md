@@ -282,17 +282,34 @@ pkgs/g/glibc.lua            ["latest"] = { ref = "2.39" }  → "2.44"
 src/core/subos/manifest.cppm DEFAULT_RUNTIME = "glibc@2.39" → "glibc@2.44"
 ```
 
-**这仍不是「跟最新」而是「跟宿主」的问题**——见下面的口径选择。
+#### 口径已拍板(2026-08-09,已实现于 2026.8.9.1)
 
-`DEFAULT_RUNTIME = "glibc@2.39"`(`src/core/subos/manifest.cppm`)。
-2.39 是 2024 年的版本;宿主一旦更新,形态 X 必然失败,而失败信息完全不指向版本。
+> **只影响新建 subos。绑定本身就是口径,不需要迁移。**
 
-**做法**:默认改为当前打包的最高版本(今天是 2.44),并在 subos 创建时
-**记录当时的宿主 glibc 版本**,供 C2 判定。
+依据是三条既有机制,验证后全部成立:
 
-**不是简单改常量**:已有 home 的 `runtime` 字段已经写死,需要迁移路径;
-`mcpp#392` 的报告者是手工改 `.xlings.json` + 删 2.39 + 全量重建才走通的,
-这条路不能要求用户走。
+1. **绑定已持久化**:`runtime` 是 subos 创建期属性,写死在各 subos 自己的
+   `subos_info` 里(`manifest.cppm`),读取端无静默回退——改常量天然只影响新建。
+2. **依赖解析不会拉偏**:resolver 的 `pin_target_to_active`
+   (`resolver.cppm:38-62`)让**已激活的版本在满足约束时压过索引最新**。
+   实测索引里对 glibc 的依赖全是裸名/范围(15 个裸 `xim:glibc`、25 个
+   `@>=2.38/2.39`),旧 subos 的 2.39 被 pin 住,新 subos 无 active →
+   解析到 2.44。llvm 的 clang.cfg 从**自己的 dep 解析**推导 loader
+   (`llvm.lua:210`),因此同样自动分流——旧 subos 得 2.39 cfg,新 subos
+   得 2.44 cfg,**llvm.lua 一行都不用改**。
+3. **修复路径曾是唯一漏洞,已堵上**:`doctor --fix` 和三处块重铸原本无条件用
+   `DEFAULT_RUNTIME` 重写坏块——默认值一变,修一个坏块就把存量 subos 悄悄改成
+   2.44。新增 `preserved_runtime()`(单一谓词,六个重铸点共用):**块坏但
+   runtime 合法时保留 runtime**,只修其余字段。e2e 断言了这一条。
+
+另:「subos 创建时记录宿主 glibc」**复用 `subos_info` 机制**,不新建任何东西
+——块里新增可选字段 `host_glibc`(创建/重铸时经 `/usr/bin/getconf` 探测;
+绝对路径是因为 PATH 上的 `getconf`/`ldd` 可能是我们自己的 shim)。缺失 = 未知
+= 不可证,规则 A 不判——不是判过。旧 manifest 无需迁移。
+
+`mcpp#392` 的报告者手工改 `.xlings.json` + 删 2.39 + 全量重建才走通的那条路,
+新建 subos 后不再需要;存量 subos 想上 2.44 的正路是
+`xlings subos new <name> --runtime glibc@2.44`(新建绑定,不原地改)。
 
 ### C2 — 规则 D 的守卫:三个执行点,今天只有一个
 
@@ -396,6 +413,30 @@ soname 索引里根本没有     →  "libtinfo.so.6 在任何索引里都没有
 第 3 步能直接硬失败,正是因为它**不含政策判断**:拦下来的每一个,今天跑起来
 也一定是崩的。
 
+#### C2.6 实现状态(2026-08-09,xlings 2026.8.9.1)
+
+执行点 2 已上线,warn-only:`src/core/closure_check.cppm` +
+`installer.cppm` 安装循环内(config 之后、mark_installed 之前,与 elfcheck
+同为「新装载荷才扫」)。要点:
+
+- **规则 D**:形态 X(INTERP 在 xpkgs 内)的每个 NEEDED soname 必须由载荷
+  自身或任一已安装载荷提供;provider map 扫 `<xpkgs>` 全店,**符号链接算数**
+  (soname 通常就是链接),被测载荷自身除外——与 CI 脚本同一组来之不易的
+  性质,host-link 因此天然放行(C2.2)。
+- **规则 A**:INTERP 载荷的 glibc 版本 < subos 记录的 `host_glibc` 时告警;
+  `host_glibc` 缺失 = 未知 = 不判。
+- **规则 B 不重复**:elfcheck 已在同一循环里硬失败。
+- **防 predicate drift**:`tests/e2e/closure_guard_differential_test.sh`
+  (E2E-68)在同一棵 rigged 树上跑客户端守卫与 CI 的
+  `dep-closure-check.sh`,断言两边同时点名同一个缺口
+  (libnothere.so.9)、同时放过已提供的 soname——两套实现,一份 fixture,
+  不可能静默漂移。
+- 客户端**不知道**「缺口该由索引里哪个包补」(需要 soname→包 的索引级映射,
+  客户端没有)——C2.4 的第一种话术留给 CI 侧,客户端只报第二、三种。
+
+执行点 3 在 mcpp 侧,本轮不实现,以 issue 形式带完整设计提给
+mcpp-community/mcpp(判 A/B 两条物理规则,可直接硬失败)。
+
 ### C3 — 让我们的 ld.so 有一份真实的 cache
 
 三个可选,按侵入性排序:
@@ -494,12 +535,12 @@ host-link 机制不依赖 cache,降级为「以后再说」。
 
 ## 7. 验收(全部可证伪,今天跑都会失败)
 
-| 项 | 断言 | 今天的结果 |
-|---|---|---|
-| 规则 B | 任一 ELF 的 INTERP 载荷 == 其 libc 载荷 | `#578` 的产物会失败 |
-| 规则 A | `our_glibc >= host_glibc` | 默认 2.39 在 2.43 宿主上失败 |
-| **规则 D** | **形态 X 的闭包里每个 soname 由索引包或已声明的 host-link 提供** | **xmake 的 libtinfo 无提供者,失败** |
-| C4 | `LD_DEBUG` provenance 除 host-link 外无宿主对象 | JDK 15 个宿主对象,失败 |
+| 项 | 断言 | 写下时的结果 | 2026-08-09 落地后 |
+|---|---|---|---|
+| 规则 B | 任一 ELF 的 INTERP 载荷 == 其 libc 载荷 | `#578` 的产物会失败 | elfcheck 安装期硬失败(先前已有) |
+| 规则 A | `our_glibc >= host_glibc` | 默认 2.39 在 2.43 宿主上失败 | C1 落地:默认 2.44,`host_glibc` 记录进 subos_info,客户端 warn(closure_check) |
+| **规则 D** | **形态 X 的闭包里每个 soname 由索引包或已声明的 host-link 提供** | **xmake 的 libtinfo 无提供者,失败** | ncurses 入索引(xlings-res/ncurses 6.5);真实 xmake 3.0.8 在纯 xim 闭环下实测跑通;客户端 warn 上线,差分测试钉住两套实现 |
+| C4 | `LD_DEBUG` provenance 除 host-link 外无宿主对象 | JDK 15 个宿主对象,失败 | 字体探针 = glibc 族 6 个精确断言(L4 测试);音频改判宿主服务例外(§8);L3/L4 首次接入索引 CI(closure-lifecycle job) |
 
 组合 4(SONAME 找不到宿主库)不再列为验收项:X-完整下宿主库只经 host-link 的
 显式符号链接进入,本就不走 SONAME 全局查找。
@@ -543,6 +584,65 @@ D5-4  验收:LD_DEBUG 宿主对象为 0(host-link 除外)+ headless Toolkit + �
 ```
 
 **D5-3 是原子的,没有「切一半」。** 这是 `#578` 最贵的一课。
+
+#### 2026-08-09 实测修正一:音频是宿主服务,不进 RPATH
+
+强制我们的 alsa-lib 后实测:`AudioSystem.getMixerInfo()` 从 16 个降到 **0 个**。
+宿主 libasound 会 `dlopen` 它的 pipewire 插件
+(`alsa-lib/libasound_module_pcm_pipewire.so`),把整条宿主链拖进闭包
+(libpipewire/libsystemd/libdbus/libgcrypt/… 实测 16+ 个对象,随发行版漂移);
+而我们的 alsa 载荷没有插件桥,**纯净度换来的是桌面音频枚举归零**——功能回归,
+不是进步。
+
+所以口径修正:**音频与 GPU 同类,是宿主服务集成。** D5-1 的 RPATH
+**排除 alsa-lib**(形态 H 下 SONAME 回落宿主 libasound,音频保持可用);
+D5-2 的闸门相应拆成两半:
+
+```
+字体/Toolkit 探针(headless,不碰音频) →  宿主对象 == glibc 族 6 个,精确断言
+音频探针                               →  只断言功能(exit 0),不断言纯净度
+```
+
+alsa 桥接(我们的 libasound + ALSA_PLUGIN_DIR 指宿主插件目录,或打包
+alsa-plugins)是 **D5-3 的新增前置**——切形态 X 后 SONAME 无宿主回退,
+届时必须二选一,现在不必。
+
+#### 实测修正二:`#578` 的真正死因是 API,不只是清单
+
+`elfpatch.set({ rpath = ... })` 的 `rpath` 参数 **`_apply` 根本不读**
+(libxpkg `elfpatch.lua`:override 分支只消费
+enable/interpreter/interp_from/shrink/extra_rpath;RPATH 恒为
+`closure_lib_paths()` 全量)。`#578` 递进去的 leaf 清单被丢弃,实际写入的是
+含 **glibc lib64 + subos farm** 的全量 closure——组合 2 由此而来。
+
+两个连带的地雷,D5-1 的实现因此长这样:
+
+- **farm 目录(`subos/<name>/lib`)里有 `libc.so.6` 和 `ld-linux`**,
+  `closure_lib_paths()` 又无条件把它接在尾部——形态 H 下任何把它写进
+  可执行文件 RPATH 的路径都是组合 2。库文件因 SONAME 去重(libc 已载入)
+  而侥幸安全,可执行文件没有这层保护。
+- 声明 `xim:glibc` 会触发 elfpatch 的 predicate(「恰好一个 dep 声明
+  loader」)**自动切 PT_INTERP + 写全量 closure**。所以 jdk-zulu 的
+  `install()` 必须 `elfpatch.skip()`,再在 `config()` 里用低层
+  `patch_elf_loader_rpath`(唯一接受自定义 rpath 的 API)对 7 个 dlopen
+  调用者逐个做 leaf-only RUNPATH 手术。
+
+#### 实测修正三:leaf 自身必须 sealed,jdk 的 RPATH 救不了传递闭包
+
+RUNPATH 只作用于**载体自己的查找**;我们的 fontconfig 载荷若无 RUNPATH,
+它的 NEEDED(freetype/expat)照样从 ld.so cache 回落宿主——实测宿主
+freetype + brotli×2 + bz2 + png 全从这道侧门回流。fontconfig **recipe**
+早已声明 deps 并调用 `selfcontain.seal`,但**本机载荷装于 seal 存在之前**
+——同版本键不重装,修复到不了存量用户。
+
+解法是既有惯例:**同 artifact 换版本键**(fontconfig 2.15.0 → 2.15.0.1),
+jdk 依赖写 `xim:fontconfig@>=2.15.0.1`——已激活的 2.15.0 不满足下界,
+pin-to-active 失效,强制装一份 sealed 载荷。
+
+sealed fontconfig 下重放:**宿主残留恰好 = glibc 族 6 个**
+(ld-linux/libc/libdl/libm/libpthread/librt),字体链全归我们,
+brotli/bz2/png 如 §8.3 预言整体消失。**D5-2 的闸门在仿真中已达成**;
+产品化验收 = `tests/j/test_jdk_zulu.py::test_font_stack_provenance`(L4)。
 
 ### 8.3 JDK 的闭包账(实测,不是估算)
 
