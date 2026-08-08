@@ -1419,6 +1419,49 @@ int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream) {
         luaFile = destFile;
     }
 
+    // Give the local index the shared `libs/` too.
+    //
+    // Without this, `--add-xpkg` produces an index holding ONLY `pkgs/`, and a
+    // recipe's top-level `import("xim.pkgindex.sysroot")` resolves against
+    // `<index>/libs/<name>.lua` -- which does not exist -- so libxpkg hands back a
+    // permissive stub whose every call evaporates. Measured 2026-08-08 installing
+    // libXtst this way: `xvm.add` registered the anchor while
+    // `sysroot.declare_libs` produced no lib nodes at all, against a real-index
+    // install of the sibling libXi which produces libXi.so / .so.6 / .so.6.1.0.
+    //
+    // So a local install could not exercise the part of a recipe most likely to be
+    // wrong -- sysroot assets, driver directories, EGL/Vulkan manifests -- and it
+    // reported success. That cost a bug report against `xlings use` (#507) for a
+    // defect that did not exist.
+    //
+    // A symlink rather than a copy: the local index is an OVERLAY on the same
+    // ecosystem, so it should track the primary index's modules rather than
+    // snapshot them -- a stale copy would be its own silent-divergence bug. Falls
+    // back to a directory copy where symlinks need privileges (Windows).
+    {
+        auto primaryLibs = Config::global_data_dir() / "xim-pkgindex" / "libs";
+        auto localLibs = localRepoDir / "libs";
+        std::error_code lec;
+        if (fs::is_directory(primaryLibs, lec) && !fs::exists(localLibs, lec)) {
+            fs::create_directory_symlink(primaryLibs, localLibs, lec);
+            if (lec) {
+                lec.clear();
+                fs::copy(primaryLibs, localLibs,
+                         fs::copy_options::recursive
+                             | fs::copy_options::overwrite_existing, lec);
+            }
+            if (lec) {
+                log::warn("could not provide libs/ to the local index: {} -- "
+                          "`xim.pkgindex.*` calls in this recipe will be silent "
+                          "no-ops", lec.message());
+            }
+        } else if (!fs::is_directory(primaryLibs, lec)) {
+            log::warn("no primary index libs/ at {} -- `xim.pkgindex.*` calls in "
+                      "this recipe will be silent no-ops (run `xlings update`)",
+                      Config::display_path(primaryLibs));
+        }
+    }
+
     log::println("add xpkg - {}", luaFile.string());
     // Rebuild index so the new package is immediately available
     auto& catalog = get_catalog();
