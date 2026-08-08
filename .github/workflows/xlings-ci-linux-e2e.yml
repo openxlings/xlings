@@ -34,10 +34,14 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Phase 1: environment (same as xlings-ci-linux.yml) ─────────
+      # patchelf + lua5.4: E2E-68 (closure guard differential) rigs an ELF
+      # with patchelf and runs the index's dep-closure-check.sh, which needs
+      # lua. The test SKIPs when they are missing, so dropping them here
+      # would not fail CI -- it would silently stop running the test.
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential
+          sudo apt-get install -y curl git build-essential patchelf lua5.4
 
       - name: Install bootstrap xlings (pinned ${{ env.BOOTSTRAP_XLINGS_VERSION }})
         env:
