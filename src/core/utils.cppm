@@ -13,6 +13,18 @@ export namespace xlings::utils {
     return std::string{defaultValue};
 }
 
+// Whether the variable EXISTS in the environment -- empty or not.
+//
+// `get_env_or_default` cannot answer this: it returns "" both for a variable
+// that is unset and for one the user deliberately exported empty. The `set`
+// env op needs the difference. An explicit `export FOO=` is a value the user
+// chose, so `set` must leave it alone; collapsing the two made the four
+// backends disagree, since `${VAR:=v}` and a `-not $env:VAR` test overwrite an
+// empty value while fish's `set -q` does not.
+[[nodiscard]] bool env_is_set(const std::string& name) {
+    return std::getenv(name.c_str()) != nullptr;
+}
+
 [[nodiscard]] std::string strip_ansi(const std::string& str) {
     std::string cleaned;
     cleaned.reserve(str.size());
