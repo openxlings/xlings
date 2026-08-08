@@ -236,6 +236,78 @@ O4 probe 该做的只有一件事:证明 `eglGetPlatformDisplay(EGL_PLATFORM_WAY
 
 ---
 
+## 8. 实施记录:llvm-dev 已交付,以及它教了什么
+
+交付 A(Wayland probe)和 llvm-dev 包都已完成。llvm-dev 是 §3 那个「两趟构建」方案的
+第一趟前置,构建过程推翻了本文里两条我原以为确定的东西。
+
+### 已交付
+
+| | |
+|---|---|
+| 构建脚本 | `.agents/tools/graphics/build-llvm-dev.sh` |
+| 产物 | `xlings-res/llvm-dev` 20.1.7,237 MB,`sha256 b0cdaaad…` |
+| CN 镜像 | gitcode,**完整下载哈希与 GLOBAL 一致** |
+| recipe | `pkgs/l/llvm-dev.lua`,`status = "dev"` |
+| 沙箱验证 | OpenCL C → LLVM IR → SPIR-V,468 字节产出 |
+
+最后一行是真正的验收:**不是「三个文件在不在」,而是「mesa_clc 要走的那条流水线能不能走通」**。
+`pkg-config --modversion libclc` 也能解析,而那正是 `meson.build:850` 的路径。
+
+### 推翻一:必须用 gcc 15.1.0 —— 对 libllvm 成立,对这里不成立
+
+`build-libllvm.sh` 的约束是「16.1.0 在 `AMDGPUAsmParser.cpp` ICE,而 AMDGPU 不能砍」。
+**这条是 AMDGPU 专属的**,而 llvm-dev 只建 `X86;SPIRV`,碰不到那个文件。
+
+更要紧的是反向:**gcc 15.1.0 在这个生态里根本建不了 LLVM。**它的
+`include-fixed/pthread.h` 在搜索顺序上先于 sysroot,遮蔽了我们的
+`bits/pthreadtypes.h`,于是 `__gthread_cond_t` 变成 `unsigned int`,libstdc++ **自己的**
+`<ext/concurrence.h>` 编不过,构建死在 13/4049:
+
+```
+ext/concurrence.h:257: cannot convert '<brace-enclosed initializer list>' to 'unsigned int'
+```
+
+已提 `xim-pkgindex#560`。这不是一个头文件的事:任何与 sysroot glibc 不一致的
+fixincludes 副本都会这样遮蔽,`pthread.h` 只是 C++ 线程头最先碰到的那个。
+
+**代价**:用 gcc 16 编出来的 llvm-dev,libstdc++ ABI 是 16 的,而索引里 `gcc-runtime`
+是 15.1.0 —— 所以 recipe 只能依赖 `xim:gcc@16.1.0`(重得多)。**#560 修好后**换回
+`gcc-runtime` 即可,已写在 recipe 注释里。
+
+### 推翻二:「DirectX-Headers 已建好且 clean」—— 建过,但从没打包
+
+原文(和我的任务清单)据此把 B 当成「只差一次 mesa 重建」。查了:
+
+```
+$ gh release list --repo xlings-res/directx-headers → 仓库不存在
+$ ls pkgs/d/directx-headers.lua                      → 不存在
+```
+
+只剩上一轮的 `/tmp/xlings-gfx/directx-headers-*.log`。**产物在临时目录里,不在任何人能装到
+的地方。**所以 B 多一步:先把 DirectX-Headers 做成包。
+
+这是「把做过当成交付了」的又一次,值得作为方案的一条纪律:**前置只有在「能被 install
+到」时才算就位。**
+
+### 两个非 mesa 的发现
+
+**`libclc.pc` 带构建机绝对路径。**pkg-config 把 `includedir`/`libexecdir` 直接交给 mesa,
+不重写就指向不存在的 `/tmp/.../gfxwork/dist`,而失败会表现为 mesa 报缺位码文件 —— 离
+原因三层远。recipe 里重写并**断言重写生效**(gsub 没匹配上也会「成功」写回原文)。
+
+**`.xlings.json` 里的 `"mirror": "CN"` 不被下载路径采纳。**同一个 home、同一个 CN URL:
+
+| | 速率 | 实连 |
+|---|---|---|
+| 只有配置文件 | 40 KB/s | `185.199.109.133`(GitHub CDN) |
+| 加 `XLINGS_MIRROR=CN` 等环境变量 | **6.7 MB/s** | gitcode |
+
+差 160 倍。任何靠配置文件的隔离环境或 CI 都在静默跨境下载。这是「配置说一套、行为做
+一套」,和本轮其它几个同源。
+
+---
+
 ## 附:每条结论的证据
 
 | 结论 | 怎么来的 |
