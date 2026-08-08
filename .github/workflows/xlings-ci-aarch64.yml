@@ -79,14 +79,32 @@ jobs:
           echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.xlings/bin"               >> "$GITHUB_PATH"
 
-      - name: Cache xlings package payloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.xlings/data/xpkgs
-          key: xlings-deps-aarch64-${{ runner.os }}-${{ hashFiles('.xlings.json') }}
-          restore-keys: |
-            xlings-deps-aarch64-${{ runner.os }}-
-
+      # NO payload cache here, deliberately.
+      #
+      # It used to cache `~/.xlings/data/xpkgs` -- the package PAYLOADS -- while
+      # the xvm registry that records what is installed lives in
+      # `~/.xlings/.xlings.json`, which was NOT cached. On a cache hit the runner
+      # therefore had payload directories on disk with no version registered for
+      # any of them.
+      #
+      # That is unsound by construction, and it is the shape this ecosystem keeps
+      # producing: `xlings install` treats a present payload directory as already
+      # installed, so it skips the install AND the config() hook. For gcc that hook
+      # is what rewrites the specs; without it the compiler cannot produce a working
+      # binary, and the first visible symptom is a build script that 'compiled' and
+      # left no output:
+      #
+      #   build.mcpp compiling / build.mcpp running
+      #   error: posix_spawnp('.../xpkg@0.0.54/build.mcpp.bin') failed (error 2)
+      #
+      # The same command with the same released mcpp succeeds on a machine whose
+      # home has both halves, which is what narrowed it here after three wrong
+      # diagnoses (mcpp main moving, the index being unpinned, the source build).
+      #
+      # Either cache both halves or neither. Caching both would restore
+      # registrations that may point at payloads a different `.xlings.json` would
+      # have changed, so neither is the safe choice -- paid for in download time on
+      # a job that already spends minutes cross-compiling.
       - name: Bootstrap mcpp + GLOBAL mirror
         run: |
           xlings config --mirror GLOBAL
