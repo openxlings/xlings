@@ -38,6 +38,24 @@ struct TempTree {
     }
 };
 
+// These assertions ask "does the message NAME this path", not "does it spell it
+// the way this test literal does". std::filesystem normalises separators on
+// Windows, and the fixtures use POSIX-shaped literals, so a raw substring match
+// compares two spellings of one path and fails only there. Windows paths are
+// also case-insensitive, and canonicalisation can change the case it hands
+// back. Compare in one spelling and one case; the paths themselves are still
+// compared whole, so this loosens the rendering, not the claim.
+std::string gen(std::string s) {
+    for (auto& c : s) {
+        if (c == '\\') c = '/';
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+bool names(const std::string& haystack, const std::string& needle) {
+    return gen(haystack).find(gen(needle)) != std::string::npos;
+}
+
 const ec::CoreDirProbe GLIBC_CORE_DIR = [](const std::filesystem::path& path) {
     const auto payload = ec::payload_of(path.string());
     return ec::provider_of(payload) == "xim-x-glibc";
@@ -107,8 +125,8 @@ TEST(SameSource, LoaderFromOnePayloadAndLibcFromAnotherIsAViolation) {
     EXPECT_EQ(f.rpathPayload, glibc("2.44"));
     // Both paths must appear: the reader should not need LD_DEBUG.
     auto msg = ec::describe(f);
-    EXPECT_NE(msg.find(glibc("2.39")), std::string::npos);
-    EXPECT_NE(msg.find(glibc("2.44")), std::string::npos);
+    EXPECT_TRUE(names(msg, glibc("2.39"))) << msg;
+    EXPECT_TRUE(names(msg, glibc("2.44"))) << msg;
 }
 
 TEST(SameSource, AgreementPasses) {
@@ -191,8 +209,7 @@ TEST(SameSource, PayloadLoaderWithHostCoreRuntimeViolates) {
                              rpath);
     EXPECT_TRUE(finding.violated);
     EXPECT_EQ(finding.reason, ec::Finding::Reason::PayloadMismatch);
-    EXPECT_NE(ec::describe(finding).find((hostLib / "libc.so.6").string()),
-              std::string::npos);
+    EXPECT_TRUE(names(ec::describe(finding), (hostLib / "libc.so.6").string()));
 }
 
 TEST(SameSource, HostLoaderWithPayloadLibcIsAViolation) {
@@ -207,8 +224,8 @@ TEST(SameSource, HostLoaderWithPayloadLibcIsAViolation) {
     EXPECT_TRUE(finding.violated);
     EXPECT_EQ(finding.reason, ec::Finding::Reason::HostLoaderPayloadCore);
     auto message = ec::describe(finding);
-    EXPECT_NE(message.find("/lib64/ld-linux-x86-64.so.2"), std::string::npos);
-    EXPECT_NE(message.find(payloadLib.string()), std::string::npos);
+    EXPECT_TRUE(names(message, "/lib64/ld-linux-x86-64.so.2")) << message;
+    EXPECT_TRUE(names(message, payloadLib.string())) << message;
 }
 
 TEST(SameSource, HostLoaderWithOrdinaryPayloadLibraryPasses) {
@@ -314,7 +331,7 @@ TEST(SameSource, SubosSymlinkResolvingToPayloadLibcViolates) {
                              rpath);
     EXPECT_TRUE(finding.violated);
     EXPECT_EQ(finding.reason, ec::Finding::Reason::PayloadMismatch);
-    EXPECT_NE(ec::describe(finding).find(subosLib.string()), std::string::npos);
+    EXPECT_TRUE(names(ec::describe(finding), subosLib.string()));
 }
 
 TEST(SameSource, SubosDirectoryCannotMixLoaderAndLibcSources) {
@@ -338,8 +355,8 @@ TEST(SameSource, SubosDirectoryCannotMixLoaderAndLibcSources) {
                              rpath);
     EXPECT_TRUE(finding.violated);
     EXPECT_EQ(finding.reason, ec::Finding::Reason::PayloadMismatch);
-    EXPECT_NE(ec::describe(finding).find(subosLib.string()), std::string::npos);
-    EXPECT_NE(ec::describe(finding).find(libcDir.string()), std::string::npos);
+    EXPECT_TRUE(names(ec::describe(finding), subosLib.string()));
+    EXPECT_TRUE(names(ec::describe(finding), libcDir.string()));
 }
 
 // A PT_INTERP inside a SubOS lib dir is our own loader reached through a view.
