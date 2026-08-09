@@ -11,11 +11,23 @@ version = "1.0.8"
 source  = "index+compat@1.0.8"
 hash    = "fnv1a:3672c2797c5f2faf"
 
+[package."compat.ftxui"]
+namespace = "compat"
+version = "6.1.9"
+source  = "index+compat@6.1.9"
+hash    = "fnv1a:f4f0f58dc9107814"
+
 [package."compat.libarchive"]
 namespace = "compat"
 version = "3.8.7"
 source  = "index+compat@3.8.7"
 hash    = "fnv1a:e412742c0533bef7"
+
+[package."compat.lua"]
+namespace = "compat"
+version = "5.4.7"
+source  = "index+compat@5.4.7"
+hash    = "fnv1a:6bda787e2c850eac"
 
 [package."compat.lz4"]
 namespace = "compat"
@@ -52,18 +64,6 @@ namespace = "mcpplibs"
 version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:8ee8a8e51ac69885"
-
-[package."ftxui"]
-namespace = "mcpplibs"
-version = "6.1.9"
-source  = "index+mcpplibs@6.1.9"
-hash    = "fnv1a:b3ae3d5c6e5a7a91"
-
-[package."lua"]
-namespace = "mcpplibs"
-version = "5.4.7"
-source  = "index+mcpplibs@5.4.7"
-hash    = "fnv1a:baac1cce64264c57"
 
 [package."mcpplibs.tinyhttps"]
 namespace = "mcpplibs"

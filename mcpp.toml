@@ -31,10 +31,8 @@ linkage = "static"
 [target.aarch64-linux-musl]
 linkage = "static"
 
-[dependencies]
-ftxui = "6.1.9"
-
 [dependencies.compat]
+ftxui = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
@@ -43,5 +41,5 @@ xpkg = "0.0.54"
 tinyhttps = "0.2.9"
 capi.lua = "0.0.3"
 
-[dev-dependencies]
+[dev-dependencies.compat]
 gtest = "1.15.2"
