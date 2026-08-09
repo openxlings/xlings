@@ -374,6 +374,44 @@ TEST(XimInventoryOwnerTest, AsymmetricIncomingEdgeRejectsLegacyOwner) {
         << "an asymmetric incoming edge was ignored outside the DFS component";
 }
 
+TEST(XimInventoryOwnerTest, TransitiveHealthyLegacyChainReachesOwnerHint) {
+    xlings::xvm::VersionDB db;
+    const std::string version = "ns:1.0.0";
+    for (const auto* target : {"A", "B", "C"}) {
+        db[target].type = "program";
+        db[target].versions[version].kind = "program";
+    }
+    db["A"].bindings["B"][version] = version;
+    db["B"].bindings["A"][version] = version;
+    db["B"].bindings["C"][version] = version;
+    db["C"].bindings["B"][version] = version;
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"A", version},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    for (const auto match : {
+             xlings::xim::detail::CoordinateMatch::exact,
+             xlings::xim::detail::CoordinateMatch::contains,
+         }) {
+        xlings::xim::detail::MetadataLookup metadata{
+            std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+                {"ns-x-C", {.namespaceName = "ns", .name = "C",
+                              .canonicalName = "ns:C"}},
+            }};
+
+        const auto related = xlings::xim::detail::build_owner_coordinates(
+            db, requested, "ns:C", storeRoots, metadata, nullptr, match);
+
+        const auto found = related.find({"A", version});
+        ASSERT_NE(found, related.end());
+        EXPECT_EQ(found->second.coordinate.ns, "ns");
+        EXPECT_EQ(found->second.coordinate.package, "C");
+    }
+}
+
 TEST(XimInventoryOwnerTest, ValidModernGroupCanFallBackToItsRoot) {
     xlings::xvm::VersionDB db;
     const xlings::xvm::BindingGroupRef group{

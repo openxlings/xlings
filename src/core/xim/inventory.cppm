@@ -377,19 +377,27 @@ std::vector<xvm::InstallCoordinate> shallow_owner_candidates_for(
         return candidates;
     }
 
-    const auto info = db.find(pair.first);
-    if (info == db.end()) return candidates;
-    for (const auto& [peerTarget, versions] : info->second.bindings) {
-        const auto edge = versions.find(pair.second);
-        if (edge == versions.end()) continue;
-        const TargetVersion peer{peerTarget, edge->second};
-        push_candidate(candidates, direct_coordinate(
-            peer.first, peer.second));
-        if (const auto* peerData = version_data(db, peer)) {
-            if (auto fromPath =
-                    xvm::coordinate_from_payload_path(peerData->path)) {
-                push_candidate(candidates, std::move(*fromPath));
+    std::vector<TargetVersion> pending{pair};
+    std::set<TargetVersion> visited;
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        const auto info = db.find(current.first);
+        if (info == db.end()) continue;
+        for (const auto& [peerTarget, versions] : info->second.bindings) {
+            const auto edge = versions.find(current.second);
+            if (edge == versions.end()) continue;
+            const TargetVersion peer{peerTarget, edge->second};
+            push_candidate(candidates, direct_coordinate(
+                peer.first, peer.second));
+            if (const auto* peerData = version_data(db, peer)) {
+                if (auto fromPath =
+                        xvm::coordinate_from_payload_path(peerData->path)) {
+                    push_candidate(candidates, std::move(*fromPath));
+                }
             }
+            if (!visited.contains(peer)) pending.push_back(peer);
         }
     }
     return candidates;

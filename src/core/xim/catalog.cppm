@@ -323,9 +323,6 @@ resolve_local_identity_from_repos(
         return std::unexpected(std::format(
             "package '{}' not found", target));
     }
-    if (matches.size() > 1) {
-        matches = detail_::prefer_project_scope_(std::move(matches));
-    }
     if (matches.size() != 1) {
         return std::unexpected(format_ambiguous_candidates(
             target, matches));
