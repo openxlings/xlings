@@ -142,6 +142,15 @@ fi
 set +e
 MISSING_OUT="$(RUN remove config-no-payload@9.9.9 -y 2>&1)"
 MISSING_RC=$?
+
+# The other half of the same contract. `remove <name>` means "make sure it is
+# gone", and scripts re-run it defensively; a name the index has never heard of
+# is as gone as it gets. `remove <name>@<version>` names something specific, so
+# an unresolvable coordinate is a wrong coordinate. Same command, two questions.
+set +e
+GONE_OUT="$(RUN remove no-such-package-anywhere -y 2>&1)"
+GONE_RC=$?
+set -e
 set -e
 
 UNINSTALL_COUNT_AFTER_MISSING=0
@@ -160,6 +169,8 @@ grep -qi "not found" <<<"$MISSING_OUT" \
   || FAILURES+=("never-installed config coordinate did not report not found: $MISSING_OUT")
 [[ "$UNINSTALL_COUNT_AFTER_MISSING" == "1" ]] \
   || FAILURES+=("never-installed coordinate changed uninstall count to $UNINSTALL_COUNT_AFTER_MISSING")
+[[ "$GONE_RC" -eq 0 ]] \
+  || FAILURES+=("defensive re-run of an unknown bare name exited $GONE_RC: $GONE_OUT")
 
 if [[ "${#FAILURES[@]}" -ne 0 ]]; then
   printf '  - %s\n' "${FAILURES[@]}" >&2

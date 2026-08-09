@@ -44,19 +44,21 @@ PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly) {
     static PackageCatalog mgr;
     static bool initialized = false;
     static bool installReadyChecked = false;
-    std::expected<void, std::string> result;
-    bool rebuiltThisCall = false;
+    // No rebuild yet on this call. A default-constructed expected<void,...> is
+    // a SUCCESS value, so leaving it as "the result" would make "never probed"
+    // and "probed and fine" the same thing -- and the self-heal below only ever
+    // fires on a failure it can see.
+    std::optional<std::expected<void, std::string>> result;
     if (!initialized) {
         result = mgr.rebuild();
         initialized = true;
-        rebuiltThisCall = true;
     }
 
     if (access == CatalogAccess::InstallReady && !installReadyChecked) {
         // A LocalOnly caller may have initialized the singleton before an
         // install reaches it. Rebuild once here so this access request has a
         // current error to report before attempting the repair sync.
-        if (!mgr.is_loaded() && !rebuiltThisCall) result = mgr.rebuild();
+        if (!result && !mgr.is_loaded()) result = mgr.rebuild();
 
         // #366: on a fresh machine the main index rebuilds fine, but the
         // default sub-indexes were never synced — their pkgs/ dirs don't
@@ -66,22 +68,23 @@ PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly) {
         // the user ran `xlings update`. Force a one-time sync when the
         // sub-index marker JSON is missing (cheap: skipped on every later run).
         bool subIndexesNeverSynced = !sub_indexes_initialized();
-        if (!result || subIndexesNeverSynced) {
-            if (!result) {
+        const bool buildFailed = result.has_value() && !result->has_value();
+        if (buildFailed || subIndexesNeverSynced) {
+            if (buildFailed) {
                 // Self-heal: a broken/absent index tree (interrupted fetch on
                 // an older xlings, wiped cache) is repairable — resync and
                 // rebuild once before surfacing an error the user would have
                 // to fix by running `xlings update` themselves.
                 log::warn("catalog build failed ({}); resyncing indexes...",
-                          result.error());
+                          result->error());
             } else {
                 log::info("initializing package sub-indexes (first run)...");
             }
             if (sync_all_repos(true)) {
                 result = mgr.rebuild(true);
             }
-            if (!result) {
-                log::error("failed to build catalog: {}", result.error());
+            if (result.has_value() && !result->has_value()) {
+                log::error("failed to build catalog: {}", result->error());
                 log::info("try running: xlings update");
             }
         }
@@ -835,34 +838,51 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
             }
 
             if (!payloadOnDisk) {
+                // Nothing here is installed. The only question left is whether
+                // this coordinate is a payloadless config whose uninstall hook
+                // still has work to do -- and being unable to answer it is not
+                // the same as answering "yes".
+                //
+                // What an unanswerable question MEANS depends on how the user
+                // asked it, and these are two different questions:
+                //
+                //   `remove pkg`        -- "make sure pkg is gone". Scripts
+                //       re-run this defensively, and a package whose recipe has
+                //       left the index is as gone as it gets. Warn, exit 0.
+                //       That is the convention the block below states.
+                //   `remove pkg@9.9.9`  -- "remove THIS version". Nothing here
+                //       has it and the index has never heard of it, so the
+                //       coordinate itself is wrong. Say so and fail; reporting
+                //       success would confirm a removal of something that
+                //       cannot exist.
+                const bool explicitVersion = target.contains('@');
                 auto selected = catalog.resolve_target(
                     target, detect_platform());
-                if (!selected) {
-                    stream.emit(ErrorEvent{
-                        .code = selected.error().contains("ambiguous")
-                            ? ErrorCode::InvalidInput
-                            : ErrorCode::NotFound,
-                        .message = selected.error(),
-                        .recoverable = true,
-                        .hint = "verify the package coordinate or install it first",
-                    });
-                    return 1;
-                }
-                auto executable =
-                    selected_payloadless_config_has_uninstall_(
+                std::expected<bool, std::string> executable = false;
+                if (selected) {
+                    executable = selected_payloadless_config_has_uninstall_(
                         catalog, *selected, detect_platform());
-                if (!executable) {
-                    stream.emit(ErrorEvent{
-                        .code = ErrorCode::InvalidInput,
-                        .message = std::format(
-                            "cannot inspect uninstall recipe for {}@{}: {}",
-                            selected->canonicalName, selected->version,
-                            executable.error()),
-                        .recoverable = false,
-                    });
-                    return 1;
                 }
-                if (*executable) {
+                if (!selected || !executable) {
+                    const auto reason = selected ? executable.error()
+                                                 : selected.error();
+                    if (explicitVersion) {
+                        stream.emit(ErrorEvent{
+                            .code = reason.contains("ambiguous")
+                                ? ErrorCode::InvalidInput
+                                : ErrorCode::NotFound,
+                            .message = reason,
+                            .recoverable = true,
+                            .hint = "verify the package coordinate, or drop "
+                                    "the version to remove whatever is installed",
+                        });
+                        return 1;
+                    }
+                    log::warn("xlings: cannot inspect an uninstall recipe for "
+                              "'{}' ({}); treating it as absent",
+                              target, reason);
+                }
+                if (executable && *executable) {
                     payloadlessUninstallProven = true;
                     log::info("{}@{} has an executable payloadless config "
                               "uninstall; running it",
