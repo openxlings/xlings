@@ -6,8 +6,6 @@ module;
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
-#include <cstdio>
-
 export module xlings.core.xself.doctor;
 
 import std;
@@ -2813,7 +2811,6 @@ export int cmd_doctor(EventStream& stream, bool fix,
                 ? std::format("deep audit scope: {}", *scope)
                 : std::string("deep audit scope: all installed payloads"),
         });
-        std::fflush(stdout);
         std::cout.flush();
     }
 
