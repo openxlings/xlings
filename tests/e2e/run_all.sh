@@ -128,6 +128,7 @@ TESTS=(
     "E2E-74 |shared_registry_dep_install_dir_test.sh||"
     "E2E-75 |remove_foreign_provider_delegator_test.sh||"
     "E2E-76 |config_install_no_implicit_dir_test.sh||"
+    "E2E-77 |subos_use_candidates_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

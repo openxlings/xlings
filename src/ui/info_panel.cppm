@@ -384,6 +384,12 @@ void print_subos_list(
     layout::print_rows(std::move(rows), P.width);
 }
 
+void print_subos_resolved(std::string_view query, std::string_view selected) {
+    std::println("{}  {} resolved subos '{}' -> {}{}{}{}",
+                 palette::fg(palette::cyan()), theme::icon::arrow, query,
+                 palette::strong(), selected, palette::off(), palette::off());
+}
+
 // Subos status messages are single-line with a possibly-long path, and they
 // stay plain `std::print` rather than going through a rendered document: the
 // content has to survive CI / pipes / non-TTY contexts unchanged.

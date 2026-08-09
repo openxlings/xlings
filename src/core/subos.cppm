@@ -47,6 +47,10 @@ export struct SubosInfo {
     int           toolCount;
 };
 
+export struct SubosCandidateView {
+    std::vector<SubosInfo> candidates;
+};
+
 nlohmann::json read_config_json_(const fs::path& path) {
     if (!fs::exists(path)) return nlohmann::json::object();
     try {
@@ -60,35 +64,232 @@ void write_config_json_(const fs::path& path, const nlohmann::json& json) {
     platform::write_string_to_file(path.string(), json.dump(2));
 }
 
-export std::vector<SubosInfo> list_all() {
+SubosInfo candidate_info_(const std::string& name, bool includeToolCount) {
     auto& p = Config::paths();
-    auto configPath = p.homeDir / ".xlings.json";
-    auto json = read_config_json_(configPath);
+    auto dir = Config::subos_dir(name);
+    int toolCount = 0;
+    auto binDir = dir / "bin";
+    if (includeToolCount && fs::exists(binDir)) {
+        for (auto& e : platform::dir_entries(binDir)) {
+            auto stem = e.path().stem().string();
+            if (!xself::is_builtin_shim(stem) && stem != "xvm-alias")
+                ++toolCount;
+        }
+    }
+    return {name, dir, p.activeSubos == name, toolCount};
+}
 
-    std::vector<SubosInfo> result;
+export SubosCandidateView candidate_view(bool includeToolCount = true) {
+    auto& p = Config::paths();
+    auto json = read_config_json_(p.homeDir / ".xlings.json");
+    SubosCandidateView view;
+    bool hasDefault = false;
 
     if (json.contains("subos") && json["subos"].is_object()) {
         for (auto it = json["subos"].begin(); it != json["subos"].end(); ++it) {
             auto name = it.key();
-            auto dir  = Config::subos_dir(name);
-            int toolCount = 0;
-            auto binDir   = dir / "bin";
-            if (fs::exists(binDir)) {
-                for (auto& e : platform::dir_entries(binDir)) {
-                    auto stem = e.path().stem().string();
-                    if (!xself::is_builtin_shim(stem) && stem != "xvm-alias")
-                        ++toolCount;
-                }
-            }
-            result.push_back({name, dir, p.activeSubos == name, toolCount});
+            hasDefault = hasDefault || name == "default";
+            view.candidates.push_back(candidate_info_(name, includeToolCount));
         }
-    } else {
-        result.push_back({"default", Config::subos_dir("default"),
-                          p.activeSubos == "default", 0});
     }
 
-    std::ranges::sort(result, {}, &SubosInfo::name);
+    // Bounded compatibility for homes created before the registry existed.
+    // Only the well-known default manifest is synthesized. Arbitrary
+    // directories are never promoted into environments by a read-only query.
+    std::error_code ec;
+    const auto defaultManifest =
+        Config::subos_dir("default") / ".xlings.json";
+    if (!hasDefault && fs::is_regular_file(defaultManifest, ec)) {
+        view.candidates.push_back(
+            candidate_info_("default", includeToolCount));
+    }
+
+    std::ranges::sort(view.candidates, {}, &SubosInfo::name);
+    return view;
+}
+
+export std::vector<SubosInfo> list_all() {
+    return candidate_view().candidates;
+}
+
+std::string lowercase_name_(std::string_view name) {
+    std::string lowered(name);
+    for (auto& ch : lowered) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    return lowered;
+}
+
+std::size_t edit_distance_(std::string_view lhs, std::string_view rhs) {
+    std::vector<std::size_t> prev(rhs.size() + 1);
+    std::vector<std::size_t> next(rhs.size() + 1);
+    std::iota(prev.begin(), prev.end(), std::size_t{0});
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        next[0] = i + 1;
+        for (std::size_t j = 0; j < rhs.size(); ++j) {
+            const auto replace = prev[j] + (lhs[i] == rhs[j] ? 0u : 1u);
+            next[j + 1] = std::min({prev[j + 1] + 1, next[j] + 1, replace});
+        }
+        std::swap(prev, next);
+    }
+    return prev.back();
+}
+
+struct CandidateResolution_ {
+    std::string selected;
+    std::string reason;
+    std::vector<SubosInfo> candidates;
+    bool autoSelected { false };
+};
+
+std::vector<SubosInfo> suggestions_(
+        std::string_view query,
+        std::span<const SubosInfo> candidates) {
+    struct Scored {
+        int substringRank;
+        std::size_t distance;
+        SubosInfo candidate;
+    };
+    const auto loweredQuery = lowercase_name_(query);
+    std::vector<Scored> scored;
+    scored.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        const auto lowered = lowercase_name_(candidate.name);
+        const bool related = lowered.contains(loweredQuery)
+            || loweredQuery.contains(lowered);
+        scored.push_back({related ? 0 : 1,
+                          edit_distance_(loweredQuery, lowered), candidate});
+    }
+    std::ranges::sort(scored, [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.substringRank, lhs.distance, lhs.candidate.name)
+             < std::tie(rhs.substringRank, rhs.distance, rhs.candidate.name);
+    });
+    std::vector<SubosInfo> result;
+    for (std::size_t i = 0; i < std::min<std::size_t>(3, scored.size()); ++i) {
+        result.push_back(std::move(scored[i].candidate));
+    }
     return result;
+}
+
+CandidateResolution_ resolve_candidate_(std::string_view query) {
+    auto all = candidate_view(false).candidates;
+    if (query.empty()) {
+        return {.reason = "missing_name", .candidates = std::move(all)};
+    }
+
+    if (auto exact = std::ranges::find(all, query, &SubosInfo::name);
+        exact != all.end()) {
+        return {.selected = exact->name,
+                .reason = "exact",
+                .candidates = {*exact}};
+    }
+
+    const auto loweredQuery = lowercase_name_(query);
+    std::vector<SubosInfo> matches;
+    for (const auto& candidate : all) {
+        if (lowercase_name_(candidate.name) == loweredQuery) {
+            matches.push_back(candidate);
+        }
+    }
+    if (matches.size() == 1) {
+        return {.selected = matches.front().name,
+                .reason = "case_insensitive_exact",
+                .candidates = std::move(matches),
+                .autoSelected = true};
+    }
+    if (matches.size() > 1) {
+        return {.reason = "ambiguous", .candidates = std::move(matches)};
+    }
+
+    for (const auto& candidate : all) {
+        if (lowercase_name_(candidate.name).starts_with(loweredQuery)) {
+            matches.push_back(candidate);
+        }
+    }
+    if (matches.size() == 1) {
+        return {.selected = matches.front().name,
+                .reason = "unique_prefix",
+                .candidates = std::move(matches),
+                .autoSelected = true};
+    }
+    if (matches.size() > 1) {
+        return {.reason = "ambiguous", .candidates = std::move(matches)};
+    }
+
+    return {.reason = "not_found",
+            .candidates = suggestions_(query, all)};
+}
+
+void emit_candidates_(EventStream& stream,
+                      const CandidateResolution_& resolution,
+                      std::string_view query,
+                      std::string_view hint = {}) {
+    nlohmann::json candidates = nlohmann::json::array();
+    for (const auto& candidate : resolution.candidates) {
+        candidates.push_back({
+            {"name", candidate.name},
+            {"active", candidate.isActive},
+            {"dir", candidate.dir.string()},
+            {"pkgCount", candidate.toolCount},
+        });
+    }
+    nlohmann::json payload;
+    payload["reason"] = resolution.reason;
+    payload["query"] = query;
+    payload["candidates"] = std::move(candidates);
+    payload["auto_selected"] = resolution.autoSelected;
+    if (!resolution.selected.empty()) payload["selected"] = resolution.selected;
+    if (!hint.empty()) payload["hint"] = hint;
+    stream.emit(DataEvent{"subos_candidates", payload.dump()});
+}
+
+struct UseNameResolution_ {
+    std::string selected;
+    int exitCode { 0 };
+};
+
+UseNameResolution_ resolve_use_name_(std::string_view query,
+                                    EventStream& stream) {
+    auto resolution = resolve_candidate_(query);
+    if (query.empty()) {
+        const auto hint = resolution.candidates.empty()
+            ? "Create: xlings subos new <name>"
+            : "Use: xlings subos use <name>";
+        emit_candidates_(stream, resolution, query, hint);
+        return {};
+    }
+    if (!resolution.selected.empty()) {
+        if (resolution.autoSelected) {
+            emit_candidates_(stream, resolution, query);
+        }
+        return {.selected = std::move(resolution.selected)};
+    }
+    if (resolution.reason == "ambiguous") {
+        emit_candidates_(stream, resolution, query);
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = std::format("subos name '{}' is ambiguous", query),
+            .recoverable = true,
+            .hint = "use one of the exact names listed above",
+        });
+        return {.exitCode = 2};
+    }
+
+    emit_candidates_(stream, resolution, query);
+    std::string nearest;
+    for (const auto& candidate : resolution.candidates) {
+        if (!nearest.empty()) nearest += ", ";
+        nearest += candidate.name;
+    }
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::NotFound,
+        .message = std::format("subos '{}' not found", query),
+        .recoverable = true,
+        .hint = nearest.empty()
+            ? "create it first: xlings subos new " + std::string(query)
+            : "did you mean: " + nearest,
+    });
+    return {.exitCode = 1};
 }
 
 void update_current_symlink_(EventStream& stream,
@@ -742,14 +943,16 @@ export int new_from(const std::string& name, const fs::path& customDir,
 //                      load (i.e., new shells; existing shells via the
 //                      indirect symlink).
 //
-// All three share validation: subos must exist in ~/.xlings.json's subos map.
+// All three share validation through the bounded candidate view. This keeps
+// registered environments authoritative while allowing only the legacy
+// default-manifest compatibility case.
 
 namespace use_detail_ {
 
 inline int validate_subos_(const std::string& name, EventStream& stream) {
-    auto& p = Config::paths();
-    auto json = read_config_json_(p.homeDir / ".xlings.json");
-    if (!json.contains("subos") || !json["subos"].contains(name)) {
+    auto candidates = candidate_view(false).candidates;
+    if (std::ranges::find(candidates, name, &SubosInfo::name)
+        == candidates.end()) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::NotFound,
             .message = "subos '" + name + "' not found",
@@ -1285,7 +1488,9 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
 // imports xlings::subos::use directly) on the legacy global behavior.
 // CLI dispatch goes through `run()` which uses the flag-aware path below.
 export int use(const std::string& name, EventStream& stream) {
-    return use_global(name, stream);
+    auto resolved = resolve_use_name_(name, stream);
+    if (resolved.selected.empty()) return resolved.exitCode;
+    return use_global(resolved.selected, stream);
 }
 
 export int remove(const std::string& name, EventStream& stream) {
@@ -1401,7 +1606,7 @@ export std::optional<SubosInfo> info(const std::string& name) {
 }
 
 int run_list_(EventStream& stream) {
-    auto all = list_all();
+    auto all = candidate_view().candidates;
     std::vector<std::tuple<std::string, std::string, int, bool>> entries;
     for (auto& s : all) {
         entries.emplace_back(s.name, s.dir.string(), s.toolCount, s.isActive);
@@ -1638,8 +1843,6 @@ export int run(int argc, char* argv[], EventStream& stream) {
                 return 1;
             }
         }
-        if (name.empty()) { usageError("missing <name> for: xlings subos use"); return 1; }
-
         if (no_keep && keep_forever) {
             usageError("--no-keep and --keep are mutually exclusive");
             return 1;
@@ -1650,6 +1853,10 @@ export int run(int argc, char* argv[], EventStream& stream) {
                        "(GPU passthrough only applies to bwrap-sandboxed sessions)");
             return 1;
         }
+
+        auto resolved = resolve_use_name_(name, stream);
+        if (resolved.selected.empty()) return resolved.exitCode;
+        name = std::move(resolved.selected);
 
         if (mode == "global") {
             if (!cmd.empty()) {

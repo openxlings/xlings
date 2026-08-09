@@ -154,6 +154,26 @@ static void dispatch_data_event(const DataEvent& e) {
             json.value("detached", false),
             pinnedBy);
     }
+    else if (e.kind == "subos_candidates") {
+        std::vector<std::tuple<std::string, std::string, int, bool>> entries;
+        if (json.contains("candidates") && json["candidates"].is_array()) {
+            for (auto& candidate : json["candidates"]) {
+                entries.emplace_back(
+                    candidate.value("name", ""),
+                    candidate.value("dir", ""),
+                    candidate.value("pkgCount", 0),
+                    candidate.value("active", false));
+            }
+        }
+        if (json.value("auto_selected", false)) {
+            ui::print_subos_resolved(
+                json.value("query", ""), json.value("selected", ""));
+        } else {
+            ui::print_subos_list(entries);
+            auto hint = json.value("hint", "");
+            if (!hint.empty()) ui::print_tip(hint);
+        }
+    }
     else if (e.kind == "subos_list") {
         std::vector<std::tuple<std::string, std::string, int, bool>> entries;
         if (json.contains("entries") && json["entries"].is_array()) {

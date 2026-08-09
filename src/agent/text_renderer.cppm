@@ -134,6 +134,21 @@ export void render_data_event(const DataEvent& e) {
             }
         }
     }
+    else if (e.kind == "subos_candidates") {
+        if (json.value("auto_selected", false)) {
+            std::println("Resolved subos: {} -> {}",
+                json.value("query", ""), json.value("selected", ""));
+        } else if (json.contains("candidates")
+                   && json["candidates"].is_array()) {
+            for (auto& candidate : json["candidates"]) {
+                auto name = candidate.value("name", "");
+                auto active = candidate.value("active", false);
+                std::println("  {}{}", name, active ? " (active)" : "");
+            }
+        }
+        auto hint = json.value("hint", "");
+        if (!hint.empty()) std::println("{}", hint);
+    }
     else if (e.kind == "subos_list") {
         if (json.contains("entries") && json["entries"].is_array()) {
             for (auto& s : json["entries"]) {
