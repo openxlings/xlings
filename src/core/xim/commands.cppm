@@ -37,12 +37,27 @@ namespace xpkg = mcpplibs::xpkg;
 
 export namespace xlings::xim {
 
+enum class CatalogAccess { LocalOnly, InstallReady };
+
 // Shared IndexManager instance (lazy-initialized)
-PackageCatalog& get_catalog() {
+PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly) {
     static PackageCatalog mgr;
     static bool initialized = false;
+    static bool installReadyChecked = false;
+    std::expected<void, std::string> result;
+    bool rebuiltThisCall = false;
     if (!initialized) {
-        auto result = mgr.rebuild();
+        result = mgr.rebuild();
+        initialized = true;
+        rebuiltThisCall = true;
+    }
+
+    if (access == CatalogAccess::InstallReady && !installReadyChecked) {
+        // A LocalOnly caller may have initialized the singleton before an
+        // install reaches it. Rebuild once here so this access request has a
+        // current error to report before attempting the repair sync.
+        if (!mgr.is_loaded() && !rebuiltThisCall) result = mgr.rebuild();
+
         // #366: on a fresh machine the main index rebuilds fine, but the
         // default sub-indexes were never synced — their pkgs/ dirs don't
         // exist, so repo_specs_() skips them and rebuild() still SUCCEEDS.
@@ -70,7 +85,7 @@ PackageCatalog& get_catalog() {
                 log::info("try running: xlings update");
             }
         }
-        initialized = true;
+        installReadyChecked = true;
     }
     return mgr;
 }
@@ -210,7 +225,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     }
     Config::reload_state();
 
-    auto& catalog = get_catalog();
+    auto& catalog = get_catalog(CatalogAccess::InstallReady);
     if (!catalog.is_loaded()) {
         log::info("package index not available, updating...");
         sync_all_repos(true);

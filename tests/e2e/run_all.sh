@@ -120,6 +120,7 @@ TESTS=(
     "E2E-66 |subos_env_use_switch_test.sh||"
     "E2E-67 |subos_runtime_binding_test.sh||"
     "E2E-68 |closure_guard_differential_test.sh||"
+    "E2E-69 |local_query_no_index_sync_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

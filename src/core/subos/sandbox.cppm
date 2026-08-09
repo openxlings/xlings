@@ -777,7 +777,7 @@ detect_backend_(const fs::path& home_dir,
 // so the day an aarch64 backend is published every client in the field still
 // refuses. This is re-read from the index on every call.
 std::optional<std::string> backend_target_unavailable_() {
-    auto& catalog = xim::get_catalog();
+    auto& catalog = xim::get_catalog(xim::CatalogAccess::LocalOnly);
     if (!catalog.is_loaded()) return std::nullopt;
 
     const auto hostArch = xim::host_architecture();
