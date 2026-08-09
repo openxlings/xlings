@@ -695,6 +695,15 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
             info, activeVersion, runtimePayloadExists(info.runtime));
         if (!mismatch) return out;
 
+        // A cold default SubOS records its runtime authority before that
+        // payload is materialized, while `self install` intentionally stays
+        // lightweight and does not download it. There is no split state until an
+        // active runtime exists. Keep the declaration visible as a warning;
+        // an active mismatch or an active runtime whose payload disappeared
+        // remains an error.
+        const bool unmaterializedDeclaration =
+            activeVersion.empty() && mismatch->payloadMissing;
+
         const auto active = mismatch->active.empty()
             ? std::string("<none>") : mismatch->active;
         std::string detail = std::format(
@@ -709,7 +718,8 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
             && mismatch->active != mismatch->declared;
         out.push_back({
             .kind    = FindingKind::SubosRuntimeMissing,
-            .level   = FindingLevel::Error,
+            .level   = unmaterializedDeclaration
+                ? FindingLevel::Warning : FindingLevel::Error,
             .target  = subosName,
             .version = mismatch->declared,
             .detail  = std::move(detail),

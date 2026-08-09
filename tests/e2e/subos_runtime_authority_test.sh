@@ -81,6 +81,49 @@ run_x() {
       XLINGS_HOME="$HOME_DIR" "$XLINGS_BIN" "$@" )
 }
 
+# A freshly initialized default SubOS records its runtime authority before the
+# payload is materialized; a self install intentionally does not download it.
+# Keep the missing declaration visible without making a clean cold home fail.
+DECLARED_ONLY_HOME="$RUNTIME_DIR/declared-only"
+mkdir -p "$DECLARED_ONLY_HOME/subos/default/bin"
+cat > "$DECLARED_ONLY_HOME/.xlings.json" <<'JSON'
+{
+  "activeSubos": "default",
+  "mirror": "GLOBAL",
+  "versions": {}
+}
+JSON
+cat > "$DECLARED_ONLY_HOME/subos/default/.xlings.json" <<'JSON'
+{
+  "subos_info": {
+    "schema_version": 1,
+    "runtime": "glibc@2.44",
+    "envs": {},
+    "created_at": "2026-08-09T00:00:00Z",
+    "created_by": "runtime-authority-e2e"
+  },
+  "workspace": {}
+}
+JSON
+
+set +e
+DECLARED_ONLY_OUT="$(
+  cd /tmp && env -i HOME="$DECLARED_ONLY_HOME" \
+    PATH=/usr/bin:/bin XLINGS_HOME="$DECLARED_ONLY_HOME" \
+    "$XLINGS_BIN" self doctor 2>&1
+)"
+declared_only_rc=$?
+set -e
+[[ "$declared_only_rc" -eq 0 ]] \
+  || fail "doctor treated an unmaterialized cold-home runtime as broken:
+$DECLARED_ONLY_OUT"
+DECLARED_ONLY_CLEAN="$(printf '%s\n' "$DECLARED_ONLY_OUT" | strip_ansi)"
+grep -Fq 'subos runtime' <<<"$DECLARED_ONLY_CLEAN" \
+  || fail "doctor hid the unmaterialized runtime warning"
+grep -Fq 'glibc@2.44' <<<"$DECLARED_ONLY_CLEAN" \
+  || fail "doctor warning did not name the declared runtime"
+log "  ✓ unmaterialized cold-home runtime is visible but non-fatal"
+
 active_version() {
   python3 - "$SUBOS_FILE" "$1" <<'PY'
 import json, pathlib, sys
