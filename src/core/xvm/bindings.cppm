@@ -41,6 +41,29 @@ struct BindingError {
     std::string message;
 };
 
+class BindingSelectionResolver {
+public:
+    explicit BindingSelectionResolver(const VersionDB& db) : db_(db) {}
+
+    std::expected<BindingSelection, BindingError>
+    resolve(const std::string& target, const std::string& version);
+
+    [[nodiscard]] std::size_t legacy_incoming_index_builds() const {
+        return legacyIncomingIndexBuilds_;
+    }
+
+private:
+    using TargetVersion = std::pair<std::string, std::string>;
+    using IncomingEdges = std::map<
+        TargetVersion, std::vector<TargetVersion>>;
+
+    const IncomingEdges& legacy_incoming_edges_();
+
+    const VersionDB& db_;
+    std::optional<IncomingEdges> legacyIncomingEdges_;
+    std::size_t legacyIncomingIndexBuilds_ { 0 };
+};
+
 std::expected<BindingSelection, BindingError>
 resolve_binding_selection(const VersionDB& db,
                           const std::string& target,
@@ -407,7 +430,11 @@ resolve_provider_group_(const VersionDB& db,
 std::expected<BindingSelection, BindingError>
 resolve_legacy_graph_(const VersionDB& db,
                       const std::string& target,
-                      const std::string& version) {
+                      const std::string& version,
+                      const std::map<
+                          std::pair<std::string, std::string>,
+                          std::vector<std::pair<
+                              std::string, std::string>>>& incomingEdges) {
     BindingSelection selection{
         .source = BindingSource::LegacyGraph,
     };
@@ -415,21 +442,6 @@ resolve_legacy_graph_(const VersionDB& db,
         {target, version},
     };
     std::set<std::pair<std::string, std::string>> visited;
-    std::map<
-        std::pair<std::string, std::string>,
-        std::vector<std::pair<std::string, std::string>>> incomingEdges;
-    for (const auto& [sourceTarget, sourceInfo] : db) {
-        for (const auto& [destinationTarget, versions] :
-             sourceInfo.bindings) {
-            for (const auto& [sourceVersion, destinationVersion] :
-                 versions) {
-                incomingEdges[
-                    {destinationTarget, destinationVersion}]
-                    .emplace_back(sourceTarget, sourceVersion);
-            }
-        }
-    }
-
     while (!pending.empty()) {
         auto [currentTarget, currentVersion] = std::move(pending.back());
         pending.pop_back();
@@ -585,10 +597,29 @@ resolve_legacy_graph_(const VersionDB& db,
 
 namespace xlings::xvm {
 
+const BindingSelectionResolver::IncomingEdges&
+BindingSelectionResolver::legacy_incoming_edges_() {
+    if (legacyIncomingEdges_) return *legacyIncomingEdges_;
+    legacyIncomingEdges_.emplace();
+    ++legacyIncomingIndexBuilds_;
+    for (const auto& [sourceTarget, sourceInfo] : db_) {
+        for (const auto& [destinationTarget, versions] :
+             sourceInfo.bindings) {
+            for (const auto& [sourceVersion, destinationVersion] :
+                 versions) {
+                (*legacyIncomingEdges_)[
+                    {destinationTarget, destinationVersion}]
+                    .emplace_back(sourceTarget, sourceVersion);
+            }
+        }
+    }
+    return *legacyIncomingEdges_;
+}
+
 std::expected<BindingSelection, BindingError>
-resolve_binding_selection(const VersionDB& db,
-                          const std::string& target,
-                          const std::string& version) {
+BindingSelectionResolver::resolve(const std::string& target,
+                                  const std::string& version) {
+    const auto& db = db_;
     auto infoIt = db.find(target);
     if (infoIt == db.end()) {
         return std::unexpected(detail_::binding_error_(
@@ -625,7 +656,16 @@ resolve_binding_selection(const VersionDB& db,
         return detail_::resolve_provider_group_(
             db, target, version, *versionIt->second.bindingGroup);
     }
-    return detail_::resolve_legacy_graph_(db, target, version);
+    return detail_::resolve_legacy_graph_(
+        db, target, version, legacy_incoming_edges_());
+}
+
+std::expected<BindingSelection, BindingError>
+resolve_binding_selection(const VersionDB& db,
+                          const std::string& target,
+                          const std::string& version) {
+    BindingSelectionResolver resolver{db};
+    return resolver.resolve(target, version);
 }
 
 std::vector<HeaderAsset> group_header_assets(const VersionDB& db,

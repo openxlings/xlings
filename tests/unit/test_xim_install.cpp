@@ -222,6 +222,59 @@ TEST(XimInventoryOwnerTest, CanonicalFilterKeepsUniqueLegacyBareRecord) {
     EXPECT_EQ(found->second.coordinate.package, "gcc");
 }
 
+TEST(XimInventoryOwnerTest, ContainsFilterRecoversUniqueLegacyBareRecord) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["16.1.0"].kind = "program";
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-gcc", {.namespaceName = "xim", .name = "gcc",
+                            .canonicalName = "xim:gcc"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"gcc", "16.1.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    for (const auto filter : {"xim:g", "xim"}) {
+        SCOPED_TRACE(filter);
+        const auto related = xlings::xim::detail::build_owner_coordinates(
+            db, requested, filter, storeRoots, metadata);
+
+        const auto found = related.find({"gcc", "16.1.0"});
+        ASSERT_NE(found, related.end());
+        EXPECT_EQ(found->second.coordinate.ns, "xim");
+        EXPECT_EQ(found->second.coordinate.package, "gcc");
+    }
+}
+
+TEST(XimInventoryOwnerTest, ContainsFilterDoesNotGuessAcrossNamespaces) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["16.1.0"].kind = "program";
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"alpha-x-gcc", {.namespaceName = "alpha", .name = "gcc",
+                              .canonicalName = "alpha:gcc"}},
+            {"xim-x-gcc", {.namespaceName = "xim", .name = "gcc",
+                            .canonicalName = "xim:gcc"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"gcc", "16.1.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    for (const auto filter : {"xim:g", "xim"}) {
+        SCOPED_TRACE(filter);
+        const auto related = xlings::xim::detail::build_owner_coordinates(
+            db, requested, filter, storeRoots, metadata);
+
+        EXPECT_FALSE(related.contains({"gcc", "16.1.0"}));
+    }
+}
+
 TEST(XimInventoryOwnerTest, ResolvesProviderBeforeApplyingIdentityFilter) {
     xlings::xvm::VersionDB db;
     auto& data = db["tool"].versions["xim:1.0.0"];
@@ -360,6 +413,94 @@ TEST(XimInventoryOwnerTest, ValidModernGroupCanFallBackToItsRoot) {
     ASSERT_NE(found, related.end());
     EXPECT_EQ(found->second.coordinate.ns, "xim");
     EXPECT_EQ(found->second.coordinate.package, "owner");
+}
+
+TEST(XimInventoryOwnerTest, ExactFilterSelectsOnlyMatchingBindingComponent) {
+    xlings::xvm::VersionDB db;
+    std::set<xlings::xim::detail::TargetVersion> requested;
+    std::map<std::string, xlings::xim::detail::CatalogMetadata> catalog;
+    constexpr std::size_t kComponentCount = 100;
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        const auto suffix = std::format("{:03}", index);
+        const auto target = "tool-" + suffix;
+        const auto providerName = "pkg-" + suffix;
+        const auto provider = "ns:" + providerName;
+        const std::string version = "ns:1.0.0";
+        auto& data = db[target].versions[version];
+        data.kind = "program";
+        data.bindingGroup = xlings::xvm::BindingGroupRef{
+            .provider = provider,
+            .providerVersion = version,
+            .group = "group-" + suffix,
+            .rootTarget = target,
+            .rootVersion = version,
+        };
+        data.bindingMembers = {{target, version}};
+        data.bindingMembersDeclared = true;
+        requested.emplace(target, version);
+        catalog.emplace("ns-x-" + providerName,
+            xlings::xim::detail::CatalogMetadata{
+                .namespaceName = "ns",
+                .name = providerName,
+                .canonicalName = provider,
+            });
+    }
+    xlings::xim::detail::MetadataLookup metadata{std::move(catalog)};
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+    xlings::xim::InventoryTrace trace;
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "ns:pkg-050", storeRoots, metadata, &trace,
+        xlings::xim::detail::CoordinateMatch::exact);
+
+    ASSERT_EQ(related.size(), 1u);
+    EXPECT_TRUE(related.contains({"tool-050", "ns:1.0.0"}));
+    ASSERT_EQ(trace.bindingSelections.size(), 1u);
+    EXPECT_EQ(trace.bindingSelections.front(), "tool-050@ns:1.0.0");
+}
+
+TEST(XimInventoryOwnerTest,
+     ExactFilterBuildsLegacyIncomingIndexOnceForMatchingComponent) {
+    xlings::xvm::VersionDB db;
+    std::set<xlings::xim::detail::TargetVersion> requested;
+    std::map<std::string, xlings::xim::detail::CatalogMetadata> catalog;
+    constexpr std::size_t kComponentCount = 100;
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        const auto suffix = std::format("{:03}", index);
+        const auto member = "member-" + suffix;
+        const auto owner = "owner-" + suffix;
+        const std::string version = "ns:1.0.0";
+        db[member].type = "program";
+        db[member].versions[version].kind = "program";
+        db[owner].type = "program";
+        db[owner].versions[version].kind = "program";
+        db[member].bindings[owner][version] = version;
+        db[owner].bindings[member][version] = version;
+        requested.emplace(member, version);
+        catalog.emplace("ns-x-" + owner,
+            xlings::xim::detail::CatalogMetadata{
+                .namespaceName = "ns",
+                .name = owner,
+                .canonicalName = "ns:" + owner,
+            });
+    }
+    xlings::xim::detail::MetadataLookup metadata{std::move(catalog)};
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+    xlings::xim::InventoryTrace trace;
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "ns:owner-050", storeRoots, metadata, &trace,
+        xlings::xim::detail::CoordinateMatch::exact);
+
+    ASSERT_EQ(related.size(), 1u);
+    EXPECT_TRUE(related.contains({"member-050", "ns:1.0.0"}));
+    ASSERT_EQ(trace.bindingSelections.size(), 1u);
+    EXPECT_EQ(trace.bindingSelections.front(), "member-050@ns:1.0.0");
+    EXPECT_EQ(trace.legacyIncomingIndexBuilds, 1u);
 }
 
 TEST(XimCommandsTest, ListWithFilter) {

@@ -44,10 +44,12 @@ struct InventoryWorkspace {
 
 // Optional instrumentation for structural query tests. These are the two
 // operations whose fan-out made one-package queries scale with an entire
-// home: resolving catalog metadata and inspecting payload version roots.
+// home: evaluating recipe details and inspecting payload version roots.
 struct InventoryTrace {
     std::vector<std::string> metadataIdentities;
     std::vector<std::filesystem::path> payloadVersionDirs;
+    std::vector<std::string> bindingSelections;
+    std::size_t legacyIncomingIndexBuilds { 0 };
 };
 
 std::pair<std::string, std::string> identity_from_store_name(
@@ -144,6 +146,10 @@ public:
         const auto storeName = package_store_name(namespaceName, name);
         auto& record = *exact_.at(storeName);
         if (!record.detailsLoaded && record.match && catalog_ != nullptr) {
+            if (trace_ != nullptr) {
+                trace_->metadataIdentities.push_back(
+                    record.metadata.canonicalName);
+            }
             if (auto pkg = catalog_->load_package(*record.match)) {
                 record.metadata.description = std::string(pkg->description);
                 record.metadata.programs = pkg->programs;
@@ -170,7 +176,6 @@ private:
 
     std::optional<CatalogRecord> resolve_(const std::string& target) {
         if (catalog_ == nullptr) return std::nullopt;
-        if (trace_ != nullptr) trace_->metadataIdentities.push_back(target);
         auto match = catalog_->resolve_local_identity(target);
         if (!match) return std::nullopt;
         return CatalogRecord{
@@ -248,7 +253,9 @@ using SelectionCache = std::map<TargetVersion, SelectionPtr>;
 // at most once.
 SelectionPtr bounded_selection(const xvm::VersionDB& db,
                                const TargetVersion& seed,
-                               SelectionCache& cache) {
+                               SelectionCache& cache,
+                               xvm::BindingSelectionResolver& resolver,
+                               InventoryTrace* trace = nullptr) {
     if (const auto cached = cache.find(seed); cached != cache.end()) {
         return cached->second;
     }
@@ -275,8 +282,15 @@ SelectionPtr bounded_selection(const xvm::VersionDB& db,
         return nullptr;
     }
 
-    auto selected = xvm::resolve_binding_selection(
-        db, seed.first, seed.second);
+    if (trace != nullptr) {
+        trace->bindingSelections.push_back(
+            seed.first + "@" + seed.second);
+    }
+    auto selected = resolver.resolve(seed.first, seed.second);
+    if (trace != nullptr) {
+        trace->legacyIncomingIndexBuilds =
+            resolver.legacy_incoming_index_builds();
+    }
     if (!selected) {
         cache[seed] = nullptr;
         return nullptr;
@@ -315,10 +329,9 @@ bool legacy_root_in_selection(const xvm::VersionDB& db,
     return false;
 }
 
-std::vector<xvm::InstallCoordinate> owner_candidates_for(
+std::vector<xvm::InstallCoordinate> direct_owner_candidates_for(
     const xvm::VersionDB& db,
-    const TargetVersion& pair,
-    SelectionCache& selectionCache) {
+    const TargetVersion& pair) {
     std::vector<xvm::InstallCoordinate> candidates;
     const auto* data = version_data(db, pair);
     if (data && data->bindingGroup
@@ -338,8 +351,60 @@ std::vector<xvm::InstallCoordinate> owner_candidates_for(
         }
     }
     push_candidate(candidates, direct_coordinate(pair.first, pair.second));
+    return candidates;
+}
 
-    const auto selection = bounded_selection(db, pair, selectionCache);
+std::vector<xvm::InstallCoordinate> shallow_owner_candidates_for(
+    const xvm::VersionDB& db,
+    const TargetVersion& pair) {
+    auto candidates = direct_owner_candidates_for(db, pair);
+    const auto* data = version_data(db, pair);
+    if (data && data->bindingGroup) {
+        const TargetVersion root{
+            data->bindingGroup->rootTarget,
+            data->bindingGroup->rootVersion,
+        };
+        if (root != pair) {
+            push_candidate(candidates, direct_coordinate(
+                root.first, root.second));
+            if (const auto* rootData = version_data(db, root)) {
+                if (auto fromPath =
+                        xvm::coordinate_from_payload_path(rootData->path)) {
+                    push_candidate(candidates, std::move(*fromPath));
+                }
+            }
+        }
+        return candidates;
+    }
+
+    const auto info = db.find(pair.first);
+    if (info == db.end()) return candidates;
+    for (const auto& [peerTarget, versions] : info->second.bindings) {
+        const auto edge = versions.find(pair.second);
+        if (edge == versions.end()) continue;
+        const TargetVersion peer{peerTarget, edge->second};
+        push_candidate(candidates, direct_coordinate(
+            peer.first, peer.second));
+        if (const auto* peerData = version_data(db, peer)) {
+            if (auto fromPath =
+                    xvm::coordinate_from_payload_path(peerData->path)) {
+                push_candidate(candidates, std::move(*fromPath));
+            }
+        }
+    }
+    return candidates;
+}
+
+std::vector<xvm::InstallCoordinate> owner_candidates_for(
+    const xvm::VersionDB& db,
+    const TargetVersion& pair,
+    SelectionCache& selectionCache,
+    xvm::BindingSelectionResolver& resolver,
+    InventoryTrace* trace = nullptr) {
+    auto candidates = direct_owner_candidates_for(db, pair);
+
+    const auto selection = bounded_selection(
+        db, pair, selectionCache, resolver, trace);
     if (!selection) return candidates;
     if (selection->source == xvm::BindingSource::ProviderGroup) {
         if (selection->root && *selection->root != pair) {
@@ -385,15 +450,8 @@ bool identity_matches(std::string_view namespaceName,
 bool candidate_may_match(const xvm::InstallCoordinate& candidate,
                          std::string_view filter,
                          CoordinateMatch match) {
-    if (identity_matches(
-            candidate.ns, candidate.package, filter, match)) {
-        return true;
-    }
-    if (candidate.ns.empty() && !filter.empty()) {
-        const auto parsed = parse_package_target(std::string(filter));
-        return !parsed.name.empty() && parsed.name == candidate.package;
-    }
-    return false;
+    return identity_matches(
+        candidate.ns, candidate.package, filter, match);
 }
 
 OwnedCoordinate resolve_owner(
@@ -443,14 +501,24 @@ RelatedCoordinates build_owner_coordinates(
     CoordinateMatch match = CoordinateMatch::contains) {
     RelatedCoordinates related;
     SelectionCache selectionCache;
+    xvm::BindingSelectionResolver bindingResolver{db};
     for (const auto& pair : requested) {
-        auto candidates = owner_candidates_for(db, pair, selectionCache);
-        if (!filter.empty()
-            && !std::ranges::any_of(candidates, [&](const auto& candidate) {
-                return candidate_may_match(candidate, filter, match);
-            })) {
-            continue;
+        if (!filter.empty()) {
+            const auto shallow = shallow_owner_candidates_for(db, pair);
+            auto mayMatch = std::ranges::any_of(
+                shallow, [&](const auto& candidate) {
+                    return candidate_may_match(candidate, filter, match);
+                });
+            if (!mayMatch) {
+                const auto* unique = metadata.by_short_name(pair.first);
+                mayMatch = unique != nullptr
+                    && identity_matches(unique->namespaceName, unique->name,
+                                        filter, match);
+            }
+            if (!mayMatch) continue;
         }
+        auto candidates = owner_candidates_for(
+            db, pair, selectionCache, bindingResolver, trace);
         auto owner = resolve_owner(
             candidates, pair, storeRoots, metadata, trace);
         if (!identity_matches(owner.coordinate.ns, owner.coordinate.package,
@@ -531,7 +599,9 @@ std::vector<InstalledPackageRecord> assemble_inventory(
     const auto related = build_owner_coordinates(
         db, requested, filter, storeRoots, metadata, trace, match);
     std::map<std::string, InstalledPackageRecord> records;
+    std::map<std::string, std::filesystem::path> catalogFallbacks;
     std::set<std::string> workspaceDerived;
+    std::set<std::string> stampDerived;
 
     const auto ensure_record = [&](const OwnedCoordinate& owned)
         -> InstalledPackageRecord& {
@@ -545,10 +615,11 @@ std::vector<InstalledPackageRecord> assemble_inventory(
                 coordinate.ns, coordinate.package);
             record.version = coordinate.version;
         }
-        if (record.payloadPath.empty() && !owned.storeRoot.empty()) {
-            record.payloadPath = owned.storeRoot
+        if (!owned.storeRoot.empty()) {
+            catalogFallbacks.try_emplace(coordinate.canonical(),
+                owned.storeRoot
                 / package_store_name(coordinate.ns, coordinate.package)
-                / coordinate.version;
+                / coordinate.version);
         }
         return record;
     };
@@ -605,7 +676,8 @@ std::vector<InstalledPackageRecord> assemble_inventory(
                     .storeRoot = storeRoot,
                 };
                 auto& record = ensure_record(owned);
-                if (record.payloadPath.empty()) {
+                if (stampDerived.insert(
+                        owned.coordinate.canonical()).second) {
                     record.payloadPath = versionDir.path();
                 }
             }
@@ -625,10 +697,11 @@ std::vector<InstalledPackageRecord> assemble_inventory(
             record.canonicalName = found->canonicalName;
             record.description = found->description;
             record.programs = found->programs;
-            if (record.payloadPath.empty() && !found->storeRoot.empty()) {
-                record.payloadPath = found->storeRoot
+            if (!found->storeRoot.empty()) {
+                catalogFallbacks.try_emplace(coordinate,
+                    found->storeRoot
                     / package_store_name(record.namespaceName, record.name)
-                    / record.version;
+                    / record.version);
             }
         }
         if (record.payloadPath.empty()) {
@@ -642,6 +715,12 @@ std::vector<InstalledPackageRecord> assemble_inventory(
                     record.payloadPath = candidate;
                     break;
                 }
+            }
+        }
+        if (record.payloadPath.empty()) {
+            if (const auto fallback = catalogFallbacks.find(coordinate);
+                fallback != catalogFallbacks.end()) {
+                record.payloadPath = fallback->second;
             }
         }
         if (record.payloadPath.empty() && !storeRoots.empty()) {

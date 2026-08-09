@@ -133,3 +133,44 @@ TEST(XimInventory, PayloadPathFollowsTheRepoScope) {
 
     fs::remove_all(root);
 }
+
+TEST(XimInventory, ProjectStampOverridesWorkspaceCatalogStoreRoot) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-inventory-stamp-authority-{}",
+                      std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto globalStore = root / "global" / "xpkgs";
+    const auto projectStore = root / "project" / "xpkgs";
+    const auto relative = fs::path("proj-x-tool") / "1.0.0";
+    fs::create_directories(globalStore / relative);
+    fs::create_directories(projectStore / relative);
+    std::ofstream(globalStore / relative / ".xpkg-install.json") << "{}";
+    std::ofstream(projectStore / relative / ".xpkg-install.json") << "{}";
+    std::ofstream(globalStore / relative / "global") << "global";
+    std::ofstream(projectStore / relative / "project") << "project";
+
+    xlings::xvm::VersionDB db;
+    std::vector<InventoryWorkspace> workspaces{
+        {.name = "default",
+         .installed = {{"tool", {"proj:1.0.0"}}},
+         .current = true},
+    };
+    detail::MetadataLookup metadata{std::map<std::string, detail::CatalogMetadata>{
+        {"proj-x-tool", {.namespaceName = "proj",
+                         .name = "tool",
+                         .canonicalName = "proj:tool",
+                         .description = "global catalog match",
+                         .storeRoot = globalStore}},
+    }};
+    const std::array stores{projectStore, globalStore};
+
+    const auto records = detail::assemble_inventory(
+        db, workspaces, stores, metadata, {},
+        detail::CoordinateMatch::contains);
+
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].payloadPath, projectStore / relative);
+    EXPECT_TRUE(records[0].payloadPresent);
+
+    fs::remove_all(root);
+}
