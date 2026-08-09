@@ -1854,6 +1854,26 @@ export int run(int argc, char* argv[], EventStream& stream) {
             return 1;
         }
 
+        // No name is a request to SEE the candidates -- but only when the rest
+        // of the command asked for nothing else. Every other flag here names an
+        // effect: run this command, emit this shell code, persist this choice,
+        // enter this sandbox. Listing candidates and exiting 0 in their place
+        // reports success for work that never happened, and `--shell` makes it
+        // worse than a no-op: that stdout is eval'd by the caller, so a table
+        // lands where shell code was expected.
+        //
+        // The acceptance path for this whole release is
+        // `subos use <name> --sandbox --cmd ...`; a typo there has to fail, not
+        // print a list and return 0.
+        const bool discoveryOnly = mode == "spawn" && cmd.empty()
+            && !sandbox && !gpu && !no_keep && !keep_forever && ttl_sec == 0;
+        if (name.empty() && !discoveryOnly) {
+            usageError("missing <name> for: xlings subos use "
+                       "(run `xlings subos use` with no other arguments to "
+                       "list candidates)");
+            return 1;
+        }
+
         auto resolved = resolve_use_name_(name, stream);
         if (resolved.selected.empty()) return resolved.exitCode;
         name = std::move(resolved.selected);

@@ -185,4 +185,48 @@ EMPTY_OUT="$(RUN_EMPTY subos use 2>&1 | strip_ansi)"
 grep -Fq "xlings subos new <name>" <<< "$EMPTY_OUT" \
   || fail "empty discovery omitted the creation hint: $EMPTY_OUT"
 
+# A missing name is a request to SEE the candidates. It is not a licence to
+# report success for an effect the command asked for and never got. Every flag
+# below names an effect; `--shell` is the worst of them, because its stdout is
+# eval'd by the caller, so a candidate table lands where shell code belongs.
+#
+# This is also the shape of the release's own acceptance command
+# (`subos use <name> --sandbox --cmd ...`): a typo in the name has to fail.
+log "a missing name never stands in for an executing modifier"
+for spec in "--cmd:printf SHOULD_NOT_RUN" "--sandbox --cmd:printf SHOULD_NOT_RUN"; do
+  flags="${spec%%:*}"; body="${spec#*:}"
+  set +e
+  # shellcheck disable=SC2086
+  MOD_OUT="$(RUN subos use $flags "$body" 2>&1 | strip_ansi)"
+  MOD_RC=$?
+  set -e
+  [[ "$MOD_RC" -eq 1 ]] \
+    || fail "no-name '$flags' exited $MOD_RC instead of 1: $MOD_OUT"
+  grep -Fq "missing <name>" <<< "$MOD_OUT" \
+    || fail "no-name '$flags' did not say what was missing: $MOD_OUT"
+  if grep -Fq "SHOULD_NOT_RUN" <<< "$MOD_OUT"; then
+    fail "no-name '$flags' executed the command"
+  fi
+done
+
+set +e
+SHELL_OUT="$(RUN subos use --shell 2>&1 | strip_ansi)"
+SHELL_RC=$?
+set -e
+[[ "$SHELL_RC" -eq 1 ]] \
+  || fail "no-name --shell exited $SHELL_RC instead of 1: $SHELL_OUT"
+if grep -Eq '(^|[[:space:]])(alpha|alpine|beta)([[:space:]]|$)' <<< "$SHELL_OUT"; then
+  fail "no-name --shell emitted a candidate table into eval'd stdout: $SHELL_OUT"
+fi
+
+cp "$HOME_DIR/.xlings.json" "$RUNTIME_DIR/home-before-global.json"
+set +e
+GLOBAL_OUT="$(RUN subos use --global 2>&1 | strip_ansi)"
+GLOBAL_RC=$?
+set -e
+[[ "$GLOBAL_RC" -eq 1 ]] \
+  || fail "no-name --global exited $GLOBAL_RC instead of 1: $GLOBAL_OUT"
+cmp -s "$RUNTIME_DIR/home-before-global.json" "$HOME_DIR/.xlings.json" \
+  || fail "no-name --global persisted something"
+
 log "PASS: subos use discovery and safe fuzzy resolution"
