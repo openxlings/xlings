@@ -28,14 +28,27 @@ export namespace xlings::elfcheck {
 
 namespace fs = std::filesystem;
 
+// Store coordinates may arrive from std::filesystem using either native path
+// separator. Normalize only for parsing; callers keep the original spelling
+// for diagnostics and for opening the path on its host platform.
+inline std::string store_parse_path_(std::string_view p) {
+    std::string normalized(p);
+    for (auto& ch : normalized) {
+        if (ch == '\\') ch = '/';
+    }
+    return normalized;
+}
+
 // `<store>/xpkgs/<provider>/<version>` for any path inside a payload, or
 // empty when the path does not live in a store at all ($ORIGIN, a subos
 // directory, a system path).
 inline std::string payload_of(std::string_view p) {
-    const auto marker = std::string("/xpkgs/");
-    auto pos = p.rfind(marker);
+    constexpr std::string_view marker = "/xpkgs/";
+    const auto normalized = store_parse_path_(p);
+    const std::string_view parsed(normalized);
+    auto pos = parsed.rfind(marker);
     if (pos == std::string_view::npos) return {};
-    auto rest = p.substr(pos + marker.size());
+    auto rest = parsed.substr(pos + marker.size());
     // provider/version — two components, and both must be there.
     auto slash1 = rest.find('/');
     if (slash1 == std::string_view::npos) return {};
@@ -46,10 +59,12 @@ inline std::string payload_of(std::string_view p) {
 
 // The `<provider>` component of a payload directory.
 inline std::string provider_of(std::string_view payload) {
-    const auto marker = std::string("/xpkgs/");
-    auto pos = payload.rfind(marker);
+    constexpr std::string_view marker = "/xpkgs/";
+    const auto normalized = store_parse_path_(payload);
+    const std::string_view parsed(normalized);
+    auto pos = parsed.rfind(marker);
     if (pos == std::string_view::npos) return {};
-    auto rest = payload.substr(pos + marker.size());
+    auto rest = parsed.substr(pos + marker.size());
     auto slash = rest.find('/');
     return std::string(slash == std::string_view::npos ? rest
                                                        : rest.substr(0, slash));
@@ -262,8 +277,9 @@ inline std::string describe(const Finding& f) {
 // through one sees the real home rather than the isolated one under test.
 // The directory being scanned cannot lie about which store it is in.
 inline std::string store_root_of(std::string_view p) {
-    const auto marker = std::string("/xpkgs/");
-    auto pos = p.rfind(marker);
+    constexpr std::string_view marker = "/xpkgs/";
+    const auto normalized = store_parse_path_(p);
+    auto pos = std::string_view(normalized).rfind(marker);
     if (pos == std::string_view::npos) return {};
     return std::string(p.substr(0, pos + marker.size() - 1));
 }

@@ -39,7 +39,8 @@ struct TempTree {
 };
 
 const ec::CoreDirProbe GLIBC_CORE_DIR = [](const std::filesystem::path& path) {
-    return path.string().find("/xim-x-glibc/") != std::string::npos;
+    const auto payload = ec::payload_of(path.string());
+    return ec::provider_of(payload) == "xim-x-glibc";
 };
 }  // namespace
 
@@ -62,6 +63,16 @@ TEST(ProviderOf, IsTheStoreDirectoryName) {
     EXPECT_EQ(ec::provider_of(glibc("2.39")), "xim-x-glibc");
     EXPECT_EQ(ec::provider_of(STORE + "/local-x-gcc/16.1.0"), "local-x-gcc");
     EXPECT_EQ(ec::provider_of(""), "");
+}
+
+TEST(PayloadOf, AcceptsWindowsSeparators) {
+    const std::string store = R"(C:\Users\ci\.xlings\data\xpkgs)";
+    const std::string payload = store + R"(\xim-x-glibc\2.44)";
+    const std::string core = payload + R"(\lib64\libc.so.6)";
+
+    EXPECT_EQ(ec::payload_of(core), payload);
+    EXPECT_EQ(ec::provider_of(payload), "xim-x-glibc");
+    EXPECT_EQ(ec::store_root_of(core), store);
 }
 
 // The case that motivated all of this, measured on a real binary.
