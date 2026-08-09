@@ -5,6 +5,10 @@ module;
 #include <cstdio>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+// See src/core/subos.cppm: windows.h's min/max macros break std::min({...}).
+// Not yet triggered here, and that is exactly why it is worth closing --
+// the failure only appears on Windows, and only once someone writes the call.
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <cerrno>

@@ -396,3 +396,60 @@ TEST(SameSource, ARealHostInterpWithAPayloadCoreStillViolates) {
 
     fs::remove_all(root);
 }
+
+// glibc and musl are not each other's core runtime. A musl cross-compiler bakes
+// its own libdir into RUNPATH, so glibc binaries it produces carry a musl loader
+// on a path they never resolve libc through -- `libc.so.6` is not in there under
+// any name. Comparing across families reported that as a loader/libc split.
+TEST(SameSource, AMuslLoaderIsNotAGlibcBinarysLibc) {
+    namespace fs = std::filesystem;
+    TempTree tree;
+    const auto glibcLib = tree.payload("2.39") / "lib64";
+    const auto muslLib = tree.root / "data" / "xpkgs" / "xim-x-musl-gcc"
+                       / "16.1.0" / "x86_64-linux-musl" / "lib";
+    TempTree::touch(glibcLib / "ld-linux-x86-64.so.2");
+    TempTree::touch(glibcLib / "libc.so.6");
+    TempTree::touch(muslLib / "ld-musl-x86_64.so.1");
+
+    std::vector<std::string> rpath{muslLib.string(), glibcLib.string()};
+    const auto f = ec::check((tree.root / "bin" / "rigged").string(),
+                             (glibcLib / "ld-linux-x86-64.so.2").string(),
+                             rpath);
+    EXPECT_FALSE(f.violated) << ec::describe(f);
+}
+
+// ...and the same across the other direction, so this is a family rule rather
+// than a musl exemption.
+TEST(SameSource, AGlibcLoaderIsNotAMuslBinarysLibc) {
+    namespace fs = std::filesystem;
+    TempTree tree;
+    const auto muslLib = tree.root / "data" / "xpkgs" / "xim-x-musl" / "1.2.5" / "lib";
+    const auto glibcLib = tree.payload("2.39") / "lib64";
+    TempTree::touch(muslLib / "ld-musl-x86_64.so.1");
+    TempTree::touch(glibcLib / "ld-linux-x86-64.so.2");
+    TempTree::touch(glibcLib / "libc.so.6");
+
+    std::vector<std::string> rpath{glibcLib.string()};
+    const auto f = ec::check((tree.root / "bin" / "tool").string(),
+                             (muslLib / "ld-musl-x86_64.so.1").string(),
+                             rpath);
+    EXPECT_FALSE(f.violated) << ec::describe(f);
+}
+
+// Within one family the rule is unchanged: a payload glibc loader with the
+// host's glibc libc is still the crash-before-main case (measured on godot).
+TEST(SameSource, WithinAFamilyAHostLibcStillViolates) {
+    namespace fs = std::filesystem;
+    TempTree tree;
+    const auto payloadLib = tree.payload("2.39") / "lib64";
+    const auto hostLib = tree.root / "usr" / "lib" / "x86_64-linux-gnu";
+    TempTree::touch(payloadLib / "ld-linux-x86-64.so.2");
+    TempTree::touch(hostLib / "ld-linux-x86-64.so.2");
+
+    std::vector<std::string> rpath{hostLib.string()};
+    const auto f = ec::check((tree.root / "bin" / "godot").string(),
+                             (payloadLib / "ld-linux-x86-64.so.2").string(),
+                             rpath);
+    EXPECT_TRUE(f.violated);
+    EXPECT_EQ(f.reason, ec::Finding::Reason::PayloadMismatch);
+}

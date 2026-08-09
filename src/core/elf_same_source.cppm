@@ -110,6 +110,35 @@ inline bool is_core_runtime_filename_(std::string_view name) {
     return loader_name("ld-linux-") || loader_name("ld-musl-");
 }
 
+// glibc and musl are not each other's core runtime.
+//
+// "A loader and the libc it loads are one build" is a statement about ONE
+// runtime family. A glibc-interpreted binary asks for `libc.so.6`, which a musl
+// libdir does not contain under any name -- so a musl loader sitting on its
+// RUNPATH is not a libc it could ever load, and pairing them is not the defect
+// this rule is about.
+//
+// Without this, any binary produced by one toolchain while linking the other's
+// runtime trips the guard. That is not hypothetical: a musl cross-compiler
+// bakes its own libdir into RUNPATH, and the resulting glibc binaries then
+// carry a musl loader on a path they never resolve through.
+enum class CoreFamily { Unknown, Glibc, Musl };
+
+inline CoreFamily core_family_of_(std::string_view filename) {
+    if (filename == "libc.so.6" || filename.starts_with("ld-linux-")) {
+        return CoreFamily::Glibc;
+    }
+    if (filename.starts_with("ld-musl-")
+        || filename.starts_with("libc.musl-")) {
+        return CoreFamily::Musl;
+    }
+    return CoreFamily::Unknown;
+}
+
+inline CoreFamily core_family_of_path_(const fs::path& path) {
+    return core_family_of_(path.filename().string());
+}
+
 // Every core runtime file in a directory, resolved through symlinks.
 // Inspecting all of them is essential: a SubOS libdir can itself be split,
 // with its loader link pointing into payload A and libc.so.6 into payload B.
@@ -218,7 +247,17 @@ inline Finding check(std::string_view binary,
             if (!payload.empty()) sources.push_back(dir);
         }
 
+        const auto interpFamily = core_family_of_path_(fs::path(interp));
         for (const auto& source : sources) {
+            // Only compare within one runtime family. An unknown family on
+            // either side still compares, so a payload this does not recognise
+            // is never silently excused.
+            const auto sourceFamily = core_family_of_path_(source);
+            if (interpFamily != CoreFamily::Unknown
+                && sourceFamily != CoreFamily::Unknown
+                && interpFamily != sourceFamily) {
+                continue;
+            }
             auto payload = payload_of(source.string());
 
             if (f.interpPayload.empty()) {

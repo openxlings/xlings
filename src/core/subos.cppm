@@ -7,6 +7,14 @@ module;
 #include <cstdio>  // stderr (used by std::println(stderr, ...))
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+// windows.h defines `min`/`max` as function-like macros, which turns any
+// `std::min({a, b, c})` in this module into "too many arguments provided to
+// function-like macro invocation" -- an error that names the call site and
+// says nothing about where the macro came from. Every other module here that
+// includes windows.h already defines this (platform.cppm, platform/windows.cppm,
+// platform/target.cppm); this one was the exception, and it cost four
+// consecutive red Windows runs.
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <cerrno>
