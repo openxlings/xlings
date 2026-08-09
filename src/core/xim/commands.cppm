@@ -1114,13 +1114,10 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         return 1;
     }
 
-    auto installed = collect_inventory(catalog, all);
-    if (!filter.empty()) {
-        std::erase_if(installed, [&](const auto& record) {
-            return !record.canonicalName.contains(filter)
-                && !record.name.contains(filter);
-        });
-    }
+    const auto inventoryFilter = filter.empty()
+        ? std::optional<std::string_view>{}
+        : std::optional<std::string_view>{filter};
+    auto installed = collect_inventory(catalog, all, inventoryFilter);
 
     if (installed.empty()) {
         if (all) {
@@ -1349,7 +1346,8 @@ int cmd_info(const std::string& target, EventStream& stream,
     const auto storePath = match->storeRoot / storeName;
     // This package's rows only. Building the whole inventory to answer two
     // booleans about one package made `info` proportional to the index.
-    const auto rows = collect_package_inventory(catalog, match->canonicalName);
+    const auto rows = collect_package_inventory(
+        catalog, match->canonicalName, /*allSubos=*/true);
     const auto packageInstalled = !rows.empty();
     const auto selectedInstalled = std::ranges::any_of(rows,
         [&](const auto& record) {

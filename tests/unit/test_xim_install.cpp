@@ -25,6 +25,7 @@ import xlings.core.xim.downloader;
 import xlings.core.xim.payload;
 import xlings.core.xim.installer;
 import xlings.core.xim.commands;
+import xlings.core.xim.inventory;
 import xlings.core.xim.repo;
 import xlings.core.xim.extract;
 import xlings.core.xvm.types;
@@ -198,8 +199,52 @@ TEST(XimCommandsTest, SearchNonexistentReturnsZero) {
 }
 
 TEST(XimCommandsTest, ListWithFilter) {
+    const xlings::xvm::VersionDB legacyDb;
+    EXPECT_TRUE(xlings::xim::detail::target_may_match_filter(
+        legacyDb, "gcc", "16.1.0", std::string_view{"xim:gcc"}))
+        << "canonical filter dropped a legacy bare workspace key";
+    EXPECT_FALSE(xlings::xim::detail::target_may_match_filter(
+        legacyDb, "gcc", "other:16.1.0", std::string_view{"xim:gcc"}))
+        << "canonical filter admitted the same name from another namespace";
+
+    xlings::xvm::VersionDB bindingDb;
+    bindingDb["gcc"].versions["xim:16.1.0"].path =
+        "/fixture/xpkgs/xim-x-gcc/16.1.0/bin/gcc";
+    bindingDb["g++"].versions["xim:16.1.0"].path =
+        "/fixture/xpkgs/xim-x-gcc/16.1.0/bin/g++";
+    bindingDb["gcc"].bindings["g++"]["xim:16.1.0"] = "xim:16.1.0";
+    bindingDb["g++"].bindings["gcc"]["xim:16.1.0"] = "xim:16.1.0";
+    xlings::xim::detail::MetadataLookup fixtureMetadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-gcc", {.namespaceName = "xim", .name = "gcc",
+                            .canonicalName = "xim:gcc"}},
+        }};
+    const auto related = xlings::xim::detail::build_related_coordinates(
+        bindingDb, "xim:gcc", "/fixture/xpkgs", fixtureMetadata);
+    const auto member = related.find({"g++", "xim:16.1.0"});
+    ASSERT_NE(member, related.end())
+        << "filter dropped a target owned through a legacy reciprocal group";
+    EXPECT_EQ(member->second.ns, "xim");
+    EXPECT_EQ(member->second.package, "gcc");
+
     auto& catalog = xlings::xim::get_catalog();
     if (!catalog.is_loaded()) GTEST_SKIP() << "package catalog not available";
+    xlings::xim::InventoryTrace trace;
+    const auto rows = xlings::xim::collect_inventory(
+        catalog, /*allSubos=*/false, std::string_view{"gcc"}, &trace);
+    for (const auto& row : rows) {
+        EXPECT_TRUE(row.canonicalName.contains("gcc")
+                    || row.name.contains("gcc"));
+    }
+    for (const auto& identity : trace.metadataIdentities) {
+        EXPECT_TRUE(identity.contains("gcc"))
+            << "list filter loaded unrelated metadata: " << identity;
+    }
+    for (const auto& versionDir : trace.payloadVersionDirs) {
+        EXPECT_TRUE(versionDir.parent_path().filename().string().contains("gcc"))
+            << "list filter inspected an unrelated payload version: "
+            << versionDir.string();
+    }
     xlings::EventStream stream;
     auto rc = xlings::xim::cmd_list("gcc", stream);
     EXPECT_EQ(rc, 0);
@@ -211,6 +256,27 @@ TEST(XimCommandsTest, InfoKnownPackage) {
     auto platform = xlings::xim::detect_platform();
     // gcc fixture only has linux entries; skip on other platforms
     if (platform != "linux") GTEST_SKIP() << "gcc fixture not available on " << platform;
+    auto match = catalog.resolve_target("xim:gcc", platform);
+    if (!match) GTEST_SKIP() << match.error();
+    xlings::xim::InventoryTrace trace;
+    const auto rows = xlings::xim::collect_package_inventory(
+        catalog, match->canonicalName, /*allSubos=*/true, &trace);
+    for (const auto& row : rows) {
+        EXPECT_EQ(row.canonicalName, match->canonicalName);
+    }
+    ASSERT_FALSE(trace.metadataIdentities.empty());
+    for (const auto& identity : trace.metadataIdentities) {
+        EXPECT_TRUE(identity == match->canonicalName
+                    || identity == match->name)
+            << "info loaded unrelated metadata: " << identity;
+    }
+    const auto targetStore = xlings::xim::package_store_name(
+        match->namespaceName, match->name);
+    for (const auto& versionDir : trace.payloadVersionDirs) {
+        EXPECT_EQ(versionDir.parent_path().filename(), targetStore)
+            << "info inspected an unrelated payload version: "
+            << versionDir.string();
+    }
     xlings::EventStream stream;
     auto rc = xlings::xim::cmd_info("xim:gcc", stream);
     EXPECT_EQ(rc, 0);
