@@ -359,9 +359,34 @@ std::string alias_program_(const std::string& aliasCmd,
 // repair detection passes.
 using CoordinateProbe = std::function<bool(const xvm::InstallCoordinate&)>;
 
+// `--deep` used to be one bool over two unrelated costs, and `--fix` implied
+// it. Measured on a real 71 GB home: `--fix` ran the payload audit SEVEN times
+// (one detection plus six `refresh()` calls) at ~196s each -- and no repair
+// consumes what that audit produces. LoaderLibcSplit and NssResolution appear
+// only in detection, `count_` and `render_`; every repair selects on other
+// kinds. So `--fix` paid ~23 minutes for findings it could not act on.
+//
+// Two costs, two fields:
+//
+//   remedies  a local catalog resolve per broken coordinate. `--fix` NEEDS it
+//             -- it is what turns a BrokenPayload finding into an install
+//             command and tells the ladder the package is reinstallable.
+//             Cheap.
+//   payloads  walking every payload for ELF loader/libc pairing and the NSS
+//             probe. Diagnostic only. Expensive.
 struct AuditSelection {
-    bool deep { false };
+    bool remedies { false };
+    bool payloads { false };
     std::optional<xim::PackageMatch> scope;
+
+    // Findings carried over from a previous detection instead of recomputed.
+    // Only `repair_payloads_` can change what a payload audit would see, so
+    // between the other repair phases the previous answer IS the current one
+    // -- and recomputing it is the cost above, paid again.
+    //
+    // Carried whole, never merged: a spliced-together Scan is a second
+    // answerer, and this repo has produced enough of those.
+    const std::vector<Finding>* carriedPayloadFindings { nullptr };
 };
 
 fs::path audit_payload_dir_(const xim::PackageMatch& match) {
@@ -1198,7 +1223,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         }
         const auto wit = st.ws.find(name);
         std::string remedy;
-        if (audit.deep) {
+        if (audit.remedies) {
             if (auto coord = owning_coordinate_(st.db, name, version, probe)) {
                 remedy = coord->install_command();
             }
@@ -1471,8 +1496,17 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             std::string storeName;
             std::string version;
         };
+        // Carried, recomputed, or skipped -- exactly one of the three.
+        //
+        // Carrying is not an optimisation applied to a result: it IS the
+        // previous result, added unchanged. Between repair phases that cannot
+        // touch a payload, recomputing would produce the same findings from
+        // the same bytes at ~196s a time.
+        if (audit.carriedPayloadFindings != nullptr) {
+            for (const auto& f : *audit.carriedPayloadFindings) add(Finding{f});
+        }
         std::vector<PayloadAuditRoot> payloadAuditRoots;
-        if (audit.deep) {
+        if (audit.payloads) {
             if (audit.scope) {
                 const auto& match = *audit.scope;
                 const auto storeName = xim::package_store_name(
@@ -2552,6 +2586,7 @@ Counts count_(const Scan& scan) {
 }
 
 void render_(const Scan& scan, const RepairReport& repair, bool fix,
+             bool payloadAuditRan,
              bool dryRun, bool verbose, EventStream& stream) {
     nlohmann::json fields = nlohmann::json::array();
     const auto add = [&](std::string_view label, std::string value,
@@ -2877,6 +2912,19 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         add("hint", "run `xlings self doctor --fix` to repair", true);
     }
 
+    // Say what was NOT looked at.
+    //
+    // The payload/runtime audit is the expensive half and `--fix` no longer
+    // implies it. Without this line a clean `--fix` and a clean `--fix --deep`
+    // print the same thing, so "did not check" and "checked, nothing wrong"
+    // become one output -- the shape this repo keeps producing. `doctor`
+    // (quick) has always had the same boundary; now it says so too.
+    if (!payloadAuditRan) {
+        add(glyph::mark(glyph::note, "not audited"),
+            "payload/runtime audit did not run — add `--deep` to include it",
+            true);
+    }
+
     // The nudge, for a home an older client set up. Last field of the same
     // panel rather than a panel of its own: a second panel renders its own
     // (empty) header, which reads as a broken frame rather than a footnote.
@@ -2894,6 +2942,24 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     stream.emit(DataEvent{"info_panel", payload.dump()});
 }
 
+// The findings a payload audit produces, and only those. Used to carry a
+// previous audit forward across repair phases that cannot invalidate it.
+//
+// Listed explicitly rather than "everything detection did not recompute":
+// when a new payload-derived kind is added, this list is where it has to be
+// declared, and forgetting is a compile-visible omission here rather than a
+// silently dropped finding at the far end.
+std::vector<Finding> payload_findings_of_(const Scan& scan) {
+    std::vector<Finding> out;
+    for (const auto& f : scan.findings) {
+        if (f.kind == FindingKind::LoaderLibcSplit
+            || f.kind == FindingKind::NssResolution) {
+            out.push_back(f);
+        }
+    }
+    return out;
+}
+
 // ── the command ──────────────────────────────────────────────────────
 
 export int cmd_doctor(EventStream& stream, bool fix,
@@ -2902,11 +2968,17 @@ export int cmd_doctor(EventStream& stream, bool fix,
                       bool verbose = false,
                       bool deep = false,
                       std::optional<std::string> scope = std::nullopt) {
-    const bool deepAudit = deep || fix;
-    if (scope && !deepAudit) {
+    // `--fix` needs the catalog (remedies, reinstallability). It does NOT need
+    // the payload walk -- nothing it repairs is keyed on what that walk finds.
+    // Keeping them separate is what makes `--fix` usable on a large home; see
+    // AuditSelection.
+    const bool wantRemedies = deep || fix;
+    const bool wantPayloads = deep;
+    if (scope && !wantPayloads) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
-            .message = "`--scope` requires `--deep` (or `--fix`, which implies it)",
+            .message = "`--scope` requires `--deep`"
+                       " (it narrows the payload/runtime audit)",
             .recoverable = false,
         });
         return 2;
@@ -2915,7 +2987,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // Announce the boundary before catalog evaluation or payload walking. A
     // deep audit can legitimately take time on a large store; silence before
     // the first result is indistinguishable from the hang this mode replaces.
-    if (deepAudit) {
+    if (wantPayloads) {
         // `--scope` narrows the payload/runtime AUDIT. Every other check, and
         // every repair `--fix` performs, still covers the whole home -- so the
         // announce line says which, rather than letting the reader infer that
@@ -2932,8 +3004,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
     }
 
     std::optional<xim::PackageCatalog> localCatalog;
-    AuditSelection audit{.deep = deepAudit};
-    if (deepAudit) {
+    AuditSelection audit{.remedies = wantRemedies, .payloads = wantPayloads};
+    if (wantRemedies) {
         localCatalog.emplace();
         const auto rebuilt = localCatalog->rebuild();
         if (!rebuilt) {
@@ -3044,7 +3116,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     auto scan = detect_(state, probe, audit);
 
     if (!fix) {
-        render_(scan, repair, fix, dryRun, verbose, stream);
+        render_(scan, repair, fix, wantPayloads, dryRun, verbose, stream);
             return count_(scan).issues() == 0 ? 0 : 1;
     }
 
@@ -3057,7 +3129,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     if (dryRun) {
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
         repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
-        render_(scan, repair, fix, dryRun, verbose, stream);
+        render_(scan, repair, fix, wantPayloads, dryRun, verbose, stream);
             return count_(scan).issues() == 0 ? 0 : 1;
     }
 
@@ -3068,10 +3140,27 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // Without the reload, a cure that is purely a re-registration -- which is
     // what the ladder mostly does -- reads as a failure, and only repairs that
     // happened to restore a directory on disk appear to work.
-    const auto refresh = [&] {
+    // What a payload audit found, kept so the phases that cannot change a
+    // payload do not pay to rediscover it. Empty unless --deep asked for it.
+    std::vector<Finding> payloadFindings = payload_findings_of_(scan);
+
+    // `payloadsMayHaveChanged` is a claim about the phase that just ran, and
+    // only `repair_payloads_` can make it true -- it reinstalls through
+    // subprocesses. The metadata repairs write the workspace, manifests and
+    // shims, none of which live under the payload store this audit walks.
+    //
+    // Passing `false` where a payload DID change would report stale findings,
+    // so the default is the safe direction: the parameter has no default.
+    const auto refresh = [&](bool payloadsMayHaveChanged) {
         Config::reload_state();
         state = load_state_();
-        scan  = detect_(state, probe, audit);
+        auto pass = audit;
+        if (audit.payloads && !payloadsMayHaveChanged) {
+            pass.payloads = false;
+            pass.carriedPayloadFindings = &payloadFindings;
+        }
+        scan = detect_(state, probe, pass);
+        if (payloadsMayHaveChanged) payloadFindings = payload_findings_of_(scan);
     };
 
     // Phase 1: the cheap metadata repairs, BEFORE the ladder.
@@ -3085,11 +3174,11 @@ export int cmd_doctor(EventStream& stream, bool fix,
     repair_state_(repair);
     repair_other_subos_(state, repair);
     repair_local_(state, scan, repair);
-    refresh();
+    refresh(/*payloadsMayHaveChanged=*/false);
 
     // Phase 2: the payload ladder.
     repair_payloads_(state, scan, probe, /*dryRun=*/false, repair);
-    refresh();
+    refresh(/*payloadsMayHaveChanged=*/true);   // the ladder reinstalls
 
 
     // Phase 3: the cheap repairs again, on what the ladder left behind.
@@ -3102,7 +3191,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // findings that a single-pass repair reported as unfixed.
     repair_state_(repair);
     repair_local_(state, scan, repair);
-    refresh();
+    refresh(/*payloadsMayHaveChanged=*/false);
 
     // Phase 3.5: activate what is installed and inactive.
     //
@@ -3124,18 +3213,18 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // payload was missing is both broken AND inactive, and `use` on a payload
     // that is not there fails for a reason the user cannot act on.
     repair_inactive_(scan, client, run, /*dryRun=*/false, repair);
-    refresh();
+    refresh(/*payloadsMayHaveChanged=*/false);
 
     // Phase 4: whatever is STILL a broken payload after the ladder had its
     // turn is dead. Prune it, then re-detect once more so the report shows the
     // result rather than the intent.
     prune_dead_registrations_(state, scan, repair);
     if (repair.pruned > 0) {
-        refresh();
+        refresh(/*payloadsMayHaveChanged=*/false);
         // A prune can orphan a shim of its own -- the entry is gone, the file
         // is not.
         repair_local_(state, scan, repair);
-        refresh();
+        refresh(/*payloadsMayHaveChanged=*/false);
     }
 
     const auto after = count_(scan);
@@ -3184,7 +3273,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         if (stillFound.contains(entry)) ++outstanding;
     }
 
-    render_(scan, repair, fix, dryRun, verbose, stream);
+    render_(scan, repair, fix, wantPayloads, dryRun, verbose, stream);
 
     // Stamp the home with the client that just checked it.
     //

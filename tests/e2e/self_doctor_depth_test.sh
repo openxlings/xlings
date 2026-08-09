@@ -291,8 +291,18 @@ ambiguous_out="$(tr -d '\0' < "$OUT_FILE")"
 grep -qi "ambiguous" <<<"$ambiguous_out" \
   || errors+=("ambiguous-scope error did not explain the ambiguity")
 
-# `--fix` retains the historical deep detection surface; dry-run controls
-# writes only. One ELF is enough to distinguish implied deep from quick.
+# `--fix` gets the CATALOG half of the deep audit and not the payload half.
+#
+# It used to imply the whole thing. Measured on a real 71 GB home: that cost
+# ~23 minutes across seven payload audits, and no repair selects on what they
+# produce -- LoaderLibcSplit and NssResolution reach `count_` and `render_` and
+# stop there. What `--fix` genuinely needs from the audit is the local catalog:
+# that is what turns a BrokenPayload finding into an install command and tells
+# the ladder the package is reinstallable.
+#
+# So this assertion flipped. The `--fix --deep` case right after is what keeps
+# the flip honest -- otherwise this would read as "the payload walk is gone"
+# rather than "it is opt-in". One ELF distinguishes the walk from the rest.
 FIX_HOME="$RUNTIME_DIR/fix-home"
 mkdir -p "$FIX_HOME/subos/default/bin" "$FIX_HOME/data/xpkgs/audit-only/1/bin"
 cp "$XLINGS_BIN" "$FIX_HOME/xlings"
@@ -310,9 +320,22 @@ for fix_args in "--fix --dry-run" "--fix"; do
   # shellcheck disable=SC2086
   DOCTOR_HOME_OVERRIDE="$FIX_HOME" RUN self doctor $fix_args \
     >"$OUT_FILE" 2>&1 || fix_rc=$?
-  [[ "$(wc -l < "$PATCHELF_TRACE")" -gt 0 ]] \
-    || errors+=("doctor $fix_args did not imply deep detection (rc=$fix_rc)")
+  [[ "$(wc -l < "$PATCHELF_TRACE")" -eq 0 ]] \
+    || errors+=("doctor $fix_args walked payloads it cannot act on (rc=$fix_rc)")
+  grep -Fq "payload/runtime audit did not run" "$OUT_FILE" \
+    || errors+=("doctor $fix_args skipped the audit without saying so")
 done
+
+# ...and adding --deep brings the payload walk back, on the same home. Without
+# this, the assertion above would be satisfied by deleting the walk entirely.
+: > "$PATCHELF_TRACE"
+DOCTOR_HOME_OVERRIDE="$FIX_HOME" RUN self doctor --fix --deep \
+  >"$OUT_FILE" 2>&1 || true
+[[ "$(wc -l < "$PATCHELF_TRACE")" -gt 0 ]] \
+  || errors+=("doctor --fix --deep did not walk payloads")
+if grep -Fq "payload/runtime audit did not run" "$OUT_FILE"; then
+  errors+=("doctor --fix --deep claims it skipped an audit it ran")
+fi
 
 if ((${#errors[@]})); then
   printf '[project-e2e] FAIL: %s\n' "${errors[@]}" >&2
