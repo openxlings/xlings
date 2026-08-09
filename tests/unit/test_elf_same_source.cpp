@@ -16,8 +16,12 @@ std::string glibc(const std::string& v, const std::string& sub = "") {
 }
 
 struct TempTree {
+    // weakly_canonical, not temp_directory_path() raw: on Windows CI the latter
+    // is an 8.3 short path (C:\Users\RUNNER~1\...) while the code under test
+    // canonicalises and gets the long form. The two never compare equal, and no
+    // amount of case/separator folding fixes RUNNER~1 vs runneradmin.
     std::filesystem::path root =
-        std::filesystem::temp_directory_path()
+        std::filesystem::weakly_canonical(std::filesystem::temp_directory_path())
         / std::format("xlings-elf-same-source-{}",
                       std::chrono::steady_clock::now()
                           .time_since_epoch().count());
@@ -121,8 +125,8 @@ TEST(SameSource, LoaderFromOnePayloadAndLibcFromAnotherIsAViolation) {
     EXPECT_TRUE(f.violated);
     EXPECT_EQ(f.reason, ec::Finding::Reason::PayloadMismatch);
     EXPECT_EQ(f.provider, "xim-x-glibc");
-    EXPECT_EQ(f.interpPayload, glibc("2.39"));
-    EXPECT_EQ(f.rpathPayload, glibc("2.44"));
+    EXPECT_EQ(gen(f.interpPayload), gen(glibc("2.39")));
+    EXPECT_EQ(gen(f.rpathPayload), gen(glibc("2.44")));
     // Both paths must appear: the reader should not need LD_DEBUG.
     auto msg = ec::describe(f);
     EXPECT_TRUE(names(msg, glibc("2.39"))) << msg;
