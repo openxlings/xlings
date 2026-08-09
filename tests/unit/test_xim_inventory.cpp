@@ -174,3 +174,93 @@ TEST(XimInventory, ProjectStampOverridesWorkspaceCatalogStoreRoot) {
 
     fs::remove_all(root);
 }
+
+// ── the filtered query must not be narrower than filtering the full one ──
+//
+// `list <filter>` skips a workspace pair before resolving it, using a cheap
+// over-approximation of the owner candidates. If that approximation is ever
+// narrower than the real resolution, the filtered query silently omits a row
+// the plain query shows -- and nothing in the output says so. This test states
+// the relationship as an invariant rather than testing one hand-picked case.
+//
+// The fixture is the shape the approximation used to miss: `pair` has no
+// outgoing edges at all, and its owner is only reachable by first walking
+// BACKWARDS to the peer that binds it.
+namespace {
+
+std::set<std::string> canonical_names(
+        const std::vector<InstalledPackageRecord>& records) {
+    std::set<std::string> names;
+    for (const auto& record : records) names.insert(record.canonicalName);
+    return names;
+}
+
+xlings::xvm::VersionDB incoming_only_owner_db() {
+    xlings::xvm::VersionDB db;
+    // owner@1 binds member@1, and member@1 binds nothing. Reaching "owner"
+    // from "member" requires the reverse edge.
+    xlings::xvm::VInfo owner;
+    owner.versions["1"] = {};
+    owner.bindings["member"]["1"] = "1";
+    db["owner"] = std::move(owner);
+
+    xlings::xvm::VInfo member;
+    member.versions["1"] = {};
+    db["member"] = std::move(member);
+    return db;
+}
+
+}  // namespace
+
+TEST(XimInventoryFilter, AFilteredQueryEqualsFilteringTheFullQuery) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-inventory-filter-{}",
+                      std::chrono::steady_clock::now()
+                          .time_since_epoch().count());
+    const auto store = root / "xpkgs";
+    fs::create_directories(store);
+
+    const auto db = incoming_only_owner_db();
+    std::vector<InventoryWorkspace> workspaces{
+        {.name = "default",
+         .installed = {{"member", {"1"}}},
+         .current = true},
+    };
+    detail::MetadataLookup full{std::map<std::string, detail::CatalogMetadata>{}};
+    const std::array roots{store};
+    const auto everything = detail::assemble_inventory(
+        db, workspaces, roots, full, {}, detail::CoordinateMatch::contains);
+
+    for (const auto& name : canonical_names(everything)) {
+        detail::MetadataLookup scoped{
+            std::map<std::string, detail::CatalogMetadata>{}};
+        const auto filtered = detail::assemble_inventory(
+            db, workspaces, roots, scoped, name,
+            detail::CoordinateMatch::contains);
+        EXPECT_EQ(canonical_names(filtered), std::set<std::string>{name})
+            << "`list " << name << "` does not agree with filtering `list`";
+    }
+
+    fs::remove_all(root);
+}
+
+// The reverse walk is what makes the above hold; state it directly so a
+// regression names the mechanism instead of only the symptom.
+TEST(XimInventoryFilter, TheSkipDecisionFollowsEdgesBackwards) {
+    const auto db = incoming_only_owner_db();
+    const auto incoming = detail::build_incoming_edges(db);
+    const auto blind = detail::shallow_owner_candidates_for(
+        db, {"member", "1"}, nullptr);
+    const auto full = detail::shallow_owner_candidates_for(
+        db, {"member", "1"}, &incoming);
+
+    const auto names = [](const auto& candidates) {
+        std::set<std::string> out;
+        for (const auto& c : candidates) out.insert(c.package);
+        return out;
+    };
+    EXPECT_FALSE(names(blind).contains("owner"))
+        << "fixture no longer exercises the reverse edge";
+    EXPECT_TRUE(names(full).contains("owner"));
+}

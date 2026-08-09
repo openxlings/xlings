@@ -354,9 +354,39 @@ std::vector<xvm::InstallCoordinate> direct_owner_candidates_for(
     return candidates;
 }
 
+using IncomingEdgeIndex =
+    std::map<TargetVersion, std::vector<TargetVersion>>;
+
+// Every `source -> destination` edge, read backwards. Built at most once per
+// query and only when a filter is present.
+IncomingEdgeIndex build_incoming_edges(const xvm::VersionDB& db) {
+    IncomingEdgeIndex incoming;
+    for (const auto& [sourceTarget, sourceInfo] : db) {
+        for (const auto& [destinationTarget, versions] : sourceInfo.bindings) {
+            for (const auto& [sourceVersion, destinationVersion] : versions) {
+                incoming[{destinationTarget, destinationVersion}]
+                    .emplace_back(sourceTarget, sourceVersion);
+            }
+        }
+    }
+    return incoming;
+}
+
+// A cheap over-approximation of owner_candidates_for, used only to decide
+// whether a filtered query can skip a pair before paying for full binding
+// resolution. It MUST NOT be narrower than the real thing: a name this misses
+// is a row that `list <filter>` silently omits while plain `list` shows it,
+// and nothing reports the difference.
+//
+// That is why the legacy walk follows edges in BOTH directions. The real
+// resolver builds an incoming index and reaches members through it; a walk
+// that only follows a version's own outgoing edges misses every peer that
+// binds TO it -- and `legacy_root_in_selection`, which decides which members
+// become candidates, is precisely a question about incoming edges.
 std::vector<xvm::InstallCoordinate> shallow_owner_candidates_for(
     const xvm::VersionDB& db,
-    const TargetVersion& pair) {
+    const TargetVersion& pair,
+    const IncomingEdgeIndex* incoming = nullptr) {
     auto candidates = direct_owner_candidates_for(db, pair);
     const auto* data = version_data(db, pair);
     if (data && data->bindingGroup) {
@@ -379,25 +409,32 @@ std::vector<xvm::InstallCoordinate> shallow_owner_candidates_for(
 
     std::vector<TargetVersion> pending{pair};
     std::set<TargetVersion> visited;
+    const auto reach = [&](const TargetVersion& peer) {
+        push_candidate(candidates, direct_coordinate(peer.first, peer.second));
+        if (const auto* peerData = version_data(db, peer)) {
+            if (auto fromPath =
+                    xvm::coordinate_from_payload_path(peerData->path)) {
+                push_candidate(candidates, std::move(*fromPath));
+            }
+        }
+        if (!visited.contains(peer)) pending.push_back(peer);
+    };
     while (!pending.empty()) {
         auto current = std::move(pending.back());
         pending.pop_back();
         if (!visited.insert(current).second) continue;
+        if (incoming != nullptr) {
+            if (const auto found = incoming->find(current);
+                found != incoming->end()) {
+                for (const auto& source : found->second) reach(source);
+            }
+        }
         const auto info = db.find(current.first);
         if (info == db.end()) continue;
         for (const auto& [peerTarget, versions] : info->second.bindings) {
             const auto edge = versions.find(current.second);
             if (edge == versions.end()) continue;
-            const TargetVersion peer{peerTarget, edge->second};
-            push_candidate(candidates, direct_coordinate(
-                peer.first, peer.second));
-            if (const auto* peerData = version_data(db, peer)) {
-                if (auto fromPath =
-                        xvm::coordinate_from_payload_path(peerData->path)) {
-                    push_candidate(candidates, std::move(*fromPath));
-                }
-            }
-            if (!visited.contains(peer)) pending.push_back(peer);
+            reach(TargetVersion{peerTarget, edge->second});
         }
     }
     return candidates;
@@ -510,9 +547,14 @@ RelatedCoordinates build_owner_coordinates(
     RelatedCoordinates related;
     SelectionCache selectionCache;
     xvm::BindingSelectionResolver bindingResolver{db};
+    // Only a filtered query can skip a pair, so only a filtered query pays for
+    // the reverse index the skip decision needs to be safe.
+    std::optional<IncomingEdgeIndex> incoming;
+    if (!filter.empty()) incoming = build_incoming_edges(db);
     for (const auto& pair : requested) {
         if (!filter.empty()) {
-            const auto shallow = shallow_owner_candidates_for(db, pair);
+            const auto shallow = shallow_owner_candidates_for(
+                db, pair, incoming ? &*incoming : nullptr);
             auto mayMatch = std::ranges::any_of(
                 shallow, [&](const auto& candidate) {
                     return candidate_may_match(candidate, filter, match);
