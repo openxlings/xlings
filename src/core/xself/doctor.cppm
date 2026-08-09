@@ -1818,7 +1818,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                              std::format("could not write {}: {}",
                                          Config::display_path(
                                              mf::config_path(p.subosDir)),
-                                         e.what()));
+                                         std::string(e.what())));
                     }
                 }
             }
@@ -2107,7 +2107,8 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
         for (const auto& [coord, covered] : byOwner) {
             out.planned.push_back(std::format(
                 "{}   ({} entr{})", coord.install_command(), covered.size(),
-                covered.size() == 1 ? "y" : "ies"));
+                covered.size() == 1 ? std::string("y")
+                                    : std::string("ies")));
         }
         for (const auto* f : unowned) {
             out.planned.push_back(std::format(
@@ -2151,7 +2152,8 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
             .target        = coord.package,
             .version       = coord.version,
             .detail        = std::format("{} broken entr{}", covered.size(),
-                                         covered.size() == 1 ? "y" : "ies"),
+                                         covered.size() == 1 ? std::string("y")
+                                                             : std::string("ies")),
             .coordinate    = coord.canonical(),
             .reinstallable = true,   // confirmed by the probe above
         };
@@ -2706,7 +2708,9 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         std::string summary;
         const auto part = [&](int n, std::string_view what) {
             if (n == 0) return;
-            if (!summary.empty()) summary += std::format(" {} ", glyph::bullet);
+            if (!summary.empty()) {
+                summary += std::format(" {} ", std::string(glyph::bullet));
+            }
             summary += std::format("{} {}", n, what);
         };
         part(anchors, "release anchor");
