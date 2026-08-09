@@ -6,6 +6,7 @@ module;
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
+#include <cstdio>
 
 export module xlings.core.xself.doctor;
 
@@ -31,6 +32,7 @@ import xlings.core.xvm.switch_plan;   // plan_use_switch — the --fix preflight
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
 import xlings.core.xself.repair;
+import xlings.core.xim.catalog;
 import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.profile;
 import xlings.core.subos.manifest;
@@ -355,9 +357,20 @@ std::string alias_program_(const std::string& aliasCmd,
 // ── detection ────────────────────────────────────────────────────────
 
 // Whether a package is installable under this coordinate. Injected so that
-// detection stays testable and so that the probe -- a subprocess -- can be
-// memoized across both detection passes.
+// detection stays testable and so the local lookup can be memoized across
+// repair detection passes.
 using CoordinateProbe = std::function<bool(const xvm::InstallCoordinate&)>;
+
+struct AuditSelection {
+    bool deep { false };
+    std::optional<xim::PackageMatch> scope;
+};
+
+fs::path audit_payload_dir_(const xim::PackageMatch& match) {
+    return match.storeRoot
+        / xim::package_store_name(match.namespaceName, match.name)
+        / match.version;
+}
 
 // The command that repairs a broken entry, or nothing.
 //
@@ -671,7 +684,8 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     return out;
 }
 
-Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
+Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
+             const AuditSelection& audit) {
     auto& p = Config::paths();
     Scan scan;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
@@ -1116,8 +1130,10 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         }
         const auto wit = st.ws.find(name);
         std::string remedy;
-        if (auto coord = owning_coordinate_(st.db, name, version, probe)) {
-            remedy = coord->install_command();
+        if (audit.deep) {
+            if (auto coord = owning_coordinate_(st.db, name, version, probe)) {
+                remedy = coord->install_command();
+            }
         }
         add({
             .kind     = FindingKind::BrokenPayload,
@@ -1381,6 +1397,50 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             }
         }
 
+        struct PayloadAuditRoot {
+            fs::path path;
+            std::string target;
+            std::string storeName;
+            std::string version;
+        };
+        std::vector<PayloadAuditRoot> payloadAuditRoots;
+        if (audit.deep) {
+            if (audit.scope) {
+                const auto& match = *audit.scope;
+                const auto storeName = xim::package_store_name(
+                    match.namespaceName, match.name);
+                const auto path = audit_payload_dir_(match);
+                std::error_code sec;
+                if (fs::is_directory(path, sec)) {
+                    payloadAuditRoots.push_back({
+                        .path = path,
+                        .target = match.canonicalName,
+                        .storeName = storeName,
+                        .version = match.version,
+                    });
+                }
+            } else {
+                std::error_code sec;
+                const auto store = Config::paths().dataDir / "xpkgs";
+                if (fs::is_directory(store, sec)) {
+                    for (const auto& pkgDir : platform::dir_entries(store)) {
+                        if (!pkgDir.is_directory()) continue;
+                        const auto storeName = pkgDir.path().filename().string();
+                        for (const auto& verDir :
+                                platform::dir_entries(pkgDir.path())) {
+                            if (!verDir.is_directory()) continue;
+                            payloadAuditRoots.push_back({
+                                .path = verDir.path(),
+                                .target = storeName,
+                                .storeName = storeName,
+                                .version = verDir.path().filename().string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // Loader and libc from one payload, over what is already on disk.
         //
         // The install path refuses to create a split, so anything found here
@@ -1392,30 +1452,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // Report and repair have drifted three times in this repo, and it
         // always looks the same from outside: doctor keeps reporting what
         // `--fix` claims to have fixed.
-        {
-            std::error_code sec;
-            const auto store = Config::paths().dataDir / "xpkgs";
-            if (fs::is_directory(store, sec)) {
-                for (const auto& pkgDir : platform::dir_entries(store)) {
-                    if (!pkgDir.is_directory()) continue;
-                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
-                        if (!verDir.is_directory()) continue;
-                        for (const auto& f :
-                                 elfcheck::scan_payload(verDir.path())) {
-                            add({
-                                .kind   = FindingKind::LoaderLibcSplit,
-                                .level  = FindingLevel::Error,
-                                .target = pkgDir.path().filename().string(),
-                                .version = verDir.path().filename().string(),
-                                .detail = elfcheck::describe(f),
-                                .remedy = std::format(
-                                    "xlings install {}@{} --force",
-                                    pkgDir.path().filename().string(),
-                                    verDir.path().filename().string()),
-                            });
-                        }
-                    }
-                }
+        for (const auto& root : payloadAuditRoots) {
+            for (const auto& f : elfcheck::scan_payload(root.path)) {
+                add({
+                    .kind   = FindingKind::LoaderLibcSplit,
+                    .level  = FindingLevel::Error,
+                    .target = root.target,
+                    .version = root.version,
+                    .detail = elfcheck::describe(f),
+                    .remedy = std::format(
+                        "xlings install {}@{} --force",
+                        root.target, root.version),
+                });
             }
         }
 
@@ -1436,98 +1484,90 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // to be boring. When it fails it is an Error, because a home whose
         // packages resolve no users is broken in a way nothing else reports.
 #ifdef __linux__
-        {
+        for (const auto& root : payloadAuditRoots) {
+            const auto& storeName = root.storeName;
+            // `<ns>-x-glibc`, any namespace.
+            if (!storeName.ends_with("-x-glibc")) continue;
             std::error_code sec;
-            const auto store = Config::paths().dataDir / "xpkgs";
-            if (fs::is_directory(store, sec)) {
-                for (const auto& pkgDir : platform::dir_entries(store)) {
-                    if (!pkgDir.is_directory()) continue;
-                    const auto storeName = pkgDir.path().filename().string();
-                    // `<ns>-x-glibc`, any namespace.
-                    if (!storeName.ends_with("-x-glibc")) continue;
-                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
-                        if (!verDir.is_directory()) continue;
-                        const auto lib64  = verDir.path() / "lib64";
-                        const auto loader = lib64 / "ld-linux-x86-64.so.2";
-                        const auto getent = verDir.path() / "bin" / "getent";
-                        if (!fs::is_regular_file(loader, sec)) continue;
-                        if (!fs::is_regular_file(getent, sec)) continue;
+            const auto lib64  = root.path / "lib64";
+            const auto loader = lib64 / "ld-linux-x86-64.so.2";
+            const auto getent = root.path / "bin" / "getent";
+            if (!fs::is_regular_file(loader, sec)) continue;
+            if (!fs::is_regular_file(getent, sec)) continue;
 
-                        const auto version = verDir.path().filename().string();
-                        const auto cmd = std::format(
-                            "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
-                            loader.string(), lib64.string(), getent.string(),
-                            ::geteuid());
-                        auto [rc, out] = platform::run_command_capture(cmd);
+            const auto& version = root.version;
+            const auto cmd = std::format(
+                "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
+                loader.string(), lib64.string(), getent.string(),
+                ::geteuid());
+            auto [rc, out] = platform::run_command_capture(cmd);
 
-                        if (rc == 0 && !out.empty()) {
-                            add({
-                                .kind    = FindingKind::NssResolution,
-                                .level   = FindingLevel::Notice,
-                                .target  = storeName,
-                                .version = version,
-                                .detail  = std::format(
-                                    "glibc {}: resolves the current user "
-                                    "(getent passwd {} under our loader)",
-                                    version, ::geteuid()),
-                            });
-                            continue;
+            if (rc == 0 && !out.empty()) {
+                add({
+                    .kind    = FindingKind::NssResolution,
+                    .level   = FindingLevel::Notice,
+                    .target  = storeName,
+                    .version = version,
+                    .detail  = std::format(
+                        "glibc {}: resolves the current user "
+                        "(getent passwd {} under our loader)",
+                        version, ::geteuid()),
+                });
+                continue;
+            }
+
+            // Which backends this host asks for that we do not ship. Part of
+            // the finding, not a separate check: it is the only actionable
+            // thing about the failure.
+            std::string missing;
+            {
+                std::ifstream nss("/etc/nsswitch.conf");
+                std::set<std::string> seen;
+                for (std::string line; std::getline(nss, line);) {
+                    if (auto h = line.find('#'); h != std::string::npos)
+                        line.resize(h);
+                    auto colon = line.find(':');
+                    if (colon == std::string::npos) continue;
+                    auto rest = line.substr(colon + 1);
+                    // `[NOTFOUND=return]` is control flow, not a module.
+                    while (true) {
+                        auto ob = rest.find('[');
+                        if (ob == std::string::npos) break;
+                        auto cb = rest.find(']', ob);
+                        if (cb == std::string::npos) {
+                            rest.resize(ob);
+                            break;
                         }
-
-                        // Which backends this host asks for that we do not
-                        // ship. Part of the finding, not a separate check: it
-                        // is the only actionable thing about the failure.
-                        std::string missing;
-                        {
-                            std::ifstream nss("/etc/nsswitch.conf");
-                            std::set<std::string> seen;
-                            for (std::string line; std::getline(nss, line);) {
-                                if (auto h = line.find('#'); h != std::string::npos)
-                                    line.resize(h);
-                                auto colon = line.find(':');
-                                if (colon == std::string::npos) continue;
-                                auto rest = line.substr(colon + 1);
-                                // `[NOTFOUND=return]` is control flow, not a
-                                // module; reporting it as missing would send
-                                // the reader looking for libnss_NOTFOUND.
-                                while (true) {
-                                    auto ob = rest.find('[');
-                                    if (ob == std::string::npos) break;
-                                    auto cb = rest.find(']', ob);
-                                    if (cb == std::string::npos) { rest.resize(ob); break; }
-                                    rest.erase(ob, cb - ob + 1);
-                                }
-                                std::istringstream toks(rest);
-                                for (std::string mod; toks >> mod;) {
-                                    if (!seen.insert(mod).second) continue;
-                                    if (!fs::is_regular_file(
-                                            lib64 / ("libnss_" + mod + ".so.2"), sec)) {
-                                        if (!missing.empty()) missing += ", ";
-                                        missing += mod;
-                                    }
-                                }
-                            }
+                        rest.erase(ob, cb - ob + 1);
+                    }
+                    std::istringstream toks(rest);
+                    for (std::string mod; toks >> mod;) {
+                        if (!seen.insert(mod).second) continue;
+                        if (!fs::is_regular_file(
+                                lib64 / ("libnss_" + mod + ".so.2"), sec)) {
+                            if (!missing.empty()) missing += ", ";
+                            missing += mod;
                         }
-
-                        add({
-                            .kind    = FindingKind::NssResolution,
-                            .level   = FindingLevel::Error,
-                            .target  = storeName,
-                            .version = version,
-                            .detail  = std::format(
-                                "glibc {}: does NOT resolve the current user "
-                                "under our loader{}. Any package switched to "
-                                "this interpreter will see no user, silently.",
-                                version,
-                                missing.empty()
-                                    ? std::string{}
-                                    : std::format(
-                                        " -- /etc/nsswitch.conf names backend(s) "
-                                        "this payload does not ship: {}", missing)),
-                        });
                     }
                 }
             }
+
+            add({
+                .kind    = FindingKind::NssResolution,
+                .level   = FindingLevel::Error,
+                .target  = storeName,
+                .version = version,
+                .detail  = std::format(
+                    "glibc {}: does NOT resolve the current user under our "
+                    "loader{}. Any package switched to this interpreter will "
+                    "see no user, silently.",
+                    version,
+                    missing.empty()
+                        ? std::string{}
+                        : std::format(
+                            " -- /etc/nsswitch.conf names backend(s) this "
+                            "payload does not ship: {}", missing)),
+            });
         }
 #endif
 
@@ -2750,10 +2790,82 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
 export int cmd_doctor(EventStream& stream, bool fix,
                       bool resetMetadata = false,
                       bool dryRun = false,
-                      bool verbose = false) {
-    // One probe cache for the whole command. `xlings info` is ~50ms and the
-    // same candidate is asked about once per finding it owns and again on the
-    // second detection pass.
+                      bool verbose = false,
+                      bool deep = false,
+                      std::optional<std::string> scope = std::nullopt) {
+    const bool deepAudit = deep || fix;
+    if (scope && !deepAudit) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "`--scope` requires `--deep` (or `--fix`, which implies it)",
+            .recoverable = false,
+        });
+        return 2;
+    }
+
+    // Announce the boundary before catalog evaluation or payload walking. A
+    // deep audit can legitimately take time on a large store; silence before
+    // the first result is indistinguishable from the hang this mode replaces.
+    if (deepAudit) {
+        stream.emit(LogEvent{
+            LogLevel::info,
+            scope
+                ? std::format("deep audit scope: {}", *scope)
+                : std::string("deep audit scope: all installed payloads"),
+        });
+        std::fflush(stdout);
+        std::cout.flush();
+    }
+
+    std::optional<xim::PackageCatalog> localCatalog;
+    AuditSelection audit{.deep = deepAudit};
+    if (deepAudit) {
+        localCatalog.emplace();
+        const auto rebuilt = localCatalog->rebuild();
+        if (!rebuilt) {
+            if (scope) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "cannot resolve deep audit scope '{}': {}",
+                        *scope, rebuilt.error()),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            localCatalog.reset();
+        } else if (scope) {
+            auto resolved = localCatalog->resolve_target(
+                *scope, std::string(platform::build_os()));
+            if (!resolved) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "deep audit scope '{}' is missing or ambiguous: {}",
+                        *scope, resolved.error()),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            const auto payloadDir = audit_payload_dir_(*resolved);
+            std::error_code ec;
+            if (!fs::is_directory(payloadDir, ec)
+                || !xim::payload_has_content(payloadDir)) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "deep audit scope '{}' has no local payload at {}",
+                        *scope, Config::display_path(payloadDir)),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            audit.scope = std::move(*resolved);
+        }
+    }
+
+    // One in-process probe cache for the whole command. The same candidate is
+    // asked about once per finding it owns and again after repair passes.
     std::map<std::string, bool> probed;
     std::string client = "xlings";
     {
@@ -2766,10 +2878,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
             if (const auto it = probed.find(key); it != probed.end()) {
                 return it->second;
             }
-            const bool ok = probe_coordinate(
-                key,
-                [](const std::string& cmd) { return platform::exec(cmd); },
-                client);
+            const bool ok = localCatalog
+                && xim::resolve_local_coordinate(*localCatalog, key).has_value();
             probed.emplace(key, ok);
             return ok;
         };
@@ -2817,7 +2927,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         state = load_state_();
     }
 
-    auto scan = detect_(state, probe);
+    auto scan = detect_(state, probe, audit);
 
     if (!fix) {
         render_(scan, repair, fix, dryRun, verbose, stream);
@@ -2847,7 +2957,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     const auto refresh = [&] {
         Config::reload_state();
         state = load_state_();
-        scan  = detect_(state, probe);
+        scan  = detect_(state, probe, audit);
     };
 
     // Phase 1: the cheap metadata repairs, BEFORE the ladder.

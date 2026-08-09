@@ -122,6 +122,7 @@ TESTS=(
     "E2E-68 |closure_guard_differential_test.sh||"
     "E2E-69 |local_query_no_index_sync_test.sh||"
     "E2E-70 |query_heavy_home_test.sh||"
+    "E2E-71 |self_doctor_depth_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

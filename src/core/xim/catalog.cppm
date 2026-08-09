@@ -10,6 +10,7 @@ import xlings.core.xim.index;
 import xlings.core.xim.repo;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.semver;
+import xlings.platform.target;
 
 namespace xpkg = mcpplibs::xpkg;
 
@@ -423,7 +424,7 @@ class PackageCatalog {
     }
 
     static std::vector<PackageMatch>
-    build_matches_(RepoState& state,
+    build_matches_(const RepoState& state,
                    const detail_::ParsedTarget_& parsed,
                    const std::string& platform,
                    bool forSearch = false) {
@@ -493,13 +494,13 @@ class PackageCatalog {
     }
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
-                                               const std::string& platform) {
+                                               const std::string& platform) const {
         auto parsed = detail_::parse_target_(target);
         std::vector<PackageMatch> primaryMatches;
         std::vector<PackageMatch> subMatches;
 
-        auto collect = [&](std::vector<RepoState>& repos) {
-            for (auto& repo : repos) {
+        auto collect = [&](const std::vector<RepoState>& repos) {
+            for (const auto& repo : repos) {
                 auto matches = build_matches_(repo, parsed, platform);
                 if (repo.spec.subIndex) {
                     for (auto& match : matches) {
@@ -589,7 +590,8 @@ public:
     }
 
     std::expected<PackageMatch, std::string>
-    resolve_target(const std::string& target, const std::string& platform) {
+    resolve_target(const std::string& target,
+                   const std::string& platform) const {
         auto matches = collect_matches_(target, platform);
         if (matches.empty()) {
             return std::unexpected(std::format("package '{}' not found", target));
@@ -700,5 +702,19 @@ public:
         }
     }
 };
+
+// Resolve one package coordinate against an already-loaded catalog. This is a
+// deliberately narrow leaf for local diagnostics: it never rebuilds or syncs
+// the catalog, and it uses the same recipe version/ref selection, namespace
+// ambiguity and project-preference rules as normal package resolution.
+std::optional<PackageMatch>
+resolve_local_coordinate(const PackageCatalog& catalog,
+                         std::string_view coordinate) {
+    if (!catalog.is_loaded() || coordinate.empty()) return std::nullopt;
+    auto resolved = catalog.resolve_target(
+        std::string(coordinate), std::string(platform::build_os()));
+    if (!resolved) return std::nullopt;
+    return std::move(*resolved);
+}
 
 }  // namespace xlings::xim

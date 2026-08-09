@@ -14,7 +14,7 @@
 //   xself/config.cppm           — `self config`
 //   xself/clean.cppm            — `self clean [--dry-run]`
 //   xself/migrate.cppm          — `self migrate`
-//   xself/doctor.cppm           — `self doctor [--fix] [--dry-run] [--reset-metadata]`
+//   xself/doctor.cppm           — `self doctor [--deep] [--scope PKG] [--fix]`
 //   compact/xself.cppm          — cross-version compat shims, organized
 //                                 into vX_Y_Z sub-namespaces. See its
 //                                 header for the removal procedure when
@@ -59,7 +59,7 @@ static int cmd_help(EventStream& stream) {
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
-        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--fix to repair, --dry-run to preview the repairs, --all to list non-defect findings, --reset-metadata to discard unreadable release metadata)"}},
+        {{"name", "doctor"},    {"desc", "Verify workspace/shim consistency (--deep for payload/runtime audits, optionally --scope PACKAGE[@VERSION]; --fix implies deep, --dry-run previews repairs, --all lists non-defects, --reset-metadata discards unreadable release metadata)"}},
     });
     stream.emit(DataEvent{"help", payload.dump()});
     return 0;
@@ -139,14 +139,17 @@ export int run(int argc, char* argv[], EventStream& stream) {
         bool resetMetadata = false;
         bool dryRun = false;
         bool verbose = false;
-        for (const auto& arg : args) {
+        bool deep = false;
+        std::optional<std::string> scope;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            const auto& arg = args[i];
             if (arg == "--fix") fix = true;
             // Discards unreadable binding metadata, so it is opt-in on top
             // of --fix rather than part of it.
-            if (arg == "--reset-metadata") resetMetadata = true;
+            else if (arg == "--reset-metadata") resetMetadata = true;
             // Show the repair plan without running it. Only meaningful
             // with --fix, which is the flag that can now touch the network.
-            if (arg == "--dry-run") dryRun = true;
+            else if (arg == "--dry-run") dryRun = true;
             // List the findings that are not defects -- release anchors,
             // aliases that are probably system commands, notices about state
             // the upgrade inherited. They are summarised to one counted line
@@ -158,12 +161,34 @@ export int run(int argc, char* argv[], EventStream& stream) {
             // dispatch ever runs, so a `--verbose` here would be documented in
             // the help text and silently do nothing.
             else if (arg == "--all") verbose = true;
-            else if (arg != "--fix" && arg != "--reset-metadata"
-                     && arg != "--dry-run") {
+            else if (arg == "--deep") deep = true;
+            else if (arg == "--scope") {
+                if (i + 1 >= args.size() || args[i + 1].starts_with('-')) {
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::InvalidInput,
+                        .message = "missing value for option: --scope",
+                        .recoverable = false,
+                    });
+                    return 2;
+                }
+                scope = args[++i];
+            } else if (arg.starts_with("--scope=")) {
+                const auto value = arg.substr(std::string("--scope=").size());
+                if (value.empty()) {
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::InvalidInput,
+                        .message = "missing value for option: --scope",
+                        .recoverable = false,
+                    });
+                    return 2;
+                }
+                scope = value;
+            } else {
                 return reject("doctor", arg);
             }
         }
-        return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose);
+        return cmd_doctor(stream, fix, resetMetadata, dryRun, verbose,
+                          deep, std::move(scope));
     }
     // help / unknown-action handling. Distinguish a deliberate help
     // request (no action / -h / --help) from a typo / made-up action so
