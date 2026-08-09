@@ -605,7 +605,12 @@ TEST(XimCommandsTest, InfoKnownPackage) {
     for (const auto& row : rows) {
         EXPECT_EQ(row.canonicalName, match->canonicalName);
     }
-    ASSERT_FALSE(trace.metadataIdentities.empty());
+    if (rows.empty()) {
+        EXPECT_TRUE(trace.metadataIdentities.empty());
+        EXPECT_TRUE(trace.payloadVersionDirs.empty());
+    } else {
+        EXPECT_FALSE(trace.metadataIdentities.empty());
+    }
     for (const auto& identity : trace.metadataIdentities) {
         EXPECT_TRUE(identity.contains(match->name))
             << "info loaded a target unrelated to the requested package: "
