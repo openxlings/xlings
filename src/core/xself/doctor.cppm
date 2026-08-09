@@ -466,9 +466,11 @@ std::string activation_conflict_(const DoctorState& st,
 // a reporter and a repairer that each describe the criteria end up describing
 // them differently, and then fight.
 //
-// Nothing here needs the version DB except D2 and D5, which take it as an
-// argument, so this stays checkable against a directory.
+// Nothing here needs XVM state except D2 and D5, which take the database and
+// already-parsed active workspace as arguments, so the manifest leaf itself
+// stays independent of VersionDB.
 std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
+                                            const xvm::Workspace& workspace,
                                             const fs::path& subosDir,
                                             const std::string& subosName) {
     namespace mf = xlings::subos::manifest;
@@ -662,21 +664,61 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         });
     }
 
-    // D5 — the declared runtime is not installed here.
-    if (mf::is_binding(info.runtime) && !installed(info.runtime)) {
+    // D5 — the manifest and this SubOS's active XVM runtime must agree
+    // exactly. Finding the declared version elsewhere in the global DB is not
+    // enough: many payload versions coexist globally by design, while one
+    // SubOS has one active core runtime.
+    const auto runtimePayloadExists = [&](std::string_view binding) {
+        if (!mf::is_binding(binding)) return false;
+        const std::string name(mf::binding_name(binding));
+        const auto wanted = mf::binding_version(binding);
+        const auto* vi = xvm::get_vinfo(db, name);
+        if (!vi) return false;
+        for (const auto& [version, data] : vi->versions) {
+            if (!mf::version_is_active(wanted, version) || data.path.empty()) {
+                continue;
+            }
+            std::error_code ec;
+            const auto expanded = xvm::expand_path(
+                data.path, Config::paths().homeDir.string());
+            if (fs::exists(expanded, ec) && !ec) return true;
+        }
+        return false;
+    };
+
+    if (mf::is_binding(info.runtime)) {
+        const auto runtimeName = std::string(mf::binding_name(info.runtime));
+        const auto activeIt = workspace.find(runtimeName);
+        const std::string activeVersion = activeIt == workspace.end()
+            ? std::string{} : activeIt->second;
+        const auto mismatch = mf::check_runtime_activation(
+            info, activeVersion, runtimePayloadExists(info.runtime));
+        if (!mismatch) return out;
+
+        const auto active = mismatch->active.empty()
+            ? std::string("<none>") : mismatch->active;
+        std::string detail = std::format(
+            "subos '{}' declares runtime {}, but its active XVM runtime is {}",
+            subosName, mismatch->declared, active);
+        if (mismatch->payloadMissing) {
+            detail += std::format("; declared runtime payload {} is missing",
+                                  mismatch->declared);
+        }
+
+        const bool differentActive = !mismatch->active.empty()
+            && mismatch->active != mismatch->declared;
         out.push_back({
             .kind    = FindingKind::SubosRuntimeMissing,
-            // Warning: binaries generally still run, off the host's libc.
-            // That is the hermetic boundary being crossed silently, which is
-            // the thing worth saying rather than failing over.
-            .level   = FindingLevel::Warning,
+            .level   = FindingLevel::Error,
             .target  = subosName,
-            .version = info.runtime,
-            .detail  = std::format(
-                "subos '{}' declares runtime {} ({}), which is not installed "
-                "here", subosName, info.runtime,
-                mf::family_of(info.runtime, platform::host().arch)),
-            .remedy  = std::format("xlings install {}", info.runtime),
+            .version = mismatch->declared,
+            .detail  = std::move(detail),
+            .remedy  = differentActive
+                ? std::format(
+                    "runtime migration is required; create a new SubOS with "
+                    "`xlings subos new <name> --runtime {}` or migrate this "
+                    "SubOS explicitly", mismatch->declared)
+                : std::format("xlings install {}", mismatch->declared),
         });
     }
     return out;
@@ -691,7 +733,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     // The subos this run is actually in. Other subos are not inspected from
     // here for the same reason their payloads are not repaired: a second
     // shell may be inside one right now.
-    for (auto&& f : detect_subos_manifest_(st.db, p.subosDir,
+    for (auto&& f : detect_subos_manifest_(st.db, st.ws, p.subosDir,
                                            p.activeSubos.empty() ? "default"
                                                                  : p.activeSubos)) {
         add(std::move(f));
@@ -2433,14 +2475,12 @@ Counts count_(const Scan& scan) {
             case FindingKind::SubosEnvUnresolved:
                 ++c.broken;
                 break;
-            // Warnings, so deliberately NOT in issues() and not in the exit
-            // code. They are counted because the summary line should account
-            // for every finding it printed -- a report whose numbers do not
-            // add up to its own list is how "broken payloads 1" with nothing
-            // in the list to explain it happened before.
             case FindingKind::SubosEnvConflict:
-            case FindingKind::SubosRuntimeMissing:
                 ++c.warnings;
+                break;
+            case FindingKind::SubosRuntimeMissing:
+                if (f.level == FindingLevel::Error) ++c.broken;
+                else ++c.warnings;
                 break;
         }
     }
@@ -2661,7 +2701,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::warn, "subos env conflict"), f.detail);
                 break;
             case FindingKind::SubosRuntimeMissing:
-                add(glyph::mark(glyph::warn, "subos runtime"), f.detail);
+                add(f.level == FindingLevel::Error
+                        ? glyph::mark(glyph::failed, "subos runtime")
+                        : glyph::mark(glyph::warn, "subos runtime"),
+                    f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;

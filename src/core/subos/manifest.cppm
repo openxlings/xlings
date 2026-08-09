@@ -191,6 +191,44 @@ inline bool version_is_active(std::string_view version, std::string_view active)
     return colon != std::string_view::npos && active.substr(colon + 1) == version;
 }
 
+// The manifest and XVM workspace are two records of the same SubOS runtime.
+// The global payload store may contain any number of versions; this predicate
+// only asks whether THIS SubOS has exactly the version it declares active and
+// whether that declaration still resolves to a payload on disk.
+struct RuntimeActivationMismatch {
+    std::string declared;
+    std::string active;
+    bool payloadMissing = false;
+};
+
+std::optional<RuntimeActivationMismatch>
+check_runtime_activation(const Info& info,
+                         std::string_view activeVersion,
+                         bool payloadExists) {
+    if (!is_binding(info.runtime)) return std::nullopt;
+
+    const auto declaredVersion = binding_version(info.runtime);
+    if (version_is_active(declaredVersion, activeVersion) && payloadExists) {
+        return std::nullopt;
+    }
+
+    std::string active;
+    if (!activeVersion.empty()) {
+        auto displayVersion = activeVersion;
+        if (const auto colon = displayVersion.find(':');
+            colon != std::string_view::npos) {
+            displayVersion.remove_prefix(colon + 1);
+        }
+        active = std::format("{}@{}", binding_name(info.runtime),
+                             displayVersion);
+    }
+    return RuntimeActivationMismatch{
+        .declared = info.runtime,
+        .active = std::move(active),
+        .payloadMissing = !payloadExists,
+    };
+}
+
 // The providers that actually take effect, out of everything the manifest
 // records.
 //

@@ -72,6 +72,43 @@ TEST(SubosManifestRuntime, BindingShapeRequiresBothHalves) {
     EXPECT_FALSE(m::is_binding("@2.39"));
 }
 
+TEST(SubosRuntime, ExactActiveVersionWithPayloadPasses) {
+    m::Info info{.runtime = "glibc@2.44"};
+    EXPECT_FALSE(m::check_runtime_activation(info, "2.44", true).has_value());
+}
+
+TEST(SubosRuntime, MismatchNamesDeclaredAndActiveCoordinates) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "2.39", true);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->declared, "glibc@2.44");
+    EXPECT_EQ(mismatch->active, "glibc@2.39");
+    EXPECT_FALSE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, MissingActiveVersionIsAMismatch) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "", true);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->declared, "glibc@2.44");
+    EXPECT_TRUE(mismatch->active.empty());
+    EXPECT_FALSE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, ExactActiveVersionStillRequiresItsPayload) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "2.44", false);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->active, "glibc@2.44");
+    EXPECT_TRUE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, NamespacedActiveVersionUsesItsVersionTail) {
+    m::Info info{.runtime = "glibc@2.44"};
+    EXPECT_FALSE(m::check_runtime_activation(
+        info, "xim:2.44", true).has_value());
+}
+
 // ── invariants ───────────────────────────────────────────────────────
 
 TEST(SubosManifestValidate, AcceptsAWellFormedBlock) {

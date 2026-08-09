@@ -123,6 +123,8 @@ TESTS=(
     "E2E-69 |local_query_no_index_sync_test.sh||"
     "E2E-70 |query_heavy_home_test.sh||"
     "E2E-71 |self_doctor_depth_test.sh||"
+    "E2E-72 |elf_host_loader_payload_libc_guard_test.sh||"
+    "E2E-73 |subos_runtime_authority_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

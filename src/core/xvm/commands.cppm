@@ -6,6 +6,7 @@ import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.core.palette;
+import xlings.core.subos.manifest;
 import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;
@@ -279,6 +280,65 @@ filter_to_subos_installed_(const std::string& target,
     return out;
 }
 
+// Refuse a prospective core-runtime activation that contradicts the current
+// SubOS manifest. This runs immediately after the locked reload, before even
+// legacy-edge self-healing: a refusal promised to change nothing cannot first
+// rewrite the versions DB as an incidental repair.
+bool runtime_activation_refused_(const VersionDB& db,
+                                 const std::string& target,
+                                 const std::string& requestedVersion) {
+    namespace mf = xlings::subos::manifest;
+
+    const auto doc = mf::read_document(Config::subos_scope().root);
+    if (!doc) return false;
+    const auto info = mf::parse(*doc);
+    if (!mf::is_binding(info.runtime)
+        || target != mf::binding_name(info.runtime)) {
+        return false;
+    }
+
+    const auto it = db.find(target);
+    if (it == db.end() || it->second.versions.empty()) return false;
+    const auto resolved = requestedVersion == "latest"
+        ? pick_highest_version(it->second.versions)
+        : match_version(db, target, requestedVersion);
+    if (resolved.empty()) return false;
+
+    bool payloadExists = false;
+    if (const auto* data = get_vdata(db, target, resolved);
+        data && !data->path.empty()) {
+        std::error_code ec;
+        const auto expanded = expand_path(
+            data->path, Config::paths().homeDir.string());
+        payloadExists = fs::exists(expanded, ec) && !ec;
+    }
+
+    const auto mismatch = mf::check_runtime_activation(
+        info, resolved, payloadExists);
+    if (!mismatch) return false;
+
+    const auto prospective = mismatch->active.empty()
+        ? std::format("{}@{}", target, resolved) : mismatch->active;
+    if (mismatch->payloadMissing
+        && prospective == mismatch->declared) {
+        log::error("[xlings:use] runtime activation refused: {} has no "
+                   "payload", mismatch->declared);
+        log::error("  nothing was changed");
+        log::error("  hint: reinstall it with `xlings install {} --force`",
+                   mismatch->declared);
+        return true;
+    }
+
+    log::error("[xlings:use] runtime activation refused: this SubOS "
+               "declares {}, but the requested runtime is {}",
+               mismatch->declared, prospective);
+    log::error("  nothing was changed");
+    log::error("  hint: runtime migration is required; create a new SubOS "
+               "with `xlings subos new <name> --runtime {}` or migrate this "
+               "SubOS explicitly", mismatch->declared);
+    return true;
+}
+
 // xlings use <target> <version>
 // Updates the active subos workspace and creates/updates bin/ hardlinks
 int cmd_use(const std::string& target, const std::string& version,
@@ -293,6 +353,10 @@ int cmd_use(const std::string& target, const std::string& version,
         return 1;
     }
     Config::reload_state();
+
+    if (runtime_activation_refused_(Config::versions(), target, version)) {
+        return 1;
+    }
 
     // Self-heal a dangling legacy edge before planning anything.
     //
