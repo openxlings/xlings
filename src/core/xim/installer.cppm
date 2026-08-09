@@ -836,6 +836,35 @@ bool evict_invalid_archive_cache_(
 
 namespace detail_ {
 
+std::string format_hook_failure(
+        std::string_view hookName,
+        const mcpplibs::xpkg::HookResult& result) {
+    auto trim = [](std::string_view text) {
+        while (!text.empty()
+               && std::isspace(static_cast<unsigned char>(text.front()))) {
+            text.remove_prefix(1);
+        }
+        while (!text.empty()
+               && std::isspace(static_cast<unsigned char>(text.back()))) {
+            text.remove_suffix(1);
+        }
+        return text;
+    };
+
+    auto error = trim(result.error);
+    auto output = trim(result.output);
+    std::string message = std::format("{} hook failed", hookName);
+    if (!error.empty()) {
+        message += ": ";
+        message.append(error);
+    }
+    if (!output.empty() && output != error) {
+        message.push_back('\n');
+        message.append(result.output);
+    }
+    return message;
+}
+
 // Does a resolved node's version satisfy the version half of a dep spec?
 //
 // The dep half is a RANGE (`>=2.38`, `^1.2`, `~1.2.3`), not a literal, and
@@ -861,6 +890,24 @@ configure_xpkg_execution_artifact_paths_(
     context.bin_dir = subosDir / "bin";
     context.subos_sysrootdir = subosDir.string();
     return subosDir;
+}
+
+void configure_dependency_store_roots_(
+        mcpplibs::xpkg::ExecutionContext& context,
+        const std::filesystem::path& selectedStore) {
+    auto append = [&](std::filesystem::path root) {
+        if (root.empty()) return;
+        root = root.lexically_normal();
+        if (std::ranges::find(context.dependency_store_roots, root)
+            == context.dependency_store_roots.end()) {
+            context.dependency_store_roots.push_back(std::move(root));
+        }
+    };
+
+    append(selectedStore);
+    auto projectDataDir = Config::project_data_dir();
+    if (!projectDataDir.empty()) append(projectDataDir / "xpkgs");
+    append(Config::global_data_dir() / "xpkgs");
 }
 
 // The index root a recipe's `xim.pkgindex.*` modules are loaded from.
@@ -2116,7 +2163,8 @@ bool run_config_hook_(const PlanNode& node,
                       mcpplibs::xpkg::PackageExecutor& executor,
                       mcpplibs::xpkg::ExecutionContext& ctx,
                       std::function<void(const InstallStatus&)> onStatus,
-                      bool useAfterInstall) {
+                      bool useAfterInstall,
+                      std::string* failureMessage = nullptr) {
     if (!executor.has_hook(mcpplibs::xpkg::HookType::Config)) return true;
     if (onStatus) {
         onStatus({ node.name, InstallPhase::Configuring, 0.8f, "" });
@@ -2124,11 +2172,16 @@ bool run_config_hook_(const PlanNode& node,
     ScopedCurrentDir_ configCwd(ctx.install_dir);
     auto hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
     if (!hookResult.success) {
-        log::warn("config hook failed for {}: {}", node.name, hookResult.error);
+        if (failureMessage) {
+            *failureMessage = format_hook_failure("config", hookResult);
+        }
         return false;
     }
-    return process_xvm_operations_(
-        node, dataDir, executor, useAfterInstall);
+    if (!process_xvm_operations_(node, dataDir, executor, useAfterInstall)) {
+        if (failureMessage) *failureMessage = "config hook failed";
+        return false;
+    }
+    return true;
 }
 
 // A package that promised programs and delivered none of them.
@@ -2420,6 +2473,7 @@ public:
             ctx.install_dir = targetRoot / detail_::effective_store_name_(node) / node.version;
             detail_::configure_xpkg_execution_artifact_paths_(
                 ctx);
+            detail_::configure_dependency_store_roots_(ctx, targetRoot);
             ctx.xpkg_dir = node.pkgFile.parent_path();
             ctx.project_data_dir = Config::project_data_dir();
             // pkgindex_dir: package index repo root (for custom module loading).
@@ -2749,11 +2803,11 @@ public:
                 }
 
                 if (!hookResult.success) {
-                    log::error("install hook failed for {}: {}",
-                               node.name, hookResult.error);
+                    auto message = detail_::format_hook_failure(
+                        "install", hookResult);
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                                   hookResult.error });
+                                   std::move(message) });
                     }
                     continue;
                 }
@@ -2952,13 +3006,17 @@ public:
                     }
                     continue;
                 }
-            } else if (!detail_::run_config_hook_(node, dataDir, executor, ctx,
-                                                  onStatus, useAfterInstall)) {
-                if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               "config hook failed" });
+            } else {
+                std::string configFailure;
+                if (!detail_::run_config_hook_(
+                        node, dataDir, executor, ctx, onStatus,
+                        useAfterInstall, &configFailure)) {
+                    if (onStatus) {
+                        onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                                   std::move(configFailure) });
+                    }
+                    continue;
                 }
-                continue;
             }
 
             if (node.pkgType != 3 /* Config */) {
@@ -3218,6 +3276,12 @@ public:
         const auto artifactSubosDir =
             detail_::configure_xpkg_execution_artifact_paths_(
                 ctx);
+        auto selectedStore = resolvedMatch
+            ? (resolvedMatch->storeRoot.empty()
+                ? Config::paths().dataDir / "xpkgs"
+                : resolvedMatch->storeRoot)
+            : Config::paths().dataDir / "xpkgs";
+        detail_::configure_dependency_store_roots_(ctx, selectedStore);
         ctx.install_dir = installDir;
         ctx.xpkg_dir = pkgFile.parent_path();
         ctx.pkgindex_dir = detail_::pkgindex_root_for_(pkgFile);
@@ -3229,7 +3293,7 @@ public:
                 mcpplibs::xpkg::HookType::Uninstall, ctx);
             if (!result.success) {
                 return std::unexpected(
-                    std::format("uninstall hook failed: {}", result.error));
+                    detail_::format_hook_failure("uninstall", result));
             }
         } else {
             // Check if this is a script-type or subos-type package and run default uninstall

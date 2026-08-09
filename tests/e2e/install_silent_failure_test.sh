@@ -70,9 +70,13 @@ package = {
     },
 }
 
+import("xim.libxpkg.log")
+
 function install()
-    -- Deliberately fail to simulate the gitcode 9-byte stub →
-    -- libarchive extraction failure path that motivated the fix.
+    io.write(string.rep("P", 17000))
+    print("REPRO stdout")
+    io.stderr:write("REPRO stderr\n")
+    log.error("REPRO log.error")
     return false
 end
 LUA
@@ -94,7 +98,7 @@ cat > "$HOME_DIR/.xlings.json" <<JSON
 JSON
 
 RUN() {
-  ( cd /tmp && env -i HOME="$HOME" USER="$USER" SHELL="${SHELL:-/bin/sh}" \
+  ( cd /tmp && env -i HOME="$HOME_DIR" USER=xlings-test SHELL=/bin/sh \
       PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" "$XLINGS_BIN" "$@" )
 }
 
@@ -110,11 +114,24 @@ out_cli="$(RUN install brokenpkg -y 2>&1)"
 rc_cli=$?
 set -e
 
-echo "$out_cli" | tail -6 | sed 's/^/    /'
+echo "$out_cli" \
+  | sed -E 's/P{80,}/[bounded hook transcript]/g' \
+  | tail -8 \
+  | sed 's/^/    /'
 
 [[ "$rc_cli" -ne 0 ]] \
   || fail "S1: CLI exitCode was $rc_cli, expected non-zero
 $out_cli"
+for marker in \
+  "install hook returned false" \
+  "REPRO stdout" \
+  "REPRO stderr" \
+  "REPRO log.error" \
+  "[libxpkg: hook output truncated]"; do
+  [[ "$out_cli" == *"$marker"* ]] \
+    || fail "S1: CLI failure omitted '$marker'
+$out_cli"
+done
 log "  ✓ CLI exitCode = $rc_cli (non-zero, P0 fix verified)"
 
 # ── S2: interface install_packages must propagate non-zero exitCode ──
@@ -122,9 +139,47 @@ log "S2: xlings interface install_packages → exitCode != 0 in NDJSON envelope"
 
 set +e
 out_iface="$(RUN interface install_packages \
-              --args '{"targets":["brokenpkg"],"yes":true}' 2>/dev/null)"
+              --args '{"targets":["brokenpkg"],"yes":true}' \
+              2>"$RUNTIME_DIR/interface.stderr")"
 rc_iface=$?
 set -e
+
+printf '%s\n' "$out_iface" > "$RUNTIME_DIR/interface.stdout"
+python3 - "$RUNTIME_DIR/interface.stdout" <<'PY' \
+  || fail "S2: interface stdout was not pure NDJSON or lacked the bounded hook transcript
+$out_iface"
+import json
+import pathlib
+import sys
+
+events = []
+for line_number, line in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
+    if not line:
+        continue
+    try:
+        events.append(json.loads(line))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"line {line_number} is not JSON: {error}: {line!r}")
+
+required = (
+    "install hook returned false",
+    "REPRO stdout",
+    "REPRO stderr",
+    "REPRO log.error",
+    "[libxpkg: hook output truncated]",
+)
+messages = [
+    event.get("message", "")
+    for event in events
+    if event.get("code") == "E_INTERNAL"
+]
+if len(messages) != 1:
+    raise SystemExit(f"expected exactly one E_INTERNAL message, got {len(messages)}")
+if not all(marker in messages[0] for marker in required):
+    raise SystemExit(f"E_INTERNAL message lacks hook diagnostics: {messages[0]!r}")
+if len(messages[0].encode("utf-8")) > 16 * 1024 + 1024:
+    raise SystemExit(f"E_INTERNAL hook transcript is not bounded: {len(messages[0].encode('utf-8'))} bytes")
+PY
 
 last_line="$(echo "$out_iface" | grep -E '"kind":"result"' | tail -1)"
 log "  result envelope: $last_line"
