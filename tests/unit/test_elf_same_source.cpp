@@ -205,6 +205,23 @@ TEST(SameSource, PayloadLoaderAndMatchingPayloadLibcPass) {
                            rpath).violated);
 }
 
+TEST(SameSource, FilesystemAliasesOfOnePayloadStillPass) {
+    TempTree tree;
+    const auto payloadLib = tree.payload("2.44") / "lib64";
+    TempTree::touch(payloadLib / "ld-linux-x86-64.so.2");
+    TempTree::touch(payloadLib / "libc.so.6");
+
+    const auto aliasData = tree.root / "data-alias";
+    std::filesystem::create_directory_symlink(tree.root / "data", aliasData);
+    const auto aliasLib = aliasData / "xpkgs" / "xim-x-glibc" / "2.44"
+                        / "lib64";
+
+    std::vector<std::string> rpath{payloadLib.string()};
+    EXPECT_FALSE(ec::check((tree.payload("2.44") / "bin" / "gcc").string(),
+                           (aliasLib / "ld-linux-x86-64.so.2").string(),
+                           rpath).violated);
+}
+
 TEST(SameSource, PayloadLoaderAndDifferentPayloadLibcViolate) {
     TempTree tree;
     const auto loaderDir = tree.payload("2.44") / "lib64";

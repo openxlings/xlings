@@ -55,6 +55,19 @@ inline std::string provider_of(std::string_view payload) {
                                                        : rest.substr(0, slash));
 }
 
+// Filesystem aliases are not different runtime builds. macOS exposes ordinary
+// paths through aliases such as /var -> /private/var and the Data volume; a
+// SubOS may likewise reach one payload through a symlinked store root. Compare
+// existing payload directories by their canonical identity while preserving
+// the original paths in diagnostics.
+inline std::string payload_identity_(std::string_view payload) {
+    if (payload.empty()) return {};
+    fs::path path(payload);
+    std::error_code ec;
+    auto resolved = fs::canonical(path, ec);
+    return ec ? path.lexically_normal().string() : resolved.string();
+}
+
 struct Finding {
     enum class Reason {
         None,
@@ -131,7 +144,11 @@ inline fs::path resolve_rpath_entry_(std::string_view binary,
     fs::path path(expanded);
     if (path.is_relative()) path = fs::path(binary).parent_path() / path;
     std::error_code ec;
-    auto resolved = fs::weakly_canonical(path, ec);
+    // canonical() deliberately requires the complete path to exist. For
+    // synthetic/unmaterialized entries, retaining the lexical spelling avoids
+    // canonicalising only an OS alias prefix and then comparing two spellings
+    // of the same nonexistent path.
+    auto resolved = fs::canonical(path, ec);
     return ec ? path.lexically_normal() : resolved;
 }
 
@@ -152,6 +169,7 @@ inline Finding check(std::string_view binary,
     if (interp.empty()) return f;                 // no INTERP: nothing to pair
     f.interpPayload = payload_of(interp);
     f.provider = provider_of(f.interpPayload);
+    const auto interpIdentity = payload_identity_(f.interpPayload);
 
     for (const auto& e : rpathEntries) {
         const auto dir = resolve_rpath_entry_(binary, e);
@@ -189,7 +207,10 @@ inline Finding check(std::string_view binary,
             // names what must be repaired.
             const auto sourceIdentity = payload.empty()
                 ? source.string() : payload;
-            if (sourceIdentity == f.interpPayload) continue;
+            if (!payload.empty()
+                && payload_identity_(payload) == interpIdentity) {
+                continue;
+            }
             f.violated = true;
             f.reason = Finding::Reason::PayloadMismatch;
             f.rpathPayload = sourceIdentity;
