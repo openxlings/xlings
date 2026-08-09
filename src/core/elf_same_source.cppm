@@ -183,6 +183,22 @@ inline Finding check(std::string_view binary,
     f.interpreter = std::string(interp);
     if (interp.empty()) return f;                 // no INTERP: nothing to pair
     f.interpPayload = payload_of(interp);
+    if (f.interpPayload.empty()) {
+        // A PT_INTERP inside a SubOS lib dir is OUR loader reached through a
+        // view, not the host's: that directory is a symlink farm into the
+        // payload, and payload_of is documented to return empty for it. The
+        // RUNPATH side already resolves through symlinks (core_runtime_sources_)
+        // for exactly this reason; doing it on only one side classified every
+        // migrated binary as "host loader with a payload libc".
+        //
+        // Measured on a real home: this accounted for 143 of 145 findings the
+        // reverse rule produced, all of them a payload loader and a payload
+        // libc from the same payload. Resolving both sides is what makes the
+        // rule mean what it says.
+        std::error_code ec;
+        const auto resolved = fs::weakly_canonical(fs::path(interp), ec);
+        if (!ec) f.interpPayload = payload_of(resolved.string());
+    }
     f.provider = provider_of(f.interpPayload);
     const auto interpIdentity = payload_identity_(f.interpPayload);
 
@@ -276,6 +292,12 @@ inline std::string describe(const Finding& f) {
 // a shim rewrites XLINGS_HOME to the home that owns it, so a helper invoked
 // through one sees the real home rather than the isolated one under test.
 // The directory being scanned cannot lie about which store it is in.
+// Normalization is for FINDING the split point only. The result is sliced out
+// of the caller's own spelling, exactly as payload_of does -- the two are
+// compared against each other, so they have to make the same choice. Returning
+// a normalized slice from one and an original slice from the other makes a
+// single store two different strings on Windows, and that comparison fails
+// silently and only there. `PayloadOf.AcceptsWindowsSeparators` pins it.
 inline std::string store_root_of(std::string_view p) {
     constexpr std::string_view marker = "/xpkgs/";
     const auto normalized = store_parse_path_(p);

@@ -65,6 +65,11 @@ TEST(ProviderOf, IsTheStoreDirectoryName) {
     EXPECT_EQ(ec::provider_of(""), "");
 }
 
+// Separators are normalized to FIND the split point; the result is sliced out
+// of the caller's own spelling. Both helpers must make that choice the same
+// way, because their results are compared against each other -- one normalized
+// slice and one original slice make a single store two different strings, and
+// that comparison would fail silently and only on Windows.
 TEST(PayloadOf, AcceptsWindowsSeparators) {
     const std::string store = R"(C:\Users\ci\.xlings\data\xpkgs)";
     const std::string payload = store + R"(\xim-x-glibc\2.44)";
@@ -73,6 +78,17 @@ TEST(PayloadOf, AcceptsWindowsSeparators) {
     EXPECT_EQ(ec::payload_of(core), payload);
     EXPECT_EQ(ec::provider_of(payload), "xim-x-glibc");
     EXPECT_EQ(ec::store_root_of(core), store);
+
+    // The invariant itself, so a future divergence fails HERE rather than
+    // inside whatever compares the two: a core file's payload always starts
+    // with the store root that same core file is in, in either spelling.
+    for (const auto& spelling : {core, std::string(
+             "C:/Users/ci/.xlings/data/xpkgs"
+             "/xim-x-glibc/2.44/lib64/libc.so.6")}) {
+        EXPECT_TRUE(ec::payload_of(spelling)
+                        .starts_with(ec::store_root_of(spelling)))
+            << "payload_of and store_root_of disagree on: " << spelling;
+    }
 }
 
 // The case that motivated all of this, measured on a real binary.
@@ -324,4 +340,59 @@ TEST(SameSource, SubosDirectoryCannotMixLoaderAndLibcSources) {
     EXPECT_EQ(finding.reason, ec::Finding::Reason::PayloadMismatch);
     EXPECT_NE(ec::describe(finding).find(subosLib.string()), std::string::npos);
     EXPECT_NE(ec::describe(finding).find(libcDir.string()), std::string::npos);
+}
+
+// A PT_INTERP inside a SubOS lib dir is our own loader reached through a view.
+// Measured on a real home: classifying it as the HOST's loader produced 143 of
+// 145 "loader/libc split" findings, every one of them a payload loader paired
+// with a libc from the same payload. The RUNPATH side already resolved through
+// symlinks; resolving only one side is what made them disagree.
+TEST(SameSource, InterpThroughASubosViewIsNotTheHostLoader) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-interp-view-{}", std::chrono::steady_clock::now()
+            .time_since_epoch().count());
+    const auto payload = root / "data" / "xpkgs" / "xim-x-glibc" / "2.39";
+    const auto payloadLib = payload / "lib";
+    const auto subosLib = root / "subos" / "default" / "lib";
+    fs::create_directories(payloadLib);
+    fs::create_directories(subosLib);
+    std::ofstream(payloadLib / "ld-linux-x86-64.so.2") << "loader";
+    std::ofstream(payloadLib / "libc.so.6") << "libc";
+    // The SubOS lib dir is a symlink farm into the payload -- the shape the
+    // loader migration produces.
+    fs::create_symlink(payloadLib / "ld-linux-x86-64.so.2",
+                       subosLib / "ld-linux-x86-64.so.2");
+    fs::create_symlink(payloadLib / "libc.so.6", subosLib / "libc.so.6");
+
+    const auto interp = (subosLib / "ld-linux-x86-64.so.2").string();
+    std::vector<std::string> rpath{subosLib.string()};
+    const auto f = ec::check(root.string() + "/bin/tool", interp, rpath);
+
+    EXPECT_FALSE(f.violated)
+        << "a payload loader and its own payload libc, both reached through "
+           "the SubOS view, are one build: " << ec::describe(f);
+    EXPECT_EQ(f.reason, ec::Finding::Reason::None);
+
+    fs::remove_all(root);
+}
+
+// The reverse rule still has to fire for a genuine host interpreter.
+TEST(SameSource, ARealHostInterpWithAPayloadCoreStillViolates) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-host-interp-{}", std::chrono::steady_clock::now()
+            .time_since_epoch().count());
+    const auto payloadLib = root / "data" / "xpkgs" / "xim-x-glibc" / "2.39" / "lib";
+    fs::create_directories(payloadLib);
+    std::ofstream(payloadLib / "libc.so.6") << "libc";
+
+    std::vector<std::string> rpath{payloadLib.string()};
+    const auto f = ec::check(root.string() + "/bin/tool",
+                             "/lib64/ld-linux-x86-64.so.2", rpath);
+
+    EXPECT_TRUE(f.violated);
+    EXPECT_EQ(f.reason, ec::Finding::Reason::HostLoaderPayloadCore);
+
+    fs::remove_all(root);
 }
