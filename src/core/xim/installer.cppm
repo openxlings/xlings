@@ -964,7 +964,8 @@ std::string pkgindex_root_for_(const std::filesystem::path& pkgFile,
     return derived.string();
 }
 
-// Did this package register any xvm version at all?
+// Did the provider whose uninstall hook is about to run register any xvm
+// version for this target?
 //
 // `type = "config"` and `type = "script"` packages are in that state BY DESIGN,
 // and so is any recipe that delegates its install to another package. Measured
@@ -972,14 +973,22 @@ std::string pkgindex_root_for_(const std::filesystem::path& pkgFile,
 // zero times: cpp.lua, mcpp-vscode-clangd.lua (config) and
 // linux-sysroot-create.lua, configure-project-installer.lua (script).
 //
-// So "no version registered" is a normal shape, not a fault -- see
-// target_registers_no_version_'s single caller for why removal must not fail on
-// it (openxlings/xlings#506).
-bool target_registers_no_version_(const xvm::VersionDB& db,
-                                  std::string_view target) {
+// A version owned by another provider is not evidence that this provider
+// registered one. Only a readable canonical owner can answer the question;
+// legacy/unreadable entries remain outside this provider's ownership and are
+// protected by the empty removal selection.
+bool executing_provider_owns_no_version(
+        const xvm::VersionDB& db,
+        std::string_view target,
+        std::string_view executingProvider) {
+    if (executingProvider.empty()) return false;
     auto it = db.find(std::string(target));
     if (it == db.end()) return true;
-    return it->second.versions.empty();
+    for (const auto& [_, data] : it->second.versions) {
+        if (!data.bindingGroup || data.bindingGroup->provider.empty()) continue;
+        if (data.bindingGroup->provider == executingProvider) return false;
+    }
+    return true;
 }
 
 std::string effective_store_name_(std::string_view namespaceName, std::string_view name) {
@@ -3208,17 +3217,18 @@ public:
         // punishes a shape the installer already accepted. `type = "config"` and
         // `type = "script"` recipes are in that state by design.
         //
-        // Narrow deliberately: only VersionNotFound, and only when the target has
-        // no versions AT ALL. A package that registered some other version must
-        // still fail loudly -- that is a real mismatch, and swallowing it would
-        // hide exactly the bug this check is shaped like.
+        // Narrow deliberately: only VersionNotFound, and only when the executing
+        // provider owns no version for this target. A mismatched version owned by
+        // this provider still fails loudly; another provider's version neither
+        // blocks this hook nor enters its removal selection.
         xvm::RemovalContext removalContext;
         if (removalSnapshot) {
             removalContext = std::move(*removalSnapshot);
         } else if (removalSnapshot.error().kind
                        == xvm::RemovalErrorKind::VersionNotFound
-                   && detail_::target_registers_no_version_(
-                          Config::versions_mut(), detachTarget)) {
+                   && detail_::executing_provider_owns_no_version(
+                          Config::versions_mut(), detachTarget,
+                          executingProvider)) {
             log::info("{}: registers no xvm version; running its uninstall hook "
                       "and removing the payload",
                       executingProvider);

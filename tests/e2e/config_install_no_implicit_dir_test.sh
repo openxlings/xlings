@@ -55,6 +55,16 @@ function config()
     io.writefile(marker, tostring(count + 1))
     return true
 end
+
+function uninstall()
+    local marker = os.getenv("XLINGS_TEST_UNINSTALL_COUNTER")
+    local count = 0
+    if os.isfile(marker) then
+        count = tonumber(io.readfile(marker)) or 0
+    end
+    io.writefile(marker, tostring(count + 1))
+    return true
+end
 LUA
 
 printf 'xim_indexrepos = {}\n' > "$LOCAL_INDEX_DIR/xim-indexrepos.lua"
@@ -71,9 +81,14 @@ cat > "$HOME_DIR/.xlings.json" <<JSON
 }
 JSON
 
+XLINGS_BIN="$(find_xlings_bin)"
+XLINGS_BIN="$(cd "$(dirname "$XLINGS_BIN")" && pwd)/$(basename "$XLINGS_BIN")"
+
 RUN() {
-  ( cd "$WORK_DIR" && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
-      "$(find_xlings_bin)" --verbose "$@" )
+  ( cd "$WORK_DIR" && env -i HOME="$HOME_DIR" USER=xlings-ci \
+      SHELL=/bin/sh PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+      XLINGS_TEST_UNINSTALL_COUNTER="$WORK_DIR/uninstall-count.txt" \
+      "$XLINGS_BIN" --verbose "$@" )
 }
 
 RUN self init >/dev/null 2>&1 || fail "self init failed"
@@ -111,4 +126,44 @@ if [[ -e "$INSTALL_DIR" ]]; then
 $(ls -la "$INSTALL_DIR")"
 fi
 
-log "PASS: config install hook without payload is not materialized by xlings"
+UNINSTALL_COUNT_FILE="$WORK_DIR/uninstall-count.txt"
+rm -f "$UNINSTALL_COUNT_FILE"
+
+set +e
+REMOVE_OUT="$(RUN remove config-no-payload@1.0.0 -y 2>&1)"
+REMOVE_RC=$?
+set -e
+
+UNINSTALL_COUNT=0
+if [[ -f "$UNINSTALL_COUNT_FILE" ]]; then
+  UNINSTALL_COUNT="$(cat "$UNINSTALL_COUNT_FILE")"
+fi
+
+set +e
+MISSING_OUT="$(RUN remove config-no-payload@9.9.9 -y 2>&1)"
+MISSING_RC=$?
+set -e
+
+UNINSTALL_COUNT_AFTER_MISSING=0
+if [[ -f "$UNINSTALL_COUNT_FILE" ]]; then
+  UNINSTALL_COUNT_AFTER_MISSING="$(cat "$UNINSTALL_COUNT_FILE")"
+fi
+
+FAILURES=()
+[[ "$REMOVE_RC" -eq 0 ]] \
+  || FAILURES+=("payloadless config remove exited $REMOVE_RC: $REMOVE_OUT")
+[[ "$UNINSTALL_COUNT" == "1" ]] \
+  || FAILURES+=("payloadless config uninstall hook count should be 1, got $UNINSTALL_COUNT: $REMOVE_OUT")
+[[ "$MISSING_RC" -ne 0 ]] \
+  || FAILURES+=("never-installed config coordinate unexpectedly exited 0: $MISSING_OUT")
+grep -qi "not found" <<<"$MISSING_OUT" \
+  || FAILURES+=("never-installed config coordinate did not report not found: $MISSING_OUT")
+[[ "$UNINSTALL_COUNT_AFTER_MISSING" == "1" ]] \
+  || FAILURES+=("never-installed coordinate changed uninstall count to $UNINSTALL_COUNT_AFTER_MISSING")
+
+if [[ "${#FAILURES[@]}" -ne 0 ]]; then
+  printf '  - %s\n' "${FAILURES[@]}" >&2
+  fail "payloadless config removal contract failed"
+fi
+
+log "PASS: payloadless config install/remove does not require an implicit directory"

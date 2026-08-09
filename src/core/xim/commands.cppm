@@ -666,6 +666,47 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 // (pkgmanager.remove inside an xpkg) always pass yes=true: the user already
 // approved the parent install, so the connected uninstall is implicit.
 // CLI-driven `xlings remove <pkg>` defaults to yes=false and bails on n.
+std::expected<bool, std::string>
+selected_payloadless_config_has_uninstall_(
+        PackageCatalog& catalog,
+        const PackageMatch& match,
+        std::string_view platform) {
+    auto package = catalog.load_package(match);
+    if (!package) return std::unexpected(package.error());
+    if (package->type != xpkg::PackageType::Config) return false;
+
+    const auto hasDeps = [&](const auto& deps) {
+        auto it = deps.find(std::string(platform));
+        return it != deps.end() && !it->second.empty();
+    };
+    if (hasDeps(package->xpm.deps)
+        || hasDeps(package->xpm.runtime_deps)
+        || hasDeps(package->xpm.build_deps)) {
+        return false;
+    }
+
+    const auto storeRoot = match.storeRoot.empty()
+        ? Config::paths().dataDir / "xpkgs"
+        : match.storeRoot;
+    const auto installDir = storeRoot
+        / package_store_name(match.namespaceName, match.name)
+        / match.version;
+    const auto snapshot = installDir / ".xpkg.lua";
+    std::error_code ec;
+    const auto recipe = std::filesystem::is_regular_file(snapshot, ec)
+        ? snapshot
+        : match.pkgFile;
+    ec.clear();
+    if (!std::filesystem::is_regular_file(recipe, ec)) {
+        return std::unexpected(std::format(
+            "uninstall recipe is not a local file: {}", recipe.string()));
+    }
+
+    auto executor = xpkg::create_executor(recipe);
+    if (!executor) return std::unexpected(executor.error());
+    return executor->has_hook(xpkg::HookType::Uninstall);
+}
+
 int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force) {
     // Serialize against any other xlings mutating this home, then re-read
@@ -705,6 +746,7 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
     std::string displayName = target;
     std::string displayVersion;
     std::string subos = Config::paths().activeSubos;
+    bool payloadlessUninstallProven = false;
 
     // 0.4.19+: subos-membership guard.
     //
@@ -793,20 +835,57 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
             }
 
             if (!payloadOnDisk) {
-                // Genuinely absent. Here the "remove what isn't there is
-                // success" convention is right (S4 of
-                // remove_multi_version_test.sh asserts exit 0 and no
-                // `removed.*subos` summary), so keep it -- with a visible
-                // diagnostic, and without breaking scripts that re-run
-                // `remove` defensively.
-                log::warn("xlings: '{}' is not installed in current subos '{}'",
-                          bareName, subos);
-                return 0;
+                auto selected = catalog.resolve_target(
+                    target, detect_platform());
+                if (!selected) {
+                    stream.emit(ErrorEvent{
+                        .code = selected.error().contains("ambiguous")
+                            ? ErrorCode::InvalidInput
+                            : ErrorCode::NotFound,
+                        .message = selected.error(),
+                        .recoverable = true,
+                        .hint = "verify the package coordinate or install it first",
+                    });
+                    return 1;
+                }
+                auto executable =
+                    selected_payloadless_config_has_uninstall_(
+                        catalog, *selected, detect_platform());
+                if (!executable) {
+                    stream.emit(ErrorEvent{
+                        .code = ErrorCode::InvalidInput,
+                        .message = std::format(
+                            "cannot inspect uninstall recipe for {}@{}: {}",
+                            selected->canonicalName, selected->version,
+                            executable.error()),
+                        .recoverable = false,
+                    });
+                    return 1;
+                }
+                if (*executable) {
+                    payloadlessUninstallProven = true;
+                    log::info("{}@{} has an executable payloadless config "
+                              "uninstall; running it",
+                              selected->canonicalName, selected->version);
+                } else {
+                    // Genuinely absent. Here the "remove what isn't there is
+                    // success" convention is right (S4 of
+                    // remove_multi_version_test.sh asserts exit 0 and no
+                    // `removed.*subos` summary), so keep it -- with a visible
+                    // diagnostic, and without breaking scripts that re-run
+                    // `remove` defensively.
+                    log::warn(
+                        "xlings: '{}' is not installed in current subos '{}'",
+                        bareName, subos);
+                    return 0;
+                }
             }
 
-            log::warn("xlings: '{}' is not registered in subos '{}', but a "
-                      "payload is on disk; removing it for real",
-                      bareName, subos);
+            if (payloadOnDisk) {
+                log::warn("xlings: '{}' is not registered in subos '{}', but a "
+                          "payload is on disk; removing it for real",
+                          bareName, subos);
+            }
         }
     }
 
@@ -865,8 +944,9 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
         // a non-existent dir) and reports success, which loops the user.
         // The xvm-DB fallback above already anchors resolution to a real
         // installed version when one exists, so reaching here with
-        // `!installed` means nothing is installed for this target.
-        if (!match->installed) {
+        // `!installed` means nothing is installed for this target unless the
+        // payloadless-config proof above deliberately admitted its recipe.
+        if (!match->installed && !payloadlessUninstallProven) {
             log::warn("{}@{} is not installed", displayName, displayVersion);
             return 0;
         }
