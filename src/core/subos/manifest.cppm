@@ -191,6 +191,44 @@ inline bool version_is_active(std::string_view version, std::string_view active)
     return colon != std::string_view::npos && active.substr(colon + 1) == version;
 }
 
+// The manifest and XVM workspace are two records of the same SubOS runtime.
+// The global payload store may contain any number of versions; this predicate
+// only asks whether THIS SubOS has exactly the version it declares active and
+// whether that declaration still resolves to a payload on disk.
+struct RuntimeActivationMismatch {
+    std::string declared;
+    std::string active;
+    bool payloadMissing = false;
+};
+
+std::optional<RuntimeActivationMismatch>
+check_runtime_activation(const Info& info,
+                         std::string_view activeVersion,
+                         bool payloadExists) {
+    if (!is_binding(info.runtime)) return std::nullopt;
+
+    const auto declaredVersion = binding_version(info.runtime);
+    if (version_is_active(declaredVersion, activeVersion) && payloadExists) {
+        return std::nullopt;
+    }
+
+    std::string active;
+    if (!activeVersion.empty()) {
+        auto displayVersion = activeVersion;
+        if (const auto colon = displayVersion.find(':');
+            colon != std::string_view::npos) {
+            displayVersion.remove_prefix(colon + 1);
+        }
+        active = std::format("{}@{}", binding_name(info.runtime),
+                             displayVersion);
+    }
+    return RuntimeActivationMismatch{
+        .declared = info.runtime,
+        .active = std::move(active),
+        .payloadMissing = !payloadExists,
+    };
+}
+
 // The providers that actually take effect, out of everything the manifest
 // records.
 //
@@ -443,18 +481,64 @@ nlohmann::json make_block(std::string_view runtime, std::string_view createdBy,
     return b;
 }
 
+// What a subos is OBSERVED to run, out of the workspace in its own manifest.
+//
+// A subos that predates `subos_info` recorded no binding, but it is not silent
+// about its runtime: its workspace names an active version for the runtime
+// family. Reading it is not a guess and not a scan -- it is the same file, one
+// key over, and it is the record `use` itself maintains.
+//
+// The family comes from the caller's fallback rather than a literal, so this
+// says nothing about which family a platform uses.
+std::string observed_runtime(const nlohmann::json& doc,
+                             std::string_view family) {
+    if (family.empty()) return {};
+    if (!doc.contains("workspace") || !doc["workspace"].is_object()) return {};
+    const auto& ws = doc["workspace"];
+    const std::string key(family);
+    if (!ws.contains(key) || !ws[key].is_object()) return {};
+    auto active = ws[key].value("active", std::string{});
+    // Workspace versions may carry the provider namespace (`xim:2.39`); the
+    // binding never does.
+    if (const auto colon = active.find(':'); colon != std::string::npos) {
+        active = active.substr(colon + 1);
+    }
+    if (active.empty()) return {};
+    const auto binding = std::format("{}@{}", family, active);
+    return is_binding(binding) ? binding : std::string{};
+}
+
 // The runtime a REBUILT block should carry. A block can be invalid for
 // reasons that have nothing to do with its runtime (schema_version, envs,
 // provenance), and every rebuild path used to reset the runtime to the
 // caller's fallback as a side effect. After a default bump that side effect
 // silently re-declares an existing subos against a libc its payloads were
-// never built for — the exact "changed underneath you" C1 forbids. Keep a
-// valid recorded binding; fall back only when there is nothing to keep.
+// never built for — the exact "changed underneath you" C1 forbids.
+//
+// Three sources, most authoritative first:
+//
+//   1. a valid recorded binding — the subos said what it is;
+//   2. the workspace's active runtime — the subos never said, but it is
+//      demonstrably running something, and declaring it against anything else
+//      is the same re-declaration as (1) guards, reached from the
+//      never-recorded side instead of the invalid-block side;
+//   3. the caller's fallback — nothing is known, so a new subos's default is
+//      the only answer left.
+//
+// (2) is what makes the upgrade seamless for every home created before
+// `subos_info` existed. Without it those homes are declared against the
+// current default the first time anything rebuilds their block, and then
+// `self doctor` calls them broken and `use` refuses to activate the runtime
+// they were already on.
 std::string preserved_runtime(const nlohmann::json& doc,
                               std::string_view fallback) {
     if (doc.contains(std::string(BLOCK)) && doc[std::string(BLOCK)].is_object()) {
         const auto r = doc[std::string(BLOCK)].value("runtime", std::string{});
         if (is_binding(r)) return r;
+    }
+    if (auto observed = observed_runtime(doc, binding_name(fallback));
+        !observed.empty()) {
+        return observed;
     }
     return std::string(fallback);
 }

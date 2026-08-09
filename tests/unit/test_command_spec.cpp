@@ -36,6 +36,8 @@ TEST(CommandSpec, ValidatesManualNestedArguments) {
     EXPECT_TRUE(validate_manual_argv(*subos,
         std::array<std::string_view, 5>{
             "use", "probe", "--sandbox", "bwrap", "--gpu"}));
+    EXPECT_TRUE(validate_manual_argv(*subos,
+        std::array<std::string_view, 1>{"use"}));
     EXPECT_FALSE(validate_manual_argv(*subos,
         std::array<std::string_view, 3>{"remove", "probe", "extra"}));
 }
@@ -74,12 +76,17 @@ TEST(CommandSpec, OptionalValuesAreNotWhitelisted) {
         EXPECT_TRUE(validate_manual_argv(*subos, argv))
             << "rejected --shell " << kind;
     }
-    // The value must still lose to a required positional that has not been
-    // supplied: `subos use --shell probe` names the subos, not a shell kind.
+    // With the SubOS name optional, `--shell probe` is the option's optional
+    // value and leaves discovery mode name-less. A named environment remains
+    // unambiguous when it precedes the option.
     auto ambiguous = validate_manual_argv(*subos,
         std::array<std::string_view, 3>{"use", "--shell", "probe"});
     ASSERT_TRUE(ambiguous);
-    EXPECT_EQ(ambiguous->positional, (std::vector<std::string>{"probe"}));
+    EXPECT_TRUE(ambiguous->positional.empty());
+    auto named = validate_manual_argv(*subos,
+        std::array<std::string_view, 3>{"use", "probe", "--shell"});
+    ASSERT_TRUE(named);
+    EXPECT_EQ(named->positional, (std::vector<std::string>{"probe"}));
 }
 
 // `xlings --help` documents `-y/--yes`, `--agent`, `-v` and `-q` without

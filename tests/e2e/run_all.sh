@@ -120,6 +120,16 @@ TESTS=(
     "E2E-66 |subos_env_use_switch_test.sh||"
     "E2E-67 |subos_runtime_binding_test.sh||"
     "E2E-68 |closure_guard_differential_test.sh||"
+    "E2E-69 |local_query_no_index_sync_test.sh||"
+    "E2E-70 |query_heavy_home_test.sh||"
+    "E2E-71 |self_doctor_depth_test.sh||"
+    "E2E-72 |elf_host_loader_payload_libc_guard_test.sh||"
+    "E2E-73 |subos_runtime_authority_test.sh||"
+    "E2E-74 |shared_registry_dep_install_dir_test.sh||"
+    "E2E-75 |remove_foreign_provider_delegator_test.sh||"
+    "E2E-76 |config_install_no_implicit_dir_test.sh||"
+    "E2E-77 |subos_use_candidates_test.sh||"
+    "E2E-78 |subos_runtime_declaration_upgrade_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0

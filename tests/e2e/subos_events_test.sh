@@ -9,7 +9,7 @@
 #   2. create reserved 'current'     → InvalidInput error
 #   3. create invalid char           → InvalidInput error
 #   4. create duplicate              → InvalidInput error
-#   5. switch to non-existent        → NotFound error + hint
+#   5. switch to non-existent        → NotFound error + nearest-name hint
 #   6. switch to existing            → success line
 #   7. remove the active subos       → InvalidInput error + hint
 #   8. remove 'default'              → InvalidInput error
@@ -76,7 +76,7 @@ assert_contains "already exists" "$OUT" "S4"
 log "Scenario 5: switch to non-existent"
 OUT="$(RUN subos use nope --global 2>&1)" || true
 assert_contains "subos 'nope' not found" "$OUT" "S5"
-assert_contains "create it first" "$OUT" "S5 hint"
+assert_contains "did you mean" "$OUT" "S5 hint"
 
 # ── 6. switch to existing ─────────────────────────────────────────
 log "Scenario 6: switch to existing"

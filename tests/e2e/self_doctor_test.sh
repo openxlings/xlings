@@ -181,8 +181,8 @@ RUN install doctor-fixture@1.0.0 -y >/dev/null 2>&1 \
 RUN use doctor-fixture 1.0.0 >/dev/null 2>&1 || fail "reset: use failed"
 [[ -e "$SHIM" ]] || fail "reset: shim should exist after re-install"
 
-# ── S7: broken payload (active version) → doctor reports broken + hint ─
-log "S7: rm xpkgs payload while active → doctor reports broken + actionable hint"
+# ── S7: quick keeps the finding; deep resolves the package remedy ─────
+log "S7: rm active payload → quick reports it without deep remedy resolution"
 PAYLOAD_DIR="$HOME_DIR/data/xpkgs/xim-x-doctor-fixture/1.0.0"
 [[ -d "$PAYLOAD_DIR" ]] || fail "S7 setup: payload dir should exist"
 rm -rf "$PAYLOAD_DIR"
@@ -194,6 +194,12 @@ echo "$out" | grep -q "broken payload" \
   || fail "S7: output should mention 'broken payload'; got:\n$out"
 echo "$out" | grep -q "active" \
   || fail "S7: output should mark active version with [active] tag"
+echo "$out" | grep -qE "xlings install (xim:)?doctor-fixture@1\.0\.0" \
+  && fail "S7: quick doctor must not resolve package remedies; got:\n$out"
+
+rc=0
+out=$(RUN self doctor --deep 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "S7: deep doctor should still report the broken payload"
 # The remedy names the PACKAGE, with its namespace, because that is what
 # `xlings install` takes -- a finding names an xvm target and those are not the
 # same thing (`nm@20.1.7` is a program llvm registers, not a package).

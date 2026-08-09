@@ -4167,6 +4167,30 @@ TEST(XvmBindingSelectionErrorTest,
         "provider", "1.0.0");
 }
 
+TEST(XvmBindingSelectionTest, QueryContextReusesLegacyIncomingIndex) {
+    xlings::xvm::VersionDB db;
+    constexpr std::size_t kComponentCount = 100;
+    for (std::size_t index = 0; index < kComponentCount; ++index) {
+        const auto suffix = std::format("{:03}", index);
+        const auto member = "member-" + suffix;
+        const auto owner = "owner-" + suffix;
+        db[member].type = "program";
+        db[member].versions["1.0.0"].kind = "program";
+        db[owner].type = "program";
+        db[owner].versions["1.0.0"].kind = "program";
+        db[member].bindings[owner]["1.0.0"] = "1.0.0";
+        db[owner].bindings[member]["1.0.0"] = "1.0.0";
+    }
+    xlings::xvm::BindingSelectionResolver resolver{db};
+
+    const auto first = resolver.resolve("member-000", "1.0.0");
+    const auto last = resolver.resolve("member-099", "1.0.0");
+
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(last.has_value());
+    EXPECT_EQ(resolver.legacy_incoming_index_builds(), 1u);
+}
+
 TEST(XvmBindingSelectionErrorTest,
      ProviderResolutionRejectsPersistedIntegrityIssue) {
     auto corruptRoot = nlohmann::json::parse(R"({

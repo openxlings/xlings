@@ -70,7 +70,7 @@ Create a SubOS
 
 Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44
 
-## `xlings subos use <name>`
+## `xlings subos use [name]`
 
 Enter a SubOS
 
@@ -132,7 +132,7 @@ Migrate old layout
 
 Verify installation
 
-Options: `--fix` — Repair; `--dry-run` — Preview; `--all` — Show all findings; `--reset-metadata` — Discard unreadable metadata
+Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--fix` — Repair (implies --deep); `--dry-run` — Preview repairs without changing detection depth; `--all` — Show all findings; `--reset-metadata` — Discard unreadable metadata
 
 ## `xlings script <script-file> [args]...`
 

@@ -120,6 +120,36 @@ std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
     return std::nullopt;
 }
 
+xlings::xim::IndexManager make_identity_index(
+    std::vector<mcpplibs::xpkg::IndexEntry> entries) {
+    mcpplibs::xpkg::PackageIndex index;
+    for (auto& entry : entries) {
+        index.entries.emplace(entry.entryKey, std::move(entry));
+    }
+    xlings::xim::IndexManager manager;
+    manager.merge(std::move(index));
+    return manager;
+}
+
+mcpplibs::xpkg::IndexEntry identity_entry(
+    std::string namespaceName, std::string name,
+    std::string version, std::filesystem::path path,
+    std::string ref = {}) {
+    const auto canonical = namespaceName + ":" + name;
+    return {
+        .identity = {
+            .namespaceName = std::move(namespaceName),
+            .name = std::move(name),
+        },
+        .canonicalName = canonical,
+        .entryKey = version.empty() ? canonical : canonical + "@" + version,
+        .name = canonical.substr(canonical.find(':') + 1),
+        .version = std::move(version),
+        .path = std::move(path),
+        .ref = std::move(ref),
+    };
+}
+
 }  // namespace
 
 // ============================================================
@@ -512,6 +542,214 @@ TEST(XimNamespaceIndexTest, RejectsDuplicateEffectiveIdentityWithBothPaths) {
               std::string::npos);
     EXPECT_NE(result.error().find("implicit.demo.lua"), std::string::npos);
     EXPECT_NE(result.error().find("explicit.demo.lua"), std::string::npos);
+}
+
+TEST(XimCatalogLocalIdentityTest,
+     VersionedOnlyAndAliasUseIndexResolutionWithoutRecipes) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-local-identity-{}",
+                      std::chrono::steady_clock::now()
+                          .time_since_epoch().count());
+    fs::create_directories(root);
+    const auto marker = root / "recipe-ran";
+    const auto recipe = root / "pkg.lua";
+    const auto unrelated = root / "unrelated.lua";
+    xlings::platform::write_string_to_file(recipe.string(),
+        std::format("local f=io.open('{}','w'); f:write('pkg'); f:close()",
+                    marker.string()));
+    xlings::platform::write_string_to_file(unrelated.string(),
+        std::format("local f=io.open('{}','w'); f:write('other'); f:close()",
+                    marker.string()));
+    auto index = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", recipe),
+        identity_entry("ns", "shortcut", {}, unrelated, "pkg"),
+        identity_entry("other", "unrelated", "9.0.0", unrelated),
+    });
+    const xlings::xim::RepoIndexSpec spec{
+        .name = "global-a",
+        .scope = xlings::xim::PackageScope::Global,
+    };
+    const std::array views{
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = spec.name,
+            .scope = spec.scope,
+            .subIndex = spec.subIndex,
+            .index = &index,
+            .storeRoot = root / "store",
+        },
+    };
+
+    const auto direct =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "ns:pkg");
+    const auto alias =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "ns:shortcut");
+
+    ASSERT_TRUE(direct.has_value()) << direct.error();
+    EXPECT_EQ(direct->rawName, "ns:pkg@1.0.0");
+    EXPECT_EQ(direct->version, "1.0.0");
+    EXPECT_EQ(direct->pkgFile, recipe);
+    ASSERT_TRUE(alias.has_value()) << alias.error();
+    EXPECT_EQ(alias->canonicalName, "ns:pkg");
+    EXPECT_EQ(alias->rawName, "ns:pkg@1.0.0");
+    EXPECT_EQ(alias->version, "1.0.0");
+    EXPECT_FALSE(fs::exists(marker));
+    fs::remove_all(root);
+}
+
+TEST(XimCatalogLocalIdentityTest, DuplicateGlobalRepositoriesStayAmbiguous) {
+    auto first = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", "/repo-a/pkg.lua"),
+    });
+    auto second = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", "/repo-b/pkg.lua"),
+    });
+    const xlings::xim::RepoIndexSpec specA{
+        .name = "global-a",
+        .scope = xlings::xim::PackageScope::Global,
+    };
+    const xlings::xim::RepoIndexSpec specB{
+        .name = "global-b",
+        .scope = xlings::xim::PackageScope::Global,
+    };
+    const std::array views{
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = specA.name, .scope = specA.scope,
+            .subIndex = specA.subIndex, .index = &first,
+            .storeRoot = "/store-a"},
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = specB.name, .scope = specB.scope,
+            .subIndex = specB.subIndex, .index = &second,
+            .storeRoot = "/store-b"},
+    };
+
+    const auto result =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "ns:pkg");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("ambiguous"), std::string::npos);
+    EXPECT_NE(result.error().find("global-a"), std::string::npos);
+    EXPECT_NE(result.error().find("global-b"), std::string::npos);
+}
+
+TEST(XimCatalogLocalIdentityTest,
+     CrossRepoScopeNeverShadowsWithoutXpmVersionProof) {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path()
+        / std::format("xlings-local-scope-proof-{}",
+                      std::chrono::steady_clock::now()
+                          .time_since_epoch().count());
+    fs::create_directories(root);
+    const auto marker = root / "recipe-ran";
+    const auto recipe = root / "pkg.lua";
+    xlings::platform::write_string_to_file(recipe.string(),
+        std::format("local f=io.open('{}','w'); f:write('ran'); f:close()",
+                    marker.string()));
+
+    auto globalUnversioned = make_identity_index({
+        identity_entry("ns", "pkg", {}, recipe),
+    });
+    auto projectUnversioned = make_identity_index({
+        identity_entry("ns", "pkg", {}, recipe),
+    });
+    auto globalVersioned = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", recipe),
+    });
+    auto projectVersioned = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", recipe),
+    });
+    auto globalSecond = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", recipe),
+    });
+    auto projectSecond = make_identity_index({
+        identity_entry("ns", "pkg", "1.0.0", recipe),
+    });
+    const xlings::xim::RepoIndexSpec globalSpec{
+        .name = "global",
+        .scope = xlings::xim::PackageScope::Global,
+    };
+    const xlings::xim::RepoIndexSpec projectSpecA{
+        .name = "project-a",
+        .scope = xlings::xim::PackageScope::Project,
+    };
+    const xlings::xim::RepoIndexSpec projectSpecB{
+        .name = "project-b",
+        .scope = xlings::xim::PackageScope::Project,
+    };
+    const std::array unversionedViews{
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = projectSpecA.name, .scope = projectSpecA.scope,
+            .subIndex = projectSpecA.subIndex,
+            .index = &projectUnversioned,
+            .storeRoot = "/project-store-a"},
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = globalSpec.name, .scope = globalSpec.scope,
+            .subIndex = globalSpec.subIndex,
+            .index = &globalUnversioned,
+            .storeRoot = "/global-store"},
+    };
+    const auto unversioned =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            unversionedViews, "ns:pkg");
+    EXPECT_FALSE(unversioned.has_value());
+
+    const std::array versionedViews{
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = projectSpecA.name, .scope = projectSpecA.scope,
+            .subIndex = projectSpecA.subIndex, .index = &projectVersioned,
+            .storeRoot = "/project-store-a"},
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = globalSpec.name, .scope = globalSpec.scope,
+            .subIndex = globalSpec.subIndex, .index = &globalVersioned,
+            .storeRoot = "/global-store"},
+    };
+    const auto versioned =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            versionedViews, "ns:pkg");
+    EXPECT_FALSE(versioned.has_value());
+
+    const std::array fourRepoViews{
+        versionedViews[0],
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = projectSpecB.name, .scope = projectSpecB.scope,
+            .subIndex = projectSpecB.subIndex, .index = &projectSecond,
+            .storeRoot = "/project-store-b"},
+        versionedViews[1],
+        xlings::xim::catalog_detail::LocalIdentityRepoView{
+            .repoName = "global-b",
+            .scope = xlings::xim::PackageScope::Global,
+            .index = &globalSecond,
+            .storeRoot = "/global-store-b"},
+    };
+    const auto fourRepos =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            fourRepoViews, "ns:pkg");
+    EXPECT_FALSE(fourRepos.has_value());
+
+    const std::array projectViews{fourRepoViews[0], fourRepoViews[1]};
+    const std::array globalViews{fourRepoViews[2], fourRepoViews[3]};
+    EXPECT_FALSE(
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            projectViews, "ns:pkg").has_value());
+    EXPECT_FALSE(
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            globalViews, "ns:pkg").has_value());
+
+    const auto projectOnly =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            std::span{versionedViews}.first(1), "ns:pkg");
+    const auto globalOnly =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            std::span{versionedViews}.last(1), "ns:pkg");
+    ASSERT_TRUE(projectOnly.has_value()) << projectOnly.error();
+    ASSERT_TRUE(globalOnly.has_value()) << globalOnly.error();
+    EXPECT_EQ(projectOnly->repoName, "project-a");
+    EXPECT_EQ(globalOnly->repoName, "global");
+    EXPECT_FALSE(fs::exists(marker));
+    fs::remove_all(root);
 }
 
 // ============================================================

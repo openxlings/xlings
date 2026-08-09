@@ -25,6 +25,9 @@ write_home_config "$HOME_DIR" "GLOBAL" "$INDEX_DIR"
 mkdir -p "$HOME_DIR/data/xim-index-repos"
 printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
+log "explicit update materializes the namespace index"
+run_xlings "$HOME_DIR" "$ROOT_DIR" update >/dev/null
+
 log "search exposes both canonical identities"
 SEARCH_OUT="$(run_xlings "$HOME_DIR" "$ROOT_DIR" search demo 2>&1)"
 assert_contains "$SEARCH_OUT" "alpha:demo" "search missing alpha:demo"
@@ -118,7 +121,7 @@ write_home_config "$DUPLICATE_HOME_DIR" "GLOBAL" "$DUPLICATE_INDEX_DIR"
 mkdir -p "$DUPLICATE_HOME_DIR/data/xim-index-repos"
 printf '{}\n' > "$DUPLICATE_HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 set +e
-DUPLICATE_OUT="$(run_xlings "$DUPLICATE_HOME_DIR" "$ROOT_DIR" search demo 2>&1)"
+DUPLICATE_OUT="$(run_xlings "$DUPLICATE_HOME_DIR" "$ROOT_DIR" update 2>&1)"
 DUPLICATE_RC=$?
 set -e
 [[ "$DUPLICATE_RC" -ne 0 ]] || fail "duplicate xim:demo unexpectedly built"

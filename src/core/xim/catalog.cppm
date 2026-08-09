@@ -10,6 +10,7 @@ import xlings.core.xim.index;
 import xlings.core.xim.repo;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.semver;
+import xlings.platform.target;
 
 namespace xpkg = mcpplibs::xpkg;
 
@@ -213,7 +214,124 @@ bool same_match_identity_(const PackageMatch& lhs, const PackageMatch& rhs) {
         && lhs.repoName == rhs.repoName;
 }
 
+std::vector<PackageMatch> dedupe_matches_(
+    std::vector<PackageMatch> matches) {
+    std::ranges::sort(matches, {}, [](const PackageMatch& match) {
+        return std::tuple {
+            match.canonicalName,
+            match.version,
+            match.scope == PackageScope::Project ? 0 : 1,
+            match.repoName,
+            match.rawName,
+        };
+    });
+    std::vector<PackageMatch> unique;
+    for (auto& match : matches) {
+        const auto seen = std::ranges::any_of(
+            unique, [&](const PackageMatch& existing) {
+                return same_match_identity_(existing, match);
+            });
+        if (!seen) unique.push_back(std::move(match));
+    }
+    return unique;
+}
+
+std::vector<PackageMatch> prefer_project_scope_(
+    std::vector<PackageMatch> matches) {
+    std::unordered_set<std::string> projectKeys;
+    for (const auto& match : matches) {
+        if (match.scope == PackageScope::Project) {
+            projectKeys.insert(
+                match.canonicalName + "@" + match.version);
+        }
+    }
+    if (projectKeys.empty()) return matches;
+    std::vector<PackageMatch> filtered;
+    for (auto& match : matches) {
+        const auto key = match.canonicalName + "@" + match.version;
+        if (match.scope == PackageScope::Global
+            && projectKeys.contains(key)) {
+            continue;
+        }
+        filtered.push_back(std::move(match));
+    }
+    return filtered;
+}
+
 }  // namespace detail_
+
+namespace catalog_detail {
+
+struct LocalIdentityRepoView {
+    std::string repoName;
+    PackageScope scope { PackageScope::Global };
+    bool subIndex { false };
+    const IndexManager* index { nullptr };
+    std::filesystem::path storeRoot;
+};
+
+std::expected<PackageMatch, std::string>
+resolve_local_identity_from_repos(
+    std::span<const LocalIdentityRepoView> repos,
+    const std::string& target) {
+    const auto parsed = detail_::parse_target_(target);
+    if (parsed.name.empty() || !parsed.version.empty()) {
+        return std::unexpected(std::format(
+            "package identity '{}' is invalid", target));
+    }
+
+    std::vector<PackageMatch> primaryMatches;
+    std::vector<PackageMatch> subMatches;
+    std::optional<std::string_view> namespaceName;
+    if (parsed.explicitNamespace) namespaceName = parsed.namespaceName;
+    for (const auto& repo : repos) {
+        if (repo.index == nullptr) continue;
+        auto& destination = repo.subIndex
+            ? subMatches : primaryMatches;
+        for (const auto& candidate :
+             repo.index->find_candidates(parsed.name, namespaceName)) {
+            auto resolved = repo.index->resolve(candidate);
+            if (resolved.empty()) resolved = candidate;
+            auto matched = repo.index->find_entry(resolved) != nullptr
+                ? std::optional<std::string>{resolved}
+                : repo.index->match_version(resolved);
+            if (!matched) continue;
+            const auto* entry = repo.index->find_entry(*matched);
+            if (entry == nullptr) continue;
+            destination.push_back({
+                .query = parsed.raw,
+                .rawName = *matched,
+                .name = entry->identity.name,
+                .version = entry->version,
+                .namespaceName = entry->identity.namespaceName,
+                .canonicalName = entry->canonicalName,
+                .repoName = repo.repoName,
+                .pkgFile = entry->path,
+                .storeRoot = repo.storeRoot,
+                .scope = repo.scope,
+            });
+        }
+    }
+
+    if (parsed.explicitNamespace || primaryMatches.empty()) {
+        for (auto& match : subMatches) {
+            primaryMatches.push_back(std::move(match));
+        }
+    }
+    auto matches = std::move(primaryMatches);
+    matches = detail_::dedupe_matches_(std::move(matches));
+    if (matches.empty()) {
+        return std::unexpected(std::format(
+            "package '{}' not found", target));
+    }
+    if (matches.size() != 1) {
+        return std::unexpected(format_ambiguous_candidates(
+            target, matches));
+    }
+    return matches.front();
+}
+
+}  // namespace catalog_detail
 
 class PackageCatalog {
     struct RepoState {
@@ -305,32 +423,8 @@ class PackageCatalog {
         return state;
     }
 
-    static std::vector<PackageMatch> dedupe_matches_(std::vector<PackageMatch> matches) {
-        std::ranges::sort(matches, {}, [](const PackageMatch& match) {
-            return std::tuple {
-                match.canonicalName,
-                match.version,
-                match.scope == PackageScope::Project ? 0 : 1,
-                match.repoName,
-                match.rawName,
-            };
-        });
-        std::vector<PackageMatch> unique;
-        for (auto& match : matches) {
-            bool seen = false;
-            for (auto& existing : unique) {
-                if (detail_::same_match_identity_(existing, match)) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen) unique.push_back(std::move(match));
-        }
-        return unique;
-    }
-
     static std::vector<PackageMatch>
-    build_matches_(RepoState& state,
+    build_matches_(const RepoState& state,
                    const detail_::ParsedTarget_& parsed,
                    const std::string& platform,
                    bool forSearch = false) {
@@ -400,13 +494,13 @@ class PackageCatalog {
     }
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
-                                               const std::string& platform) {
+                                               const std::string& platform) const {
         auto parsed = detail_::parse_target_(target);
         std::vector<PackageMatch> primaryMatches;
         std::vector<PackageMatch> subMatches;
 
-        auto collect = [&](std::vector<RepoState>& repos) {
-            for (auto& repo : repos) {
+        auto collect = [&](const std::vector<RepoState>& repos) {
+            for (const auto& repo : repos) {
                 auto matches = build_matches_(repo, parsed, platform);
                 if (repo.spec.subIndex) {
                     for (auto& match : matches) {
@@ -426,14 +520,14 @@ class PackageCatalog {
         // Only fall through to sub-repos when no primary match exists.
         // Explicit namespace (e.g. d2x:d2mcpp) always uses all matches.
         if (!parsed.explicitNamespace && !primaryMatches.empty()) {
-            return dedupe_matches_(std::move(primaryMatches));
+            return detail_::dedupe_matches_(std::move(primaryMatches));
         }
 
         // Merge: either explicit namespace or no primary match
         for (auto& m : subMatches) {
             primaryMatches.push_back(std::move(m));
         }
-        return dedupe_matches_(std::move(primaryMatches));
+        return detail_::dedupe_matches_(std::move(primaryMatches));
     }
 
 public:
@@ -492,24 +586,12 @@ public:
 
     // When project and global have the same package, keep only project-scoped match
     static std::vector<PackageMatch> prefer_project_scope_(std::vector<PackageMatch> matches) {
-        std::unordered_set<std::string> projectKeys;
-        for (auto& m : matches) {
-            if (m.scope == PackageScope::Project) {
-                projectKeys.insert(m.canonicalName + "@" + m.version);
-            }
-        }
-        if (projectKeys.empty()) return matches;
-        std::vector<PackageMatch> filtered;
-        for (auto& m : matches) {
-            auto key = m.canonicalName + "@" + m.version;
-            if (m.scope == PackageScope::Global && projectKeys.contains(key)) continue;
-            filtered.push_back(std::move(m));
-        }
-        return filtered;
+        return detail_::prefer_project_scope_(std::move(matches));
     }
 
     std::expected<PackageMatch, std::string>
-    resolve_target(const std::string& target, const std::string& platform) {
+    resolve_target(const std::string& target,
+                   const std::string& platform) const {
         auto matches = collect_matches_(target, platform);
         if (matches.empty()) {
             return std::unexpected(std::format("package '{}' not found", target));
@@ -520,6 +602,33 @@ public:
             return std::unexpected(format_ambiguous_candidates(target, matches));
         }
         return matches.front();
+    }
+
+    // Resolve an already-indexed package identity without evaluating its Lua
+    // recipe, selecting a version, syncing a repository, or touching payload
+    // contents. Inventory uses this as a leaf existence/uniqueness check so a
+    // missing stamped identity cannot turn into an all-recipe scan.
+    std::expected<PackageMatch, std::string>
+    resolve_local_identity(const std::string& target) const {
+        std::vector<catalog_detail::LocalIdentityRepoView> views;
+        views.reserve(projectRepos_.size() + globalRepos_.size());
+        const auto append = [&](const std::vector<RepoState>& repos) {
+            for (const auto& repo : repos) {
+                views.push_back({
+                    .repoName = repo.spec.name,
+                    .scope = repo.spec.scope,
+                    .subIndex = repo.spec.subIndex,
+                    .index = &repo.index,
+                    .storeRoot = (repo.spec.scope == PackageScope::Project
+                        ? Config::project_data_dir()
+                        : Config::global_data_dir()) / "xpkgs",
+                });
+            }
+        };
+        append(projectRepos_);
+        append(globalRepos_);
+        return catalog_detail::resolve_local_identity_from_repos(
+            views, target);
     }
 
     std::vector<PackageMatch> search(const std::string& query, const std::string& platform) {
@@ -543,7 +652,7 @@ public:
 
         append(projectRepos_);
         append(globalRepos_);
-        return dedupe_matches_(std::move(results));
+        return detail_::dedupe_matches_(std::move(results));
     }
 
     std::expected<xpkg::Package, std::string> load_package(const PackageMatch& match) {
@@ -593,5 +702,19 @@ public:
         }
     }
 };
+
+// Resolve one package coordinate against an already-loaded catalog. This is a
+// deliberately narrow leaf for local diagnostics: it never rebuilds or syncs
+// the catalog, and it uses the same recipe version/ref selection, namespace
+// ambiguity and project-preference rules as normal package resolution.
+std::optional<PackageMatch>
+resolve_local_coordinate(const PackageCatalog& catalog,
+                         std::string_view coordinate) {
+    if (!catalog.is_loaded() || coordinate.empty()) return std::nullopt;
+    auto resolved = catalog.resolve_target(
+        std::string(coordinate), std::string(platform::build_os()));
+    if (!resolved) return std::nullopt;
+    return std::move(*resolved);
+}
 
 }  // namespace xlings::xim

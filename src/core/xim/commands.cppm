@@ -37,12 +37,29 @@ namespace xpkg = mcpplibs::xpkg;
 
 export namespace xlings::xim {
 
+enum class CatalogAccess { LocalOnly, InstallReady };
+
 // Shared IndexManager instance (lazy-initialized)
-PackageCatalog& get_catalog() {
+PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly) {
     static PackageCatalog mgr;
     static bool initialized = false;
+    static bool installReadyChecked = false;
+    // No rebuild yet on this call. A default-constructed expected<void,...> is
+    // a SUCCESS value, so leaving it as "the result" would make "never probed"
+    // and "probed and fine" the same thing -- and the self-heal below only ever
+    // fires on a failure it can see.
+    std::optional<std::expected<void, std::string>> result;
     if (!initialized) {
-        auto result = mgr.rebuild();
+        result = mgr.rebuild();
+        initialized = true;
+    }
+
+    if (access == CatalogAccess::InstallReady && !installReadyChecked) {
+        // A LocalOnly caller may have initialized the singleton before an
+        // install reaches it. Rebuild once here so this access request has a
+        // current error to report before attempting the repair sync.
+        if (!result && !mgr.is_loaded()) result = mgr.rebuild();
+
         // #366: on a fresh machine the main index rebuilds fine, but the
         // default sub-indexes were never synced — their pkgs/ dirs don't
         // exist, so repo_specs_() skips them and rebuild() still SUCCEEDS.
@@ -51,26 +68,27 @@ PackageCatalog& get_catalog() {
         // the user ran `xlings update`. Force a one-time sync when the
         // sub-index marker JSON is missing (cheap: skipped on every later run).
         bool subIndexesNeverSynced = !sub_indexes_initialized();
-        if (!result || subIndexesNeverSynced) {
-            if (!result) {
+        const bool buildFailed = result.has_value() && !result->has_value();
+        if (buildFailed || subIndexesNeverSynced) {
+            if (buildFailed) {
                 // Self-heal: a broken/absent index tree (interrupted fetch on
                 // an older xlings, wiped cache) is repairable — resync and
                 // rebuild once before surfacing an error the user would have
                 // to fix by running `xlings update` themselves.
                 log::warn("catalog build failed ({}); resyncing indexes...",
-                          result.error());
+                          result->error());
             } else {
                 log::info("initializing package sub-indexes (first run)...");
             }
             if (sync_all_repos(true)) {
                 result = mgr.rebuild(true);
             }
-            if (!result) {
-                log::error("failed to build catalog: {}", result.error());
+            if (result.has_value() && !result->has_value()) {
+                log::error("failed to build catalog: {}", result->error());
                 log::info("try running: xlings update");
             }
         }
-        initialized = true;
+        installReadyChecked = true;
     }
     return mgr;
 }
@@ -210,7 +228,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
     }
     Config::reload_state();
 
-    auto& catalog = get_catalog();
+    auto& catalog = get_catalog(CatalogAccess::InstallReady);
     if (!catalog.is_loaded()) {
         log::info("package index not available, updating...");
         sync_all_repos(true);
@@ -651,6 +669,47 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
 // (pkgmanager.remove inside an xpkg) always pass yes=true: the user already
 // approved the parent install, so the connected uninstall is implicit.
 // CLI-driven `xlings remove <pkg>` defaults to yes=false and bails on n.
+std::expected<bool, std::string>
+selected_payloadless_config_has_uninstall_(
+        PackageCatalog& catalog,
+        const PackageMatch& match,
+        std::string_view platform) {
+    auto package = catalog.load_package(match);
+    if (!package) return std::unexpected(package.error());
+    if (package->type != xpkg::PackageType::Config) return false;
+
+    const auto hasDeps = [&](const auto& deps) {
+        auto it = deps.find(std::string(platform));
+        return it != deps.end() && !it->second.empty();
+    };
+    if (hasDeps(package->xpm.deps)
+        || hasDeps(package->xpm.runtime_deps)
+        || hasDeps(package->xpm.build_deps)) {
+        return false;
+    }
+
+    const auto storeRoot = match.storeRoot.empty()
+        ? Config::paths().dataDir / "xpkgs"
+        : match.storeRoot;
+    const auto installDir = storeRoot
+        / package_store_name(match.namespaceName, match.name)
+        / match.version;
+    const auto snapshot = installDir / ".xpkg.lua";
+    std::error_code ec;
+    const auto recipe = std::filesystem::is_regular_file(snapshot, ec)
+        ? snapshot
+        : match.pkgFile;
+    ec.clear();
+    if (!std::filesystem::is_regular_file(recipe, ec)) {
+        return std::unexpected(std::format(
+            "uninstall recipe is not a local file: {}", recipe.string()));
+    }
+
+    auto executor = xpkg::create_executor(recipe);
+    if (!executor) return std::unexpected(executor.error());
+    return executor->has_hook(xpkg::HookType::Uninstall);
+}
+
 int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                bool force) {
     // Serialize against any other xlings mutating this home, then re-read
@@ -690,6 +749,7 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
     std::string displayName = target;
     std::string displayVersion;
     std::string subos = Config::paths().activeSubos;
+    bool payloadlessUninstallProven = false;
 
     // 0.4.19+: subos-membership guard.
     //
@@ -778,20 +838,74 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
             }
 
             if (!payloadOnDisk) {
-                // Genuinely absent. Here the "remove what isn't there is
-                // success" convention is right (S4 of
-                // remove_multi_version_test.sh asserts exit 0 and no
-                // `removed.*subos` summary), so keep it -- with a visible
-                // diagnostic, and without breaking scripts that re-run
-                // `remove` defensively.
-                log::warn("xlings: '{}' is not installed in current subos '{}'",
-                          bareName, subos);
-                return 0;
+                // Nothing here is installed. The only question left is whether
+                // this coordinate is a payloadless config whose uninstall hook
+                // still has work to do -- and being unable to answer it is not
+                // the same as answering "yes".
+                //
+                // What an unanswerable question MEANS depends on how the user
+                // asked it, and these are two different questions:
+                //
+                //   `remove pkg`        -- "make sure pkg is gone". Scripts
+                //       re-run this defensively, and a package whose recipe has
+                //       left the index is as gone as it gets. Warn, exit 0.
+                //       That is the convention the block below states.
+                //   `remove pkg@9.9.9`  -- "remove THIS version". Nothing here
+                //       has it and the index has never heard of it, so the
+                //       coordinate itself is wrong. Say so and fail; reporting
+                //       success would confirm a removal of something that
+                //       cannot exist.
+                const bool explicitVersion = target.contains('@');
+                auto selected = catalog.resolve_target(
+                    target, detect_platform());
+                std::expected<bool, std::string> executable = false;
+                if (selected) {
+                    executable = selected_payloadless_config_has_uninstall_(
+                        catalog, *selected, detect_platform());
+                }
+                if (!selected || !executable) {
+                    const auto reason = selected ? executable.error()
+                                                 : selected.error();
+                    if (explicitVersion) {
+                        stream.emit(ErrorEvent{
+                            .code = reason.contains("ambiguous")
+                                ? ErrorCode::InvalidInput
+                                : ErrorCode::NotFound,
+                            .message = reason,
+                            .recoverable = true,
+                            .hint = "verify the package coordinate, or drop "
+                                    "the version to remove whatever is installed",
+                        });
+                        return 1;
+                    }
+                    log::warn("xlings: cannot inspect an uninstall recipe for "
+                              "'{}' ({}); treating it as absent",
+                              target, reason);
+                }
+                if (executable && *executable) {
+                    payloadlessUninstallProven = true;
+                    log::info("{}@{} has an executable payloadless config "
+                              "uninstall; running it",
+                              selected->canonicalName, selected->version);
+                } else {
+                    // Genuinely absent. Here the "remove what isn't there is
+                    // success" convention is right (S4 of
+                    // remove_multi_version_test.sh asserts exit 0 and no
+                    // `removed.*subos` summary), so keep it -- with a visible
+                    // diagnostic, and without breaking scripts that re-run
+                    // `remove` defensively.
+                    log::warn(
+                        "xlings: '{}' is not installed in current subos '{}'",
+                        bareName, subos);
+                    return 0;
+                }
             }
 
-            log::warn("xlings: '{}' is not registered in subos '{}', but a "
-                      "payload is on disk; removing it for real",
-                      bareName, subos);
+            if (payloadOnDisk) {
+                log::warn("xlings: '{}' is not registered in subos '{}', but a "
+                          "payload is on disk; removing it for real",
+                          bareName, subos);
+            }
         }
     }
 
@@ -850,8 +964,9 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
         // a non-existent dir) and reports success, which loops the user.
         // The xvm-DB fallback above already anchors resolution to a real
         // installed version when one exists, so reaching here with
-        // `!installed` means nothing is installed for this target.
-        if (!match->installed) {
+        // `!installed` means nothing is installed for this target unless the
+        // payloadless-config proof above deliberately admitted its recipe.
+        if (!match->installed && !payloadlessUninstallProven) {
             log::warn("{}@{} is not installed", displayName, displayVersion);
             return 0;
         }
@@ -1099,13 +1214,10 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all = false) {
         return 1;
     }
 
-    auto installed = collect_inventory(catalog, all);
-    if (!filter.empty()) {
-        std::erase_if(installed, [&](const auto& record) {
-            return !record.canonicalName.contains(filter)
-                && !record.name.contains(filter);
-        });
-    }
+    const auto inventoryFilter = filter.empty()
+        ? std::optional<std::string_view>{}
+        : std::optional<std::string_view>{filter};
+    auto installed = collect_inventory(catalog, all, inventoryFilter);
 
     if (installed.empty()) {
         if (all) {
@@ -1334,7 +1446,8 @@ int cmd_info(const std::string& target, EventStream& stream,
     const auto storePath = match->storeRoot / storeName;
     // This package's rows only. Building the whole inventory to answer two
     // booleans about one package made `info` proportional to the index.
-    const auto rows = collect_package_inventory(catalog, match->canonicalName);
+    const auto rows = collect_package_inventory(
+        catalog, match->canonicalName, /*allSubos=*/true);
     const auto packageInstalled = !rows.empty();
     const auto selectedInstalled = std::ranges::any_of(rows,
         [&](const auto& record) {

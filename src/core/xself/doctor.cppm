@@ -6,7 +6,6 @@ module;
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
-
 export module xlings.core.xself.doctor;
 
 import std;
@@ -31,6 +30,7 @@ import xlings.core.xvm.switch_plan;   // plan_use_switch — the --fix preflight
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
 import xlings.core.xself.repair;
+import xlings.core.xim.catalog;
 import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.profile;
 import xlings.core.subos.manifest;
@@ -355,9 +355,20 @@ std::string alias_program_(const std::string& aliasCmd,
 // ── detection ────────────────────────────────────────────────────────
 
 // Whether a package is installable under this coordinate. Injected so that
-// detection stays testable and so that the probe -- a subprocess -- can be
-// memoized across both detection passes.
+// detection stays testable and so the local lookup can be memoized across
+// repair detection passes.
 using CoordinateProbe = std::function<bool(const xvm::InstallCoordinate&)>;
+
+struct AuditSelection {
+    bool deep { false };
+    std::optional<xim::PackageMatch> scope;
+};
+
+fs::path audit_payload_dir_(const xim::PackageMatch& match) {
+    return match.storeRoot
+        / xim::package_store_name(match.namespaceName, match.name)
+        / match.version;
+}
 
 // The command that repairs a broken entry, or nothing.
 //
@@ -455,9 +466,11 @@ std::string activation_conflict_(const DoctorState& st,
 // a reporter and a repairer that each describe the criteria end up describing
 // them differently, and then fight.
 //
-// Nothing here needs the version DB except D2 and D5, which take it as an
-// argument, so this stays checkable against a directory.
+// Nothing here needs XVM state except D2 and D5, which take the database and
+// already-parsed active workspace as arguments, so the manifest leaf itself
+// stays independent of VersionDB.
 std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
+                                            const xvm::Workspace& workspace,
                                             const fs::path& subosDir,
                                             const std::string& subosName) {
     namespace mf = xlings::subos::manifest;
@@ -651,27 +664,96 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
         });
     }
 
-    // D5 — the declared runtime is not installed here.
-    if (mf::is_binding(info.runtime) && !installed(info.runtime)) {
+    // D5 — the manifest and this SubOS's active XVM runtime must agree
+    // exactly. Finding the declared version elsewhere in the global DB is not
+    // enough: many payload versions coexist globally by design, while one
+    // SubOS has one active core runtime.
+    const auto runtimePayloadExists = [&](std::string_view binding) {
+        if (!mf::is_binding(binding)) return false;
+        const std::string name(mf::binding_name(binding));
+        const auto wanted = mf::binding_version(binding);
+        const auto* vi = xvm::get_vinfo(db, name);
+        if (!vi) return false;
+        for (const auto& [version, data] : vi->versions) {
+            if (!mf::version_is_active(wanted, version) || data.path.empty()) {
+                continue;
+            }
+            std::error_code ec;
+            const auto expanded = xvm::expand_path(
+                data.path, Config::paths().homeDir.string());
+            if (fs::exists(expanded, ec) && !ec) return true;
+        }
+        return false;
+    };
+
+    if (mf::is_binding(info.runtime)) {
+        const auto runtimeName = std::string(mf::binding_name(info.runtime));
+        const auto activeIt = workspace.find(runtimeName);
+        const std::string activeVersion = activeIt == workspace.end()
+            ? std::string{} : activeIt->second;
+        const auto mismatch = mf::check_runtime_activation(
+            info, activeVersion, runtimePayloadExists(info.runtime));
+        if (!mismatch) return out;
+
+        // A cold default SubOS records its runtime authority before that
+        // payload is materialized, while `self install` intentionally stays
+        // lightweight and does not download it. There is no split state until an
+        // active runtime exists. Keep the declaration visible as a warning;
+        // an active mismatch or an active runtime whose payload disappeared
+        // remains an error.
+        const bool unmaterializedDeclaration =
+            activeVersion.empty() && mismatch->payloadMissing;
+
+        const auto active = mismatch->active.empty()
+            ? std::string("<none>") : mismatch->active;
+        std::string detail = std::format(
+            "subos '{}' declares runtime {}, but its active XVM runtime is {}",
+            subosName, mismatch->declared, active);
+        if (mismatch->payloadMissing) {
+            detail += std::format("; declared runtime payload {} is missing",
+                                  mismatch->declared);
+        }
+
+        // Two ways out, and "create a new SubOS" is neither of them.
+        //
+        //   adopt   -- record what this subos is actually running. `--fix`
+        //              does this, and it is what a home upgraded from before
+        //              `subos_info` existed needs: the declaration was written
+        //              by the upgrade, not chosen by anyone.
+        //   migrate -- install the declared runtime and activate it. That path
+        //              already works, because activating the DECLARED version
+        //              is exactly what the use guard permits.
+        //
+        // Naming only "create a new SubOS" made this a dead end it never was.
+        const bool differentActive = !mismatch->active.empty()
+            && mismatch->active != mismatch->declared;
+        if (differentActive) {
+            detail += std::format(
+                "; nothing here was ever activated against {}",
+                mismatch->declared);
+        }
         out.push_back({
             .kind    = FindingKind::SubosRuntimeMissing,
-            // Warning: binaries generally still run, off the host's libc.
-            // That is the hermetic boundary being crossed silently, which is
-            // the thing worth saying rather than failing over.
-            .level   = FindingLevel::Warning,
+            .level   = unmaterializedDeclaration
+                ? FindingLevel::Warning : FindingLevel::Error,
             .target  = subosName,
-            .version = info.runtime,
-            .detail  = std::format(
-                "subos '{}' declares runtime {} ({}), which is not installed "
-                "here", subosName, info.runtime,
-                mf::family_of(info.runtime, platform::host().arch)),
-            .remedy  = std::format("xlings install {}", info.runtime),
+            .version = mismatch->declared,
+            .detail  = std::move(detail),
+            .remedy  = differentActive
+                ? std::format(
+                    "xlings self doctor --fix   (adopt {}; or migrate with "
+                    "`xlings install {}` then `xlings use {} {}`)",
+                    mismatch->active, mismatch->declared,
+                    mf::binding_name(mismatch->declared),
+                    mf::binding_version(mismatch->declared))
+                : std::format("xlings install {}", mismatch->declared),
         });
     }
     return out;
 }
 
-Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
+Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
+             const AuditSelection& audit) {
     auto& p = Config::paths();
     Scan scan;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
@@ -679,7 +761,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
     // The subos this run is actually in. Other subos are not inspected from
     // here for the same reason their payloads are not repaired: a second
     // shell may be inside one right now.
-    for (auto&& f : detect_subos_manifest_(st.db, p.subosDir,
+    for (auto&& f : detect_subos_manifest_(st.db, st.ws, p.subosDir,
                                            p.activeSubos.empty() ? "default"
                                                                  : p.activeSubos)) {
         add(std::move(f));
@@ -1116,8 +1198,10 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         }
         const auto wit = st.ws.find(name);
         std::string remedy;
-        if (auto coord = owning_coordinate_(st.db, name, version, probe)) {
-            remedy = coord->install_command();
+        if (audit.deep) {
+            if (auto coord = owning_coordinate_(st.db, name, version, probe)) {
+                remedy = coord->install_command();
+            }
         }
         add({
             .kind     = FindingKind::BrokenPayload,
@@ -1381,6 +1465,50 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
             }
         }
 
+        struct PayloadAuditRoot {
+            fs::path path;
+            std::string target;
+            std::string storeName;
+            std::string version;
+        };
+        std::vector<PayloadAuditRoot> payloadAuditRoots;
+        if (audit.deep) {
+            if (audit.scope) {
+                const auto& match = *audit.scope;
+                const auto storeName = xim::package_store_name(
+                    match.namespaceName, match.name);
+                const auto path = audit_payload_dir_(match);
+                std::error_code sec;
+                if (fs::is_directory(path, sec)) {
+                    payloadAuditRoots.push_back({
+                        .path = path,
+                        .target = match.canonicalName,
+                        .storeName = storeName,
+                        .version = match.version,
+                    });
+                }
+            } else {
+                std::error_code sec;
+                const auto store = Config::paths().dataDir / "xpkgs";
+                if (fs::is_directory(store, sec)) {
+                    for (const auto& pkgDir : platform::dir_entries(store)) {
+                        if (!pkgDir.is_directory()) continue;
+                        const auto storeName = pkgDir.path().filename().string();
+                        for (const auto& verDir :
+                                platform::dir_entries(pkgDir.path())) {
+                            if (!verDir.is_directory()) continue;
+                            payloadAuditRoots.push_back({
+                                .path = verDir.path(),
+                                .target = storeName,
+                                .storeName = storeName,
+                                .version = verDir.path().filename().string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // Loader and libc from one payload, over what is already on disk.
         //
         // The install path refuses to create a split, so anything found here
@@ -1392,30 +1520,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // Report and repair have drifted three times in this repo, and it
         // always looks the same from outside: doctor keeps reporting what
         // `--fix` claims to have fixed.
-        {
-            std::error_code sec;
-            const auto store = Config::paths().dataDir / "xpkgs";
-            if (fs::is_directory(store, sec)) {
-                for (const auto& pkgDir : platform::dir_entries(store)) {
-                    if (!pkgDir.is_directory()) continue;
-                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
-                        if (!verDir.is_directory()) continue;
-                        for (const auto& f :
-                                 elfcheck::scan_payload(verDir.path())) {
-                            add({
-                                .kind   = FindingKind::LoaderLibcSplit,
-                                .level  = FindingLevel::Error,
-                                .target = pkgDir.path().filename().string(),
-                                .version = verDir.path().filename().string(),
-                                .detail = elfcheck::describe(f),
-                                .remedy = std::format(
-                                    "xlings install {}@{} --force",
-                                    pkgDir.path().filename().string(),
-                                    verDir.path().filename().string()),
-                            });
-                        }
-                    }
-                }
+        for (const auto& root : payloadAuditRoots) {
+            for (const auto& f : elfcheck::scan_payload(root.path)) {
+                add({
+                    .kind   = FindingKind::LoaderLibcSplit,
+                    .level  = FindingLevel::Error,
+                    .target = root.target,
+                    .version = root.version,
+                    .detail = elfcheck::describe(f),
+                    .remedy = std::format(
+                        "xlings install {}@{} --force",
+                        root.target, root.version),
+                });
             }
         }
 
@@ -1436,98 +1552,90 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe) {
         // to be boring. When it fails it is an Error, because a home whose
         // packages resolve no users is broken in a way nothing else reports.
 #ifdef __linux__
-        {
+        for (const auto& root : payloadAuditRoots) {
+            const auto& storeName = root.storeName;
+            // `<ns>-x-glibc`, any namespace.
+            if (!storeName.ends_with("-x-glibc")) continue;
             std::error_code sec;
-            const auto store = Config::paths().dataDir / "xpkgs";
-            if (fs::is_directory(store, sec)) {
-                for (const auto& pkgDir : platform::dir_entries(store)) {
-                    if (!pkgDir.is_directory()) continue;
-                    const auto storeName = pkgDir.path().filename().string();
-                    // `<ns>-x-glibc`, any namespace.
-                    if (!storeName.ends_with("-x-glibc")) continue;
-                    for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
-                        if (!verDir.is_directory()) continue;
-                        const auto lib64  = verDir.path() / "lib64";
-                        const auto loader = lib64 / "ld-linux-x86-64.so.2";
-                        const auto getent = verDir.path() / "bin" / "getent";
-                        if (!fs::is_regular_file(loader, sec)) continue;
-                        if (!fs::is_regular_file(getent, sec)) continue;
+            const auto lib64  = root.path / "lib64";
+            const auto loader = lib64 / "ld-linux-x86-64.so.2";
+            const auto getent = root.path / "bin" / "getent";
+            if (!fs::is_regular_file(loader, sec)) continue;
+            if (!fs::is_regular_file(getent, sec)) continue;
 
-                        const auto version = verDir.path().filename().string();
-                        const auto cmd = std::format(
-                            "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
-                            loader.string(), lib64.string(), getent.string(),
-                            ::geteuid());
-                        auto [rc, out] = platform::run_command_capture(cmd);
+            const auto& version = root.version;
+            const auto cmd = std::format(
+                "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
+                loader.string(), lib64.string(), getent.string(),
+                ::geteuid());
+            auto [rc, out] = platform::run_command_capture(cmd);
 
-                        if (rc == 0 && !out.empty()) {
-                            add({
-                                .kind    = FindingKind::NssResolution,
-                                .level   = FindingLevel::Notice,
-                                .target  = storeName,
-                                .version = version,
-                                .detail  = std::format(
-                                    "glibc {}: resolves the current user "
-                                    "(getent passwd {} under our loader)",
-                                    version, ::geteuid()),
-                            });
-                            continue;
+            if (rc == 0 && !out.empty()) {
+                add({
+                    .kind    = FindingKind::NssResolution,
+                    .level   = FindingLevel::Notice,
+                    .target  = storeName,
+                    .version = version,
+                    .detail  = std::format(
+                        "glibc {}: resolves the current user "
+                        "(getent passwd {} under our loader)",
+                        version, ::geteuid()),
+                });
+                continue;
+            }
+
+            // Which backends this host asks for that we do not ship. Part of
+            // the finding, not a separate check: it is the only actionable
+            // thing about the failure.
+            std::string missing;
+            {
+                std::ifstream nss("/etc/nsswitch.conf");
+                std::set<std::string> seen;
+                for (std::string line; std::getline(nss, line);) {
+                    if (auto h = line.find('#'); h != std::string::npos)
+                        line.resize(h);
+                    auto colon = line.find(':');
+                    if (colon == std::string::npos) continue;
+                    auto rest = line.substr(colon + 1);
+                    // `[NOTFOUND=return]` is control flow, not a module.
+                    while (true) {
+                        auto ob = rest.find('[');
+                        if (ob == std::string::npos) break;
+                        auto cb = rest.find(']', ob);
+                        if (cb == std::string::npos) {
+                            rest.resize(ob);
+                            break;
                         }
-
-                        // Which backends this host asks for that we do not
-                        // ship. Part of the finding, not a separate check: it
-                        // is the only actionable thing about the failure.
-                        std::string missing;
-                        {
-                            std::ifstream nss("/etc/nsswitch.conf");
-                            std::set<std::string> seen;
-                            for (std::string line; std::getline(nss, line);) {
-                                if (auto h = line.find('#'); h != std::string::npos)
-                                    line.resize(h);
-                                auto colon = line.find(':');
-                                if (colon == std::string::npos) continue;
-                                auto rest = line.substr(colon + 1);
-                                // `[NOTFOUND=return]` is control flow, not a
-                                // module; reporting it as missing would send
-                                // the reader looking for libnss_NOTFOUND.
-                                while (true) {
-                                    auto ob = rest.find('[');
-                                    if (ob == std::string::npos) break;
-                                    auto cb = rest.find(']', ob);
-                                    if (cb == std::string::npos) { rest.resize(ob); break; }
-                                    rest.erase(ob, cb - ob + 1);
-                                }
-                                std::istringstream toks(rest);
-                                for (std::string mod; toks >> mod;) {
-                                    if (!seen.insert(mod).second) continue;
-                                    if (!fs::is_regular_file(
-                                            lib64 / ("libnss_" + mod + ".so.2"), sec)) {
-                                        if (!missing.empty()) missing += ", ";
-                                        missing += mod;
-                                    }
-                                }
-                            }
+                        rest.erase(ob, cb - ob + 1);
+                    }
+                    std::istringstream toks(rest);
+                    for (std::string mod; toks >> mod;) {
+                        if (!seen.insert(mod).second) continue;
+                        if (!fs::is_regular_file(
+                                lib64 / ("libnss_" + mod + ".so.2"), sec)) {
+                            if (!missing.empty()) missing += ", ";
+                            missing += mod;
                         }
-
-                        add({
-                            .kind    = FindingKind::NssResolution,
-                            .level   = FindingLevel::Error,
-                            .target  = storeName,
-                            .version = version,
-                            .detail  = std::format(
-                                "glibc {}: does NOT resolve the current user "
-                                "under our loader{}. Any package switched to "
-                                "this interpreter will see no user, silently.",
-                                version,
-                                missing.empty()
-                                    ? std::string{}
-                                    : std::format(
-                                        " -- /etc/nsswitch.conf names backend(s) "
-                                        "this payload does not ship: {}", missing)),
-                        });
                     }
                 }
             }
+
+            add({
+                .kind    = FindingKind::NssResolution,
+                .level   = FindingLevel::Error,
+                .target  = storeName,
+                .version = version,
+                .detail  = std::format(
+                    "glibc {}: does NOT resolve the current user under our "
+                    "loader{}. Any package switched to this interpreter will "
+                    "see no user, silently.",
+                    version,
+                    missing.empty()
+                        ? std::string{}
+                        : std::format(
+                            " -- /etc/nsswitch.conf names backend(s) this "
+                            "payload does not ship: {}", missing)),
+            });
         }
 #endif
 
@@ -1726,6 +1834,23 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         for (const auto& f : scan.findings)
             if (f.kind == FindingKind::SubosEnvOrphan) orphans.push_back(f.version);
 
+        // A runtime declaration that contradicts what this subos actually runs.
+        // Keyed on the finding, and the adopted value is read back through the
+        // same `observed_runtime` the detection used, so the repairer cannot
+        // decide something the reporter did not say.
+        //
+        // Only the Error shape is adopted: a declaration with NO active runtime
+        // is a cold intent (`subos new --runtime X` before installing X), and
+        // overwriting that would undo a decision someone took.
+        std::string adoptRuntime;
+        for (const auto& f : scan.findings) {
+            if (f.kind != FindingKind::SubosRuntimeMissing) continue;
+            if (f.level != FindingLevel::Error) continue;
+            if (!f.remedy.starts_with("xlings self doctor --fix")) continue;
+            adoptRuntime = f.version;   // the declared binding; family only
+            break;
+        }
+
         // A contested binding is deliberately NOT repaired here. It is reported
         // precisely because nothing can say which version was meant -- the
         // package has no active version -- and picking the highest, or the
@@ -1733,7 +1858,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         // a repair: a second answerer invented at the read end. Its remedy is
         // `xlings use`, which makes the choice a decision someone took.
 
-        if (wantsBlock || !orphans.empty()) {
+        if (wantsBlock || !orphans.empty() || !adoptRuntime.empty()) {
             auto doc = mf::read_document(p.subosDir);
             nlohmann::json document = doc ? *doc : nlohmann::json::object();
             if (!doc && fs::exists(mf::config_path(p.subosDir))) {
@@ -1763,6 +1888,25 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                          std::format("described subos '{}' (runtime {})",
                                      p.activeSubos, keptRuntime));
                 }
+                if (!adoptRuntime.empty()) {
+                    const auto observed = mf::observed_runtime(
+                        document, mf::binding_name(adoptRuntime));
+                    if (observed.empty()) {
+                        note(glyph::mark(glyph::warn, "subos runtime"),
+                             std::format("cannot adopt: subos '{}' has no "
+                                         "active {} to record",
+                                         p.activeSubos,
+                                         mf::binding_name(adoptRuntime)));
+                    } else if (observed != adoptRuntime) {
+                        document[std::string(mf::BLOCK)]["runtime"] = observed;
+                        changed = true;
+                        note(glyph::mark(glyph::bullet, "subos runtime"),
+                             std::format("subos '{}' now declares {} "
+                                         "(was {}, never activated here)",
+                                         p.activeSubos, observed,
+                                         adoptRuntime));
+                    }
+                }
                 for (const auto& binding : orphans) {
                     if (!mf::remove_provider(document, binding)) continue;
                     changed = true;
@@ -1780,7 +1924,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                              std::format("could not write {}: {}",
                                          Config::display_path(
                                              mf::config_path(p.subosDir)),
-                                         e.what()));
+                                         std::string(e.what())));
                     }
                 }
             }
@@ -2069,7 +2213,8 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
         for (const auto& [coord, covered] : byOwner) {
             out.planned.push_back(std::format(
                 "{}   ({} entr{})", coord.install_command(), covered.size(),
-                covered.size() == 1 ? "y" : "ies"));
+                covered.size() == 1 ? std::string("y")
+                                    : std::string("ies")));
         }
         for (const auto* f : unowned) {
             out.planned.push_back(std::format(
@@ -2113,7 +2258,8 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
             .target        = coord.package,
             .version       = coord.version,
             .detail        = std::format("{} broken entr{}", covered.size(),
-                                         covered.size() == 1 ? "y" : "ies"),
+                                         covered.size() == 1 ? std::string("y")
+                                                             : std::string("ies")),
             .coordinate    = coord.canonical(),
             .reinstallable = true,   // confirmed by the probe above
         };
@@ -2393,14 +2539,12 @@ Counts count_(const Scan& scan) {
             case FindingKind::SubosEnvUnresolved:
                 ++c.broken;
                 break;
-            // Warnings, so deliberately NOT in issues() and not in the exit
-            // code. They are counted because the summary line should account
-            // for every finding it printed -- a report whose numbers do not
-            // add up to its own list is how "broken payloads 1" with nothing
-            // in the list to explain it happened before.
             case FindingKind::SubosEnvConflict:
-            case FindingKind::SubosRuntimeMissing:
                 ++c.warnings;
+                break;
+            case FindingKind::SubosRuntimeMissing:
+                if (f.level == FindingLevel::Error) ++c.broken;
+                else ++c.warnings;
                 break;
         }
     }
@@ -2621,7 +2765,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::warn, "subos env conflict"), f.detail);
                 break;
             case FindingKind::SubosRuntimeMissing:
-                add(glyph::mark(glyph::warn, "subos runtime"), f.detail);
+                add(f.level == FindingLevel::Error
+                        ? glyph::mark(glyph::failed, "subos runtime")
+                        : glyph::mark(glyph::warn, "subos runtime"),
+                    f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
@@ -2668,7 +2815,9 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         std::string summary;
         const auto part = [&](int n, std::string_view what) {
             if (n == 0) return;
-            if (!summary.empty()) summary += std::format(" {} ", glyph::bullet);
+            if (!summary.empty()) {
+                summary += std::format(" {} ", std::string(glyph::bullet));
+            }
             summary += std::format("{} {}", n, what);
         };
         part(anchors, "release anchor");
@@ -2750,10 +2899,87 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
 export int cmd_doctor(EventStream& stream, bool fix,
                       bool resetMetadata = false,
                       bool dryRun = false,
-                      bool verbose = false) {
-    // One probe cache for the whole command. `xlings info` is ~50ms and the
-    // same candidate is asked about once per finding it owns and again on the
-    // second detection pass.
+                      bool verbose = false,
+                      bool deep = false,
+                      std::optional<std::string> scope = std::nullopt) {
+    const bool deepAudit = deep || fix;
+    if (scope && !deepAudit) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "`--scope` requires `--deep` (or `--fix`, which implies it)",
+            .recoverable = false,
+        });
+        return 2;
+    }
+
+    // Announce the boundary before catalog evaluation or payload walking. A
+    // deep audit can legitimately take time on a large store; silence before
+    // the first result is indistinguishable from the hang this mode replaces.
+    if (deepAudit) {
+        // `--scope` narrows the payload/runtime AUDIT. Every other check, and
+        // every repair `--fix` performs, still covers the whole home -- so the
+        // announce line says which, rather than letting the reader infer that
+        // the run is confined to one package.
+        stream.emit(LogEvent{
+            LogLevel::info,
+            scope
+                ? std::format("deep audit scope: {} "
+                              "(payload/runtime audit only; other checks and "
+                              "repairs still cover this home)", *scope)
+                : std::string("deep audit scope: all installed payloads"),
+        });
+        std::cout.flush();
+    }
+
+    std::optional<xim::PackageCatalog> localCatalog;
+    AuditSelection audit{.deep = deepAudit};
+    if (deepAudit) {
+        localCatalog.emplace();
+        const auto rebuilt = localCatalog->rebuild();
+        if (!rebuilt) {
+            if (scope) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "cannot resolve deep audit scope '{}': {}",
+                        *scope, rebuilt.error()),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            localCatalog.reset();
+        } else if (scope) {
+            auto resolved = localCatalog->resolve_target(
+                *scope, std::string(platform::build_os()));
+            if (!resolved) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "deep audit scope '{}' is missing or ambiguous: {}",
+                        *scope, resolved.error()),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            const auto payloadDir = audit_payload_dir_(*resolved);
+            std::error_code ec;
+            if (!fs::is_directory(payloadDir, ec)
+                || !xim::payload_has_content(payloadDir)) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format(
+                        "deep audit scope '{}' has no local payload at {}",
+                        *scope, Config::display_path(payloadDir)),
+                    .recoverable = false,
+                });
+                return 2;
+            }
+            audit.scope = std::move(*resolved);
+        }
+    }
+
+    // One in-process probe cache for the whole command. The same candidate is
+    // asked about once per finding it owns and again after repair passes.
     std::map<std::string, bool> probed;
     std::string client = "xlings";
     {
@@ -2766,10 +2992,8 @@ export int cmd_doctor(EventStream& stream, bool fix,
             if (const auto it = probed.find(key); it != probed.end()) {
                 return it->second;
             }
-            const bool ok = probe_coordinate(
-                key,
-                [](const std::string& cmd) { return platform::exec(cmd); },
-                client);
+            const bool ok = localCatalog
+                && xim::resolve_local_coordinate(*localCatalog, key).has_value();
             probed.emplace(key, ok);
             return ok;
         };
@@ -2817,7 +3041,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
         state = load_state_();
     }
 
-    auto scan = detect_(state, probe);
+    auto scan = detect_(state, probe, audit);
 
     if (!fix) {
         render_(scan, repair, fix, dryRun, verbose, stream);
@@ -2847,7 +3071,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
     const auto refresh = [&] {
         Config::reload_state();
         state = load_state_();
-        scan  = detect_(state, probe);
+        scan  = detect_(state, probe, audit);
     };
 
     // Phase 1: the cheap metadata repairs, BEFORE the ladder.

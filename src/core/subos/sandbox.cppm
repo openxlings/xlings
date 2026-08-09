@@ -5,6 +5,10 @@ module;
 #include <cstdio>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+// See src/core/subos.cppm: windows.h's min/max macros break std::min({...}).
+// Not yet triggered here, and that is exactly why it is worth closing --
+// the failure only appears on Windows, and only once someone writes the call.
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <cerrno>
@@ -777,7 +781,7 @@ detect_backend_(const fs::path& home_dir,
 // so the day an aarch64 backend is published every client in the field still
 // refuses. This is re-read from the index on every call.
 std::optional<std::string> backend_target_unavailable_() {
-    auto& catalog = xim::get_catalog();
+    auto& catalog = xim::get_catalog(xim::CatalogAccess::LocalOnly);
     if (!catalog.is_loaded()) return std::nullopt;
 
     const auto hostArch = xim::host_architecture();

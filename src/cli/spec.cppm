@@ -67,7 +67,7 @@ const CommandSpec& root() {
                 {{"--lang <LANG>", "Set language"}, {"--mirror <MIRROR>", "Set mirror"}, {"--add-xpkg <FILE>", "Add package recipe"}, {"--index-repo <NS:URL>", "Add index repository"}}, {}},
             {"subos", "Manage SubOS environments", {}, {}, {}, {
                 {"new", "Create a SubOS", {}, {{"name", "SubOS name", true}}, {{"--storage <MODE>", "shared, tmpfs or image"}, {"--image-size <SIZE>", "Image size"}, {"--from <SOURCE>", "Fork source"}, {"--runtime <SPEC>", "Runtime binding, e.g. glibc@2.44"}}, {}},
-                {"use", "Enter a SubOS", {}, {{"name", "SubOS name", true}}, {{"--global", "Persist the active SubOS"}, {"--shell [KIND]", "Emit shell activation code"}, {"--sandbox [BACKEND]", "Enable sandbox (bwrap or proot on Linux)"}, {"--cmd <COMMAND>", "Run one command"}, {"--keep", "Keep the namespace keeper"}, {"--no-keep", "Disable the namespace keeper"}, {"--ttl <SECONDS>", "Keeper idle timeout"}, {"--gpu", "Expose GPU devices (bwrap only)"}}, {}},
+                {"use", "Enter a SubOS", {}, {{"name", "Optional SubOS name; omit to list candidates", false}}, {{"--global", "Persist the active SubOS"}, {"--shell [KIND]", "Emit shell activation code"}, {"--sandbox [BACKEND]", "Enable sandbox (bwrap or proot on Linux)"}, {"--cmd <COMMAND>", "Run one command"}, {"--keep", "Keep the namespace keeper"}, {"--no-keep", "Disable the namespace keeper"}, {"--ttl <SECONDS>", "Keeper idle timeout"}, {"--gpu", "Expose GPU devices (bwrap only)"}}, {}},
                 {"list", "List SubOS environments", {"ls"}, {}, {}, {}},
                 {"remove", "Remove a SubOS", {"rm"}, {{"name", "SubOS name", true}}, {}, {}},
                 {"info", "Show SubOS details", {"i"}, {{"name", "Optional SubOS", false}}, {}, {}},
@@ -81,7 +81,7 @@ const CommandSpec& root() {
                 {"config", "Show configuration", {}, {}, {}, {}},
                 {"clean", "Clean cache", {}, {}, {{"--dry-run", "Preview"}}, {}},
                 {"migrate", "Migrate old layout", {}, {}, {}, {}},
-                {"doctor", "Verify installation", {}, {}, {{"--fix", "Repair"}, {"--dry-run", "Preview"}, {"--all", "Show all findings"}, {"--reset-metadata", "Discard unreadable metadata"}}, {}},
+                {"doctor", "Verify installation", {}, {}, {{"--deep", "Audit package payloads and runtime functionality"}, {"--scope <PACKAGE[@VERSION]>", "Limit deep payload/runtime audit to one local package coordinate"}, {"--fix", "Repair (implies --deep)"}, {"--dry-run", "Preview repairs without changing detection depth"}, {"--all", "Show all findings"}, {"--reset-metadata", "Discard unreadable metadata"}}, {}},
             }},
             {"script", "Run an xlings script", {}, {{"script-file", "Script path", true}, {"args", "Script arguments", false, true}}, {}, {}},
             {"interface", "Use the NDJSON interface", {}, {{"capability", "Capability name", false}}, {{"--args <JSON>", "Capability arguments"}, {"--args-file <PATH>", "Read capability arguments from a file"}, {"--list", "List capabilities"}, {"--version", "Show protocol version"}}, {}},

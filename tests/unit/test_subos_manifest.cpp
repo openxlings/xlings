@@ -72,6 +72,43 @@ TEST(SubosManifestRuntime, BindingShapeRequiresBothHalves) {
     EXPECT_FALSE(m::is_binding("@2.39"));
 }
 
+TEST(SubosRuntime, ExactActiveVersionWithPayloadPasses) {
+    m::Info info{.runtime = "glibc@2.44"};
+    EXPECT_FALSE(m::check_runtime_activation(info, "2.44", true).has_value());
+}
+
+TEST(SubosRuntime, MismatchNamesDeclaredAndActiveCoordinates) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "2.39", true);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->declared, "glibc@2.44");
+    EXPECT_EQ(mismatch->active, "glibc@2.39");
+    EXPECT_FALSE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, MissingActiveVersionIsAMismatch) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "", true);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->declared, "glibc@2.44");
+    EXPECT_TRUE(mismatch->active.empty());
+    EXPECT_FALSE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, ExactActiveVersionStillRequiresItsPayload) {
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "2.44", false);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_EQ(mismatch->active, "glibc@2.44");
+    EXPECT_TRUE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, NamespacedActiveVersionUsesItsVersionTail) {
+    m::Info info{.runtime = "glibc@2.44"};
+    EXPECT_FALSE(m::check_runtime_activation(
+        info, "xim:2.44", true).has_value());
+}
+
 // ── invariants ───────────────────────────────────────────────────────
 
 TEST(SubosManifestValidate, AcceptsAWellFormedBlock) {
@@ -682,4 +719,81 @@ TEST(SubosPrivilegedEnv, PathIsGovernedElsewhere) {
 TEST(SubosPrivilegedEnv, AValueOutsideOurStoreIsNotPrivileged) {
     EXPECT_FALSE(m::is_privileged_env("LD_LIBRARY_PATH",
                                       "/usr/lib/x86_64-linux-gnu"));
+}
+
+// ── preserved_runtime: what a rebuilt block declares ────────────────────
+//
+// Measured on a real home before these were written: of ~25 subos, three
+// carried a runtime binding and the rest predated `subos_info` entirely.
+// Every one of those was declared against the current DEFAULT_RUNTIME the
+// first time anything rebuilt its block -- after which `self doctor` reported
+// an error and `use` refused to activate the runtime the subos was already
+// running. The declaration has to come from what the subos IS, and the
+// workspace in the same file already says so.
+
+TEST(SubosPreservedRuntime, ARecordedBindingWins) {
+    auto doc = nlohmann::json::parse(R"({
+        "subos_info": {"runtime": "glibc@2.39"},
+        "workspace": {"glibc": {"active": "2.44"}}
+    })");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+}
+
+TEST(SubosPreservedRuntime, NoRecordedBindingTakesTheObservedActiveRuntime) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "2.39", "installed": ["2.39"]}}
+    })");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39")
+        << "a legacy subos running 2.39 must not be re-declared against 2.44";
+}
+
+TEST(SubosPreservedRuntime, AnInvalidRecordedBindingStillPrefersTheObserved) {
+    auto doc = nlohmann::json::parse(R"({
+        "subos_info": {"runtime": "glibc"},
+        "workspace": {"glibc": {"active": "2.39"}}
+    })");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+}
+
+TEST(SubosPreservedRuntime, TheWorkspaceVersionMayCarryItsNamespace) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "xim:2.39"}}
+    })");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+}
+
+TEST(SubosPreservedRuntime, NothingKnownFallsBackToTheDefault) {
+    auto doc = nlohmann::json::parse(R"({"workspace": {"gcc": {"active": "16"}}})");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.44")
+        << "another package's version is not this subos's runtime";
+}
+
+TEST(SubosPreservedRuntime, AnEmptyActiveIsNotAnObservation) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "", "installed": []}}
+    })");
+    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.44");
+}
+
+// The family is read out of the fallback, so this function states nothing
+// about which runtime family a platform uses.
+TEST(SubosObservedRuntime, TheFamilyComesFromTheCaller) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "2.39"}, "msvcrt": {"active": "14"}}
+    })");
+    EXPECT_EQ(m::observed_runtime(doc, "msvcrt"), "msvcrt@14");
+    EXPECT_EQ(m::observed_runtime(doc, "glibc"), "glibc@2.39");
+    EXPECT_EQ(m::observed_runtime(doc, ""), "");
+}
+
+// A rebuilt block must still validate, or doctor reports the manifest as
+// broken forever. This is why "record nothing" is not an option for a legacy
+// subos: validate_block requires a well-formed binding.
+TEST(SubosPreservedRuntime, TheRebuiltBlockValidates) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "2.39"}}
+    })");
+    doc["subos_info"] = m::make_block(m::preserved_runtime(doc, m::DEFAULT_RUNTIME),
+                                      "xlings test", "2.39");
+    EXPECT_TRUE(m::validate_block(doc).empty());
 }

@@ -140,15 +140,6 @@ bool probe_reinstallable(const std::string& target,
                            client, target, version, quiet_suffix())) == 0;
 }
 
-// Same probe, for a coordinate the caller has already assembled.
-bool probe_coordinate(const std::string& coordinate,
-                      const CommandRunner& run,
-                      const std::string& client = "xlings") {
-    if (!is_shell_safe_token(coordinate)) return false;
-    return run(std::format("{} info {}{}",
-                           client, coordinate, quiet_suffix())) == 0;
-}
-
 // The one-line nudge toward `self doctor --fix`.
 //
 // The home config records which xlings set it up. When that differs from the

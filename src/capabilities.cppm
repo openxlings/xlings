@@ -296,7 +296,7 @@ public:
         };
     }
     auto execute(Params, EventStream& stream) -> Result override {
-        auto all = subos::list_all();
+        auto all = subos::candidate_view().candidates;
         nlohmann::json entries = nlohmann::json::array();
         for (auto& s : all) {
             entries.push_back({
