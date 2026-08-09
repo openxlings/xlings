@@ -714,8 +714,24 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                                   mismatch->declared);
         }
 
+        // Two ways out, and "create a new SubOS" is neither of them.
+        //
+        //   adopt   -- record what this subos is actually running. `--fix`
+        //              does this, and it is what a home upgraded from before
+        //              `subos_info` existed needs: the declaration was written
+        //              by the upgrade, not chosen by anyone.
+        //   migrate -- install the declared runtime and activate it. That path
+        //              already works, because activating the DECLARED version
+        //              is exactly what the use guard permits.
+        //
+        // Naming only "create a new SubOS" made this a dead end it never was.
         const bool differentActive = !mismatch->active.empty()
             && mismatch->active != mismatch->declared;
+        if (differentActive) {
+            detail += std::format(
+                "; nothing here was ever activated against {}",
+                mismatch->declared);
+        }
         out.push_back({
             .kind    = FindingKind::SubosRuntimeMissing,
             .level   = unmaterializedDeclaration
@@ -725,9 +741,11 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
             .detail  = std::move(detail),
             .remedy  = differentActive
                 ? std::format(
-                    "runtime migration is required; create a new SubOS with "
-                    "`xlings subos new <name> --runtime {}` or migrate this "
-                    "SubOS explicitly", mismatch->declared)
+                    "xlings self doctor --fix   (adopt {}; or migrate with "
+                    "`xlings install {}` then `xlings use {} {}`)",
+                    mismatch->active, mismatch->declared,
+                    mf::binding_name(mismatch->declared),
+                    mf::binding_version(mismatch->declared))
                 : std::format("xlings install {}", mismatch->declared),
         });
     }
@@ -1816,6 +1834,23 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         for (const auto& f : scan.findings)
             if (f.kind == FindingKind::SubosEnvOrphan) orphans.push_back(f.version);
 
+        // A runtime declaration that contradicts what this subos actually runs.
+        // Keyed on the finding, and the adopted value is read back through the
+        // same `observed_runtime` the detection used, so the repairer cannot
+        // decide something the reporter did not say.
+        //
+        // Only the Error shape is adopted: a declaration with NO active runtime
+        // is a cold intent (`subos new --runtime X` before installing X), and
+        // overwriting that would undo a decision someone took.
+        std::string adoptRuntime;
+        for (const auto& f : scan.findings) {
+            if (f.kind != FindingKind::SubosRuntimeMissing) continue;
+            if (f.level != FindingLevel::Error) continue;
+            if (!f.remedy.starts_with("xlings self doctor --fix")) continue;
+            adoptRuntime = f.version;   // the declared binding; family only
+            break;
+        }
+
         // A contested binding is deliberately NOT repaired here. It is reported
         // precisely because nothing can say which version was meant -- the
         // package has no active version -- and picking the highest, or the
@@ -1823,7 +1858,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         // a repair: a second answerer invented at the read end. Its remedy is
         // `xlings use`, which makes the choice a decision someone took.
 
-        if (wantsBlock || !orphans.empty()) {
+        if (wantsBlock || !orphans.empty() || !adoptRuntime.empty()) {
             auto doc = mf::read_document(p.subosDir);
             nlohmann::json document = doc ? *doc : nlohmann::json::object();
             if (!doc && fs::exists(mf::config_path(p.subosDir))) {
@@ -1852,6 +1887,25 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     note(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",
                                      p.activeSubos, keptRuntime));
+                }
+                if (!adoptRuntime.empty()) {
+                    const auto observed = mf::observed_runtime(
+                        document, mf::binding_name(adoptRuntime));
+                    if (observed.empty()) {
+                        note(glyph::mark(glyph::warn, "subos runtime"),
+                             std::format("cannot adopt: subos '{}' has no "
+                                         "active {} to record",
+                                         p.activeSubos,
+                                         mf::binding_name(adoptRuntime)));
+                    } else if (observed != adoptRuntime) {
+                        document[std::string(mf::BLOCK)]["runtime"] = observed;
+                        changed = true;
+                        note(glyph::mark(glyph::bullet, "subos runtime"),
+                             std::format("subos '{}' now declares {} "
+                                         "(was {}, never activated here)",
+                                         p.activeSubos, observed,
+                                         adoptRuntime));
+                    }
                 }
                 for (const auto& binding : orphans) {
                     if (!mf::remove_provider(document, binding)) continue;
@@ -2862,10 +2916,16 @@ export int cmd_doctor(EventStream& stream, bool fix,
     // deep audit can legitimately take time on a large store; silence before
     // the first result is indistinguishable from the hang this mode replaces.
     if (deepAudit) {
+        // `--scope` narrows the payload/runtime AUDIT. Every other check, and
+        // every repair `--fix` performs, still covers the whole home -- so the
+        // announce line says which, rather than letting the reader infer that
+        // the run is confined to one package.
         stream.emit(LogEvent{
             LogLevel::info,
             scope
-                ? std::format("deep audit scope: {}", *scope)
+                ? std::format("deep audit scope: {} "
+                              "(payload/runtime audit only; other checks and "
+                              "repairs still cover this home)", *scope)
                 : std::string("deep audit scope: all installed payloads"),
         });
         std::cout.flush();

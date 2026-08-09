@@ -333,9 +333,13 @@ bool runtime_activation_refused_(const VersionDB& db,
                "declares {}, but the requested runtime is {}",
                mismatch->declared, prospective);
     log::error("  nothing was changed");
-    log::error("  hint: runtime migration is required; create a new SubOS "
-               "with `xlings subos new <name> --runtime {}` or migrate this "
-               "SubOS explicitly", mismatch->declared);
+    // Two ways out, and both stay inside this SubOS. Sending the user to
+    // `subos new` implies neither exists, which was never true: activating the
+    // DECLARED version is exactly what this guard permits.
+    log::error("  hint: adopt what this SubOS runs -- `xlings self doctor --fix`");
+    log::error("        or migrate to it -- `xlings install {}` then "
+               "`xlings use {} {}`",
+               mismatch->declared, target, mf::binding_version(mismatch->declared));
     return true;
 }
 
