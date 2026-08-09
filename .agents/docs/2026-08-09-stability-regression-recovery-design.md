@@ -639,14 +639,19 @@ CLI 人类输出之外，DataEvent 保持结构化：
 
 ```text
 subos_candidates {
-  reason: missing_name | ambiguous | not_found,
+  reason: missing_name | ambiguous | not_found
+        | case_insensitive_exact | unique_prefix,
   query,
-  candidates: [{name, active, dir}],
-  auto_selected
+  candidates: [{name, active, dir, pkgCount}],
+  auto_selected,
+  selected?,
+  hint?
 }
 ```
 
-无参数和歧义都不能让 Agent 猜测后进入环境。
+`auto_selected` 只在唯一的大小写不敏感 exact 或唯一 prefix 命中时为
+`true`，同时用 `selected` 返回规范名称。无参数、歧义和未找到都不能让
+Agent 猜测后进入环境；`hint` 只承载发现/恢复建议，不改变选择结果。
 
 ## 8. 交付拆分与依赖图
 

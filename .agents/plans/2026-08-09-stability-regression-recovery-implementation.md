@@ -465,7 +465,7 @@ three runtime E2Es passed.
 - Produces: one `format_hook_failure(hookName, HookResult)` path used by install/config/uninstall.
 - Populates `ExecutionContext::dependency_store_roots` as ordered/deduplicated exact `<data>/xpkgs` paths: selected/current store first, project store when distinct, global store last. It never reads `MCPP_HOME`.
 
-- [ ] **Step 1: Bump to the released libxpkg and rebuild**
+- [x] **Step 1: Bump to the released libxpkg and rebuild**
 
 Update dependency and lock using the repository's normal mcpp resolution command. Verify the lock names the exact published version and checksum/source, not a local path.
 
@@ -473,19 +473,19 @@ Update dependency and lock using the repository's normal mcpp resolution command
 mcpp build
 ```
 
-- [ ] **Step 2: Extend #513 E2E and record RED before xlings formatting**
+- [x] **Step 2: Extend #513 E2E and record RED before xlings formatting**
 
 Make the failing fixture emit stdout, stderr and `log.error`, then return false. CLI output must include the semantic reason and markers. For `interface install_packages`, parse every stdout line as JSON and require one `E_INTERNAL` message containing the bounded transcript; no raw Lua line may break NDJSON.
 
-- [ ] **Step 3: Centralize hook failure formatting**
+- [x] **Step 3: Centralize hook failure formatting**
 
 Use the same helper in install/config/uninstall. It must never return empty, must avoid duplicating identical error/output text, and must preserve libxpkg's truncation marker. Pass the result through existing `InstallStatus.message`/EventStream rather than direct stdout.
 
-- [ ] **Step 4: Add #514 shared-registry RED E2E**
+- [x] **Step 4: Add #514 shared-registry RED E2E**
 
 Use `XLINGS_HOME=<tmp>/registry` and `XLINGS_PROJECT_DIR=<tmp>/member/.mcpp`. Seed only `registry/data/xpkgs/compat-x-zlib/1.3.2`, install the consumer project-locally, and have its hook record `pkginfo.install_dir("compat:zlib","1.3.2")`. Assert the exact global path is returned. Add `other-x-zlib` decoys in project/global roots and an out-of-list `MCPP_HOME` decoy.
 
-- [ ] **Step 5: Populate explicit roots and run E2Es**
+- [x] **Step 5: Populate explicit roots and run E2Es**
 
 ```bash
 mcpp build
@@ -495,6 +495,10 @@ git diff --check
 git add mcpp.toml mcpp.lock src/core/xim/installer.cppm tests/e2e/install_silent_failure_test.sh tests/e2e/shared_registry_dep_install_dir_test.sh tests/e2e/run_all.sh
 git commit -m "fix(xim): preserve hook failures and shared dependency paths"
 ```
+
+**Delivered:** `8a325be`. The public lock resolves `mcpplibs.xpkg@0.0.55`
+without a local path; the #513 and #514 focused E2Es and the full 36-target
+unit gate passed.
 
 ### Task 9: xlings #506 provider-aware zero-target removal
 
@@ -512,15 +516,15 @@ git commit -m "fix(xim): preserve hook failures and shared dependency paths"
 - A foreign provider's versions never block this provider's uninstall and are never removed by it.
 - A payloadless dependency-free config with an executable local/snapshot recipe reaches uninstall exactly once; arbitrary absent packages remain NotFound.
 
-- [ ] **Step 1: Write foreign-provider delegator RED**
+- [x] **Step 1: Write foreign-provider delegator RED**
 
 Fixture provider A installs/uninstalls a delegator and writes an uninstall marker but registers no `gcc` version. Provider B owns `gcc@local:1` through `bindingGroup->provider`. Removing A must run its marker and preserve B's version, shim and workspace entry.
 
-- [ ] **Step 2: Write payloadless config RED**
+- [x] **Step 2: Write payloadless config RED**
 
 Extend the existing config fixture with an uninstall counter. After install, no payload directory is required. Remove must increment exactly once. Removing a never-installed config coordinate must still fail and leave the counter unchanged.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/remove_foreign_provider_delegator_test.sh
@@ -529,11 +533,11 @@ XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/config_install_no_implicit_dir_test.sh
 
 Expected current-main failures: D4 sees B's target as nonempty; command-level disk/workspace guard rejects payloadless config before uninstall.
 
-- [ ] **Step 4: Implement provider ownership and narrow recipe proof**
+- [x] **Step 4: Implement provider ownership and narrow recipe proof**
 
 Scan target versions and compare only non-malformed `bindingGroup->provider` to `executingProvider`. Preserve fail behavior when this provider owns a mismatched exact version. Widen the early command guard only when the selected local/snapshot executable recipe proves the payloadless uninstall path; do not turn unknown absence into success.
 
-- [ ] **Step 5: Run removal matrix and commit**
+- [x] **Step 5: Run removal matrix and commit**
 
 ```bash
 XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/remove_foreign_provider_delegator_test.sh
@@ -544,6 +548,10 @@ git add src/core/xim/installer.cppm src/core/xim/commands.cppm tests/e2e/remove_
 git commit -m "fix(remove): select versions by executing provider"
 ```
 
+**Delivered:** `1436867`. The foreign-provider preservation, payloadless
+config and orphan removal E2Es passed; the focused XVM removal matrix passed
+8/8 and the full unit gate passed 36/36.
+
 ### Task 10: xlings `subos use` candidate discovery and safe fuzzy match
 
 **Repository:** `openxlings/xlings` (isolated worktree)
@@ -552,25 +560,30 @@ git commit -m "fix(remove): select versions by executing provider"
 - Modify: `src/cli/spec.cppm`
 - Modify: `src/core/subos.cppm`
 - Modify: `src/capabilities.cppm`
+- Modify: `src/cli.cppm`
+- Modify: `src/agent/text_renderer.cppm`
+- Modify: `src/ui/info_panel.cppm`
+- Modify: `docs/generated/command-reference.md`
 - Create: `tests/e2e/subos_use_candidates_test.sh`
 - Modify: `tests/unit/test_command_spec.cpp`
+- Modify: `tests/e2e/subos_events_test.sh`
 - Modify: `tests/e2e/run_all.sh`
 
 **Interfaces:**
 - Produces: shared sorted `SubosCandidateView` consumed by list, use validation/resolution and interface capability.
 - Produces match order: case-sensitive exact; case-insensitive exact if unique; unique case-insensitive prefix; substring/edit-distance suggestions only.
 - Exit codes: no name 0; ambiguous 2; not found 1; selected command/shell preserves downstream exit.
-- DataEvent: `subos_candidates {reason,query,candidates:[{name,active,dir}],auto_selected}`.
+- DataEvent: `subos_candidates {reason,query,candidates:[{name,active,dir,pkgCount}],auto_selected,selected?,hint?}`.
 
-- [ ] **Step 1: Write candidate behavior RED E2E**
+- [x] **Step 1: Write candidate behavior RED E2E**
 
 Create `alpha`, `alpine`, `beta`. Snapshot home manifest and current link. Assert no-arg returns 0, lists all, emits no shell env and mutates nothing; exact beta works; `bet --cmd 'printf MATCHED'` resolves beta; `alp` returns 2 and names both without executing; unknown returns 1 with suggestions.
 
-- [ ] **Step 2: Add legacy default and spec RED**
+- [x] **Step 2: Add legacy default and spec RED**
 
 Create `subos/default/.xlings.json` without registry entry; list/use must expose exactly one synthesized default without writing home config. Change command spec name argument to optional and assert manual validation accepts an empty argv.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 mcpp test -- --gtest_filter='CommandSpec.*'
@@ -579,11 +592,11 @@ XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/subos_use_candidates_test.sh
 
 Expected current-main failure: command spec and parser reject missing name; validation is exact-only.
 
-- [ ] **Step 4: Implement one candidate source/resolver**
+- [x] **Step 4: Implement one candidate source/resolver**
 
 Refactor `list_all()` into the shared view. Synthesize default only when its manifest exists and registry lacks it; never scan arbitrary directories. Resolve the name once before dispatching global/shell/spawn/sandbox/cmd/gpu. No-name routes to the same renderer/event as list and exits 0.
 
-- [ ] **Step 5: Run SubOS modes and commit**
+- [x] **Step 5: Run SubOS modes and commit**
 
 ```bash
 mcpp test -- --gtest_filter='CommandSpec.*'
@@ -592,8 +605,14 @@ XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/subos_xpkg_use_cmd_test.sh
 XLINGS_BIN="$XLINGS_BIN" bash tests/e2e/subos_shell_level_test.sh
 git diff --check
 git add src/cli/spec.cppm src/core/subos.cppm src/capabilities.cppm tests/e2e/subos_use_candidates_test.sh tests/unit/test_command_spec.cpp tests/e2e/run_all.sh
-git commit -m "fix(subos): make use discover and resolve candidates safely"
+git commit -m "fix(subos): discover and resolve use candidates safely"
 ```
+
+**Delivered:** `1fee812`. CommandSpec passed 7/7; generated command reference
+and CLI spec parity passed (240 option spellings and 64 parser literals); the
+full unit gate passed 36/36. Candidate discovery plus the five affected SubOS
+and local-query E2Es passed with an absolute candidate binary and fail-fast
+execution.
 
 ### Task 11: xlings integrated gate, squash merge, release, mirror and index pointer A
 
