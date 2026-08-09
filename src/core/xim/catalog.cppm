@@ -436,6 +436,66 @@ class PackageCatalog {
         return dedupe_matches_(std::move(primaryMatches));
     }
 
+    static std::vector<PackageMatch> build_identity_matches_(
+        const RepoState& state, const detail_::ParsedTarget_& parsed) {
+        std::optional<std::string_view> namespaceName;
+        if (parsed.explicitNamespace) namespaceName = parsed.namespaceName;
+
+        std::vector<PackageMatch> matches;
+        for (const auto& rawName :
+             state.index.find_candidates(parsed.name, namespaceName)) {
+            const auto* entry = state.index.find_entry(rawName);
+            if (entry == nullptr || entry->identity.name != parsed.name) {
+                continue;
+            }
+            if (parsed.explicitNamespace
+                && entry->identity.namespaceName != parsed.namespaceName) {
+                continue;
+            }
+            matches.push_back({
+                .query = parsed.raw,
+                .rawName = rawName,
+                .name = entry->identity.name,
+                .version = entry->version,
+                .namespaceName = entry->identity.namespaceName,
+                .canonicalName = entry->canonicalName,
+                .repoName = state.spec.name,
+                .pkgFile = entry->path,
+                .storeRoot = (state.spec.scope == PackageScope::Project
+                    ? Config::project_data_dir()
+                    : Config::global_data_dir()) / "xpkgs",
+                .scope = state.spec.scope,
+            });
+        }
+        return matches;
+    }
+
+    std::vector<PackageMatch> collect_identity_matches_(
+        const detail_::ParsedTarget_& parsed) const {
+        std::vector<PackageMatch> primaryMatches;
+        std::vector<PackageMatch> subMatches;
+        const auto collect = [&](const std::vector<RepoState>& repos) {
+            for (const auto& repo : repos) {
+                auto matches = build_identity_matches_(repo, parsed);
+                auto& destination = repo.spec.subIndex
+                    ? subMatches : primaryMatches;
+                for (auto& match : matches) {
+                    destination.push_back(std::move(match));
+                }
+            }
+        };
+        collect(projectRepos_);
+        collect(globalRepos_);
+
+        if (!parsed.explicitNamespace && !primaryMatches.empty()) {
+            return primaryMatches;
+        }
+        for (auto& match : subMatches) {
+            primaryMatches.push_back(std::move(match));
+        }
+        return primaryMatches;
+    }
+
 public:
     std::expected<void, std::string> rebuild(bool forceRebuild = false) {
         projectRepos_.clear();
@@ -520,6 +580,45 @@ public:
             return std::unexpected(format_ambiguous_candidates(target, matches));
         }
         return matches.front();
+    }
+
+    // Resolve an already-indexed package identity without evaluating its Lua
+    // recipe, selecting a version, syncing a repository, or touching payload
+    // contents. Inventory uses this as a leaf existence/uniqueness check so a
+    // missing stamped identity cannot turn into an all-recipe scan.
+    std::expected<PackageMatch, std::string>
+    resolve_local_identity(const std::string& target) const {
+        const auto parsed = detail_::parse_target_(target);
+        if (parsed.name.empty() || !parsed.version.empty()) {
+            return std::unexpected(std::format(
+                "package identity '{}' is invalid", target));
+        }
+
+        auto matches = collect_identity_matches_(parsed);
+        if (matches.empty()) {
+            return std::unexpected(std::format(
+                "package '{}' not found", target));
+        }
+
+        std::ranges::stable_sort(matches, {}, [](const PackageMatch& match) {
+            return std::tuple {
+                match.scope == PackageScope::Project ? 0 : 1,
+                match.repoName,
+                match.rawName,
+            };
+        });
+        std::vector<PackageMatch> unique;
+        std::set<std::string> seen;
+        for (auto& match : matches) {
+            if (seen.insert(match.canonicalName).second) {
+                unique.push_back(std::move(match));
+            }
+        }
+        if (unique.size() != 1) {
+            return std::unexpected(format_ambiguous_candidates(
+                target, unique));
+        }
+        return unique.front();
     }
 
     std::vector<PackageMatch> search(const std::string& query, const std::string& platform) {

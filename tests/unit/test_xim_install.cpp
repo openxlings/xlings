@@ -198,15 +198,171 @@ TEST(XimCommandsTest, SearchNonexistentReturnsZero) {
     EXPECT_EQ(rc, 0);  // returns 0 with "no packages found" message
 }
 
-TEST(XimCommandsTest, ListWithFilter) {
-    const xlings::xvm::VersionDB legacyDb;
-    EXPECT_TRUE(xlings::xim::detail::target_may_match_filter(
-        legacyDb, "gcc", "16.1.0", std::string_view{"xim:gcc"}))
-        << "canonical filter dropped a legacy bare workspace key";
-    EXPECT_FALSE(xlings::xim::detail::target_may_match_filter(
-        legacyDb, "gcc", "other:16.1.0", std::string_view{"xim:gcc"}))
-        << "canonical filter admitted the same name from another namespace";
+TEST(XimInventoryOwnerTest, CanonicalFilterKeepsUniqueLegacyBareRecord) {
+    xlings::xvm::VersionDB db;
+    db["gcc"].versions["16.1.0"].kind = "program";
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-gcc", {.namespaceName = "xim", .name = "gcc",
+                            .canonicalName = "xim:gcc"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"gcc", "16.1.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
 
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "xim:gcc", storeRoots, metadata);
+
+    const auto found = related.find({"gcc", "16.1.0"});
+    ASSERT_NE(found, related.end());
+    EXPECT_EQ(found->second.coordinate.ns, "xim");
+    EXPECT_EQ(found->second.coordinate.package, "gcc");
+}
+
+TEST(XimInventoryOwnerTest, ResolvesProviderBeforeApplyingIdentityFilter) {
+    xlings::xvm::VersionDB db;
+    auto& data = db["tool"].versions["xim:1.0.0"];
+    data.kind = "program";
+    data.path = "/fixture/xpkgs/xim-x-wanted/1.0.0/bin/tool";
+    data.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "other:provider",
+        .providerVersion = "other:1.0.0",
+        .group = "provider-group",
+        .rootTarget = "tool",
+        .rootVersion = "xim:1.0.0",
+    };
+    data.bindingMembers = {{"tool", "xim:1.0.0"}};
+    data.bindingMembersDeclared = true;
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"other-x-provider", {.namespaceName = "other",
+                                   .name = "provider",
+                                   .canonicalName = "other:provider"}},
+            {"xim-x-wanted", {.namespaceName = "xim", .name = "wanted",
+                               .canonicalName = "xim:wanted"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"tool", "xim:1.0.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "xim:wanted", storeRoots, metadata, nullptr,
+        xlings::xim::detail::CoordinateMatch::exact);
+
+    EXPECT_FALSE(related.contains({"tool", "xim:1.0.0"}))
+        << "filter selected the payload candidate ahead of its provider";
+}
+
+TEST(XimInventoryOwnerTest, MalformedLegacyGraphCannotDonatePeerOwner) {
+    xlings::xvm::VersionDB db;
+    db["member"].type = "program";
+    db["member"].versions["xim:1.0.0"].kind = "program";
+    db["owner"].type = "program";
+    db["owner"].versions["xim:1.0.0"].kind = "program";
+    db["owner"].versions["xim:1.0.0"].path =
+        "/fixture/xpkgs/xim-x-owner/1.0.0/bin/owner";
+    db["member"].bindings["owner"]["xim:1.0.0"] = "xim:1.0.0";
+    db["owner"].bindings["member"]["xim:1.0.0"] = "xim:1.0.0";
+    db["member"].bindings["dangling"]["xim:1.0.0"] = "xim:1.0.0";
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-owner", {.namespaceName = "xim", .name = "owner",
+                              .canonicalName = "xim:owner"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"member", "xim:1.0.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "xim:owner", storeRoots, metadata);
+
+    EXPECT_FALSE(related.contains({"member", "xim:1.0.0"}))
+        << "a dangling legacy component donated its otherwise valid root";
+}
+
+TEST(XimInventoryOwnerTest, AsymmetricIncomingEdgeRejectsLegacyOwner) {
+    xlings::xvm::VersionDB db;
+    db["member"].type = "program";
+    db["member"].versions["xim:1.0.0"].kind = "program";
+    db["owner"].type = "program";
+    db["owner"].versions["xim:1.0.0"].kind = "program";
+    db["owner"].versions["xim:1.0.0"].path =
+        "/fixture/xpkgs/xim-x-owner/1.0.0/bin/owner";
+    db["member"].bindings["owner"]["xim:1.0.0"] = "xim:1.0.0";
+    db["owner"].bindings["member"]["xim:1.0.0"] = "xim:1.0.0";
+    db["outsider"].type = "program";
+    db["outsider"].versions["xim:1.0.0"].kind = "program";
+    db["outsider"].bindings["member"]["xim:1.0.0"] = "xim:1.0.0";
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-owner", {.namespaceName = "xim", .name = "owner",
+                              .canonicalName = "xim:owner"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"member", "xim:1.0.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "xim:owner", storeRoots, metadata);
+
+    EXPECT_FALSE(related.contains({"member", "xim:1.0.0"}))
+        << "an asymmetric incoming edge was ignored outside the DFS component";
+}
+
+TEST(XimInventoryOwnerTest, ValidModernGroupCanFallBackToItsRoot) {
+    xlings::xvm::VersionDB db;
+    const xlings::xvm::BindingGroupRef group{
+        .provider = "xim:unavailable-provider",
+        .providerVersion = "xim:1.0.0",
+        .group = "modern-group",
+        .rootTarget = "owner",
+        .rootVersion = "xim:1.0.0",
+    };
+    auto& root = db["owner"].versions["xim:1.0.0"];
+    root.kind = "program";
+    root.bindingGroup = group;
+    root.bindingMembers = {
+        {"member", "xim:1.0.0"},
+        {"owner", "xim:1.0.0"},
+    };
+    root.bindingMembersDeclared = true;
+    auto& member = db["member"].versions["xim:1.0.0"];
+    member.kind = "program";
+    member.bindingGroup = group;
+    xlings::xim::detail::MetadataLookup metadata{
+        std::map<std::string, xlings::xim::detail::CatalogMetadata>{
+            {"xim-x-owner", {.namespaceName = "xim", .name = "owner",
+                              .canonicalName = "xim:owner"}},
+        }};
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"member", "xim:1.0.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        db, requested, "xim:owner", storeRoots, metadata);
+
+    const auto found = related.find({"member", "xim:1.0.0"});
+    ASSERT_NE(found, related.end());
+    EXPECT_EQ(found->second.coordinate.ns, "xim");
+    EXPECT_EQ(found->second.coordinate.package, "owner");
+}
+
+TEST(XimCommandsTest, ListWithFilter) {
     xlings::xvm::VersionDB bindingDb;
     bindingDb["gcc"].versions["xim:16.1.0"].path =
         "/fixture/xpkgs/xim-x-gcc/16.1.0/bin/gcc";
@@ -219,13 +375,19 @@ TEST(XimCommandsTest, ListWithFilter) {
             {"xim-x-gcc", {.namespaceName = "xim", .name = "gcc",
                             .canonicalName = "xim:gcc"}},
         }};
-    const auto related = xlings::xim::detail::build_related_coordinates(
-        bindingDb, "xim:gcc", "/fixture/xpkgs", fixtureMetadata);
+    const std::set<xlings::xim::detail::TargetVersion> requested{
+        {"g++", "xim:16.1.0"},
+    };
+    const std::vector<std::filesystem::path> storeRoots{
+        "/fixture/xpkgs",
+    };
+    const auto related = xlings::xim::detail::build_owner_coordinates(
+        bindingDb, requested, "xim:gcc", storeRoots, fixtureMetadata);
     const auto member = related.find({"g++", "xim:16.1.0"});
     ASSERT_NE(member, related.end())
         << "filter dropped a target owned through a legacy reciprocal group";
-    EXPECT_EQ(member->second.ns, "xim");
-    EXPECT_EQ(member->second.package, "gcc");
+    EXPECT_EQ(member->second.coordinate.ns, "xim");
+    EXPECT_EQ(member->second.coordinate.package, "gcc");
 
     auto& catalog = xlings::xim::get_catalog();
     if (!catalog.is_loaded()) GTEST_SKIP() << "package catalog not available";
@@ -266,9 +428,9 @@ TEST(XimCommandsTest, InfoKnownPackage) {
     }
     ASSERT_FALSE(trace.metadataIdentities.empty());
     for (const auto& identity : trace.metadataIdentities) {
-        EXPECT_TRUE(identity == match->canonicalName
-                    || identity == match->name)
-            << "info loaded unrelated metadata: " << identity;
+        EXPECT_TRUE(identity.contains(match->name))
+            << "info loaded a target unrelated to the requested package: "
+            << identity;
     }
     const auto targetStore = xlings::xim::package_store_name(
         match->namespaceName, match->name);
