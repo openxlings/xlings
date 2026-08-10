@@ -254,10 +254,27 @@ void write_payload_failure_marker(const std::filesystem::path& dir,
     if (!fs::is_directory(dir, ec)) return;
     // Quotes and backslashes in the reason would break the hand-written
     // reader; the field is diagnostic, so sanitising beats escaping.
+    //
+    // Bounded, and runs of whitespace collapsed. A hook failure carries the
+    // bounded hook transcript, and writing that verbatim produced a 4 KB
+    // marker whose `reason` was mostly one repeated padding character. The
+    // field exists to tell a human what went wrong at a glance; the full
+    // transcript already went to the log, where it belongs.
+    constexpr std::size_t kReasonLimit = 200;
     std::string safe;
-    safe.reserve(reason.size());
+    safe.reserve(std::min(reason.size(), kReasonLimit));
+    bool lastWasSpace = false;
     for (const char c : reason) {
-        safe.push_back(c == '"' || c == '\\' || c == '\n' ? ' ' : c);
+        if (safe.size() >= kReasonLimit) { safe += " ..."; break; }
+        const bool space = c == '"' || c == '\\' || c == '\n' || c == '\r'
+                        || c == '\t' || c == ' ';
+        if (space) {
+            if (!lastWasSpace && !safe.empty()) safe.push_back(' ');
+            lastWasSpace = true;
+        } else {
+            safe.push_back(c);
+            lastWasSpace = false;
+        }
     }
     const auto text = std::format(
         "{{\n  \"os\": \"{}\",\n  \"version\": \"{}\",\n"

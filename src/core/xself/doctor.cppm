@@ -2515,10 +2515,18 @@ void repair_incomplete_(const Scan& scan, const CommandRunner& run,
     for (const auto& f : scan.findings) {
         if (f.kind != FindingKind::IncompletePayload) continue;
         if (f.remedy.empty()) continue;
-        if (!is_shell_safe_token(f.target) || !is_shell_safe_token(f.version)) {
+        // The WHOLE remedy, not just target and version.
+        //
+        // This finding is built by walking the store, so its namespace comes
+        // from a directory NAME on disk rather than from the index -- and the
+        // remedy is handed to a shell. Checking target and version while
+        // letting the namespace through would leave the one component that
+        // this check, alone among the repairs here, takes from the filesystem.
+        if (!is_shell_safe_token(f.target) || !is_shell_safe_token(f.version)
+            || f.remedy.find_first_of(";&|$`\n<>()") != std::string::npos) {
             out.notes.emplace_back(
                 glyph::mark(glyph::failed, "reinstall skipped"),
-                std::format("{} — name or version is not a safe shell token",
+                std::format("{} — its coordinate is not a safe shell token",
                             xvm::display_coordinate(f.target, f.version)));
             continue;
         }
