@@ -889,6 +889,12 @@ export int enter(const std::string& name, EventStream& stream,
     // ── Common env (all platforms) ──
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
+    // E2a, same declaration as the non-sandbox path. Declared here too and
+    // not only there: a contract that holds in one of the two ways users
+    // enter a subos is a contract consumers cannot rely on, and the sandbox
+    // is the mode the graphics acceptance tooling runs in.
+    platform::set_env_variable("XLINGS_SUBOS_LIB",
+                               (subos_dir / "lib").string());
 
     nlohmann::json payload;
     payload["name"] = name;

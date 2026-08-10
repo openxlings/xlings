@@ -173,17 +173,53 @@ report_tag_differential() {
     fi
 }
 
+# The consumer tag the main table is measured under.
+#
+# THE HARNESS'S OWN TRAP, THIRD (fourth) TIME. The table below used to build
+# its probe with a bare `gcc ... -ldl`, which produces DT_RUNPATH. Every subos
+# cell therefore measured "what a DT_RUNPATH consumer sees" — and the answer
+# for EGL/GLESv1/GLESv2 is llvmpipe, whatever the vendors can actually do. That
+# reading was filed as a driver defect (#534), chased for hours, and was never
+# a property of the vendors at all: it is a property of the PROBE.
+#
+# The consumer's tag decides, because DT_RPATH is transitive through dlopen
+# and DT_RUNPATH is not. Installed programs carry DT_RPATH since libxpkg
+# 0.0.57; programs the user builds in a subos still get DT_RUNPATH (#532). So
+# the two rows are not a nicety — they are two real populations of program,
+# and a table that shows one of them is a confident wrong answer.
+#
+# `not-measured` counts as failure here, so the default is BOTH.
+PROBE_TAGS="${PROBE_TAGS:-runpath rpath}"
+
+# The extra link flags that produce each tag. `rpath` names the farm and the
+# nvidia payload explicitly because that is what an installed program's
+# elfpatch-written RPATH contains; `runpath` adds nothing, which is what the
+# subos toolchain does today.
+probe_link_flags() {
+    # $1 tag, $2 subos lib dir (may be empty for the host)
+    case "$1" in
+        rpath)
+            [ -n "$2" ] || { echo ""; return; }
+            local nv
+            nv=$(ls -d "$HOME_DIR"/data/xpkgs/xim-x-nvidia-gl-host-link/*/lib \
+                 2>/dev/null | head -1)
+            printf -- '-Wl,--disable-new-dtags,-rpath,%s' \
+                   "$2${nv:+:$nv}" ;;
+        *)  echo "" ;;
+    esac
+}
+
 run_env() {
-    # $1 label, $2 runner ("host"|"subos"|"sandbox")
-    local label="$1" runner="$2"
-    echo "════════ $label ════════"
+    # $1 label, $2 runner ("host"|"subos"|"sandbox"), $3 consumer tag
+    local label="$1" runner="$2" tag="${3:-runpath}"
+    echo "════════ $label  [consumer tag: DT_${tag^^}] ════════"
 
     # The probe binary must land somewhere BOTH sides can see. $WORK is under
     # /tmp, and the sandbox gives /tmp a fresh tmpfs — the compile succeeded
     # and the output went into a namespace that vanished with the shell, which
     # surfaced as a link error naming a path that "does not exist".
-    local bin="$WORK/probe-$runner"
-    [ "$runner" = "host" ] || bin="$HOME_DIR/.gfx-probe-$runner"
+    local bin="$WORK/probe-$runner-$tag"
+    [ "$runner" = "host" ] || bin="$HOME_DIR/.gfx-probe-$runner-$tag"
     local mesa_json_runner="$runner"
     local mesa_json
     local libdir=""
@@ -236,19 +272,41 @@ run_env() {
             # does not exist in there and the compile fails naming the .c file.
             local src="$HOME_DIR/.gfx-probe.c"
             cp "$HERE/probe.c" "$src"
-            XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" $sandbox_flag --cmd \
-                "gcc -O0 -o '$bin' '$src' -ldl" \
-                >"$WORK/cc.err" 2>&1 || {
-                echo "  (cannot build the probe in this environment:)"
-                sed 's/^/    /' "$WORK/cc.err" | tail -3; echo; return; }
             local sdir
             sdir="$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos info "$SUBOS" 2>/dev/null \
                     | awk '/^ *dir /{print $2; exit}')"
+            local tagflags
+            tagflags="$(probe_link_flags "$tag" "$sdir/lib")"
+            XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" $sandbox_flag --cmd \
+                "gcc -O0 -o '$bin' '$src' -ldl $tagflags" \
+                >"$WORK/cc.err" 2>&1 || {
+                echo "  (cannot build the probe in this environment:)"
+                sed 's/^/    /' "$WORK/cc.err" | tail -3; echo; return; }
+            # Assert the probe is the shape this row claims to measure.
+            #
+            # Without this the row is unfalsifiable: if the flags stop
+            # producing DT_RPATH (a specs change, a linker default flip, a
+            # wrapper appending --enable-new-dtags after ours) the table still
+            # prints a confident "DT_RPATH" heading over DT_RUNPATH numbers,
+            # and we are back to #534 with a new coat of paint.
+            local actual
+            actual="$(readelf -d "$bin" 2>/dev/null \
+                      | grep -oE '\(RPATH\)|\(RUNPATH\)' | head -1)"
+            case "$tag:$actual" in
+                rpath:'(RPATH)'|runpath:'(RUNPATH)'|runpath:'') ;;
+                *)  echo "  ✗ HARNESS DEFECT: asked for DT_${tag^^}, probe carries ${actual:-no tag}"
+                    echo "    Refusing to print a table labelled with a tag it does not have."
+                    echo; return ;;
+            esac
             mesa_json="$sdir/share/glvnd/egl_vendor.d/50_mesa.json"
             libdir="$sdir/lib"
-            report_build_defect "$sdir"
-            report_tag_differential "$sdir/lib" \
-              "$(ls -d "$HOME_DIR"/data/xpkgs/xim-x-nvidia-gl-host-link/*/lib 2>/dev/null | head -1)"
+            # Reported once, against the runpath pass, because they describe
+            # the toolchain rather than this row.
+            if [ "$tag" = "runpath" ]; then
+                report_build_defect "$sdir"
+                report_tag_differential "$sdir/lib" \
+                  "$(ls -d "$HOME_DIR"/data/xpkgs/xim-x-nvidia-gl-host-link/*/lib 2>/dev/null | head -1)"
+            fi
             ;;
     esac
 
@@ -309,10 +367,21 @@ run_env() {
     echo
 }
 
+# The host row has no consumer-tag dimension: it is built with /usr/bin/cc
+# against the host's own loader, which finds its libraries by name. The tag
+# question only exists inside a subos, where nothing is on a default search
+# path and the RPATH/RUNPATH distinction is what decides reachability.
 [ "$WITH_HOST" -eq 1 ] && run_env "HOST (no xlings — the baseline to beat)" host
-run_env "SUBOS $SUBOS (xlings stack, no sandbox)" subos
-run_env "SUBOS $SUBOS --sandbox (bwrap: fresh /dev and mounts)" sandbox
-run_env "SUBOS $SUBOS --sandbox --gpu (device nodes re-exposed)" sandbox-gpu
+
+# Each subos environment, once per consumer tag. Both populations are real:
+# DT_RPATH is what installed programs carry, DT_RUNPATH is what a program
+# built inside the subos gets today. Reporting only one of them is how #534
+# was filed against the drivers.
+for _tag in $PROBE_TAGS; do
+    run_env "SUBOS $SUBOS (xlings stack, no sandbox)" subos "$_tag"
+    run_env "SUBOS $SUBOS --sandbox (bwrap: fresh /dev and mounts)" sandbox "$_tag"
+    run_env "SUBOS $SUBOS --sandbox --gpu (device nodes re-exposed)" sandbox-gpu "$_tag"
+done
 
 cat <<'NOTE'
 Reading this table

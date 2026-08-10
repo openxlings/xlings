@@ -83,18 +83,30 @@ CodeAndHint describe_kind(RegistrationErrorKind kind) {
                 "another package already owns this exact name and version; "
                 "uninstall that package first, or install this one at a "
                 "different version"};
+    // The three hints below all say "uninstall it first", and all three used
+    // to say it without naming a version. `xlings remove <name>` resolves
+    // through the ACTIVE binding, which in every situation these errors are
+    // raised in is a DIFFERENT version from the one that needs clearing -- so
+    // the official way out reported "not installed" and left the user with the
+    // tool's own `--force` warning as the only remaining move (#541 ②).
+    //
+    // A remedy that names no version is a remedy for whichever package happens
+    // to be active. Say `@<version>`.
     case RegistrationErrorKind::LegacyPayloadMismatch:
         return {"xvm-legacy-payload-mismatch",
                 "this name and version is already installed with different "
-                "contents; uninstall it before reinstalling"};
+                "contents; uninstall it with its version "
+                "(`xlings remove <name>@<version>`) before reinstalling"};
     case RegistrationErrorKind::IncompleteLegacyComponent:
         return {"xvm-legacy-component-incomplete",
                 "the install would rewrite part of an existing bound group; "
-                "uninstall the whole package first"};
+                "uninstall the whole package first, naming its version "
+                "(`xlings remove <name>@<version>`)"};
     case RegistrationErrorKind::IncompleteOwnedGroup:
         return {"xvm-owned-group-incomplete",
                 "reinstalling this release would drop a member it already "
-                "owns; uninstall it first, then install again"};
+                "owns; uninstall it with its version "
+                "(`xlings remove <name>@<version>`), then install again"};
     case RegistrationErrorKind::InvalidHeader:
         return {"xvm-header-invalid",
                 "a recipe declared headers with no source directory; check "
