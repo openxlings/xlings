@@ -365,7 +365,51 @@ Fix E 落地后 `compat.glx-runtime` 的 symlink bridge 就不再是可达性的
 （mcpp 自己的路线图里它本来就标着「过渡桥，最终应弃用」）。
 建议顺序：xlings 侧先修好并实测，**再**推动 mcpp 弃用桥 —— 反过来会在没有替代品的时候把 GL 彻底断掉。
 
-### 2.6 需要在实测中确认的两点
+### 2.6 实测推翻了本节的结论（2026-08-10，NVIDIA 550.144.03 真机）
+
+上面的分析**机制上都对，但认错了绑定约束**。装好整套栈、用**默认 dtags** 构建探针实测：
+
+**推翻 1：`$ORIGIN` 是错的锚点。** glibc 按对象被**打开**的路径展开 `$ORIGIN`，不是 realpath。
+`libGLX.so.0` 是通过 subos farm 符号链接加载的，于是 `$ORIGIN` = `<subos>/lib`，
+loader 去找 `<subos>/lib/glx-vendor` —— 没有任何东西创建那个目录。LD_DEBUG 原文：
+
+```
+search path=<subos>/lib/glx-vendor   (RPATH from file <subos>/lib/libGLX.so.0)
+```
+
+机制在工作，只是指错了一棵目录树。改成**绝对载荷路径**后正确（这条 RPATH 里其余全是
+elfpatch 写进去的绝对 per-home 路径，本来就是这个风格）。
+
+**推翻 2：vendor 可达性根本不是这台机器上的瓶颈。** `libGLX_nvidia.so.0` 早就能通过 farm 找到。
+它是在**下一层**失败的：interposer 带的是 **DT_RUNPATH**，而 RUNPATH 不传递，
+所以它背后那个**自身没有任何搜索路径**的宿主 vendor 解析不了自己的闭包 ——
+`libnvidia-glsi.so.550.144.03` 在空的 system path 上查找，glvnd 吞掉 dlopen 错误，
+GLX 报无 FBConfig。只翻这一个标签、其它什么都不改：
+
+```
+before   GLX server vendor: (null)、无 GL_RENDERER、无 FBConfig
+after    GLX GL_RENDERER: NVIDIA GeForce RTX 4080/PCIe/SSE2
+         GLX LOADED <ours>/xim-x-nvidia-gl-host-link/0.1.2/lib/libGLX_nvidia.so.0
+         GLX LOADED <ours>/xim-x-libglvnd/1.7.0.1/lib/libGLX.so.0.0.0
+```
+
+**为什么 recipe 里已有的那次重写是空转的。** `nvidia-gl-host-link.lua` 本来就想写 DT_RPATH，
+也本来就有事后检查，两者都没生效，叠了三层：
+
+1. `patchelf` 是 **build dep** —— 在 store 里但**不在 PATH 上**；
+2. `os.iorun` 失败时返回 `""` 而**不是 nil**，还吞掉 stderr，于是 `#rp > 0` 守卫静默跳过重写；
+3. 就算重写成功也留不住 —— xlings 的声明式 elfpatch pass 在 **install hook 之后**跑，
+   而它发的是 DT_RUNPATH，把标签又改回去了。
+
+点破第 3 条的是一个不对称：libglvnd 的 RPATH 修改写在 `config()` 里，**留住了**；
+nvidia 的写在 `install()` 里，**没留住**。所以修复放在 `config()` 做重新断言。
+
+**这一节的教训**：`declare_egl_vendor` 的对称物（E1）是对的、也已验证可用，
+但它不是 #525 在这台机器上的成因。**「机制成立」和「机制是瓶颈」是两件事**，
+只有实测能区分 —— 而区分它们的工具是 `LD_DEBUG=libs` 里的
+`search path=... (RPATH from file ...)` 归属行，不是任何 renderer 字符串。
+
+### 2.7 原「需要在实测中确认的两点」（已完成）
 
 以下两条来自 2026-08-06 的记录，写进方案前应当在装好栈的机器上复核（本机没装 graphics 栈，无法就地验证）：
 

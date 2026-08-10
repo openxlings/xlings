@@ -293,9 +293,26 @@ jobs:
           xlings install mcpp -y
           mcpp --version
 
-      - name: Build cross-capable mcpp from source (latest main)
+      - name: Build cross-capable mcpp from source (pinned, see mcpp#406)
         run: |
-          git clone --depth 1 https://github.com/mcpp-community/mcpp /tmp/mcpp-src
+          # TEMPORARY PIN -- restore `--depth 1` on main when
+          # mcpp-community/mcpp#406 is fixed.
+          #
+          # This step took mcpp's latest main on purpose. mcpp 2026.8.10.1's
+          # toolchain post-install fixup binds `glibc@2.39` while the resolver
+          # installs 2.44 (latest since xim-pkgindex#582) and refuses to fall
+          # back, so this step fails and takes the whole release with it:
+          #
+          #   error: toolchain post-install fixup: selected RuntimeBinding
+          #   glibc@2.39 requires payload .../xim-x-glibc/2.39, but it is not
+          #   installed; mcpp will not fall back to another directory entry
+          #
+          # v2026.8.8.4 is the last revision that cross-builds. It is only the
+          # build DRIVER -- the aarch64 xlings this produces is statically
+          # cross-built and carries nothing from it -- so pinning it changes
+          # who builds the artifact, not what the artifact is.
+          git clone --depth 1 --branch v2026.8.8.4 \
+            https://github.com/mcpp-community/mcpp /tmp/mcpp-src
           cd /tmp/mcpp-src
           # Avoid recursively resolving mcpp's development pin while the
           # already-installed mcpp bootstraps the source tree.
