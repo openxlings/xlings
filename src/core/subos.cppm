@@ -1504,6 +1504,22 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
     // the profile).
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     platform::set_env_variable("XLINGS_BIN", bin_dir.string());
+    // E2a: the subos's library farm, DECLARED rather than derivable.
+    //
+    // Two consumers need it and neither should have to guess. The linker
+    // wrapper in the binutils payload writes it into `-rpath-link` (and, when
+    // not opted out, `-rpath`) so a program built in here can find the
+    // libraries it just linked against; mcpp reads it to know which directory
+    // to strip back out at pack time. Both reading one declaration is the
+    // difference between a contract and two derivations of the same decision
+    // that drift.
+    //
+    // `XLINGS_BIN` + "/../lib" would work today and is exactly the coincidence
+    // this replaces: it is true because of how the farm happens to be laid
+    // out, not because anything promised it.
+    platform::set_env_variable(
+        "XLINGS_SUBOS_LIB",
+        (p.homeDir / "subos" / name / "lib").string());
     platform::set_env_variable("PATH", new_path);
 
     // The subos's declared environment, applied to this process before it is
@@ -1748,7 +1764,12 @@ nlohmann::json graphics_fields_(const fs::path& subosDir) {
     for (const auto& v : w.vendors) {
         auto lbl = gfx::label_for(v.soname);
         auto label = lbl ? lbl->vendor + " " + lbl->api : v.soname;
-        row(std::move(label), gfx::describe(v), v.is_broken());
+        // `needs-transitive-consumer` is marked too: it is not a failure for
+        // installed programs, but it IS the answer to "why does the GL app I
+        // just compiled render in software", and that question is why someone
+        // reads this panel.
+        row(std::move(label), gfx::describe(v),
+            v.is_broken() || v.needs_transitive_consumer());
     }
     return out;
 }

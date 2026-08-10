@@ -62,10 +62,16 @@ namespace xlings::xself::profile_resources {
 //       uses angle brackets `<xsubos:<name>>` instead of square
 //       `[xsubos:<name>]` — visually obvious which entry mode the
 //       shell is in. Re-source idempotency checks BOTH bracket forms.
-export inline constexpr std::string_view kVersion = "10";
+//  11 — declares XLINGS_SUBOS_LIB (E2a). The subos library farm becomes a
+//       named contract instead of a coincidence two consumers each derive
+//       for themselves: the linker wrapper in the binutils payload reads
+//       it for -rpath-link, and mcpp reads it to know what to strip at
+//       pack time. `XLINGS_BIN` + "/../lib" would work today, which is
+//       exactly the problem — it is true by layout, not by promise.
+export inline constexpr std::string_view kVersion = "11";
 
 export inline constexpr std::string_view bash_sh =
-R"XPROFILE(# xlings-profile-version: 10
+R"XPROFILE(# xlings-profile-version: 11
 # Xlings Shell Profile (bash/zsh)
 
 _xlings_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
@@ -80,6 +86,12 @@ unset _xlings_dir
 # subos/current symlink and the on-disk activeSubos field.
 XLINGS_BIN="$XLINGS_HOME/subos/${XLINGS_ACTIVE_SUBOS:-current}/bin"
 export XLINGS_BIN
+# E2a: the subos library farm, declared for build-side consumers (the linker
+# wrapper in the binutils payload, and mcpp's pack-time strip). Re-derived
+# here rather than inherited so a shell that sources the profile without
+# having been spawned by `subos use` still has it.
+XLINGS_SUBOS_LIB="$XLINGS_HOME/subos/${XLINGS_ACTIVE_SUBOS:-current}/lib"
+export XLINGS_SUBOS_LIB
 
 case ":$PATH:" in
     *":$XLINGS_BIN:"*) ;;
@@ -129,7 +141,7 @@ fi
 )XPROFILE";
 
 export inline constexpr std::string_view fish =
-R"XPROFILE(# xlings-profile-version: 10
+R"XPROFILE(# xlings-profile-version: 11
 # Xlings Shell Profile (fish)
 
 set -l _script_dir (dirname (status filename))
@@ -138,8 +150,10 @@ set -gx XLINGS_HOME (dirname (dirname "$_script_dir"))
 # Active subos: per-shell env override > global current symlink.
 if set -q XLINGS_ACTIVE_SUBOS
     set -gx XLINGS_BIN "$XLINGS_HOME/subos/$XLINGS_ACTIVE_SUBOS/bin"
+    set -gx XLINGS_SUBOS_LIB "$XLINGS_HOME/subos/$XLINGS_ACTIVE_SUBOS/lib"
 else
     set -gx XLINGS_BIN "$XLINGS_HOME/subos/current/bin"
+    set -gx XLINGS_SUBOS_LIB "$XLINGS_HOME/subos/current/lib"
 end
 
 if not contains "$XLINGS_BIN" $PATH
@@ -183,7 +197,7 @@ end
 )XPROFILE";
 
 export inline constexpr std::string_view pwsh =
-R"XPROFILE(# xlings-profile-version: 10
+R"XPROFILE(# xlings-profile-version: 11
 # Xlings Shell Profile (PowerShell)
 
 $env:XLINGS_HOME = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -191,6 +205,7 @@ $env:XLINGS_HOME = (Resolve-Path "$PSScriptRoot\..\..").Path
 # Active subos: per-shell env override > global current symlink.
 $activeSubos = if ($env:XLINGS_ACTIVE_SUBOS) { $env:XLINGS_ACTIVE_SUBOS } else { 'current' }
 $env:XLINGS_BIN = "$env:XLINGS_HOME\subos\$activeSubos\bin"
+$env:XLINGS_SUBOS_LIB = "$env:XLINGS_HOME\subos\$activeSubos\lib"
 
 if ($env:Path -notlike "*$env:XLINGS_BIN*") {
     $env:Path = "$env:XLINGS_BIN;$env:XLINGS_HOME\bin;$env:Path"

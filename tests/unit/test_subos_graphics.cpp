@@ -269,6 +269,34 @@ TEST(SubosGraphics, AMissingStateFailsClosed) {
 // A state this client has never heard of is neither ok nor broken. Treating
 // an unknown verdict as a pass is how a client older than the index turns a
 // new failure category into silence.
+// The verdict that depends on who opens it. `vendor_closure_gaps` judges the
+// interposer in isolation and is right about the interposer; a consumer's
+// DT_RPATH is transitive and covers the whole chain, so the same vendor is
+// usable from an installed program and unusable from one the user just built.
+// Measured: DT_RUNPATH consumer cannot open libEGL_nvidia, DT_RPATH loads it.
+TEST(SubosGraphics, NeedsTransitiveConsumerIsNeitherOkNorBroken) {
+    auto rec = gfx::parse_wiring_record(
+        "vendor=libEGL_nvidia.so.0 state=needs-transitive-consumer\n");
+    ASSERT_EQ(rec.vendors.size(), 1u);
+    const auto& v = rec.vendors[0];
+    EXPECT_TRUE(v.needs_transitive_consumer());
+    // Not `ok`: a program the user builds here still cannot load it.
+    EXPECT_FALSE(v.is_ok());
+    // Not `broken` either: installed programs reach the GPU through it, and
+    // calling that broken is the under-reporting this state exists to end.
+    EXPECT_FALSE(v.is_broken());
+}
+
+// The description has to answer the question that brings someone to the panel:
+// "the GL app I just compiled renders in software — why". Naming the tag alone
+// would read as trivia.
+TEST(SubosGraphics, NeedsTransitiveConsumerSaysWhichProgramsAreAffected) {
+    gfx::VendorWiring v{"libEGL_nvidia.so.0", "needs-transitive-consumer", "", {}};
+    auto d = gfx::describe(v);
+    EXPECT_NE(d.find("installed"), std::string::npos);
+    EXPECT_NE(d.find("build"), std::string::npos);
+}
+
 TEST(SubosGraphics, AnUnknownStateIsNeitherOkNorBroken) {
     auto rec = gfx::parse_wiring_record("vendor=libGLX_x.so.0 state=quarantined\n");
     ASSERT_EQ(rec.vendors.size(), 1u);

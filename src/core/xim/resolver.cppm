@@ -5,6 +5,8 @@ import mcpplibs.xpkg;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
+import xlings.core.xim.install_state;
+import xlings.core.config;
 import xlings.core.xim.compatibility;
 import xlings.core.log;
 import xlings.core.semver;
@@ -83,6 +85,12 @@ resolve(PackageCatalog& catalog,
 
     InstallPlan plan;
 
+    // Built once for the whole resolution. Nothing registers while a plan is
+    // being computed, so one snapshot is correct for every node in it -- and
+    // the question it answers is about what a PREVIOUS run left behind.
+    const LedgerIndex ledgerIndex(
+        Config::versions(), Config::paths().homeDir.string());
+
     std::unordered_map<std::string, Color_> color;
     std::unordered_map<std::string, PlanNode> nodeMap;
 
@@ -141,7 +149,20 @@ resolve(PackageCatalog& catalog,
         node.scope = match.scope;
         // Foreign payloads plan as NOT installed, so the artifact is
         // downloaded and the install hook has something to unpack.
-        node.alreadyInstalled = match.installed && !match.payloadForeign;
+        //
+        // An INCOMPLETE payload plans as not installed for the same reason,
+        // and the planner has to agree with the installer here or the two
+        // contradict each other on screen: the installer re-runs the hook of
+        // an incomplete payload, while a planner that still called it
+        // installed printed "nothing to do" and then "already installed" in
+        // the same run that reinstalled it. Same predicate, both places.
+        node.alreadyInstalled = match.installed && !match.payloadForeign
+            && !installation_state(
+                   ledgerIndex, match.namespaceName, match.name, match.version,
+                   match.storeRoot
+                       / package_store_name(match.namespaceName, match.name)
+                       / match.version)
+                   .is_incomplete();
         node.kind = kind;
 
         auto pkg = catalog.load_package(match);

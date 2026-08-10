@@ -204,19 +204,43 @@ log "  ✓ install_summary reports failed=1"
 
 # Verdir may have been pre-created by installer.execute (see
 # installer.cppm — it create_directories(ctx.install_dir) before
-# running the install hook), but it must be empty / lack the install
-# stamp because the hook returned false. Either is a valid "failed"
-# fingerprint; failed=1 in install_summary above is the canonical
-# proof that the failure was registered.
+# running the install hook), and since 2026.8.11.1 a failed hook writes
+# `.xpkg-install.json` with `"incomplete": true` INTO it.
+#
+# That marker is the point, not an exception to it. Emptiness was only ever
+# a proxy for "this does not look installed", and it is a weak one: the next
+# `xlings install` decided from the directory alone, so a hook that failed
+# after unpacking anything left a payload that read as complete and was never
+# retried (#541 ①). The marker is what makes the failure retryable.
+#
+# So the assertion is now the stronger one — no PAYLOAD, and the failure
+# recorded — rather than the weaker "nothing at all".
 VERDIR="$HOME_DIR/data/xpkgs/xim-x-brokenpkg/1.0.0"
-if [[ -d "$VERDIR" ]]; then
-  if [[ -n "$(ls -A "$VERDIR" 2>/dev/null)" ]]; then
-    fail "S3: brokenpkg verdir has content — install hook should not have populated it
+STAMP=".xpkg-install.json"
+
+# The marker is REQUIRED, not tolerated.
+#
+# Making it conditional ("if a stamp exists, it must say incomplete") would be
+# the vacuous gate this repo has written before: if the marker silently stopped
+# being written, the check would pass through the empty-directory branch and
+# report success about the exact regression it exists to catch. The hook
+# returned false, so the marker must be there.
+[[ -f "$VERDIR/$STAMP" ]] || fail "S3: brokenpkg has no failure marker at $VERDIR/$STAMP —
+a failed install that leaves no record of itself is one the next \`xlings install\`
+cannot distinguish from a finished one, which is what made #541 ① permanent
+$(ls -la "$VERDIR" 2>/dev/null || echo '(verdir absent)')"
+
+grep -q '"incomplete"[[:space:]]*:[[:space:]]*true' "$VERDIR/$STAMP" \
+  || fail "S3: brokenpkg carries a stamp that does not record the failure —
+a stamp without \`incomplete\` reads as a SUCCESSFUL install
+$(cat "$VERDIR/$STAMP")"
+
+# Anything other than our own bookkeeping is payload, and payload here would
+# mean the hook populated a directory it then failed out of.
+leftover="$(ls -A "$VERDIR" 2>/dev/null | grep -v "^${STAMP}\$" || true)"
+[[ -z "$leftover" ]] || fail "S3: brokenpkg verdir holds payload — install hook should not have populated it
 $(ls -la "$VERDIR")"
-  fi
-  log "  ✓ brokenpkg verdir is empty (hook returned false before populating it)"
-else
-  log "  ✓ brokenpkg verdir absent"
-fi
+
+log "  ✓ brokenpkg verdir has no payload and records the failed install"
 
 log "PASS: cmd_install exit-code propagation regression covered"

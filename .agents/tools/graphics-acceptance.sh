@@ -176,8 +176,29 @@ echo "── loader ────────────────────
 # The compile and the run happen in the SAME invocation: two invocations can
 # straddle a `use`, and then the probe is built against one subos and run in
 # another.
+# BOTH TAGS, and this is the correction that matters most in this file.
+#
+# The probe used to be built with the toolchain's default dtags, which is
+# DT_RUNPATH -- the same tag the record's verdict assumes. So the tool agreed
+# with the record by SHARING ITS ASSUMPTION, and reported "record and loader
+# agree" about vendors that an installed program loads without trouble
+# (openxlings/xlings#537).
+#
+# A measuring tool that carries the assumption under test agrees with it,
+# wrongly. That is the third form of this trap in this one file: the first
+# took its probe set from a directory listing, the second probed by bare
+# SONAME. Both printed PASS having measured the wrong thing.
+#
+# DT_RPATH is what an INSTALLED program carries (elfpatch stamps it since
+# libxpkg 0.0.57); DT_RUNPATH is what a program built in the subos gets
+# (#532). A vendor that loads under one and not the other is not `broken` and
+# not `ok` -- it is `needs-transitive-consumer`, and only measuring both can
+# tell those three apart.
 MEASURED=$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" --cmd \
     "gcc -O0 -o '$PROBE_BIN' '$PROBE_SRC' -ldl && '$PROBE_BIN' $ARGS" 2>&1 || true)
+MEASURED_RPATH=$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" --cmd \
+    "gcc -O0 -o '$PROBE_BIN.rp' '$PROBE_SRC' -ldl \
+       -Wl,--disable-new-dtags,-rpath,$SUBOS_DIR/lib && '$PROBE_BIN.rp' $ARGS" 2>&1 || true)
 echo "$MEASURED"
 echo
 
@@ -191,9 +212,10 @@ while read -r line; do
     # `native` means our own build with no host driver behind it. It is a pass,
     # and it is a DIFFERENT claim from `ok` — do not collapse them.
     case "$state" in
-        ok|native) claimed="loads" ;;
-        broken)    claimed="fails" ;;
-        *)         claimed="unknown" ;;
+        ok|native)                  claimed="loads" ;;
+        broken)                     claimed="fails" ;;
+        needs-transitive-consumer)  claimed="needs-transitive-consumer" ;;
+        *)                          claimed="unknown" ;;
     esac
 
     # Match on the path that was actually probed, resolved the same way it was
@@ -209,6 +231,17 @@ while read -r line; do
         observed="fails"
     else
         observed="not-measured"
+    fi
+    if [ -n "$probed" ] && echo "$MEASURED_RPATH" | grep -qF "LOADED $probed"; then
+        observed_rp="loads"
+    elif [ -n "$probed" ] && echo "$MEASURED_RPATH" | grep -qF "FAILED $probed "; then
+        observed_rp="fails"
+    else
+        observed_rp="not-measured"
+    fi
+    # The two tags disagreeing IS a state, not a contradiction to resolve.
+    if [ "$observed" = "fails" ] && [ "$observed_rp" = "loads" ]; then
+        observed="needs-transitive-consumer"
     fi
 
     # An unmeasured vendor is NOT an agreeing vendor. The first version of

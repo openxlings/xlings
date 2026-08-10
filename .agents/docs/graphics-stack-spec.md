@@ -135,6 +135,7 @@ vendor=libGLX_mesa.so.0 state=native
 |---|---|
 | `ok` | 背后有宿主驱动,且它的闭包可达 |
 | `native` | 我们自己构建的,背后没有宿主驱动 —— **与 `ok` 是不同的事实** |
+| ↑ | **只有 `form == "native"` 才可以写它**,见 §6.1.1 |
 | `needs-transitive-consumer` | **已安装程序可用,用户自建的程序不可用**。判定取决于谁打开它:消费者的 DT_RPATH 是传递的,elfpatch 给已安装可执行文件打的正是它;用户构建的产物仍是 DT_RUNPATH(#532) |
 | `broken` | 任何消费者都加载失败;`reason=` 或 `missing=` 说明为什么 |
 | `unverified` | 安装时无法读取该库(readelf/patchelf 不可用) |
@@ -153,6 +154,31 @@ DT_RUNPATH,所以 `broken` 事实上准确;之后已安装程序都是 DT_RPATH,
 
 **判定以消费者标签为条件,而格式必须表达这个条件** —— 这正是
 `needs-transitive-consumer` 存在的理由(见上表)。graphics 0.1.3 起产出它。
+
+### 6.1.1 `native` 是一个**通过**,只能由一件被确认的事实写出
+
+`native` 在面板上是通过。它曾经由 `host_vendor_behind` 返回 `nil` 触发,而那个 `nil`
+有**三种互不相干的含义**,于是三种都成了通过。实测(2026-08-11,真实 NVIDIA home):
+**六个 vendor 全部记成 `native`**,而那个栈没有接进任何 subos、`<subos>/lib` 里零个 GL 库、
+GL 在跑软件渲染。
+
+`host_vendor_behind` 现在返回**形态**,四选一(graphics 0.1.4 起):
+
+| form | 判据 | 记什么 |
+|---|---|---|
+| `interposed` | DT_NEEDED 里有绝对路径 | 走闭包检查(`ok` / `broken` / `needs-transitive-consumer`) |
+| `direct` | 无绝对 DT_NEEDED,但文件解析到**我们 store 之外** | 它就是宿主驱动本身;同样走闭包检查 |
+| `native` | 无绝对 DT_NEEDED,且解析在 store 之内 | `native` |
+| `unreadable` | `readelf` 没跑成 | `unverified` —— **不是** `native` |
+
+两条各自独立、后果相同的教训:
+
+* **工具没跑成不是关于这个库的事实。** `os.iorun` 失败返回 `""`,把它当成
+  「这是我们自己的」就是拿一个缺失的观测去付一个结论。**兄弟函数
+  `vendor_closure_gaps` 恰好防住了同一件事**,守卫就在隔壁。
+* **裸符号链接指向宿主库的 vendor 没有绝对 DT_NEEDED**(宿主库用 soname 命名兄弟),
+  所以「没有绝对项」曾被读成「我们自己构建的」。它字面上就是宿主驱动 ——
+  **判定对最该检查的那几个 vendor 是反的。**
 
 ### 6.2 驱动版本戳
 
@@ -209,6 +235,15 @@ DT_RUNPATH,所以 `broken` 事实上准确;之后已安装程序都是 DT_RPATH,
 |---|---|---|
 | `__EGL_VENDOR_LIBRARY_DIRS` | mesa、nvidia-gl-host-link | EGL vendor JSON 目录 |
 | `LIBGL_DRIVERS_PATH` | mesa、nvidia-gl-host-link | mesa DRI 驱动目录 |
+| `XLINGS_SUBOS_LIB` | **subos 自己**(2026.8.11.1 起) | 这个 subos 的库 farm。构建侧契约,见下 |
+
+**`XLINGS_SUBOS_LIB` 由 subos 声明,不是包声明的**(E2a)。两个消费方要读它,谁都不该猜:
+binutils 载荷里的 `ld` 包装器拿它做 `-rpath-link`(以及未退出时的 `-rpath`),
+`mcpp pack` 拿它知道该剥掉哪个目录(#540)。`XLINGS_BIN` + `/../lib` 今天也能用 ——
+**那恰恰是问题**:它成立是因为目录碰巧这么摆,不是因为谁承诺过。
+
+进入 subos 的**两条路都声明它**(spawn 与 `--sandbox`),shell profile 也重新推导一份
+(profile version 11),否则一个只在其中一条路上成立的契约,消费方没法依赖。
 
 **这类变量会把我们载荷里的代码加载进不属于我们的进程**(包括在宿主加载器下运行的宿主
 程序)。**优先在消费者上用 RPATH;只有 RPATH 到不了的地方**(库自己 dlopen 插件)
@@ -230,7 +265,7 @@ LIBGL_ALWAYS_SOFTWARE=1 __EGL_VENDOR_LIBRARY_FILENAMES=<…>/50_mesa.json   # EG
 
 | 工具 | 回答什么 |
 |---|---|
-| `.agents/tools/graphics/matrix.sh` | **谁在渲染** —— 真实建上下文,12 格 × 三种 xlings 环境 + 宿主基线 |
+| `.agents/tools/graphics/matrix.sh` | **谁在渲染** —— 真实建上下文,12 格 × 三种 xlings 环境 × **两种消费者标签** + 宿主基线。主表在 DT_RUNPATH 与 DT_RPATH 下各跑一遍,并**断言探针真的带着表头声称的那个标签**;主表曾只在 DT_RUNPATH 下跑,于是测到的是探针自己,那个读数被当成驱动缺陷立了 #534 |
 | `.agents/tools/graphics-acceptance.sh` | **记录与加载器是否一致** —— 两个方向的分歧都是发现;**两种标签各测一遍**,因为一个 vendor 在 DT_RPATH 下可用、DT_RUNPATH 下不可用,既不是 ok 也不是 broken |
 | `xlings-gl-doctor`(nvidia 包) | 驱动版本漂移、interposer 覆盖了几个入口点 |
 

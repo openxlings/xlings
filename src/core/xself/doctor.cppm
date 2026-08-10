@@ -32,6 +32,7 @@ import xlings.core.xvm.owner;
 import xlings.core.xself.repair;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;   // classify_payload_platform
+import xlings.core.xim.install_state;
 import xlings.core.profile;
 import xlings.core.subos.manifest;
 import xlings.platform.target;   // platform::host().arch for the runtime family
@@ -191,6 +192,25 @@ enum class FindingKind {
     // in a prompt, or an ssh that will not authorise -- none of which mentions
     // libc, let alone xlings.
     NssResolution,
+    // A payload whose last install is RECORDED as having failed. The files are
+    // there, so every check that asks the directory says "installed"; the
+    // install that produced them said otherwise and wrote it down.
+    //
+    // Reported at Error because it is the state that used to be permanent: the
+    // repair command's precondition ("is there a payload") was satisfied by the
+    // wreckage, so `xlings install` skipped the hook and reported success
+    // forever. See xim/install_state.cppm.
+    IncompletePayload,
+    // A payload that carries a stamp from before the stamp recorded what it
+    // registered, and that the version database does not reference at all.
+    //
+    // NOT an error, and deliberately not repaired automatically. We cannot tell
+    // "registers nothing, legitimately" from "registered nothing, wrongly" for
+    // these -- the run was never observed. Measured on a real home: 29 such
+    // payloads, and they were the graphics stack almost exactly, every one of
+    // them reporting `installed` while no subos held a single one of its
+    // libraries. A human plus one command settles it; a guess does not.
+    UnverifiedPayload,
 };
 
 enum class FindingLevel {
@@ -362,6 +382,15 @@ using CoordinateProbe = std::function<bool(const xvm::InstallCoordinate&)>;
 struct AuditSelection {
     bool deep { false };
     std::optional<xim::PackageMatch> scope;
+
+    // Called while the deep audit walks payloads, so the caller can say
+    // something. `detect_` owns WHEN (it rate-limits by elapsed time, see the
+    // loop) and the caller owns WHAT — this module has no event stream by
+    // design, and threading one in to print a progress line would give the
+    // detector a second job.
+    std::function<void(std::size_t done, std::size_t total,
+                       std::string_view target, std::string_view version)>
+        onProgress;
 };
 
 fs::path audit_payload_dir_(const xim::PackageMatch& match) {
@@ -1465,6 +1494,82 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
+        // Payloads whose files and whose records disagree.
+        //
+        // Walks the STORE, not the version database -- which is the whole
+        // point. Every other check here starts from a DB entry and asks
+        // whether the files behind it are sound; this one starts from files
+        // that no DB entry mentions. A package that registered nothing is
+        // invisible to a DB walk by construction, and invisible is exactly how
+        // it presented: `xlings info` said `installed`, `xlings list` agreed,
+        // and no subos held one of its libraries.
+        //
+        // Runs WITHOUT `--deep`. It reads one small file per version directory
+        // and opens no payload, so it costs a few hundred stats on a large
+        // home -- the deep audit's price is readelf per binary, and this is
+        // nothing like it. Putting it behind `--deep` would hide the finding
+        // from the default command, which is the command people run.
+        {
+            const xim::LedgerIndex ledgerIndex(st.db, st.homeStr);
+            std::error_code sec;
+            for (const auto& storeRoot : {Config::global_data_dir() / "xpkgs",
+                                          Config::project_data_dir() / "xpkgs"}) {
+                if (!fs::is_directory(storeRoot, sec)) continue;
+                for (const auto& pkgDir : platform::dir_entries(storeRoot)) {
+                    if (!pkgDir.is_directory()) continue;
+                    const auto storeName = pkgDir.path().filename().string();
+                    const auto sep = storeName.find("-x-");
+                    const auto ns = sep == std::string::npos
+                        ? std::string{} : storeName.substr(0, sep);
+                    const auto name = sep == std::string::npos
+                        ? storeName : storeName.substr(sep + 3);
+                    for (const auto& verDir :
+                            platform::dir_entries(pkgDir.path())) {
+                        if (!verDir.is_directory()) continue;
+                        const auto version =
+                            verDir.path().filename().string();
+                        const auto coordinate = ns.empty()
+                            ? std::format("{}@{}", name, version)
+                            : std::format("{}:{}@{}", ns, name, version);
+                        const auto remedy =
+                            std::format("xlings install {}", coordinate);
+
+                        if (xim::stamped_incomplete(verDir.path())) {
+                            add({
+                                .kind    = FindingKind::IncompletePayload,
+                                .level   = FindingLevel::Error,
+                                .target  = name,
+                                .version = version,
+                                .detail  = std::format(
+                                    "{} did not finish installing; its payload "
+                                    "is on disk and nothing registered it",
+                                    coordinate),
+                                .remedy  = remedy,
+                            });
+                            continue;
+                        }
+                        if (xim::unverifiable_stamped_payload(
+                                ledgerIndex, ns, name, version,
+                                verDir.path())) {
+                            add({
+                                .kind    = FindingKind::UnverifiedPayload,
+                                .level   = FindingLevel::Notice,
+                                .target  = name,
+                                .version = version,
+                                .detail  = std::format(
+                                    "{} is installed but the version database "
+                                    "references none of it -- it may register "
+                                    "nothing by design, or its install may "
+                                    "have registered nothing",
+                                    coordinate),
+                                .remedy  = remedy,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         struct PayloadAuditRoot {
             fs::path path;
             std::string target;
@@ -1520,7 +1625,51 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         // Report and repair have drifted three times in this repo, and it
         // always looks the same from outside: doctor keeps reporting what
         // `--fix` claims to have fixed.
+        // Progress, because this loop is the reason `--fix` looks dead.
+        //
+        // Measured on a 124-payload / 71 GB home: 145 seconds between the line
+        // announcing the audit and the first result, with nothing in between.
+        // A user cannot tell scanning from hung from dead, and this repo's
+        // usual failure is the reverse -- failure that looks like success --
+        // so the reflex to distrust silence is not there.
+        //
+        // RATE-LIMITED BY TIME, NOT BY COUNT, and silent for the first
+        // seconds. A home small enough to finish quickly prints nothing extra;
+        // only a run long enough to be mistaken for a hang starts reporting.
+        // Tying it to the payload count instead would put a line per payload on
+        // a home that finished in two seconds, and none on the one that needed
+        // them.
+        //
+        // GRANULARITY LIMIT, measured and not hidden: the tick fires between
+        // payloads, so a single large payload still produces one silent
+        // stretch as long as its own scan. On the home this was written
+        // against that was 26 seconds for one payload, down from 145 for the
+        // whole run. Going finer means a progress callback inside
+        // `elfcheck::scan_payload`, which is a shared module and a wider
+        // change; the name of the payload being scanned is emitted BEFORE the
+        // wait, so the remaining silence is at least attributed.
+        //
+        // Both event kinds: the plain CLI renders LogEvent and ignores
+        // ProgressEvent, while the TUI and the agent protocol consume
+        // ProgressEvent. Emitting only one leaves the other silent.
+        {
+        using audit_clock_ = std::chrono::steady_clock;
+        const auto auditStarted = audit_clock_::now();
+        auto auditLastSpoke = auditStarted;
+        std::size_t auditDone = 0;
+        const auto auditTotal = payloadAuditRoots.size();
+        auto auditTick = [&](const auto& root) {
+            if (!audit.onProgress) return;
+            const auto now = audit_clock_::now();
+            using namespace std::chrono;
+            if (duration_cast<seconds>(now - auditStarted).count() < 1) return;
+            if (duration_cast<seconds>(now - auditLastSpoke).count() < 2) return;
+            auditLastSpoke = now;
+            audit.onProgress(auditDone, auditTotal, root.target, root.version);
+        };
         for (const auto& root : payloadAuditRoots) {
+            auditTick(root);
+            ++auditDone;
             for (const auto& f : elfcheck::scan_payload(root.path)) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
@@ -1533,6 +1682,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                         root.target, root.version),
                 });
             }
+        }
         }
 
         // Name resolution under our own glibc.
@@ -2191,9 +2341,18 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
 
 // ── the payload ladder ───────────────────────────────────────────────
 
+// `onStep`, because the repair below shells out to `xlings install` and that
+// can be a large download with nothing on screen.
+//
+// In a plain terminal the child's own output is visible. In the agent and TUI
+// modes it is NOT: `platform::exec` appends `>/dev/null 2>&1` when
+// `tui_mode_` is set (platform.cppm), so the same repair is a genuinely
+// silent multi-hundred-megabyte wait there. Saying what is about to run, and
+// that it may download, is the difference between waiting and giving up.
 void repair_payloads_(const DoctorState& st, const Scan& scan,
                       const CoordinateProbe& probe, bool dryRun,
-                      RepairReport& out) {
+                      RepairReport& out,
+                      const std::function<void(std::string_view)>& onStep = {}) {
     // Collapse the findings onto their owning package: one install per
     // release, not one per program in it. A broken llvm reports nine targets;
     // reinstalling llvm nine times would be nine downloads for one problem.
@@ -2239,6 +2398,10 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
     }
 
     for (const auto& [coord, covered] : byOwner) {
+        if (onStep) {
+            onStep(std::format("repairing {} — running `{}` (this may download)",
+                               coord.package, coord.install_command()));
+        }
         // R3's remove exited 0 — did the records actually go? Asked of the
         // FINDINGS the repair covers, not of the package name it ran the
         // command with: a package name is not a key in the versions DB, so
@@ -2326,6 +2489,65 @@ void repair_inactive_(const Scan& scan, const std::string& client,
             out.failedEntries.emplace_back(f.target, f.version);
             out.notes.emplace_back(
                 glyph::mark(glyph::failed, "activation failed"),
+                std::format("{} — run `{}` to see why",
+                            xvm::display_coordinate(f.target, f.version),
+                            f.remedy));
+        }
+    }
+}
+
+// Re-run the install of a payload whose own stamp records that it failed.
+//
+// Separate from repair_payloads_ and NOT routed through owning_coordinate_,
+// because these findings come from the store rather than the version database
+// and the database is exactly what does not know about them. The coordinate
+// was recovered from the store layout when the finding was made -- the payload
+// path IS the package identity (xvm/owner.cppm) -- so the remedy already names
+// the right package and there is nothing left to resolve.
+//
+// Re-running the install is the whole repair: the failure marker makes
+// `installation_state` report Incomplete, which is what makes the installer
+// run the hook again instead of concluding "already installed" from the files
+// the failure left behind.
+void repair_incomplete_(const Scan& scan, const CommandRunner& run,
+                        bool dryRun, RepairReport& out,
+                        const std::function<void(std::string_view)>& onStep = {}) {
+    for (const auto& f : scan.findings) {
+        if (f.kind != FindingKind::IncompletePayload) continue;
+        if (f.remedy.empty()) continue;
+        // The WHOLE remedy, not just target and version.
+        //
+        // This finding is built by walking the store, so its namespace comes
+        // from a directory NAME on disk rather than from the index -- and the
+        // remedy is handed to a shell. Checking target and version while
+        // letting the namespace through would leave the one component that
+        // this check, alone among the repairs here, takes from the filesystem.
+        if (!is_shell_safe_token(f.target) || !is_shell_safe_token(f.version)
+            || f.remedy.find_first_of(";&|$`\n<>()") != std::string::npos) {
+            out.notes.emplace_back(
+                glyph::mark(glyph::failed, "reinstall skipped"),
+                std::format("{} — its coordinate is not a safe shell token",
+                            xvm::display_coordinate(f.target, f.version)));
+            continue;
+        }
+        if (dryRun) {
+            out.planned.push_back(f.remedy);
+            continue;
+        }
+        // Said out loud for the reason repair_payloads_ documents: in agent
+        // and TUI mode platform::exec silences the child, so an install that
+        // downloads is an indefinite silent wait.
+        if (onStep) {
+            onStep(std::format("reinstalling {} (may download)",
+                               xvm::display_coordinate(f.target, f.version)));
+        }
+        if (run(f.remedy + quiet_suffix()) == 0) {
+            out.notes.emplace_back(glyph::mark(glyph::bullet, "reinstalled"),
+                                   xvm::display_coordinate(f.target, f.version));
+        } else {
+            out.failedEntries.emplace_back(f.target, f.version);
+            out.notes.emplace_back(
+                glyph::mark(glyph::failed, "reinstall failed"),
                 std::format("{} — run `{}` to see why",
                             xvm::display_coordinate(f.target, f.version),
                             f.remedy));
@@ -2545,6 +2767,20 @@ Counts count_(const Scan& scan) {
             case FindingKind::SubosRuntimeMissing:
                 if (f.level == FindingLevel::Error) ++c.broken;
                 else ++c.warnings;
+                break;
+            case FindingKind::IncompletePayload:
+                // Counted as broken for both reasons the comment above gives:
+                // it must reach the exit code, and `healed` is computed as
+                // before-minus-after over this count, so an uncounted finding
+                // that --fix repairs reports "healed 0".
+                ++c.broken;
+                break;
+            case FindingKind::UnverifiedPayload:
+                // Counts as nothing, on purpose. It is a Notice about state we
+                // could not observe, not a defect we found -- and a home with
+                // 29 of them exiting non-zero would train everyone to ignore
+                // the command. The line still prints, with the command that
+                // settles it.
                 break;
         }
     }
@@ -2787,6 +3023,23 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                         : glyph::mark(glyph::done, "nss resolution"),
                     f.detail);
                 break;
+            case FindingKind::IncompletePayload:
+                add(glyph::mark(glyph::failed, "incomplete install"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::UnverifiedPayload:
+                // Summarised into one counted line when not verbose -- see
+                // below. Twenty-nine of these would bury everything else,
+                // which is the failure mode the notice-collapsing block
+                // downstream was built for.
+                if (verbose) {
+                    add(glyph::mark(glyph::note, "unverified install"),
+                        f.detail);
+                    if (!f.remedy.empty())
+                        add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                }
+                break;
             default: break;
         }
     }
@@ -2796,11 +3049,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // four lines that matter got lost.
     if (!verbose) {
         int anchors = 0, anchorShims = 0, bindingNotices = 0, subosNotices = 0;
+        int unverified = 0;
         // Per TARGET, like the warning line it replaced: one package's alias
         // is one fact however many versions of it are registered.
         std::set<std::string> hostAliasTargets;
         for (const auto& f : scan.findings) {
-            if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
+            if (f.kind == FindingKind::UnverifiedPayload) ++unverified;
+            else if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
             else if (f.kind == FindingKind::OrphanShim
                      && f.level == FindingLevel::Notice) ++anchorShims;
             else if (f.kind == FindingKind::BindingState
@@ -2825,6 +3080,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         part(anchorShims, "anchor shim");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
+        part(unverified, "unverified install");
         if (!summary.empty()) {
             add(glyph::mark(glyph::note, "nothing to do"), summary + "  —  `--all` to list them");
         }
@@ -2902,6 +3158,23 @@ export int cmd_doctor(EventStream& stream, bool fix,
                       bool verbose = false,
                       bool deep = false,
                       std::optional<std::string> scope = std::nullopt) {
+    // `--fix` implies `--deep`. Deliberate and load-bearing: the repair must
+    // be able to act on findings only the payload audit produces, and
+    // self_doctor_depth_test asserts it ("--fix retains the historical deep
+    // detection surface").
+    //
+    // It is also expensive. Measured on a 124-package / 71 GB home: plain
+    // `self doctor` 0.75s, `--fix --dry-run` 148-191s WITHOUT repairing
+    // anything, because the audit walks every package at every version. That
+    // cost is what makes `--fix` look dead, and the progress below is the
+    // answer to THAT -- the user's complaint was silence, not duration.
+    //
+    // Decoupling the two would trade the wait for a quieter problem: a `--fix`
+    // that no longer detects what only a deep scan finds. Getting the speed
+    // without that trade means making the audit itself cheap -- payload
+    // directories are immutable, so their scan results are cacheable by path
+    // and mtime -- which is a separate change with its own risk surface.
+    // See .agents/docs/2026-08-10-doctor-fix-hang-and-537.md (D2 vs D3).
     const bool deepAudit = deep || fix;
     if (scope && !deepAudit) {
         stream.emit(ErrorEvent{
@@ -2933,7 +3206,32 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     std::optional<xim::PackageCatalog> localCatalog;
     AuditSelection audit{.deep = deepAudit};
-    if (deepAudit) {
+    // Both kinds, deliberately: the plain CLI renders LogEvent and ignores
+    // ProgressEvent, while the TUI and the agent protocol consume
+    // ProgressEvent and would show nothing for a LogEvent. Emitting one leaves
+    // the other with the silence this exists to remove.
+    audit.onProgress = [&stream](std::size_t done, std::size_t total,
+                                 std::string_view target, std::string_view version) {
+        stream.emit(ProgressEvent{
+            .phase = "auditing",
+            .percent = total ? static_cast<float>(done) / static_cast<float>(total) : 0.0f,
+            .message = std::format("auditing payloads {}/{}", done, total),
+        });
+        stream.emit(LogEvent{
+            LogLevel::info,
+            std::format("auditing payloads {}/{} — {}@{}", done, total, target, version),
+        });
+        std::cout.flush();
+    };
+    // The catalog is needed by the REPAIR, not only by the audit — it is how a
+    // broken payload's owning package is found so `xlings install` can be run
+    // against it. Gating it on `deepAudit` alone was the bug in the first cut
+    // of this change: decoupling `--fix` from `--deep` silently took the
+    // catalog away too, and `--fix` stopped repairing a payload whose
+    // directory was simply gone. Caught by self_doctor_test S8b, which asserts
+    // the repair by looking at the filesystem rather than at what doctor
+    // claimed — which is why it could catch it at all.
+    if (deepAudit || fix) {
         localCatalog.emplace();
         const auto rebuilt = localCatalog->rebuild();
         if (!rebuilt) {
@@ -3056,6 +3354,7 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     if (dryRun) {
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
+        repair_incomplete_(scan, run, /*dryRun=*/true, repair);
         repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
         render_(scan, repair, fix, dryRun, verbose, stream);
             return count_(scan).issues() == 0 ? 0 : 1;
@@ -3088,7 +3387,19 @@ export int cmd_doctor(EventStream& stream, bool fix,
     refresh();
 
     // Phase 2: the payload ladder.
-    repair_payloads_(state, scan, probe, /*dryRun=*/false, repair);
+    const auto announce = [&stream](std::string_view msg) {
+        stream.emit(LogEvent{LogLevel::info, std::string(msg)});
+        std::cout.flush();
+    };
+    repair_payloads_(state, scan, probe, /*dryRun=*/false, repair, announce);
+    refresh();
+
+    // Phase 2b: payloads whose own stamp records a failed install.
+    //
+    // After the ladder and after a reload, so a payload the ladder already
+    // reinstalled is no longer reported here -- the refresh above re-reads the
+    // stamp, and a successful install overwrites the failure marker.
+    repair_incomplete_(scan, run, /*dryRun=*/false, repair, announce);
     refresh();
 
 
