@@ -11,7 +11,10 @@
 无显示的 GPU 离线渲染完全不通;沙箱需要 `--gpu`(带上就恢复 GPU,不带则静默纯软件);
 并且用户无法在 subos 里构建 GL 程序。**
 
-12 格 × 4 环境 = 48 格,全部有测量结果(没有一格是"没测到")。
+被测的是**三种 xlings 环境**——普通 subos、`--sandbox`、`--sandbox --gpu`;
+宿主是**基线**,不是被测对象,它的作用是把"这台机器就是这样"和"经过我们的栈才这样"分开。
+
+12 格 × 3 环境 + 12 格基线 = 48 格,全部有测量结果(没有一格是"没测到")。
 
 ## 1. 矩阵
 
@@ -34,6 +37,26 @@
 | gles2-surfaceless | `DISPLAY` unset | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | CPU llvmpipe |
 | vulkan | — | GPU nvidia | **GPU nvidia** ✅ | ICD 枚举失败 | **GPU nvidia** ✅ |
 | **构建 GL 程序** | `gcc -lGL` | (宿主可以) | **链接失败** ❌ | 链接失败 ❌ | 链接失败 ❌ |
+
+### 1.1 判定不随环境变化,所以记录只需写一次
+
+`.wiring` 的逐 vendor 判定在三种环境下用 `dlopen` 逐个对账,结果**完全相同**(6/6):
+
+```
+libEGL_mesa.so.0          LOADED     ← record=native
+libGLX_mesa.so.0          LOADED     ← record=native
+libEGL_nvidia.so.0        FAILED :: libpthread.so.0: cannot open shared object file
+libGLX_nvidia.so.0        LOADED     ← record=ok
+libGLESv1_CM_nvidia.so.1  FAILED :: libpthread.so.0 …
+libGLESv2_nvidia.so.2     FAILED :: libpthread.so.0 …
+```
+
+这是有意义的:接线判定是 **ELF 标签的属性**,不是运行环境的属性。所以"安装时写一次记录、
+读取方不重新探测"这个设计是对的——如果判定随环境变动,记录就必须按环境重算,
+`subos info` 也就不可能既即时又准确。
+
+对账工具:`.agents/tools/graphics-acceptance.sh`(它检查的是**记录与加载器是否一致**,
+两个方向的分歧都是发现,不是"栈健不健康")。
 
 ## 2. 分维度评估
 

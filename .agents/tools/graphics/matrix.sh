@@ -17,9 +17,16 @@
 #   Path        GPU / CPU / offline-headless. The headless path uses a
 #               different EGL platform entirely (surfaceless, device) and can
 #               work when the display path does not, or the reverse.
-#   Environment host, subos, sandboxed subos. The sandbox rebuilds /dev and
-#               the mount namespace, which is exactly where a GPU node or a
-#               vendor JSON goes missing without a diagnostic.
+#   Environment THREE xlings environments — plain subos, --sandbox, and
+#               --sandbox --gpu. The sandbox rebuilds /dev and the mount
+#               namespace, which is exactly where a GPU node or a vendor JSON
+#               goes missing without a diagnostic, and --gpu is what puts them
+#               back; measuring only the flagless one reports the sandbox as
+#               broken when it is merely unflagged.
+#
+# The host is a BASELINE, not a fourth environment. It is what the machine
+# does with xlings out of the way, and its only job is to separate "this box
+# is like that" from "it is like that only through our stack".
 #
 # Usage: matrix.sh [--home DIR] [--subos NAME] [--bin PATH] [--host-baseline]
 set -uo pipefail
