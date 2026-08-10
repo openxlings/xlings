@@ -303,6 +303,18 @@ TEST(SubosGraphics, ABrokenVendorSaysWhatWillActuallyHappen) {
     EXPECT_NE(d.find("without saying so"), std::string::npos);
 }
 
+// The index ships independently of the client, so a recipe writing a verdict
+// this xlings has never heard of is a matter of time. Showing the bare word
+// would read as a state that is fine — the panel has to say it cannot
+// interpret it.
+TEST(SubosGraphics, AnUnknownStateSaysThisClientCannotReadIt) {
+    gfx::VendorWiring v{"libGLX_x.so.0", "quarantined", "", {}};
+    auto d = gfx::describe(v);
+    EXPECT_NE(d.find("quarantined"), std::string::npos);
+    EXPECT_NE(d.find("newer than this xlings"), std::string::npos);
+    EXPECT_NE(d.find("unassessed"), std::string::npos);
+}
+
 TEST(SubosGraphics, AMissingClosureNamesTheLibraries) {
     gfx::VendorWiring v{"libGLX_nvidia.so.0", "broken", "",
                         {"libpthread.so.0", "librt.so.1"}};

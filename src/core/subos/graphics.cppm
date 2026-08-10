@@ -340,7 +340,12 @@ std::string describe(const VendorWiring& v) {
         return "BROKEN — " + why +
                ". GL still renders, on a different driver, without saying so";
     }
-    return v.state;
+    // A verdict this client has never heard of. The index ships independently
+    // of the client, so a newer recipe WILL reach an older xlings, and showing
+    // the bare word ("quarantined") would read as a state that is fine. Say
+    // that this xlings cannot interpret it, and what to do about that.
+    return "state '" + v.state + "' is newer than this xlings — upgrade to "
+           "read it; until then this vendor is unassessed";
 }
 
 } // namespace xlings::subos::graphics
