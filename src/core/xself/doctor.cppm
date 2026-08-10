@@ -3045,7 +3045,15 @@ export int cmd_doctor(EventStream& stream, bool fix,
         });
         std::cout.flush();
     };
-    if (deepAudit) {
+    // The catalog is needed by the REPAIR, not only by the audit — it is how a
+    // broken payload's owning package is found so `xlings install` can be run
+    // against it. Gating it on `deepAudit` alone was the bug in the first cut
+    // of this change: decoupling `--fix` from `--deep` silently took the
+    // catalog away too, and `--fix` stopped repairing a payload whose
+    // directory was simply gone. Caught by self_doctor_test S8b, which asserts
+    // the repair by looking at the filesystem rather than at what doctor
+    // claimed — which is why it could catch it at all.
+    if (deepAudit || fix) {
         localCatalog.emplace();
         const auto rebuilt = localCatalog->rebuild();
         if (!rebuilt) {
