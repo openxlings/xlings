@@ -38,6 +38,7 @@ import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.subos.keeper;
 import xlings.core.subos.gpu;
+import xlings.core.subos.graphics;
 import xlings.core.subos.sandbox;
 import xlings.core.subos.manifest;
 // Leaf module (std + json only). Same source for "is this a global option"
@@ -1629,6 +1630,71 @@ int run_list_(EventStream& stream) {
     return 0;
 }
 
+// The graphics section of `xlings subos info`.
+//
+// This is the ONLY channel the wiring verdict has. It was designed as the
+// second one: the graphics recipe logs a warning for every vendor it finds
+// broken, and that seemed sufficient. Measured on a real install — the config
+// hook's log does not surface on the success path at all, not the new
+// warnings and not the stack's own long-standing "GL renders on the GPU"
+// banner. A user whose NVIDIA vendor cannot load is told nothing, anywhere,
+// unless they run this command.
+//
+// Empty when the subos has no GL dispatch, so `subos info` is unchanged for
+// every subos that does no graphics — which is most of them.
+nlohmann::json graphics_fields_(const fs::path& subosDir) {
+    namespace gfx = xlings::subos::graphics;
+    auto w = gfx::read_graphics_wiring(subosDir);
+    nlohmann::json out = nlohmann::json::array();
+    if (!w.has_dispatch()) return out;
+
+    auto row = [&](std::string label, std::string value, bool alert) {
+        out.push_back({{"label", std::move(label)}, {"value", std::move(value)},
+                       {"highlight", false}, {"alert", alert}});
+    };
+
+    row("GL dispatch", w.dispatchDir.string(), false);
+
+    switch (w.status) {
+    case gfx::WiringStatus::NoVendors:
+        // The failure this whole mechanism exists to remove, and the one case
+        // that needs no record to detect: glvnd with nothing to dispatch to
+        // falls back to software rendering and reports success.
+        row("vendors",
+            "NONE REGISTERED — every GL program in this subos falls back to "
+            "software rendering. Run 'xlings install graphics' to wire it.",
+            true);
+        return out;
+    case gfx::WiringStatus::Unrecorded:
+        row("vendors",
+            std::to_string(w.vendorFiles) + " registered, but this stack was "
+            "wired before xlings recorded whether they load. Re-run "
+            "'xlings install graphics' to check them.",
+            true);
+        return out;
+    default:
+        break;
+    }
+
+    if (w.dispatchMismatch) {
+        // The record describes libraries nobody in this subos will load.
+        // Reporting their states as this subos's would be a confident wrong
+        // answer, so say that first and keep the states clearly attributed.
+        row("stale wiring",
+            "recorded against " + w.recordedDispatch + ", which is not the "
+            "dispatch this subos loads. The states below may describe a "
+            "different stack — re-run 'xlings install graphics'.",
+            true);
+    }
+
+    for (const auto& v : w.vendors) {
+        auto lbl = gfx::label_for(v.soname);
+        auto label = lbl ? lbl->vendor + " " + lbl->api : v.soname;
+        row(std::move(label), gfx::describe(v), v.is_broken());
+    }
+    return out;
+}
+
 int run_info_(const std::string& name, EventStream& stream) {
     auto& p = Config::paths();
     auto target = name.empty() ? p.activeSubos : name;
@@ -1648,6 +1714,8 @@ int run_info_(const std::string& name, EventStream& stream) {
     nlohmann::json payload;
     payload["title"] = si->name;
     payload["fields"] = std::move(fieldsJson);
+    auto gfx = graphics_fields_(si->dir);
+    if (!gfx.empty()) payload["extra_fields"] = std::move(gfx);
     stream.emit(DataEvent{"info_panel", payload.dump()});
     return 0;
 }

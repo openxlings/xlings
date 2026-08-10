@@ -25,7 +25,12 @@ export void render_data_event(const DataEvent& e) {
         auto print_fields = [](const nlohmann::json& arr) {
             if (!arr.is_array()) return;
             for (auto& f : arr) {
-                std::println("  {}: {}", f.value("label", ""), f.value("value", ""));
+                // This renderer is plain text on purpose, so the amber the
+                // TTY panel uses to mark a broken row cannot reach it. The
+                // marker has to be a character, or an agent reading this
+                // stream sees a failing graphics vendor as one more field.
+                std::println("  {}{}: {}", f.value("alert", false) ? "! " : "",
+                             f.value("label", ""), f.value("value", ""));
             }
         };
         if (json.contains("fields")) print_fields(json["fields"]);

@@ -161,7 +161,12 @@ pass 14   fail 1   这台机器覆盖不到 4
 
 ## 4. 完善方案
 
-### 4.1 P0 —— 把「谁在渲染」变成产品能力
+### 4.1 P0 —— 把「谁在渲染」变成产品能力 —— **已落地(2026.8.10.3)**
+
+> 落地形态与下面的草案有三处不同,都是实测逼出来的,记在 §4.1c。
+> 读取方:`src/core/subos/graphics.cppm`;渲染:`xlings subos info`;
+> 对账工具:`.agents/tools/graphics-acceptance.sh`。
+
 
 **问题**:今天唯一能回答「我的 GL 是不是真的走了我的栈」的东西,是 `.agents/tools/graphics/`
 里的验收脚本。用户手上没有。而 `glxinfo` 的 renderer 字符串**结构性地不能回答这个问题**。
@@ -193,6 +198,43 @@ EGL vendor    10_nvidia.json  50_mesa.json
 所以 §4.1 的 status 读取方**不是锦上添花,是唯一的通道**。任何"在安装时提醒用户"的方案
 都建立在一个不成立的前提上。这也反过来确认了「装配者记录、读取方不重新探测」是对的:
 记录是唯一活下来的东西。
+
+### 4.1c 落地时被实测改掉的三处
+
+**一、不是新命令,是 `subos info` 的一节。** 草案想要 `xlings graphics status`。但这个
+事实是**每 subos 一份**的:一个 home 里可以同时躺着几份 libglvnd 载荷,"哪一份在渲染"
+只有站在某个 subos 里才有答案。挂在 `subos info` 下,归属天然正确,也不必再教用户一条
+新命令。没有图形栈的 subos 完全不显示这一节——大多数 subos 属于这一类。
+
+**二、锚点是 `<subos>/lib/libGLX.so.0`,不是"在 store 里找 libglvnd"。**
+farm 里那条软链就是 GL 程序真正会加载的那一份,glvnd 又通过它自己的 RPATH 找 vendor。
+所以读取方走的是**加载器同一条边**,只是用 `readlink` 代替 `dlopen`。
+顺带修掉一个真 bug:必须用 `symlink_status` 而不是 `exists`——载荷被删后 farm 里留下的
+悬空软链,`exists` 会答"否",于是一个**接线到已消失载荷**的坏栈被读成"这个 subos 不做图形"。
+
+**三、"没有记录"不是一种情况,是三种。** 草案只有"未接线"一格。实际必须分开:
+
+| 状态 | 含义 | 显示 |
+|---|---|---|
+| `NoDispatch` | farm 里没有 libGLX.so.0 | 整节不显示(这个 subos 本来就不做 GL) |
+| `NoVendors` | dispatch 在,vendor 目录空 | **⚠ 每个 GL 程序都会退到软件渲染** |
+| `Unrecorded` | vendor 在,但没有记录 | **⚠ 由旧版 graphics 接线,没人量过它们能否加载** |
+| `Recorded` | 逐 vendor 判定 | 四个入口点各自一行 |
+
+把 `Unrecorded` 显示成"ok"就是把静默成功搬了个家。另外还加了一格草案没有的:
+记录里的 `dispatch=` 与本 subos 实际加载的载荷**两边都 canonicalize 后**不一致时,
+先报"记录已过期",否则就是拿另一套栈的判定冒充这一套的。
+
+**面板需要能说"值得注意的坏"。** `InfoField` 原先只有 `is_highlight`(绿+◆,含义是
+"这是活跃的那个")。用它渲染一个加载失败的 vendor,会让失败读起来像成功。加了
+`is_alert`(琥珀+⚠);纯文本渲染器(agent/管道)用 `! ` 前缀,因为颜色到不了那里。
+
+**对账工具在自己身上抓到了同一个 bug 两次。** `graphics-acceptance.sh` 不检查"栈健不健康",
+它检查**记录与加载器是否一致**——两个方向的分歧都是发现。第一版列 `glx-vendor/` 目录取
+待测库,那里只有 GLX vendor,于是 6 个里只开了 2 个,**却打印 PASS**;第二版改用裸 SONAME,
+探针搜索路径里根本没有 farm,6 个全"打不开",假象与真失败在输出里长得一模一样。
+现在按记录里的名字经 farm 解析到载荷真实路径(`$ORIGIN` 按**打开时的路径**展开,所以
+不能开软链),并且 `not-measured` 一律算失败——**没测过不等于一致**。
 
 ### 4.2 P0 —— 修 EGL 的 host-vendor 闭包,并让回落变成事件
 
