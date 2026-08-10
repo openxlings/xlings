@@ -135,8 +135,14 @@ vendor=libGLX_mesa.so.0 state=native
 |---|---|
 | `ok` | 背后有宿主驱动,且它的闭包可达 |
 | `native` | 我们自己构建的,背后没有宿主驱动 —— **与 `ok` 是不同的事实** |
-| `broken` | 加载会失败;`reason=` 或 `missing=` 说明为什么 |
+| `needs-transitive-consumer` | **已安装程序可用,用户自建的程序不可用**。判定取决于谁打开它:消费者的 DT_RPATH 是传递的,elfpatch 给已安装可执行文件打的正是它;用户构建的产物仍是 DT_RUNPATH(#532) |
+| `broken` | 任何消费者都加载失败;`reason=` 或 `missing=` 说明为什么 |
 | `unverified` | 安装时无法读取该库(readelf/patchelf 不可用) |
+
+**为什么需要第三种状态**:`vendor_closure_gaps` 判的是 interposer **孤立看**的可达性,
+那对 interposer 是对的、对进程不对。libxpkg 0.0.57 之前几乎所有可执行文件都是
+DT_RUNPATH,所以 `broken` 事实上准确;之后已安装程序都是 DT_RPATH,再报 `broken` 就是
+**低报**。低报比高报隐蔽:它派人去修一个不存在的问题,并掩盖真正坏着的那个。→ #537
 
 **格式是纯 key=value**,因为它跨仓库、由另一种语言读取:**需要解析器的格式就是会解析
 失败的格式**。未知的键必须被跳过而不是拒绝 —— 索引独立于客户端发布,新字段一定会到达
@@ -145,11 +151,8 @@ vendor=libGLX_mesa.so.0 state=native
 **读取方不得重新探测。** 安装器手里有 readelf/patchelf 并已作答;第二个回答方是这个
 仓库产生矛盾的方式。`xlings subos info` 只读不测。
 
-**判定以消费者标签为条件,而当前格式没有表达这个条件。** `vendor_closure_gaps` 判的是
-interposer **孤立看**的可达性;但消费者的 DT_RPATH 是传递的,一个正确打标签的可执行
-文件打开它时,整条链都在消费者的搜索路径作用域内。所以同一个 `state=broken` 对
-DT_RUNPATH 的消费者为真、对 DT_RPATH 的为假。0.0.57 之前几乎所有可执行文件都是前者,
-所以这个缺陷此前不可见。→ #537
+**判定以消费者标签为条件,而格式必须表达这个条件** —— 这正是
+`needs-transitive-consumer` 存在的理由(见上表)。graphics 0.1.3 起产出它。
 
 ### 6.2 驱动版本戳
 
@@ -228,7 +231,7 @@ LIBGL_ALWAYS_SOFTWARE=1 __EGL_VENDOR_LIBRARY_FILENAMES=<…>/50_mesa.json   # EG
 | 工具 | 回答什么 |
 |---|---|
 | `.agents/tools/graphics/matrix.sh` | **谁在渲染** —— 真实建上下文,12 格 × 三种 xlings 环境 + 宿主基线 |
-| `.agents/tools/graphics-acceptance.sh` | **记录与加载器是否一致** —— 两个方向的分歧都是发现 |
+| `.agents/tools/graphics-acceptance.sh` | **记录与加载器是否一致** —— 两个方向的分歧都是发现;**两种标签各测一遍**,因为一个 vendor 在 DT_RPATH 下可用、DT_RUNPATH 下不可用,既不是 ok 也不是 broken |
 | `xlings-gl-doctor`(nvidia 包) | 驱动版本漂移、interposer 覆盖了几个入口点 |
 
 三条硬规矩,都是这些工具自己踩出来的:
@@ -236,7 +239,9 @@ LIBGL_ALWAYS_SOFTWARE=1 __EGL_VENDOR_LIBRARY_FILENAMES=<…>/50_mesa.json   # EG
 1. **待测集由声明驱动,不由目录列举。** 按 `glx-vendor/` 列举只覆盖 GLX,曾经 6 个只测
    了 2 个**却打印 PASS**。
 2. **`not-measured` 一律算失败。** 沉默与同意在结果表里是同一个字符,除非你让它们不同。
-3. **探针按解析出的载荷真实路径 dlopen。** 裸 SONAME 不在搜索路径上(假象与真失败输出
+3. **探针必须两种标签各编一遍。** 只用默认 dtags 的探针会与记录**共享同一个假设**,
+   于是一致地错 —— 这是同一陷阱在这个文件里的第三种形态。
+4. **探针按解析出的载荷真实路径 dlopen。** 裸 SONAME 不在搜索路径上(假象与真失败输出
    一样);软链会让 `$ORIGIN` 锚到别处。
 
 ## 11. recipe 作者须知
@@ -268,7 +273,7 @@ LIBGL_ALWAYS_SOFTWARE=1 __EGL_VENDOR_LIBRARY_FILENAMES=<…>/50_mesa.json   # EG
 
 | # | 缺口 | 追踪 |
 |---|---|---|
-| 1 | **面板低报**:`nvidia EGL/GLES` 对 DT_RPATH 的消费者可用,记录却报 BROKEN | #537 |
+| ~~1~~ | ~~面板低报~~ | **已修**:graphics 0.1.3 + xlings 2026.8.10.5 |
 | 2 | subos 内构建的程序带 DT_RUNPATH,拿不到 GPU;链接非 glibc/gcc 载荷的库也跑不起来 | #532 |
 | 3 | 无显示 GPU 离线渲染(`egl-device` 在 subos 里 `eglInitialize` 失败) | #534 |
 | 4 | 沙箱缺 `--gpu` 时已有提示,但 `--gpu` 仍需用户显式给出 | #533 |
