@@ -8,30 +8,32 @@
 ## 0. 一句话结论
 
 **GLX 和 Vulkan 走 GPU,与宿主等价;EGL / GLESv1 / GLESv2 全部静默降级到 CPU;
-离线 GPU 路径不可用;沙箱内 GLX 完全拿不到上下文;并且用户无法在 subos 里构建 GL 程序。**
+无显示的 GPU 离线渲染完全不通;沙箱需要 `--gpu`(带上就恢复 GPU,不带则静默纯软件);
+并且用户无法在 subos 里构建 GL 程序。**
 
-12 格 × 3 环境 = 36 格,全部有测量结果(没有一格是"没测到")。
+12 格 × 4 环境 = 48 格,全部有测量结果(没有一格是"没测到")。
 
 ## 1. 矩阵
 
 家族标注是**实际渲染者**,由 `glGetString(GL_RENDERER)` 在一个真实当前上下文里返回。
 
-| 探针 | 覆盖变量 | 宿主(基线) | subos | subos --sandbox |
-|---|---|---|---|---|
-| glx | — | GPU nvidia | **GPU nvidia** ✅ | **拿不到上下文** ❌ |
-| glx | `__GLX_VENDOR_LIBRARY_NAME=nvidia` | GPU nvidia | **GPU nvidia** ✅ | 拿不到上下文 ❌ |
-| glx | `…=mesa` + `LIBGL_ALWAYS_SOFTWARE=1` | 拿不到上下文 | 拿不到上下文 | 拿不到上下文 |
-| glx | `DISPLAY` unset | 无 X display(**预期**) | 无 X display ✅ | 无 X display ✅ |
-| egl | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe |
-| egl-surfaceless | `DISPLAY` unset | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe |
-| egl-surfaceless | + `LIBGL_ALWAYS_SOFTWARE=1` | GPU nvidia(**变量无效**) | CPU llvmpipe | CPU llvmpipe |
-| egl-surfaceless | + 强制 mesa vendor JSON | **CPU llvmpipe** ✅ | CPU llvmpipe ✅ | CPU llvmpipe ✅ |
-| egl-device | `DISPLAY` unset | GPU nvidia | **eglInitialize 失败** ❌ | CPU llvmpipe |
-| gles1 | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe |
-| gles2 | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe |
-| gles2-surfaceless | `DISPLAY` unset | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe |
-| vulkan | — | GPU nvidia | **GPU nvidia** ✅ | **ICD 枚举失败** ❌ |
-| **构建 GL 程序** | `gcc -lGL` | (宿主可以) | **链接失败** ❌ | 链接失败 ❌ |
+| 探针 | 覆盖变量 | 宿主(基线) | subos | --sandbox | --sandbox --gpu |
+|---|---|---|---|---|---|
+| glx | — | GPU nvidia | **GPU nvidia** ✅ | 拿不到上下文 | **GPU nvidia** ✅ |
+| glx | `__GLX_VENDOR_LIBRARY_NAME=nvidia` | GPU nvidia | **GPU nvidia** ✅ | 拿不到上下文 | **GPU nvidia** ✅ |
+| glx | `…=mesa` + `LIBGL_ALWAYS_SOFTWARE=1` | 拿不到上下文 | 拿不到上下文 | 拿不到上下文 | 拿不到上下文 |
+| glx | `DISPLAY` unset | 无 X display(**预期**) | 无 X display ✅ | 无 X display ✅ | 无 X display ✅ |
+| egl | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | **CPU llvmpipe** ❌ |
+| egl-surfaceless | `DISPLAY` unset | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | CPU llvmpipe |
+| egl-surfaceless | + `LIBGL_ALWAYS_SOFTWARE=1` | GPU nvidia(**变量无效**) | CPU llvmpipe | CPU llvmpipe | CPU llvmpipe |
+| egl-surfaceless | + 强制 mesa vendor JSON | **CPU llvmpipe** ✅ | CPU llvmpipe ✅ | CPU llvmpipe ✅ | CPU llvmpipe ✅ |
+| egl-device | `DISPLAY` unset | GPU nvidia | **eglInitialize 失败** ❌ | CPU llvmpipe | **eglInitialize 失败** ❌ |
+| egl-device | (DISPLAY 保留) | GPU nvidia | — | — | **zink over NVIDIA**(转译) |
+| gles1 | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | CPU llvmpipe |
+| gles2 | — | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | **CPU llvmpipe** ❌ |
+| gles2-surfaceless | `DISPLAY` unset | GPU nvidia | **CPU llvmpipe** ❌ | CPU llvmpipe | CPU llvmpipe |
+| vulkan | — | GPU nvidia | **GPU nvidia** ✅ | ICD 枚举失败 | **GPU nvidia** ✅ |
+| **构建 GL 程序** | `gcc -lGL` | (宿主可以) | **链接失败** ❌ | 链接失败 ❌ | 链接失败 ❌ |
 
 ## 2. 分维度评估
 
@@ -80,19 +82,39 @@ GLX 的 CPU 路径在这台机器上拿不到上下文(mesa 的 GLX vendor 对�
 - GLX:三个环境一致地报"无 X display"。**这是正确的**——GLX 本来就没有无显示模式,
   离线故事必须走 EGL。这一格存在的意义就是证明这一点。
 - EGL surfaceless:三个环境都能拿到上下文。**宿主是 GPU,subos 是 CPU**。
-- EGL device platform(无显示访问 GPU 的正规路线):宿主 GPU;**subos `eglInitialize` 直接失败**。
+- EGL device platform(无显示访问 GPU 的正规路线):宿主 GPU;**subos `eglInitialize` 直接失败**,
+  带 `--sandbox --gpu` 也一样失败。
+
+  值得单独记一笔:`egl-device` 在**保留 DISPLAY** 时能拿到 `zink over NVIDIA`(经 Vulkan
+  转译的 GPU),一旦 unset DISPLAY 就失败。一个"设备平台"路线依赖显示服务器,恰好废掉了
+  它存在的理由。
 
 结论:**xlings 的离线渲染可用,但只能用 CPU**。要在无显示环境下用 GPU 跑离线渲染
-(渲染农场、CI 里的 GPU 测试、服务端推理配套的可视化),这个栈目前做不到。
+(渲染农场、CI 里的 GPU 测试、服务端推理配套的可视化),这个栈目前做不到——
+`--gpu` 也救不了,因为断点在 EGL 侧而不在设备节点侧。
 
-### 2.4 沙箱:GLX 完全不可用,Vulkan 不可用
+### 2.4 沙箱:不是坏的,是需要 `--gpu`——而且不说
 
-`--sandbox` 下 GLX 连上下文都建不出来(X 协议 `BadValue` on `X_GLXCreateNewContext`),
-Vulkan 的 ICD 枚举返回 0 个设备。EGL 系列仍能跑,但都是 llvmpipe。
+**先纠正我自己**:第一版评估把沙箱写成"GLX 完全不可用、Vulkan 不可用"。加测
+`--sandbox --gpu` 之后这个说法不成立。
 
-bwrap 重建 `/dev` 与挂载命名空间,`/dev/nvidia*` 默认不在里面——`subos use --sandbox --gpu`
-存在正是为此。**没有 `--gpu` 时沙箱是纯软件渲染环境**,这本身合理;不合理的是**它不说**:
-命令照常成功,程序照常出画面。
+| | `--sandbox` | `--sandbox --gpu` |
+|---|---|---|
+| glx | 拿不到上下文(X 协议 `BadValue`) | **GPU nvidia** ——与不带沙箱时逐字相同 |
+| vulkan | ICD 枚举返回 0 个设备 | **GPU nvidia** |
+| egl / gles2 | CPU llvmpipe | CPU llvmpipe(不变,是 §2.1 那个缺陷) |
+| egl-device(保留 DISPLAY) | — | **zink over NVIDIA**——GPU,但经 Vulkan 转译 |
+| egl-device(无 DISPLAY) | CPU llvmpipe | `eglInitialize` 失败 |
+
+bwrap 用 `--dev` 重建 `/dev`,白名单是硬编码的,`/dev/nvidia*` 与 `/dev/dri/*` 不在其中。
+`--gpu` 存在正是为此,带上它 `/dev/nvidia0`、`/dev/nvidiactl`、`/dev/nvidia-modeset` 都回来了。
+**缺省不带是对的**——设备直通应当是显式决定。
+
+所以问题不在缺省值,在**沉默**:不带 `--gpu` 时用户拿到的是"能跑、有画面、exit 0",
+与 GPU 可用时观感完全相同,唯一差别是帧率。→ #533
+
+(顺带:我一度怀疑是 keeper 复用了不带 `--gpu` 建立的命名空间。查了,`.keeper.pid`
+根本不存在,这个假设是错的,已丢弃。`--gpu` 的结果是稳定可复现的。)
 
 ### 2.5 开发体验:能跑,不能建
 
@@ -121,7 +143,7 @@ undefined reference to `__glDispatchInit' …
 | **A** | EGL / GLESv1 / GLESv2 静默降级到 CPU | 任何用 EGL 的程序(现代引擎、Wayland、无显示)拿不到 GPU | 已定位:interposer 带 DT_RUNPATH,不传递。`subos info` 已能报出来 |
 | **B** | 无法在 subos 里构建 GL 程序 | GL 开发在 subos 内不可行 | 根因同 A(RUNPATH 不传递)+ 工具链只写两个载荷的 RUNPATH |
 | **C** | 离线 GPU 路径(EGL device)不可用 | 无显示环境只能软件渲染 | subos 里 `eglInitialize` 失败 |
-| **D** | 沙箱无 GPU 时不声明 | 用户以为在用 GPU,实际全软件 | `--gpu` 存在但缺省静默 |
+| **D** | 沙箱不带 `--gpu` 时不声明 | 用户以为在用 GPU,实际全软件;观感与真 GPU 完全相同 | 带上 `--gpu` 就恢复 GPU,所以缺的是一句话不是能力 |
 | **E** | "强制软件渲染"的通行做法在此栈无效 | 用户以为在测 CPU 路径,实际测的是 GPU | 属文档缺口,机制正确 |
 
 A 与 B 同源,修好 A 的传递性大概率同时松动 B。
@@ -137,3 +159,7 @@ A 与 B 同源,修好 A 的传递性大概率同时松动 B。
    和"经过我们的栈才这样"能分开。
 3. **与另一条独立证据交叉**。`.wiring` 记录(安装期 `readelf` 静态判定)和这份矩阵
    (运行期真实渲染)是两套完全不同的方法,结论逐条一致。
+
+第一版评估有一处结论是错的,已在 §2.4 原地纠正并留痕:漏测 `--sandbox --gpu`,
+于是把"需要一个标志"写成了"不可用"。**少测一个格子,得到的是一个自信的错误答案**——
+这与本轮反复出现的形态是同一个。

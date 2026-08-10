@@ -137,6 +137,7 @@ run_env() {
     # surfaced as a link error naming a path that "does not exist".
     local bin="$WORK/probe-$runner"
     [ "$runner" = "host" ] || bin="$HOME_DIR/.gfx-probe-$runner"
+    local mesa_json_runner="$runner"
     local mesa_json
     local libdir=""
     # Build with -ldl only, and point the probe at the environment's lib
@@ -170,13 +171,19 @@ run_env() {
             mesa_json="/usr/share/glvnd/egl_vendor.d/50_mesa.json"
             libdir=""     # the host resolves these by name, as it should
             ;;
-        subos|sandbox)
+        subos|sandbox|sandbox-gpu)
             # Built INSIDE, with the subos's own toolchain. A host-built probe
             # runs under the host loader and would resolve libraries this
             # environment does not actually provide — the measurement would be
             # of the host, wearing the subos's name.
             local sandbox_flag=""
-            [ "$runner" = "sandbox" ] && sandbox_flag="--sandbox"
+            [ "$runner" = "sandbox" ]     && sandbox_flag="--sandbox"
+            # --gpu is not a nicety: bwrap's --dev builds a fresh /dev with a
+            # hard-coded whitelist that excludes /dev/nvidia* and /dev/dri/*,
+            # so without it the sandbox is a software-rendering environment by
+            # construction. Measuring only the flagless case would report the
+            # sandbox as broken when it is merely unflagged.
+            [ "$runner" = "sandbox-gpu" ] && sandbox_flag="--sandbox --gpu"
             # The source must live somewhere the sandbox can see. bwrap
             # rebuilds the mount namespace, so a path under the repo simply
             # does not exist in there and the compile fails naming the .c file.
@@ -231,6 +238,9 @@ run_env() {
             sandbox)
                 out=$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" --sandbox --cmd \
                       "$libenv $envprefix '$bin' '$probe'" 2>&1 | grep -E "^$probe\|" | head -1) ;;
+            sandbox-gpu)
+                out=$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" --sandbox --gpu --cmd \
+                      "$libenv $envprefix '$bin' '$probe'" 2>&1 | grep -E "^$probe\|" | head -1) ;;
         esac
 
         local renderer family
@@ -253,6 +263,7 @@ run_env() {
 [ "$WITH_HOST" -eq 1 ] && run_env "HOST (no xlings — the baseline to beat)" host
 run_env "SUBOS $SUBOS (xlings stack, no sandbox)" subos
 run_env "SUBOS $SUBOS --sandbox (bwrap: fresh /dev and mounts)" sandbox
+run_env "SUBOS $SUBOS --sandbox --gpu (device nodes re-exposed)" sandbox-gpu
 
 cat <<'NOTE'
 Reading this table
