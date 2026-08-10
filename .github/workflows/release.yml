@@ -15,7 +15,16 @@ env:
   XLINGS_RELEASE_MIRROR: GLOBAL
   # Pinned bootstrap xlings used to install mcpp. Bump together with
   # XIM_PKGINDEX_REF so release uses a known-good xlings + package index pair.
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.8.1
+  #
+  # v2026.8.8.1 stamped `subos_info.runtime` from a CONSTANT when it created
+  # the default SubOS -- `glibc@2.39` on a home that then resolved and ran
+  # glibc 2.44. The declaration was false from the moment it was written, and
+  # mcpp reads it as authoritative (correctly: an exact runtime identity is
+  # what stops an INTERP and a RUNPATH coming from two different glibcs).
+  # 2026.8.10.1 is the first release that declares the version actually
+  # active, so the record it writes is true by construction.
+  # mcpp-community/mcpp#406 was that lie surfacing two repos away.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
   # Must contain the mcpp version pinned in .xlings.json (2026.8.8.4).
   XIM_PKGINDEX_REF: 3d80079485ded53d161212857027122ee6029419
 
