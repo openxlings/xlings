@@ -42,7 +42,7 @@
 
 | | 缺口 | 性质 |
 |---|---|---|
-| **A** | EGL / GLESv1 / GLESv2 到不了 GPU | **原因未知**(§4.1) |
+| **A** | EGL / GLESv1 / GLESv2 到不了 GPU | **原因已定位**——见 `…-four-gaps-root-cause.md`;§4.1 的解释已作废 |
 | **B** | 无显示 GPU 离线渲染 | 与 A 同源 |
 | **C** | 环境内构建不出可运行的 GL 程序 | 原因清楚,方案已验证(§4.3) |
 | **D** | 沙箱缺 GPU 时不声明 | 缺一句话,不缺能力(§4.5) |
@@ -50,6 +50,13 @@
 ## 4. 每一块的"为什么"
 
 ### 4.1 A —— 不是闭包问题(四次测量)
+
+> **本节的结论已被后续调研推翻。** 「NVIDIA vendor 被加载了然后拒绝提供 display」
+> 站不住:那次隔离用的是还原后的原始 interposer,它本来就 `dlopen` 失败,而
+> 「加载不了」与「拒绝服务」在 `eglGetDisplay` 上返回同一个 `EGL_NO_DISPLAY`。
+> 真正的根因见 `2026-08-10-graphics-four-gaps-root-cause.md`:**消费者可执行文件的
+> DT_RUNPATH 不传递**,而图形栈的加载链有三到四层 `dlopen`。
+> 下面的四组测量本身是准确的,它们否证的东西也确实被否证了——错的是当时的解释。
 
 原先的判定是 `reason=runpath-not-transitive`:interposer 带 DT_RUNPATH,不传递,
 背后的宿主驱动够不到我们的载荷。**这个描述是真的**——`dlopen` 确实报
