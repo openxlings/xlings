@@ -1748,7 +1748,12 @@ nlohmann::json graphics_fields_(const fs::path& subosDir) {
     for (const auto& v : w.vendors) {
         auto lbl = gfx::label_for(v.soname);
         auto label = lbl ? lbl->vendor + " " + lbl->api : v.soname;
-        row(std::move(label), gfx::describe(v), v.is_broken());
+        // `needs-transitive-consumer` is marked too: it is not a failure for
+        // installed programs, but it IS the answer to "why does the GL app I
+        // just compiled render in software", and that question is why someone
+        // reads this panel.
+        row(std::move(label), gfx::describe(v),
+            v.is_broken() || v.needs_transitive_consumer());
     }
     return out;
 }

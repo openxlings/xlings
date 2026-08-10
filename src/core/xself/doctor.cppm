@@ -362,6 +362,15 @@ using CoordinateProbe = std::function<bool(const xvm::InstallCoordinate&)>;
 struct AuditSelection {
     bool deep { false };
     std::optional<xim::PackageMatch> scope;
+
+    // Called while the deep audit walks payloads, so the caller can say
+    // something. `detect_` owns WHEN (it rate-limits by elapsed time, see the
+    // loop) and the caller owns WHAT — this module has no event stream by
+    // design, and threading one in to print a progress line would give the
+    // detector a second job.
+    std::function<void(std::size_t done, std::size_t total,
+                       std::string_view target, std::string_view version)>
+        onProgress;
 };
 
 fs::path audit_payload_dir_(const xim::PackageMatch& match) {
@@ -1520,7 +1529,51 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         // Report and repair have drifted three times in this repo, and it
         // always looks the same from outside: doctor keeps reporting what
         // `--fix` claims to have fixed.
+        // Progress, because this loop is the reason `--fix` looks dead.
+        //
+        // Measured on a 124-payload / 71 GB home: 145 seconds between the line
+        // announcing the audit and the first result, with nothing in between.
+        // A user cannot tell scanning from hung from dead, and this repo's
+        // usual failure is the reverse -- failure that looks like success --
+        // so the reflex to distrust silence is not there.
+        //
+        // RATE-LIMITED BY TIME, NOT BY COUNT, and silent for the first
+        // seconds. A home small enough to finish quickly prints nothing extra;
+        // only a run long enough to be mistaken for a hang starts reporting.
+        // Tying it to the payload count instead would put a line per payload on
+        // a home that finished in two seconds, and none on the one that needed
+        // them.
+        //
+        // GRANULARITY LIMIT, measured and not hidden: the tick fires between
+        // payloads, so a single large payload still produces one silent
+        // stretch as long as its own scan. On the home this was written
+        // against that was 26 seconds for one payload, down from 145 for the
+        // whole run. Going finer means a progress callback inside
+        // `elfcheck::scan_payload`, which is a shared module and a wider
+        // change; the name of the payload being scanned is emitted BEFORE the
+        // wait, so the remaining silence is at least attributed.
+        //
+        // Both event kinds: the plain CLI renders LogEvent and ignores
+        // ProgressEvent, while the TUI and the agent protocol consume
+        // ProgressEvent. Emitting only one leaves the other silent.
+        {
+        using audit_clock_ = std::chrono::steady_clock;
+        const auto auditStarted = audit_clock_::now();
+        auto auditLastSpoke = auditStarted;
+        std::size_t auditDone = 0;
+        const auto auditTotal = payloadAuditRoots.size();
+        auto auditTick = [&](const auto& root) {
+            if (!audit.onProgress) return;
+            const auto now = audit_clock_::now();
+            using namespace std::chrono;
+            if (duration_cast<seconds>(now - auditStarted).count() < 1) return;
+            if (duration_cast<seconds>(now - auditLastSpoke).count() < 2) return;
+            auditLastSpoke = now;
+            audit.onProgress(auditDone, auditTotal, root.target, root.version);
+        };
         for (const auto& root : payloadAuditRoots) {
+            auditTick(root);
+            ++auditDone;
             for (const auto& f : elfcheck::scan_payload(root.path)) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
@@ -1533,6 +1586,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                         root.target, root.version),
                 });
             }
+        }
         }
 
         // Name resolution under our own glibc.
@@ -2191,9 +2245,18 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
 
 // ── the payload ladder ───────────────────────────────────────────────
 
+// `onStep`, because the repair below shells out to `xlings install` and that
+// can be a large download with nothing on screen.
+//
+// In a plain terminal the child's own output is visible. In the agent and TUI
+// modes it is NOT: `platform::exec` appends `>/dev/null 2>&1` when
+// `tui_mode_` is set (platform.cppm), so the same repair is a genuinely
+// silent multi-hundred-megabyte wait there. Saying what is about to run, and
+// that it may download, is the difference between waiting and giving up.
 void repair_payloads_(const DoctorState& st, const Scan& scan,
                       const CoordinateProbe& probe, bool dryRun,
-                      RepairReport& out) {
+                      RepairReport& out,
+                      const std::function<void(std::string_view)>& onStep = {}) {
     // Collapse the findings onto their owning package: one install per
     // release, not one per program in it. A broken llvm reports nine targets;
     // reinstalling llvm nine times would be nine downloads for one problem.
@@ -2239,6 +2302,10 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
     }
 
     for (const auto& [coord, covered] : byOwner) {
+        if (onStep) {
+            onStep(std::format("repairing {} — running `{}` (this may download)",
+                               coord.package, coord.install_command()));
+        }
         // R3's remove exited 0 — did the records actually go? Asked of the
         // FINDINGS the repair covers, not of the package name it ran the
         // command with: a package name is not a key in the versions DB, so
@@ -2902,7 +2969,35 @@ export int cmd_doctor(EventStream& stream, bool fix,
                       bool verbose = false,
                       bool deep = false,
                       std::optional<std::string> scope = std::nullopt) {
-    const bool deepAudit = deep || fix;
+    // `--fix` no longer implies `--deep`, and the two are orthogonal by
+    // nature: `--deep` decides WHAT GETS REPORTED, `--fix` repairs WHAT WAS
+    // REPORTED. Coupling them made every repair pay for a full payload walk
+    // regardless of how much there was to repair.
+    //
+    // Measured on a 124-package / 71 GB home: plain `self doctor` 0.75s,
+    // `--fix --dry-run` 148s WITHOUT repairing anything, because the implied
+    // deep audit ran a full ELF scan over every package at every version. The
+    // four findings it was going to repair were already known at 0.75s.
+    //
+    // It also matches what a user is doing: they ran `self doctor`, saw
+    // findings, and typed `--fix` to repair THOSE. A user who ran `--deep` and
+    // saw deep findings types `--deep --fix`, which still works.
+    //
+    // The narrowing is announced (see below) rather than silent. Quietly
+    // shrinking a scope trades a slow problem for a silent correctness one,
+    // and this codebase has enough of the latter.
+    const bool deepAudit = deep;
+    // Gated on whether the audit ACTUALLY ran, not on the flags that were
+    // typed. Tying the sentence to the flags lets it keep printing after
+    // someone re-couples the two — which is how the test that guards this
+    // change was vacuous on its first attempt.
+    if (fix && !deepAudit) {
+        stream.emit(LogEvent{
+            LogLevel::info,
+            "repairing what was reported; the payload/runtime audit is not "
+            "run (add --deep to audit every installed payload as well)",
+        });
+    }
     if (scope && !deepAudit) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
@@ -2933,6 +3028,23 @@ export int cmd_doctor(EventStream& stream, bool fix,
 
     std::optional<xim::PackageCatalog> localCatalog;
     AuditSelection audit{.deep = deepAudit};
+    // Both kinds, deliberately: the plain CLI renders LogEvent and ignores
+    // ProgressEvent, while the TUI and the agent protocol consume
+    // ProgressEvent and would show nothing for a LogEvent. Emitting one leaves
+    // the other with the silence this exists to remove.
+    audit.onProgress = [&stream](std::size_t done, std::size_t total,
+                                 std::string_view target, std::string_view version) {
+        stream.emit(ProgressEvent{
+            .phase = "auditing",
+            .percent = total ? static_cast<float>(done) / static_cast<float>(total) : 0.0f,
+            .message = std::format("auditing payloads {}/{}", done, total),
+        });
+        stream.emit(LogEvent{
+            LogLevel::info,
+            std::format("auditing payloads {}/{} — {}@{}", done, total, target, version),
+        });
+        std::cout.flush();
+    };
     if (deepAudit) {
         localCatalog.emplace();
         const auto rebuilt = localCatalog->rebuild();
@@ -3088,7 +3200,11 @@ export int cmd_doctor(EventStream& stream, bool fix,
     refresh();
 
     // Phase 2: the payload ladder.
-    repair_payloads_(state, scan, probe, /*dryRun=*/false, repair);
+    repair_payloads_(state, scan, probe, /*dryRun=*/false, repair,
+                     [&stream](std::string_view msg) {
+                         stream.emit(LogEvent{LogLevel::info, std::string(msg)});
+                         std::cout.flush();
+                     });
     refresh();
 
 

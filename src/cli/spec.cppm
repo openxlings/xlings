@@ -81,7 +81,7 @@ const CommandSpec& root() {
                 {"config", "Show configuration", {}, {}, {}, {}},
                 {"clean", "Clean cache", {}, {}, {{"--dry-run", "Preview"}}, {}},
                 {"migrate", "Migrate old layout", {}, {}, {}, {}},
-                {"doctor", "Verify installation", {}, {}, {{"--deep", "Audit package payloads and runtime functionality"}, {"--scope <PACKAGE[@VERSION]>", "Limit deep payload/runtime audit to one local package coordinate"}, {"--fix", "Repair (implies --deep)"}, {"--dry-run", "Preview repairs without changing detection depth"}, {"--all", "Show all findings"}, {"--reset-metadata", "Discard unreadable metadata"}}, {}},
+                {"doctor", "Verify installation", {}, {}, {{"--deep", "Audit package payloads and runtime functionality"}, {"--scope <PACKAGE[@VERSION]>", "Limit deep payload/runtime audit to one local package coordinate"}, {"--fix", "Repair what was reported (add --deep to audit payloads too)"}, {"--dry-run", "Preview repairs without changing detection depth"}, {"--all", "Show all findings"}, {"--reset-metadata", "Discard unreadable metadata"}}, {}},
             }},
             {"script", "Run an xlings script", {}, {{"script-file", "Script path", true}, {"args", "Script arguments", false, true}}, {}, {}},
             {"interface", "Use the NDJSON interface", {}, {{"capability", "Capability name", false}}, {{"--args <JSON>", "Capability arguments"}, {"--args-file <PATH>", "Read capability arguments from a file"}, {"--list", "List capabilities"}, {"--version", "Show protocol version"}}, {}},

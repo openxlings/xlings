@@ -85,6 +85,28 @@ struct VendorWiring {
     std::vector<std::string> missing;   // broken only: unresolved SONAMEs
 
     bool is_broken() const { return state == "broken"; }
+
+    // The verdict that depends on WHO OPENS IT.
+    //
+    // `vendor_closure_gaps` judges the interposer in isolation: it carries
+    // DT_RUNPATH, so the host driver behind it cannot reach our payloads. That
+    // is true of the interposer alone and false of the process, because a
+    // CONSUMER's DT_RPATH is transitive — when an executable stamped that way
+    // opens this vendor, its search path covers the whole chain.
+    //
+    // Measured on one home, one interposer, changing only the consumer:
+    // DT_RUNPATH cannot open libEGL_nvidia, DT_RPATH loads it and renders on
+    // the GPU. Before libxpkg 0.0.57 nearly every installed executable was
+    // DT_RUNPATH, so `broken` was accurate in practice; after it, installed
+    // programs are DT_RPATH and `broken` under-reports. See #537.
+    //
+    // Under-reporting is the worse half: it sends someone to fix a problem
+    // that is not there, and it hides the one that is — programs the user
+    // builds are still DT_RUNPATH (#532), and this is exactly the state that
+    // says so.
+    bool needs_transitive_consumer() const {
+        return state == "needs-transitive-consumer";
+    }
     // `native` means the probe found no host driver behind this vendor -- it
     // is one of our own builds, so there is no host closure to complete. That
     // is a pass, and it is NOT the same fact as `ok`, which means a host
@@ -387,6 +409,11 @@ std::string describe(const VendorWiring& v) {
         return "ok  (built by xlings — no host driver behind it)";
     if (v.state == "ok")
         return "ok  (the host driver behind it is reachable)";
+    if (v.state == "needs-transitive-consumer")
+        return "ok for installed programs — but a program you build here "
+               "cannot load it: your build gets DT_RUNPATH, which is not "
+               "transitive (see xlings#532). Installed packages get DT_RPATH "
+               "and reach the GPU through it";
     if (v.state == "unverified")
         return "unverified — the installer could not read this library; "
                "if it is broken, GL renders elsewhere and says nothing";
