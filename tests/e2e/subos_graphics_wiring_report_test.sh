@@ -139,4 +139,37 @@ fi
 # The panel itself must still work.
 assert_contains "$OUT" "default" "the subos is still reported"
 
-log "PASS: four states of one subos produce four different answers"
+# ── 5. the answer is per-subos, not per-home ──────────────────────────────
+#
+# The architectural claim behind reading `<subos>/lib/libGLX.so.0` rather than
+# searching the store: a home can hold several libglvnd payloads and the
+# question "which one renders" only has an answer inside a subos.
+#
+# So put the payload back — untouched, exactly where it was — and ask a
+# SECOND subos in the SAME home. A store-searching implementation finds the
+# payload and reports a graphics stack for a subos where no GL program could
+# load one: a confident wrong answer, which is worse than no answer.
+
+fs_restore() {
+  mkdir -p "$VENDOR_DIR"
+  : > "$PAYLOAD/lib/libGLX.so.0"
+  : > "$VENDOR_DIR/libGLX_nvidia.so.0"
+  printf 'dispatch=%s\nvendor=libGLX_nvidia.so.0 state=ok\n' "$PAYLOAD" \
+    > "$VENDOR_DIR/.wiring"
+}
+fs_restore
+mkdir -p "$HOME_DIR/subos/nogfx/lib"
+ln -sf "$PAYLOAD/lib/libGLX.so.0" "$HOME_DIR/subos/default/lib/libGLX.so.0"
+
+WIRED="$(info_output)"
+OUT="$(run_xlings "$HOME_DIR" "" subos info nogfx 2>&1 | strip_ansi)"
+log "── second subos, same home ──"
+printf '%s\n' "$OUT" | sed 's/^/    /'
+
+assert_contains "$WIRED" "nvidia GLX" "the wired subos still reports its vendor"
+if printf '%s\n' "$OUT" | grep -qi "GL dispatch\|nvidia\|vendors"; then
+  fail "a subos with no dispatch inherited another subos's graphics stack"
+fi
+
+log "PASS: four states of one subos produce four different answers, and a"
+log "      second subos in the same home is answered separately"
