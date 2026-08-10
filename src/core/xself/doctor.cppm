@@ -2969,35 +2969,24 @@ export int cmd_doctor(EventStream& stream, bool fix,
                       bool verbose = false,
                       bool deep = false,
                       std::optional<std::string> scope = std::nullopt) {
-    // `--fix` no longer implies `--deep`, and the two are orthogonal by
-    // nature: `--deep` decides WHAT GETS REPORTED, `--fix` repairs WHAT WAS
-    // REPORTED. Coupling them made every repair pay for a full payload walk
-    // regardless of how much there was to repair.
+    // `--fix` implies `--deep`. Deliberate and load-bearing: the repair must
+    // be able to act on findings only the payload audit produces, and
+    // self_doctor_depth_test asserts it ("--fix retains the historical deep
+    // detection surface").
     //
-    // Measured on a 124-package / 71 GB home: plain `self doctor` 0.75s,
-    // `--fix --dry-run` 148s WITHOUT repairing anything, because the implied
-    // deep audit ran a full ELF scan over every package at every version. The
-    // four findings it was going to repair were already known at 0.75s.
+    // It is also expensive. Measured on a 124-package / 71 GB home: plain
+    // `self doctor` 0.75s, `--fix --dry-run` 148-191s WITHOUT repairing
+    // anything, because the audit walks every package at every version. That
+    // cost is what makes `--fix` look dead, and the progress below is the
+    // answer to THAT -- the user's complaint was silence, not duration.
     //
-    // It also matches what a user is doing: they ran `self doctor`, saw
-    // findings, and typed `--fix` to repair THOSE. A user who ran `--deep` and
-    // saw deep findings types `--deep --fix`, which still works.
-    //
-    // The narrowing is announced (see below) rather than silent. Quietly
-    // shrinking a scope trades a slow problem for a silent correctness one,
-    // and this codebase has enough of the latter.
-    const bool deepAudit = deep;
-    // Gated on whether the audit ACTUALLY ran, not on the flags that were
-    // typed. Tying the sentence to the flags lets it keep printing after
-    // someone re-couples the two — which is how the test that guards this
-    // change was vacuous on its first attempt.
-    if (fix && !deepAudit) {
-        stream.emit(LogEvent{
-            LogLevel::info,
-            "repairing what was reported; the payload/runtime audit is not "
-            "run (add --deep to audit every installed payload as well)",
-        });
-    }
+    // Decoupling the two would trade the wait for a quieter problem: a `--fix`
+    // that no longer detects what only a deep scan finds. Getting the speed
+    // without that trade means making the audit itself cheap -- payload
+    // directories are immutable, so their scan results are cacheable by path
+    // and mtime -- which is a separate change with its own risk surface.
+    // See .agents/docs/2026-08-10-doctor-fix-hang-and-537.md (D2 vs D3).
+    const bool deepAudit = deep || fix;
     if (scope && !deepAudit) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
