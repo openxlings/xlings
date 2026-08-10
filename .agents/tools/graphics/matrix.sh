@@ -133,6 +133,46 @@ report_build_defect() {
     fi
 }
 
+# The tag differential: the same probe, built twice, differing only in whether
+# its search path is DT_RPATH or DT_RUNPATH.
+#
+# This is not a style check. DT_RPATH on an executable is consulted for EVERY
+# dlopen anywhere in the process; DT_RUNPATH is not consulted for the process
+# at all. The graphics stack's load chain is three to four dlopens deep
+# (glvnd -> vendor -> external platform module -> its own deps), so only the
+# transitive tag reaches the bottom. Measured: identical path content, RPATH
+# reaches the GPU on all four entry points, RUNPATH fails at eglInitialize.
+#
+# `elfpatch` stamps DT_RUNPATH (patchelf's --set-rpath default; --force-rpath
+# is what writes DT_RPATH). One recipe in the whole index flips it by hand --
+# godot -- and godot is the only installed program observed to render on the
+# GPU. 1 binary with the right tag, 68 with the right PATH and the wrong tag.
+#
+# So this row answers "would a program built here see the GPU", which is a
+# different question from every other row, and the one that decides whether
+# the ecosystem's binaries work.
+report_tag_differential() {
+    local libdir="$1" nvdir="$2"
+    local src="$HOME_DIR/.tagdiff.c"
+    cp "$HERE/probe.c" "$src"
+    local out
+    out=$(XLINGS_HOME="$HOME_DIR" "$XBIN" subos use "$SUBOS" --cmd       "gcc -O0 -o '$HOME_DIR/.tag-rpath'   '$src' -ldl -Wl,--disable-new-dtags,-rpath,$libdir:$nvdir &&
+       gcc -O0 -o '$HOME_DIR/.tag-runpath' '$src' -ldl -Wl,-rpath,$libdir:$nvdir &&
+       echo RPATH=\$(GFX_PROBE_LIBDIR=$libdir '$HOME_DIR/.tag-rpath' egl) &&
+       echo RUNPATH=\$(GFX_PROBE_LIBDIR=$libdir '$HOME_DIR/.tag-runpath' egl)" 2>&1)
+    local r u
+    r=$(printf '%s' "$out" | sed -n 's/^RPATH=//p'   | cut -d"|" -f3- | cut -c1-40)
+    u=$(printf '%s' "$out" | sed -n 's/^RUNPATH=//p' | cut -d"|" -f3- | cut -c1-40)
+    echo "  tag differential (same paths, different tag):"
+    printf '      DT_RPATH   -> %s\n' "${r:-(no result)}"
+    printf '      DT_RUNPATH -> %s\n' "${u:-(no result)}"
+    if [ -n "$r" ] && [ "$r" != "$u" ]; then
+        echo "      ^ THE TAG DECIDES. Programs stamped DT_RUNPATH cannot reach"
+        echo "        the GPU however correct their paths are (elfpatch stamps"
+        echo "        DT_RUNPATH; only godot's recipe flips it by hand)."
+    fi
+}
+
 run_env() {
     # $1 label, $2 runner ("host"|"subos"|"sandbox")
     local label="$1" runner="$2"
@@ -207,6 +247,8 @@ run_env() {
             mesa_json="$sdir/share/glvnd/egl_vendor.d/50_mesa.json"
             libdir="$sdir/lib"
             report_build_defect "$sdir"
+            report_tag_differential "$sdir/lib" \
+              "$(ls -d "$HOME_DIR"/data/xpkgs/xim-x-nvidia-gl-host-link/*/lib 2>/dev/null | head -1)"
             ;;
     esac
 
