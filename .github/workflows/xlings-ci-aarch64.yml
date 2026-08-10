@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.8.1
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
 
 jobs:
   native-contracts:
@@ -106,22 +106,9 @@ jobs:
         run: |
           xlings config --mirror GLOBAL
           xlings update -y 2>/dev/null || xlings update 2>/dev/null || true
-          # TEMPORARY PIN -- remove when mcpp-community/mcpp#406 is fixed.
-          #
-          # This job deliberately takes the LATEST mcpp, not the `.xlings.json`
-          # pin: it exists to catch cross-build breakage against the current
-          # client. It did exactly that. mcpp 2026.8.10.1's host toolchain
-          # post-install fixup binds `glibc@2.39` while the resolver installs
-          # 2.44 (latest since xim-pkgindex#582) and refuses to fall back, so
-          # every cross-build lane fails -- on main as well as on PRs. Proven
-          # by re-running one unchanged run id across the index bump that made
-          # mcpp 2026.8.10.1 latest: 2026.8.8.4 passed, 2026.8.10.1 failed.
-          #
-          # Pinning here muzzles the canary this job is FOR, which is why the
-          # pin names its own removal condition instead of quietly existing.
-          # Until #406 lands, breakage against the newest mcpp is invisible
-          # here.
-          xlings install mcpp@2026.8.8.4 -y
+          # This job deliberately takes the LATEST mcpp, not the pin -- it
+          # exists to catch cross-build breakage against the current client.
+          xlings install mcpp -y
           mcpp --version
 
       - name: Cross-build release candidate -> aarch64 static, run under qemu
