@@ -77,6 +77,12 @@ TESTS=(
     "E2E-25 |subos_sandbox_test.sh||"
     "E2E-26 |subos_sandbox_gpu_test.sh||"
     "E2E-27 |install_silent_failure_test.sh||"
+    # Present in the tree since #232 and listed here by NOTHING until
+    # 2026.8.11.1 -- so for a year it was indistinguishable from a test that
+    # passes. It guards the property the install-state predicate is most
+    # able to break: that installing something already installed changes
+    # nothing. Found by diffing tests/e2e/*_test.sh against this manifest.
+    "E2E-27a|install_idempotent_test.sh||"
     "E2E-28 |shim_owner_anchoring_test.sh||"
     "E2E-29 |interface_multi_repo_error_visibility_test.sh||"
     "E2E-30 |custom_index_artifact_test.sh||"
@@ -133,6 +139,58 @@ TESTS=(
     "E2E-79 |config_hook_resolves_declared_dep_test.sh||"
     "E2E-80 |subos_graphics_wiring_report_test.sh||"
 )
+
+# ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
+#
+# `install_idempotent_test.sh` sat in this directory since #232 and was listed
+# by neither this manifest nor any workflow. Nothing failed, nothing warned,
+# and the suite reported a clean run the whole time -- the silent-success
+# pattern applied to the test suite itself.
+#
+# Warned, not fatal, and deliberately so: the invariant worth asserting is
+# "every test runs somewhere", but the set of workflows that count is not
+# knowable from inside this script, and a check that reds CI over a
+# pre-existing gap teaches people to skip the whole file. A loud, specific,
+# actionable line is what this needs to be.
+_e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Run by a dedicated workflow rather than this manifest. Name the workflow, so
+# the exemption stays checkable by a human reading it.
+ORPHAN_EXEMPT=(
+    # Run by a dedicated workflow.
+    "aarch64_compat_contract_test.sh"       # xlings-ci-aarch64.yml
+    "bootstrap_home_test.sh"                # linux-e2e / macos / windows
+    "mcpp_build_xlings_test.sh"             # xlings-ci-linux-e2e.yml
+    "root_usability_test.sh"                # xlings-ci-linux-root.yml
+    "subos_cmd_contract_test.sh"            # windows / macos
+    # Sub-tests invoked by project_e2e_test.sh (E2E-05), not standalone.
+    "project_global_fallback_test.sh"
+    "project_home_test.sh"
+    "project_local_repo_test.sh"
+    "project_shim_mirror_test.sh"           # + xlings-ci-windows.yml
+    "project_workspace_platform_test.sh"
+    "project_xlings_res_test.sh"
+    "project_xlings_res_cross_region_test.sh"
+    "project_xlings_res_multi_server_test.sh"
+    "project_xlings_res_override_test.sh"
+    "project_xlings_res_region_map_test.sh"
+    "shim_project_context_test.sh"          # + xlings-ci-windows.yml
+    "subos_payload_refcount_test.sh"
+)
+_orphans=()
+for _f in "$_e2e_dir"/*_test.sh; do
+    _b="$(basename "$_f")"
+    printf '%s\n' "${TESTS[@]}" | grep -q "|$_b|" && continue
+    printf '%s\n' "${ORPHAN_EXEMPT[@]}" | grep -qx "$_b" && continue
+    _orphans+=("$_b")
+done
+if (( ${#_orphans[@]} > 0 )); then
+    echo "⚠ e2e tests present in the tree but run by NOTHING:"
+    printf '    %s\n' "${_orphans[@]}"
+    echo "  Add them to TESTS above, or to ORPHAN_EXEMPT naming the workflow"
+    echo "  that runs them. A test nobody runs reports the same thing as a"
+    echo "  test that passes."
+    echo
+fi
 
 PASS=0; FAIL=0; SOFTFAIL=0
 FAILED_TESTS=()
