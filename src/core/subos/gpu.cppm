@@ -83,4 +83,27 @@ inline std::vector<std::string> passthrough_args() {
     });
 }
 
+// Does this host have a GPU that `--gpu` would actually expose?
+//
+// Derived from `passthrough_args` rather than from a second list of device
+// paths. A separate list is a second answerer to a question this function
+// already answers, and the two would drift the first time a platform's node
+// is added to one of them — /dev/dxg was added to the list above precisely
+// because a platform whose node is missing reports "no GPU" identically to a
+// machine that has none.
+//
+// The `--ro-bind /sys` triple is unconditional, so the presence of any
+// `--dev-bind` is exactly "at least one GPU character device exists".
+inline bool host_has_gpu_devices(std::function<bool(const std::string&)> exists_fn) {
+    auto args = passthrough_args(std::move(exists_fn));
+    return std::find(args.begin(), args.end(), "--dev-bind") != args.end();
+}
+
+inline bool host_has_gpu_devices() {
+    return host_has_gpu_devices([](const std::string& p) {
+        std::error_code ec;
+        return std::filesystem::exists(p, ec);
+    });
+}
+
 } // namespace xlings::subos::gpu

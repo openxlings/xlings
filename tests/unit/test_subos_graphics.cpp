@@ -67,6 +67,21 @@ struct Tree {
         fs::create_directories(vendorDir);
         std::ofstream(vendorDir / std::string(soname)) << "vendor";
     }
+    // The nvidia payload records the host driver version it was wired for.
+    // The vendor entry is a symlink into that payload, so the stamp is reached
+    // by following the link the loader would follow — the same discipline the
+    // rest of this module uses instead of searching the store.
+    void stamp_driver(std::string_view version) {
+        fs::create_directories(vendorDir);
+        auto nv = root / "store" / "nvidia";
+        fs::create_directories(nv / "lib");
+        std::ofstream(nv / "lib" / "libGLX_nvidia.so.0") << "vendor";
+        std::ofstream(nv / ".host-driver-version") << version << "\n";
+        std::error_code ec;
+        fs::remove(vendorDir / "libGLX_nvidia.so.0", ec);
+        fs::create_symlink(nv / "lib" / "libGLX_nvidia.so.0",
+                           vendorDir / "libGLX_nvidia.so.0", ec);
+    }
     void write_record(std::string_view text) {
         fs::create_directories(vendorDir);
         std::ofstream(vendorDir / ".wiring") << text;
@@ -313,6 +328,55 @@ TEST(SubosGraphics, AnUnknownStateSaysThisClientCannotReadIt) {
     EXPECT_NE(d.find("quarantined"), std::string::npos);
     EXPECT_NE(d.find("newer than this xlings"), std::string::npos);
     EXPECT_NE(d.find("unassessed"), std::string::npos);
+}
+
+// ─── host driver drift ─────────────────────────────────────────────────────
+//
+// The NVIDIA userspace driver is the one part of this stack we do not own: it
+// is in lockstep with the host's kernel module, so we link to the host's files
+// rather than shipping them, and a distribution update moves it under us. The
+// wiring recorded at install then describes a driver that is no longer there.
+
+TEST(SubosGraphics, AgreeingDriverVersionsAreNotDrift) {
+    Tree t("drift-same");
+    WIRE_OR_SKIP(t);
+    t.add_vendor("libGLX_nvidia.so.0");
+    t.stamp_driver("550.144.03");
+    auto d = gfx::read_driver_stamp(t.vendorDir);
+    EXPECT_TRUE(d.known);
+    EXPECT_EQ(d.builtFor, "550.144.03");
+}
+
+// An unknown on either side is NOT drift. A machine whose kernel module is not
+// loaded right now has not changed driver — it has no driver running — and
+// reporting that as a change would cry wolf on every laptop with the GPU
+// asleep, which is how the previous generation of hints in this codebase
+// became noise and got commented out.
+TEST(SubosGraphics, AnUnreadableSideIsNotDrift) {
+    Tree t("drift-unknown");
+    WIRE_OR_SKIP(t);
+    t.add_vendor("libGLX_nvidia.so.0");
+    t.stamp_driver("550.144.03");
+    auto d = gfx::read_driver_stamp(t.vendorDir);
+    // hostNow comes from /sys and is empty on any machine without the module.
+    gfx::DriverStamp probe{true, "550.144.03", "", };
+    EXPECT_FALSE(probe.drifted());
+    gfx::DriverStamp nostamp{false, "", "560.1", };
+    EXPECT_FALSE(nostamp.drifted());
+    gfx::DriverStamp real{true, "550.144.03", "560.35.03", };
+    EXPECT_TRUE(real.drifted()) << "a genuine version change must be reported";
+    (void)d;
+}
+
+// A stack with no stamp at all (installed by a recipe older than the stamp)
+// must not be reported as drifted — nobody recorded what it was built for.
+TEST(SubosGraphics, NoStampIsNotDrift) {
+    Tree t("drift-nostamp");
+    WIRE_OR_SKIP(t);
+    t.add_vendor("libGLX_nvidia.so.0");
+    auto d = gfx::read_driver_stamp(t.vendorDir);
+    EXPECT_FALSE(d.known);
+    EXPECT_FALSE(d.drifted());
 }
 
 TEST(SubosGraphics, AMissingClosureNamesTheLibraries) {

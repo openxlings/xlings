@@ -73,9 +73,9 @@ hash    = "fnv1a:3465dd0bd5d7aa20"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
-version = "0.0.56"
-source  = "index+mcpplibs@0.0.56"
-hash    = "fnv1a:1f00ff8945ea9597"
+version = "0.0.57"
+source  = "index+mcpplibs@0.0.57"
+hash    = "fnv1a:91399fb9d7d59ebc"
 
 [package."mcpplibs.capi.lua"]
 namespace = "mcpplibs.capi"

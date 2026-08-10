@@ -1272,6 +1272,45 @@ int use_global(const std::string& name, EventStream& stream) {
 // was created with image/tmpfs storage so the user understands the
 // attribute is dormant in this entry. Writes to stderr (not stdout)
 // so the --shell <kind> path stays eval-safe.
+// `--sandbox` without `--gpu` on a machine that has one, for a subos that does
+// graphics: say so, once, before entering.
+//
+// bwrap's `--dev` builds a fresh /dev from a hard-coded whitelist that does not
+// include /dev/nvidia*, /dev/dri or /dev/dxg, so a sandbox without `--gpu` is a
+// software-rendering environment by construction. That default is CORRECT --
+// device passthrough should be a decision someone takes, not something a tool
+// does quietly -- and `--gpu` genuinely restores it: measured, GLX and Vulkan
+// come back byte-identical to the unsandboxed subos.
+//
+// So the gap is not capability, it is silence. Without the flag the user gets
+// "runs, draws a window, exits 0", indistinguishable from the GPU case except
+// in frame rate. That is this stack's whole failure mode: succeeding at the
+// wrong thing without saying so.
+//
+// THREE conditions, and the narrowness is the point. `warn_storage_dormant_on_
+// shell_` a few lines below is a hint that fired on every entry of its kind,
+// became noise, and is now commented out -- a hint that cannot be acted on is
+// worse than none. This one can only fire where acting on it changes the
+// outcome:
+//
+//   * the subos has a GL dispatch -- a subos that does no graphics is not
+//     missing anything (read, not probed: same state file `subos info` reads)
+//   * the host actually has GPU device nodes -- on a machine with no GPU,
+//     `--gpu` would expose nothing and the advice would be false
+//   * `--gpu` was not passed -- the user who asked does not need telling
+void warn_sandbox_without_gpu_(const std::string& name, bool gpu,
+                               EventStream& stream) {
+    if (gpu) return;
+    auto w = xlings::subos::graphics::read_graphics_wiring(Config::subos_dir(name));
+    if (!w.has_dispatch()) return;
+    if (!xlings::subos::gpu::host_has_gpu_devices()) return;
+    stream.emit(DataEvent{"tip", nlohmann::json{
+        {"message",
+         "this subos has a GL stack but the sandbox exposes no GPU device; "
+         "GL will render in software. Add --gpu to pass the host's GPU through."}
+    }.dump()});
+}
+
 void warn_storage_dormant_on_shell_(const std::string& name) {
     auto& p = Config::paths();
     auto storage = sandbox::read_storage_mode_(p.homeDir / "subos" / name);
@@ -1433,6 +1472,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
         // both sides of the boundary.
         if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
+        warn_sandbox_without_gpu_(name, gpu, stream);
         return sandbox::enter(name, stream, sandbox_backend, gpu, cmd);
     }
     warn_storage_dormant_on_shell_(name);
@@ -1674,6 +1714,24 @@ nlohmann::json graphics_fields_(const fs::path& subosDir) {
         return out;
     default:
         break;
+    }
+
+    // The one part of this stack we do not own is the host's NVIDIA driver,
+    // and it moves: a distribution update replaces it, the versioned SONAMEs
+    // our payload links to change, and the wiring below describes a driver
+    // that is no longer there. The detector already existed and worked
+    // (`xlings-gl-doctor`); what it lacked was a way to reach the user without
+    // being remembered. Reported before the per-vendor rows because when it
+    // fires, every row under it is about the old driver.
+    if (auto d = gfx::read_driver_stamp(w.dispatchDir / "lib" /
+                                        std::string(gfx::kVendorSubdir));
+        d.drifted()) {
+        row("host driver",
+            "CHANGED — this stack was wired for " + d.builtFor +
+            " and the host is now running " + d.hostNow +
+            ". Re-run 'xlings install graphics'; until then the states below "
+            "describe a driver that is no longer loaded.",
+            true);
     }
 
     if (w.dispatchMismatch) {
