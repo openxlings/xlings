@@ -132,7 +132,7 @@ Migrate old layout
 
 Verify installation
 
-Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--fix` — Repair (implies --deep); `--dry-run` — Preview repairs without changing detection depth; `--all` — Show all findings; `--reset-metadata` — Discard unreadable metadata
+Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--fix` — Repair what was reported (add --deep to audit payloads too); `--dry-run` — Preview repairs without changing detection depth; `--all` — Show all findings; `--reset-metadata` — Discard unreadable metadata
 
 ## `xlings script <script-file> [args]...`
 
