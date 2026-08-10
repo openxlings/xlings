@@ -1459,11 +1459,28 @@ int cmd_info(const std::string& target, EventStream& stream,
     // `installed 0.0.1 (active)` is three labels for overlapping facts, and
     // the middle one is the only question the summary can answer that the
     // list below cannot.
+    // An incomplete selected version must not render as `yes`. The payload is
+    // there and the records are not, so every command that reads one source
+    // says installed and every command that reads the other says it is not --
+    // which is how a graphics stack wired to nothing reported success on a
+    // real home. Named here so the panel answers the question that brings
+    // people to it.
+    const auto selectedIncomplete = std::ranges::any_of(rows,
+        [&](const auto& record) {
+            return record.version == xvm::strip_namespace(match->version)
+                && record.incomplete;
+        });
     addField(fieldsJson, "selected version", match->version);
     addField(fieldsJson, "selected installed",
              !packageInstalled ? "no (package not installed)"
+             : selectedIncomplete ? "incomplete (payload present, not registered)"
              : selectedInstalled ? "yes"
              : "no (other versions are)");
+    if (selectedIncomplete) {
+        addField(fieldsJson, "repair",
+                 std::format("xlings install {}@{}",
+                             match->canonicalName, match->version));
+    }
 
     nlohmann::json extraJson = nlohmann::json::array();
     if (packageInstalled) {

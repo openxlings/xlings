@@ -142,9 +142,77 @@ PayloadPlatform classify_payload_platform(const std::filesystem::path& dir) {
     return classify_payload_content(dir);
 }
 
+// How many xvm nodes the install that wrote this stamp registered.
+//
+// `-1` means the stamp predates the field, and that is NOT the same fact as
+// zero. Zero is a package DECLARING it registers nothing -- wrapper and meta
+// packages legitimately do -- and can be checked against the ledger. Absent is
+// an install we never observed, and a check that treats it as zero would
+// declare something about a run that recorded nothing. A payload whose stamp
+// cannot say what it registered gets no verdict, not a convenient default.
+constexpr int kRegisteredUnrecorded = -1;
+
+// Whether the last install of this payload is known to have failed.
+//
+// A failure has to leave a record of ITSELF, because the alternative -- infer
+// it from the payload -- cannot work. "No stamp" was the obvious candidate and
+// it is wrong: measured on a real home, the payloads with no stamp are old
+// installs written before the stamp existed (`linux-headers` with a full
+// `include/` tree, twenty-five superseded `xlings` versions), not failures.
+// Treating those as incomplete would reinstall them forever, which is the
+// non-convergence this repo already has a postmortem about.
+//
+// So the moment we know -- the hook returned false -- we write it down.
+bool stamped_incomplete(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto stamp = dir / std::filesystem::path(kPayloadStampFile);
+    if (!fs::is_regular_file(stamp, ec)) return false;
+    const auto content = platform::read_file_to_string(stamp.string());
+    const auto key = content.find("\"incomplete\"");
+    if (key == std::string::npos) return false;
+    const auto colon = content.find(':', key);
+    if (colon == std::string::npos) return false;
+    return content.find("true", colon) != std::string::npos
+        && content.find("true", colon) < content.find('\n', colon);
+}
+
+int stamped_registration_count(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto stamp = dir / std::filesystem::path(kPayloadStampFile);
+    if (!fs::is_regular_file(stamp, ec)) return kRegisteredUnrecorded;
+    // Scanned by hand, like classify_payload_platform above and for the same
+    // reason: instantiating the JSON parser in this module trips a GCC 16
+    // modules failure that names an unrelated module.
+    const auto content = platform::read_file_to_string(stamp.string());
+    const auto key = content.find("\"registered\"");
+    if (key == std::string::npos) return kRegisteredUnrecorded;
+    const auto colon = content.find(':', key);
+    if (colon == std::string::npos) return kRegisteredUnrecorded;
+    std::size_t i = colon + 1;
+    while (i < content.size() && (content[i] == ' ' || content[i] == '\t')) ++i;
+    int value = 0;
+    bool any = false;
+    while (i < content.size() && content[i] >= '0' && content[i] <= '9') {
+        value = value * 10 + (content[i] - '0');
+        ++i;
+        any = true;
+    }
+    return any ? value : kRegisteredUnrecorded;
+}
+
 // Record what this platform installed, so the next run does not have to guess.
+//
+// `registered` is the count of xvm nodes the install produced. It is what
+// makes "the install finished" checkable instead of merely asserted: a stamp
+// alone says a run reached the end, which a run that registered nothing also
+// does. Measured on a real home: 29 payloads carried a stamp, reported
+// `installed`, and had no ledger entry at all -- the whole graphics stack
+// among them. See .agents/docs/2026-08-11-five-issues-triage-and-plan.md.
 void write_payload_stamp(const std::filesystem::path& dir,
-                         std::string_view version) {
+                         std::string_view version,
+                         int registered = kRegisteredUnrecorded) {
     namespace fs = std::filesystem;
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return;
@@ -153,11 +221,49 @@ void write_payload_stamp(const std::filesystem::path& dir,
     // the very signal the installed-probe reads.
     if (fs::is_empty(dir, ec) || ec) return;
     // Written by hand for the same reason classify_payload_platform reads by
-    // hand (see there). Three string fields, no user input in any of them.
+    // hand (see there). No user input in any field.
+    auto text = std::format(
+        "{{\n  \"os\": \"{}\",\n  \"version\": \"{}\",\n"
+        "  \"xlings_version\": \"{}\"",
+        host_platform_tag(), version, Info::VERSION);
+    if (registered != kRegisteredUnrecorded) {
+        text += std::format(",\n  \"registered\": {}", registered);
+    }
+    text += "\n}\n";
+    platform::write_string_to_file(
+        (dir / std::filesystem::path(kPayloadStampFile)).string(), text);
+}
+
+// Mark this payload as the residue of an install that did not finish.
+//
+// Deliberately written into the stamp file and not a new one: the stamp is the
+// single artifact every reader already consults, and `payload_has_content`
+// ignores it by name -- so recording a failure never makes an empty directory
+// look like a payload, which is the exact confusion that made the failure
+// unrecoverable in the first place.
+//
+// Unlike write_payload_stamp this does NOT skip an empty directory. A hook
+// that failed before unpacking anything is precisely the case that must be
+// retryable, and it is the case that leaves nothing behind.
+void write_payload_failure_marker(const std::filesystem::path& dir,
+                                  std::string_view version,
+                                  std::string_view reason) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (!fs::is_directory(dir, ec)) return;
+    // Quotes and backslashes in the reason would break the hand-written
+    // reader; the field is diagnostic, so sanitising beats escaping.
+    std::string safe;
+    safe.reserve(reason.size());
+    for (const char c : reason) {
+        safe.push_back(c == '"' || c == '\\' || c == '\n' ? ' ' : c);
+    }
     const auto text = std::format(
         "{{\n  \"os\": \"{}\",\n  \"version\": \"{}\",\n"
-        "  \"xlings_version\": \"{}\"\n}}\n",
-        host_platform_tag(), version, Info::VERSION);
+        "  \"xlings_version\": \"{}\",\n  \"incomplete\": true,\n"
+        "  \"reason\": \"{}\"\n}}\n",
+        host_platform_tag(), version, Info::VERSION, safe);
     platform::write_string_to_file(
         (dir / std::filesystem::path(kPayloadStampFile)).string(), text);
 }

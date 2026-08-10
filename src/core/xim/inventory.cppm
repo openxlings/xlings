@@ -5,6 +5,7 @@ import xlings.core.config;
 import xlings.core.profile;
 import xlings.core.version_order;
 import xlings.core.xim.catalog;
+import xlings.core.xim.install_state;
 import xlings.core.xim.payload;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
@@ -28,6 +29,12 @@ struct InstalledPackageRecord {
     std::set<std::string> suboses;
     bool inCurrentSubos { false };
     bool payloadPresent { false };
+    // The payload and the records contradict each other. Reported rather than
+    // folded into `payloadPresent`: a package can have every file it needs and
+    // still be unusable because nothing registered it, and that case used to
+    // render identically to a healthy one. See xim/install_state.cppm.
+    bool incomplete { false };
+    std::string incompleteReason;
     bool active { false };
     std::string description;
     std::vector<std::string> programs;
@@ -648,6 +655,10 @@ std::vector<InstalledPackageRecord> assemble_inventory(
     const auto requested = requested_pairs(workspaces);
     const auto related = build_owner_coordinates(
         db, requested, filter, storeRoots, metadata, trace, match);
+    // Built once for the whole inventory rather than per record: the query
+    // contract says local commands answer immediately, and one pass over the
+    // DB is what keeps `info` proportional to the answer instead of the home.
+    const LedgerIndex ledgerIndex(db, Config::paths().homeDir.string());
     std::map<std::string, InstalledPackageRecord> records;
     std::map<std::string, std::filesystem::path> catalogFallbacks;
     std::set<std::string> workspaceDerived;
@@ -780,6 +791,17 @@ std::vector<InstalledPackageRecord> assemble_inventory(
         }
         trace_payload_visit(trace, record.payloadPath);
         record.payloadPresent = payload_has_content(record.payloadPath);
+        // Asked here rather than derived from the two flags above, because the
+        // interesting cases are exactly the ones those flags agree on: a
+        // stamped payload with no ledger entry has `payloadPresent` true and an
+        // index entry, and is unusable. One answerer, asked by everyone.
+        if (const auto state = installation_state(
+                ledgerIndex, record.namespaceName, record.name,
+                record.version, record.payloadPath);
+            state.is_incomplete()) {
+            record.incomplete = true;
+            record.incompleteReason = state.reason;
+        }
         if (!record.payloadPresent) {
             record.degradedReason = "payload missing";
         } else if (!found) {

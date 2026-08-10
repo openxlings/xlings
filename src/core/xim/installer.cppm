@@ -8,6 +8,7 @@ import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
 import xlings.core.xim.payload;
+import xlings.core.xim.install_state;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
@@ -2445,6 +2446,14 @@ public:
             return *hostGlibcCache;
         };
 
+        // Every payload the ledger references, built once for the whole plan.
+        // Rebuilt per node it would be O(nodes x DB); the plan cannot register
+        // anything before phase 2 starts, so one snapshot is correct for the
+        // skip decision -- and the decision is about what a PREVIOUS run left
+        // behind, which is exactly what this snapshot holds.
+        const auto ledgerIndex = LedgerIndex(
+            Config::versions(), Config::paths().homeDir.string());
+
         // Phase 2: Install each package in topological order
         for (auto& node : plan.nodes) {
             // Refused by a gate in phase 1. Skipping here rather than there
@@ -2742,6 +2751,30 @@ public:
                 }
             }
 
+            // The one that closes #541 ①.
+            //
+            // Everything above answers "is there a payload here". A hook that
+            // failed halfway leaves one, so every check above says yes and the
+            // hook is never re-run: the repair command's own precondition is
+            // satisfied by the wreckage it exists to clear. `installation_state`
+            // asks whether the payload and the records AGREE, and re-runs the
+            // hook when they do not.
+            //
+            // Positive evidence only -- a stamp that predates the `registered`
+            // field yields no verdict, so a home installed by an older client
+            // does not start reinstalling itself. See install_state.cppm.
+            if (payloadInstalled && !foreignPayload) {
+                const auto state = installation_state(
+                    ledgerIndex, node.namespaceName, node.name, node.version,
+                    ctx.install_dir);
+                if (state.is_incomplete()) {
+                    log::warn("[{}@{}] previous install left an incomplete "
+                              "state ({}); running its install hook again",
+                              node.name, node.version, state.reason);
+                    payloadInstalled = false;
+                }
+            }
+
             // Run install hook
             if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
                 log::debug("installing {}...", node.name);
@@ -2814,6 +2847,13 @@ public:
                 if (!hookResult.success) {
                     auto message = detail_::format_hook_failure(
                         "install", hookResult);
+                    // Record the failure ON the payload. Without this the next
+                    // `xlings install` finds a non-empty directory, concludes
+                    // "already installed", skips the hook, and reports success
+                    // -- the state #541 ① calls permanently stuck. The payload
+                    // is the only place the next run is guaranteed to look.
+                    write_payload_failure_marker(
+                        ctx.install_dir, node.version, message);
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    std::move(message) });
@@ -2843,6 +2883,9 @@ public:
             if (!payloadInstalled && extractedRoot && !detail_::has_directory_entries_(ctx.install_dir)) {
                 if (!detail_::stage_extracted_payload_(*extractedRoot, ctx.install_dir)) {
                     log::error("failed to stage extracted payload for {}", node.name);
+                    write_payload_failure_marker(
+                        ctx.install_dir, node.version,
+                        "failed to stage extracted payload");
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    "failed to stage extracted payload" });
@@ -2853,6 +2896,9 @@ public:
 
             if (!payloadInstalled && !detail_::normalize_file_install_(ctx.install_dir)) {
                 log::error("failed to normalize file install layout for {}", node.name);
+                write_payload_failure_marker(
+                    ctx.install_dir, node.version,
+                    "failed to normalize file install layout");
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                "failed to normalize file install layout" });
@@ -3020,6 +3066,13 @@ public:
                 if (!detail_::run_config_hook_(
                         node, dataDir, executor, ctx, onStatus,
                         useAfterInstall, &configFailure)) {
+                    // Same reason as the install hook above, and this one
+                    // matters more: config is where registration happens, so
+                    // its failure is exactly "payload on disk, ledger empty" --
+                    // the state that used to be indistinguishable from a
+                    // package that legitimately registers nothing.
+                    write_payload_failure_marker(
+                        ctx.install_dir, node.version, configFailure);
                     if (onStatus) {
                         onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                    std::move(configFailure) });
@@ -3068,6 +3121,25 @@ public:
                               closurecheck::describe_non_transitive(
                                   *rep.nonTransitive));
                 }
+            }
+
+            // Re-stamp with what the install actually REGISTERED.
+            //
+            // The stamp above was written before the config hook ran, because
+            // its other job -- recording which platform produced the payload --
+            // has to happen on the install path. The registration count can
+            // only be known here, after the hook and after xvm accepted (or
+            // silently dropped) what it produced.
+            //
+            // This is the observation that makes a finished install checkable.
+            // Without it, "the run reached the end" and "the run did its work"
+            // are the same output, which is how a stack that wired nothing
+            // reported `installed` on a real home.
+            if (node.pkgType != 3 /* Config */) {
+                const auto registered = count_ledger_registrations(
+                    Config::versions(), Config::paths().homeDir.string(),
+                    node.namespaceName, node.name, node.version);
+                write_payload_stamp(ctx.install_dir, node.version, registered);
             }
 
             if (catalog_) {
