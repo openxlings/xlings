@@ -131,6 +131,7 @@ TESTS=(
     "E2E-77 |subos_use_candidates_test.sh||"
     "E2E-78 |subos_runtime_declaration_upgrade_test.sh||"
     "E2E-79 |config_hook_resolves_declared_dep_test.sh||"
+    "E2E-80 |subos_graphics_wiring_report_test.sh||"
 )
 
 PASS=0; FAIL=0; SOFTFAIL=0
