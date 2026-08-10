@@ -282,6 +282,76 @@ GraphicsWiring read_graphics_wiring(const fs::path& subosDir) {
     return w;
 }
 
+// ─── host driver drift ─────────────────────────────────────────────────────
+//
+// The one piece of this stack we do not own is the NVIDIA userspace driver: it
+// is in lockstep with the host's kernel module (550.144.03 userspace talks to
+// 550.144.03 `nvidia.ko` and to nothing else), so the stack links to the
+// host's files rather than shipping them. That makes the host driver a version
+// that moves under us — a distribution update replaces it, the versioned
+// SONAMEs our payload symlinks to change, and the wiring recorded at install
+// time describes a driver that is no longer there.
+//
+// The detector already exists and works: `xlings-gl-doctor`, shipped by the
+// nvidia-gl-host-link package, compares the version stamped at install against
+// the one the kernel module reports now. What it lacks is a way to reach the
+// user — it has to be remembered and run. This reads the same two files it
+// reads, so `subos info` can say it without anyone remembering.
+//
+// Two plain file reads, no subprocess: the local-query-answers-instantly
+// contract (2026.8.10.1) applies here as much as to the wiring record, and the
+// values are already written down. Re-deriving the driver version by running
+// something would make this the second answerer to a question the installer
+// answered.
+struct DriverStamp {
+    bool known { false };        // the payload recorded a version at install
+    std::string builtFor;        // <nvidia payload>/.host-driver-version
+    std::string hostNow;         // /sys/module/nvidia/version
+    bool drifted() const {
+        // Only a DISAGREEMENT is drift. An unknown on either side is not:
+        // a machine whose module is not loaded right now (`hostNow` empty)
+        // has not changed driver, it has no driver running, and reporting
+        // that as drift would cry wolf on every laptop with the GPU asleep.
+        return known && !builtFor.empty() && !hostNow.empty()
+               && builtFor != hostNow;
+    }
+};
+
+inline std::string read_trimmed_(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::string s;
+    std::getline(in, s);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+        s.pop_back();
+    return s;
+}
+
+// `vendorDir` is the dispatch's `glx-vendor/`. The NVIDIA entry there is a
+// symlink into the nvidia payload, so the payload root — and the stamp beside
+// it — is reached the same way everything else here is reached: by following
+// the link the loader would follow, not by searching the store.
+DriverStamp read_driver_stamp(const fs::path& vendorDir) {
+    DriverStamp d;
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(vendorDir, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        auto name = it->path().filename().string();
+        if (name.find("nvidia") == std::string::npos) continue;
+        auto real = fs::weakly_canonical(it->path(), ec);
+        if (ec) continue;
+        // <payload>/lib/<soname> -> <payload>
+        auto payload = real.parent_path().parent_path();
+        auto stamp = payload / ".host-driver-version";
+        if (!fs::exists(stamp, ec)) continue;
+        d.known = true;
+        d.builtFor = read_trimmed_(stamp);
+        break;
+    }
+    if (d.known) d.hostNow = read_trimmed_("/sys/module/nvidia/version");
+    return d;
+}
+
 // ─── display ───────────────────────────────────────────────────────────────
 //
 // Presentation, not re-derivation: the SONAME is the record's key, and this

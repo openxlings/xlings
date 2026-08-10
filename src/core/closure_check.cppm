@@ -31,6 +31,12 @@ import xlings.core.elf_same_source;
 //            than the host's glibc recorded at subos creation. Host objects
 //            can always enter a form-X process (dlopen, host-link), and an
 //            older libc cannot serve their symbol versions.
+//   rule E   a form-X EXECUTABLE's search path must be in DT_RPATH, not
+//            DT_RUNPATH. DT_RUNPATH is consulted only for the object carrying
+//            it, so an executable that dlopens two or three levels deep -- any
+//            GL program does -- cannot reach the bottom however correct the
+//            path is. Libraries are deliberately out of scope: the transitive
+//            tag on a LIBRARY is measured harmful (xim-pkgindex#593).
 //
 // Rule B (loader and libc from one payload) is elfcheck's, already enforced
 // hard earlier in the same install loop. This module deliberately does not
@@ -64,11 +70,98 @@ struct VersionFloor {
     std::string interpPayload;
 };
 
+// A form-X executable whose search path is in the non-transitive tag.
+//
+// rule E. DT_RUNPATH is consulted only for the object that carries it;
+// DT_RPATH is consulted for every dlopen anywhere in the process. An
+// executable that dlopens something three levels deep -- which is what any GL
+// program does, since glvnd dlopens a vendor, the vendor dlopens its platform
+// modules, and those dlopen their own dependencies -- cannot reach the bottom
+// through DT_RUNPATH however correct the path itself is.
+//
+// This rule exists for the same reason as rule D, one layer up. Rule D's
+// comment says it: a predicate that is right but "runs in exactly one place --
+// a repository workflow the user's machine never sees". The TAG was in a worse
+// place than that -- it lived in each recipe author's head. Measured on a real
+// home: 1 of 73 installed executables carried DT_RPATH, 68 carried DT_RUNPATH,
+// and 55 of those 68 already carried the correct PATH. The one that was right
+// was right because that package's author found the problem independently and
+// fixed it locally; nothing carried the finding to the other 68.
+struct NonTransitiveTag {
+    std::string elf;
+    std::string rpath;      // the value, which is usually correct
+};
+
+// Which of the two search-path tags an ELF carries.
+//
+// Parsed here rather than shelled out because there is no tool to shell out
+// TO: `patchelf --print-rpath` prints the value of whichever tag exists and
+// does not say which, and `readelf` is not something a payload is guaranteed
+// to have. It is also the right shape for a check that runs over every ELF of
+// every install -- no process per file.
+enum class PathTag { None, Rpath, Runpath };
+
+inline PathTag path_tag_of(const fs::path& file) {
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return PathTag::None;
+    std::string buf((std::istreambuf_iterator<char>(f)), {});
+    if (buf.size() < 64) return PathTag::None;
+    const auto* p = reinterpret_cast<const unsigned char*>(buf.data());
+    if (!(p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F'))
+        return PathTag::None;
+
+    const bool is64 = p[4] == 2;
+    // Little-endian only. Every target this check runs on is LE, and a wrong
+    // guess here would misreport rather than fail loudly, so it declines
+    // instead.
+    if (p[5] != 1) return PathTag::None;
+
+    auto rd = [&](std::size_t off, int width) -> std::uint64_t {
+        if (off + static_cast<std::size_t>(width) > buf.size()) return 0;
+        std::uint64_t v = 0;
+        for (int i = width - 1; i >= 0; --i) v = (v << 8) | p[off + static_cast<std::size_t>(i)];
+        return v;
+    };
+
+    const std::uint64_t phoff     = is64 ? rd(32, 8) : rd(28, 4);
+    const std::uint64_t phentsize = is64 ? rd(54, 2) : rd(42, 2);
+    const std::uint64_t phnum     = is64 ? rd(56, 2) : rd(44, 2);
+    if (phoff == 0 || phentsize == 0) return PathTag::None;
+
+    constexpr std::uint64_t PT_DYNAMIC = 2;
+    constexpr std::uint64_t DT_NULL = 0, DT_RPATH = 15, DT_RUNPATH = 29;
+
+    for (std::uint64_t i = 0; i < phnum; ++i) {
+        const std::uint64_t ph = phoff + i * phentsize;
+        if (rd(ph, 4) != PT_DYNAMIC) continue;
+        const std::uint64_t dynoff = is64 ? rd(ph + 8, 8) : rd(ph + 4, 4);
+        const int w = is64 ? 8 : 4;
+        // The WHOLE dynamic section, not the first hit. When both tags are
+        // present the loader IGNORES DT_RPATH and uses DT_RUNPATH, so an ELF
+        // carrying both behaves as Runpath -- and returning whichever
+        // happened to come first in the table would report the opposite on
+        // half of them.
+        bool sawRpath = false;
+        for (std::uint64_t d = dynoff; d + 2 * static_cast<std::uint64_t>(w) <= buf.size();
+             d += 2 * static_cast<std::uint64_t>(w)) {
+            const std::uint64_t tag = rd(d, w);
+            if (tag == DT_NULL) break;
+            if (tag == DT_RUNPATH) return PathTag::Runpath;
+            if (tag == DT_RPATH)   sawRpath = true;
+        }
+        return sawRpath ? PathTag::Rpath : PathTag::None;
+    }
+    return PathTag::None;
+}
+
 struct Report {
     int scannedElves = 0;
     int formXElves   = 0;
     std::vector<MissingSoname>  missing;   // one entry per (first elf, soname)
     std::optional<VersionFloor> floor;     // one offender is enough to say it
+    // rule E. One offender names the payload: every executable in a payload is
+    // stamped by the same pass, so listing all of them would repeat one fact.
+    std::optional<NonTransitiveTag> nonTransitive;
 };
 
 // ── pure core ───────────────────────────────────────────────────────────
@@ -210,6 +303,21 @@ inline Report scan_payload(const fs::path& payloadDir,
             }
         }
 
+        // rule E -- the same set rule A uses: this ELF has PT_INTERP (it is
+        // an executable, not a library) and that interpreter is a payload
+        // (form X). Libraries are deliberately out of scope: forcing the
+        // transitive tag on a LIBRARY is measured harmful, because
+        // transitivity runs downward too and the library's path then enters
+        // every lookup beneath it (xim-pkgindex#593).
+        if (!rep.nonTransitive
+            && path_tag_of(path) == PathTag::Runpath) {
+            const auto rp = run_lines(std::format("--print-rpath \"{}\"", path));
+            rep.nonTransitive = NonTransitiveTag{
+                .elf = path,
+                .rpath = rp.empty() ? std::string{} : rp.back(),
+            };
+        }
+
         // rule D
         if (!store) store = store_sonames(xpkgsRoot, payloadDir);
         const auto needed = run_lines(std::format("--print-needed \"{}\"", path));
@@ -235,6 +343,25 @@ inline std::string describe_missing(const MissingSoname& m) {
         "enter through a *-host-link package, everything else belongs in the "
         "index. (rule D, warn-only)",
         fs::path(m.elf).filename().string(), m.soname);
+}
+
+// Names the file, the tag, and the consequence -- because the consequence is
+// the part nobody would guess. The path is usually right, so a message that
+// only said "wrong tag" would read as pedantry rather than as the reason GL
+// renders in software.
+inline std::string describe_non_transitive(const NonTransitiveTag& t) {
+    return std::format(
+        "non-transitive search path: {} carries DT_RUNPATH, not DT_RPATH.\n"
+        "  Its path ({}) is consulted for this binary's own libraries and for "
+        "NOTHING it dlopens. A GL program reaches its driver through three "
+        "levels of dlopen -- glvnd opens a vendor, the vendor opens its "
+        "platform modules, those open their own dependencies -- so with this "
+        "tag it silently renders in software however correct the path is. "
+        "elfpatch stamps DT_RPATH on executables since libxpkg 0.0.57; a "
+        "payload installed before that keeps the old tag until it is "
+        "reinstalled. (rule E, warn-only)",
+        fs::path(t.elf).filename().string(),
+        t.rpath.empty() ? "empty" : t.rpath);
 }
 
 inline std::string describe_floor(const VersionFloor& v) {

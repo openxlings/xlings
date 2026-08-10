@@ -17,6 +17,10 @@
 #   2. warn names libnothere.so.9     (rule D fires on the real gap)
 #   3. warn does NOT name libc.so.6   (a provided soname is not a gap)
 #   4. version-floor warn names 1.0 vs the recorded host glibc (rule A)
+#   4b. warn says the search path is non-transitive (rule E) -- the rig carries
+#      DT_RUNPATH, which is what elfpatch wrote before libxpkg 0.0.57. This is
+#      the ONLY way to observe rule E firing: installing anything today
+#      produces DT_RPATH executables, because the writer is now consistent.
 #   5. dep-closure-check.sh on the same payload also fails, also names
 #      libnothere.so.9, and also does not call libc.so.6 host-only
 #
@@ -63,6 +67,15 @@ patchelf --set-interpreter "$FAKE_GLIBC/lib64/ld-linux-x86-64.so.2" "$RIG_DIR/ri
   || fail "patchelf --set-interpreter failed"
 patchelf --add-needed libnothere.so.9 "$RIG_DIR/rigged" \
   || fail "patchelf --add-needed failed"
+# rule E's rig, on the same executable. `--set-rpath` without `--force-rpath`
+# is exactly what elfpatch did before libxpkg 0.0.57, so this reproduces a
+# payload arriving from an older client — the case rule E exists to catch and
+# the one that cannot be produced by installing anything today, because the
+# writer is now consistent.
+patchelf --set-rpath "$FAKE_GLIBC/lib64" "$RIG_DIR/rigged" \
+  || fail "patchelf --set-rpath failed"
+[ -n "$(readelf -d "$RIG_DIR/rigged" | grep -o '(RUNPATH)')" ] \
+  || fail "the rig was meant to carry DT_RUNPATH; patchelf wrote something else"
 
 # ── the fixture recipe that carries it into a payload ───────────────────
 cat > "$LOCAL_INDEX_DIR/pkgs/c/closurefix.lua" <<LUA
@@ -163,6 +176,17 @@ echo "$OUT" | strip_ansi | grep "version floor" | grep -q "1\.0.*$HOST_GLIBC\|$H
   || fail "4: rule A did not report glibc 1.0 vs host $HOST_GLIBC:
 $OUT"
 log "  ✓ 4: rule A reports the version floor (1.0 < host $HOST_GLIBC)"
+
+# rule E. The message has to carry the CONSEQUENCE, not just the tag name:
+# the path in a DT_RUNPATH executable is usually correct, so "wrong tag" alone
+# reads as pedantry rather than as the reason a GL program renders in software.
+echo "$OUT" | strip_ansi | grep -q "non-transitive search path" \
+  || fail "4b: rule E did not report the DT_RUNPATH executable:
+$OUT"
+echo "$OUT" | strip_ansi | grep -q "dlopen" \
+  || fail "4b: rule E fired but did not say what it costs (no mention of dlopen):
+$OUT"
+log "  ✓ 4b: rule E reports the non-transitive tag, and says what it costs"
 
 # ── side 2: the index CI's script, same tree ────────────────────────────
 # -print -quit, not `| head -1`: the shared lib sets -e and this file sets

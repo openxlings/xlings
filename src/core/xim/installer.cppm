@@ -3063,6 +3063,11 @@ public:
                     log::warn("[{}@{}] {}", node.name, node.version,
                               closurecheck::describe_floor(*rep.floor));
                 }
+                if (rep.nonTransitive) {
+                    log::warn("[{}@{}] {}", node.name, node.version,
+                              closurecheck::describe_non_transitive(
+                                  *rep.nonTransitive));
+                }
             }
 
             if (catalog_) {
