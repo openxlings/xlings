@@ -54,7 +54,8 @@ static void dispatch_data_event(const DataEvent& e) {
                 fields.push_back({
                     f.value("label", ""),
                     f.value("value", ""),
-                    f.value("highlight", false)
+                    f.value("highlight", false),
+                    f.value("alert", false)
                 });
             }
         }
@@ -64,7 +65,8 @@ static void dispatch_data_event(const DataEvent& e) {
                 extra.push_back({
                     f.value("label", ""),
                     f.value("value", ""),
-                    f.value("highlight", false)
+                    f.value("highlight", false),
+                    f.value("alert", false)
                 });
             }
         }

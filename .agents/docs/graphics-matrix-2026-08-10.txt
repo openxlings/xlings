@@ -1,0 +1,84 @@
+xlings : /home/speak/workspace/github/openxlings/xlings/target/x86_64-linux-gnu/c4e948c2d216b2cc/bin/xlings
+home   : /tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home
+subos  : default
+display: :1
+
+════════ HOST (no xlings — the baseline to beat) ════════
+  PROBE                  OVERRIDES                      RENDERER                       FAMILY
+  glx                    -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=nvidia NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=mesa;LIBGL_ALWAYS_SOFTWARE=1 glXCreatePbuffer failed        no context
+  glx                    DISPLAY=                       no X display (DISPLAY unset or no context
+  egl                    -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  egl-surfaceless        DISPLAY=                       NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.2, 256 bit CPU (software)
+  egl-device             DISPLAY=                       NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  gles1                  -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  gles2                  -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  gles2-surfaceless      DISPLAY=                       NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  vulkan                 -                              NVIDIA GeForce RTX 4080        GPU (nvidia)
+
+════════ SUBOS default (xlings stack, no sandbox) ════════
+  build a GL program (gcc -lGL): CANNOT LINK — libGL's own DT_NEEDED
+      is unreachable (RUNPATH is not transitive for ld either)
+  PROBE                  OVERRIDES                      RENDERER                       FAMILY
+  glx                    -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=nvidia NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=mesa;LIBGL_ALWAYS_SOFTWARE=1 glXCreatePbuffer failed        no context
+  glx                    DISPLAY=                       no X display (DISPLAY unset or no context
+  egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-device             DISPLAY=                       eglInitialize failed           no context
+  gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2-surfaceless      DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  vulkan                 -                              NVIDIA GeForce RTX 4080        GPU (nvidia)
+
+════════ SUBOS default --sandbox (bwrap: fresh /dev and mounts) ════════
+  build a GL program (gcc -lGL): CANNOT LINK — libGL's own DT_NEEDED
+      is unreachable (RUNPATH is not transitive for ld either)
+  PROBE                  OVERRIDES                      RENDERER                       FAMILY
+  glx                    -                              glXCreateNewContext failed     no context
+  glx                    __GLX_VENDOR_LIBRARY_NAME=nvidia glXCreateNewContext failed     no context
+  glx                    __GLX_VENDOR_LIBRARY_NAME=mesa;LIBGL_ALWAYS_SOFTWARE=1 glXCreatePbuffer failed        no context
+  glx                    DISPLAY=                       no X display (DISPLAY unset or no context
+  egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-device             DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2-surfaceless      DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  vulkan                 -                              enumerate failed               no context
+
+════════ SUBOS default --sandbox --gpu (device nodes re-exposed) ════════
+  build a GL program (gcc -lGL): CANNOT LINK — libGL's own DT_NEEDED
+      is unreachable (RUNPATH is not transitive for ld either)
+  PROBE                  OVERRIDES                      RENDERER                       FAMILY
+  glx                    -                              NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=nvidia NVIDIA GeForce RTX 4080/PCIe/S GPU (nvidia)
+  glx                    __GLX_VENDOR_LIBRARY_NAME=mesa;LIBGL_ALWAYS_SOFTWARE=1 glXCreatePbuffer failed        no context
+  glx                    DISPLAY=                       no X display (DISPLAY unset or no context
+  egl                    -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1 llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-surfaceless        DISPLAY=;LIBGL_ALWAYS_SOFTWARE=1;__EGL_VENDOR_LIBRARY_FILENAMES=/tmp/claude-1000/-home-speak-workspace-github-openxlings-xlings/bd877344-74bb-4dba-8a6d-08de5f910578/scratchpad/verify-home/subos/default/share/glvnd/egl_vendor.d/50_mesa.json llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  egl-device             DISPLAY=                       eglInitialize failed           no context
+  gles1                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2                  -                              llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  gles2-surfaceless      DISPLAY=                       llvmpipe (LLVM 20.1.7, 256 bit CPU (software)
+  vulkan                 -                              NVIDIA GeForce RTX 4080        GPU (nvidia)
+
+Reading this table
+  • Compare DOWN a column across environments: a row that is "GPU (nvidia)" on
+    the host and "CPU (software)" in the subos is a silent regression — both
+    rendered, both exited 0.
+  • "no context" is a HONEST failure: the cell said it could not get there.
+  • "UNMEASURED" means the probe produced nothing at all; that is a broken
+    measurement, not a result, and must be chased before reading the row.
+  • GLX with DISPLAY unset is EXPECTED to be "no context". GLX has no headless
+    mode; that cell exists to prove the offline story runs through EGL.

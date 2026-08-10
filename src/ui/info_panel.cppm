@@ -29,10 +29,19 @@ struct ListRow {
 };
 
 // A key-value row for info panels
+//
+// `is_alert` exists because the panel could previously only say
+// "notable-good". `xlings subos info` now reports the graphics wiring, whose
+// whole point is naming a vendor that fails to load, and rendering that in the
+// green+◆ styling reserved for "this is the active one" would make a failure
+// read as a success — the exact confusion this repo keeps producing. A row is
+// at most one of the two; alert wins, since a row that is both notable and
+// broken is a broken row.
 struct InfoField {
     std::string label;
     std::string value;
     bool is_highlight { false }; // Use green+bold for value
+    bool is_alert { false };     // Use amber+bold for value, warn glyph marker
 };
 
 // How a panel lays its rows out at the width it actually has.
@@ -75,7 +84,7 @@ PanelLayout measure_panel_(std::string_view title,
     auto scan = [&](std::span<const InfoField> fs) {
         for (auto& f : fs) {
             L.labelW = std::max(L.labelW, layout::display_width(f.label));
-            if (f.is_highlight) L.markerW = 2;
+            if (f.is_highlight || f.is_alert) L.markerW = 2;
         }
     };
     scan(fields);
@@ -112,13 +121,16 @@ void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
         // fact the command exists to report.
         auto marker = L.markerW == 0
             ? text("")
-            : (f.is_highlight
-                   ? (text(std::string(theme::icon::active) + " ") | color(theme::green()))
-                   : text("  "));
+            : (f.is_alert
+                   ? (text(std::string(theme::icon::warn) + " ") | color(theme::amber()))
+                   : f.is_highlight
+                       ? (text(std::string(theme::icon::active) + " ") | color(theme::green()))
+                       : text("  "));
 
         auto value_style = [&](Element e) {
-            return f.is_highlight ? (e | color(theme::green()) | bold)
-                                  : (e | color(theme::text_color()));
+            if (f.is_alert)     return e | color(theme::amber()) | bold;
+            if (f.is_highlight) return e | color(theme::green()) | bold;
+            return e | color(theme::text_color());
         };
 
         auto lines = layout::wrap_to_width(f.value, L.valueW);
