@@ -92,6 +92,39 @@ ld: cannot find -lGL: No such file or directory
 一个 GL 库都没有(见 §2)。A 的机制(ld 不搜输入 `.so` 自己的 DT_RUNPATH)没有被证伪,
 它只是**被一个更大的缺陷盖住了**。修完 §2 之后必须重测 A。
 
+### 1.2.1 落地期实测追加:subos 里**连 hello world 都链接不了**
+
+比 #532 说的更靠前一步。#532 说「链得上、跑不起来」;实测这台机器上今天**连不上**:
+
+```console
+$ xlings subos use default --cmd "gcc -o /tmp/t /tmp/t.c"
+ld: cannot find crt1.o: No such file or directory
+ld: cannot find crti.o: No such file or directory
+```
+
+**根因:subos 工具链没有任何指向自己 farm 的库搜索路径。**
+
+```console
+$ ... --cmd 'echo "[$LIBRARY_PATH]"'
+[]                                        ← 空
+$ ... --cmd 'gcc -v -o /tmp/t /tmp/t.c 2>&1 | grep -oE "\-L[^ ]+"'
+-L<gcc载荷>/lib/gcc/... -L/lib -L/usr/lib  ← 没有 <subos>/lib,也没有 glibc 载荷
+```
+
+`crt1.o` 就在 `<subos>/lib/crt1.o`(指向 glibc 2.44 载荷,链接有效)。**补一条搜索路径就好:**
+
+```console
+$ ... --cmd 'LIBRARY_PATH="$XLINGS_SUBOS_LIB" gcc -o /tmp/t /tmp/t.c && /tmp/t'
+WITH LIBRARY_PATH: BUILD+RUN OK
+```
+
+**不是本轮改动引入的**:用**已发布的 2026.8.10.4** 逐字复现同样的失败。
+
+> **未落地,需要决定。** 一行 `LIBRARY_PATH=$XLINGS_SUBOS_LIB` 就能修好,而且它**不写进产物**
+> ——与 `-rpath-link` 同一类。但它**会改变链接期选中哪一个库**(farm 里的 libz 还是消费方
+> 自己的),这一点比 `-rpath-link` 强,属于 #540 要求「必须可声明退出」的那一类语义。
+> 所以放进 E2 一起谈,不在本轮悄悄塞进去。
+
 ### 1.3 #537:修对了,但只修了一半的仓库
 
 xlings 侧(PR #538)**完整**:三态判定 `needs-transitive-consumer`、面板渲染
