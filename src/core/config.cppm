@@ -17,6 +17,40 @@ export struct Info {
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
+// XLINGS_HOME as the PROCESS WAS STARTED with -- what the USER named, not
+// what xlings resolved.
+//
+// main.cpp exports XLINGS_HOME to the home it resolved, on every single run,
+// so from that line onward `getenv("XLINGS_HOME")` returns xlings's own answer.
+// Anything asking "did the caller name a home?" must read it before that.
+//
+// Found by an e2e that had never been run in its life: `self install`'s
+// conflict guard used getenv() and refused a caller who had explicitly passed
+// `env -u XLINGS_HOME` -- xlings had set the variable itself two frames
+// earlier. One question, two answerers, and the second one was us.
+//
+// Captured EXPLICITLY from main.cpp rather than at static-init: the ordering
+// argument for static-init is correct but unverifiable by a reader, and a
+// guard whose input silently changes meaning is what this whole round is
+// about. Absent (never captured, e.g. in a unit test) means no observation,
+// so nothing that consumes this fires.
+namespace detail_ {
+inline std::optional<std::string> ambientHome_;
+inline bool ambientHomeCaptured_ { false };
+}  // namespace detail_
+
+export void capture_ambient_home_env() {
+    if (detail_::ambientHomeCaptured_) return;   // first call wins
+    detail_::ambientHomeCaptured_ = true;
+    if (const char* v = std::getenv("XLINGS_HOME"); v != nullptr && *v != '\0') {
+        detail_::ambientHome_ = std::string(v);
+    }
+}
+
+export const std::optional<std::string>& ambient_home_env() {
+    return detail_::ambientHome_;
+}
+
 export struct IndexRepo {
     std::string name;
     std::string url;

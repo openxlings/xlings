@@ -465,11 +465,20 @@ static void warn_root_context_() {
     }
 }
 
-// `XLINGS_HOME` as the user set it, canonicalized the same way
+// `XLINGS_HOME` as the CALLER set it, canonicalized the same way
 // detect_existing_home does, so the two can be compared without a spurious
-// mismatch from a trailing slash or a symlinked prefix. Empty when unset.
+// mismatch from a trailing slash or a symlinked prefix. Empty when the caller
+// did not name one.
+//
+// xlings::ambient_home_env(), NOT getenv: main.cpp exports XLINGS_HOME to the
+// home it resolved before any command runs, so getenv here answers "what did
+// xlings decide" and never "what did the user ask for". Reading it was a
+// second answerer to a question that already had one -- and it made this guard
+// refuse a caller who had explicitly passed `env -u XLINGS_HOME`.
 static fs::path explicit_home_() {
-    auto envHome = utils::get_env_or_default("XLINGS_HOME");
+    const auto& ambient = xlings::ambient_home_env();
+    if (!ambient) return {};
+    const auto& envHome = *ambient;
     if (envHome.empty()) return {};
     std::error_code ec;
     auto absolute = fs::absolute(fs::path(envHome), ec);

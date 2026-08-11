@@ -139,6 +139,30 @@ TESTS=(
     "E2E-79 |config_hook_resolves_declared_dep_test.sh||"
     "E2E-80 |subos_graphics_wiring_report_test.sh||"
     "E2E-81 |entry_binary_and_isolation_test.sh||"
+    # ── the orphan backlog, cleared 2026.8.11.2 ──
+    #
+    # Twelve tests that were in this directory and in no manifest or workflow.
+    # All twelve were run before being listed here and all twelve pass; the
+    # thirteenth (rpath_verify_test.sh) was deleted rather than registered --
+    # its only observable behaviour anywhere was SKIP, and E2E-12
+    # (elfpatch_install_verify_test.sh) already makes every assertion it made,
+    # against a home it builds itself instead of one it hopes to find.
+    #
+    # shim_link_test.sh earned its keep on the first run: it caught a guard
+    # added in this very release reading XLINGS_HOME from the environment,
+    # where xlings had already overwritten it with its own answer.
+    "E2E-82 |build_xim_index_artifact_test.sh||"
+    "E2E-83 |project_data_routing_test.sh||"
+    "E2E-84 |shim_alias_recursion_test.sh||"
+    "E2E-85 |shim_link_test.sh|T|"
+    "E2E-86 |subos_events_test.sh||"
+    "E2E-87 |subos_xpkg_install_test.sh|T|"
+    "E2E-88 |subos_xpkg_fork_test.sh|T|"
+    "E2E-89 |subos_xpkg_use_cmd_test.sh|T|"
+    "E2E-90 |subos_xpkg_keeper_test.sh|T|"
+    "E2E-91 |update_package_test.sh||"
+    "E2E-92 |xpkg_snapshot_remove_test.sh||"
+    "E2E-93 |windows_quick_install_resource_probe_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
@@ -148,11 +172,18 @@ TESTS=(
 # and the suite reported a clean run the whole time -- the silent-success
 # pattern applied to the test suite itself.
 #
-# Warned, not fatal, and deliberately so: the invariant worth asserting is
-# "every test runs somewhere", but the set of workflows that count is not
-# knowable from inside this script, and a check that reds CI over a
-# pre-existing gap teaches people to skip the whole file. A loud, specific,
-# actionable line is what this needs to be.
+# FATAL as of 2026.8.11.2, having been a warning for one release.
+#
+# The warning was the right call while thirteen historical orphans existed -- a check
+# that reds CI over a pre-existing backlog teaches people to skip the whole
+# file. That backlog is now zero: all thirteen were run, twelve registered
+# (E2E-82..E2E-93) and one deleted as a stale duplicate of E2E-12.
+#
+# With the list empty, the only way to add to it is to write a NEW test and
+# not run it, and that is exactly the state this check exists to refuse. The
+# exemption list below is the escape hatch, and it costs one line naming the
+# workflow that does run the test -- which keeps the claim checkable by a human
+# reading it, rather than implied by silence.
 _e2e_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Run by a dedicated workflow rather than this manifest. Name the workflow, so
 # the exemption stays checkable by a human reading it.
@@ -185,12 +216,12 @@ for _f in "$_e2e_dir"/*_test.sh; do
     _orphans+=("$_b")
 done
 if (( ${#_orphans[@]} > 0 )); then
-    echo "⚠ e2e tests present in the tree but run by NOTHING:"
+    echo "FATAL: e2e tests present in the tree but run by NOTHING:"
     printf '    %s\n' "${_orphans[@]}"
     echo "  Add them to TESTS above, or to ORPHAN_EXEMPT naming the workflow"
     echo "  that runs them. A test nobody runs reports the same thing as a"
     echo "  test that passes."
-    echo
+    exit 1
 fi
 
 PASS=0; FAIL=0; SOFTFAIL=0

@@ -58,6 +58,9 @@ int main(int argc, char* argv[]) {
     }
 
     auto& p = xlings::Config::paths();
+    // BEFORE the export below, which is the only chance to see what the caller
+    // actually passed. See config.cppm's ambient_home_env.
+    xlings::capture_ambient_home_env();
     xlings::platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
 
     // COMPAT(0.4.17 → permanent self-heal): if the user updated xlings via
