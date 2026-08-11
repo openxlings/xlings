@@ -1,5 +1,9 @@
 # 2026.8.11.1 之后:综合优化方案
 
+> **执行结果见 `2026-08-11-release-2026.8.11.2-notes.md`。**
+> 落地过程中**两条前提被实测推翻**,已在下面就地更正并标注 —— 保留原文而不是
+> 悄悄改掉,因为「方案写错了什么」和「方案做对了什么」一样值得留下。
+
 > 汇总两部分:2026-08-11 分诊里**计划了但没落地**的,以及**发布后验证过程中新发现**的。
 > 全部结论在用户真实 home(NVIDIA / X11 / x86_64)与已发布的 `2026.8.11.1` 上实测。
 >
@@ -64,6 +68,25 @@ E 欠账                 §3.9 remove 目标解析  §3.10 egl-device 重测
 **另一份拷贝**,没有任何东西对账。本次 `self update` 还因 `xim:` 与 `local:` 二义
 而拒绝(确定性契约,行为正确)——**结果是没人升级入口**。
 
+> ### 【实测更正 · 2026.8.11.2】入口不是被拷贝「漂移」的,是**按设计被写的**
+>
+> 上面那句「`bin/xlings` 是另一份拷贝,没有任何东西对账」只对了一半。查代码:
+>
+> * `xvm/commands.cppm:618` —— `xlings use xlings <v>` **物理替换入口二进制**
+>   (self-replace)。注释写得很清楚:main.cpp 的 multicall 短路不查 workspace,
+>   所以「切换了 xlings 版本」必须落到文件上,否则 `xlings --version` 不会变。
+> * `xim/installer.cppm:2060` —— install 侧的**同一个动作,第二份实现**。
+>
+> 于是真实事故链是:某次 `xlings use xlings local:0.4.51`(或安装它)
+> ⇒ self-replace 把 6 月的载荷写进入口 ⇒ 全家的 shim 都经它派发。
+> **实测该 home 至今 `active = local:0.4.51`,而文件是 2026.8.11.1** ——
+> 一个我修了文件却没修绑定留下的、活的分叉。
+>
+> 缺的从来不是「写入者」,是:**两个写入者、都只 `log::debug`、都不比较版本**,
+> 而且**事后没有任何东西对账**。所以本轮做的是
+> `entry_binary.cppm`:一个读者、一个写入者、写的时候**说出方向**(降级 warn),
+> doctor 报**长期分叉**。不拒绝降级 —— 钉住旧客户端是合法操作(二分回归)。
+
 **要做**
 
 1. `xlings self doctor` 增加一条检查。**判据不是「入口版本 ≠ 包版本」** ——
@@ -104,6 +127,25 @@ E 欠账                 §3.9 remove 目标解析  §3.10 egl-device 重测
 `self install` 与 `quick_install` **不认 `XLINGS_HOME`,只认 `HOME`**。
 仓库里其余所有隔离都靠 `XLINGS_HOME`,于是任何「设了 `XLINGS_HOME` 就以为安全」
 的验证步骤会直接写用户真实的 home。
+
+> ### 【实测更正 · 2026.8.11.2】这句是**错的**:`self install` 认 `XLINGS_HOME`
+>
+> 实测(隔离 HOME + 隔离 XLINGS_HOME,已发布的 2026.8.11.1):
+> `XLINGS_HOME=<iso> <rel>/bin/xlings self install` ⇒ **装进 `<iso>`**。
+> `detect_existing_home()` 第一件事就是读 `XLINGS_HOME` 并视为权威。
+> 我在 memory 里记了三次的那条「只认 HOME」,**从来没被验证过**。
+>
+> 真正的坑窄得多,而且恰好是我们每次踩的那一种:**当 `XLINGS_HOME` 指向
+> 「源目录自己」时**(解包一个 release、`cd` 进去、把 `XLINGS_HOME` 指向它来做
+> 隔离验证),`sameDir` 分支会**静默改投 `$HOME/.xlings`**。
+> 「以为隔离了」的那一步于是写了真实 home。
+>
+> 所以做法不变但理由变了:**只在冲突时拒绝**(零 blast radius),
+> 并且判据必须读**调用方传进来的** `XLINGS_HOME` —— 不是 `getenv`。
+> `main.cpp` 每次运行都会把 `XLINGS_HOME` 导出成它自己解析出的 home,
+> 所以 `getenv` 回答的是「xlings 决定了什么」。第一版正是这么写的,
+> 被一个**从没跑过的 e2e**(`shim_link_test.sh`)当场抓住:调用方明明
+> `env -u XLINGS_HOME`,守卫却拒绝了它。**「一个问题多个回答方」,而第二个是我。**
 
 **记录在案的次数:2026-07-30、2026-08-01、2026-08-11 —— 三次。**
 前两次的处理都是「写进 memory,提醒自己小心」,而**产品行为没变**,所以有了第三次。
@@ -338,10 +380,23 @@ node×5(5) nvim ollama openssl alsa-lib(各 1)
 **要做**:二选一 —— 清该包全部版本,或在有多个版本时**拒绝并列出**(与
 `install` 的确定性契约一致)。倾向后者。
 
-### 3.10 【E · P2】`egl-device` 无 DISPLAY 那一格
+### 3.10 【已重测,通过】`egl-device` 无 DISPLAY 那一格
 
 从未在 DT_RPATH 消费者下测过。按 harness 自己的规矩(`not-measured` 一律算失败),
-这一格现在是**未知**,不是「坏」。**重测之前不许写根因。**
+这一格当时是**未知**,不是「坏」。**重测之前不许写根因。**
+
+> ### 【实测 · 2026.8.11.2】重测完了,是**通过**,没有根因可写
+>
+> `matrix.sh` 在 `consumer tag: DT_RPATH` 下:
+>
+> | 环境 | `egl-device DISPLAY=` |
+> |---|---|
+> | subos default | **NVIDIA GeForce RTX 4080 — GPU (nvidia)** |
+> | `--sandbox` | `no EGL devices` —— 设备节点没暴露,**诚实失败** |
+> | `--sandbox --gpu` | **NVIDIA GeForce RTX 4080 — GPU (nvidia)** |
+>
+> 当初的疑虑来自 **DT_RUNPATH 探针**,也就是 #534 那个「测的是探针自己」的缺陷。
+> 探针修好之后这一格从头到尾是通的。**本条结案,不是欠账。**
 
 ## 4. 顺序与依赖
 
