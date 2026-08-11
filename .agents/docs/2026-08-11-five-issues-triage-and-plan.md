@@ -92,38 +92,64 @@ ld: cannot find -lGL: No such file or directory
 一个 GL 库都没有(见 §2)。A 的机制(ld 不搜输入 `.so` 自己的 DT_RUNPATH)没有被证伪,
 它只是**被一个更大的缺陷盖住了**。修完 §2 之后必须重测 A。
 
-### 1.2.1 落地期实测追加:subos 里**连 hello world 都链接不了**
+### 1.2.1 ⚠️ 已撤回:「连 hello world 都链接不了」是我把环境搞坏了
 
-比 #532 说的更靠前一步。#532 说「链得上、跑不起来」;实测这台机器上今天**连不上**:
+这一节原本说「比 #532 更靠前一步:subos 里连 hello world 都链接不了」。**那个结论是错的,
+撤回。** 留下这段而不是删掉,因为出错的方式比结论本身有价值。
 
-```console
-$ xlings subos use default --cmd "gcc -o /tmp/t /tmp/t.c"
-ld: cannot find crt1.o: No such file or directory
-ld: cannot find crti.o: No such file or directory
-```
-
-**根因:subos 工具链没有任何指向自己 farm 的库搜索路径。**
+**真相**:`$XLINGS_HOME/bin/xlings` —— **每一个 shim 的派发入口** —— 在会话中途被换成了
+`local:xlings@0.4.51`(6 月的载荷,字节完全一致,mtime 落在会话窗口内)。0.4.51 早于
+`${XLINGS_DYNAMIC_SUBOS_DIR}` 展开(2026.7.31.2 / #460)落地,于是 gcc alias 里的标记
+原样落到 **shell** 手里,被展开成**空**:
 
 ```console
-$ ... --cmd 'echo "[$LIBRARY_PATH]"'
-[]                                        ← 空
-$ ... --cmd 'gcc -v -o /tmp/t /tmp/t.c 2>&1 | grep -oE "\-L[^ ]+"'
--L<gcc载荷>/lib/gcc/... -L/lib -L/usr/lib  ← 没有 <subos>/lib,也没有 glibc 载荷
+COLLECT_GCC_OPTIONS='--sysroot=' ...        ← 空值,不是标记字面量
 ```
 
-`crt1.o` 就在 `<subos>/lib/crt1.o`(指向 glibc 2.44 载荷,链接有效)。**补一条搜索路径就好:**
+没有 sysroot ⇒ `-L/lib`、`-L/usr/lib` 变成**宿主的** ⇒ `crt1.o` 找不到
+(宿主那份在 multiarch 路径 `/usr/lib/x86_64-linux-gnu/`,这个 gcc 不搜)。
+
+换回 2026.8.11.1 之后,同一台机器、同一条命令:
 
 ```console
-$ ... --cmd 'LIBRARY_PATH="$XLINGS_SUBOS_LIB" gcc -o /tmp/t /tmp/t.c && /tmp/t'
-WITH LIBRARY_PATH: BUILD+RUN OK
+$ xlings subos use default --cmd 'echo "sysroot=[$(gcc -print-sysroot)]"; gcc -o /tmp/v /tmp/v.c && /tmp/v'
+sysroot=[/home/speak/.xlings/subos/default]
+BUILD+RUN OK
 ```
 
-**不是本轮改动引入的**:用**已发布的 2026.8.10.4** 逐字复现同样的失败。
+**是什么把入口换掉的:`self install` 与 `quick_install` 不认 `XLINGS_HOME`,只认 `HOME`。**
+这个仓库里几乎所有隔离都靠 `XLINGS_HOME`,唯独这两条不是 —— 任何「设了 `XLINGS_HOME`
+就以为安全」的验证步骤都会直接写用户的真实 home。memory 记过 2026-07-30 一次、
+2026-08-01 一次,**这是第三次**。记下来没能阻止它,因为记的是「要小心」而产品行为没变。
 
-> **未落地,需要决定。** 一行 `LIBRARY_PATH=$XLINGS_SUBOS_LIB` 就能修好,而且它**不写进产物**
-> ——与 `-rpath-link` 同一类。但它**会改变链接期选中哪一个库**(farm 里的 libz 还是消费方
-> 自己的),这一点比 `-rpath-link` 强,属于 #540 要求「必须可声明退出」的那一类语义。
-> 所以放进 E2 一起谈,不在本轮悄悄塞进去。
+> **产品侧待办**:`self install` 二选一 —— 尊重 `XLINGS_HOME`,或在只设了 `XLINGS_HOME`
+> 时**拒绝并说明**。一条只能靠人记住的隔离规则,就是会被第四次踩到的规则。
+
+**方法论上的教训,比结论重要**:我当时拿「已发布的 2026.8.10.4 也复现」当作「不是我造成的」
+的证据。那个对照**是无效的** —— 它同样经 `bin/xlings`(0.4.51)派发。
+**换一个二进制而不换派发者,不是对照。**
+
+### 1.2.2 #532 在修好的环境上逐字复现(A 与 B 都成立)
+
+```console
+$ gcc -o /tmp/z /tmp/z.c -lz && /tmp/z
+LINK_OK
+/tmp/z: error while loading shared libraries: libz.so.1: cannot open shared object file
+$ readelf -d /tmp/z | grep RUNPATH
+ (RUNPATH) [<store>/xim-x-glibc/2.39/lib64:<store>/xim-x-gcc/16.1.0/lib64]   ← 只有两个载荷
+$ ls <subos>/lib/libz.so.1
+<subos>/lib/libz.so.1 -> <store>/xim-x-zlib/1.3.1/lib/libz.so.1              ← 就在这儿
+```
+
+```console
+$ gcc -o /tmp/gl /tmp/gl.c -lGL
+ld: warning: libGLdispatch.so.0, needed by <subos>/lib/libGL.so, not found (try using -rpath or -rpath-link)
+ld: warning: libGLX.so.0,        needed by <subos>/lib/libGL.so, not found
+ld: <subos>/lib/libGL.so: undefined reference to `__glDispatchRegisterStubCallbacks'
+```
+
+**与 issue 的描述逐字一致。** 这才是 #532 的真实形态:**链得上、跑不起来**(B),
+以及**输入 `.so` 自己的 DT_NEEDED 解析不了**(A)。E2b 仍然是主干。
 
 ### 1.3 #537:修对了,但只修了一半的仓库
 
