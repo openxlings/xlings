@@ -461,6 +461,11 @@ TEST(SubosGraphics, AVendorWiredElsewhereThanRecordedIsStale) {
     ASSERT_EQ(w.vendors.size(), 1u);
     EXPECT_TRUE(w.vendors[0].stale)
         << "the vendor was upgraded and the assembler was not re-run";
+    // And it must FAIL CLOSED: a verdict measured against a payload that is
+    // no longer in place is not evidence that anything passes. The panel
+    // replaces the text today, but the next caller to reach for is_ok() must
+    // not read `ok` off an expired record.
+    EXPECT_FALSE(w.vendors[0].is_ok());
     // And the reassuring word must be GONE, not footnoted: six confident
     // `native` rows once described a stack wired to nothing.
     auto d = gfx::describe(w.vendors[0]);

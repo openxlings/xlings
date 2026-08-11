@@ -120,7 +120,15 @@ struct VendorWiring {
     // is one of our own builds, so there is no host closure to complete. That
     // is a pass, and it is NOT the same fact as `ok`, which means a host
     // driver IS behind it and everything it needs is reachable.
-    bool is_ok() const { return state == "ok" || state == "native"; }
+    // FAILS CLOSED ON `stale`, for the reason stated one function down about
+    // an unrecognized state: a verdict measured against a payload that is no
+    // longer in place is not evidence that anything passes. Today the only
+    // production consumer of this module renders `describe()` -- which already
+    // replaces the verdict -- so nothing changes; the point is that the next
+    // caller cannot read `ok` off a record that has expired.
+    bool is_ok() const {
+        return !stale && (state == "ok" || state == "native");
+    }
 };
 
 enum class WiringStatus {
