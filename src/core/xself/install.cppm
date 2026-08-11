@@ -487,9 +487,27 @@ static fs::path explicit_home_() {
     return ec ? absolute.lexically_normal() : canonical;
 }
 
+// Do these two paths name the same directory?
+//
+// `fs::equivalent` FIRST, and only then string comparison. Comparing
+// canonicalized strings is wrong on Windows, where the filesystem is
+// case-insensitive and `weakly_canonical` does not fold case: `c:\users\me`
+// and `C:\Users\Me` are one directory and two strings. This guard REFUSES on
+// a difference, so a false difference is a refused install -- the failure mode
+// is louder than the one it was added to prevent.
+//
+// `equivalent` needs both to exist, which is exactly when the question is
+// answerable; when one does not, a normalized string compare is all there is,
+// and a non-existent target cannot be the home someone is worried about
+// overwriting anyway.
 static bool same_dir_(const fs::path& a, const fs::path& b) {
     if (a.empty() || b.empty()) return false;
     std::error_code ec;
+    if (fs::exists(a, ec) && fs::exists(b, ec)) {
+        std::error_code eqEc;
+        if (bool eq = fs::equivalent(a, b, eqEc); !eqEc) return eq;
+    }
+    ec.clear();
     auto ca = fs::weakly_canonical(a, ec);
     auto cb = fs::weakly_canonical(b, ec);
     if (ec) return a.lexically_normal() == b.lexically_normal();
