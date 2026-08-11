@@ -304,8 +304,13 @@ NamespaceRankResult_ prefer_namespace_rank_(
         if (namespace_rank_(match.namespaceName) == best) {
             out.kept.push_back(match);
         } else {
+            // Same rule as announce_demotion_: no version, no `@`. This string
+            // is printed as a command the user can copy, and
+            // `xlings install local:binutils@` is not one.
             out.demoted.push_back(
-                std::format("{}@{}", match.canonicalName, match.version));
+                match.version.empty()
+                    ? match.canonicalName
+                    : std::format("{}@{}", match.canonicalName, match.version));
         }
     }
     return out;
@@ -698,9 +703,21 @@ public:
         }
         auto key = target + "\x1f" + chosen.canonicalName + "\x1f" + losers;
         if (!demotionsAnnounced_.insert(key).second) return;
-        log::warn("'{}' also provided by {}; selected {}@{} by namespace "
+        // `@version` only when there IS one. The identity-only path
+        // (resolve_local_identity, used by inventory) does not select a
+        // version, so unconditional formatting printed `local:binutils@` --
+        // measured on a real home right after the release. A trailing `@`
+        // reads as a version that failed to render, which is worse than not
+        // showing one: the whole purpose of this line is that the reader can
+        // trust what it says.
+        const auto withVersion = [](const std::string& name,
+                                    const std::string& version) {
+            return version.empty() ? name : name + "@" + version;
+        };
+        log::warn("'{}' also provided by {}; selected {} by namespace "
                   "priority (local ranks last)",
-                  target, losers, chosen.canonicalName, chosen.version);
+                  target, losers,
+                  withVersion(chosen.canonicalName, chosen.version));
         log::warn("  to pick the other: use its full name, e.g. `{}`",
                   chosen.demoted.front());
     }
