@@ -21,6 +21,8 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.elf_same_source;
+import xlings.core.entry_binary;
+import xlings.core.version_order;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
@@ -211,6 +213,28 @@ enum class FindingKind {
     // them reporting `installed` while no subos held a single one of its
     // libraries. A human plus one command settles it; a guess does not.
     UnverifiedPayload,
+    // `$XLINGS_HOME/bin/xlings` is not the xlings this home believes it is
+    // running.
+    //
+    // That file is written on purpose, by `use`/`install` of the xlings
+    // package itself (entry_binary::replace_with), and EVERY shim in the home
+    // reaches it -- `subos/<s>/bin/<tool>` is a link to it. So its version
+    // decides how every tool in the home is dispatched, and a stale one is not
+    // a cosmetic mismatch: measured on a real home, a June entry stopped
+    // expanding `${XLINGS_DYNAMIC_SUBOS_DIR}`, gcc's alias reached a shell as
+    // `--sysroot=`, and the toolchain silently stopped being self-contained.
+    // Nothing anywhere reported it; the symptom was `cannot find crt1.o`.
+    //
+    // NOTICE, not Error. A user may pin an older entry deliberately, and the
+    // two shapes this reports -- "the binding says one thing and the file says
+    // another", "something newer is installed here" -- are both states a
+    // person might have chosen. The point is that they cannot be invisible.
+    //
+    // Deliberately NOT "entry version != package version": a home legitimately
+    // holds several xlings (xim: and local: both provide it, which is exactly
+    // why `self update` used to refuse), so "the package version" is itself
+    // ambiguous and a check built on it would inherit the ambiguity.
+    EntryBinaryDrift,
 };
 
 enum class FindingLevel {
@@ -781,6 +805,123 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     return out;
 }
 
+// Is the file every shim dispatches through the xlings this home says it runs?
+//
+// TWO SHAPES, ONE FINDING. Reported separately because the user's next move
+// differs, and because each is evidence the other cannot supply:
+//
+//   * the active binding names a version, the FILE reports another. Provable
+//     divergence -- the writer is `use`/`install` of the xlings package, so
+//     the only ways to reach this state are a hand-copied binary or a failed
+//     replacement. Live on a real home while this was written: the binding
+//     said `local:0.4.51` and the file was 2026.8.11.1.
+//   * the file is behind a version this home already has on disk. Directional
+//     on purpose -- "not equal" would fire on every deliberately pinned entry,
+//     and the half that bites is only ever "the entry is older".
+//
+// The version comes from RUNNING the binary (entry_binary::version_of), not
+// from a record. Checking a record against another record is what let the
+// original divergence stand: `.xlings.json` and the versions DB agreed with
+// each other and neither described the file. ~60ms, measured, once per run.
+//
+// An unreadable entry produces NOTHING. No observation is not a verdict --
+// the same rule `registered`/`kRegisteredUnrecorded` follows one module over.
+std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
+    std::vector<Finding> out;
+    auto& p = Config::paths();
+
+    const auto entry = entry_binary::path_of(p.homeDir);
+    const auto actual = entry_binary::version_of(entry);
+    if (actual.empty()) return out;   // absent, or would not answer
+
+    // What the home says is active for the `xlings` program, in this subos.
+    if (auto it = st.ws.find("xlings");
+        it != st.ws.end() && !it->second.empty()) {
+        // The binding may be namespace-qualified (`local:0.4.51`); compare on
+        // the version alone, since the file cannot report a namespace.
+        std::string boundVersion = it->second;
+        if (auto colon = boundVersion.rfind(':'); colon != std::string::npos) {
+            boundVersion = boundVersion.substr(colon + 1);
+        }
+        if (!boundVersion.empty() && boundVersion != actual) {
+            // Reconcile toward the NEWER of the two, whichever side it is on.
+            //
+            // The obvious remedy -- "make the file match the binding" -- is
+            // actively harmful in the case that produced this check: the
+            // binding was a June `local:` build and the file was current, so
+            // that command would have recreated the outage it is meant to
+            // report. `use` rewrites the entry either way, so choosing the
+            // newer side re-aligns the binding at no cost when the file is
+            // ahead, and upgrades the file when the binding is ahead.
+            const bool bindingIsNewer =
+                version_order::compare(boundVersion, actual) > 0;
+            const auto toward = bindingIsNewer ? it->second : actual;
+            out.push_back({
+                .kind    = FindingKind::EntryBinaryDrift,
+                .level   = FindingLevel::Notice,
+                .target  = "xlings",
+                .version = actual,
+                .detail  = std::format(
+                    "bin/xlings reports {}, but this subos has {} active -- "
+                    "every shim in the home dispatches through the file, not "
+                    "the binding",
+                    actual, it->second),
+                .remedy  = std::format("xlings use xlings {}", toward),
+            });
+        }
+    }
+
+    // Something newer sitting in the store. Payload dirs, not the versions DB:
+    // the question is what this home COULD dispatch through, and a payload
+    // with a binary in it is the direct evidence of that.
+    std::string newest;
+    std::string newestCoordinate;
+    const auto xpkgs = Config::global_data_dir() / "xpkgs";
+    std::error_code ec;
+    if (fs::is_directory(xpkgs, ec)) {
+        for (const auto& pkgDir : platform::dir_entries(xpkgs)) {
+            if (!pkgDir.is_directory()) continue;
+            const auto storeName = pkgDir.path().filename().string();
+            const auto sep = storeName.find("-x-");
+            const auto name = sep == std::string::npos
+                ? storeName : storeName.substr(sep + 3);
+            if (name != "xlings") continue;
+            const auto ns = sep == std::string::npos
+                ? std::string{} : storeName.substr(0, sep);
+            for (const auto& verDir : platform::dir_entries(pkgDir.path())) {
+                if (!verDir.is_directory()) continue;
+                const auto version = verDir.path().filename().string();
+                // Positive evidence only: a payload that failed to install is
+                // not something this home can dispatch through.
+                if (xim::stamped_incomplete(verDir.path())) continue;
+                if (!fs::exists(verDir.path() / "bin"
+                                / shim_filename_("xlings"), ec)) continue;
+                if (version_order::compare(version, actual) <= 0) continue;
+                if (!newest.empty()
+                    && version_order::compare(version, newest) <= 0) continue;
+                newest = version;
+                newestCoordinate = ns.empty()
+                    ? std::format("xlings@{}", version)
+                    : std::format("{}:xlings@{}", ns, version);
+            }
+        }
+    }
+    if (!newest.empty()) {
+        out.push_back({
+            .kind    = FindingKind::EntryBinaryDrift,
+            .level   = FindingLevel::Notice,
+            .target  = "xlings",
+            .version = actual,
+            .detail  = std::format(
+                "bin/xlings is {}, and {} is already installed here -- an "
+                "older entry may not expand records a newer index wrote",
+                actual, newestCoordinate),
+            .remedy  = std::format("xlings use xlings {}", newest),
+        });
+    }
+    return out;
+}
+
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
              const AuditSelection& audit) {
     auto& p = Config::paths();
@@ -795,6 +936,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                                                                  : p.activeSubos)) {
         add(std::move(f));
     }
+
+    for (auto&& f : detect_entry_binary_(st)) add(std::move(f));
 
     // The PATH an aliased command would inherit. Read once, and read from
     // THIS process: doctor is normally started from the user's shell, so this
@@ -2782,6 +2925,11 @@ Counts count_(const Scan& scan) {
                 // the command. The line still prints, with the command that
                 // settles it.
                 break;
+            case FindingKind::EntryBinaryDrift:
+                // Counts as nothing either: both shapes it reports are states
+                // a user may have chosen on purpose. It must be visible, not
+                // fatal.
+                break;
         }
     }
     return c;
@@ -3039,6 +3187,16 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     if (!f.remedy.empty())
                         add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 }
+                break;
+            case FindingKind::EntryBinaryDrift:
+                // Printed in full, always -- NOT collapsed into the notice
+                // summary. There are at most two of these, and each one
+                // describes the single file every other tool in the home is
+                // dispatched through; a collapsed count would say "1 notice"
+                // about the fact that explains everything else on the page.
+                add(glyph::mark(glyph::note, "entry binary"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             default: break;
         }

@@ -1769,7 +1769,7 @@ nlohmann::json graphics_fields_(const fs::path& subosDir) {
         // just compiled render in software", and that question is why someone
         // reads this panel.
         row(std::move(label), gfx::describe(v),
-            v.is_broken() || v.needs_transitive_consumer());
+            v.stale || v.is_broken() || v.needs_transitive_consumer());
     }
     return out;
 }

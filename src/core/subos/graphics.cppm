@@ -83,6 +83,15 @@ struct VendorWiring {
     std::string state;                  // ok | native | broken | unverified
     std::string reason;                 // broken only, e.g. runpath-not-transitive
     std::vector<std::string> missing;   // broken only: unresolved SONAMEs
+    // The payload directory this verdict was measured against. Written by the
+    // index since graphics 0.1.5; EMPTY for every record written before that,
+    // and an empty one must produce no verdict -- see stale below.
+    std::string payload;
+    // Derived HERE, not recorded: the record no longer describes what is on
+    // disk. See recompute_staleness_ for the two local tests and why neither
+    // of them asks the index anything.
+    bool stale { false };
+    std::string staleDetail;
 
     bool is_broken() const { return state == "broken"; }
 
@@ -191,6 +200,13 @@ ParsedRecord parse_wiring_record(std::string_view text) {
         if (!line.starts_with("vendor=")) continue;
 
         VendorWiring v;
+        // `payload=` takes the whole rest of the line, for the same reason
+        // `dispatch=` does: it is a path and a path may contain a space. The
+        // writer puts it last so this split is unambiguous.
+        if (auto at = line.find(" payload="); at != std::string_view::npos) {
+            v.payload = std::string(trim_(line.substr(at + 9)));
+            line = trim_(line.substr(0, at));
+        }
         for (auto& tok : split_(line, ' ')) {
             auto t = trim_(tok);
             if (t.empty()) continue;
@@ -236,6 +252,67 @@ inline bool same_path_(const fs::path& a, const fs::path& b) {
     auto cb = fs::weakly_canonical(b, ec2);
     if (ec1 || ec2) return a == b;
     return ca == cb;
+}
+
+// Has each verdict outlived the payload it was measured against?
+//
+// The record is written by ONE package (`graphics`) and every line in it is
+// about ANOTHER (mesa, libglvnd, nvidia-gl-host-link). Those upgrade
+// independently, and nothing made the record expire when they did. Measured on
+// a real home: the record was written 57 seconds BEFORE the nvidia payload it
+// speaks for.
+//
+// TWO LOCAL TESTS, no index, no probe.
+//
+//   * a vendor wired into `glx-vendor/` -- follow the symlink. It is absolute
+//     and points into a payload; if it no longer lands inside the recorded
+//     `payload=`, that vendor was upgraded and the assembler was not re-run.
+//     This is exactly what an upgrade changes and what a re-run would fix.
+//   * a vendor NOT in that directory (EGL and GLES are found through the
+//     glvnd JSON, not through the GLX directory) -- the recorded payload must
+//     still exist and still hold that soname.
+//
+// WHY NOT "is this the current version of that package": because the reader
+// cannot answer it. `subos info` answers from local state by contract -- an
+// instant local query, no index parsing (2026.8.10.1) -- so a criterion that
+// needs the index is a criterion that would be silently skipped. The plan for
+// this check originally said "compare versions", and that is where it would
+// have died.
+//
+// NO `payload=` -> NO VERDICT. Every record written before graphics 0.1.5
+// lacks the field, and calling those stale would mark every existing home's
+// stack as suspect on the strength of a field nobody wrote. Same rule as
+// `registered` in xim/install_state.cppm: an absent observation is not an
+// observation of absence.
+inline void recompute_staleness_(std::vector<VendorWiring>& vendors,
+                                 const fs::path& vendorDir) {
+    for (auto& v : vendors) {
+        if (v.payload.empty()) continue;          // no observation
+        std::error_code ec;
+        const auto wired = vendorDir / v.soname;
+        const auto st = fs::symlink_status(wired, ec);
+        if (!ec && st.type() != fs::file_type::not_found) {
+            auto target = fs::weakly_canonical(wired, ec);
+            if (ec) continue;                     // unreadable: no verdict
+            auto recorded = fs::weakly_canonical(fs::path(v.payload), ec);
+            if (ec) continue;
+            // lexically_relative rather than a string prefix: `/a/b` must not
+            // read as a parent of `/a/bc`.
+            const auto rel = target.lexically_relative(recorded);
+            if (rel.empty() || rel.native().starts_with("..")) {
+                v.stale = true;
+                v.staleDetail = "wired to " + target.parent_path().string()
+                              + ", recorded against " + v.payload;
+            }
+            continue;
+        }
+        // Not in glx-vendor/ -- an EGL or GLES entry point. The record is
+        // still about a file, so ask whether that file is still there.
+        if (!fs::exists(fs::path(v.payload) / "lib" / v.soname, ec)) {
+            v.stale = true;
+            v.staleDetail = v.payload + " no longer holds " + v.soname;
+        }
+    }
 }
 
 GraphicsWiring read_graphics_wiring(const fs::path& subosDir) {
@@ -294,6 +371,7 @@ GraphicsWiring read_graphics_wiring(const fs::path& subosDir) {
     w.recordedDispatch = rec.dispatch;
     w.vendors = std::move(rec.vendors);
     w.dispatchMismatch = !same_path_(rec.dispatch, w.dispatchDir);
+    recompute_staleness_(w.vendors, vendorDir);
     // A record listing no vendor is not a record of a wired stack. Fall back
     // to what the directory says rather than rendering an empty vendor table
     // under a "recorded" heading.
@@ -405,6 +483,17 @@ std::optional<VendorLabel> label_for(std::string_view soname) {
 }
 
 std::string describe(const VendorWiring& v) {
+    // FIRST, and it replaces the recorded verdict rather than decorating it.
+    //
+    // A stale record's state is a measurement of a payload that is no longer
+    // what this subos loads. Printing "ok" with a footnote would leave the
+    // reassuring word on the screen, and the whole reason this field exists is
+    // that six confident `native` rows once described a stack wired to nothing.
+    if (v.stale) {
+        return "STALE — this verdict was measured against a payload that is "
+               "no longer the one in place (" + v.staleDetail +
+               "). Re-run 'xlings install graphics' to re-measure";
+    }
     if (v.state == "native")
         return "ok  (built by xlings — no host driver behind it)";
     if (v.state == "ok")
