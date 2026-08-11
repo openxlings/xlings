@@ -394,11 +394,37 @@ std::optional<std::string> merge_shim_env_value(const std::string& expanded,
     return expanded + platform::PATH_SEPARATOR + existing;
 }
 
-// Set environment variables for a program before exec
-void setup_envs(const VData& vdata,
+// Set environment variables for a program before exec.
+//
+// Returns the name of a `${XLINGS_*}` reference that would have reached the
+// child as an empty string, or nullopt when everything resolved. See
+// vanishing_xlings_reference for why that is the failure worth refusing.
+std::optional<std::string> setup_envs(const VData& vdata,
                 const std::string& resolved_path,
                 const std::string& xlings_home,
                 const std::string& active_subos_dir) {
+    // The subos library farm, declared by the layer that resolved WHICH subos
+    // this process runs in.
+    //
+    // The same contract the shell profile, `subos spawn` and `--sandbox` each
+    // declare (E2a, 2026.8.11.1) -- but those three cover entry into a subos,
+    // and a shim is the fourth way a program starts: `gcc` invoked from a
+    // plain shell that never sourced the profile, or from a build system that
+    // sanitises the environment. The `ld` wrapper in the binutils payload
+    // reads this variable, so a path where nobody sets it is a path where the
+    // wrapper silently does nothing -- which is indistinguishable from it
+    // working.
+    //
+    // Set unconditionally rather than only-if-absent: this layer resolved the
+    // ACTIVE subos for this process (project > env > home), and the profile's
+    // value is the home's default, which is the wrong one inside a project
+    // subos. The most specific answerer wins.
+    if (!active_subos_dir.empty()) {
+        platform::set_env_variable(
+            "XLINGS_SUBOS_LIB",
+            (std::filesystem::path(active_subos_dir) / "lib").string());
+    }
+
     // Set envs from VData
     for (auto& [key, value] : vdata.envs) {
         // Same hazard as the alias: an env value recorded at install time can
@@ -407,6 +433,9 @@ void setup_envs(const VData& vdata,
             normalize_subos_paths(expand_path(value, xlings_home),
                                   xlings_home, active_subos_dir),
             active_subos_dir);
+        if (auto vanishing = vanishing_xlings_reference(expanded)) {
+            return vanishing;
+        }
         auto existing = std::string(std::getenv(key.c_str()) ? std::getenv(key.c_str()) : "");
         if (auto merged = merge_shim_env_value(expanded, existing))
             platform::set_env_variable(key, *merged);
@@ -429,6 +458,25 @@ void setup_envs(const VData& vdata,
         }
         platform::set_env_variable("PATH", new_path);
     }
+    return std::nullopt;
+}
+
+// One message for both ways a `${XLINGS_*}` reference can vanish, because the
+// user's next move differs and only one of the two is their problem.
+void report_vanishing_reference_(const std::string& program_name,
+                                 const std::string& name) {
+    if (name == "XLINGS_DYNAMIC_SUBOS_DIR") {
+        log::error("xlings: '{}' needs the active subos, and none resolved",
+                   program_name);
+        log::error("  hint: xlings subos list   (then `xlings subos use <name>`)");
+        return;
+    }
+    log::error("xlings: '{}' is registered against '{}', which this client "
+               "does not provide", program_name, name);
+    log::error("  this record was written by a newer index than the xlings "
+               "running it");
+    log::error("  hint: xlings self update   (entry: {})",
+               std::string(Info::VERSION));
 }
 
 // Main shim dispatch: called when argv[0] is a tool name (not xlings/xim)
@@ -550,7 +598,11 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         platform::set_env_variable("PATH", new_path);
 
         // Setup custom envs
-        setup_envs(*vdata, "", xlings_home, active_subos_dir);
+        if (auto vanishing =
+                setup_envs(*vdata, "", xlings_home, active_subos_dir)) {
+            report_vanishing_reference_(program_name, *vanishing);
+            return 1;
+        }
 
         // COMPAT: an alias written before the placeholder existed carries the
         // absolute path of whatever subos was active at install time. Re-point
@@ -568,6 +620,21 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // -- which is exactly why the answer was not in the database.
         alias_cmd = expand_subos_placeholder(alias_cmd, active_subos_dir);
 
+        // Refuse rather than hand a vanishing reference to the shell.
+        //
+        // This is the guard the 0.4.51 incident needed: that client predated
+        // the marker, passed it through, and `sh` turned `--sysroot=<marker>`
+        // into `--sysroot=` -- a valid flag meaning "use the host root". Every
+        // build in the home silently stopped being self-contained and the
+        // first visible symptom was a missing crt1.o three layers down.
+        //
+        // Checked AFTER setup_envs, so a variable the alias legitimately
+        // defers to (`${XLINGS_SUBOS_LIB}`) has already been exported and does
+        // not trip this.
+        if (auto vanishing = vanishing_xlings_reference(alias_cmd)) {
+            report_vanishing_reference_(program_name, *vanishing);
+            return 1;
+        }
 
         if (depth >= MAX_SHIM_DEPTH) {
             // Fallback: resolve alias command to full path to break recursion
@@ -615,7 +682,11 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     log::debug("exe path: {}", exe_path.string());
 
     // Setup environment
-    setup_envs(*vdata, exe_path.string(), xlings_home, active_subos_dir);
+    if (auto vanishing = setup_envs(*vdata, exe_path.string(), xlings_home,
+                                    active_subos_dir)) {
+        report_vanishing_reference_(program_name, *vanishing);
+        return 1;
+    }
 
     // Build argv for execvp
     auto exe_str = exe_path.string();

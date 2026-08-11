@@ -639,6 +639,56 @@ std::string pin_subos_paths(const std::string& text,
                                  std::string(kSubosPlaceholder));
 }
 
+// A `${XLINGS_*}` reference in a command this client is about to hand to a
+// shell, which that shell would expand to NOTHING. Returns the name
+// (`XLINGS_FOO`), or nullopt when there is no such reference.
+//
+// WHY THIS EXISTS
+//
+// A record is written by the INDEX and read by whatever client the user has.
+// When the index starts using a marker a client predates, that client passes
+// it through untouched -- and a shell expands an unset variable to the EMPTY
+// STRING.
+//
+// Empty is worse than literal. `gcc --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}`
+// reaching a shell became `--sysroot=`, which gcc accepts and reads as "the
+// host root": self-containment was lost with no error anywhere, for five days,
+// and the symptom surfaced three layers away as `cannot find crt1.o`. The
+// literal would have made gcc complain on the spot.
+//
+// WHY THE TEST IS "WOULD EXPAND TO EMPTY" AND NOT "IS A MARKER"
+//
+// A name list is the obvious implementation and it is wrong in both
+// directions. `${XLINGS_SUBOS_LIB}` in an alias is LEGITIMATE -- xlings
+// exports that variable, so the recipe is deliberately deferring to the
+// environment (the `ld` wrapper does exactly this) -- and a list of "markers
+// we expand" would reject it. Meanwhile the marker that actually caused the
+// outage is one a list written today cannot contain, because the whole failure
+// mode is a name INVENTED AFTER this client shipped.
+//
+// So ask the question the damage is actually about: at the moment of exec,
+// with the child's environment already set up, would this reference vanish?
+// That is one `getenv` and it needs no dictionary. It catches a marker from a
+// newer index, catches an unexpanded `${XLINGS_DYNAMIC_SUBOS_DIR}` when no
+// subos resolved, and lets every genuinely-exported name through.
+//
+// `${XLINGS_*}` only, never `${...}`: a recipe may reference any other shell
+// variable and mean it, and that is not xlings's business to police.
+std::optional<std::string> vanishing_xlings_reference(std::string_view text) {
+    constexpr std::string_view kPrefix = "${XLINGS_";
+    std::size_t pos = 0;
+    while ((pos = text.find(kPrefix, pos)) != std::string_view::npos) {
+        auto close = text.find('}', pos + kPrefix.size());
+        if (close == std::string_view::npos) break;  // unterminated; not ours to judge
+        auto name = std::string(
+            text.substr(pos + 2, close - (pos + 2)));   // strip "${" and "}"
+        const char* value = std::getenv(name.c_str());
+        if (value == nullptr || *value == '\0') return name;
+        pos = close + 1;
+    }
+    return std::nullopt;
+}
+
 std::string expand_subos_placeholder(const std::string& text,
                                      const std::string& subos_dir) {
     if (subos_dir.empty() || text.empty()) return text;

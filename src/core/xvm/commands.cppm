@@ -11,6 +11,7 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;
 import xlings.core.semver;
+import xlings.core.entry_binary;
 import xlings.core.xself;
 import xlings.core.xself.repair;
 import xlings.core.xvm.types;
@@ -621,13 +622,9 @@ int cmd_use(const std::string& target, const std::string& version,
             auto active_bin = fs::path(vd->path)
                             / ("xlings" + std::string(shim_ext));
             if (fs::exists(active_bin)) {
-                if (platform::atomic_replace_executable(active_bin, xlings_bin)) {
-                    log::debug("[self-replace] bootstrap synced to {}@{}",
-                              target, resolved);
-                } else {
-                    log::warn("[self-replace] failed: {}@{} -> {}",
-                             target, resolved, xlings_bin.string());
-                }
+                entry_binary::replace_with(
+                    active_bin, xlings_bin,
+                    std::format("{}@{}", target, resolved), resolved);
             }
         }
         // COMPAT(0.4.8 → drop in 0.6.0): opportunistically drop legacy

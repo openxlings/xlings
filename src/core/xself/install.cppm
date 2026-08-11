@@ -11,6 +11,7 @@ import xlings.libs.tinyhttps;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.utils;
+import xlings.core.version_order;
 
 namespace xlings::xself {
 
@@ -464,6 +465,55 @@ static void warn_root_context_() {
     }
 }
 
+// `XLINGS_HOME` as the CALLER set it, canonicalized the same way
+// detect_existing_home does, so the two can be compared without a spurious
+// mismatch from a trailing slash or a symlinked prefix. Empty when the caller
+// did not name one.
+//
+// xlings::ambient_home_env(), NOT getenv: main.cpp exports XLINGS_HOME to the
+// home it resolved before any command runs, so getenv here answers "what did
+// xlings decide" and never "what did the user ask for". Reading it was a
+// second answerer to a question that already had one -- and it made this guard
+// refuse a caller who had explicitly passed `env -u XLINGS_HOME`.
+static fs::path explicit_home_() {
+    const auto& ambient = xlings::ambient_home_env();
+    if (!ambient) return {};
+    const auto& envHome = *ambient;
+    if (envHome.empty()) return {};
+    std::error_code ec;
+    auto absolute = fs::absolute(fs::path(envHome), ec);
+    if (ec) return fs::path(envHome).lexically_normal();
+    auto canonical = fs::weakly_canonical(absolute, ec);
+    return ec ? absolute.lexically_normal() : canonical;
+}
+
+// Do these two paths name the same directory?
+//
+// `fs::equivalent` FIRST, and only then string comparison. Comparing
+// canonicalized strings is wrong on Windows, where the filesystem is
+// case-insensitive and `weakly_canonical` does not fold case: `c:\users\me`
+// and `C:\Users\Me` are one directory and two strings. This guard REFUSES on
+// a difference, so a false difference is a refused install -- the failure mode
+// is louder than the one it was added to prevent.
+//
+// `equivalent` needs both to exist, which is exactly when the question is
+// answerable; when one does not, a normalized string compare is all there is,
+// and a non-existent target cannot be the home someone is worried about
+// overwriting anyway.
+static bool same_dir_(const fs::path& a, const fs::path& b) {
+    if (a.empty() || b.empty()) return false;
+    std::error_code ec;
+    if (fs::exists(a, ec) && fs::exists(b, ec)) {
+        std::error_code eqEc;
+        if (bool eq = fs::equivalent(a, b, eqEc); !eqEc) return eq;
+    }
+    ec.clear();
+    auto ca = fs::weakly_canonical(a, ec);
+    auto cb = fs::weakly_canonical(b, ec);
+    if (ec) return a.lexically_normal() == b.lexically_normal();
+    return ca == cb;
+}
+
 export int cmd_install() {
     warn_root_context_();
     auto srcDir = detect_source_dir();
@@ -511,6 +561,36 @@ export int cmd_install() {
     }
     std::println("  install:  v{} -> {}", pkgVersion, targetHome.string());
 
+    // An explicit XLINGS_HOME that this command is NOT going to honour.
+    //
+    // XLINGS_HOME is honoured in the ordinary case -- detect_existing_home
+    // takes it as authoritative -- but the two `sameDir` branches above
+    // silently retarget to `$HOME/.xlings`, and silently is the problem. The
+    // rest of this repository isolates by XLINGS_HOME, so a verification step
+    // that sets it and then watches this command write somewhere else is
+    // writing into a home it believed it had ruled out.
+    //
+    // REFUSE, do not retarget-and-warn. A warning scrolls past under the
+    // progress output (measured: the header above was already invisible in a
+    // real run), and by the time anyone reads it the home has been
+    // overwritten. Non-zero exit with the two paths named is recoverable; a
+    // warning is not.
+    //
+    // Only when they DISAGREE -- so the ordinary install, and every install
+    // that does not set XLINGS_HOME, is untouched.
+    if (auto envHome = explicit_home_();
+        !envHome.empty() && !same_dir_(envHome, targetHome)) {
+        log::error("[xlings:self] XLINGS_HOME and the install target disagree");
+        log::error("  XLINGS_HOME: {}", envHome.string());
+        log::error("  would write: {}", targetHome.string());
+        log::error("  refusing, because the rest of xlings isolates by "
+                   "XLINGS_HOME and this command would not have");
+        log::error("  hint: to install into XLINGS_HOME, run it from outside "
+                   "that directory; to install into the target above, unset "
+                   "XLINGS_HOME");
+        return 1;
+    }
+
     // Skip if source == target and not temp — "fix links" in place (e.g. dev from source).
     if (!cmp_ec && sameDir && !fromTempExtract) {
         log::println("\n[xlings:self] already in target dir, fixing links");
@@ -541,7 +621,36 @@ export int cmd_install() {
                 overwriteDataSubos = utils::ask_yes_no("[xlings:self] overwrite data and subos? ", false);
             }
         } else if (fs::exists(targetHome / "bin") && fs::exists(targetHome / "subos")) {
-            if (!utils::ask_yes_no("\n[xlings:self] overwrite existing installation? ", true)) {
+            // Name both versions, and say which DIRECTION this is.
+            //
+            // The prompt used to read "overwrite existing installation?" with
+            // a default of yes, and an upgrade and a six-week downgrade were
+            // worded identically. That is how a June payload's `self install`
+            // replaced a current entry binary on this machine: the entry then
+            // predated `${XLINGS_DYNAMIC_SUBOS_DIR}`, so every alias in the
+            // home lost its expansion and the first visible symptom was a
+            // toolchain that could not find crt1.o.
+            //
+            // Note the old default was INVERTED against the risk: reinstalling
+            // the same version defaulted to NO, while going backwards
+            // defaulted to YES. Going backwards is the one that needs the
+            // deliberate keystroke.
+            const bool downgrade =
+                !pkgVersion.empty() && !installedVersion.empty()
+                && version_order::compare(pkgVersion, installedVersion) < 0;
+            std::string question;
+            if (installedVersion.empty()) {
+                question = "\n[xlings:self] overwrite existing installation? ";
+            } else if (downgrade) {
+                question = std::format(
+                    "\n[xlings:self] DOWNGRADE v{} -> v{}, overwrite? ",
+                    installedVersion, pkgVersion);
+            } else {
+                question = std::format(
+                    "\n[xlings:self] replace v{} with v{}? ",
+                    installedVersion, pkgVersion);
+            }
+            if (!utils::ask_yes_no(question, !downgrade)) {
                 std::println("[xlings:self] cancelled\n");
                 return 0;
             }

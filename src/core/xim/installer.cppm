@@ -18,6 +18,7 @@ import xlings.platform;
 import xlings.platform.target;
 import xlings.core.config;
 import xlings.core.semver;
+import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
 import xlings.core.closure_check;
 import xlings.libs.json;
@@ -2057,16 +2058,14 @@ bool process_xvm_operations_(const PlanNode& node,
                     std::filesystem::path(resolved->path)
                     / activeName;
                 if (std::filesystem::exists(activeBin)) {
-                    if (platform::atomic_replace_executable(
-                            activeBin, xlings_bin)) {
-                        log::debug(
-                            "[self-replace] bootstrap {} <- {}",
-                            xlings_bin.string(), activeBin.string());
-                    } else {
-                        log::warn(
-                            "[self-replace] failed: bootstrap {} <- {}",
-                            xlings_bin.string(), activeBin.string());
-                    }
+                    // The same writer `xlings use xlings <v>` goes through.
+                    // Two independent replacements of the one file every shim
+                    // dispatches through is how a home ends up running a
+                    // client nobody chose -- see entry_binary.cppm.
+                    entry_binary::replace_with(
+                        activeBin, xlings_bin,
+                        std::format("{}@{}", resolved->target, effect.version),
+                        effect.version);
                 }
                 xself::compat::v0_4_8::cleanup_legacy_alias_shims(
                     artifactBinDir, xlings_bin);

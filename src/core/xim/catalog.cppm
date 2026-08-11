@@ -46,6 +46,14 @@ struct PackageMatch {
     // is sitting on disk. Folding it into `installed` made `xlings remove`
     // refuse the very package the user was told to remove.
     bool payloadForeign { false };
+    // Candidates that also answered to this bare name and lost on namespace
+    // priority. Empty in the ordinary case.
+    //
+    // Carried on the match rather than logged and forgotten so a test can
+    // assert the choice was made AND announced -- a demotion the user cannot
+    // see is a silent pick, which is the shape this rule was added to remove,
+    // not to introduce.
+    std::vector<std::string> demoted;
 };
 
 // #374: a single index repo that could not be loaded during rebuild
@@ -236,6 +244,73 @@ std::vector<PackageMatch> dedupe_matches_(
     return unique;
 }
 
+// Namespace priority: `local` ranks below every other namespace.
+//
+// WHY A RULE AND NOT A REFUSAL
+//
+// Refusing an ambiguous bare name is the right answer when there is NO rule
+// -- the deterministic-or-refuse contract (2026.7.30.2) exists because
+// picking silently between two equally-valid answers is how a machine ends up
+// running something nobody chose. But that argument only holds where the two
+// candidates are peers.
+//
+// `local` is not a peer. It is the side-loading namespace: recipes a user or
+// a dev script dropped into the local index, never fetched, never bumped, and
+// never removed when they go stale. Measured on this machine: `local:xlings`
+// carried a payload from June while `xim:xlings` was current, and because the
+// two tied, `xlings self update` REFUSED -- so nothing upgraded the entry
+// binary, and every shim in the home dispatched through a six-week-old client
+// whose symptom surfaced three layers away as `ld: cannot find crt1.o`.
+//
+// A refusal is not a safe default when the refused operation is the one that
+// repairs the machine. So: rank, announce, and keep the escape hatch.
+//
+// SCOPE, deliberately narrow:
+//   * Only for a target with NO explicit namespace. `local:foo` is untouched;
+//     the priority answers "the user did not say which", never "the user said
+//     which and was overruled".
+//   * Only `local` is demoted. There is no rule between `xim:` and `d2x:` --
+//     inventing an order for them would be exactly the silent pick this
+//     contract forbids -- so a tie among non-local namespaces still refuses.
+//   * The loser is NAMED (PackageMatch::demoted -> one printed line). This
+//     turns "undetermined" into "determined, and here is what it beat", which
+//     is a different thing from determinism being dropped.
+int namespace_rank_(std::string_view namespaceName) {
+    return namespaceName == "local" ? 1 : 0;   // lower wins
+}
+
+struct NamespaceRankResult_ {
+    std::vector<PackageMatch> kept;
+    std::vector<std::string> demoted;   // "local:xlings@0.4.51"
+};
+
+// BY CONST REFERENCE, and it copies what it keeps.
+//
+// Both callers use their `matches` again when ranking fails to decide -- to
+// build the ambiguity message, which must list every candidate. Taking this by
+// value happens to be safe (the copy is what gets moved from), but the safety
+// then lives in a signature rather than in the code that depends on it, and
+// one edit to `&&` would silently produce an ambiguity message full of empty
+// strings. A vector of a handful of matches is not worth that.
+NamespaceRankResult_ prefer_namespace_rank_(
+    const std::vector<PackageMatch>& matches) {
+    NamespaceRankResult_ out;
+    if (matches.empty()) return out;
+    int best = std::ranges::min(
+        matches | std::views::transform([](const PackageMatch& match) {
+            return namespace_rank_(match.namespaceName);
+        }));
+    for (const auto& match : matches) {
+        if (namespace_rank_(match.namespaceName) == best) {
+            out.kept.push_back(match);
+        } else {
+            out.demoted.push_back(
+                std::format("{}@{}", match.canonicalName, match.version));
+        }
+    }
+    return out;
+}
+
 std::vector<PackageMatch> prefer_project_scope_(
     std::vector<PackageMatch> matches) {
     std::unordered_set<std::string> projectKeys;
@@ -325,6 +400,18 @@ resolve_local_identity_from_repos(
             "package '{}' not found", target));
     }
     if (matches.size() != 1) {
+        // Same namespace priority the full resolver applies, for the same
+        // reason: this path answers `info`/inventory, and an identity that
+        // resolves for `install` but not for `info` is two answers to one
+        // question -- the defect 2026.8.11.1 was spent removing.
+        if (!parsed.explicitNamespace) {
+            auto ranked = detail_::prefer_namespace_rank_(matches);
+            if (ranked.kept.size() == 1) {
+                auto chosen = std::move(ranked.kept.front());
+                chosen.demoted = std::move(ranked.demoted);
+                return chosen;
+            }
+        }
         return std::unexpected(format_ambiguous_candidates(
             target, matches));
     }
@@ -345,6 +432,10 @@ class PackageCatalog {
     // Recipe -> parsed package, for the lifetime of the process. See
     // load_package() for why.
     std::unordered_map<std::string, xpkg::Package> packageCache_;
+    // What announce_demotion_ has already said. `mutable` because resolution
+    // is const and the announcement is a property of the process, not of the
+    // catalog's contents.
+    mutable std::unordered_set<std::string> demotionsAnnounced_;
     bool loaded_ { false };
 
     static std::vector<RepoIndexSpec> repo_specs_() {
@@ -589,6 +680,31 @@ public:
         return detail_::prefer_project_scope_(std::move(matches));
     }
 
+    // Say which candidate the namespace priority beat, exactly once.
+    //
+    // Emitted HERE rather than at each command, because `resolve_target` has
+    // sixteen callers and several of them resolve the same target twice in one
+    // run (planner, then installer). A per-command line would have to be added
+    // sixteen times and would be forgotten somewhere -- the forgotten one is
+    // then a silent pick, which is the whole thing this rule must not become.
+    // One writer, deduplicated by what it actually said.
+    void announce_demotion_(const std::string& target,
+                            const PackageMatch& chosen) const {
+        if (chosen.demoted.empty()) return;
+        std::string losers;
+        for (const auto& name : chosen.demoted) {
+            if (!losers.empty()) losers += ", ";
+            losers += name;
+        }
+        auto key = target + "\x1f" + chosen.canonicalName + "\x1f" + losers;
+        if (!demotionsAnnounced_.insert(key).second) return;
+        log::warn("'{}' also provided by {}; selected {}@{} by namespace "
+                  "priority (local ranks last)",
+                  target, losers, chosen.canonicalName, chosen.version);
+        log::warn("  to pick the other: use its full name, e.g. `{}`",
+                  chosen.demoted.front());
+    }
+
     std::expected<PackageMatch, std::string>
     resolve_target(const std::string& target,
                    const std::string& platform) const {
@@ -599,6 +715,19 @@ public:
         if (matches.size() > 1) {
             matches = prefer_project_scope_(std::move(matches));
             if (matches.size() == 1) return matches.front();
+            if (!detail_::parse_target_(target).explicitNamespace) {
+                auto ranked = detail_::prefer_namespace_rank_(matches);
+                if (ranked.kept.size() == 1) {
+                    auto chosen = std::move(ranked.kept.front());
+                    chosen.demoted = std::move(ranked.demoted);
+                    announce_demotion_(target, chosen);
+                    return chosen;
+                }
+            }
+            // The candidate list stays COMPLETE here on purpose. Ranking
+            // failed to decide, so the user has to; hiding the demoted
+            // candidate would offer a menu that does not contain the answer
+            // they may want.
             return std::unexpected(format_ambiguous_candidates(target, matches));
         }
         return matches.front();
@@ -627,8 +756,15 @@ public:
         };
         append(projectRepos_);
         append(globalRepos_);
-        return catalog_detail::resolve_local_identity_from_repos(
+        auto match = catalog_detail::resolve_local_identity_from_repos(
             views, target);
+        // Announce here too. Self-review caught the asymmetry: this path
+        // applied the namespace priority and said nothing, so a bare stamped
+        // identity resolved by inventory would have been a SILENT pick -- the
+        // one thing the rule must not become, and precisely the objection that
+        // justified refusing before it existed.
+        if (match) announce_demotion_(target, *match);
+        return match;
     }
 
     std::vector<PackageMatch> search(const std::string& query, const std::string& platform) {

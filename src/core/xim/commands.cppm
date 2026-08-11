@@ -912,6 +912,44 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
     std::string resolveTarget = target;
     if (target.find('@') == std::string::npos) {
         auto bareName = target.substr(target.rfind(':') + 1);
+
+        // `remove <name>` with several versions installed here: SAY SO.
+        //
+        // This started as a refusal -- list the candidates, exit 2, on the
+        // reasoning that in every error `remove` raises about multi-version
+        // state the active binding is not the version being complained about.
+        // E2E-13 killed it, and was right to: `remove <pkg>` taking the active
+        // version and re-pointing the binding at the highest survivor is a
+        // documented, tested contract (docs/bugfixes/2026-04-25-...), and
+        // "run it three times to clear three versions" is a loop people write.
+        // The evidence behind the refusal came from the ERROR paths of #541 ②;
+        // generalising it to the ordinary path was not supported by it.
+        //
+        // What survives is the half that was actually missing: the user cannot
+        // see that this package has other versions here, or how to name them.
+        // Same move as the entry binary in this release -- ANNOUNCE the
+        // divergence, do not refuse it -- and consistency with that is most of
+        // the argument.
+        //
+        // `--force` is exempt: the xpkg hook path (pkgmanager.remove) passes it
+        // precisely because a recipe swapping a provider mid-install has
+        // already reasoned about what it replaces, and an extra paragraph in
+        // the middle of an install helps nobody.
+        if (!force) {
+            const auto& wsi = Config::workspace_installed();
+            if (auto it = wsi.find(bareName);
+                it != wsi.end() && it->second.size() > 1) {
+                auto versions = it->second;
+                version_order::sort_desc(versions);
+                log::warn("'{}' has {} versions installed in subos '{}'; this "
+                          "removes the ACTIVE one only",
+                          bareName, versions.size(), subos);
+                for (const auto& v : versions) {
+                    log::warn("  xlings remove {}@{}", target, v);
+                }
+            }
+        }
+
         auto active = xvm::get_active_version(
             Config::effective_workspace(), bareName);
         // Fall back to "any installed version" when the active binding

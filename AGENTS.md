@@ -108,6 +108,31 @@ Use `project_test_lib.sh` helpers. Key functions:
 - `run_xlings "$HOME_DIR" "$ROOT_DIR" <args>` — isolated execution
 - `require_fixture_index` — ensures pkgindex fixture present
 
+### Diagnosing a shim that behaves strangely
+
+**First command: `$XLINGS_HOME/bin/xlings --version`.**
+
+Every shim in a home is a link to that one file — `subos/<s>/bin/gcc`,
+`.../ld`, `.../node` all resolve to it — so its version decides how every
+tool in the home is dispatched. It is written on purpose by `use`/`install`
+of the xlings package itself, which means **activating an older xlings
+rewrites it**, and a downgrade there changes the behaviour of the entire
+toolchain.
+
+What that looks like from the outside is nothing like a version problem.
+Measured: an entry rolled back six weeks stopped expanding
+`${XLINGS_DYNAMIC_SUBOS_DIR}`, so gcc's alias reached a shell as
+`--sysroot=` (empty, therefore the host root), and the first visible
+symptom was `ld: cannot find crt1.o` — three layers away from anything
+naming xlings.
+
+`xlings info xim:xlings` and the `active` binding can both disagree with
+that file. `xlings self doctor` reports the divergence; the file is the
+authority on what is actually running.
+
+Corollary for any verification that goes through a shim: **swapping the
+binary under test without swapping the dispatcher is not a control.**
+
 ### Upstream dependency
 
 `mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via `mcpp.toml`:

@@ -1080,3 +1080,78 @@ TEST(SubosPathNormalizeTest, NormalizingTowardsCurrentStillMovesAPinnedSubos) {
                    "/home/u/.xlings", "/home/u/.xlings/subos/current"),
               "g++ --sysroot=/home/u/.xlings/subos/current/usr");
 }
+
+// ── A `${XLINGS_*}` that would reach a shell and expand to nothing ─────
+//
+// The failure this refuses: a record written by a NEWER index reaches an older
+// client, which passes the marker through, and `sh` turns an unset variable
+// into the empty string. `gcc --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}` became
+// `--sysroot=`, which gcc accepts and reads as "the host root" -- every build
+// in the home silently stopped being self-contained and the first symptom was
+// `cannot find crt1.o`, three layers away.
+//
+// The predicate is "would this vanish", NOT "is this one of our markers".
+// A name list is wrong in both directions: it cannot contain the name that
+// caused the outage (that name was invented after the client shipped), and it
+// would reject `${XLINGS_SUBOS_LIB}`, which a recipe may defer to on purpose.
+
+namespace {
+std::optional<std::string> vanishing(std::string_view text) {
+    return xlings::xvm::vanishing_xlings_reference(text);
+}
+}  // namespace
+
+TEST(VanishingMarker, AnUnexpandedMarkerIsCaught) {
+    ScopedEnvVar unset("XLINGS_DYNAMIC_SUBOS_DIR", "");
+    auto v = vanishing("gcc --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, "XLINGS_DYNAMIC_SUBOS_DIR");
+}
+
+TEST(VanishingMarker, AMarkerThisClientHasNeverHeardOfIsCaught) {
+    // The whole point. No dictionary could contain this name, because the
+    // failure mode is a name a newer index invents after this binary ships.
+    ScopedEnvVar unset("XLINGS_SOMETHING_FROM_2027", "");
+    auto v = vanishing("cc --future=${XLINGS_SOMETHING_FROM_2027}/lib");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, "XLINGS_SOMETHING_FROM_2027");
+}
+
+TEST(VanishingMarker, AVariableThatIsActuallySetIsLetThrough) {
+    // `ld` reads XLINGS_SUBOS_LIB deliberately; a recipe deferring to a value
+    // xlings exports is doing the right thing and must not be refused.
+    ScopedEnvVar e("XLINGS_SUBOS_LIB", "/home/u/.xlings/subos/default/lib");
+    EXPECT_FALSE(vanishing("ld -rpath-link ${XLINGS_SUBOS_LIB}").has_value());
+}
+
+TEST(VanishingMarker, AVariableSetButEmptyStillVanishes) {
+    // Empty is the damage, not absence -- `--sysroot=` came from a variable
+    // that expanded to nothing, however it got that way.
+    ScopedEnvVar e("XLINGS_SUBOS_LIB", "");
+    auto v = vanishing("ld -rpath-link ${XLINGS_SUBOS_LIB}");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, "XLINGS_SUBOS_LIB");
+}
+
+TEST(VanishingMarker, ANonXlingsVariableIsNoneOfOurBusiness) {
+    // A recipe may reference any other shell variable and mean it. Policing
+    // all of `${...}` would kill the legitimate use to catch the illegitimate.
+    ScopedEnvVar unset("SOME_USER_THING", "");
+    EXPECT_FALSE(vanishing("tool --flag=${SOME_USER_THING}").has_value());
+    EXPECT_FALSE(vanishing("tool --flag=$HOME/x").has_value());
+}
+
+TEST(VanishingMarker, TheExpandedFormIsClean) {
+    // After expansion there is nothing left to refuse -- otherwise this guard
+    // would degenerate into "always fail", which is the other way to get it
+    // wrong.
+    auto expanded = unpin("g++ --sysroot=${XLINGS_DYNAMIC_SUBOS_DIR}",
+                          "/home/u/.xlings/subos/default");
+    EXPECT_EQ(expanded, "g++ --sysroot=/home/u/.xlings/subos/default");
+    EXPECT_FALSE(vanishing(expanded).has_value());
+}
+
+TEST(VanishingMarker, AnUnterminatedReferenceIsNotJudged) {
+    ScopedEnvVar unset("XLINGS_NOPE", "");
+    EXPECT_FALSE(vanishing("cc --x=${XLINGS_NOPE").has_value());
+}

@@ -817,3 +817,91 @@ TEST(XimPinToActive, ExactPinIsNeverOverridden) {
     EXPECT_EQ(pin_target_to_active("xim:glibc@2.39", satisfied),
               "xim:glibc@2.39");
 }
+
+// ── namespace priority: `local` ranks last ────────────────────────────────
+//
+// Refusing an ambiguous bare name is right where there is NO rule. `local` is
+// not a peer of the maintained namespaces -- it is the side-loading one, where
+// a dev script's recipe stays forever -- and the refusal had a cost measured
+// on a real machine: `xlings self update` refused because `local:xlings` and
+// `xim:xlings` tied, so NOTHING upgraded the entry binary, and the home spent
+// weeks dispatching every shim through a June client.
+//
+// The rule is deliberately the smallest one that fixes that: demote `local`,
+// invent no order among the others, leave explicitly-qualified targets alone,
+// and NAME the loser.
+
+namespace {
+std::array<xlings::xim::catalog_detail::LocalIdentityRepoView, 1>
+one_repo_view(const xlings::xim::IndexManager& index) {
+    return { xlings::xim::catalog_detail::LocalIdentityRepoView{
+        .repoName = "global",
+        .scope = xlings::xim::PackageScope::Global,
+        .subIndex = false,
+        .index = &index,
+        .storeRoot = "/store",
+    } };
+}
+}  // namespace
+
+TEST(XimNamespacePriorityTest, LocalLosesABareNameAndIsNamed) {
+    auto index = make_identity_index({
+        identity_entry("xim", "xlings", "2026.8.11.1", "/repo/xim/xlings.lua"),
+        identity_entry("local", "xlings", "0.4.51", "/repo/local/xlings.lua"),
+    });
+    const auto views = one_repo_view(index);
+    const auto got =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "xlings");
+    ASSERT_TRUE(got.has_value()) << got.error();
+    EXPECT_EQ(got->canonicalName, "xim:xlings");
+    // The demotion is DATA, not just a log line: a pick nobody can see is the
+    // thing this rule must not become.
+    ASSERT_EQ(got->demoted.size(), 1u);
+    EXPECT_EQ(got->demoted.front(), "local:xlings@0.4.51");
+}
+
+TEST(XimNamespacePriorityTest, AnExplicitlyQualifiedLocalTargetIsUntouched) {
+    auto index = make_identity_index({
+        identity_entry("xim", "xlings", "2026.8.11.1", "/repo/xim/xlings.lua"),
+        identity_entry("local", "xlings", "0.4.51", "/repo/local/xlings.lua"),
+    });
+    const auto views = one_repo_view(index);
+    const auto got =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "local:xlings");
+    ASSERT_TRUE(got.has_value()) << got.error();
+    EXPECT_EQ(got->canonicalName, "local:xlings");
+    EXPECT_TRUE(got->demoted.empty())
+        << "the user said which one; nothing was overruled";
+}
+
+TEST(XimNamespacePriorityTest, TwoNonLocalNamespacesStillRefuse) {
+    // There IS no rule between `xim:` and `d2x:`. Inventing one would be
+    // exactly the silent pick the deterministic-or-refuse contract forbids.
+    auto index = make_identity_index({
+        identity_entry("xim", "tool", "1.0.0", "/repo/xim/tool.lua"),
+        identity_entry("d2x", "tool", "2.0.0", "/repo/d2x/tool.lua"),
+    });
+    const auto views = one_repo_view(index);
+    const auto got =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "tool");
+    ASSERT_FALSE(got.has_value());
+    EXPECT_NE(got.error().find("ambiguous"), std::string::npos);
+}
+
+TEST(XimNamespacePriorityTest, LocalAloneStillResolves) {
+    // Demotion is a tiebreak, not an exclusion: a package only `local` has is
+    // still that package.
+    auto index = make_identity_index({
+        identity_entry("local", "mytool", "0.1.0", "/repo/local/mytool.lua"),
+    });
+    const auto views = one_repo_view(index);
+    const auto got =
+        xlings::xim::catalog_detail::resolve_local_identity_from_repos(
+            views, "mytool");
+    ASSERT_TRUE(got.has_value()) << got.error();
+    EXPECT_EQ(got->canonicalName, "local:mytool");
+    EXPECT_TRUE(got->demoted.empty());
+}
