@@ -306,8 +306,13 @@ inline void recompute_staleness_(std::vector<VendorWiring>& vendors,
             if (ec) continue;
             // lexically_relative rather than a string prefix: `/a/b` must not
             // read as a parent of `/a/bc`.
-            const auto rel = target.lexically_relative(recorded);
-            if (rel.empty() || rel.native().starts_with("..")) {
+            //
+            // `generic_string()`, not `native()`: path::string_type is
+            // std::wstring on Windows, so comparing it against a narrow
+            // literal does not compile there. This module only describes a
+            // Linux stack, but it is still built on every platform.
+            const auto rel = target.lexically_relative(recorded).generic_string();
+            if (rel.empty() || rel.starts_with("..")) {
                 v.stale = true;
                 v.staleDetail = "wired to " + target.parent_path().string()
                               + ", recorded against " + v.payload;
