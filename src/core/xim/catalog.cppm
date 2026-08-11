@@ -284,16 +284,25 @@ struct NamespaceRankResult_ {
     std::vector<std::string> demoted;   // "local:xlings@0.4.51"
 };
 
-NamespaceRankResult_ prefer_namespace_rank_(std::vector<PackageMatch> matches) {
+// BY CONST REFERENCE, and it copies what it keeps.
+//
+// Both callers use their `matches` again when ranking fails to decide -- to
+// build the ambiguity message, which must list every candidate. Taking this by
+// value happens to be safe (the copy is what gets moved from), but the safety
+// then lives in a signature rather than in the code that depends on it, and
+// one edit to `&&` would silently produce an ambiguity message full of empty
+// strings. A vector of a handful of matches is not worth that.
+NamespaceRankResult_ prefer_namespace_rank_(
+    const std::vector<PackageMatch>& matches) {
     NamespaceRankResult_ out;
     if (matches.empty()) return out;
     int best = std::ranges::min(
         matches | std::views::transform([](const PackageMatch& match) {
             return namespace_rank_(match.namespaceName);
         }));
-    for (auto& match : matches) {
+    for (const auto& match : matches) {
         if (namespace_rank_(match.namespaceName) == best) {
-            out.kept.push_back(std::move(match));
+            out.kept.push_back(match);
         } else {
             out.demoted.push_back(
                 std::format("{}@{}", match.canonicalName, match.version));

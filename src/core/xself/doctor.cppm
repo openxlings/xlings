@@ -905,6 +905,13 @@ std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
                 if (xim::stamped_incomplete(verDir.path())) continue;
                 if (!fs::exists(verDir.path() / "bin"
                                 / shim_filename_("xlings"), ec)) continue;
+                // A payload built for another platform cannot become this
+                // home's entry, and the remedy this finding prints would fail
+                // against it. Only a PROVABLE mismatch is excluded -- Unknown
+                // stays eligible, the same rule PackageMatch::payloadForeign
+                // follows.
+                if (xim::classify_payload_platform(verDir.path())
+                        == xim::PayloadPlatform::Foreign) continue;
                 if (version_order::compare(version, actual) <= 0) continue;
                 if (!newest.empty()
                     && version_order::compare(version, newest) <= 0) continue;
