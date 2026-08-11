@@ -138,6 +138,7 @@ TESTS=(
     "E2E-78 |subos_runtime_declaration_upgrade_test.sh||"
     "E2E-79 |config_hook_resolves_declared_dep_test.sh||"
     "E2E-80 |subos_graphics_wiring_report_test.sh||"
+    "E2E-81 |entry_binary_and_isolation_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

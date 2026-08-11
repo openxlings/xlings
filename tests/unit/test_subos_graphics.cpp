@@ -414,3 +414,124 @@ TEST(SubosGraphics, AMissingClosureNamesTheLibraries) {
     EXPECT_NE(d.find("libpthread.so.0"), std::string::npos);
     EXPECT_NE(d.find("librt.so.1"), std::string::npos);
 }
+
+// ─── provenance: has this verdict outlived what it describes? ──────────────
+//
+// The record is written by ONE package (`graphics`) and every line in it is
+// about ANOTHER (mesa, libglvnd, nvidia-gl-host-link). Those upgrade
+// independently and nothing made the record expire when they did — measured
+// on a real home, the record was written 57 seconds BEFORE the nvidia payload
+// it speaks for.
+//
+// The whole criterion has to be answerable from local state: `subos info` is
+// an instant local query by contract and must not parse the index. So the
+// question is never "is this the current version of that package" — it is
+// "does the symlink still land where the verdict says it was measured".
+
+TEST(SubosGraphics, PayloadIsParsedAndTakesTheRestOfTheLine) {
+    // A path may contain a space, which is why the writer puts it last and
+    // this takes the remainder — the same rule `dispatch=` already follows.
+    auto rec = gfx::parse_wiring_record(
+        "vendor=libGLX_nvidia.so.0 state=ok payload=/store/my payloads/nv/0.1\n");
+    ASSERT_EQ(rec.vendors.size(), 1u);
+    EXPECT_EQ(rec.vendors[0].state, "ok");
+    EXPECT_EQ(rec.vendors[0].payload, "/store/my payloads/nv/0.1");
+}
+
+TEST(SubosGraphics, AVendorWiredElsewhereThanRecordedIsStale) {
+    Tree t("stale-moved");
+    WIRE_OR_SKIP(t);
+    // Two payload versions of the same vendor; wire the NEW one, record the OLD.
+    auto oldv = t.root / "store" / "nvidia" / "0.1.2";
+    auto newv = t.root / "store" / "nvidia" / "0.1.3";
+    fs::create_directories(oldv / "lib");
+    fs::create_directories(newv / "lib");
+    std::ofstream(oldv / "lib" / "libGLX_nvidia.so.0") << "old";
+    std::ofstream(newv / "lib" / "libGLX_nvidia.so.0") << "new";
+    fs::create_directories(t.vendorDir);
+    std::error_code ec;
+    fs::create_symlink(newv / "lib" / "libGLX_nvidia.so.0",
+                       t.vendorDir / "libGLX_nvidia.so.0", ec);
+    ASSERT_FALSE(ec);
+    t.write_record("dispatch=" + t.payload.string() + "\n"
+                   "vendor=libGLX_nvidia.so.0 state=ok payload="
+                   + oldv.string() + "\n");
+
+    auto w = gfx::read_graphics_wiring(t.subos);
+    ASSERT_EQ(w.vendors.size(), 1u);
+    EXPECT_TRUE(w.vendors[0].stale)
+        << "the vendor was upgraded and the assembler was not re-run";
+    // And the reassuring word must be GONE, not footnoted: six confident
+    // `native` rows once described a stack wired to nothing.
+    auto d = gfx::describe(w.vendors[0]);
+    EXPECT_NE(d.find("STALE"), std::string::npos);
+    EXPECT_EQ(d.find("ok  ("), std::string::npos);
+}
+
+TEST(SubosGraphics, AVendorStillInsideItsRecordedPayloadIsNotStale) {
+    Tree t("stale-ok");
+    WIRE_OR_SKIP(t);
+    auto nv = t.root / "store" / "nvidia" / "0.1.2";
+    fs::create_directories(nv / "lib");
+    std::ofstream(nv / "lib" / "libGLX_nvidia.so.0") << "vendor";
+    fs::create_directories(t.vendorDir);
+    std::error_code ec;
+    fs::create_symlink(nv / "lib" / "libGLX_nvidia.so.0",
+                       t.vendorDir / "libGLX_nvidia.so.0", ec);
+    ASSERT_FALSE(ec);
+    t.write_record("dispatch=" + t.payload.string() + "\n"
+                   "vendor=libGLX_nvidia.so.0 state=ok payload="
+                   + nv.string() + "\n");
+
+    auto w = gfx::read_graphics_wiring(t.subos);
+    ASSERT_EQ(w.vendors.size(), 1u);
+    EXPECT_FALSE(w.vendors[0].stale);
+}
+
+// EGL and GLES vendors are found through the glvnd JSON, not through
+// glx-vendor/ — so there is no symlink to follow. The record is still about a
+// file, so ask whether that file is still there.
+TEST(SubosGraphics, AnUnwiredVendorIsStaleWhenItsPayloadNoLongerHoldsIt) {
+    Tree t("stale-gone");
+    WIRE_OR_SKIP(t);
+    auto nv = t.root / "store" / "nvidia" / "0.1.2";
+    fs::create_directories(nv / "lib");
+    t.add_vendor("libGLX_nvidia.so.0");     // something in the dir, not the EGL one
+    t.write_record("dispatch=" + t.payload.string() + "\n"
+                   "vendor=libEGL_nvidia.so.0 state=ok payload="
+                   + nv.string() + "\n");
+
+    auto w = gfx::read_graphics_wiring(t.subos);
+    ASSERT_EQ(w.vendors.size(), 1u);
+    EXPECT_TRUE(w.vendors[0].stale)
+        << "the payload no longer holds the library the verdict is about";
+
+    // ... and it is NOT stale once the file is there.
+    std::ofstream(nv / "lib" / "libEGL_nvidia.so.0") << "vendor";
+    auto w2 = gfx::read_graphics_wiring(t.subos);
+    ASSERT_EQ(w2.vendors.size(), 1u);
+    EXPECT_FALSE(w2.vendors[0].stale);
+}
+
+// THE COMPATIBILITY HALF, and the one that decides whether this ships.
+//
+// Every record written before graphics 0.1.5 has no `payload=`. Calling those
+// stale would mark every existing home's stack suspect on the strength of a
+// field nobody wrote — the same mistake as spending an absent `registered`
+// count as a zero.
+TEST(SubosGraphics, ARecordWithoutProvenanceProducesNoVerdict) {
+    Tree t("stale-oldrecord");
+    WIRE_OR_SKIP(t);
+    t.add_vendor("libGLX_nvidia.so.0");
+    t.write_record("dispatch=" + t.payload.string() + "\n"
+                   "vendor=libGLX_nvidia.so.0 state=ok\n"
+                   "vendor=libEGL_nvidia.so.0 state=native\n");
+
+    auto w = gfx::read_graphics_wiring(t.subos);
+    ASSERT_EQ(w.vendors.size(), 2u);
+    for (const auto& v : w.vendors) {
+        EXPECT_FALSE(v.stale) << v.soname << " has no recorded payload, so "
+                                 "there is nothing to have drifted from";
+        EXPECT_TRUE(v.is_ok());
+    }
+}
