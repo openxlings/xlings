@@ -843,7 +843,16 @@ std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
         if (auto colon = boundVersion.rfind(':'); colon != std::string::npos) {
             boundVersion = boundVersion.substr(colon + 1);
         }
-        if (!boundVersion.empty() && boundVersion != actual) {
+        // A binding that is not a version at all -- a sentinel like `latest`,
+        // or anything a future client writes -- is NO OBSERVATION, not a
+        // mismatch. Comparing it against the file would report drift on every
+        // home that spells its binding that way. Same first-digit rule
+        // entry_binary::version_of applies to the binary's own answer, so the
+        // two sides of the comparison are qualified identically.
+        const bool boundIsAVersion =
+            !boundVersion.empty()
+            && std::isdigit(static_cast<unsigned char>(boundVersion[0]));
+        if (boundIsAVersion && boundVersion != actual) {
             // Reconcile toward the NEWER of the two, whichever side it is on.
             //
             // The obvious remedy -- "make the file match the binding" -- is

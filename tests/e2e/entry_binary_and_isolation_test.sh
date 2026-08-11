@@ -184,7 +184,7 @@ grep -q "install:  v.* -> $ISO_HOME" <<<"$out" \
     || { echo "$out"; fail "S3a: the target was not XLINGS_HOME"; }
 echo "   ok — an isolated XLINGS_HOME is the target, as before (rc=$rc)"
 
-echo "== S4: remove without a version lists and refuses when several exist =="
+echo "== S4: remove without a version SAYS the other versions are here =="
 mkdir -p "$HOME_DIR/subos/default"
 python3 - "$HOME_DIR/subos/default/.xlings.json" <<'PY'
 import json, sys
@@ -202,20 +202,21 @@ d.setdefault("workspace", {})["multi"] = {
 }
 json.dump(d, open(p, "w"), indent=2)
 PY
+# ANNOUNCE, do not refuse -- the same choice this release makes for the entry
+# binary. `remove <pkg>` taking the active version and re-pointing the binding
+# is a documented contract (E2E-13); what was missing is that nothing told the
+# user other versions were sitting here, or how to name them.
 set +e
 out="$(run_x remove multi 2>&1 </dev/null)"
 rc=$?
 set -e
-if [[ $rc -ne 2 ]]; then
-    echo "$out"
-    echo "exit=$rc"
-    fail "S4: expected exit 2 (refused, nothing done), not $rc"
-fi
 for v in 1.0.0 2.0.0 3.0.0; do
     grep -q "multi@$v" <<<"$out" \
-        || { echo "$out"; fail "S4: candidate $v was not listed"; }
+        || { echo "$out"; echo "exit=$rc"; fail "S4: version $v was not named"; }
 done
-echo "   ok — exit 2 and every candidate named"
+grep -qi "ACTIVE one only" <<<"$out" \
+    || { echo "$out"; fail "S4: nothing said which version this actually removes"; }
+echo "   ok — every version named, and it says which one goes (rc=$rc)"
 
 echo
 echo "PASS: entry_binary_and_isolation_test.sh"

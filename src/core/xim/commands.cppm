@@ -913,51 +913,40 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
     if (target.find('@') == std::string::npos) {
         auto bareName = target.substr(target.rfind(':') + 1);
 
-        // `remove <name>` with several versions installed here: refuse, list.
+        // `remove <name>` with several versions installed here: SAY SO.
         //
-        // The rule `use <target>` already states -- "whether a human is at the
-        // keyboard is not detectable; whether this command has a single correct
-        // outcome is" -- with one difference that changes the exit code. `use`
-        // without a version is a QUERY and answers itself completely, so it
-        // lists and exits 0. `remove` is an ACTION: the user asked for
-        // something to be gone, and if nothing was removed, exit 0 is the
-        // "did nothing, reported success" shape this codebase keeps paying
-        // for. So: list, and exit 2 -- the code `remove` already uses for
-        // "refused, nothing done" (running-binary guard, reverse-dep guard).
+        // This started as a refusal -- list the candidates, exit 2, on the
+        // reasoning that in every error `remove` raises about multi-version
+        // state the active binding is not the version being complained about.
+        // E2E-13 killed it, and was right to: `remove <pkg>` taking the active
+        // version and re-pointing the binding at the highest survivor is a
+        // documented, tested contract (docs/bugfixes/2026-04-25-...), and
+        // "run it three times to clear three versions" is a loop people write.
+        // The evidence behind the refusal came from the ERROR paths of #541 ②;
+        // generalising it to the ordinary path was not supported by it.
         //
-        // Why refuse rather than take the active one, which is what it did:
-        // in every error `remove` raises about multi-version state, the active
-        // binding is NOT the version being complained about. 2026.8.11.1 fixed
-        // the wording of those errors and left the targeting, so the official
-        // way out still aimed at the wrong version.
+        // What survives is the half that was actually missing: the user cannot
+        // see that this package has other versions here, or how to name them.
+        // Same move as the entry binary in this release -- ANNOUNCE the
+        // divergence, do not refuse it -- and consistency with that is most of
+        // the argument.
         //
-        // NARROW ON PURPOSE. One installed version is not ambiguous and is by
-        // far the common case, so nothing changes for it. `--force` is exempt:
-        // it already means "the caller has decided", and the xpkg hook path
-        // (pkgmanager.remove) passes it precisely because a recipe swapping a
-        // provider mid-install has already reasoned about what it replaces.
+        // `--force` is exempt: the xpkg hook path (pkgmanager.remove) passes it
+        // precisely because a recipe swapping a provider mid-install has
+        // already reasoned about what it replaces, and an extra paragraph in
+        // the middle of an install helps nobody.
         if (!force) {
             const auto& wsi = Config::workspace_installed();
             if (auto it = wsi.find(bareName);
                 it != wsi.end() && it->second.size() > 1) {
                 auto versions = it->second;
                 version_order::sort_desc(versions);
-                log::error("'{}' has {} versions installed in subos '{}'; "
-                           "name the one to remove",
-                           bareName, versions.size(), subos);
+                log::warn("'{}' has {} versions installed in subos '{}'; this "
+                          "removes the ACTIVE one only",
+                          bareName, versions.size(), subos);
                 for (const auto& v : versions) {
-                    log::println("  xlings remove {}@{}", target, v);
+                    log::warn("  xlings remove {}@{}", target, v);
                 }
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::InvalidInput,
-                    .message = std::format(
-                        "'{}' is installed at {} versions in this subos",
-                        bareName, versions.size()),
-                    .recoverable = true,
-                    .hint = "pin the version, e.g. `xlings remove "
-                            + target + "@" + versions.front() + "`",
-                });
-                return 2;
             }
         }
 

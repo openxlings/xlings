@@ -747,8 +747,15 @@ public:
         };
         append(projectRepos_);
         append(globalRepos_);
-        return catalog_detail::resolve_local_identity_from_repos(
+        auto match = catalog_detail::resolve_local_identity_from_repos(
             views, target);
+        // Announce here too. Self-review caught the asymmetry: this path
+        // applied the namespace priority and said nothing, so a bare stamped
+        // identity resolved by inventory would have been a SILENT pick -- the
+        // one thing the rule must not become, and precisely the objection that
+        // justified refusing before it existed.
+        if (match) announce_demotion_(target, *match);
+        return match;
     }
 
     std::vector<PackageMatch> search(const std::string& query, const std::string& platform) {
