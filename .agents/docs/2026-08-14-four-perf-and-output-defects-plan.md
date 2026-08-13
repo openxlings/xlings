@@ -608,3 +608,81 @@ D1/D2/D3 是从代码直接确定的,并且都有测试(`tests/unit/test_log_lin
 **D4(MSVC 的 `std::print` 控制台旁路 / stdout 无行缓冲)仍未在 Windows 上实测。**
 O2 + O4 是按它成立来修的,而且**即使 D4 不成立这两条也无害**(单一 sink 和
 显式 flush 在任何平台上都是对的)。要证实或推翻它,用 §4.1 的判别实验。
+
+---
+
+## 8. 端到端验证(不是「跑通了」,是「测过了什么」)
+
+在 `.agents/tools/slice-real-home.sh` 切出的**真实 home 副本**上跑
+(73 GB / 364 payload,12.4 秒切完;每次跑完都 `verify-untouched`,
+真 home `data/xpkgs` 全程未被改动)。
+
+### 8.1 `--fix` 全流程:14 分钟 → **8.76 秒**
+
+```
+$ XLINGS_HOME=<slice> xlings self doctor --fix
+7.49user 1.26system 0:08.76elapsed 99%CPU
+```
+
+**缓存确实在起作用,而且有直接证据。**
+`elfcheck: skipping nested store` 这行只在 `scan_payload` **真的执行**时才打
+(缓存命中根本不进那个函数),所以数它就等于数真实扫描次数:
+
+```
+nested-store skips:  74
+distinct nested stores: 74      ← 一一对应
+```
+
+整条 `--fix`(多遍 detect)里,**每个 payload 只被真正扫描了一次**。
+缓存不生效的话这里会是 74 × 遍数。
+
+顺带,这 74 个嵌套 store 也就是 §1.5 里那 48% 的字节,现在一个都不走。
+
+进度行只出现 `pass 1` —— 不是 bug:进度是**为打破沉默而存在**的,
+它扫描满 1 秒才开口,而第 2 遍之后全是缓存命中,根本没有沉默可打破。
+
+### 8.2 锁等待:从沉默 30 秒变成一秒一句
+
+用一个持有 flock 并写了 sidecar 的假 holder 复现:
+
+```
+[xlings] waiting for another xlings to finish with this home (pid 2041759, `xlings install gcc`)
+[xlings] still waiting for another xlings (pid 2041759, `xlings install gcc`) — 1s
+[xlings] still waiting for another xlings (pid 2041759, `xlings install gcc`) — 2s
+...
+（holder 释放后立即继续,install 正常完成）
+```
+
+### 8.3 空 url 包:确实变成 debug 了
+
+第一次测试是**无效的** —— 包已安装,循环在 `node.alreadyInstalled` 就
+`continue` 了,根本没走到改动的那一行。删掉 payload 目录重测才算数:
+
+```
+[debug] nvidia-gl-host-link: no download source declared; install hooks only
+```
+
+`[debug]`,不是 `[warn]`,且安装成功(exit 0)。
+
+### 8.4 F1 等价性:与 patchelf 逐个对照
+
+```
+[ RUN      ] ElfRead.AgreesWithPatchelfOverARealStore
+[       OK ] ElfRead.AgreesWithPatchelfOverARealStore (8338 ms)
+```
+
+真 store 里取样 300 个真实 ELF,`--print-interpreter` 和 `--print-rpath`
+两个字段与 patchelf **逐条相同**。加上 §7.1 的整体输出逐字节相同,
+这是「换了个读取器但结论没变」能给出的最强证据。
+
+### 8.5 单元测试
+
+41/41 目标全绿。新增:
+`test_elfread.cpp`(9 个,含上面那个 oracle)、
+`test_log_line.cpp`(5 个,含 8 线程并发撕裂测试)、
+`test_no_download_source.cpp`(7 个)、
+`test_elf_same_source.cpp` 里 4 个缓存失效测试。
+
+> `test_log_line.cpp` 第一版用 `freopen("/dev/tty")` 还原 stdout —— 本机能过,
+> **CI 上没有 tty,还原会失败,之后这个二进制里所有测试的输出都会写进临时文件**,
+> 连 gtest 自己的报告一起消失。复查时发现,改成 dup/dup2 保存原 fd。
