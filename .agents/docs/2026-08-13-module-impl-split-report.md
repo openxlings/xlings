@@ -37,7 +37,12 @@ Three things left the interface:
 |---|---|---|
 | interface before | 46,253 | 100% |
 | interface after | **14,819** | **32%** |
-| implementation after | 35,112 | |
+| implementation after | 35,655 | |
+
+110 interface units, 92 implementation units (90 generated + `main.cpp` +
+`windows_syslibs.cpp`). Only one implementation unit is trivial, and it is the
+pre-existing `windows_syslibs.cpp` — none of the 90 generated units is an empty
+translation unit added for nothing.
 
 The interface is what every importer reads through the BMI. That is the number
 the build speed follows.
@@ -102,7 +107,7 @@ refs, so it must show no improvement. If it does, the measurement is noise
 rather than an effect.
 
 Harness: `.agents/tools/module-split/{cold.sh,incr.py}`, driver
-`build/bench/run_compare.sh`.
+`build/bench/measure_side.sh`.
 
 ## 4. Measurements
 
@@ -151,18 +156,148 @@ inline it". Removing it is a performance-visibility decision, not a move — the
 maintainer's call, not a mechanical migration's. Stripping it would take the
 interface down by roughly another 13% and is the largest remaining lever.
 
-## 7. What this run does not verify
+## 7. Invariants checked statically
+
+Three things this refactor must not change, checked against the pre-split tree
+rather than assumed:
+
+| invariant | before | after | tool |
+|---|---|---|---|
+| exported identifiers | 961 | **961** (0 lost, 0 gained) | `export-surface.py` |
+| module names | 110 | **110, byte-identical** | — |
+| comment lines | 10,316 | 10,612 | — |
+
+The export-surface check had to be made depth-aware to mean anything: a
+line-anchored regex over an `export namespace` body also matches the **local
+variables** inside the function bodies that live there, so the first version
+reported 914 "lost exports" with names like `1`, `a`, `acc`, `activeBin` — an
+artefact of the bodies moving, not a lost export.
+
+The comment surplus is the comment above an `#if`, emitted to both units along
+with the directive. Getting there took a fix: dropping a module-private
+declaration from the interface first deleted the comment above it, 230 lines
+explaining helpers whose bodies are still there. Counting comment lines is what
+found that; the compiler had nothing to say about it.
+
+## 8. Three toolchains, three failures the dev build could not see
+
+The dev loop is one compiler (`gcc@16.1.0`, x86_64-linux-gnu). This project ships
+three more, and each one rejected something the dev build accepted.
+
+### 8a. `gcc@15.1.0-musl` — a range pipeline in an implementation unit
+
+`x86_64-linux-musl` (then `gcc@15.1.0-musl`) rejected `catalog.cpp`:
+
+```
+use of 'constexpr auto std::ranges::views::__adaptor::operator|(...)'
+before deduction of 'auto'
+```
+
+The body is byte-identical to main's. The same `std::views::transform` pipeline
+compiles in an interface unit and not in an implementation unit — under that
+compiler. `mcpp build --target x86_64-linux-musl` reproduces it locally: one
+error, one file.
+
+**Fixed by moving the musl target to `gcc@16.1.0-musl`** rather than by keeping
+the function in the interface. The reverse has bitten this project before:
+`views::split | ranges::to` compiled under 15.1.0-musl and made a whole module
+fail with "Bad file data" under 16.1.0, blaming an unmodified TU
+(`.agents/docs/2026-08-06-subos-architecture-proposal.md` §590). Range adaptors
+in modules are fragile in **both** directions across those two versions, so the
+two targets now share one compiler major instead of trading one breakage for the
+other.
+
+A stale object file hid this on the dev toolchain too: several regeneration
+rounds cleared only `target/*/gcm.cache` and kept the `.o` files, so
+`catalog.o` was never recompiled. Before believing a green build: a cold
+`rm -rf target`.
+
+### 8b. `llvm@20.1.7` — the stream-less `std::print` in an interface template
+
+macOS failed on the phase-2 push having passed on phase 1. Every TU
+instantiating a zero-argument `log::` template died inside libc++'s `<print>`:
+
+```
+call to deleted constructor of
+  'formatter<basic_format_string<char, basic_string<char>>, char>'
+```
+
+That is `std::print` no longer picking its `FILE*` overload and deducing `stdout`
+**as** the format string. libc++ implements `print(fmt, args...)` as
+`print(stdout, fmt, args...)`, so the `FILE*` overload has to win overload
+resolution at the point of instantiation — and for a template that stays in the
+interface, that point is in the **importer**. Once enough bodies leave the
+interface, clang 20 stops picking it.
+
+Two rules fix it, and neither needs a per-entity exclusion:
+
+- **11 call sites across 4 interfaces name their stream** — `core/log.cppm` (8)
+  and one each in `platform/{linux,macos,windows}.cppm`. `[print.fun]` defines the
+  two-argument form *as* `print(stdout, ...)`, so behaviour is identical and the
+  deduction is gone. Bodies that move to an implementation unit are left alone:
+  nothing instantiates those from another TU. (The commit message says 23 sites
+  in 6 files; that was the count of stream-less prints in the *pre-split*
+  `.cppm` set, and 12 of them belong to bodies that then moved to a `.cpp` and
+  were never normalised. 11 in 4 is what the tree carries.)
+- **8 implementation units gained `<cstdio>`** — `config.cpp`, `cmdprocessor.cpp`,
+  `xim/downloader.cpp`, `platform.cpp` and the four platform partitions — because
+  a body that ends up there can name `stdout`/`stderr`/`FILE` while its interface
+  has no global module fragment at all. `config.cppm` has none, and
+  `Config::print_paths()` lands in `config.cpp`.
+
+**Two wrong fixes came first, and both are reverted rather than left in the
+tree.** The first restored three declarations to `log.cppm` on the theory that
+interface reachability drove it — macOS then failed again, identically, which
+disproved it. The second pinned in-class bodies containing a stream-less print
+as "instantiation anchors"; it worked, but it was treating the symptom, and once
+the streams were named it was unnecessary.
+
+**The real lesson is the loop, not the bug.** `llvm@20.1.7` on **Linux**
+reproduces the macOS failure exactly — main builds clean, the split does not — so
+this was diagnosable in 40 seconds all along, and three CI cycles were spent
+before trying it. A *minimal* probe of the same shape does **not** reproduce it;
+it needs the whole project, which is what made the failure look
+macOS-libc-specific. `build/bench/clang_variant.sh` builds any variant with clang
+in an isolated copy; `clang_bisect.sh` binary-searches one file's members.
+
+### 8c. My own bug, for the record
+
+`open(f, 'w').write(ensure_cstdio(open(f).read()))` truncates the file before the
+read runs, so every implementation unit taking that path came out **empty**. It
+surfaced as undefined symbols at link time — never as an error in the file that
+was emptied.
+
+## 9. The gate this work should have started with
+
+Four compilers, and each one caught something the others accepted. All four are
+now runnable locally, and the first three take under a minute each:
+
+```bash
+rm -rf target && mcpp build                        # gcc@16.1.0   (dev)
+mcpp build --target x86_64-linux-musl              # gcc@16.1.0-musl (release)
+bash build/bench/clang_variant.sh check --all      # llvm@20.1.7  (macOS family)
+python3 .agents/tools/module-split/export-surface.py
+```
+
+The cold `rm -rf target` matters as much as the extra compilers: a kept object
+file hid §8a on the dev toolchain.
+
+Windows (`llvm@20.1.7`, MSVC-flavoured) and real macOS remain CI-only.
+
+## 10. What this report does not verify
 
 - **1,228 lines of the moved code sit behind `_WIN32` / `__APPLE__` guards** that
   a Linux build never compiles — `platform/windows.cpp` (330),
-  `platform/macos.cpp` (181), `subos/sandbox.cpp` (121) and others. The macOS
-  and Windows CI jobs are the gate for those, not this report.
-- The release (musl static, `gcc@15.1.0-musl`) toolchain is a second compiler
-  this branch has not been through locally.
+  `platform/macos.cpp` (181), `subos/sandbox.cpp` (121) and others. The macOS and
+  Windows CI jobs are the gate; Windows and aarch64 are green, macOS is what the
+  latest push tests.
 - Runtime behaviour beyond the unit suite: the e2e block needs a release tarball
-  and network access.
+  and network access, and runs in CI (green).
+- Release-mode (`-O2`) runtime performance. Dropping implicit `inline` costs
+  cross-TU inlining without LTO; binary size is reported, a runtime comparison is
+  not.
 
-## 8. An mcpp observation
+## 11. An mcpp observation
 
 `mcpp` warns `module ':part' imported but not provided in this build` for a
 partition import inside an implementation unit. The warning is cosmetic — the

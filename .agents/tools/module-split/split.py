@@ -275,8 +275,15 @@ def is_qualified_definition(h: str) -> bool:
     return '::' in decl.split()[-1] if decl.split() else False
 
 
-def classify(it: Item, in_class: bool) -> str:
-    """Return 'stay' | 'namespace' | 'both' | 'split-fn' | 'split-var'."""
+def classify(it: Item) -> str:
+    """Return one of:
+      'stay'       leave it whole in the interface
+      'namespace'  recurse into it, re-emitting the wrapper in both units
+      'both'       emit it verbatim to both units (a preprocessor conditional)
+      'move-impl'  move it whole to the implementation unit
+      'split-fn'   declaration in the interface, definition in the impl unit
+      'split-var'  `extern` in the interface, definition in the impl unit
+    """
     if it.kind in ('blank', 'access'):
         return 'stay'
     if it.kind == 'preproc':
@@ -431,10 +438,10 @@ def is_exported(head: str) -> bool:
     return re.match(r'^\s*export\b', head) is not None
 
 
-def process_level(items: list[Item], out: Split, indent: str, in_class=False,
+def process_level(items: list[Item], out: Split, indent: str,
                   ns: str = '', exported: bool = False):
     for it in items:
-        cls = classify(it, in_class)
+        cls = classify(it)
         if cls == 'both':
             out.iface.append(it.lead + it.head)
             out.impl.append(it.lead + it.head)
