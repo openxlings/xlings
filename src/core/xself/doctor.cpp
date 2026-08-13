@@ -1576,7 +1576,14 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                 });
             }
         }
-        if (audit.onAuditDone) {
+        // Gated on `deep`, not merely on having found roots.
+        //
+        // A quick run has an empty root list, so without this it reported
+        // "0 payload(s) examined" -- announcing an audit it was never asked to
+        // perform, on every plain `xlings self doctor`. Caught by
+        // tui_output_contract, which noticed the line at all before it noticed
+        // it was too wide.
+        if (audit.deep && audit.onAuditDone) {
             const auto hitsNow =
                 audit.payloadCache ? audit.payloadCache->hits() : 0;
             audit.onAuditDone(auditDone, hitsNow - cacheHitsBefore);
