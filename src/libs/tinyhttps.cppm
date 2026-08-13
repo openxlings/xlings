@@ -66,35 +66,13 @@ struct DownloadOptions {
 // progress callback. Exported for unit tests.
 class StallDetector {
 public:
-    StallDetector(int limitBytes, int windowSec)
-        : limit_(limitBytes), window_(windowSec) {}
+    StallDetector(int limitBytes, int windowSec);
 
-    bool enabled() const { return limit_ > 0 && window_ > 0; }
+    bool enabled() const;
 
     // Feed one sample. Returns true when the windowed average speed over a
     // full window fell below the limit (= stalled).
-    bool update(double elapsedSec, double downloadedBytes) {
-        if (!enabled()) return false;
-        if (!started_) {
-            started_ = true;
-            winT_ = elapsedSec;
-            winB_ = downloadedBytes;
-            return false;
-        }
-        if (downloadedBytes < winB_) {
-            // Counter went backwards (redirect restart) — restart the window.
-            winT_ = elapsedSec;
-            winB_ = downloadedBytes;
-            return false;
-        }
-        if (elapsedSec - winT_ < static_cast<double>(window_)) return false;
-        double avg = (downloadedBytes - winB_) / (elapsedSec - winT_);
-        if (avg < static_cast<double>(limit_)) return true;
-        // Healthy window — slide forward.
-        winT_ = elapsedSec;
-        winB_ = downloadedBytes;
-        return false;
-    }
+    bool update(double elapsedSec, double downloadedBytes);
 
 private:
     int    limit_;

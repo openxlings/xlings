@@ -278,3 +278,36 @@ std::string describe(const VendorWiring& v) {
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::subos::graphics {
+
+bool VendorWiring::is_broken() const{ return state == "broken"; }
+
+bool VendorWiring::needs_transitive_consumer() const{
+        return state == "needs-transitive-consumer";
+    }
+
+bool VendorWiring::is_ok() const{
+        return !stale && (state == "ok" || state == "native");
+    }
+
+bool GraphicsWiring::has_dispatch() const{ return status != WiringStatus::NoDispatch; }
+
+int GraphicsWiring::broken_count() const{
+        return static_cast<int>(std::ranges::count_if(
+            vendors, [](const VendorWiring& v) { return v.is_broken(); }));
+    }
+
+bool DriverStamp::drifted() const{
+        // Only a DISAGREEMENT is drift. An unknown on either side is not:
+        // a machine whose module is not loaded right now (`hostNow` empty)
+        // has not changed driver, it has no driver running, and reporting
+        // that as drift would cry wolf on every laptop with the GPU asleep.
+        return known && !builtFor.empty() && !hostNow.empty()
+               && builtFor != hostNow;
+    }
+
+} // namespace xlings::subos::graphics

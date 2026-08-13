@@ -34,6 +34,87 @@ CLASS_HEAD = re.compile(
     r'^\s*(?:export\s+)?(?P<kw>struct|class)\s+(?P<name>\w+)'
     r'(?P<rest>[^;{]*)$')
 
+# Members that must keep their body in the class because moving it makes
+# gcc@16.1.0 crash.  Each entry is (path suffix, class, member) and needs a
+# reason — an unexplained exclusion is indistinguishable from superstition.
+ICE_SKIP = {
+    # gcc 16.1.0 segfaults in cc1plus while compiling doctor.cpp once
+    # `Counts::issues()` is defined out-of-line.  The crash is reported against
+    # `DoctorState st;` at doctor.cpp:55 -- a different type, in a different
+    # function -- so the message names the wrong entity entirely.  It is a
+    # compiler bug, not a code error, and it leaves a truncated .gcm behind that
+    # makes unrelated targets fail next build, so this 2-line accessor stays
+    # inline.
+    ('core/xself/doctor.cppm', 'Counts', 'issues'),
+
+    # `static Config& instance_() { static Config inst; return inst; }` -- the
+    # singleton accessor.  Its function-local static is where the module-attached
+    # `Config` (std containers over module types inside) is first completed.
+    # Move that body to the implementation unit and the first-instantiation point
+    # moves with it, after which gcc 16.1.0 segfaults compiling an UNRELATED
+    # translation unit -- doctor.cpp, at `DoctorState st;`, a different type in a
+    # different module.  Found by bisecting config.cppm's 85 movable members;
+    # #34 is the boundary and the other 84 are fine.
+    ('core/config.cppm', 'Config', 'instance_'),
+}
+
+
+def ice_skipped(path: str, cls: str, member: str) -> bool:
+    return any(path.replace(os.sep, '/').endswith(p) and cls == c and member == m
+               for p, c, m in ICE_SKIP)
+
+
+def directive_condition(line: str):
+    """Normalise an #if-family directive to a boolean expression string, or
+    None if the line does not open a conditional."""
+    m = re.match(r'\s*#\s*(ifdef|ifndef|if|elif|else|endif)\b(.*)', line, re.S)
+    if not m:
+        return None
+    kw, rest = m.group(1), m.group(2).strip().rstrip('\\').strip()
+    if kw == 'ifdef':
+        return ('open', f'defined({rest})')
+    if kw == 'ifndef':
+        return ('open', f'!defined({rest})')
+    if kw == 'if':
+        return ('open', f'({rest})')
+    if kw == 'elif':
+        return ('elif', f'({rest})')
+    if kw == 'else':
+        return ('else', None)
+    return ('close', None)
+
+
+class GuardStack:
+    """Tracks the #if nesting so an outlined definition can be re-wrapped in
+    the same condition.  A class inside `#if defined(_WIN32)` whose members are
+    appended to the .cpp unguarded would compile its Windows bodies on Linux —
+    which is exactly what happened before this existed."""
+
+    def __init__(self):
+        self.stack = []          # list of [current_condition, seen_conditions]
+
+    def feed(self, line: str):
+        d = directive_condition(line)
+        if not d:
+            return
+        kind, cond = d
+        if kind == 'open':
+            self.stack.append([cond, [cond]])
+        elif kind == 'elif' and self.stack:
+            prev = self.stack[-1][1]
+            self.stack[-1][0] = ' && '.join(
+                [f'!({p})' for p in prev] + [cond])
+            self.stack[-1][1].append(cond)
+        elif kind == 'else' and self.stack:
+            prev = self.stack[-1][1]
+            self.stack[-1][0] = ' && '.join(f'!({p})' for p in prev)
+        elif kind == 'close' and self.stack:
+            self.stack.pop()
+
+    def current(self):
+        conds = [s[0] for s in self.stack if s[0]]
+        return ' && '.join(conds) if conds else None
+
 
 def nested_type_names(body: str) -> set[str]:
     """Types declared inside this class body — a return type naming one of
@@ -69,20 +150,42 @@ def split_member_init(head: str):
     return head, ''
 
 
+def strip_virt_specifiers(head: str) -> str:
+    """`override` and `final` are declaration-only: a virt-specifier outside a
+    class definition is an error.  They sit after the parameter list, so
+    strip_defaults never sees them."""
+    s = mask_operator(scrub(head))
+    o = s.find('(')
+    if o < 0:
+        return head
+    depth, i = 0, o
+    while i < len(s):
+        if s[i] == '(':
+            depth += 1
+        elif s[i] == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    return head[:i] + re.sub(r'\s*\b(?:override|final)\b', '', head[i:])
+
+
 def qualify(head: str, cls: str, nested: set[str], fn: str) -> str:
     """`T name(args)` -> `C::T C::name(args)` (return type qualified only when
     it names a nested type)."""
     s = mask_operator(scrub(head))
-    # locate the declarator-id: the identifier right before the parameter list
+    # Locate the declarator-id: the identifier right before the parameter list.
+    # Search the MASKED text — `operator=` ends in '=' and would not match as an
+    # identifier — but slice the original, which mask_operator keeps the same
+    # length as.
     o = s.find('(')
-    pre = head[:o]
     m = None
-    for m in re.finditer(r'[\w~]+\s*$', pre):
+    for m in re.finditer(r'[\w~]+\s*$', s[:o]):
         pass
     if not m:
         return head
-    ret = pre[:m.start()]
-    name = pre[m.start():]
+    ret = head[:m.start()]
+    name = head[m.start():o]
     # drop declaration-only specifiers
     ret = re.sub(r'(^|\s)(?:static|virtual|explicit)\s+', r'\1', ret)
     # `export` never appears on a member, but be safe
@@ -97,24 +200,42 @@ def qualify(head: str, cls: str, nested: set[str], fn: str) -> str:
     return f'{lead_ws}{ret_stripped}{sep}{cls}::{name.strip()}' + head[o:]
 
 
-def outline_class(cls_item: Item, ns: str, out_impl: list, stats: dict) -> str:
-    """Rewrite one class body; append out-of-line definitions to out_impl.
-    Returns the rewritten class item text."""
+def member_name(decl: str) -> str:
+    """The declarator-id of a member function head."""
+    m = mask_operator(scrub(decl))
+    o = m.find('(')
+    hits = list(re.finditer(r'[\w~]+\s*$', m[:o] if o >= 0 else m))
+    return decl[hits[-1].start():o].strip() if hits else ''
+
+
+def outline_class(cls_item: Item, ns: str, outer: str, out_impl: list,
+                  stats: dict, guards: 'GuardStack', path: str) -> str:
+    """Rewrite one class body; append (namespace, definition) pairs to
+    out_impl.  Returns the rewritten class item text."""
     m = CLASS_HEAD.match(cls_item.head.rstrip())
     if not m:
         return cls_item.raw
     cname = m.group('name')
-    if ':' in m.group('rest') or 'template' in cls_item.head:
-        # a base-class list is fine, but a template class is not: its members
-        # cannot be defined in another unit without explicit instantiation
-        if 'template' in cls_item.head:
-            return cls_item.raw
+    if 'template' in cls_item.head:
+        # a template class's members cannot be defined in another unit without
+        # explicit instantiation
+        return cls_item.raw
     body = cls_item.body[1:-1]
     nested = nested_type_names(body)
-    qual = f'{ns}::{cname}' if ns else cname
+    # The definitions are emitted INSIDE the enclosing namespace, so the
+    # declarator-id only needs the class path.  Qualifying it with the
+    # namespace instead would leave the RETURN TYPE unqualified at global
+    # scope, where the class's own name does not resolve.
+    qual = f'{outer}::{cname}' if outer else cname
     pieces = []
     for it in scan_items(body):
         keep = True
+        if it.kind == 'preproc':
+            guards.feed(it.head)
+        if it.kind == 'def' and it.body and CLASS_HEAD.match(it.head.rstrip()):
+            pieces.append(outline_class(it, ns, qual, out_impl, stats,
+                                        guards, path))
+            continue
         if it.kind == 'def' and it.body and not TYPE_HEAD.match(it.head) \
                 and not NS_HEAD.match(it.head):
             h = head_norm(it.head)
@@ -128,13 +249,16 @@ def outline_class(cls_item: Item, ns: str, out_impl: list, stats: dict) -> str:
                 and not has_auto_parameter(decl)
                 and 'friend' not in h
                 and '::' not in scrub(mask_operator(decl)).split('(')[0].split()[-1]
+                and not ice_skipped(path, cname, member_name(decl))
+                and (LIMIT[0] is None or stats['members'] < LIMIT[0])
             )
             if movable:
                 # in-class: declaration only, default arguments kept
                 pieces.append(it.lead + decl.rstrip() + ';')
-                out_impl.append(
-                    qualify(strip_defaults(decl), qual, nested, cname).strip()
-                    + init + it.body + it.tail)
+                out_impl.append((ns, guards.current(),
+                    qualify(strip_virt_specifiers(strip_defaults(decl)),
+                            qual, nested, cname).strip()
+                    + init + it.body + it.tail))
                 stats['members'] += 1
                 stats['lines'] += it.body.count('\n')
                 keep = False
@@ -143,20 +267,52 @@ def outline_class(cls_item: Item, ns: str, out_impl: list, stats: dict) -> str:
     return cls_item.lead + cls_item.head + '{' + ''.join(pieces) + '}' + cls_item.tail
 
 
-def walk(items: list[Item], ns: str, out_impl: list, stats: dict) -> str:
+def walk(items: list[Item], ns: str, out_impl: list, stats: dict,
+         guards: 'GuardStack', path: str) -> str:
     parts = []
     for it in items:
+        if it.kind == 'preproc':
+            guards.feed(it.head)
         if it.kind == 'def' and it.body and NS_HEAD.match(it.head):
             nm = re.sub(r'^\s*(?:export\s+)?namespace\s*', '',
                         it.head).strip().rstrip('{').strip()
             sub = f'{ns}::{nm}' if ns and nm else (nm or ns)
-            inner = walk(scan_items(it.body[1:-1]), sub, out_impl, stats)
+            inner = walk(scan_items(it.body[1:-1]), sub, out_impl, stats,
+                         guards, path)
             parts.append(it.lead + it.head + '{' + inner + '}' + it.tail)
         elif it.kind == 'def' and it.body and CLASS_HEAD.match(it.head.rstrip()):
-            parts.append(outline_class(it, ns, out_impl, stats))
+            parts.append(outline_class(it, ns, '', out_impl, stats, guards, path))
         else:
             parts.append(it.raw)
     return ''.join(parts)
+
+
+def group_by_namespace(out_impl: list) -> str:
+    """Emit the definitions inside their own namespace block, in the order the
+    classes appeared, so an unqualified return type still resolves — and inside
+    the #if that guarded the class, so platform-only bodies stay
+    platform-only."""
+    chunks, key, buf = [], None, []
+    for ns, guard, text in out_impl:
+        if (ns, guard) != key:
+            if buf:
+                chunks.append((key, buf))
+            key, buf = (ns, guard), []
+        buf.append(text)
+    if buf:
+        chunks.append((key, buf))
+    parts = []
+    for (ns, guard), texts in chunks:
+        body = '\n\n'.join(x.strip('\n') for x in texts)
+        if ns:
+            body = f'namespace {ns} {{\n\n{body}\n\n}} // namespace {ns}'
+        if guard:
+            body = f'#if {guard}\n\n{body}\n\n#endif'
+        parts.append(body)
+    return '\n\n'.join(parts)
+
+
+LIMIT = [None]      # bisection aid: outline at most this many members per file
 
 
 def process(path: str, write: bool):
@@ -174,7 +330,7 @@ def process(path: str, write: bool):
 
     out_impl: list[str] = []
     stats = {'members': 0, 'lines': 0}
-    new_body = walk(scan_items(body), '', out_impl, stats)
+    new_body = walk(scan_items(body), '', out_impl, stats, GuardStack(), path)
     if not stats['members']:
         return 0, 0, f'{path}: no outlinable members'
     if write:
@@ -197,7 +353,7 @@ def process(path: str, write: bool):
         with open(cpp, 'a') as fh:
             fh.write('\n\n// ── out-of-line class members '
                      '─────────────────────────────────\n\n')
-            fh.write('\n\n'.join(x.strip('\n') for x in out_impl) + '\n')
+            fh.write(group_by_namespace(out_impl) + '\n')
     return stats['members'], stats['lines'], None
 
 
@@ -206,7 +362,10 @@ def main():
     ap.add_argument('files', nargs='*')
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--write', action='store_true')
+    ap.add_argument('--limit', type=int, default=None,
+                    help='outline at most N members per file (bisection aid)')
     a = ap.parse_args()
+    LIMIT[0] = a.limit
     files = sorted(glob.glob('src/**/*.cppm', recursive=True)) if a.all else a.files
     tm = tl = tf = 0
     for f in files:

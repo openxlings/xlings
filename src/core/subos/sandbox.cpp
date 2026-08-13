@@ -170,7 +170,8 @@ bool is_mounted_(const fs::path& path) {
     return std::system(cmd.c_str()) == 0;
 }
 
-int mount_image_(const fs::path& img, const fs::path& mountpoint, const std::string& user) {
+int mount_image_(const fs::path& img, const fs::path& mountpoint,
+                 const std::string& user = {}) {
     fs::create_directories(mountpoint);
     if (is_mounted_(mountpoint)) return 0;  // already mounted
 
@@ -285,7 +286,11 @@ locate_proot_(const fs::path& home_dir) {
 }
 
 std::vector<SandboxBind>
-sandbox_binds_(const fs::path& subos_dir, const fs::path& host_xlings_home, const std::string& user, StorageMode storage, const fs::path& mountpoint)
+sandbox_binds_(const fs::path& subos_dir,
+               const fs::path& host_xlings_home,
+               const std::string& user,
+               StorageMode storage = StorageMode::Shared,
+               const fs::path& mountpoint = {})
 {
     auto etc = subos_dir / "etc";
     auto user_home = "/home/" + user;
@@ -348,7 +353,12 @@ sandbox_binds_(const fs::path& subos_dir, const fs::path& host_xlings_home, cons
 }
 
 std::vector<std::string>
-build_proot_argv_(const fs::path& proot_bin, const fs::path& subos_dir, const fs::path& host_xlings_home, const std::string& user, const std::string& shell_path, const std::string& cmd)
+build_proot_argv_(const fs::path& proot_bin,
+                  const fs::path& subos_dir,
+                  const fs::path& host_xlings_home,
+                  const std::string& user,
+                  const std::string& shell_path,
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     // Use sandbox-root/ as the chroot root instead of subos_dir itself.
@@ -444,7 +454,16 @@ std::string classify_bwrap_probe_error_(const std::string& output,
 }
 
 std::vector<std::string>
-build_bwrap_argv_(const fs::path& bwrap_bin, const fs::path& subos_dir, const fs::path& host_xlings_home, const std::string& user, const std::string& shell_path, bool interactive_shell, StorageMode storage, const fs::path& mountpoint, bool gpu, const std::string& cmd)
+build_bwrap_argv_(const fs::path& bwrap_bin,
+                  const fs::path& subos_dir,
+                  const fs::path& host_xlings_home,
+                  const std::string& user,
+                  const std::string& shell_path,
+                  bool interactive_shell,
+                  StorageMode storage = StorageMode::Shared,
+                  const fs::path& mountpoint = {},
+                  bool gpu = false,
+                  const std::string& cmd = "")
 {
     auto user_home = "/home/" + user;
     std::vector<std::string> argv = {
@@ -503,7 +522,8 @@ void maybe_show_bwrap_hint_(const fs::path& subos_dir) {
 }
 
 std::optional<BackendInfo>
-detect_backend_(const fs::path& home_dir, const fs::path& subos_dir) {
+detect_backend_(const fs::path& home_dir,
+                const fs::path& subos_dir = {}) {
     // 1. bwrap (xim pool) — preferred for native compat
     if (auto bin = locate_bwrap_(home_dir)) {
         if (probe_bwrap_(*bin).first)

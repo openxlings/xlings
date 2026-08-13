@@ -206,7 +206,10 @@ CandidateResolution_ resolve_candidate_(std::string_view query) {
             .candidates = suggestions_(query, all)};
 }
 
-void emit_candidates_(EventStream& stream, const CandidateResolution_& resolution, std::string_view query, std::string_view hint) {
+void emit_candidates_(EventStream& stream,
+                      const CandidateResolution_& resolution,
+                      std::string_view query,
+                      std::string_view hint = {}) {
     nlohmann::json candidates = nlohmann::json::array();
     for (const auto& candidate : resolution.candidates) {
         candidates.push_back({

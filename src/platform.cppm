@@ -25,8 +25,6 @@ export import :unix;
 namespace xlings {
 namespace platform {
 
-    extern std::string gRundir;
-
     export using platform_impl::PATH_SEPARATOR;
     export using platform_impl::OS_NAME;
     export using platform_impl::clear_console;

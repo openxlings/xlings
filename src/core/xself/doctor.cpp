@@ -2101,7 +2101,10 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
     }
 }
 
-void repair_payloads_(const DoctorState& st, const Scan& scan, const CoordinateProbe& probe, bool dryRun, RepairReport& out, const std::function<void(std::string_view)>& onStep) {
+void repair_payloads_(const DoctorState& st, const Scan& scan,
+                      const CoordinateProbe& probe, bool dryRun,
+                      RepairReport& out,
+                      const std::function<void(std::string_view)>& onStep = {}) {
     // Collapse the findings onto their owning package: one install per
     // release, not one per program in it. A broken llvm reports nine targets;
     // reinstalling llvm nine times would be nine downloads for one problem.
@@ -2226,7 +2229,9 @@ void repair_inactive_(const Scan& scan, const std::string& client,
     }
 }
 
-void repair_incomplete_(const Scan& scan, const CommandRunner& run, bool dryRun, RepairReport& out, const std::function<void(std::string_view)>& onStep) {
+void repair_incomplete_(const Scan& scan, const CommandRunner& run,
+                        bool dryRun, RepairReport& out,
+                        const std::function<void(std::string_view)>& onStep = {}) {
     for (const auto& f : scan.findings) {
         if (f.kind != FindingKind::IncompletePayload) continue;
         if (f.remedy.empty()) continue;

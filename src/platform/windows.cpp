@@ -342,3 +342,66 @@ bool atomic_swap_paths(const std::filesystem::path& a,
 }
 
 #endif // defined(_WIN32)
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+#if (defined(_WIN32))
+
+namespace xlings::platform_impl {
+
+FileLock::FileLock(FileLock&& other) noexcept: handle_(std::exchange(other.handle_, INVALID_HANDLE_VALUE)) {}
+
+FileLock& FileLock::operator=(FileLock&& other) noexcept{
+            if (this != &other) {
+                release();
+                handle_ = std::exchange(other.handle_, INVALID_HANDLE_VALUE);
+            }
+            return *this;
+        }
+
+FileLock::~FileLock(){ release(); }
+
+bool FileLock::acquire(const std::filesystem::path& path,
+                     std::chrono::milliseconds timeout,
+                     const std::function<bool()>& cancelled,
+                     std::string& error){
+            release();
+            auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (true) {
+                handle_ = ::CreateFileW(
+                    path.wstring().c_str(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0, nullptr, OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (handle_ != INVALID_HANDLE_VALUE) return true;
+                auto code = ::GetLastError();
+                if (code != ERROR_SHARING_VIOLATION
+                    && code != ERROR_LOCK_VIOLATION) {
+                    error = std::format(
+                        "failed to lock {}: Windows error {}",
+                        path.string(), code);
+                    return false;
+                }
+                if (cancelled && cancelled()) {
+                    error = "cancelled while waiting for cache lock";
+                    return false;
+                }
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    error = std::format("timed out waiting for cache lock {}",
+                                        path.string());
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+        }
+
+void FileLock::release(){
+            if (handle_ == INVALID_HANDLE_VALUE) return;
+            ::CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+        }
+
+} // namespace xlings::platform_impl
+
+#endif

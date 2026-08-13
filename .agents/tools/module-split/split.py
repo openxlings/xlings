@@ -121,16 +121,44 @@ def scan_items(text: str) -> list[Item]:
         start = i
         pdepth = 0
         body = None
+        seen_params = False     # a ')' has closed at depth 0
+        in_init = False         # inside a constructor's member-init list
         while i < n:
             c = sc[i]
             if c in '([':
                 pdepth += 1
             elif c in ')]':
                 pdepth -= 1
+                if pdepth == 0 and c == ')':
+                    seen_params = True
+            elif (pdepth == 0 and c == ':' and seen_params
+                  and sc[i:i+2] != '::' and (i == 0 or sc[i-1] != ':')):
+                in_init = True
             elif pdepth == 0 and c == ';':
                 i += 1
                 break
             elif pdepth == 0 and c == '{':
+                # In a member-init list an initialiser's brace follows an
+                # IDENTIFIER (`: registry_ { registry }`) while the function
+                # body's brace follows ')' or '}'.  Without this the first
+                # initialiser gets mistaken for the body and the declaration
+                # comes out as `Ctor(args); {}`.
+                if in_init:
+                    k = i - 1
+                    while k >= 0 and sc[k].isspace():
+                        k -= 1
+                    if k >= 0 and (sc[k].isalnum() or sc[k] == '_'):
+                        d = 0
+                        while i < n:
+                            if sc[i] == '{':
+                                d += 1
+                            elif sc[i] == '}':
+                                d -= 1
+                                if d == 0:
+                                    i += 1
+                                    break
+                            i += 1
+                        continue
                 bstart = i
                 depth = 0
                 while i < n:
@@ -360,15 +388,45 @@ def decl_from_def(h: str) -> str:
 
 # ─────────────────────────── emission ───────────────────────────
 
+class Cand:
+    """A module-private entity whose declaration may or may not be needed in
+    the interface."""
+    __slots__ = ('ns', 'decl', 'name', 'impl_with_defaults', 'impl_no_defaults')
+
+    def __init__(self, ns, decl, name, impl_with_defaults, impl_no_defaults):
+        self.ns = ns
+        self.decl = decl
+        self.name = name
+        self.impl_with_defaults = impl_with_defaults
+        self.impl_no_defaults = impl_no_defaults
+
+
 class Split:
     def __init__(self):
         self.iface: list[str] = []
         self.impl: list[str] = []
+        self.cands: list[Cand] = []
         self.moved = 0
         self.moved_lines = 0
 
 
-def process_level(items: list[Item], out: Split, indent: str, in_class=False):
+# A non-exported entity is wrapped in these while the two texts are assembled,
+# so one later pass can ask whether anything LEFT in the interface still names
+# it -- and fix up BOTH sides together.  These bytes cannot occur in C++ source.
+#
+# Both sides are needed because the decision changes the definition too: if the
+# interface keeps the declaration, the declaration carries the default arguments
+# and the definition must not repeat them; if the declaration is dropped, the
+# definition is the only declaration and must carry them itself.
+IFACE_MARK, IMPL_MARK, MARK_END = '\x01', '\x02', '\x03'
+
+
+def is_exported(head: str) -> bool:
+    return re.match(r'^\s*export\b', head) is not None
+
+
+def process_level(items: list[Item], out: Split, indent: str, in_class=False,
+                  ns: str = '', exported: bool = False):
     for it in items:
         cls = classify(it, in_class)
         if cls == 'both':
@@ -377,7 +435,15 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False):
         elif cls == 'namespace':
             inner = it.body[1:-1]
             sub = Split()
-            process_level(scan_items(inner), sub, indent)
+            # one shared candidate list per file, so the ids that pair an
+            # interface marker with its implementation marker stay unique across
+            # nesting levels
+            sub.cands = out.cands
+            nm = re.sub(r'^\s*(?:export\s+)?namespace\s*', '',
+                        it.head).strip().rstrip('{').strip()
+            sub_ns = f'{ns}::{nm}' if ns and nm else (nm or ns)
+            process_level(scan_items(inner), sub, indent, ns=sub_ns,
+                          exported=exported or is_exported(it.head))
             out.iface.append(it.lead + it.head + '{' + ''.join(sub.iface)
                              + '}' + it.tail)
             if any(x.strip() for x in sub.impl):
@@ -394,9 +460,19 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False):
         elif cls == 'stay':
             out.iface.append(it.raw)
         elif cls == 'split-fn':
-            out.iface.append(it.lead + decl_from_def(it.head))
-            impl_head = strip_defaults(strip_static(strip_export(it.head)))
-            out.impl.append(impl_head.lstrip('\n') + it.body + it.tail)
+            decl = it.lead + decl_from_def(it.head)
+            plain = strip_static(strip_export(it.head))
+            no_def = strip_defaults(plain).lstrip('\n') + it.body + it.tail
+            if exported or is_exported(it.head):
+                out.iface.append(decl)
+                out.impl.append(no_def)
+            else:
+                cid = str(len(out.cands))
+                out.cands.append(Cand(ns, decl, declared_name(it.head),
+                                      plain.lstrip('\n') + it.body + it.tail,
+                                      no_def))
+                out.iface.append(IFACE_MARK + cid + MARK_END)
+                out.impl.append(IMPL_MARK + cid + MARK_END)
             out.moved += 1
             out.moved_lines += it.body.count('\n')
         elif cls == 'split-var':
@@ -406,14 +482,68 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False):
             # the declaration carries the type and name, never the initialiser
             eq = scrub(bare).find('=')
             decl = (bare[:eq].rstrip() if eq >= 0 else bare).strip()
-            out.iface.append(it.lead + 'extern ' + decl + ';')
+            ext = it.lead + 'extern ' + decl + ';'
             defn = bare + (it.body or '') + it.tail
-            out.impl.append(defn.strip() if defn.rstrip().endswith(';')
-                            else defn.strip() + ';')
+            defn = defn.strip() if defn.rstrip().endswith(';') \
+                else defn.strip() + ';'
+            if exported or is_exported(it.head):
+                out.iface.append(ext)
+                out.impl.append(defn)
+            else:
+                cid = str(len(out.cands))
+                out.cands.append(Cand(ns, ext, declared_name(bare), defn, defn))
+                out.iface.append(IFACE_MARK + cid + MARK_END)
+                out.impl.append(IMPL_MARK + cid + MARK_END)
             out.moved += 1
             out.moved_lines += (it.body or '').count('\n')
         else:
             out.iface.append(it.raw)
+
+
+IFACE_RE = re.compile(IFACE_MARK + r'(\d+)' + MARK_END)
+IMPL_RE = re.compile(IMPL_MARK + r'(\d+)' + MARK_END)
+
+
+def declared_name(decl: str) -> str:
+    """The name a declaration introduces."""
+    m = mask_operator(scrub(decl))
+    o = m.find('(')
+    region = m[:o] if o >= 0 else m.rstrip().rstrip(';')
+    hits = list(re.finditer(r'[\w~]+', region))
+    return region[hits[-1].start():hits[-1].end()] if hits else ''
+
+
+def resolve_candidates(iface: str, impl: str, cands: list):
+    """A NON-exported declaration belongs in the interface only if something
+    still IN the interface names it -- an exported template, an inline or
+    constexpr body, a class member body, a default argument.  Everything else is
+    a module-private helper: keeping its declaration in the interface would put
+    it in the BMI, so changing its signature would recompile every importer for
+    no reason.
+
+    Both texts are fixed up here because the two are coupled -- see the comment
+    on IFACE_MARK."""
+    if not cands:
+        return IFACE_RE.sub('', iface), IMPL_RE.sub('', impl)
+    # what the interface still says with every candidate declaration removed
+    residue = IFACE_RE.sub('', iface)
+    keep = set()
+    for i, c in enumerate(cands):
+        # `detail_::binding_error_(...)` is a reference to binding_error_.  A
+        # lookbehind that rejected ':' would miss every qualified call, which is
+        # the common form.  Over-counting only keeps a declaration that could
+        # have moved; under-counting breaks the build.
+        if c.name and re.search(r'(?<!\w)' + re.escape(c.name) + r'\b', residue):
+            keep.add(i)
+    iface = IFACE_RE.sub(
+        lambda m: cands[int(m.group(1))].decl if int(m.group(1)) in keep else '',
+        iface)
+    impl = IMPL_RE.sub(
+        lambda m: (cands[int(m.group(1))].impl_no_defaults
+                   if int(m.group(1)) in keep
+                   else cands[int(m.group(1))].impl_with_defaults),
+        impl)
+    return iface, impl
 
 
 PREAMBLE = re.compile(
@@ -462,7 +592,14 @@ def split_file(path: str, qualify_partition_import=False):
         imports.insert(0, f'import {part};')
     if imports:
         impl += '\n' + '\n'.join(imports) + '\n'
+    # A dropped declaration is not re-emitted as a forward declaration: source
+    # order is preserved, so a definition still precedes its callers exactly as
+    # it did in the combined file -- and a namespace-scope declaration block is
+    # not free.  One mentioning `std::vector<xvm::SubosRef>` made gcc 16.1.0
+    # segfault in doctor.cpp, the known shape where a std container over a
+    # module-attached type is first instantiated from namespace scope.
     impl += '\n' + '\n\n'.join(x.strip('\n') for x in out.impl if x.strip())
+    iface, impl = resolve_candidates(iface, impl, out.cands)
     return (iface, impl.rstrip() + '\n', out.moved, out.moved_lines,
             mod + part), None
 

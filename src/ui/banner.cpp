@@ -7,8 +7,6 @@ module;
 module xlings.ui;
 
 import std;
-import :theme;
-import :layout;
 
 namespace xlings::ui {
 

@@ -93,7 +93,7 @@ struct VendorWiring {
     bool stale { false };
     std::string staleDetail;
 
-    bool is_broken() const { return state == "broken"; }
+    bool is_broken() const;
 
     // The verdict that depends on WHO OPENS IT.
     //
@@ -113,9 +113,7 @@ struct VendorWiring {
     // that is not there, and it hides the one that is — programs the user
     // builds are still DT_RUNPATH (#532), and this is exactly the state that
     // says so.
-    bool needs_transitive_consumer() const {
-        return state == "needs-transitive-consumer";
-    }
+    bool needs_transitive_consumer() const;
     // `native` means the probe found no host driver behind this vendor -- it
     // is one of our own builds, so there is no host closure to complete. That
     // is a pass, and it is NOT the same fact as `ok`, which means a host
@@ -126,9 +124,7 @@ struct VendorWiring {
     // production consumer of this module renders `describe()` -- which already
     // replaces the verdict -- so nothing changes; the point is that the next
     // caller cannot read `ok` off a record that has expired.
-    bool is_ok() const {
-        return !stale && (state == "ok" || state == "native");
-    }
+    bool is_ok() const;
 };
 
 enum class WiringStatus {
@@ -149,11 +145,8 @@ struct GraphicsWiring {
     int vendorFiles { 0 };              // entries in glx-vendor/, record excluded
     std::vector<VendorWiring> vendors;
 
-    bool has_dispatch() const { return status != WiringStatus::NoDispatch; }
-    int broken_count() const {
-        return static_cast<int>(std::ranges::count_if(
-            vendors, [](const VendorWiring& v) { return v.is_broken(); }));
-    }
+    bool has_dispatch() const;
+    int broken_count() const;
 };
 
 // ─── record parsing ────────────────────────────────────────────────────────
@@ -305,14 +298,7 @@ struct DriverStamp {
     bool known { false };        // the payload recorded a version at install
     std::string builtFor;        // <nvidia payload>/.host-driver-version
     std::string hostNow;         // /sys/module/nvidia/version
-    bool drifted() const {
-        // Only a DISAGREEMENT is drift. An unknown on either side is not:
-        // a machine whose module is not loaded right now (`hostNow` empty)
-        // has not changed driver, it has no driver running, and reporting
-        // that as drift would cry wolf on every laptop with the GPU asleep.
-        return known && !builtFor.empty() && !hostNow.empty()
-               && builtFor != hostNow;
-    }
+    bool drifted() const;
 };
 
 inline std::string read_trimmed_(const fs::path& p) {

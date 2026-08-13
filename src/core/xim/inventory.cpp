@@ -610,3 +610,113 @@ std::vector<InstalledPackageRecord> collect_package_inventory(PackageCatalog& ca
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xim::detail {
+
+MetadataLookup::MetadataLookup(PackageCatalog& catalog, InventoryTrace* trace): catalog_(&catalog), trace_(trace) {}
+
+MetadataLookup::MetadataLookup(std::map<std::string, CatalogMetadata> table){
+        for (auto& [storeName, item] : table) {
+            const auto shortName = item.name;
+            exact_.emplace(storeName, CatalogRecord{
+                .metadata = std::move(item),
+                .detailsLoaded = true,
+            });
+            if (auto found = shortKeys_.find(shortName);
+                found == shortKeys_.end()) {
+                shortKeys_.emplace(shortName, storeName);
+            } else {
+                found->second.reset();
+            }
+        }
+    }
+
+const CatalogMetadata* MetadataLookup::by_identity(const std::string& namespaceName,
+                                       const std::string& name){
+        const auto storeName = package_store_name(namespaceName, name);
+        if (!exact_.contains(storeName)) {
+            auto resolved = resolve_(namespaceName.empty()
+                ? name : namespaceName + ":" + name);
+            if (resolved
+                && package_store_name(resolved->metadata.namespaceName,
+                                      resolved->metadata.name) != storeName) {
+                resolved.reset();
+            }
+            exact_.emplace(storeName, std::move(resolved));
+        }
+        return metadata_for_store_(storeName);
+    }
+
+const CatalogMetadata* MetadataLookup::by_short_name(const std::string& name){
+        if (!shortKeys_.contains(name)) {
+            auto resolved = resolve_(name);
+            if (!resolved) {
+                shortKeys_.emplace(name, std::nullopt);
+            } else {
+                const auto storeName = package_store_name(
+                    resolved->metadata.namespaceName,
+                    resolved->metadata.name);
+                if (auto found = exact_.find(storeName);
+                    found == exact_.end() || !found->second) {
+                    exact_[storeName] = std::move(resolved);
+                }
+                shortKeys_.emplace(name, storeName);
+            }
+        }
+        const auto& key = shortKeys_.at(name);
+        return key ? metadata_for_store_(*key) : nullptr;
+    }
+
+const CatalogMetadata* MetadataLookup::load_details(const std::string& namespaceName,
+                                        const std::string& name){
+        const auto* identity = by_identity(namespaceName, name);
+        if (identity == nullptr) return nullptr;
+        const auto storeName = package_store_name(namespaceName, name);
+        auto& record = *exact_.at(storeName);
+        if (!record.detailsLoaded && record.match && catalog_ != nullptr) {
+            if (trace_ != nullptr) {
+                trace_->metadataIdentities.push_back(
+                    record.metadata.canonicalName);
+            }
+            if (auto pkg = catalog_->load_package(*record.match)) {
+                record.metadata.description = std::string(pkg->description);
+                record.metadata.programs = pkg->programs;
+            }
+            record.detailsLoaded = true;
+        }
+        return &record.metadata;
+    }
+
+const CatalogMetadata* MetadataLookup::load_stamped_details(
+        const std::string& namespaceName, const std::string& name){
+        // by_identity is a metadata-only local-index lookup. A recipe is
+        // loaded only after that lookup proves this exact stamped identity is
+        // unique; missing and ambiguous stamps remain self-describing rows.
+        return load_details(namespaceName, name);
+    }
+
+const CatalogMetadata* MetadataLookup::metadata_for_store_(const std::string& storeName){
+        const auto found = exact_.find(storeName);
+        if (found == exact_.end() || !found->second) return nullptr;
+        return &found->second->metadata;
+    }
+
+std::optional<CatalogRecord> MetadataLookup::resolve_(const std::string& target){
+        if (catalog_ == nullptr) return std::nullopt;
+        auto match = catalog_->resolve_local_identity(target);
+        if (!match) return std::nullopt;
+        return CatalogRecord{
+            .metadata = {
+                .namespaceName = match->namespaceName,
+                .name = match->name,
+                .canonicalName = match->canonicalName,
+                .storeRoot = match->storeRoot,
+            },
+            .match = std::move(*match),
+        };
+    }
+
+} // namespace xlings::xim::detail

@@ -34,40 +34,10 @@ export struct UninstallOpts {
     bool dryRun   = false;   // --dry-run: print plan, do nothing
 };
 
-// Best-effort directory size in bytes. Errors are silently treated as 0.
-static std::uintmax_t dir_size_bytes_(const fs::path& dir);
-
-static std::string format_bytes_(std::uintmax_t bytes);
-
-// Refuse to operate on suspicious XLINGS_HOME values that could nuke
-// large parts of the filesystem if the env var was set wrong.
-static bool home_dir_safe_to_remove_(const fs::path& home);
-
-// chdir to a safe location so the process doesn't have a cwd inside
-// the directory we're about to delete. Returns the path it moved to.
-static fs::path chdir_to_safe_();
-
 #ifdef _WIN32
-// Move xlings.exe out of XLINGS_HOME and schedule the moved copy for
-// delete-on-reboot. Returns true on success (or no-op if file already
-// gone), false on hard failure.
-static bool windows_self_displace_(const fs::path& xlingsExe);
+
 #endif
 
-static int print_summary_(const fs::path& home,
-                          const UninstallOpts& opts,
-                          std::uintmax_t dataSize,
-                          std::uintmax_t totalSize);
-
-static bool prompt_yes_no_(const std::string& question);
-
-// Every startup file `self install` may have hooked, so the advisory covers
-// the same set the install wrote to. The list used to be POSIX-only, which on
-// Windows meant uninstall reported nothing at all while leaving a source line
-// behind in one or two PowerShell profiles.
-static std::vector<fs::path> hooked_startup_files_(const fs::path& userHome);
-
-static void emit_shell_advisory_(const fs::path& home);
 
 export int cmd_uninstall(UninstallOpts opts);
 

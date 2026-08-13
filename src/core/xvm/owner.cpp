@@ -118,3 +118,21 @@ owner_candidates(const VersionDB& db,
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xvm {
+
+[[nodiscard]] bool InstallCoordinate::empty() const{ return package.empty(); }
+
+[[nodiscard]] std::string InstallCoordinate::canonical() const{
+        if (ns.empty()) return std::format("{}@{}", package, version);
+        return std::format("{}:{}@{}", ns, package, version);
+    }
+
+[[nodiscard]] std::string InstallCoordinate::install_command() const{
+        return std::format("xlings install {}", canonical());
+    }
+
+} // namespace xlings::xvm

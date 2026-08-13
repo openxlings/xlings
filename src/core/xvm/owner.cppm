@@ -33,16 +33,11 @@ struct InstallCoordinate {
     std::string package;   // the PACKAGE name, not the xvm target
     std::string version;   // bare version, never carries the namespace
 
-    [[nodiscard]] bool empty() const { return package.empty(); }
+    [[nodiscard]] bool empty() const;
 
-    [[nodiscard]] std::string canonical() const {
-        if (ns.empty()) return std::format("{}@{}", package, version);
-        return std::format("{}:{}@{}", ns, package, version);
-    }
+    [[nodiscard]] std::string canonical() const;
 
-    [[nodiscard]] std::string install_command() const {
-        return std::format("xlings install {}", canonical());
-    }
+    [[nodiscard]] std::string install_command() const;
 
     friend bool operator==(const InstallCoordinate&,
                            const InstallCoordinate&) = default;

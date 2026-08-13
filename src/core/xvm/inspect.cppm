@@ -20,36 +20,6 @@ import xlings.core.xvm.db;   // display_coordinate
 // test, and doctor stays a renderer.
 namespace xlings::xvm::detail_ {
 
-// Does the release this version belongs to declare any file asset?
-//
-// Asked of the release rather than the entry itself because a file asset is
-// registered as its own target (`<pkg>.files.<n>`) bound to the release, not
-// as a field on the package's own entry.
-bool release_declares_file_assets_(const VersionDB& db,
-                                   const std::string& target,
-                                   const std::string& version);
-
-// Is this member's name currently held by a DIFFERENT provider?
-//
-// Two packages can register the same program name: node's release registers
-// `npm`, and a standalone npm package registers it too. Whichever is active,
-// the other release's member is "wrong" by version alone -- and treating that
-// as a broken release is wrong twice over. As a report it tells the user to
-// run a `use` that would take the name away from the package they chose; as a
-// REPAIR it tears down a release that is working. A contest with the SAME
-// provider is a genuinely split release and is neither.
-//
-// Extracted because the reporter and the repairer disagreed about it and that
-// disagreement shipped. `analyze_bindings` (INV-2) learned this rule in
-// 2026.8.1.1; `plan_incoherent_deactivation` -- which is what `self doctor
-// --fix` actually executes -- did not. So doctor said "this home is fine" and
-// `--fix`, on the same home, took `gcc` and `ld` down. One predicate, both
-// callers: the two cannot drift again.
-bool held_by_another_provider_(const VersionDB& db,
-                               const Workspace& workspace,
-                               const std::string& memberTarget,
-                               const std::string& releaseProvider);
-
 }  // namespace xlings::xvm::detail_
 
 export namespace xlings::xvm {
@@ -205,14 +175,8 @@ struct SubosMetadataRepair {
     };
     std::vector<Entry> entries;
 
-    [[nodiscard]] bool empty() const { return entries.empty(); }
-    [[nodiscard]] std::size_t size() const {
-        std::size_t n = 0;
-        for (const auto& e : entries) {
-            n += e.deactivate.size() + e.dropInstalled.size();
-        }
-        return n;
-    }
+    [[nodiscard]] bool empty() const;
+    [[nodiscard]] std::size_t size() const;
 };
 
 // Pure: returns the plan, applies nothing. Mirrors inspect_subos_references
@@ -269,7 +233,7 @@ struct MetadataReset {
     };
     std::vector<Entry> entries;
 
-    [[nodiscard]] bool empty() const { return entries.empty(); }
+    [[nodiscard]] bool empty() const;
 };
 
 // Collect every entry carrying unreadable binding metadata.
@@ -300,7 +264,7 @@ struct DanglingEdgePruning {
     };
     std::vector<Edge> edges;
 
-    [[nodiscard]] bool empty() const { return edges.empty(); }
+    [[nodiscard]] bool empty() const;
 };
 
 // Collect every pairwise binding edge whose destination is not registered.

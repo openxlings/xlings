@@ -19,8 +19,6 @@ export enum class Level {
 
 extern Level gLevel_;
 extern std::string gContext_;
-extern std::ofstream gFile_;
-extern bool gColor_;
 // Terminal output is suppressed when platform::is_tui_mode() is true
 
 export void set_level(Level level);
@@ -38,21 +36,12 @@ export void set_context(std::string ctx);
 export void clear_context();
 
 export void enable_color(bool enabled);
-
-// Colors come from xlings.core.palette, so these prefixes follow the
-// terminal background like the rendered panels do and go quiet under
-// NO_COLOR / TERM=dumb / a pipe. They used to be dark-palette SGR literals
-// spelled out here, which is why a light terminal kept getting the
-// low-contrast text the palette exists to avoid.
-bool color_on_();
 bool color_on_err_();
 
 std::string colored_(palette::Rgb c, const char* text);
 
 // warn/error write to stderr, which can be a terminal when stdout is not.
 std::string colored_err_(palette::Rgb c, const char* text);
-
-std::string timestamp_();
 
 void write_to_file_(std::string_view prefix, std::string_view msg);
 

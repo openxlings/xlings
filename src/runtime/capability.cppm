@@ -25,9 +25,7 @@ export struct Capability {
     virtual auto spec() const -> CapabilitySpec = 0;
     virtual auto execute(Params params, EventStream& stream) -> Result = 0;
     // Cancellable variant — default delegates to 2-arg version; override for cancel support
-    virtual auto execute(Params params, EventStream& stream, CancellationToken* cancel) -> Result {
-        return execute(std::move(params), stream);
-    }
+    virtual auto execute(Params params, EventStream& stream, CancellationToken* cancel) -> Result;
 };
 
 export class Registry {
@@ -35,24 +33,11 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Capability>> capabilities_;
 
 public:
-    void register_capability(std::unique_ptr<Capability> cap) {
-        auto name = cap->spec().name;
-        capabilities_[std::move(name)] = std::move(cap);
-    }
+    void register_capability(std::unique_ptr<Capability> cap);
 
-    auto get(std::string_view name) -> Capability* {
-        auto it = capabilities_.find(std::string(name));
-        return it != capabilities_.end() ? it->second.get() : nullptr;
-    }
+    auto get(std::string_view name) -> Capability*;
 
-    auto list_all() -> std::vector<CapabilitySpec> {
-        std::vector<CapabilitySpec> specs;
-        specs.reserve(capabilities_.size());
-        for (auto& [_, cap] : capabilities_) {
-            specs.push_back(cap->spec());
-        }
-        return specs;
-    }
+    auto list_all() -> std::vector<CapabilitySpec>;
 };
 
 }  // namespace xlings::capability

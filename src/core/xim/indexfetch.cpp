@@ -82,7 +82,9 @@ BaseOverride resolve_base_() {
     return b;
 }
 
-std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls, const std::filesystem::path& dest, std::string_view wantSha, const BaseOverride* forced) {
+std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
+                        const std::filesystem::path& dest, std::string_view wantSha,
+                        const BaseOverride* forced = nullptr) {
     namespace fs = std::filesystem;
     auto b = forced ? *forced : resolve_base_();
     if (b.local) {
@@ -674,3 +676,14 @@ void reconcile_index_temps(const std::filesystem::path& dataDir) {
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xim {
+
+bool IndexRequirement::empty() const{ return min.empty() && max.empty(); }
+
+bool ArtifactSource::forge() const{ return !server.empty(); }
+
+} // namespace xlings::xim

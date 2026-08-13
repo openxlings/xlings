@@ -33,57 +33,16 @@ namespace platform_impl {
         FileLock() = default;
         FileLock(const FileLock&) = delete;
         FileLock& operator=(const FileLock&) = delete;
-        FileLock(FileLock&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
-        FileLock& operator=(FileLock&& other) noexcept {
-            if (this != &other) {
-                release();
-                fd_ = std::exchange(other.fd_, -1);
-            }
-            return *this;
-        }
-        ~FileLock() { release(); }
+        FileLock(FileLock&& other) noexcept;
+        FileLock& operator=(FileLock&& other) noexcept;
+        ~FileLock();
 
         bool acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error) {
-            release();
-            fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0600);
-            if (fd_ < 0) {
-                error = std::format("failed to open lock {}: {}",
-                                    path.string(), std::strerror(errno));
-                return false;
-            }
-            auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
-                if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                    error = std::format("failed to lock {}: {}",
-                                        path.string(), std::strerror(errno));
-                    release();
-                    return false;
-                }
-                if (cancelled && cancelled()) {
-                    error = "cancelled while waiting for cache lock";
-                    release();
-                    return false;
-                }
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    error = std::format("timed out waiting for cache lock {}",
-                                        path.string());
-                    release();
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds{50});
-            }
-            return true;
-        }
+                     std::string& error);
 
-        void release() {
-            if (fd_ < 0) return;
-            ::flock(fd_, LOCK_UN);
-            ::close(fd_);
-            fd_ = -1;
-        }
+        void release();
 
     private:
         int fd_ { -1 };
@@ -115,12 +74,6 @@ namespace platform_impl {
     // consumes the whole reply while ECHO is still disabled, so nothing leaks.
     export std::string read_terminal_query_reply(int fd,
                                                  std::chrono::milliseconds timeout);
-
-    // Overall deadline for the terminal background query. Default 500 ms,
-    // overridable via XLINGS_TERM_QUERY_TIMEOUT_MS (clamped to [50, 5000]).
-    // Responsive terminals hit the CPR fence in a few ms and return early;
-    // the deadline only bites on a tty that answers neither OSC-11 nor DSR.
-    static std::chrono::milliseconds term_query_timeout_();
 
     // Query the controlling terminal for its background color via the
     // OSC-11 sequence (xterm spec, supported by xterm / iTerm2 / Alacritty

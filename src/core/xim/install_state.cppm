@@ -51,17 +51,11 @@ struct InstallStateReport {
     // Filled for Incomplete only, and phrased for a user rather than a log.
     std::string reason;
 
-    [[nodiscard]] bool is_installed() const {
-        return state == InstallState::Installed;
-    }
-    [[nodiscard]] bool is_incomplete() const {
-        return state == InstallState::Incomplete;
-    }
+    [[nodiscard]] bool is_installed() const;
+    [[nodiscard]] bool is_incomplete() const;
     // What `install` must decide. An incomplete payload is the case the old
     // predicate got wrong: it is exactly when the hook MUST run again.
-    [[nodiscard]] bool should_run_install_hook() const {
-        return state != InstallState::Installed;
-    }
+    [[nodiscard]] bool should_run_install_hook() const;
 };
 
 // Every payload coordinate the version DB references.
@@ -76,29 +70,13 @@ class LedgerIndex {
 public:
     LedgerIndex() = default;
 
-    LedgerIndex(const xvm::VersionDB& db, const std::string& xlingsHome) {
-        for (const auto& [target, info] : db) {
-            for (const auto& [versionKey, data] : info.versions) {
-                if (data.path.empty()) continue;
-                const auto expanded = xvm::expand_path(data.path, xlingsHome);
-                if (auto coord = xvm::coordinate_from_payload_path(expanded)) {
-                    coords_.insert(std::move(*coord));
-                }
-            }
-        }
-    }
+    LedgerIndex(const xvm::VersionDB& db, const std::string& xlingsHome);
 
     [[nodiscard]] bool references(std::string_view namespaceName,
                                   std::string_view name,
-                                  std::string_view version) const {
-        return coords_.contains(xvm::InstallCoordinate{
-            .ns = std::string(namespaceName),
-            .package = std::string(name),
-            .version = std::string(version),
-        });
-    }
+                                  std::string_view version) const;
 
-    [[nodiscard]] std::size_t size() const { return coords_.size(); }
+    [[nodiscard]] std::size_t size() const;
 
 private:
     std::set<xvm::InstallCoordinate> coords_;

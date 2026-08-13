@@ -46,8 +46,6 @@ import xlings.cli.spec;
 
 namespace xlings::xself {
 
-static int cmd_help(EventStream& stream);
-
 export int run(int argc, char* argv[], EventStream& stream);
 
 } // namespace xlings::xself

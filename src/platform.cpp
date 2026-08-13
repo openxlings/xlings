@@ -15,10 +15,6 @@ module;
 module xlings.platform;
 
 import std;
-import :linux;
-import :macos;
-import :windows;
-import :unix;
 
 namespace xlings {
 

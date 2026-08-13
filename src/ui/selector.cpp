@@ -9,8 +9,6 @@ module xlings.ui;
 
 import std;
 import xlings.core.palette;
-import :theme;
-import :layout;
 
 namespace xlings::ui {
 

@@ -60,19 +60,9 @@ export struct SubosCandidateView {
     std::vector<SubosInfo> candidates;
 };
 
-nlohmann::json read_config_json_(const fs::path& path);
-
-void write_config_json_(const fs::path& path, const nlohmann::json& json);
-
-SubosInfo candidate_info_(const std::string& name, bool includeToolCount);
-
 export SubosCandidateView candidate_view(bool includeToolCount = true);
 
 export std::vector<SubosInfo> list_all();
-
-std::string lowercase_name_(std::string_view name);
-
-std::size_t edit_distance_(std::string_view lhs, std::string_view rhs);
 
 struct CandidateResolution_ {
     std::string selected;
@@ -81,67 +71,10 @@ struct CandidateResolution_ {
     bool autoSelected { false };
 };
 
-std::vector<SubosInfo> suggestions_(
-        std::string_view query,
-        std::span<const SubosInfo> candidates);
-
-CandidateResolution_ resolve_candidate_(std::string_view query);
-
-void emit_candidates_(EventStream& stream,
-                      const CandidateResolution_& resolution,
-                      std::string_view query,
-                      std::string_view hint = {});
-
 struct UseNameResolution_ {
     std::string selected;
     int exitCode { 0 };
 };
-
-UseNameResolution_ resolve_use_name_(std::string_view query,
-                                    EventStream& stream);
-
-void update_current_symlink_(EventStream& stream,
-                              const fs::path& homeDir,
-                              const fs::path& targetDir);
-
-// ─────────────────────────────────────────────────────────────────────
-// Sandbox subos helpers (0.4.23 V4 — see .agents/docs/sandbox-v4-design.md)
-//
-// V4 model: sandbox is NOT a creation property of subos. It's a `use`
-// modifier — `xlings subos use <name> --sandbox` enters the same subos
-// via proot fs-isolation, with sandbox-private $HOME / /tmp / /etc and
-// host-shared ~/.xlings / /usr / /lib*. Real user identity (no fake
-// root). Shell is whatever $SHELL is. Prompt switches from
-// `[xsubos:<name>]` to `<xsubos:<name>>` to signal sandbox mode.
-//
-// Helpers here:
-//   - sandbox::init_sandbox_dirs_ — lazy-init the per-subos
-//     sandbox dirs (<subos>/{home/<user>, tmp, etc/...}) at first
-//     `subos use --sandbox`. Idempotent.
-//   - sandbox::locate_proot_ — search for the proot binary
-//     (defined later, alongside build_proot_argv_).
-//   - sandbox::build_proot_argv_ — assemble the proot CLI for
-//     entering the sandbox (defined later).
-//
-// Note: V1.1-V1.3 (`--sandbox-shell <xpkg>`, `sandbox-shell` /
-// `sandbox-shell-xpkg` config fields, eager shell install at
-// create-time) was removed in V4. Old sandboxes still in user homes
-// retain those fields; V4 silently ignores them, and `subos use
-// --sandbox` works on them because init_sandbox_dirs_ is idempotent.
-// ─────────────────────────────────────────────────────────────────────
-
-
-// Give a subos directory a `subos_info` block, or leave the one it has.
-//
-// Idempotent, and called from every path that produces a subos directory
-// (create, new_from, and the migration of a subos made before this block
-// existed). A subos without it violates invariant I4 and cannot be described,
-// checked or entered with its environment.
-//
-// The block is added even when `.xlings.json` already exists, which is the
-// difference from the surrounding code: the file predates the block, so
-// "the file is there" does not mean "the subos describes itself".
-bool ensure_subos_info_(const fs::path& dir, std::string_view runtime);
 
 // Create a subos. V6: storage mode is a creation-time property
 // (`--storage image|tmpfs|shared`). Non-shared modes force sandbox
@@ -187,8 +120,6 @@ export int create(const std::string& name, const fs::path& customDir,
 // Refs: .agents/docs/subos-as-xpkg-design-2026-05-16.md (M2, E1-E5).
 namespace new_from_detail_ {
 
-bool is_pkg_spec_(const std::string& spec);
-
 // Parse `[<ns>:]<name>[@<ver>]` → {ns, name, ver}. Empty ns if absent;
 // empty ver if absent ("latest" semantics handled downstream).
 struct PkgRef {
@@ -196,18 +127,6 @@ struct PkgRef {
     std::string name;
     std::string ver;
 };
-
-PkgRef parse_pkg_spec_(const std::string& spec);
-
-// Recursive directory copy with reflink/clonefile preferred where the
-// filesystem supports COW. Falls back to full byte-copy. Excludes the
-// caller's xlings binary shims (those are minted fresh in the target).
-int copy_tree_(const fs::path& src, const fs::path& dst,
-               EventStream& stream);
-
-// Locate xpkgs/<ns>-x-<name>/<ver>/ for a parsed pkg ref. Returns empty
-// path if no matching install exists.
-fs::path locate_base_pkg_(const PkgRef& ref);
 
 } // namespace new_from_detail_
 
@@ -509,55 +428,7 @@ inline void apply_subos_env_(const std::string& name) {
     }
 }
 
-} // namespace use_detail_
-
-// Internal — not exported. `xlings subos use --global <name>` and
-// the back-compat single-arg `use()` both route here.
-int use_global(const std::string& name, EventStream& stream);
-
-// Internal — not exported. Powers the hidden `--shell <kind>` flag,
-// kept available for tests and power users that want eval-able output
-// without a sub-shell layer. The default user-facing path is
-// use_spawn_shell; --shell is intentionally not in the help text.
-// Shell-level entry never activates storage isolation (V4 orthogonality
-// — see use_spawn_shell). Emit a single hint to stderr if the subos
-// was created with image/tmpfs storage so the user understands the
-// attribute is dormant in this entry. Writes to stderr (not stdout)
-// so the --shell <kind> path stays eval-safe.
-// `--sandbox` without `--gpu` on a machine that has one, for a subos that does
-// graphics: say so, once, before entering.
-//
-// bwrap's `--dev` builds a fresh /dev from a hard-coded whitelist that does not
-// include /dev/nvidia*, /dev/dri or /dev/dxg, so a sandbox without `--gpu` is a
-// software-rendering environment by construction. That default is CORRECT --
-// device passthrough should be a decision someone takes, not something a tool
-// does quietly -- and `--gpu` genuinely restores it: measured, GLX and Vulkan
-// come back byte-identical to the unsandboxed subos.
-//
-// So the gap is not capability, it is silence. Without the flag the user gets
-// "runs, draws a window, exits 0", indistinguishable from the GPU case except
-// in frame rate. That is this stack's whole failure mode: succeeding at the
-// wrong thing without saying so.
-//
-// THREE conditions, and the narrowness is the point. `warn_storage_dormant_on_
-// shell_` a few lines below is a hint that fired on every entry of its kind,
-// became noise, and is now commented out -- a hint that cannot be acted on is
-// worse than none. This one can only fire where acting on it changes the
-// outcome:
-//
-//   * the subos has a GL dispatch -- a subos that does no graphics is not
-//     missing anything (read, not probed: same state file `subos info` reads)
-//   * the host actually has GPU device nodes -- on a machine with no GPU,
-//     `--gpu` would expose nothing and the advice would be false
-//   * `--gpu` was not passed -- the user who asked does not need telling
-void warn_sandbox_without_gpu_(const std::string& name, bool gpu,
-                               EventStream& stream);
-
-void warn_storage_dormant_on_shell_(const std::string& name);
-
-int use_emit_shell(const std::string& name,
-                          std::string_view shell_kind,
-                          EventStream& stream);
+}
 
 
 
@@ -597,24 +468,6 @@ export int use(const std::string& name, EventStream& stream);
 export int remove(const std::string& name, EventStream& stream);
 
 export std::optional<SubosInfo> info(const std::string& name);
-
-int run_list_(EventStream& stream);
-
-// The graphics section of `xlings subos info`.
-//
-// This is the ONLY channel the wiring verdict has. It was designed as the
-// second one: the graphics recipe logs a warning for every vendor it finds
-// broken, and that seemed sufficient. Measured on a real install — the config
-// hook's log does not surface on the success path at all, not the new
-// warnings and not the stack's own long-standing "GL renders on the GPU"
-// banner. A user whose NVIDIA vendor cannot load is told nothing, anywhere,
-// unless they run this command.
-//
-// Empty when the subos has no GL dispatch, so `subos info` is unchanged for
-// every subos that does no graphics — which is most of them.
-nlohmann::json graphics_fields_(const fs::path& subosDir);
-
-int run_info_(const std::string& name, EventStream& stream);
 
 export int run(int argc, char* argv[], EventStream& stream);
 

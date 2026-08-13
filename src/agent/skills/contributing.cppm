@@ -10,11 +10,9 @@ namespace xlings::agent::skills {
 
 export class ContributingSkill : public Skill {
 public:
-    auto name() const -> std::string_view override { return "contributing"; }
-    auto description() const -> std::string_view override {
-        return "REQUIRED before any code change. Development workflow, PR rules, release process.";
-    }
-    auto content() const -> std::string_view override { return kContent; }
+    auto name() const -> std::string_view override;
+    auto description() const -> std::string_view override;
+    auto content() const -> std::string_view override;
 
 private:
     static constexpr std::string_view kContent = R"SKILL([SYSTEM INSTRUCTION — xlings development workflow for AI agents]

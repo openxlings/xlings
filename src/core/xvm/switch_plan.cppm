@@ -23,15 +23,6 @@ import xlings.core.xvm.errors;
 // nothing inside it was testable before.
 namespace xlings::xvm::detail_ {
 
-// Which package a (target, version) belongs to, and at which version of it.
-//
-// Empty when the entry carries no group metadata -- entries written before
-// providers were recorded. Callers must treat that as "unknown", not as "a
-// different package".
-std::pair<std::string, std::string> provider_of_(const VersionDB& db,
-                                                 const std::string& target,
-                                                 const std::string& version);
-
 }  // namespace xlings::xvm::detail_
 
 export namespace xlings::xvm {

@@ -92,3 +92,46 @@ bool unverifiable_stamped_payload(const LedgerIndex& ledger,
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xim {
+
+[[nodiscard]] bool InstallStateReport::is_installed() const{
+        return state == InstallState::Installed;
+    }
+
+[[nodiscard]] bool InstallStateReport::is_incomplete() const{
+        return state == InstallState::Incomplete;
+    }
+
+[[nodiscard]] bool InstallStateReport::should_run_install_hook() const{
+        return state != InstallState::Installed;
+    }
+
+LedgerIndex::LedgerIndex(const xvm::VersionDB& db, const std::string& xlingsHome){
+        for (const auto& [target, info] : db) {
+            for (const auto& [versionKey, data] : info.versions) {
+                if (data.path.empty()) continue;
+                const auto expanded = xvm::expand_path(data.path, xlingsHome);
+                if (auto coord = xvm::coordinate_from_payload_path(expanded)) {
+                    coords_.insert(std::move(*coord));
+                }
+            }
+        }
+    }
+
+[[nodiscard]] bool LedgerIndex::references(std::string_view namespaceName,
+                                  std::string_view name,
+                                  std::string_view version) const{
+        return coords_.contains(xvm::InstallCoordinate{
+            .ns = std::string(namespaceName),
+            .package = std::string(name),
+            .version = std::string(version),
+        });
+    }
+
+[[nodiscard]] std::size_t LedgerIndex::size() const{ return coords_.size(); }
+
+} // namespace xlings::xim

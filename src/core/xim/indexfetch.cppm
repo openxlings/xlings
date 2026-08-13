@@ -43,7 +43,7 @@ export namespace xlings::xim {
 struct IndexRequirement {
     std::string min;   // inclusive
     std::string max;   // exclusive
-    bool empty() const { return min.empty() && max.empty(); }
+    bool empty() const;
 };
 
 // One addressable index snapshot: an artifact plus what it asks of its client.
@@ -129,7 +129,7 @@ struct ArtifactSource {
     std::string repoName;  // last path segment of base — pointer file prefix
     std::string key;       // manifest lookup key (config repo name)
     std::optional<std::filesystem::path> localDir;  // set when base is local
-    bool forge() const { return !server.empty(); }
+    bool forge() const;
 };
 
 // Build an ArtifactSource for a repo, or nullopt when it declares none.
@@ -193,23 +193,6 @@ namespace xlings::xim {
 
 namespace detail_ {
 
-// Repo + tag are fixed discovery anchors; overridable for testing/mirrors.
-std::string index_repo_name_();
-std::string index_tag_();
-
-std::string lower_hex_(std::string s);
-
-// Download the first working candidate URL into destFile, trying each candidate
-// explicitly and continuing past ANY failure — including HTTP 404. This differs
-// from tinyhttps::download_file's internal candidate loop, which treats 404 as a
-// definitive not-found and stops (correct for a single authoritative asset, but
-// wrong for index mirrors: one server 404ing must fall through to the next, e.g.
-// gitcode 404 -> github). When wantSha256 is set, a candidate is accepted only
-// if its bytes match. Returns empty string on success, else the last error.
-std::string download_candidates_(std::vector<std::string> urls,
-                                 const std::filesystem::path& destFile,
-                                 std::string_view wantSha256);
-
 // Index source base override (env now; config key folded in by the caller via
 // Config). When set to a local dir / file:// it's copied; a remote base means
 // "<base>/<filename>". Empty => use the passed remoteUrls (xlings-res default).
@@ -217,21 +200,6 @@ struct BaseOverride {
     std::string base;                      // remote base, or empty
     std::optional<std::filesystem::path> local;  // local dir, if base is local
 };
-BaseOverride resolve_base_();
-
-// Obtain `filename` into `dest`: local-dir copy, or remote (base override, else
-// the given remoteUrls). Verifies sha256 when wantSha is non-empty.
-// #377: `forced` replaces the global env/config base override entirely — a
-// custom source must never be redirected by XLINGS_INDEX_BASE_URL; a forge
-// custom source passes an EMPTY override ("use the URL list as-is").
-std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
-                        const std::filesystem::path& dest, std::string_view wantSha,
-                        const BaseOverride* forced = nullptr);
-
-// #377: forced base for a custom source: local-dir copy, flat-remote base, or
-// (for forge bases) an EMPTY override meaning "use the passed URL list, but do
-// NOT apply the global index-base override".
-BaseOverride base_override_for_(const ArtifactSource& src);
 
 } // namespace detail_
 
@@ -245,8 +213,6 @@ bool satisfies_requirement(std::string_view selfVersion, const IndexRequirement&
 std::vector<IndexSnapshot> snapshots_of(const IndexManifest& manifest);
 
 namespace detail_ {
-
-std::string describe_requirement_(const IndexSnapshot& s);
 
 }  // namespace detail_
 
@@ -277,12 +243,7 @@ inline std::map<std::string, std::map<std::string, std::string>>& client_latest_
     static std::map<std::string, std::map<std::string, std::string>> value;
     return value;
 }
-}  // namespace detail_
-
-// Newest published version of `consumer` as the pointer advertises it, or ""
-// when the pointer does not say. Requires load_index_pointers() to have run
-// for the same source (fetch_index_artifact always does).
-std::string client_latest_for(std::string_view consumer, const ArtifactSource* custom);
+}
 
 // Cached fetch of the COMBINED pointer file (xim-index-pointers.json): ONE raw
 // fetch per process covering ALL indexes (main + subs). One fetch (vs one per

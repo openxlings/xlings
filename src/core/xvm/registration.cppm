@@ -146,61 +146,6 @@ struct RegistrationGroup {
     std::vector<HeaderAsset> headers;
 };
 
-RegistrationError registration_error_(
-    RegistrationErrorKind kind,
-    std::string path,
-    std::string target,
-    std::string version,
-    std::string message);
-
-bool same_registration_group_(
-    const BindingGroupRef& lhs,
-    const BindingGroupRef& rhs);
-
-RegistrationGroupIdentity registration_group_identity_(
-    const BindingGroupRef& group);
-
-// Moved to xvm.types so the switch planner reads them identically -- see the
-// comment there. Kept as thin aliases so this file's call sites stay legible.
-std::string effective_kind_(
-    const VInfo& info,
-    const VData& data);
-
-std::string effective_source_name_(
-    const std::string& target,
-    const VInfo& info,
-    const VData& data,
-    std::string_view kind);
-
-std::string effective_destination_name_(
-    const std::string& target,
-    const VData& data,
-    std::string_view kind,
-    std::string_view sourceName);
-
-std::optional<std::string> legacy_payload_mismatch_(
-    const RegistrationNode& node,
-    const VInfo& info,
-    const VData& data);
-
-std::string registration_path_token_(std::string_view token);
-
-// Path comparison that survives a record written on another platform.
-//
-// Not a filesystem question: `db` holds whatever string the client that wrote
-// it produced, and a home carried over from Windows holds
-// `C:\…` / `/home/you/.xlings\data\xpkgs\…` on a machine where those separators
-// mean nothing. Normalising to '/' is what lets a Linux client recognise the
-// record as its own.
-std::string normalized_payload_path_(std::string_view path);
-
-// Is `candidate` the same payload as `root`, or something inside it?
-bool payload_path_covers_(std::string_view root, std::string_view candidate);
-
-void erase_exact_registration_edges_(
-    VersionDB& db,
-    const std::set<RegistrationExactKey>& exactNodes);
-
 }  // namespace xlings::xvm::detail_
 
 namespace xlings::xvm {

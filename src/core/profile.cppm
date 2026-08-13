@@ -26,19 +26,6 @@ export struct Generation {
     std::map<std::string, std::string>     packages;
 };
 
-std::string utc_now_iso_();
-
-int next_gen_number_(const fs::path& gensDir);
-
-// NOTE: `.workspace.xvm.yaml` used to be written here and by rollback().
-// Nothing in the tree ever read it -- which is what made `profile rollback`
-// a no-op with respect to version selection: it recorded an intent in a file
-// no reader consulted, and the live workspace kept whatever it had. Rollback
-// now returns the selection so the caller can apply it through the real
-// switch path, and the file is gone rather than left as a decoy.
-
-std::uintmax_t dir_size_(const fs::path& dir);
-
 export Generation load_current(const fs::path& envDir);
 
 export int commit(const fs::path& envDir,
@@ -102,10 +89,6 @@ export std::vector<SubosSnapshot> load_subos_snapshots(const fs::path& xlingsHom
 // caller is mid-transaction over several files.
 export bool save_subos_workspace(const fs::path& subosRoot,
                                  const xvm::SubosWorkspace& workspace);
-
-// Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
-// by mapping workspace target names to xpkg directory paths via the versions DB.
-std::set<std::string> collect_subos_references_(const fs::path& xlingsHome);
 
 // Find which subos environments reference a given package target name.
 export std::vector<std::string> find_subos_referencing(

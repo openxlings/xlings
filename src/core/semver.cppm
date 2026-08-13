@@ -51,8 +51,8 @@ struct Segment {
     unsigned long long num = 0;
     std::string text;         // alpha segments only
 
-    static Segment number(unsigned long long v) { return {true, v, {}}; }
-    static Segment alpha(std::string t) { return {false, 0, std::move(t)}; }
+    static Segment number(unsigned long long v);
+    static Segment alpha(std::string t);
 };
 
 struct Version {

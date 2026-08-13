@@ -115,13 +115,8 @@ struct InstallPlan {
     std::vector<PlanNode> nodes;
     std::vector<std::string> errors;
 
-    bool has_errors() const { return !errors.empty(); }
-    std::size_t pending_count() const {
-        std::size_t n = 0;
-        for (auto& nd : nodes)
-            if (!nd.alreadyInstalled) ++n;
-        return n;
-    }
+    bool has_errors() const;
+    std::size_t pending_count() const;
 
     InstallPlan() = default;
 #if defined(_MSC_VER)

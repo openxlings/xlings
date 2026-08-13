@@ -43,14 +43,12 @@ struct BindingError {
 
 class BindingSelectionResolver {
 public:
-    explicit BindingSelectionResolver(const VersionDB& db) : db_(db) {}
+    explicit BindingSelectionResolver(const VersionDB& db);
 
     std::expected<BindingSelection, BindingError>
     resolve(const std::string& target, const std::string& version);
 
-    [[nodiscard]] std::size_t legacy_incoming_index_builds() const {
-        return legacyIncomingIndexBuilds_;
-    }
+    [[nodiscard]] std::size_t legacy_incoming_index_builds() const;
 
 private:
     using TargetVersion = std::pair<std::string, std::string>;
@@ -105,7 +103,7 @@ struct LibraryPlacement {
     std::string source;
     std::string name;
 
-    [[nodiscard]] bool empty() const { return source.empty(); }
+    [[nodiscard]] bool empty() const;
 };
 
 // Resolve an entry to its library placement.
@@ -145,7 +143,7 @@ struct FilePlacement {
     std::string source;
     std::string destination;
 
-    [[nodiscard]] bool empty() const { return source.empty(); }
+    [[nodiscard]] bool empty() const;
 };
 
 // Whether a package may write this destination.
@@ -169,38 +167,12 @@ BindingError binding_error_(BindingErrorKind kind,
                             const std::string& version,
                             std::string message);
 
-bool same_group_identity_(const BindingGroupRef& lhs,
-                          const BindingGroupRef& rhs);
-
-bool same_group_(const BindingGroupRef& lhs, const BindingGroupRef& rhs);
-
-bool supported_kind_(std::string_view kind);
-
-std::optional<std::string_view>
-canonical_manifest_path_(const VData& data);
-
 bool has_canonical_manifest_(const VData& data);
-
-BindingError metadata_integrity_error_(
-    const std::string& target,
-    const std::string& version,
-    std::string_view code,
-    std::string_view path);
 
 std::optional<BindingError>
 binding_integrity_error_(const VData& data,
                          const std::string& target,
                          const std::string& version);
-
-std::string json_pointer_token_(std::string_view token);
-
-std::optional<BindingError>
-root_content_integrity_error_(const VData& root,
-                              const std::string& target,
-                              const std::string& version);
-
-std::optional<std::string_view>
-invalid_group_identity_path_(const BindingGroupRef& group);
 
 std::optional<BindingError>
 group_identity_integrity_error_(const BindingGroupRef& group,

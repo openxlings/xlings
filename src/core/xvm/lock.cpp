@@ -64,3 +64,47 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xvm {
+
+StateLock::StateLock(StateLock&& other) noexcept: lock_(std::move(other.lock_)),
+          held_(std::exchange(other.held_, false)),
+          bypassed_(std::exchange(other.bypassed_, false)),
+          inherited_(std::exchange(other.inherited_, false)),
+          ownsMarker_(std::exchange(other.ownsMarker_, false)),
+          previousMarker_(std::move(other.previousMarker_)) {}
+
+StateLock& StateLock::operator=(StateLock&& other) noexcept{
+        if (this != &other) {
+            clear_marker_();
+            lock_ = std::move(other.lock_);
+            held_ = std::exchange(other.held_, false);
+            bypassed_ = std::exchange(other.bypassed_, false);
+            inherited_ = std::exchange(other.inherited_, false);
+            ownsMarker_ = std::exchange(other.ownsMarker_, false);
+            previousMarker_ = std::move(other.previousMarker_);
+        }
+        return *this;
+    }
+
+StateLock::~StateLock(){ clear_marker_(); }
+
+[[nodiscard]] bool StateLock::held() const{ return held_; }
+
+[[nodiscard]] bool StateLock::bypassed() const{ return bypassed_; }
+
+[[nodiscard]] bool StateLock::inherited() const{ return inherited_; }
+
+void StateLock::clear_marker_(){
+        if (!ownsMarker_) return;
+        // Restore whatever was there rather than clearing outright: locking
+        // a second home while holding the first must not erase the first
+        // one's marker, or a later child would try to re-lock it and hang.
+        platform::set_env_variable(std::string(reentry_env()), previousMarker_);
+        ownsMarker_ = false;
+    }
+
+} // namespace xlings::xvm

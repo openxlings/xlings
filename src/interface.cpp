@@ -197,3 +197,107 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::interface {
+
+InterfaceSession::InterfaceSession(EventStream& stream, CancellationToken& token): stream_(stream), token_(token),
+          last_emit_(std::chrono::steady_clock::now()) {
+        heartbeat_thread_ = std::jthread([this](std::stop_token st) { heartbeat_loop_(st); });
+        stdin_thread_     = std::jthread([this](std::stop_token st) { stdin_loop_(st); });
+    }
+
+InterfaceSession::~InterfaceSession(){
+        if (heartbeat_thread_.joinable()) heartbeat_thread_.request_stop();
+        if (stdin_thread_.joinable())     stdin_thread_.request_stop();
+    }
+
+void InterfaceSession::emit_event(const Event& e){
+        // #374: track whether any structured error reached the wire so run()
+        // can guarantee "non-zero exit ⇒ at least one error event".
+        if (std::get_if<ErrorEvent>(&e)) saw_error_.store(true, std::memory_order_relaxed);
+        auto line = event_to_ndjson_line_(e);
+        if (!line.empty()) emit_raw_line_(line);
+    }
+
+bool InterfaceSession::saw_error() const{ return saw_error_.load(std::memory_order_relaxed); }
+
+void InterfaceSession::emit_result(int exitCode, std::string_view raw_content){
+        nlohmann::json line;
+        line["kind"]     = "result";
+        line["exitCode"] = exitCode;
+        auto parsed = nlohmann::json::parse(raw_content, nullptr, false);
+        if (!parsed.is_discarded() && parsed.is_object()) {
+            nlohmann::json data = nlohmann::json::object();
+            for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+                if (it.key() != "exitCode") data[it.key()] = it.value();
+            }
+            if (!data.empty()) line["data"] = std::move(data);
+        }
+        emit_raw_line_(line.dump());
+    }
+
+void InterfaceSession::emit_raw_line_(std::string_view s){
+        std::lock_guard lock(io_mtx_);
+        std::cout << s << "\n" << std::flush;
+        last_emit_.store(std::chrono::steady_clock::now(),
+                         std::memory_order_release);
+    }
+
+void InterfaceSession::heartbeat_loop_(std::stop_token st){
+        using namespace std::chrono;
+        while (!st.stop_requested()) {
+            std::this_thread::sleep_for(milliseconds(500));
+            if (st.stop_requested()) break;
+            auto now = steady_clock::now();
+            auto last = last_emit_.load(std::memory_order_acquire);
+            if (now - last >= seconds(5)) {
+                auto t = system_clock::to_time_t(system_clock::now());
+                std::string ts(32, '\0');
+                auto n = std::strftime(ts.data(), ts.size(), "%FT%TZ", std::gmtime(&t));
+                ts.resize(n);
+                nlohmann::json line = {{"kind", "heartbeat"}, {"ts", ts}};
+                emit_raw_line_(line.dump());
+            }
+        }
+    }
+
+void InterfaceSession::stdin_loop_(std::stop_token st){
+#ifdef __unix__
+        while (!st.stop_requested()) {
+            ::pollfd pfd{0, POLLIN, 0};
+            int rc = ::poll(&pfd, 1, 100);
+            if (rc <= 0) continue;
+            if (pfd.revents & (POLLHUP | POLLERR)) return;
+            if (!(pfd.revents & POLLIN)) continue;
+            std::string line;
+            if (!std::getline(std::cin, line)) return;
+            handle_stdin_line_(line);
+        }
+#else
+        std::string line;
+        while (!st.stop_requested() && std::getline(std::cin, line)) {
+            handle_stdin_line_(line);
+        }
+#endif
+    }
+
+void InterfaceSession::handle_stdin_line_(std::string_view line){
+        if (line.empty()) return;
+        auto j = nlohmann::json::parse(line, nullptr, false);
+        if (j.is_discarded() || !j.is_object() || !j.contains("action")) return;
+        auto action = j["action"].is_string() ? j["action"].get<std::string>() : "";
+        if (action == "cancel")        token_.cancel();
+        else if (action == "pause")    token_.pause();
+        else if (action == "resume")   token_.resume();
+        else if (action == "prompt-reply") {
+            stream_.respond(j.value("id", ""), j.value("value", ""));
+        } else {
+            emit_event(Event{LogEvent{LogLevel::warn,
+                "interface: unknown stdin action: " + action}});
+        }
+    }
+
+} // namespace xlings::interface

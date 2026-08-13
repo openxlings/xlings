@@ -58,8 +58,6 @@ namespace xlings::subos::sandbox {
 
 namespace fs = std::filesystem;
 
-nlohmann::json read_config_json_(const fs::path& path);
-
 // ── Storage mode (V6) ──────────────────────────────────────────────
 // Storage isolation mode for sandbox data. Set at subos creation time
 // via `--storage <mode>`, persisted in subos/.xlings.json["storage"].
@@ -94,13 +92,6 @@ export StorageMode read_storage_mode_(const fs::path& subos_dir);
 // platform-portable substitutes.
 #if defined(__linux__) || defined(__APPLE__)
 
-// We write per-user passwd/group at sandbox init time so getpwuid
-// (real_uid) inside the sandbox returns the real user's home
-// (= /home/<user>) and shell — most CLI tools depend on this. Root
-// is also included so anything that does getpwuid(0) (scripts that
-// assume "root must exist") doesn't bail.
-std::string make_etc_passwd_(const std::string& user, uid_t uid, gid_t gid);
-std::string make_etc_group_(const std::string& user, gid_t gid);
 inline constexpr std::string_view kEtcHosts =
     "127.0.0.1 localhost\n::1 localhost\n";
 inline constexpr std::string_view kEtcNsswitch =
@@ -170,14 +161,6 @@ inline void write_sandbox_rc_(const fs::path& home_dir) {
     try_write(fish_dir / "config.fish", kSandboxFishConfig);
 }
 
-// Initialize the sandbox-specific dirs / templates inside an existing
-// subos. Idempotent: only writes files that don't yet exist, so a
-// returning sandbox session won't clobber user customizations and a
-// repeated `subos use --sandbox` is cheap.
-void init_sandbox_dirs_(const fs::path& subos_dir,
-                        const std::string& user,
-                        uid_t uid, gid_t gid);
-
 #endif // __linux__ / __APPLE__
 
 // ── Image storage helpers (V6) ────────────────────────────────────
@@ -188,42 +171,8 @@ export int init_image_(const fs::path& img, const std::string& size);
 // Check if a path is already a mountpoint.
 export bool is_mounted_(const fs::path& path);
 
-// Mount an image file at mountpoint. Supports multi-terminal reuse.
-// After mount, chown the mountpoint root to the calling user so
-// subsequent directory/file creation doesn't need sudo.
-int mount_image_(const fs::path& img, const fs::path& mountpoint,
-                 const std::string& user = {});
-
 // Unmount an image file.
 export int unmount_image_(const fs::path& mountpoint);
-
-
-// ─────────────────────────────────────────────────────────────────────
-// Sandbox subos entry — proot-based fs-isolated session.
-//
-// Triggered when `subos use <name>` reads a subos config that has the
-// `sandbox-shell` field. Only available on Linux (proot uses ptrace +
-// Linux syscall conventions). On non-Linux platforms the sandbox config
-// is rejected at create time, so this code path is unreachable there;
-// guard with #if defined(__linux__) and stub elsewhere.
-//
-// See docs/plans/2026-05-09-subos-sandbox-design.md for full rationale.
-// ─────────────────────────────────────────────────────────────────────
-
-
-// Probe order for the proot binary:
-//   1. <home>/data/xpkgs/xim-x-proot/<ver>/bin/proot   the PAYLOAD
-//   2. <home>/runtimedir/proot                         auto-fetch cache
-//   3. /usr/bin/proot, /usr/local/bin/proot            the HOST (reported)
-//
-// PATH is deliberately absent -- see (3) below. The same rule, in the same
-// shape, as libxpkg's elfpatch tool lookup: payload, then a named fallback
-// that says so. Both implement R6 (internal consumers bind the payload, not
-// the view), .agents/docs/2026-08-06-subos-architecture-proposal.md §1.5.
-//
-// Returns the path to a usable proot, or unexpected with a hint string.
-std::expected<fs::path, std::string>
-locate_proot_(const fs::path& home_dir);
 
 // ── Unified bind list (shared by proot + bwrap) ──────────────────────
 //
@@ -245,69 +194,6 @@ struct SandboxBind {
     bool readonly;   // true = host RO; false = sandbox RW override
 };
 
-std::vector<SandboxBind>
-sandbox_binds_(const fs::path& subos_dir,
-               const fs::path& host_xlings_home,
-               const std::string& user,
-               StorageMode storage = StorageMode::Shared,
-               const fs::path& mountpoint = {});
-
-// Build proot argv from unified bind list. When `cmd` is non-empty, ends
-// in `<shell> -c <cmd>` for non-interactive single-command exec (M3);
-// otherwise just `<shell>` for the standard interactive entry.
-std::vector<std::string>
-build_proot_argv_(const fs::path& proot_bin,
-                  const fs::path& subos_dir,
-                  const fs::path& host_xlings_home,
-                  const std::string& user,
-                  const std::string& shell_path,
-                  const std::string& cmd = "");
-
-// ── bwrap backend (V5) ────────────────────────────────────────────────
-
-// Locate bwrap binary — only searches xim:bwrap pool.
-// System-installed bwrap (/usr/bin/bwrap) is intentionally skipped:
-// distro packages lack setuid, and AppArmor/kernel restrictions on
-// unprivileged user namespaces make system binaries unreliable on
-// Ubuntu 24+, Fedora, etc. xim:bwrap is built with
-// `-Dsupport_setuid=true` (xlings-res/bwrap mirror) and its install
-// hook sets the binary setuid root (chmod 4755) — that combination is
-// what makes the xim-managed binary work across distros where unpriv
-// userns is restricted.
-std::expected<fs::path, std::string>
-locate_bwrap_(const fs::path& home_dir);
-
-// Probe whether a bwrap binary can actually create a sandbox.
-// Returns {ok, output}. `output` captures stdout+stderr (the platform
-// helper appends `2>&1` internally) so callers can classify the
-// failure cause — see classify_bwrap_probe_error_ for the known modes.
-std::pair<bool, std::string>
-probe_bwrap_(const fs::path& bwrap_bin);
-
-// Translate a failed bwrap probe's captured output into an actionable
-// hint. Three known modes; anything else falls through to "show the
-// raw stderr" so users always see the truth instead of a stale
-// "xlings install bwrap" suggestion that won't help.
-std::string classify_bwrap_probe_error_(const std::string& output,
-                                         const fs::path& bin);
-
-// Build bwrap argv from unified bind list. Uses targeted --ro-bind
-// instead of `--ro-bind / /` to match proot's security profile
-// (same host paths exposed, same sandbox-private paths).
-// When `cmd` is non-empty, ends with `<shell> -c <cmd>` for non-
-// interactive single-command exec (M3); otherwise interactive shell.
-std::vector<std::string>
-build_bwrap_argv_(const fs::path& bwrap_bin,
-                  const fs::path& subos_dir,
-                  const fs::path& host_xlings_home,
-                  const std::string& user,
-                  const std::string& shell_path,
-                  bool interactive_shell,
-                  StorageMode storage = StorageMode::Shared,
-                  const fs::path& mountpoint = {},
-                  bool gpu = false,
-                  const std::string& cmd = "");
-
 // ── Backend detection + auto-install ─────────────────────────────────
 
 enum class SandboxBackend { Bwrap, Proot };
@@ -316,38 +202,6 @@ struct BackendInfo {
     SandboxBackend type;
     fs::path binary;
 };
-
-// Show bwrap hint — only on first sandbox use of a subos (detected by
-// whether <subos>/home/ exists; init_sandbox_dirs_ creates it, so if
-// it's missing, this is the first --sandbox entry for this subos).
-void maybe_show_bwrap_hint_(const fs::path& subos_dir);
-
-std::optional<BackendInfo>
-detect_backend_(const fs::path& home_dir,
-                const fs::path& subos_dir = {});
-
-// Should we even try to fetch a sandbox backend for this host? Answered from
-// the on-disk index, with no network access.
-//
-// The evidence rule here is deliberately stricter than the one `xlings
-// install` uses, and the difference is who asked. A package-level `archs`
-// union is weak evidence -- it went unenforced for all of spec V1 and is
-// routinely under-declared -- so it must never veto an install the USER named:
-// being wrong there means refusing a package that works, and the user has no
-// way around it.
-//
-// This install is one nobody asked for. `--sandbox` triggers it implicitly,
-// and being wrong costs only a skipped auto-install that
-// `xlings install bwrap` still overrides. Being wrong the other way costs
-// every `--sandbox` invocation on the arch a download that 404s, ~45s of
-// waiting, and a diagnostic that blames the installer rather than naming the
-// target. So a weak signal is enough to decline here.
-//
-// What it is NOT is a compile-time `#if defined(__aarch64__)`, which is what
-// this replaced: that freezes a claim about the package index into the binary,
-// so the day an aarch64 backend is published every client in the field still
-// refuses. This is re-read from the index on every call.
-std::optional<std::string> backend_target_unavailable_();
 
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream);
 

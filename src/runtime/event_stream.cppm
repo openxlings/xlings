@@ -39,92 +39,30 @@ public:
 
     // Thread safety: register all consumers before emitting from other threads.
     // on_event() and emit() are not synchronized — call on_event() during setup only.
-    auto on_event(EventConsumer consumer) -> int {
-        int id = next_id_++;
-        consumers_.push_back({id, std::move(consumer), true});
-        return id;
-    }
+    auto on_event(EventConsumer consumer) -> int;
 
-    void remove_listener(int id) {
-        std::erase_if(consumers_, [id](const ListenerEntry& e) { return e.id == id; });
-    }
+    void remove_listener(int id);
 
-    void set_enabled(int id, bool enabled) {
-        for (auto& entry : consumers_) {
-            if (entry.id == id) {
-                entry.enabled = enabled;
-                return;
-            }
-        }
-    }
+    void set_enabled(int id, bool enabled);
 
-    void emit(Event event) {
-        for (auto& entry : consumers_) {
-            if (entry.enabled) entry.consumer(event);
-        }
-    }
+    void emit(Event event);
 
     // Register an auto-responder for prompts whose id starts with the given prefix.
     // In agent mode, this allows automatic responses to install confirmations, etc.
-    void register_auto_responder(std::string prompt_id_prefix, AutoResponder fn) {
-        auto_responders_.emplace_back(std::move(prompt_id_prefix), std::move(fn));
-    }
+    void register_auto_responder(std::string prompt_id_prefix, AutoResponder fn);
 
-    void clear_auto_responders() {
-        auto_responders_.clear();
-    }
+    void clear_auto_responders();
 
     // Prompt with optional cancellation and timeout support.
     // Returns empty string on cancel/timeout.
     auto prompt(PromptEvent req,
                 CancellationToken* cancel = nullptr,
-                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000}) -> std::string {
-        auto id = req.id;
+                std::chrono::milliseconds timeout = std::chrono::milliseconds{30000}) -> std::string;
 
-        // Check auto-responders first (by prefix match)
-        for (auto& [prefix, responder] : auto_responders_) {
-            if (id.starts_with(prefix)) {
-                return responder(req);
-            }
-        }
-
-        emit(Event{std::move(req)});
-
-        std::unique_lock lock(promptMutex_);
-
-        if (cancel) {
-            bool satisfied = cancel->wait_or_cancel(lock, promptCv_,
-                [&] { return promptResponses_.contains(id); }, timeout);
-            if (!satisfied) {
-                // Cancelled or timed out — clean up any stale entry
-                promptResponses_.erase(id);
-                return "";
-            }
-        } else {
-            promptCv_.wait(lock, [&] {
-                return promptResponses_.contains(id);
-            });
-        }
-
-        auto response = std::move(promptResponses_[id]);
-        promptResponses_.erase(id);
-        return response;
-    }
-
-    void respond(std::string_view promptId, std::string_view response) {
-        {
-            std::lock_guard lock(promptMutex_);
-            promptResponses_[std::string(promptId)] = std::string(response);
-        }
-        promptCv_.notify_all();
-    }
+    void respond(std::string_view promptId, std::string_view response);
 
     // Cancel all pending prompts (call from ESC handler)
-    void cancel_all_prompts() {
-        std::lock_guard lock(promptMutex_);
-        promptResponses_.clear();
-        promptCv_.notify_all();
-    }
+    void cancel_all_prompts();
 };
 
 }  // namespace xlings

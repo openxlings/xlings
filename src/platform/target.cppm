@@ -41,7 +41,7 @@ struct Target {
     std::string os;    // linux | macosx | windows
     std::string arch;  // x86_64 | aarch64 | arm64 (macOS) | x86 | unknown
 
-    std::string str() const { return os + "-" + arch; }
+    std::string str() const;
 };
 
 // Written out rather than `= default`: a defaulted hidden-friend comparison in

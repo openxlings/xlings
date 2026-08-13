@@ -563,3 +563,20 @@ bool is_binding_root(const VersionDB& db,
 }
 
 }
+
+
+// ── out-of-line class members ─────────────────────────────────
+
+namespace xlings::xvm {
+
+BindingSelectionResolver::BindingSelectionResolver(const VersionDB& db): db_(db) {}
+
+[[nodiscard]] std::size_t BindingSelectionResolver::legacy_incoming_index_builds() const{
+        return legacyIncomingIndexBuilds_;
+    }
+
+[[nodiscard]] bool LibraryPlacement::empty() const{ return source.empty(); }
+
+[[nodiscard]] bool FilePlacement::empty() const{ return source.empty(); }
+
+} // namespace xlings::xvm

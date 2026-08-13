@@ -60,47 +60,23 @@ public:
     StateLock() = default;
     StateLock(const StateLock&) = delete;
     StateLock& operator=(const StateLock&) = delete;
-    StateLock(StateLock&& other) noexcept
-        : lock_(std::move(other.lock_)),
-          held_(std::exchange(other.held_, false)),
-          bypassed_(std::exchange(other.bypassed_, false)),
-          inherited_(std::exchange(other.inherited_, false)),
-          ownsMarker_(std::exchange(other.ownsMarker_, false)),
-          previousMarker_(std::move(other.previousMarker_)) {}
-    StateLock& operator=(StateLock&& other) noexcept {
-        if (this != &other) {
-            clear_marker_();
-            lock_ = std::move(other.lock_);
-            held_ = std::exchange(other.held_, false);
-            bypassed_ = std::exchange(other.bypassed_, false);
-            inherited_ = std::exchange(other.inherited_, false);
-            ownsMarker_ = std::exchange(other.ownsMarker_, false);
-            previousMarker_ = std::move(other.previousMarker_);
-        }
-        return *this;
-    }
-    ~StateLock() { clear_marker_(); }
+    StateLock(StateLock&& other) noexcept;
+    StateLock& operator=(StateLock&& other) noexcept;
+    ~StateLock();
 
     // True when the command may proceed. Also true for the bypass and for a
     // lock inherited from an ancestor, so callers cannot accidentally treat
     // either as a failure.
-    [[nodiscard]] bool held() const { return held_; }
-    [[nodiscard]] bool bypassed() const { return bypassed_; }
+    [[nodiscard]] bool held() const;
+    [[nodiscard]] bool bypassed() const;
     // Covered by an ancestor's lock rather than holding one of its own.
-    [[nodiscard]] bool inherited() const { return inherited_; }
+    [[nodiscard]] bool inherited() const;
 
 private:
     friend std::expected<StateLock, std::string> acquire_state_lock(
         const std::filesystem::path&, std::chrono::milliseconds);
 
-    void clear_marker_() {
-        if (!ownsMarker_) return;
-        // Restore whatever was there rather than clearing outright: locking
-        // a second home while holding the first must not erase the first
-        // one's marker, or a later child would try to re-lock it and hang.
-        platform::set_env_variable(std::string(reentry_env()), previousMarker_);
-        ownsMarker_ = false;
-    }
+    void clear_marker_();
 
     platform::FileLock lock_;
     bool held_ { false };
