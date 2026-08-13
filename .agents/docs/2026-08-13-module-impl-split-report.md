@@ -205,8 +205,12 @@ the fan-out predicted: a high-fan-out interface edit rebuilds nearly everything,
 and before the split every body edit *was* an interface edit.
 
 The control lands at 2.5× while the moved probes land at 4.6–12.1×. The control's
-2.5× is the interfaces downstream simply being smaller to recompile; the gap
-between 2.5× and 12× is what moving the body out actually bought.
+gain is the interfaces downstream simply being smaller to recompile; the gap
+between the two is what moving the body out actually bought.
+
+Both columns are phases 1–2. On the final tree the control is 2.9×
+(43.58 → 15.24) and `parse_sudo_env` is 12.4× (54.04 → 4.35) — the ratio between
+them, which is the part that matters, is unchanged.
 
 The branch's `parse_index_repos_json` first run (19.69s against 6.36s on the
 second) is an outlier, not a pattern — the same probe measured 6.51 / 6.32 in an
@@ -463,7 +467,7 @@ build is not evidence that a refactor is complete or that a report is true.
 | **`cold.sh` never ran from where it was committed** — its root was `dirname/../..`, right in `build/bench` and pointing at `.agents/` from `.agents/tools/module-split/`. Broken since this branch's first commit, and cited by this report | running the documented command |
 | **This report cited two scripts that are not in the repo** — `clang_variant.sh` and `measure_side.sh` lived under `build/`, which is gitignored, so the local gate could not be run by anyone reading it | checking that every path in the report exists |
 | **The unverified surface was overstated by 69%** — 1,228 lines "behind platform guards" is really 728; the counter flagged any block mentioning `_WIN32`/`__APPLE__`, including `#if !defined(_WIN32)`, true on Linux | re-deriving a number instead of trusting the first script that produced it |
-| **The control-probe claim was backwards** — the report said it "must show no improvement". It improves 2.5×, because the interfaces it still rebuilds are smaller | comparing the claim against the measurement |
+| **The control-probe claim was backwards** — the report said it "must show no improvement". It improves 2.5× on the phase-1–2 tree and 2.9× on the final one, because the interfaces it still rebuilds are smaller | comparing the claim against the measurement |
 | **A closure bug in the new tool** — `names \|= …` makes `names` local to the nested function | smoke-testing the tool against `main`, where it correctly finds only 4% to drop |
 | **Tool files were 644 while every other tool in `.agents/tools` is 755** | listing the mode bits |
 
