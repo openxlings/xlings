@@ -36,6 +36,22 @@ export namespace xlings::console {
 // Held for the duration of ONE complete piece of terminal output: a whole log
 // line including its newline, or a whole progress frame including its cursor
 // movement. Never held across anything that can block.
+//
+// LOCK ORDERING, because there is a second mutex in play and getting this
+// wrong would deadlock the download path rather than merely garble it:
+//
+//     downloader's progress mutex  ->  this one        (allowed)
+//     this one  ->  anything                           (never)
+//
+// The TUI refresh thread holds the downloader's mutex while it renders, and
+// the renderer then takes this one. Download workers call log::* WITHOUT
+// holding the downloader's mutex -- checked, not assumed -- so they only ever
+// take this one. No path acquires them in the opposite order, and none may.
+//
+// Concretely: never call log::* (or anything that renders) from inside a
+// region holding this mutex, and never take the downloader's mutex from
+// inside one either. Everything expensive -- formatting a message, laying out
+// a frame -- happens before the lock is taken.
 std::mutex& output_mutex();
 
 // Record that something other than the progress renderer has written.
