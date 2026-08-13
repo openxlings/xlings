@@ -115,22 +115,9 @@ private:
 };
 
 // Hex digest of a memory buffer.
-std::string hex(std::string_view data) {
-    Hasher h;
-    h.update(data.data(), data.size());
-    return h.hex_digest();
-}
+std::string hex(std::string_view data);
 
 // Hex digest of a file's contents (streaming; empty optional on I/O error).
-std::optional<std::string> hex_file(const std::filesystem::path& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return std::nullopt;
-    Hasher h;
-    char buf[64 * 1024];
-    while (in.read(buf, sizeof(buf)) || in.gcount() > 0)
-        h.update(buf, static_cast<std::size_t>(in.gcount()));
-    if (in.bad()) return std::nullopt;
-    return h.hex_digest();
-}
+std::optional<std::string> hex_file(const std::filesystem::path& path);
 
 } // namespace xlings::sha256

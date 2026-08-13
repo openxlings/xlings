@@ -39,14 +39,14 @@ inline auto surface()      -> Color { return detail::rgb_(palette::surface()); }
 inline auto border_color() -> Color { return detail::rgb_(palette::border()); }
 
 // ─── Decorator helpers ─────────────────────────────────────
-auto title()     -> Decorator { return ftxui::bold | ftxui::color(cyan()); }
-auto success()   -> Decorator { return ftxui::bold | ftxui::color(green()); }
-auto warning()   -> Decorator { return ftxui::bold | ftxui::color(amber()); }
-auto error()     -> Decorator { return ftxui::bold | ftxui::color(red()); }
-auto hint()      -> Decorator { return ftxui::dim | ftxui::color(dim_color()); }
-auto highlight() -> Decorator { return ftxui::bold | ftxui::color(magenta()); }
-auto label()     -> Decorator { return ftxui::color(dim_color()); }
-auto body()      -> Decorator { return ftxui::color(text_color()); }
+auto title()     -> Decorator;
+auto success()   -> Decorator;
+auto warning()   -> Decorator;
+auto error()     -> Decorator;
+auto hint()      -> Decorator;
+auto highlight() -> Decorator;
+auto label()     -> Decorator;
+auto body()      -> Decorator;
 
 // ─── Icons ─────────────────────────────────────────────────
 //

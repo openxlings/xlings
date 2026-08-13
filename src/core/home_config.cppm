@@ -52,29 +52,13 @@ import xlings.core.xvm.lock;
 // last-writer-wins behavior.
 export namespace xlings {
 
-std::filesystem::path home_config_path(const std::filesystem::path& home) {
-    return home / ".xlings.json";
-}
+std::filesystem::path home_config_path(const std::filesystem::path& home);
 
 // Parse `<home>/.xlings.json`, or an empty object if it is absent, empty,
 // unreadable or malformed. Matches what every hand-rolled reader in the tree
 // did before this module existed: a corrupt config is treated as no config
 // rather than failing the command.
-nlohmann::json read_home_config(const std::filesystem::path& home) {
-    const auto path = home_config_path(home);
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec) || ec) return nlohmann::json::object();
-    try {
-        auto content = platform::read_file_to_string(path.string());
-        auto parsed = nlohmann::json::parse(content, nullptr, false);
-        if (parsed.is_discarded() || !parsed.is_object()) {
-            return nlohmann::json::object();
-        }
-        return parsed;
-    } catch (...) {
-        return nlohmann::json::object();
-    }
-}
+nlohmann::json read_home_config(const std::filesystem::path& home);
 
 // Apply `mutate` to a freshly-read `<home>/.xlings.json` while holding the
 // home-wide state lock, then write it back.
@@ -91,22 +75,6 @@ nlohmann::json read_home_config(const std::filesystem::path& home) {
 std::expected<bool, std::string> update_home_config(
         const std::filesystem::path& home,
         const std::function<bool(nlohmann::json&)>& mutate,
-        std::chrono::milliseconds timeout = xvm::default_lock_timeout()) {
-    auto lock = xvm::acquire_state_lock(home, timeout);
-    if (!lock) return std::unexpected(lock.error());
-
-    auto json = read_home_config(home);
-    if (!mutate(json)) return false;
-
-    try {
-        platform::write_string_to_file(
-            home_config_path(home).string(), json.dump(2));
-    } catch (const std::exception& e) {
-        return std::unexpected(std::format(
-            "failed to write {}: {}",
-            home_config_path(home).string(), e.what()));
-    }
-    return true;
-}
+        std::chrono::milliseconds timeout = xvm::default_lock_timeout());
 
 }  // namespace xlings

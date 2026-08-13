@@ -109,6 +109,14 @@ def scan_items(text: str) -> list[Item]:
             items.append(Item(text[lead_start:i], text[i:j], None, '', 'preproc'))
             i = lead_start = j
             continue
+        # an access specifier is its own item — it ends with ':' and would
+        # otherwise swallow everything up to the next ';'
+        am = re.match(r'(public|private|protected)\s*:', sc[i:])
+        if am:
+            j = i + am.end()
+            items.append(Item(text[lead_start:i], text[i:j], None, '', 'access'))
+            i = lead_start = j
+            continue
         # an item: accumulate until ';' or '{' at paren depth 0
         start = i
         pdepth = 0
@@ -175,10 +183,22 @@ def head_norm(h: str) -> str:
     return ' '.join(scrub(h).split())
 
 
+# `operator=`, `operator==`, `operator<=>`, `operator[]`, `operator()`, a
+# conversion operator...  The '=' and the parentheses in these are part of the
+# NAME, so they must not be read as an initialiser or a parameter list.
+OPERATOR_NAME = re.compile(
+    r'\boperator\s*(?:new\b|delete\b|""\s*\w+|\(\s*\)|\[\s*\]|'
+    r'[+\-*/%^&|~!<>=,]+)')
+
+
+def mask_operator(s: str) -> str:
+    return OPERATOR_NAME.sub(lambda m: 'operator_' + '_' * (len(m.group(0)) - 9), s)
+
+
 def is_function_head(h: str) -> bool:
     """A function declarator: has a parameter list that is not part of an
     initialiser (`=` before the '(' means it is a variable)."""
-    s = scrub(h)
+    s = mask_operator(scrub(h))
     p = s.find('(')
     if p < 0:
         return False
@@ -189,36 +209,95 @@ def is_function_head(h: str) -> bool:
     return re.search(r'[\w>~\]]\s*$', before) is not None
 
 
+def has_deduced_return(h: str) -> bool:
+    """`auto f(...) { ... }` with no trailing return type: the return type is
+    deduced FROM THE BODY, so a caller in another unit cannot see it.  With a
+    trailing `-> T` the declaration is complete and the body can move."""
+    s = mask_operator(scrub(h))
+    if '->' in s:
+        return False
+    return re.match(r'^\s*(?:export\s+)?(?:static\s+)?(?:\[\[[^\]]*\]\]\s*)*'
+                    r'(?:constexpr\s+|inline\s+)*'
+                    r'(?:auto|decltype\s*\(\s*auto\s*\))\b', s) is not None
+
+
+def has_auto_parameter(h: str) -> bool:
+    """`void f(auto x)` is an abbreviated function template."""
+    s = mask_operator(scrub(h))
+    o = s.find('(')
+    if o < 0:
+        return False
+    depth, i = 0, o
+    while i < len(s):
+        if s[i] == '(': depth += 1
+        elif s[i] == ')':
+            depth -= 1
+            if depth == 0: break
+        i += 1
+    return re.search(r'\bauto\b', s[o:i]) is not None
+
+
+def is_qualified_definition(h: str) -> bool:
+    """`T C::f(...)` or `T ns::f(...)` — a definition written with a qualified
+    name.  An out-of-line member cannot be *declared* at namespace scope, so
+    phase 1 leaves every qualified definition where it is."""
+    s = mask_operator(scrub(h))
+    p = s.find('(')
+    decl = s[:p] if p >= 0 else s
+    return '::' in decl.split()[-1] if decl.split() else False
+
+
 def classify(it: Item, in_class: bool) -> str:
     """Return 'stay' | 'namespace' | 'both' | 'split-fn' | 'split-var'."""
-    if it.kind == 'blank':
+    if it.kind in ('blank', 'access'):
         return 'stay'
     if it.kind == 'preproc':
         return 'both'                      # conditionals must bracket both units
     h = head_norm(it.head)
     if not h:
         return 'stay'
+    # a module/import declaration that did not land in the preamble block
+    if re.match(r'^(?:export\s+)?(?:import|module)\b', h):
+        return 'stay'
     if NS_HEAD.match(it.head):
-        return 'namespace' if it.body else 'stay'
+        if not it.body:
+            return 'stay'
+        # An ANONYMOUS namespace has internal linkage: its members cannot be
+        # declared in one unit and defined in another, and the implementation
+        # unit cannot see the interface's copy.  It moves whole.
+        return 'namespace' if head_norm(it.head).rstrip() != 'namespace' \
+            else 'move-impl'
     if TYPE_HEAD.match(it.head):
         return 'stay'                      # phase 1: types stay whole
     if CONSTEXPR.search(h) or STAY_HEAD.search(h):
         return 'stay'
     if re.search(r'\binline\b', h):
         return 'stay'
-    # `const` at namespace scope has internal linkage, so its definition
-    # cannot be moved to another unit without changing linkage.
-    if re.search(r'\bconst\b', h.split('(')[0]):
-        return 'stay'
+    # Function or variable is decided FIRST: the rules below read the text
+    # before the parameter list, and in a variable that text is an initialiser
+    # expression, where a `const` or a `::` means nothing about the declaration.
     if is_function_head(it.head):
         if it.body is None:
             return 'stay'                  # already only a declaration
         if re.search(r'=\s*(?:default|delete)\s*;?\s*$', h):
             return 'stay'
+        if is_qualified_definition(it.head):
+            return 'stay'                  # phase 1: no out-of-line members
+        if has_deduced_return(it.head) or has_auto_parameter(it.head):
+            return 'stay'
         return 'split-fn'
     # A variable definition — with an initialiser (`T x {..};`, `T x = ..;`)
     # or default-constructed (`T x;`).  Both are definitions and both move.
-    if re.match(r'^(?:export\s+)?(?:static\s+)?[\w:<>,\s*&\[\]]+\w\s*(?:$|=|\[)', h.rstrip(';')):
+    # It needs a type AND a name: a lone identifier is a macro invocation
+    # (`NLOHMANN_JSON_NAMESPACE_END;`), not a declaration.
+    bare = h.rstrip(';').rstrip()
+    lhs = mask_operator(scrub(bare)).split('=')[0]
+    # `const` at namespace scope has internal linkage, so its definition cannot
+    # move to another unit without changing that linkage.
+    if re.search(r'\bconst\b', lhs):
+        return 'stay'
+    if re.match(r'^(?:export\s+)?(?:static\s+)?[\w:<>,\s*&\[\]]+\w\s*(?:$|=|\[)',
+                bare) and len(re.sub(r'\s*[*&]\s*', ' ', lhs).split()) >= 2:
         return 'split-var'
     return 'stay'
 
@@ -307,6 +386,11 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False):
                                 + body + '\n\n}' + it.tail)
             out.moved += sub.moved
             out.moved_lines += sub.moved_lines
+        elif cls == 'move-impl':
+            out.impl.append(it.lead.strip('\n') + '\n' + it.head + it.body + it.tail
+                            if it.lead.strip() else it.head + it.body + it.tail)
+            out.moved += 1
+            out.moved_lines += (it.body or '').count('\n')
         elif cls == 'stay':
             out.iface.append(it.raw)
         elif cls == 'split-fn':
@@ -332,35 +416,55 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False):
             out.iface.append(it.raw)
 
 
-PREAMBLE = re.compile(r'\A(?P<gmf>.*?)^export module (?P<mod>[\w.]+);',
-                      re.S | re.M)
+PREAMBLE = re.compile(
+    r'\A(?P<gmf>.*?)^export module (?P<mod>[\w.]+)(?P<part>:\w+)?;',
+    re.S | re.M)
+
+# `import x.y;`, `import :part;`, `export import :part;`
+IMPORT_LINE = re.compile(r'^(?:export\s+)?import\s+[\w.:]+\s*;', re.M)
 
 
-def split_file(path: str):
+def split_file(path: str, qualify_partition_import=False):
     src = open(path).read()
     m = PREAMBLE.search(src)
     if not m:
         return None, f'{path}: no `export module` declaration'
-    gmf, mod = m.group('gmf'), m.group('mod')
+    gmf, mod, part = m.group('gmf'), m.group('mod'), m.group('part') or ''
     rest = src[m.end():]
     # the import block that immediately follows the module declaration
-    im = re.match(r'\A((?:\s*(?:import [\w.:]+;|//[^\n]*|/\*.*?\*/))*\s*)',
-                  rest, re.S)
+    im = re.match(
+        r'\A((?:\s*(?:(?:export\s+)?import\s+[\w.:]+\s*;|//[^\n]*|/\*.*?\*/))*\s*)',
+        rest, re.S)
     imports_blk = im.group(1) if im else ''
     body = rest[len(imports_blk):]
-    imports = re.findall(r'^import [\w.:]+;', imports_blk, re.M)
+    # An implementation unit cannot re-export, so `export import` becomes a
+    # plain import there.  Partition imports are dropped: the primary interface
+    # already does `export import :p;`, an implementation unit implicitly
+    # imports that primary, and the ordering edge reaches the partition BMI
+    # through it.  Keeping them would only add mcpp's cosmetic
+    # "module ':p' imported but not provided" warning on every build.
+    imports = [re.sub(r'^export\s+', '', x)
+               for x in IMPORT_LINE.findall(imports_blk)
+               if not re.match(r'^(?:export\s+)?import\s+:', x)]
 
     out = Split()
     process_level(scan_items(body), out, '')
     if out.moved == 0:
         return None, f'{path}: nothing to move'
 
-    iface = gmf + f'export module {mod};' + imports_blk + ''.join(out.iface)
+    iface = gmf + f'export module {mod}{part};' + imports_blk + ''.join(out.iface)
+    # The implementation of a PARTITION's declarations belongs to an
+    # implementation unit of the PRIMARY module (`module M;`) — `module M:p;`
+    # would be another partition and would still produce a BMI.  A module may
+    # have any number of implementation units.
     impl = (gmf if gmf.strip() else '') + f'module {mod};\n'
+    if part and qualify_partition_import and f'import {part};' not in imports:
+        imports.insert(0, f'import {part};')
     if imports:
         impl += '\n' + '\n'.join(imports) + '\n'
     impl += '\n' + '\n\n'.join(x.strip('\n') for x in out.impl if x.strip())
-    return (iface, impl.rstrip() + '\n', out.moved, out.moved_lines, mod), None
+    return (iface, impl.rstrip() + '\n', out.moved, out.moved_lines,
+            mod + part), None
 
 
 def main():
@@ -369,11 +473,15 @@ def main():
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--write', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--partition-import', action='store_true',
+                    help="emit `import :part;` in a partition's implementation "
+                         "unit (needed only when it defines entities the "
+                         "partition does not export)")
     a = ap.parse_args()
     files = sorted(glob.glob('src/**/*.cppm', recursive=True)) if a.all else a.files
     tot_fn = tot_lines = tot_files = 0
     for f in files:
-        res, err = split_file(f)
+        res, err = split_file(f, a.partition_import)
         if err:
             print(f'SKIP {err}')
             continue
