@@ -62,17 +62,18 @@ struct Segment {
     std::uint64_t memsz {};
 };
 
-// A file's bytes, read once, up to a bound.
+// Range-checked reads into a file, never a read of the whole file.
 //
-// Whole-file rather than seek-and-read: the parts we need (header, program
-// headers, .dynamic, .dynstr) are scattered, and a payload's ELFs are
-// overwhelmingly small. The bound is what keeps that true -- a 1.6 GB CUDA
-// library in this very home would otherwise be read in full to answer a
-// question its header already settles.
+// This is the whole reason the change is worth anything. The four things this
+// module needs -- ELF header, program header table, .dynamic, one string out
+// of .dynstr -- total a few kilobytes wherever they sit, and every `at()` here
+// reads exactly the bytes asked for. The largest ELF in the home this was
+// measured against is a 1.6 GB CUDA library; answering "does it have a
+// PT_INTERP" costs a 64-byte header plus its program header table.
 //
-// Files above the bound are read in the two pieces we actually need: the
-// header block at the front, and then each field at its own offset. That path
-// is slower per file and is taken by a handful of files per store.
+// Every range is validated against the file size before the seek, so a
+// truncated or hostile file yields an empty span rather than a short read the
+// caller would parse as data. Callers never range-check first.
 class FileView {
 public:
     explicit FileView(const std::filesystem::path& path)
