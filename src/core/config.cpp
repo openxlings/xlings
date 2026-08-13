@@ -1,3 +1,6 @@
+module;
+#include <cstdio>
+
 module xlings.core.config;
 
 import std;
@@ -1208,6 +1211,19 @@ void Config::save_workspace() {
     }
     json["workspace"] = xvm::subos_workspace_to_json(sws);
     platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
+}
+
+void Config::print_paths() {
+    auto& p = paths();
+    std::println(stdout, "XLINGS_HOME:     {}", p.homeDir.string());
+    std::println(stdout, "XLINGS_DATA:     {}", display_path(p.dataDir));
+    if (has_project_config() && !project_index_repos().empty()) {
+        std::println(stdout, "XLINGS_DATA_PROJECT: {}", display_path(project_data_dir()));
+    }
+    std::println(stdout, "XLINGS_SUBOS:    {}", display_path(p.subosDir));
+    std::println(stdout, "  activeSubos:   {}", p.activeSubos);
+    std::println(stdout, "  selfContained: {}", p.selfContained);
+    std::println(stdout, "  bin:           {}", display_path(p.binDir));
 }
 
 } // namespace xlings

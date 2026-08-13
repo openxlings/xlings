@@ -3,6 +3,8 @@ module;
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 
+#include <cstdio>
+
 module xlings.cli;
 
 import std;

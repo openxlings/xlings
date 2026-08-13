@@ -93,7 +93,7 @@ namespace platform_impl {
     }
 
     export inline void println(const std::string& msg) {
-        std::println("{}", msg);
+        std::println(stdout, "{}", msg);
     }
 
     export int get_pid();

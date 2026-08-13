@@ -50,9 +50,9 @@ void debug(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Debug) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print("{} ", colored_(palette::dim(), "[debug]"));
-            if (!gContext_.empty()) std::print("{} ", colored_(palette::dim(), std::format("[{}]", gContext_).c_str()));
-            std::println("{}", msg);
+            std::print(stdout, "{} ", colored_(palette::dim(), "[debug]"));
+            if (!gContext_.empty()) std::print(stdout, "{} ", colored_(palette::dim(), std::format("[{}]", gContext_).c_str()));
+            std::println(stdout, "{}", msg);
         }
         write_to_file_("[debug] ", msg);
     }
@@ -63,9 +63,9 @@ void info(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print("{} ", colored_(palette::cyan(), "[xlings]"));
-            if (!gContext_.empty()) std::print("{} ", colored_(palette::cyan(), std::format("[{}]", gContext_).c_str()));
-            std::println("{}", msg);
+            std::print(stdout, "{} ", colored_(palette::cyan(), "[xlings]"));
+            if (!gContext_.empty()) std::print(stdout, "{} ", colored_(palette::cyan(), std::format("[{}]", gContext_).c_str()));
+            std::println(stdout, "{}", msg);
         }
         write_to_file_("[xlings] ", msg);
     }
@@ -104,7 +104,7 @@ export template<typename... Args>
 void println(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
-        if (!platform::is_tui_mode()) std::println("{}", msg);
+        if (!platform::is_tui_mode()) std::println(stdout, "{}", msg);
         write_to_file_("[status] ", msg);
     }
 }
@@ -113,7 +113,7 @@ export template<typename... Args>
 void print(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
-        std::print("{}", msg);
+        std::print(stdout, "{}", msg);
     }
 }
 

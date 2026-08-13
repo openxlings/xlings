@@ -565,6 +565,53 @@ PREAMBLE = re.compile(
 IMPORT_LINE = re.compile(r'^(?:export\s+)?import\s+[\w.:]+\s*;', re.M)
 
 
+# `std::print("...")` / `std::println("...")` -- the overload that takes no
+# stream.  libc++ implements it as `print(stdout, fmt, args...)`, so the FILE*
+# overload has to win overload resolution at the point of instantiation.  Inside
+# a template that stays in the INTERFACE, that point is in the importer, and once
+# enough bodies leave the interface clang 20 stops picking the FILE* overload:
+# `stdout` is deduced AS the format string and the error is a deleted
+# `formatter<basic_format_string<...>>` in a file that did not change
+# (xlings-ci-macos runs 31660163438 / 31660753235; reproduced locally with
+# llvm@20.1.7 on Linux, where main builds clean and the split does not).
+#
+# Naming the stream removes the deduction entirely.  It is the same call --
+# [print.fun] defines the two-argument form AS `print(stdout, ...)` -- so this
+# normalises 23 sites across 6 interfaces and changes no behaviour.  Bodies that
+# move to an implementation unit are left alone: nothing instantiates those from
+# another translation unit.
+STREAMLESS_PRINT_CALL = re.compile(r'\b(std::print(?:ln)?)\s*\(\s*(?=")')
+
+
+def name_the_stream(iface: str) -> str:
+    return STREAMLESS_PRINT_CALL.sub(r'\1(stdout, ', iface)
+
+
+# `stdout` / `stderr` / `FILE` come from <cstdio>.  A body that names one can end
+# up in an implementation unit whose interface had no global module fragment
+# (config.cppm has none, and `Config::print_paths()` moves there), so the unit
+# has to acquire the include itself -- otherwise clang says
+# "missing '#include <stdio.h>'; 'stdout' must be declared before it is used".
+CSTDIO_NAMES = re.compile(r'\b(?:stdout|stderr|stdin|FILE)\b')
+
+
+def ensure_cstdio(impl: str) -> str:
+    """Add <cstdio> to an implementation unit's global module fragment when its
+    text needs it and it does not already have it."""
+    if not CSTDIO_NAMES.search(scrub(impl)):
+        return impl
+    if re.search(r'^\s*#include\s*<cstdio>', impl, re.M) or \
+       re.search(r'^\s*#include\s*<stdio\.h>', impl, re.M):
+        return impl
+    m = re.search(r'^module [\w.]+;', impl, re.M)
+    if not m:
+        return impl
+    if re.match(r'\s*module;', impl):
+        # already has a fragment -- put the include at its end
+        return impl[:m.start()] + '#include <cstdio>\n\n' + impl[m.start():]
+    return 'module;\n#include <cstdio>\n\n' + impl
+
+
 def split_file(path: str, qualify_partition_import=False):
     src = open(path).read()
     m = PREAMBLE.search(src)
@@ -611,8 +658,8 @@ def split_file(path: str, qualify_partition_import=False):
     # module-attached type is first instantiated from namespace scope.
     impl += '\n' + '\n\n'.join(x.strip('\n') for x in out.impl if x.strip())
     iface, impl = resolve_candidates(iface, impl, out.cands)
-    return (iface, impl.rstrip() + '\n', out.moved, out.moved_lines,
-            mod + part), None
+    return (name_the_stream(iface), ensure_cstdio(impl.rstrip() + '\n'),
+            out.moved, out.moved_lines, mod + part), None
 
 
 def main():
