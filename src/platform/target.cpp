@@ -53,10 +53,10 @@ bool is_emulated() { return build().arch != host().arch; }
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::platform {
 
-std::string Target::str() const{ return os + "-" + arch; }
+std::string Target::str() const { return os + "-" + arch; }
 
 } // namespace xlings::platform

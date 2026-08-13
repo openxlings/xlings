@@ -615,22 +615,22 @@ std::size_t apply_dangling_edge_pruning(VersionDB& db,
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::xvm {
 
-[[nodiscard]] bool SubosMetadataRepair::empty() const{ return entries.empty(); }
+[[nodiscard]] bool SubosMetadataRepair::empty() const { return entries.empty(); }
 
-[[nodiscard]] std::size_t SubosMetadataRepair::size() const{
-        std::size_t n = 0;
-        for (const auto& e : entries) {
-            n += e.deactivate.size() + e.dropInstalled.size();
-        }
-        return n;
+[[nodiscard]] std::size_t SubosMetadataRepair::size() const {
+    std::size_t n = 0;
+    for (const auto& e : entries) {
+        n += e.deactivate.size() + e.dropInstalled.size();
     }
+    return n;
+}
 
-[[nodiscard]] bool MetadataReset::empty() const{ return entries.empty(); }
+[[nodiscard]] bool MetadataReset::empty() const { return entries.empty(); }
 
-[[nodiscard]] bool DanglingEdgePruning::empty() const{ return edges.empty(); }
+[[nodiscard]] bool DanglingEdgePruning::empty() const { return edges.empty(); }
 
 } // namespace xlings::xvm

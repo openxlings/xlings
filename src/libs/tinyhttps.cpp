@@ -337,35 +337,35 @@ std::int64_t query_content_length(const std::string& url, int connectTimeoutSec)
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::tinyhttps {
 
-StallDetector::StallDetector(int limitBytes, int windowSec): limit_(limitBytes), window_(windowSec) {}
+StallDetector::StallDetector(int limitBytes, int windowSec) : limit_(limitBytes), window_(windowSec) {}
 
-bool StallDetector::enabled() const{ return limit_ > 0 && window_ > 0; }
+bool StallDetector::enabled() const { return limit_ > 0 && window_ > 0; }
 
-bool StallDetector::update(double elapsedSec, double downloadedBytes){
-        if (!enabled()) return false;
-        if (!started_) {
-            started_ = true;
-            winT_ = elapsedSec;
-            winB_ = downloadedBytes;
-            return false;
-        }
-        if (downloadedBytes < winB_) {
-            // Counter went backwards (redirect restart) — restart the window.
-            winT_ = elapsedSec;
-            winB_ = downloadedBytes;
-            return false;
-        }
-        if (elapsedSec - winT_ < static_cast<double>(window_)) return false;
-        double avg = (downloadedBytes - winB_) / (elapsedSec - winT_);
-        if (avg < static_cast<double>(limit_)) return true;
-        // Healthy window — slide forward.
+bool StallDetector::update(double elapsedSec, double downloadedBytes) {
+    if (!enabled()) return false;
+    if (!started_) {
+        started_ = true;
         winT_ = elapsedSec;
         winB_ = downloadedBytes;
         return false;
     }
+    if (downloadedBytes < winB_) {
+        // Counter went backwards (redirect restart) — restart the window.
+        winT_ = elapsedSec;
+        winB_ = downloadedBytes;
+        return false;
+    }
+    if (elapsedSec - winT_ < static_cast<double>(window_)) return false;
+    double avg = (downloadedBytes - winB_) / (elapsedSec - winT_);
+    if (avg < static_cast<double>(limit_)) return true;
+    // Healthy window — slide forward.
+    winT_ = elapsedSec;
+    winB_ = downloadedBytes;
+    return false;
+}
 
 } // namespace xlings::tinyhttps

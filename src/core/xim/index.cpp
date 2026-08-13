@@ -165,161 +165,161 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::xim {
 
-IndexManager::IndexManager(const std::filesystem::path& repoDir, std::string defaultNamespace): repoDir_(repoDir),
-          defaultNamespace_(std::move(defaultNamespace)) {}
+IndexManager::IndexManager(const std::filesystem::path& repoDir, std::string defaultNamespace) : repoDir_(repoDir),
+      defaultNamespace_(std::move(defaultNamespace)) {}
 
-void IndexManager::set_repo_dir(const std::filesystem::path& dir){
-        repoDir_ = dir;
+void IndexManager::set_repo_dir(const std::filesystem::path& dir) {
+    repoDir_ = dir;
+}
+
+void IndexManager::set_default_namespace(std::string defaultNamespace) {
+    defaultNamespace_ = std::move(defaultNamespace);
+}
+
+std::expected<void, std::string> IndexManager::rebuild() {
+    namespace fs = std::filesystem;
+
+    if (repoDir_.empty()) {
+        return std::unexpected("repo directory not set");
     }
 
-void IndexManager::set_default_namespace(std::string defaultNamespace){
-        defaultNamespace_ = std::move(defaultNamespace);
+    if (!fs::exists(repoDir_ / "pkgs")) {
+        return std::unexpected(
+            std::format("pkgs/ directory not found in {}", repoDir_.string()));
     }
 
-std::expected<void, std::string> IndexManager::rebuild(){
-        namespace fs = std::filesystem;
+    log::debug("building package index from {}", repoDir_.string());
 
-        if (repoDir_.empty()) {
-            return std::unexpected("repo directory not set");
+    auto result = xpkg::build_index(repoDir_, defaultNamespace_);
+    if (!result) {
+        return std::unexpected(
+            std::format("build_index failed: {}", result.error()));
+    }
+
+    index_ = std::move(*result);
+    loaded_ = true;
+
+    log::debug("index built: {} entries", index_.entries.size());
+    return {};
+}
+
+std::expected<void, std::string> IndexManager::load_or_rebuild(const std::string& repoHeadHash, bool forceRebuild) {
+    if (repoDir_.empty()) {
+        return std::unexpected("repo directory not set");
+    }
+
+    auto cacheFile = repoDir_ / ".xlings-index-cache.json";
+
+    // Try loading from cache (unless forced or no git hash)
+    if (!forceRebuild && !repoHeadHash.empty()) {
+        xpkg::PackageIndex cached;
+        auto cacheResult = cache_detail_::load_index_cache(
+            cacheFile, cached, defaultNamespace_);
+        if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash) {
+            index_ = std::move(cached);
+            loaded_ = true;
+            log::debug("index loaded from cache: {} entries", index_.entries.size());
+            return {};
         }
-
-        if (!fs::exists(repoDir_ / "pkgs")) {
-            return std::unexpected(
-                std::format("pkgs/ directory not found in {}", repoDir_.string()));
-        }
-
-        log::debug("building package index from {}", repoDir_.string());
-
-        auto result = xpkg::build_index(repoDir_, defaultNamespace_);
-        if (!result) {
-            return std::unexpected(
-                std::format("build_index failed: {}", result.error()));
-        }
-
-        index_ = std::move(*result);
-        loaded_ = true;
-
-        log::debug("index built: {} entries", index_.entries.size());
-        return {};
     }
 
-std::expected<void, std::string> IndexManager::load_or_rebuild(const std::string& repoHeadHash, bool forceRebuild){
-        if (repoDir_.empty()) {
-            return std::unexpected("repo directory not set");
-        }
+    // Cache miss or forced: full rebuild
+    auto result = rebuild();
+    if (!result) return result;
 
-        auto cacheFile = repoDir_ / ".xlings-index-cache.json";
-
-        // Try loading from cache (unless forced or no git hash)
-        if (!forceRebuild && !repoHeadHash.empty()) {
-            xpkg::PackageIndex cached;
-            auto cacheResult = cache_detail_::load_index_cache(
-                cacheFile, cached, defaultNamespace_);
-            if (cacheResult.valid && cacheResult.repoHeadHash == repoHeadHash) {
-                index_ = std::move(cached);
-                loaded_ = true;
-                log::debug("index loaded from cache: {} entries", index_.entries.size());
-                return {};
-            }
-        }
-
-        // Cache miss or forced: full rebuild
-        auto result = rebuild();
-        if (!result) return result;
-
-        // Save cache (best effort)
-        if (!cache_detail_::save_index_cache(
-                index_, cacheFile, repoHeadHash, defaultNamespace_)) {
-            log::warn("failed to save index cache for {}", repoDir_.string());
-        }
-
-        return {};
+    // Save cache (best effort)
+    if (!cache_detail_::save_index_cache(
+            index_, cacheFile, repoHeadHash, defaultNamespace_)) {
+        log::warn("failed to save index cache for {}", repoDir_.string());
     }
 
-bool IndexManager::is_loaded() const{ return loaded_; }
+    return {};
+}
 
-std::size_t IndexManager::size() const{ return index_.entries.size(); }
+bool IndexManager::is_loaded() const { return loaded_; }
 
-std::vector<std::string> IndexManager::search(const std::string& keyword) const{
-        return xpkg::search(index_, keyword);
+std::size_t IndexManager::size() const { return index_.entries.size(); }
+
+std::vector<std::string> IndexManager::search(const std::string& keyword) const {
+    return xpkg::search(index_, keyword);
+}
+
+std::vector<std::string> IndexManager::find_candidates(std::string_view name, std::optional<std::string_view> namespaceName) const {
+    return xpkg::find_candidates(index_, name, namespaceName);
+}
+
+std::optional<std::string> IndexManager::match_version(const std::string& name) const {
+    if (name.contains(':') || index_.entries.contains(name)) {
+        return xpkg::match_version(index_, name);
     }
+    auto candidates = find_candidates(name);
+    if (candidates.size() != 1) return std::nullopt;
+    return xpkg::match_version(index_, candidates.front());
+}
 
-std::vector<std::string> IndexManager::find_candidates(std::string_view name, std::optional<std::string_view> namespaceName) const{
-        return xpkg::find_candidates(index_, name, namespaceName);
+std::string IndexManager::resolve(const std::string& name) const {
+    if (name.contains(':') || index_.entries.contains(name)) {
+        return xpkg::resolve(index_, name);
     }
+    auto candidates = find_candidates(name);
+    if (candidates.size() != 1) return name;
+    return xpkg::resolve(index_, candidates.front());
+}
 
-std::optional<std::string> IndexManager::match_version(const std::string& name) const{
-        if (name.contains(':') || index_.entries.contains(name)) {
-            return xpkg::match_version(index_, name);
-        }
-        auto candidates = find_candidates(name);
-        if (candidates.size() != 1) return std::nullopt;
-        return xpkg::match_version(index_, candidates.front());
+std::vector<std::string> IndexManager::mutex_packages(const std::string& name) const {
+    return xpkg::mutex_packages(index_, name);
+}
+
+std::expected<xpkg::Package, std::string> IndexManager::load_package(const std::string& name) const {
+    auto it = index_.entries.find(name);
+    if (it == index_.entries.end()) {
+        return std::unexpected(std::format("package '{}' not found in index", name));
     }
+    return xpkg::load_package(it->second.path);
+}
 
-std::string IndexManager::resolve(const std::string& name) const{
-        if (name.contains(':') || index_.entries.contains(name)) {
-            return xpkg::resolve(index_, name);
-        }
-        auto candidates = find_candidates(name);
-        if (candidates.size() != 1) return name;
-        return xpkg::resolve(index_, candidates.front());
+const xpkg::IndexEntry* IndexManager::find_entry(const std::string& name) const {
+    auto it = index_.entries.find(name);
+    return it != index_.entries.end() ? &it->second : nullptr;
+}
+
+void IndexManager::mark_installed(const std::string& name, bool installed) {
+    xpkg::set_installed(index_, name, installed);
+}
+
+void IndexManager::merge(xpkg::PackageIndex other, const std::string& ns) {
+    index_ = xpkg::merge(std::move(index_), other, ns);
+}
+
+std::vector<std::string> IndexManager::all_names() const {
+    std::vector<std::string> names;
+    names.reserve(index_.entries.size());
+    for (auto& [k, v] : index_.entries) {
+        names.push_back(k);
     }
+    std::sort(names.begin(), names.end());
+    return names;
+}
 
-std::vector<std::string> IndexManager::mutex_packages(const std::string& name) const{
-        return xpkg::mutex_packages(index_, name);
+std::vector<std::string> IndexManager::installed_names() const {
+    std::vector<std::string> names;
+    for (auto& [k, v] : index_.entries) {
+        if (v.installed) names.push_back(k);
     }
+    std::sort(names.begin(), names.end());
+    return names;
+}
 
-std::expected<xpkg::Package, std::string> IndexManager::load_package(const std::string& name) const{
-        auto it = index_.entries.find(name);
-        if (it == index_.entries.end()) {
-            return std::unexpected(std::format("package '{}' not found in index", name));
-        }
-        return xpkg::load_package(it->second.path);
-    }
+const xpkg::PackageIndex& IndexManager::raw_index() const { return index_; }
 
-const xpkg::IndexEntry* IndexManager::find_entry(const std::string& name) const{
-        auto it = index_.entries.find(name);
-        return it != index_.entries.end() ? &it->second : nullptr;
-    }
-
-void IndexManager::mark_installed(const std::string& name, bool installed){
-        xpkg::set_installed(index_, name, installed);
-    }
-
-void IndexManager::merge(xpkg::PackageIndex other, const std::string& ns){
-        index_ = xpkg::merge(std::move(index_), other, ns);
-    }
-
-std::vector<std::string> IndexManager::all_names() const{
-        std::vector<std::string> names;
-        names.reserve(index_.entries.size());
-        for (auto& [k, v] : index_.entries) {
-            names.push_back(k);
-        }
-        std::sort(names.begin(), names.end());
-        return names;
-    }
-
-std::vector<std::string> IndexManager::installed_names() const{
-        std::vector<std::string> names;
-        for (auto& [k, v] : index_.entries) {
-            if (v.installed) names.push_back(k);
-        }
-        std::sort(names.begin(), names.end());
-        return names;
-    }
-
-const xpkg::PackageIndex& IndexManager::raw_index() const{ return index_; }
-
-std::optional<std::filesystem::path> IndexManager::entry_path(const std::string& name) const{
-        auto it = index_.entries.find(name);
-        if (it == index_.entries.end()) return std::nullopt;
-        return it->second.path;
-    }
+std::optional<std::filesystem::path> IndexManager::entry_path(const std::string& name) const {
+    auto it = index_.entries.find(name);
+    if (it == index_.entries.end()) return std::nullopt;
+    return it->second.path;
+}
 
 } // namespace xlings::xim

@@ -678,12 +678,12 @@ void reconcile_index_temps(const std::filesystem::path& dataDir) {
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::xim {
 
-bool IndexRequirement::empty() const{ return min.empty() && max.empty(); }
+bool IndexRequirement::empty() const { return min.empty() && max.empty(); }
 
-bool ArtifactSource::forge() const{ return !server.empty(); }
+bool ArtifactSource::forge() const { return !server.empty(); }
 
 } // namespace xlings::xim

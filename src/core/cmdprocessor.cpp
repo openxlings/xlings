@@ -292,42 +292,42 @@ CommandProcessor create_processor() {
 }
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::cmdprocessor {
 
-CommandProcessor& CommandProcessor::add(std::string name, std::string description, std::function<int(int argc, char* argv[])> func, std::string usage){
-        if (usage.empty()) usage = std::format("xlings {}", name);
-        commands_.push_back({std::move(name), std::move(description),
-                            std::move(usage), std::move(func)});
-        return *this;
+CommandProcessor& CommandProcessor::add(std::string name, std::string description, std::function<int(int argc, char* argv[])> func, std::string usage) {
+    if (usage.empty()) usage = std::format("xlings {}", name);
+    commands_.push_back({std::move(name), std::move(description),
+                        std::move(usage), std::move(func)});
+    return *this;
+}
+
+int CommandProcessor::run(int argc, char* argv[]) {
+    if (argc <= 1) return print_help();
+
+    std::string cmd = argv[1];
+    if (cmd == "help" || cmd == "--help" || cmd == "-h" || cmd == "--version") {
+        return print_help();
     }
 
-int CommandProcessor::run(int argc, char* argv[]){
-        if (argc <= 1) return print_help();
-
-        std::string cmd = argv[1];
-        if (cmd == "help" || cmd == "--help" || cmd == "-h" || cmd == "--version") {
-            return print_help();
-        }
-
-        for (const auto& c : commands_) {
-            if (c.name == cmd) return c.func(argc, argv);
-        }
-
-        log::error("Unknown command: {}", cmd);
-        std::println("Use 'xlings help' for usage information");
-        return 1;
+    for (const auto& c : commands_) {
+        if (c.name == cmd) return c.func(argc, argv);
     }
 
-int CommandProcessor::print_help() const{
-        std::println("xlings version: {}\n", Info::VERSION);
-        std::println("Usage: $ xlings [command] [target] [options]\n");
-        std::println("Commands:");
-        for (const auto& c : commands_) {
-            std::println("\t {:12}\t{}", c.name, c.description);
-        }
-        return 0;
+    log::error("Unknown command: {}", cmd);
+    std::println("Use 'xlings help' for usage information");
+    return 1;
+}
+
+int CommandProcessor::print_help() const {
+    std::println("xlings version: {}\n", Info::VERSION);
+    std::println("Usage: $ xlings [command] [target] [options]\n");
+    std::println("Commands:");
+    for (const auto& c : commands_) {
+        std::println("\t {:12}\t{}", c.name, c.description);
     }
+    return 0;
+}
 
 } // namespace xlings::cmdprocessor

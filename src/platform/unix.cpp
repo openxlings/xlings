@@ -230,65 +230,65 @@ std::string home_for_user_(const std::string& name) {
 #endif // defined(__linux__) || defined(__APPLE__)
 
 
-// ── out-of-line class members ─────────────────────────────────
+// ── out-of-line class members ──────────────────────────────────
 
 #if (defined(__linux__) || defined(__APPLE__))
 
 namespace xlings::platform_impl {
 
-FileLock::FileLock(FileLock&& other) noexcept: fd_(std::exchange(other.fd_, -1)) {}
+FileLock::FileLock(FileLock&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
 
-FileLock& FileLock::operator=(FileLock&& other) noexcept{
-            if (this != &other) {
-                release();
-                fd_ = std::exchange(other.fd_, -1);
-            }
-            return *this;
-        }
+FileLock& FileLock::operator=(FileLock&& other) noexcept {
+    if (this != &other) {
+        release();
+        fd_ = std::exchange(other.fd_, -1);
+    }
+    return *this;
+}
 
-FileLock::~FileLock(){ release(); }
+FileLock::~FileLock() { release(); }
 
 bool FileLock::acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error){
+                     std::string& error) {
+    release();
+    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0600);
+    if (fd_ < 0) {
+        error = std::format("failed to open lock {}: {}",
+                            path.string(), std::strerror(errno));
+        return false;
+    }
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            error = std::format("failed to lock {}: {}",
+                                path.string(), std::strerror(errno));
             release();
-            fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0600);
-            if (fd_ < 0) {
-                error = std::format("failed to open lock {}: {}",
-                                    path.string(), std::strerror(errno));
-                return false;
-            }
-            auto deadline = std::chrono::steady_clock::now() + timeout;
-            while (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
-                if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                    error = std::format("failed to lock {}: {}",
-                                        path.string(), std::strerror(errno));
-                    release();
-                    return false;
-                }
-                if (cancelled && cancelled()) {
-                    error = "cancelled while waiting for cache lock";
-                    release();
-                    return false;
-                }
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    error = std::format("timed out waiting for cache lock {}",
-                                        path.string());
-                    release();
-                    return false;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds{50});
-            }
-            return true;
+            return false;
         }
+        if (cancelled && cancelled()) {
+            error = "cancelled while waiting for cache lock";
+            release();
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            error = std::format("timed out waiting for cache lock {}",
+                                path.string());
+            release();
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    return true;
+}
 
-void FileLock::release(){
-            if (fd_ < 0) return;
-            ::flock(fd_, LOCK_UN);
-            ::close(fd_);
-            fd_ = -1;
-        }
+void FileLock::release() {
+    if (fd_ < 0) return;
+    ::flock(fd_, LOCK_UN);
+    ::close(fd_);
+    fd_ = -1;
+}
 
 } // namespace xlings::platform_impl
 

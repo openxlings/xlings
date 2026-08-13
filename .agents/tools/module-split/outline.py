@@ -200,6 +200,35 @@ def qualify(head: str, cls: str, nested: set[str], fn: str) -> str:
     return f'{lead_ws}{ret_stripped}{sep}{cls}::{name.strip()}' + head[o:]
 
 
+def dedent(text: str, n: int) -> str:
+    """Shift every line but the first left by up to n spaces.  A member body
+    carries the class's indentation; left alone, 3,845 lines of out-of-line
+    definitions come out indented one level too deep with their closing brace
+    hanging in mid-air."""
+    if n <= 0:
+        return text
+    head, sep, rest = text.partition('\n')
+    if not sep:
+        return text
+    out = []
+    for line in rest.split('\n'):
+        k = 0
+        while k < n and k < len(line) and line[k] == ' ':
+            k += 1
+        out.append(line[k:])
+    return head + '\n' + '\n'.join(out)
+
+
+def indent_of(lead: str, head: str) -> int:
+    """How far the member declaration is indented inside the class."""
+    m = re.search(r'[ \t]*$', lead.split('\n')[-1])
+    base = len(m.group(0).expandtabs(4)) if m else 0
+    if base:
+        return base
+    m = re.match(r'[ \t]*', head)
+    return len(m.group(0).expandtabs(4))
+
+
 def member_name(decl: str) -> str:
     """The declarator-id of a member function head."""
     m = mask_operator(scrub(decl))
@@ -255,10 +284,11 @@ def outline_class(cls_item: Item, ns: str, outer: str, out_impl: list,
             if movable:
                 # in-class: declaration only, default arguments kept
                 pieces.append(it.lead + decl.rstrip() + ';')
+                ind = indent_of(it.lead, it.head)
                 out_impl.append((ns, guards.current(),
                     qualify(strip_virt_specifiers(strip_defaults(decl)),
-                            qual, nested, cname).strip()
-                    + init + it.body + it.tail))
+                            qual, nested, cname).strip() + ' '
+                    + dedent(init + it.body + it.tail, ind).lstrip(' ')))
                 stats['members'] += 1
                 stats['lines'] += it.body.count('\n')
                 keep = False
@@ -312,6 +342,12 @@ def group_by_namespace(out_impl: list) -> str:
     return '\n\n'.join(parts)
 
 
+BANNER = ('// \u2500\u2500 out-of-line class members '
+          '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+          '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+          '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+          '\u2500\u2500\u2500\u2500')
+
 LIMIT = [None]      # bisection aid: outline at most this many members per file
 
 
@@ -335,6 +371,16 @@ def process(path: str, write: bool):
         return 0, 0, f'{path}: no outlinable members'
     if write:
         open(path, 'w').write(preamble + new_body)
+        # Re-running must replace the generated section, not stack another copy
+        # on top of it.  Appending blind produced three definitions of
+        # `TaskManager::TaskManager` in task.cpp across three regenerations --
+        # and only in the files this tool creates itself, because those are the
+        # ones split.py does not rewrite from scratch.
+        if os.path.exists(cpp):
+            prev = open(cpp).read()
+            cut = prev.find(BANNER)
+            if cut >= 0:
+                open(cpp, 'w').write(prev[:cut].rstrip() + '\n')
         if not os.path.exists(cpp):
             # This module had nothing at namespace scope to move, so phase 1
             # produced no implementation unit.  Build its preamble the same way
@@ -351,8 +397,7 @@ def process(path: str, write: bool):
                 head += '\n' + '\n'.join(imports) + '\n'
             open(cpp, 'w').write(head)
         with open(cpp, 'a') as fh:
-            fh.write('\n\n// ── out-of-line class members '
-                     '─────────────────────────────────\n\n')
+            fh.write('\n\n' + BANNER + '\n\n')
             fh.write(group_by_namespace(out_impl) + '\n')
     return stats['members'], stats['lines'], None
 
