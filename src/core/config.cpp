@@ -1210,17 +1210,4 @@ void Config::save_workspace() {
     platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
 }
 
-void Config::print_paths() {
-    auto& p = paths();
-    std::println("XLINGS_HOME:     {}", p.homeDir.string());
-    std::println("XLINGS_DATA:     {}", display_path(p.dataDir));
-    if (has_project_config() && !project_index_repos().empty()) {
-        std::println("XLINGS_DATA_PROJECT: {}", display_path(project_data_dir()));
-    }
-    std::println("XLINGS_SUBOS:    {}", display_path(p.subosDir));
-    std::println("  activeSubos:   {}", p.activeSubos);
-    std::println("  selfContained: {}", p.selfContained);
-    std::println("  bin:           {}", display_path(p.binDir));
-}
-
 } // namespace xlings

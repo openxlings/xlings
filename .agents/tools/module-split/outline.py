@@ -229,6 +229,28 @@ def indent_of(lead: str, head: str) -> int:
     return len(m.group(0).expandtabs(4))
 
 
+# `std::print("...")` / `std::println("...")` -- the overload that takes no
+# stream.  libc++ implements it by calling `print(stdout, fmt, args...)`, so the
+# FILE* overload has to be visible; when it is not, `stdout` is deduced AS the
+# format string and the error is a deleted `formatter<basic_format_string<...>>`.
+STREAMLESS_PRINT = re.compile(r'std::print(?:ln)?\s*\(\s*(?!stderr\b|stdout\b)')
+
+
+def anchors_streamless_print(body: str) -> bool:
+    """An in-class body is implicitly inline, so it IS in the BMI, and it can be
+    the only thing that instantiates `std::print`/`std::println` for every
+    importer of the module.  Move it out and that instantiation point moves with
+    it -- after which clang 20 on macOS stops finding the FILE* overload in TUs
+    that were compiling before and are otherwise untouched
+    (`Config::print_paths()` took `migrate.cpp` and `uninstall.cpp` down this
+    way; xlings-ci-macos runs 31660163438 and 31660753235).
+
+    Phase 1 is not subject to this and does not carry the rule: a non-inline
+    namespace-scope body need not be in the BMI at all, so it was never anchoring
+    anything -- which is why phase 1 passed macOS and phase 2 did not."""
+    return STREAMLESS_PRINT.search(scrub(body)) is not None
+
+
 def member_name(decl: str) -> str:
     """The declarator-id of a member function head."""
     m = mask_operator(scrub(decl))
@@ -279,6 +301,7 @@ def outline_class(cls_item: Item, ns: str, outer: str, out_impl: list,
                 and 'friend' not in h
                 and '::' not in scrub(mask_operator(decl)).split('(')[0].split()[-1]
                 and not ice_skipped(path, cname, member_name(decl))
+                and not anchors_streamless_print(it.body)
                 and (LIMIT[0] is None or stats['members'] < LIMIT[0])
             )
             if movable:

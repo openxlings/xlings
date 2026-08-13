@@ -60,6 +60,11 @@ void enable_color(bool enabled) {
     gColor_ = enabled;
 }
 
+// Colors come from xlings.core.palette, so these prefixes follow the
+// terminal background like the rendered panels do and go quiet under
+// NO_COLOR / TERM=dumb / a pipe. They used to be dark-palette SGR literals
+// spelled out here, which is why a light terminal kept getting the
+// low-contrast text the palette exists to avoid.
 bool color_on_()     { return gColor_ && palette::colors_enabled(); }
 
 bool color_on_err_() { return gColor_ && palette::colors_enabled_err(); }

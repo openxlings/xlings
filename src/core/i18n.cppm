@@ -165,8 +165,6 @@ constexpr MsgEntry gMessages_[] = {
 static_assert(sizeof(gMessages_) / sizeof(gMessages_[0]) == MSG_COUNT,
               "gMessages_ size must match Msg enum count");
 
-extern std::string gLang_;
-
 export void set_language(const std::string& lang);
 
 export [[nodiscard]] const std::string& language();

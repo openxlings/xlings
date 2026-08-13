@@ -520,12 +520,6 @@ def declared_name(decl: str) -> str:
     return region[hits[-1].start():hits[-1].end()] if hits else ''
 
 
-def interface_has_template(iface: str) -> bool:
-    """Does anything left in the interface get instantiated in an importer?"""
-    return re.search(r'^[ \t]*(?:export\s+)?template\s*<', scrub(iface), re.M) \
-        is not None
-
-
 def resolve_candidates(iface: str, impl: str, cands: list):
     """A NON-exported declaration belongs in the interface only if something
     still IN the interface names it -- an exported template, an inline or
@@ -538,21 +532,6 @@ def resolve_candidates(iface: str, impl: str, cands: list):
     on IFACE_MARK."""
     if not cands:
         return IFACE_RE.sub('', iface), IMPL_RE.sub('', impl)
-    # A template left in the interface is instantiated in the IMPORTER, and what
-    # that instantiation can see depends on the interface's reachability set --
-    # which dropping declarations changes, in ways the standard leaves to the
-    # implementation.  clang 20 on macOS reads it differently from gcc 16 on
-    # Linux: after log.cppm lost three module-private declarations, every TU
-    # instantiating a zero-argument `log::` template failed inside libc++'s
-    # <print>, having stopped seeing the FILE* overload (xlings-ci-macos run
-    # 31660163438).  Neither gcc 16 nor clang 20 on Linux reproduces it, so this
-    # is conservative rather than clever: a module whose interface still holds a
-    # template keeps all of its declarations.  Six files, none of them a
-    # build-time bottleneck.
-    if interface_has_template(iface):
-        return (IFACE_RE.sub(lambda m: cands[int(m.group(1))].decl, iface),
-                IMPL_RE.sub(lambda m: cands[int(m.group(1))].impl_no_defaults,
-                            impl))
     # what the interface still says with every candidate declaration removed
     residue = IFACE_RE.sub('', iface)
     keep = set()
