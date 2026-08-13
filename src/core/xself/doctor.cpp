@@ -88,6 +88,16 @@ DoctorState load_state_() {
     return st;
 }
 
+// Does this payload ship ANY executable?
+//
+// The discriminator between "a library-only package that xvm typed as a
+// program" and "a program whose binary went missing". `is_binding_root` was
+// doing that job and cannot: it skips the entry itself, so a package that is
+// the sole member of its own release comes back false and gets reported as
+// broken. Reinstalling it can never help, because nothing is wrong.
+//
+// Scanning is confined to the failure path, and shallow: the payload root and
+// bin/, which is where a recipe puts programs.
 bool payload_has_any_executable_(const fs::path& dir) {
     auto scan = [](const fs::path& d) {
         std::error_code ec;
@@ -113,6 +123,16 @@ bool payload_has_any_executable_(const fs::path& dir) {
     return scan(dir) || scan(dir / "bin");
 }
 
+// An alias as the runtime would actually read it.
+//
+// Two things had to be stripped before the "is this an absolute path outside
+// the payload" question could be answered, and neither was:
+//   - surrounding quotes. A recipe that quotes a path containing spaces stores
+//     `"/home/…/claude.exe"`, whose first character is `"`, so is_absolute()
+//     said no and every such entry was reported as an unresolvable alias. Five
+//     of the nine warnings on the measured home were this.
+//   - ${XLINGS_HOME} / @xlings placeholders, which expand to an absolute path
+//     and until then look relative.
 std::string alias_program_(const std::string& aliasCmd,
                            const std::string& homeStr) {
     auto sp = aliasCmd.find(' ');
@@ -132,6 +152,18 @@ fs::path audit_payload_dir_(const xim::PackageMatch& match) {
         / match.version;
 }
 
+// The command that repairs a broken entry, or nothing.
+//
+// A finding names an xvm TARGET; every remedy is a PACKAGE. `xlings install
+// nm@20.1.7` cannot succeed, because no package is called `nm` -- it is a
+// program the llvm package registers. The same goes for `xim-musl-gnu-gcc`
+// (package: `musl-gcc`) and `VBoxHeadless` (package: `virtualbox`). Printing
+// twenty such commands is worse than printing none, because they get run.
+//
+// Candidates come from xvm/owner.cppm in descending order of confidence and
+// each is confirmed against the index before use. Nothing is offered on a
+// guess, and when nothing confirms, the finding says so instead of inventing
+// a command.
 std::optional<xvm::InstallCoordinate>
 owning_coordinate_(const xvm::VersionDB& db,
                    const std::string& target,
@@ -143,6 +175,27 @@ owning_coordinate_(const xvm::VersionDB& db,
     return std::nullopt;
 }
 
+// Would activating this release be undone by the repair that runs next?
+//
+// `--fix` is a sequence of repairs, and two of them want opposite things. The
+// activation repair makes an unreachable release reachable; the deactivation
+// repair (repair_state_ → plan_incoherent_deactivation) takes down releases
+// whose members disagree about which release they are. Activating a release
+// that shares program names with an ACTIVE one produces exactly that
+// disagreement, so the second repair tears down what the first just built --
+// and the wreckage reads as a fresh crop of "installed but inactive" entries,
+// which the next run tries to activate again. Measured on 2026.8.1.1: `--fix`
+// ended with more issues than it started with and left `gcc` and `ld` with no
+// active version at all.
+//
+// The answer does not need new machinery. Both halves already exist and are
+// exported: `plan_use_switch` computes the member map activation would write,
+// and `plan_incoherent_deactivation` IS the teardown. So the question is
+// answered by asking the second repair about the first repair's result --
+// simulate, then consult. Detection calls the function the repair calls, the
+// same rule the baked-subos-path check follows, so the two cannot drift.
+//
+// Returns the reason to refuse, or empty when the activation is safe.
 std::string activation_conflict_(const DoctorState& st,
                                  const std::string& rootTarget,
                                  const std::string& rootVersion) {
@@ -188,6 +241,16 @@ std::string activation_conflict_(const DoctorState& st,
     return reason;
 }
 
+// D1–D5 over the active subos's `subos_info`.
+//
+// One function, called by detection and again by the repair pass. The repair
+// acts on what this returns rather than on its own reading of the rules --
+// a reporter and a repairer that each describe the criteria end up describing
+// them differently, and then fight.
+//
+// Nothing here needs XVM state except D2 and D5, which take the database and
+// already-parsed active workspace as arguments, so the manifest leaf itself
+// stays independent of VersionDB.
 std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                                             const xvm::Workspace& workspace,
                                             const fs::path& subosDir,
@@ -471,6 +534,27 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     return out;
 }
 
+// Is the file every shim dispatches through the xlings this home says it runs?
+//
+// TWO SHAPES, ONE FINDING. Reported separately because the user's next move
+// differs, and because each is evidence the other cannot supply:
+//
+//   * the active binding names a version, the FILE reports another. Provable
+//     divergence -- the writer is `use`/`install` of the xlings package, so
+//     the only ways to reach this state are a hand-copied binary or a failed
+//     replacement. Live on a real home while this was written: the binding
+//     said `local:0.4.51` and the file was 2026.8.11.1.
+//   * the file is behind a version this home already has on disk. Directional
+//     on purpose -- "not equal" would fire on every deliberately pinned entry,
+//     and the half that bites is only ever "the entry is older".
+//
+// The version comes from RUNNING the binary (entry_binary::version_of), not
+// from a record. Checking a record against another record is what let the
+// original divergence stand: `.xlings.json` and the versions DB agreed with
+// each other and neither described the file. ~60ms, measured, once per run.
+//
+// An unreadable entry produces NOTHING. No observation is not a verdict --
+// the same rule `registered`/`kRegisteredUnrecorded` follows one module over.
 std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
     std::vector<Finding> out;
     auto& p = Config::paths();
@@ -1739,6 +1823,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     return scan;
 }
 
+// Everything below the payload layer: shims and pure state-file edits. All of
+// it is local, none of it can fail halfway in a way the user has to unpick.
 void repair_local_(const DoctorState& st, const Scan& scan,
                    RepairReport& out) {
     auto& p = Config::paths();
@@ -1902,6 +1988,13 @@ void repair_local_(const DoctorState& st, const Scan& scan,
     }
 }
 
+// The three state-file repairs, in an order that matters.
+//
+// Dangling edges first: they are repairable without guessing, and leaving one
+// in place keeps the release it names unresolvable, which would make the
+// deactivation pass below see a problem that is really this one. Unregistered
+// actives next, for the same reason in reverse: an active pointer into nothing
+// makes a release look incoherent when it is merely absent.
 void repair_state_(RepairReport& out) {
     const auto note = [&](std::string label, std::string text) {
         out.notes.emplace_back(std::move(label), std::move(text));
@@ -2052,6 +2145,13 @@ void repair_state_(RepairReport& out) {
     }
 }
 
+// Other subos: the deletions doctor could already describe exactly.
+//
+// Nothing is installed and nothing is chosen. `active` entries pointing at a
+// version the shared database does not have are dropped, and `installed[]`
+// entries likewise -- both are references into nothing, and both are what the
+// report used to hand back as a list of commands for the user to run one subos
+// at a time.
 void repair_other_subos_(const DoctorState& st, RepairReport& out) {
     auto plan = xvm::plan_subos_metadata_repair(Config::versions(),
                                                 st.otherSubos);
@@ -2101,6 +2201,16 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
     }
 }
 
+// ── the payload ladder ───────────────────────────────────────────────
+
+// `onStep`, because the repair below shells out to `xlings install` and that
+// can be a large download with nothing on screen.
+//
+// In a plain terminal the child's own output is visible. In the agent and TUI
+// modes it is NOT: `platform::exec` appends `>/dev/null 2>&1` when
+// `tui_mode_` is set (platform.cppm), so the same repair is a genuinely
+// silent multi-hundred-megabyte wait there. Saying what is about to run, and
+// that it may download, is the difference between waiting and giving up.
 void repair_payloads_(const DoctorState& st, const Scan& scan,
                       const CoordinateProbe& probe, bool dryRun,
                       RepairReport& out,
@@ -2191,6 +2301,25 @@ void repair_payloads_(const DoctorState& st, const Scan& scan,
     }
 }
 
+// Activate what is installed and inactive, by running `use`.
+//
+// Deliberately a subprocess and deliberately the exact command the finding
+// prints. Activating a release is not a workspace write: it places the
+// release's libraries and headers in the sysroot and writes a shim per
+// member, and xvm's `use` path is the only code that does all of it. Setting
+// `workspace[name]` here would activate the name and leave the sysroot
+// holding whatever the previous release put there -- the half-switched state
+// plan_use_switch was written to make impossible.
+//
+// `use` moves the WHOLE release, which can take a name from another provider:
+// node's release owns `npm`, and a separately installed npm package may hold
+// that name today. That is not a side effect this hides -- it is what the
+// printed remedy does when the user runs it by hand, and a `--fix` that did
+// something narrower than the command it advertises would be a third
+// behaviour to reason about. The install path is where "do not take a name
+// from another provider" belongs, and that is where it now lives
+// (registration.cppm); by the time doctor is looking at the wreckage, the
+// user has asked for repair.
 void repair_inactive_(const Scan& scan, const std::string& client,
                       const CommandRunner& run, bool dryRun,
                       RepairReport& out) {
@@ -2229,6 +2358,19 @@ void repair_inactive_(const Scan& scan, const std::string& client,
     }
 }
 
+// Re-run the install of a payload whose own stamp records that it failed.
+//
+// Separate from repair_payloads_ and NOT routed through owning_coordinate_,
+// because these findings come from the store rather than the version database
+// and the database is exactly what does not know about them. The coordinate
+// was recovered from the store layout when the finding was made -- the payload
+// path IS the package identity (xvm/owner.cppm) -- so the remedy already names
+// the right package and there is nothing left to resolve.
+//
+// Re-running the install is the whole repair: the failure marker makes
+// `installation_state` report Incomplete, which is what makes the installer
+// run the hook again instead of concluding "already installed" from the files
+// the failure left behind.
 void repair_incomplete_(const Scan& scan, const CommandRunner& run,
                         bool dryRun, RepairReport& out,
                         const std::function<void(std::string_view)>& onStep = {}) {
@@ -2275,6 +2417,27 @@ void repair_incomplete_(const Scan& scan, const CommandRunner& run,
     }
 }
 
+// The last rung: drop a registration that is provably dead.
+//
+// Runs after the ladder and after a reload, on findings that SURVIVED it. That
+// ordering is the whole safety argument -- pruning is not a guess about
+// whether an entry could be revived, it is what is left once the attempt to
+// revive it has been made and has failed.
+//
+// Three things have to be true, and re-detection has already established the
+// first two:
+//   - the payload is gone, or present with nothing runnable in it and no
+//     release to anchor. There is nothing to lose that has not already been
+//     lost.
+//   - the repair ladder ran and the finding is still there.
+//   - nothing else in the home still resolves through it. The workspace entry
+//     and the installed[] entry go with it, in the same transaction, or the
+//     prune would trade a broken payload for a dangling pointer.
+//
+// What it buys: the eleven `repair skipped` and nine `repair failed` lines on
+// the measured home -- entries whose namespace index no longer exists, and
+// aliases a foreign platform registered -- stop coming back on every run, and
+// the migration marker can finally land.
 void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
                                RepairReport& out) {
     std::vector<std::pair<std::string, std::string>> victims;

@@ -34,6 +34,7 @@ import xlings.core.xim.index_cmd;
 
 namespace xlings::cli {
 
+// ─── EventStream consumer: dispatch DataEvent to ui:: functions ───
 void dispatch_data_event(const DataEvent& e) {
     auto json = nlohmann::json::parse(e.json, nullptr, false);
     if (json.is_discarded()) {
@@ -263,6 +264,7 @@ void dispatch_data_event(const DataEvent& e) {
     }
 }
 
+// ─── EventStream consumer: handle PromptEvent via ui:: interactive functions ───
 void handle_prompt(EventStream& stream, const PromptEvent& p) {
     // Binary yes/no → confirm dialog
     if (p.options.size() == 2 && p.options[0] == "y" && p.options[1] == "n") {
@@ -287,6 +289,8 @@ void handle_prompt(EventStream& stream, const PromptEvent& p) {
     stream.respond(p.id, p.defaultValue);
 }
 
+// Parse legacy config.xlings (Lua format) and extract workspace from the xim table.
+// Returns empty workspace if file doesn't exist or has no xim/xlings_deps.
 xvm::Workspace parse_legacy_config_(const std::filesystem::path& configFile) {
     namespace fs = std::filesystem;
     xvm::Workspace workspace;
@@ -349,6 +353,7 @@ xvm::Workspace parse_legacy_config_(const std::filesystem::path& configFile) {
     return workspace;
 }
 
+// Generate .xlings.json from a workspace map
 void generate_xlings_json_(const std::filesystem::path& dir, const xvm::Workspace& workspace) {
     nlohmann::json ws;
     for (auto& [name, version] : workspace) {
@@ -360,6 +365,23 @@ void generate_xlings_json_(const std::filesystem::path& dir, const xvm::Workspac
     platform::write_string_to_file(outPath.string(), root.dump(2));
 }
 
+// Normalize a target-spec from positional args for the single-target
+// commands (remove/update/info — `use` has its own list-versions
+// semantic and parses inline).
+//
+// Accepted forms (equivalent):
+//   1 positional, contains '@'   →  passed as-is  (e.g. "node@22.17.1")
+//   1 positional, no '@'         →  passed as-is  (bare name; the cmd
+//                                    decides what to do — typically
+//                                    "use the active version")
+//   2 positionals                →  folded into "<arg0>@<arg1>"
+//
+// Rejected:
+//   3+ positionals
+//   2 positionals where arg0 already contains '@' (ambiguous)
+//
+// Returns false (with a logged error) on bad input. Caller should
+// `return 1` on false.
 bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
                         std::string& out) {
     auto n = args.positional_count();
@@ -393,6 +415,7 @@ bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
     return true;
 }
 
+// Install packages from project .xlings.json workspace
 int install_from_project_config_(EventStream& stream) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -471,6 +494,7 @@ void apply_global_opts_(const mcpplibs::cmdline::ParsedArgs& args) {
     if (args.is_flag_set("quiet")) log::set_level(log::Level::Error);
 }
 
+// config subcommand handler
 int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) {
     // Edits are collected rather than applied, then replayed against the
     // document `update_home_config` re-reads under the state lock. Applying
@@ -589,6 +613,17 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     return 0;
 }
 
+// `xlings profile list|commit|rollback` — generations of the active subos.
+//
+// The module had commit / list_generations / rollback and no way to reach
+// any of them: four exported functions, zero callers, no subcommand. So the
+// feature read as working and was not, and `rollback` in particular wrote a
+// YAML file nothing consulted.
+//
+// Commit is explicit rather than automatic. Recording a generation on every
+// install would change the hot path for everyone, and which mutations
+// deserve a generation is a product decision, not one to make on the way
+// past. Explicit commits make the feature usable now without deciding it.
 int run_profile_(int argc, char* argv[], EventStream& stream) {
     const std::string action = (argc >= 3) ? argv[2] : "list";
     auto& p = Config::paths();

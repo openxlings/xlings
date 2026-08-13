@@ -19,6 +19,7 @@ import xlings.agent.resources;
 
 namespace xlings::agent {
 
+// Print the overview text followed by the skill index table.
 void print_overview(const SkillRegistry& reg) {
     std::cout << resources::kOverview << "\n\n";
     std::cout << "Available skills (run `xlings agent skills <name>`):\n\n";
@@ -30,6 +31,7 @@ void print_overview(const SkillRegistry& reg) {
     std::cout << "\n";
 }
 
+// Print the full content of a named skill.
 bool print_skill(const SkillRegistry& reg, std::string_view name) {
     auto* skill = reg.find(name);
     if (skill) {

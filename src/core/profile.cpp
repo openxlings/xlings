@@ -35,6 +35,12 @@ int next_gen_number_(const fs::path& gensDir) {
     return maxNum + 1;
 }
 
+// NOTE: `.workspace.xvm.yaml` used to be written here and by rollback().
+// Nothing in the tree ever read it -- which is what made `profile rollback`
+// a no-op with respect to version selection: it recorded an intent in a file
+// no reader consulted, and the live workspace kept whatever it had. Rollback
+// now returns the selection so the caller can apply it through the real
+// switch path, and the file is gone rather than left as a decoy.
 std::uintmax_t dir_size_(const fs::path& dir) {
     std::uintmax_t total = 0;
     std::error_code ec;
@@ -210,6 +216,8 @@ bool save_subos_workspace(const fs::path& subosRoot,
     return true;
 }
 
+// Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
+// by mapping workspace target names to xpkg directory paths via the versions DB.
 std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
     std::set<std::string> referenced;
     auto xpkgsDir = xlingsHome / "data" / "xpkgs";

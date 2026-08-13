@@ -8,6 +8,7 @@ import xlings.platform;
 
 namespace xlings::xself {
 
+// Best-effort directory size in bytes. Errors are silently treated as 0.
 std::uintmax_t dir_size_bytes_(const fs::path& dir) {
     std::error_code ec;
     if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return 0;
@@ -34,6 +35,8 @@ std::string format_bytes_(std::uintmax_t bytes) {
     return buf;
 }
 
+// Refuse to operate on suspicious XLINGS_HOME values that could nuke
+// large parts of the filesystem if the env var was set wrong.
 bool home_dir_safe_to_remove_(const fs::path& home) {
     std::error_code ec;
     auto canonical = fs::weakly_canonical(home, ec);
@@ -69,6 +72,8 @@ bool home_dir_safe_to_remove_(const fs::path& home) {
     return true;
 }
 
+// chdir to a safe location so the process doesn't have a cwd inside
+// the directory we're about to delete. Returns the path it moved to.
 fs::path chdir_to_safe_() {
     std::error_code ec;
 #ifdef _WIN32
@@ -84,6 +89,9 @@ fs::path chdir_to_safe_() {
 
 #ifdef _WIN32
 
+// Move xlings.exe out of XLINGS_HOME and schedule the moved copy for
+// delete-on-reboot. Returns true on success (or no-op if file already
+// gone), false on hard failure.
 bool windows_self_displace_(const fs::path& xlingsExe) {
     std::error_code ec;
     if (!fs::exists(xlingsExe, ec)) return true;  // nothing to do
@@ -151,6 +159,10 @@ bool prompt_yes_no_(const std::string& question) {
     return line[0] == 'y' || line[0] == 'Y';
 }
 
+// Every startup file `self install` may have hooked, so the advisory covers
+// the same set the install wrote to. The list used to be POSIX-only, which on
+// Windows meant uninstall reported nothing at all while leaving a source line
+// behind in one or two PowerShell profiles.
 std::vector<fs::path> hooked_startup_files_(const fs::path& userHome) {
     static const std::vector<std::string> rc_files = {
         ".bashrc", ".zshrc", ".profile", ".config/fish/config.fish"

@@ -80,6 +80,11 @@ std::string read_terminal_query_reply(int fd,
         return acc;
     }
 
+    // Overall deadline for the terminal background query. Default 500 ms,
+    // overridable via XLINGS_TERM_QUERY_TIMEOUT_MS (clamped to [50, 5000]).
+    // Responsive terminals hit the CPR fence in a few ms and return early;
+    // the deadline only bites on a tty that answers neither OSC-11 nor DSR.
+    
 std::chrono::milliseconds term_query_timeout_() {
         long ms = 500;
         if (const char* v = std::getenv("XLINGS_TERM_QUERY_TIMEOUT_MS")) {

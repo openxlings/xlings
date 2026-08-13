@@ -15,6 +15,7 @@ namespace xlings::xim {
 
 namespace detail_ {
 
+// Repo + tag are fixed discovery anchors; overridable for testing/mirrors.
 std::string index_repo_name_() {
     if (auto* e = std::getenv("XLINGS_INDEX_REPO"); e && *e) return e;
     return "xim-index";
@@ -30,6 +31,13 @@ std::string lower_hex_(std::string s) {
     return s;
 }
 
+// Download the first working candidate URL into destFile, trying each candidate
+// explicitly and continuing past ANY failure — including HTTP 404. This differs
+// from tinyhttps::download_file's internal candidate loop, which treats 404 as a
+// definitive not-found and stops (correct for a single authoritative asset, but
+// wrong for index mirrors: one server 404ing must fall through to the next, e.g.
+// gitcode 404 -> github). When wantSha256 is set, a candidate is accepted only
+// if its bytes match. Returns empty string on success, else the last error.
 std::string download_candidates_(std::vector<std::string> urls,
                                  const std::filesystem::path& destFile,
                                  std::string_view wantSha256) {
@@ -82,6 +90,11 @@ BaseOverride resolve_base_() {
     return b;
 }
 
+// Obtain `filename` into `dest`: local-dir copy, or remote (base override, else
+// the given remoteUrls). Verifies sha256 when wantSha is non-empty.
+// #377: `forced` replaces the global env/config base override entirely — a
+// custom source must never be redirected by XLINGS_INDEX_BASE_URL; a forge
+// custom source passes an EMPTY override ("use the URL list as-is").
 std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
                         const std::filesystem::path& dest, std::string_view wantSha,
                         const BaseOverride* forced = nullptr) {
@@ -107,6 +120,9 @@ std::string obtain_file(const std::string& filename, std::vector<std::string> re
     return download_candidates_(std::move(urls), dest, wantSha);
 }
 
+// #377: forced base for a custom source: local-dir copy, flat-remote base, or
+// (for forge bases) an EMPTY override meaning "use the passed URL list, but do
+// NOT apply the global index-base override".
 BaseOverride base_override_for_(const ArtifactSource& src) {
     BaseOverride b;
     if (src.localDir) { b.local = src.localDir; b.base = src.base; }
@@ -422,6 +438,11 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
     return urls;
 }
 
+  // namespace detail_
+
+// Newest published version of `consumer` as the pointer advertises it, or ""
+// when the pointer does not say. Requires load_index_pointers() to have run
+// for the same source (fetch_index_artifact always does).
 std::string client_latest_for(std::string_view consumer, const ArtifactSource* custom) {
     const std::string cacheKey = custom ? custom->base : std::string{};
     const auto& all = detail_::client_latest_cache_();

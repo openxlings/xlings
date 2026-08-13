@@ -42,6 +42,8 @@ RegistrationGroupIdentity registration_group_identity_(
     };
 }
 
+// Moved to xvm.types so the switch planner reads them identically -- see the
+// comment there. Kept as thin aliases so this file's call sites stay legible.
 std::string effective_kind_(
     const VInfo& info,
     const VData& data) {
@@ -107,6 +109,13 @@ std::string registration_path_token_(std::string_view token) {
     return escaped;
 }
 
+// Path comparison that survives a record written on another platform.
+//
+// Not a filesystem question: `db` holds whatever string the client that wrote
+// it produced, and a home carried over from Windows holds
+// `C:\…` / `/home/you/.xlings\data\xpkgs\…` on a machine where those separators
+// mean nothing. Normalising to '/' is what lets a Linux client recognise the
+// record as its own.
 std::string normalized_payload_path_(std::string_view path) {
     std::string out{path};
     std::ranges::replace(out, '\\', '/');
@@ -114,6 +123,7 @@ std::string normalized_payload_path_(std::string_view path) {
     return out;
 }
 
+// Is `candidate` the same payload as `root`, or something inside it?
 bool payload_path_covers_(std::string_view root, std::string_view candidate) {
     if (root.empty() || candidate.empty()) return false;
     if (candidate == root) return true;

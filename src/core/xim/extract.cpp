@@ -68,10 +68,19 @@ std::string libarchive_error_(struct archive* a) {
     return "unknown libarchive error";
 }
 
+// User/group lookup callbacks for archive_write_disk that always return
+// 0 (root). Wired into archive_write_disk_set_user_lookup so libarchive
+// never falls back to getpwnam_r/getgrnam_r — see the call site for the
+// rationale.
+//
+// Signature matches libarchive's `archive_write_disk_set_user_lookup` /
+// `set_group_lookup` callback type:
+//     la_int64_t (*lookup)(void* private_data, const char* name, la_int64_t id);
 la_int64_t const_root_lookup_uid_(void*, const char*, la_int64_t) { return 0; }
 
 la_int64_t const_root_lookup_gid_(void*, const char*, la_int64_t) { return 0; }
 
+// Read each block of an entry's payload from `src` and write to `dst`.
 std::expected<void, ExtractError>
 copy_entry_data_(struct archive* src, struct archive* dst) {
     const void* buff = nullptr;

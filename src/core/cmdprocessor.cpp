@@ -12,6 +12,11 @@ import mcpplibs.xpkg.executor;
 
 namespace xlings::cmdprocessor {
 
+// Resolve the xmake project directory that contains xim task definition.
+// The xim task is defined in a xmake.lua that lives next to an xim/ directory
+// (release/installed layout).  The source tree keeps xim code under core/xim/
+// which is NOT a valid -P target; in that case we fall through to the default
+// installed home (~/.xlings) which always has the correct layout.
 std::filesystem::path find_xim_project_dir() {
     namespace fs = std::filesystem;
 

@@ -132,6 +132,9 @@ void write_if_missing_(const fs::path& path, std::string_view content) {
     platform::write_string_to_file(path.string(), std::string(content));
 }
 
+// Give a subos directory a valid `subos_info`, preserving everything else in
+// the file. Idempotent: a block that already validates is left alone, so the
+// envs packages declared into it survive.
 void ensure_subos_manifest_(const fs::path& subos_dir) {
     namespace mf = xlings::subos::manifest;
     auto path = subos_dir / ".xlings.json";
@@ -163,6 +166,10 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     platform::write_string_to_file(path.string(), json.dump(2));
 }
 
+// Extract the value following `# xlings-profile-version: ` on any line of
+// `text`. Returns an empty string when the marker is absent, which we
+// interpret as "legacy v1" — anything older than the time we started
+// shipping a version marker.
 std::string extract_profile_version_(std::string_view text) {
     constexpr std::string_view marker = "# xlings-profile-version:";
     auto pos = text.find(marker);
@@ -182,6 +189,18 @@ std::string extract_profile_version_(std::string_view text) {
     return value;
 }
 
+// Profile-aware writer. Behavior:
+//
+//   1. Path doesn't exist  → write fresh.
+//   2. Path exists, version matches `target_version` → leave alone (we
+//      respect any user edits made after install).
+//   3. Path exists with older or missing version marker → overwrite, log
+//      the upgrade. This is how shell-level subos switching reaches users
+//      who installed before v2 of the profile shipped.
+//
+// The version of the bytes we're shipping comes from
+// xlings::xself::profile_resources::kVersion; the on-disk value comes from
+// the marker line we inject as the first comment of every profile.
 void write_or_upgrade_profile_(const fs::path& path,
                                       std::string_view content,
                                       std::string_view target_version) {
@@ -203,6 +222,12 @@ void write_or_upgrade_profile_(const fs::path& path,
     platform::write_string_to_file(path.string(), std::string(content));
 }
 
+// Read-modify-writes `<home>/.xlings.json` without taking the state lock
+// itself. Both callers reach it through `ensure_home_layout`, and the only
+// caller of that is `xself::cmd_install`, which holds the lock for its whole
+// home-rewriting stretch. Acquiring here as well would be harmless (the lock
+// is re-entrant within a process) but would suggest this is safe to call
+// from somewhere unlocked, which it is not.
 void ensure_home_config_defaults_(const fs::path& home_dir) {
     auto config_path = home_dir / ".xlings.json";
     nlohmann::json json = nlohmann::json::object();

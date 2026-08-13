@@ -22,8 +22,18 @@ default = "gcc@16.1.0"
 macos = "llvm@20.1.7"
 windows = "llvm@20.1.7"
 
+# Same major as the dev toolchain on purpose. gcc 15.1.0-musl rejects a
+# `std::views::transform` pipeline once its function body lives in a module
+# implementation unit ("use of `operator|` before deduction of `auto`",
+# catalog.cpp), while gcc 16.1.0 accepts it -- and the reverse has bitten this
+# project too: `views::split | ranges::to` compiled under 15.1.0-musl and made a
+# whole module fail with "Bad file data" under 16.1.0
+# (.agents/docs/2026-08-06-subos-architecture-proposal.md). Range adaptors in
+# modules are fragile in BOTH directions across these two versions, so the two
+# targets now share one compiler major instead of trading one breakage for the
+# other.
 [target.x86_64-linux-musl]
-toolchain = "gcc@15.1.0-musl"
+toolchain = "gcc@16.1.0-musl"
 linkage = "static"
 
 # aarch64 (ARM64) static target — host-aware (native musl-gcc on ARM,
