@@ -391,12 +391,18 @@ def decl_from_def(h: str) -> str:
 class Cand:
     """A module-private entity whose declaration may or may not be needed in
     the interface."""
-    __slots__ = ('ns', 'decl', 'name', 'impl_with_defaults', 'impl_no_defaults')
+    __slots__ = ('ns', 'decl', 'name', 'lead',
+                 'impl_with_defaults', 'impl_no_defaults')
 
-    def __init__(self, ns, decl, name, impl_with_defaults, impl_no_defaults):
+    def __init__(self, ns, decl, name, lead, impl_with_defaults,
+                 impl_no_defaults):
         self.ns = ns
         self.decl = decl
         self.name = name
+        # The doc comment. It travels with whichever side keeps the
+        # declaration: dropping it with the declaration would delete the
+        # explanation of a helper whose body is still there.
+        self.lead = lead
         self.impl_with_defaults = impl_with_defaults
         self.impl_no_defaults = impl_no_defaults
 
@@ -468,7 +474,7 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False,
                 out.impl.append(no_def)
             else:
                 cid = str(len(out.cands))
-                out.cands.append(Cand(ns, decl, declared_name(it.head),
+                out.cands.append(Cand(ns, decl, declared_name(it.head), it.lead,
                                       plain.lstrip('\n') + it.body + it.tail,
                                       no_def))
                 out.iface.append(IFACE_MARK + cid + MARK_END)
@@ -491,7 +497,8 @@ def process_level(items: list[Item], out: Split, indent: str, in_class=False,
                 out.impl.append(defn)
             else:
                 cid = str(len(out.cands))
-                out.cands.append(Cand(ns, ext, declared_name(bare), defn, defn))
+                out.cands.append(Cand(ns, ext, declared_name(bare), it.lead,
+                                      defn, defn))
                 out.iface.append(IFACE_MARK + cid + MARK_END)
                 out.impl.append(IMPL_MARK + cid + MARK_END)
             out.moved += 1
@@ -538,11 +545,15 @@ def resolve_candidates(iface: str, impl: str, cands: list):
     iface = IFACE_RE.sub(
         lambda m: cands[int(m.group(1))].decl if int(m.group(1)) in keep else '',
         iface)
-    impl = IMPL_RE.sub(
-        lambda m: (cands[int(m.group(1))].impl_no_defaults
-                   if int(m.group(1)) in keep
-                   else cands[int(m.group(1))].impl_with_defaults),
-        impl)
+    def impl_for(m):
+        c = cands[int(m.group(1))]
+        if int(m.group(1)) in keep:
+            return c.impl_no_defaults      # its comment stayed with the decl
+        lead = c.lead.strip('\n')
+        return (lead + '\n' + c.impl_with_defaults) if lead.strip() \
+            else c.impl_with_defaults
+
+    impl = IMPL_RE.sub(impl_for, impl)
     return iface, impl
 
 
