@@ -1555,6 +1555,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             auditLastSpoke = now;
             audit.onProgress(auditDone, auditTotal, root.target, root.version);
         };
+        const auto cacheHitsBefore =
+            audit.payloadCache ? audit.payloadCache->hits() : 0;
         for (const auto& root : payloadAuditRoots) {
             auditTick(root);
             ++auditDone;
@@ -1573,6 +1575,11 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                         root.target, root.version),
                 });
             }
+        }
+        if (audit.onAuditDone) {
+            const auto hitsNow =
+                audit.payloadCache ? audit.payloadCache->hits() : 0;
+            audit.onAuditDone(auditDone, hitsNow - cacheHitsBefore);
         }
         }
 
@@ -3099,6 +3106,21 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
             std::format("auditing payloads (pass {}) {}/{} — {}@{}",
                         auditPass, done, total, target, version),
         });
+        std::cout.flush();
+    };
+
+    // What the audit covered, once it has. Closes the "deep audit scope: ..."
+    // line that opened it, and is the only channel that distinguishes an audit
+    // of this whole home from an audit of one package -- see onAuditDone.
+    audit.onAuditDone = [&stream, &auditPass](std::size_t scanned,
+                                              std::size_t fromCache) {
+        std::string detail = std::format(
+            "deep audit (pass {}): {} payload(s) examined", auditPass, scanned);
+        if (fromCache > 0) {
+            detail += std::format(", {} unchanged since the last pass",
+                                  fromCache);
+        }
+        stream.emit(LogEvent{LogLevel::info, std::move(detail)});
         std::cout.flush();
     };
     // The catalog is needed by the REPAIR, not only by the audit — it is how a

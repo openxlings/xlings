@@ -57,23 +57,70 @@ cat > "$HOME_DIR/subos/default/.xlings.json" <<JSON
 JSON
 
 # scan_payload only needs ELF magic before asking patchelf for the two fields.
-# The recorder makes the fixture independent of the host compiler and libc.
-printf '\177ELFfixture\n' > "$PAYLOAD/bin/host-linked-app"
-printf 'fixture libc\n' > "$LIBDIR/libc.so.6"
+# A REAL ELF, built here rather than compiled.
+#
+# This fixture used to be `\177ELF` followed by the word "fixture", plus a stub
+# `patchelf` on PATH that answered both queries -- which worked because the
+# audit shelled out to whatever `patchelf` it found. It no longer does: the two
+# fields are read in-process from the program header table (xlings.core.elfread),
+# so a file that is not really an ELF now has nothing to read and the finding
+# correctly disappears.
+#
+# That is the same property this change was FOR. A reader that could be
+# satisfied by a script on PATH was a reader whose answer depended on the
+# machine, and a missing patchelf made a clean scan and an unperformed scan
+# print the same thing.
+#
+# So the fixture becomes real: ELF64, PT_INTERP naming the HOST loader,
+# DT_RUNPATH naming the PAYLOAD's core-runtime directory. Written byte by byte
+# rather than compiled, which keeps the original property the stub was for --
+# independence from the host compiler and libc.
+python3 - "$PAYLOAD/bin/host-linked-app" "$LIBDIR" <<'PY'
+import struct, sys
 
-cat > "$TOOLS_DIR/patchelf" <<'SH'
-#!/bin/sh
-case "$1" in
-  --print-interpreter) printf '/lib64/ld-linux-x86-64.so.2\n' ;;
-  --print-rpath)       printf '%s\n' "$ELF_GUARD_LIBDIR" ;;
-  *)                   exit 2 ;;
-esac
-SH
-chmod +x "$TOOLS_DIR/patchelf"
+out_path, runpath = sys.argv[1], sys.argv[2]
+interp = b"/lib64/ld-linux-x86-64.so.2\0"
+LOAD_VADDR, PHENTSIZE, PHNUM = 0x400000, 56, 3
+body_start = 64 + PHENTSIZE * PHNUM
+
+body = bytearray()
+interp_off = len(body); body += interp
+
+strtab_off = len(body)
+body += b"\0"                      # .dynstr index 0 is the empty string
+runpath_idx = len(body) - strtab_off
+body += runpath.encode() + b"\0"
+
+while len(body) % 8: body += b"\0"
+dyn_off = len(body)
+for tag, val in ((5, LOAD_VADDR + body_start + strtab_off),  # DT_STRTAB (vaddr)
+                 (29, runpath_idx),                          # DT_RUNPATH
+                 (0, 0)):                                    # DT_NULL
+    body += struct.pack("<QQ", tag, val)
+dyn_size = len(body) - dyn_off
+total = body_start + len(body)
+
+eh = bytearray(b"\x7fELF\x02\x01\x01\x00" + b"\0" * 8)
+eh += struct.pack("<HHIQQQIHHHHHH",
+                  2, 0x3e, 1, LOAD_VADDR, 64, 0, 0, 64, PHENTSIZE, PHNUM, 64, 0, 0)
+
+def phdr(t, off, vaddr, size):
+    return struct.pack("<IIQQQQQQ", t, 4, off, vaddr, vaddr, size, size, 0x1000)
+
+ph = (phdr(1, 0, LOAD_VADDR, total)                                        # PT_LOAD
+      + phdr(3, body_start + interp_off,
+             LOAD_VADDR + body_start + interp_off, len(interp))            # PT_INTERP
+      + phdr(2, body_start + dyn_off,
+             LOAD_VADDR + body_start + dyn_off, dyn_size))                 # PT_DYNAMIC
+
+with open(out_path, "wb") as f:
+    f.write(bytes(eh) + ph + bytes(body))
+PY
+printf 'fixture libc\n' > "$LIBDIR/libc.so.6"
 
 run_doctor() {
   ( cd /tmp && env -i HOME="$HOME_DIR" PATH="$TOOLS_DIR:/usr/bin:/bin" \
-      XLINGS_HOME="$HOME_DIR" ELF_GUARD_LIBDIR="$LIBDIR" \
+      XLINGS_HOME="$HOME_DIR" \
       "$XLINGS_BIN" self doctor --deep )
 }
 

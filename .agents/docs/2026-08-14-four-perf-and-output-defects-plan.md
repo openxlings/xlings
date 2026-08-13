@@ -686,3 +686,71 @@ distinct nested stores: 74      ← 一一对应
 > `test_log_line.cpp` 第一版用 `freopen("/dev/tty")` 还原 stdout —— 本机能过,
 > **CI 上没有 tty,还原会失败,之后这个二进制里所有测试的输出都会写进临时文件**,
 > 连 gtest 自己的报告一起消失。复查时发现,改成 dup/dup2 保存原 fd。
+
+---
+
+## 9. e2e 抓到的:两个测试的**观测手段**被这次改动拿掉了
+
+单测 41/41 全绿、真机实测全对、`diff` 逐字节相同 —— 然后本地跑 e2e,**两个测试挂了**。
+两个都不是产品回归,但都不是「改个断言就行」,值得记下来。
+
+### 9.1 `elf_host_loader_payload_libc_guard_test.sh`:假 ELF 不再是 ELF
+
+夹具是这样造的:
+
+```sh
+printf '\177ELF fixture\n' > "$PAYLOAD/bin/host-linked-app"    # 11 字节,不是 ELF
+cat > "$TOOLS_DIR/patchelf" <<'SH'                              # PATH 上的桩
+  --print-interpreter) printf '/lib64/ld-linux-x86-64.so.2\n' ;;
+  --print-rpath)       printf '%s\n' "$ELF_GUARD_LIBDIR" ;;
+SH
+```
+
+老实现只校验 4 字节魔数,然后**把两个字段问 PATH 上的 patchelf** —— 于是一个
+11 字节的假文件加一个 shell 桩就能演出完整的场景。新实现读真正的 program header
+表,假文件没有可读的结构,发现自然消失。
+
+**这恰恰是这次改动的目的。** 一个能被 PATH 上的脚本满足的读取器,就是一个
+**答案取决于机器**的读取器 —— 而 §7.2 ③ 说的正是它的另一面:patchelf 缺失时,
+「干净」和「没扫」输出完全相同。
+
+所以夹具改成**真 ELF**:ELF64,PT_INTERP 指宿主 loader,DT_RUNPATH 指 payload
+的 core runtime 目录,用 python3 逐字节写出来(保留原来「不依赖宿主编译器和 libc」
+这一点)。桩 patchelf 整个删掉。
+
+### 9.2 `self_doctor_depth_test.sh`:整个测试建立在数 patchelf 调用次数上
+
+它断言 `deep_patchelf == 1000`(500 个 ELF × 2 次调用)、`quick_patchelf == 0`,
+以此证明「`--deep` 扫了,`--quick` 没扫,`--scope` 只扫一个」。
+现在 patchelf 调用数恒为 0,**这个观测手段整个没了**。
+
+要测的性质本身完全有效,没了的是**怎么看见它**。所以给审计加了一条它自己的覆盖报告:
+
+```
+[xlings] deep audit (pass 1): 1 payload(s) examined
+[xlings] deep audit (pass 2): 365 payload(s) examined, 365 unchanged since the last pass
+```
+
+这比原来的观测**更好**,不只是「还能用」:
+
+- 原来数的是问题下面两层的实现细节;现在报的**就是那个问题** ——
+  「你到底看了多少」,由看的那个东西回答。
+- 它顺手把 `PayloadScanCache::hits()` 用上了 —— 我写了却没有任何调用者,
+  这本身就是个味道,复查时才发现。
+- 它让 §8.1 里我原本要靠 debug 日志反推的缓存效果,变成**产品自己说的话**:
+
+```
+[xlings] deep audit (pass 1): 365 payload(s) examined
+[xlings] deep audit (pass 2): 365 payload(s) examined, 365 unchanged since the last pass
+... (共 6 遍)
+```
+
+一遍真扫、五遍全缓存,**不用再去数 `skipping nested store` 了**。
+
+### 9.3 顺带踩了 memory 里记过的坑
+
+新的 `audited_payloads()` 第一版是 `grep | grep | grep | awk`。
+`set -euo pipefail` 下,**quick 那次跑没有匹配 ⇒ grep 退出 1 ⇒ 管道失败 ⇒
+`x="$(audited_payloads)"` 直接杀掉整个脚本,一个字都不打印**。
+现象就是 `EXIT=1`、零输出 —— 正是 `reference_e2e_set_e_silent_death` 记的形状,
+而且是在**它要测的那个正确情形**上触发的。改成单个 awk(无匹配也退出 0)。
