@@ -20,7 +20,7 @@ module (`module M;`), because `module M:part;` would be another partition and
 would still produce a BMI — and a module may have any number of implementation
 units.
 
-Three things left the interface:
+Four things left the interface:
 
 1. **Namespace-scope implementations** — 81 files, 779 entities, 26,606 body lines.
 2. **Class member bodies** — 29 files, 286 members, 3,845 body lines. A body
@@ -30,13 +30,19 @@ Three things left the interface:
    an `inline`/`constexpr` body, a class member body). Otherwise it belongs in
    the implementation unit: in the interface it sits in the BMI, so changing its
    signature would recompile every importer for nothing.
+4. **The imports the bodies took with them** — 153 of 554 interface import edges
+   (28%). `split.py` *copies* the import list into the implementation unit, which
+   is right for the implementation and wrong for the interface: it was left
+   importing modules only the moved bodies used, and every such edge makes the
+   interface's BMI depend on a module it does not name. Found by self-review, not
+   by a compiler — nothing about it fails to build.
 
 ### Interface surface
 
 | | lines | share of original |
 |---|---|---|
 | interface before | 46,253 | 100% |
-| interface after | **14,819** | **32%** |
+| interface after phases 1–3 | **14,666** | **32%** |
 | implementation after | 35,655 | |
 
 110 interface units, 92 implementation units (90 generated + `main.cpp` +
@@ -414,3 +420,29 @@ p4.m.gcm`), verified on a throwaway project — but its check pass does not expa
 the bare `:part` the way its dependency scanner does. The generated
 implementation units avoid the warning by relying on the primary interface's
 `export import :part;` rather than importing the partition directly.
+
+## 12. What self-review caught that no compiler would
+
+Everything below built green before it was found. That is the point: a green
+build is not evidence that a refactor is complete or that a report is true.
+
+| finding | how it surfaced |
+|---|---|
+| **153 of 554 interface import edges (28%) named nothing in the interface** — split.py copied the import list instead of moving it, so the interface kept depending on modules only the moved bodies used | reading the diff and asking what the interface still needs |
+| **`cold.sh` never ran from where it was committed** — its root was `dirname/../..`, right in `build/bench` and pointing at `.agents/` from `.agents/tools/module-split/`. Broken since this branch's first commit, and cited by this report | running the documented command |
+| **This report cited two scripts that are not in the repo** — `clang_variant.sh` and `measure_side.sh` lived under `build/`, which is gitignored, so the local gate could not be run by anyone reading it | checking that every path in the report exists |
+| **The unverified surface was overstated by 69%** — 1,228 lines "behind platform guards" is really 728; the counter flagged any block mentioning `_WIN32`/`__APPLE__`, including `#if !defined(_WIN32)`, true on Linux | re-deriving a number instead of trusting the first script that produced it |
+| **The control-probe claim was backwards** — the report said it "must show no improvement". It improves 2.5×, because the interfaces it still rebuilds are smaller | comparing the claim against the measurement |
+| **A closure bug in the new tool** — `names \|= …` makes `names` local to the nested function | smoke-testing the tool against `main`, where it correctly finds only 4% to drop |
+| **Tool files were 644 while every other tool in `.agents/tools` is 755** | listing the mode bits |
+
+Four things the review checked and found clean, each stated as a number rather
+than an impression:
+
+| invariant | result |
+|---|---|
+| function definitions | **1,262 → 1,262**, none lost, none duplicated |
+| exported identifiers | **961 → 961**, 0 lost, 0 gained |
+| module names | 110, byte-identical |
+| dynamic-initialisation order | one module has globals on both sides of the split, and the one that stayed is `std::atomic<bool>{false}` — constant-initialised, so there is no order to preserve |
+| reconstructed `#if` guards | both verified against their originals; macOS and Windows CI confirm |
