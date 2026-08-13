@@ -60,9 +60,20 @@ XLINGS_BIN="$(find_xlings_bin)"
 # `env -i` on purpose: the lock is re-entrant for a child of its holder, via
 # XLINGS_STATE_LOCK_HELD. Inheriting that marker from this shell would make
 # every command below skip the lock and the test would pass vacuously.
+#
+# XLINGS_LOCK_TIMEOUT is pinned because this file tests REFUSAL, not patience.
+# It held the production default implicitly, and when that default moved from
+# 30s to 10 minutes -- so a second `xlings install` waits for a real install
+# instead of failing on one -- four refusals turned this test from 2 minutes
+# into 40, the slowest thing in the suite by an order of magnitude.
+#
+# A test that asserts "refused while the lock is held" should say how long it
+# is willing to wait to see that, rather than inherit a number chosen for
+# interactive users. Pinning it also means the next change to the default
+# cannot silently make CI 38 minutes slower.
 RUN() {
   ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
-      XLINGS_HOME="$HOME_DIR" "$XLINGS_BIN" "$@" )
+      XLINGS_HOME="$HOME_DIR" XLINGS_LOCK_TIMEOUT=2 "$XLINGS_BIN" "$@" )
 }
 
 json_get() {  # json_get <jq-ish path expr in python>
