@@ -163,12 +163,16 @@ void emit_line_(std::FILE* stream, std::string_view tag, palette::Rgb color,
         appendTag(contextTag);
     }
 
+    // Indent after every newline EXCEPT a trailing one. A message that already
+    // ends in '\n' would otherwise get a final line made entirely of spaces --
+    // invisible in a terminal, and trailing whitespace in a log file or a
+    // captured CI transcript.
     const std::string indent(width, ' ');
-    for (const auto ch : msg) {
-        line += ch;
-        if (ch == '\n') line += indent;
+    for (std::size_t i = 0; i < msg.size(); ++i) {
+        line += msg[i];
+        if (msg[i] == '\n' && i + 1 < msg.size()) line += indent;
     }
-    line += '\n';
+    if (line.empty() || line.back() != '\n') line += '\n';
 
     {
         std::lock_guard guard(console::output_mutex());

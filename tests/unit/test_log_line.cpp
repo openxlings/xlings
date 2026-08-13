@@ -204,3 +204,34 @@ TEST(LogLine, ConcurrentLoggersDoNotTearEachOthersLines) {
             << "two prefixes on one line: " << line;
     }
 }
+
+// A message that already ends in a newline must not gain a line of spaces.
+//
+// The indenter inserts the continuation indent after every '\n' it sees. On a
+// trailing newline that produces a final line consisting only of spaces --
+// invisible on a terminal, and trailing whitespace everywhere the output is
+// captured. Found by re-reading the loop, not by any test failing.
+TEST(LogLine, TrailingNewlineDoesNotProduceALineOfSpaces) {
+    CaptureFile file;
+    xlings::log::enable_color(false);
+    xlings::log::clear_context();
+
+    const auto out = capture(stdout, file.path, [] {
+        xlings::log::info("done\n");
+    });
+
+    EXPECT_EQ(out, "[xlings] done\n");
+}
+
+// And the message keeps exactly one terminator either way.
+TEST(LogLine, MessageWithoutNewlineGetsExactlyOne) {
+    CaptureFile file;
+    xlings::log::enable_color(false);
+    xlings::log::clear_context();
+
+    const auto out = capture(stdout, file.path, [] {
+        xlings::log::info("done");
+    });
+
+    EXPECT_EQ(out, "[xlings] done\n");
+}
