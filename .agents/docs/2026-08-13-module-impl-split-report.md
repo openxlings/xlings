@@ -14,11 +14,32 @@ implementation. Each is now a standard-conforming pair:
 | interface unit | `X.cppm` | `export module M;` | yes |
 | implementation unit | `X.cpp` | `module M;` | **no** |
 
-No directories moved, no behaviour changed, no product code was written. A
-partition's implementation goes into an implementation unit of the *primary*
-module (`module M;`), because `module M:part;` would be another partition and
-would still produce a BMI — and a module may have any number of implementation
-units.
+No directories moved. A partition's implementation goes into an implementation
+unit of the *primary* module (`module M;`), because `module M:part;` would be
+another partition and would still produce a BMI — and a module may have any
+number of implementation units.
+
+**What did change beyond moving text**, stated plainly rather than filed under
+"no behaviour changed":
+
+- **11 call sites in product code** now name their stream —
+  `std::println(stdout, ...)` instead of `std::println(...)`. `[print.fun]`
+  defines the short form *as* the long one, so the meaning is identical, but it
+  is an edit to product code and not a move (§8b explains why it was necessary).
+- **The musl release target moved from `gcc@15.1.0-musl` to `gcc@16.1.0-musl`**
+  (§8a). A different compiler major generates different code; this changes what
+  ships, even though no source changed to cause it.
+- **Namespace-scope `static` lost the keyword** on the entities that split, taking
+  them from internal to module linkage. Same single definition either way, and
+  module linkage still keeps the name module-private.
+- **Moved bodies lost their implicit `inline`**, which costs cross-TU inlining
+  without LTO. Measured: +0.10% binary size at `-O0`; `-O2` runtime is not
+  measured.
+
+Behaviour is otherwise unchanged, and it is checked rather than asserted: 1,262
+function definitions conserved exactly, 961 exported identifiers with none lost
+or gained, 110 module names byte-identical, and the full unit suite plus the e2e
+block green on six CI workflows.
 
 Four things left the interface:
 
@@ -136,9 +157,10 @@ Harness: `.agents/tools/module-split/{cold.sh,incr.py}`, driver
 | ref | runs (s) | median |
 |---|---|---|
 | `main` @ b1563fe | 67.17 / 55.27 / 56.40 | **56.40** |
-| this branch | 36.97 / 27.28 / 26.85 | **27.28** |
+| branch, phases 1–2 | 36.97 / 27.28 / 26.85 | 27.28 |
+| **branch, phases 1–3** | 32.96 / 25.71 / 26.09 | **26.09** |
 
-**2.07× faster**, and the direction was not a given: translation units roughly
+**2.16× faster**, and the direction was not a given: translation units roughly
 doubled (110 interfaces → 110 interfaces + 92 implementation units). Smaller
 BMIs pay more than the extra TUs cost. The first run on each side is the high
 one — that is page cache for freshly written files, which is why the median is
@@ -171,6 +193,12 @@ the mean, so one outlier would move it silently.
 | `shim_filename_` | 16 | 45.55 / 35.89 | 7.86 / 7.78 | **4.6×** |
 | `compare_segment` — **control**, `inline` on both | 23 | 43.58 / 54.53 | 17.24 / 17.54 | 2.5× |
 
+Those branch figures are from phases 1–2. Spot-checked again after phase 3, both
+improved slightly and neither regressed: `parse_sudo_env` 4.39 / 4.35 (from
+4.46 / 4.60) and the control 15.31 / 15.24 (from 17.24 / 17.54) — the control gains
+because the downstream interfaces it still rebuilds now carry smaller import
+closures too. Best-to-best for `parse_sudo_env` becomes **12.4×**.
+
 **On `main`, editing one function body costs about as much as building the whole
 project from scratch** — 54–63s against a 56.40s cold build. That is the shape
 the fan-out predicted: a high-fan-out interface edit rebuilds nearly everything,
@@ -184,39 +212,42 @@ The branch's `parse_index_repos_json` first run (19.69s against 6.36s on the
 second) is an outlier, not a pattern — the same probe measured 6.51 / 6.32 in an
 earlier run of the same harness.
 
-### `mcpp test` — where the split LOSES
+### `mcpp test` — and the finding that changed the conclusion
 
-| ref | wall clock | result |
-|---|---|---|
-| `main` | **953.81s** | 38 passed, 0 failed |
-| this branch | 1104.83s (**1.16× slower**) | 38 passed, 0 failed |
+| ref | wall clock | vs main | result |
+|---|---|---|---|
+| `main` | 953.81s | — | 38 passed, 0 failed |
+| branch, phases 1–2 | 1104.83s | **1.16× SLOWER** | 38 passed, 0 failed |
+| **branch, phases 1–3** | **921.73s** | **1.03× faster** | 38 passed, 0 failed |
 
-This is the one measurement that goes the wrong way, and the mechanism is not a
-guess. Per test binary:
+Before phase 3 this was the one measurement that went the wrong way, and the
+report said so. Per test binary:
 
-| ref | min | median | max | sum over 38 |
-|---|---|---|---|---|
-| `main` | 20.86s | 21.18s | 41.16s | 832.5s |
-| this branch | 23.96s | 24.92s | 45.53s | 1011.7s |
+| ref | min | median | max | sum over 38 | vs main |
+|---|---|---|---|---|---|
+| `main` | 20.86 | 21.18 | 41.16 | 832.5 | — |
+| branch, phases 1–2 | 23.96 | 24.92 | 45.53 | 1011.7 | **+3.74s** |
+| branch, phases 1–3 | 20.88 | **21.07** | 41.30 | **831.0** | **−0.11s** |
 
-**+4.72s per binary, and 38 × 4.72 = +179s is the entire gap.** The overhead is
-near-constant across binaries regardless of the test file's own size — min +3.10,
-median +3.74, max +4.37. A compile-side cost would scale with the file being
-compiled; a link-side cost would not. Each test binary now links roughly 202
-object files instead of 112.
+**I had the mechanism wrong, and the fix is what proved it.** The regression looked
+like link cost: the overhead was near-constant per binary regardless of the test
+file's own size, and each test binary now links ~202 object files instead of ~112.
+That reasoning does not distinguish the two candidates — **BMI loading is also
+near-constant per TU**, because it depends on the import closure and not on the
+file being compiled.
 
-So: **the split trades link time for compile time.** Compilation gets much
-faster; linking gets slower, and `mcpp test` is link-dominated because it links
-39 large static binaries. A workflow that links once (`mcpp build`) wins 2×; a
-workflow that links 39 times loses 16%.
+Phase 3 settled it as a controlled experiment. It changes **only** interface
+import edges: the object count each test binary links is identical before and
+after. If linking were the cause the penalty would have survived. It vanished
+entirely — +3.74s per binary became −0.11s.
 
-The obvious follow-up is on the test harness rather than the split: 38 binaries
-each statically linking the whole project is what makes link cost dominate, and
-one binary (or a shared library) would remove it. That is out of scope here.
+So the cause was the stale imports: every test TU was loading the BMIs of modules
+that nothing in the interfaces named, 28% more import edges than needed. The
+split does **not** meaningfully trade link time for compile time; it was carrying
+a defect that looked like that trade.
 
-The branch figure carries a ~27s pessimism: `src/` was regenerated part-way
-through that run, forcing a module rebuild the main-side run did not pay. It
-biases against the branch, so the 1.16× is if anything slightly overstated.
+The phases 1–2 figure also carries a ~27s pessimism — `src/` was regenerated
+part-way through that run — but that is noise next to the 179s the trim removed.
 
 ## 5. Two gcc@16.1.0 internal compiler errors
 
