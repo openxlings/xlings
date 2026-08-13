@@ -85,30 +85,32 @@ export int add(int a, int b) {
 
 ### 接口与实现
 
-合并（全部在 .cppm）与分离（.cppm + .cpp）均有效。
+**推荐默认：分离（`.cppm` + `.cpp`）。** 完整规则、实测数据和四个搬运陷阱
+见 [SKILL.md](SKILL.md#接口与实现分离推荐默认写法)。
 
-**合并于 .cppm** — 见上方「.cppm 与 .h/.hpp」：导出与实现在同一文件。
+- `.cppm`：仅接口 — `export module error;` + `export struct Error { void test(); };`
+- `.cpp`：实现 — `module error;` + 函数体
 
-**方式一：命名空间隔离**
+一句话理由：函数体写在 `.cppm` 里就进了 BMI，改一行实现会让所有 importer
+重编。xlings 仓库实测冷构建 2.16×、单次实现改动 12.4×。
+
+**合并写法**只留给没有函数体的模块（纯类型/常量/`concept`）、导出的模板、
+以及 `constexpr` 函数 —— 这三类必须在接口里可见。
+
+**命名空间隔离**（下面这种）不是分离的替代品：`add` 的函数体仍在 `.cppm`
+里，仍在 BMI 里，编译期依赖一点没少。它解决的是命名，不是重编译。
 
 ```cpp
 export module mcpplibs;
 
 namespace mcpplibs_impl {
-    int add(int a, int b) { return a + b; }
+    int add(int a, int b) { return a + b; }   // ← 仍在 BMI 中
 }
 
 export namespace mcpplibs {
     using mcpplibs_impl::add;
 };
 ```
-
-**方式二：分离（.cppm + .cpp）**
-
-- `.cppm`：仅接口 — `export module error;` + `export struct Error { void test(); };`
-- `.cpp`：实现 — `module error;` + 函数体
-
-简单模块用合并；需隐藏实现或减少编译依赖时用分离。
 
 ### 多文件模块
 

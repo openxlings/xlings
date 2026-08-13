@@ -26,10 +26,14 @@ namespace platform_impl {
         FileLock& operator=(FileLock&& other) noexcept;
         ~FileLock();
 
+        // See unix.cppm for the contract; both platforms must agree because
+        // the state lock's waiting message is written once, above them.
         bool acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error);
+                     std::string& error,
+                     const std::function<void(std::chrono::milliseconds)>&
+                         onWait = {});
 
         void release();
 

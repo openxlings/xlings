@@ -4,6 +4,7 @@ import xlings.cli;
 import xlings.core.config;
 import xlings.platform;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.lock;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
@@ -69,6 +70,22 @@ int main(int argc, char* argv[]) {
     // Have the new binary auto-upgrade them on its first run. Cheap on the
     // unchanged path (one read + version compare per profile file).
     xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
+
+    // What this process calls itself when another one has to wait for its
+    // state lock. Set here because this is the only place that has argv and
+    // is not itself a command; see xvm/lock.cppm.
+    //
+    // argv[0] is deliberately dropped: it is an absolute path to a store
+    // payload and would fill the message with the one part of it the reader
+    // already knows.
+    {
+        std::string command = "xlings";
+        for (int i = 1; i < argc; ++i) {
+            command += ' ';
+            command += argv[i];
+        }
+        xlings::xvm::set_lock_command_hint(std::move(command));
+    }
 
     int rc;
     if (is_cli) {

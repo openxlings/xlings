@@ -37,10 +37,22 @@ namespace platform_impl {
         FileLock& operator=(FileLock&& other) noexcept;
         ~FileLock();
 
+        // `onWait` is called once as soon as the lock is known to be held by
+        // somebody else, and then about every second while the wait
+        // continues, with the elapsed time.
+        //
+        // It exists because the wait used to be silent. A 50ms poll loop for
+        // the whole timeout produces no output at all, so a second `xlings
+        // install` looked hung rather than queued -- which is exactly what it
+        // was reported as. A timeout of zero means wait indefinitely; flock is
+        // released by the kernel when its holder exits, so there is no stale
+        // lock to wait forever on.
         bool acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error);
+                     std::string& error,
+                     const std::function<void(std::chrono::milliseconds)>&
+                         onWait = {});
 
         void release();
 

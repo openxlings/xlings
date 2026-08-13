@@ -11,11 +11,9 @@ RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/self_doctor_depth"
 HOME_DIR="$RUNTIME_DIR/home"
 INDEX_DIR="$RUNTIME_DIR/xim-pkgindex"
 RECORDER_DIR="$RUNTIME_DIR/recorders"
-PATCHELF_TRACE="$RUNTIME_DIR/patchelf.trace"
 GETENT_TRACE="$RUNTIME_DIR/getent.trace"
 CHILD_TRACE="$RUNTIME_DIR/child-xlings.trace"
 OUT_FILE="$RUNTIME_DIR/doctor.out"
-FIRST_CALL_TRACE="$RUNTIME_DIR/first-patchelf.trace"
 
 cleanup() { rm -rf "$RUNTIME_DIR"; }
 trap cleanup EXIT
@@ -53,31 +51,50 @@ cat > "$HOME_DIR/.xlings.json" <<EOF
 }
 EOF
 
-cat > "$RECORDER_DIR/patchelf" <<'SH'
-#!/bin/sh
-if [ ! -e "$DOCTOR_FIRST_CALL_TRACE" ]; then
-  if grep -q 'fixture@1' "$DOCTOR_OUTPUT_FILE" 2>/dev/null; then
-    printf 'scope-announced\n' > "$DOCTOR_FIRST_CALL_TRACE"
-  else
-    printf 'scope-missing\n' > "$DOCTOR_FIRST_CALL_TRACE"
-  fi
-fi
-printf '%s\n' "$*" >> "$DOCTOR_PATCHELF_TRACE"
-case "$1" in
-  --print-interpreter) printf '/lib64/ld-linux-x86-64.so.2\n' ;;
-  --print-rpath)       printf '\n' ;;
-esac
-SH
-chmod +x "$RECORDER_DIR/patchelf"
+# HOW THE AUDIT IS OBSERVED
+#
+# This test used to count `patchelf` invocations through a recorder on PATH:
+# scan_payload forked it twice per ELF, so the count was a direct measure of
+# how much got scanned. The audit now reads PT_INTERP and DT_RUNPATH in-process
+# (xlings.core.elfread) and forks nothing, so that measure is gone -- along
+# with the property that made it possible, which was that a script on PATH
+# could change what the audit concluded.
+#
+# The replacement is the audit's own coverage report:
+#
+#     [xlings] deep audit (pass 1): 1 payload(s) examined
+#
+# That is a better observable, not merely a surviving one. The old count was an
+# implementation detail two layers below the question; this is the question --
+# "how much did it look at" -- answered by the thing that looked. A quick run
+# emits no such line at all, which is exactly the assertion this file makes.
+# Total payloads examined across every pass in one run.
+#
+# ONE awk, not a grep pipeline, and that is not a style choice. Under
+# `set -euo pipefail` a `grep` that matches nothing exits 1, the pipeline
+# inherits it, and `x="$(audited_payloads)"` then kills the whole script with
+# no output at all -- for the case this helper exists to measure, which is a
+# quick run that correctly audited nothing. awk exits 0 on no matches, so zero
+# reads as zero instead of as a dead test.
+audited_payloads() {
+  awk '
+    { gsub(/\033\[[0-9;?]*[A-Za-z]/, "") }
+    match($0, /deep audit \(pass [0-9]+\): [0-9]+ payload/) {
+      line = substr($0, RSTART, RLENGTH)
+      sub(/.*: /, "", line)
+      sub(/ payload.*/, "", line)
+      n += line
+    }
+    END { print n + 0 }
+  ' "$OUT_FILE" 2>/dev/null || printf '0\n'
+}
 
 RUN() {
   local doctor_home="${DOCTOR_HOME_OVERRIDE:-$HOME_DIR}"
   ( cd /tmp && exec env -i HOME="$HOME" \
       PATH="$RECORDER_DIR:/usr/bin:/bin" \
       XLINGS_HOME="$doctor_home" \
-      DOCTOR_PATCHELF_TRACE="$PATCHELF_TRACE" \
       DOCTOR_GETENT_TRACE="$GETENT_TRACE" \
-      DOCTOR_FIRST_CALL_TRACE="$FIRST_CALL_TRACE" \
       DOCTOR_OUTPUT_FILE="$OUT_FILE" \
       "$XLINGS_BIN" "$@" )
 }
@@ -92,9 +109,7 @@ RUN_WATCHED() {
   ( cd /tmp && exec env -i HOME="$HOME" \
       PATH="$RECORDER_DIR:/usr/bin:/bin" \
       XLINGS_HOME="$HOME_DIR" \
-      DOCTOR_PATCHELF_TRACE="$PATCHELF_TRACE" \
       DOCTOR_GETENT_TRACE="$GETENT_TRACE" \
-      DOCTOR_FIRST_CALL_TRACE="$FIRST_CALL_TRACE" \
       DOCTOR_OUTPUT_FILE="$OUT_FILE" \
       "$XLINGS_BIN" "$@" ) >"$OUT_FILE" 2>&1 &
   local root_pid=$! rc=0
@@ -130,8 +145,9 @@ ln -s "$INDEX_DIR" "$HOME_DIR/data/xim-pkgindex"
 setup_out="$(RUN --verbose info fixture@1 2>&1)" \
   || fail "setup: local fixture must resolve: $setup_out"
 
-# The target payload contains 500 real dynamic ELFs. scan_payload invokes
-# patchelf exactly twice for each one: interpreter, then rpath.
+# A payload with real dynamic ELFs in it. The count no longer decides an
+# assertion -- the audit reports payloads, not files -- but a payload that
+# actually contains ELFs is what makes "did it scan this one" a real question.
 PAYLOAD="$HOME_DIR/data/xpkgs/xim-x-fixture/1.0.0"
 mkdir -p "$PAYLOAD/bin"
 for i in $(seq 1 500); do
@@ -175,72 +191,74 @@ data.setdefault("versions", {})["fixture-tool"] = {
 p.write_text(json.dumps(data, indent=2))
 PY
 
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
 quick_rc=0
 RUN_WATCHED self doctor || quick_rc=$?
-quick_patchelf="$(wc -l < "$PATCHELF_TRACE")"
+quick_audited="$(audited_payloads)"
 quick_getent="$(wc -l < "$GETENT_TRACE")"
 quick_child="$(wc -l < "$CHILD_TRACE")"
 
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
 scope_only_rc=0
 RUN self doctor --scope fixture@1 >"$OUT_FILE" 2>&1 || scope_only_rc=$?
 scope_only_out="$(tr -d '\0' < "$OUT_FILE")"
-scope_only_patchelf="$(wc -l < "$PATCHELF_TRACE")"
+scope_only_audited="$(audited_payloads)"
 scope_only_getent="$(wc -l < "$GETENT_TRACE")"
 
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
-rm -f "$FIRST_CALL_TRACE"
 deep_rc=0
 RUN_WATCHED self doctor --deep --scope fixture@1 || deep_rc=$?
-deep_patchelf="$(wc -l < "$PATCHELF_TRACE")"
+deep_audited="$(audited_payloads)"
 deep_getent="$(wc -l < "$GETENT_TRACE")"
 deep_child="$(wc -l < "$CHILD_TRACE")"
-deep_first="$(cat "$FIRST_CALL_TRACE" 2>/dev/null || true)"
 deep_out="$(tr -d '\0' < "$OUT_FILE")"
+# The scope must be announced BEFORE the audit runs, not reported after it.
+# Silence up to the first result is indistinguishable from the hang this mode
+# replaced, and a user who bounded a scan wants to see the bound take effect.
+# Both lines are in one stream, so their order is directly observable -- which
+# the old recorder could only approximate by racing a file write.
+deep_scope_line="$(grep -n 'deep audit scope' <<<"$deep_out" | head -1 | cut -d: -f1)"
+deep_cover_line="$(grep -n 'deep audit (pass' <<<"$deep_out" | head -1 | cut -d: -f1)"
 
 errors=()
 [[ "$quick_rc" -eq 1 ]] \
   || errors+=("quick exited $quick_rc, expected the seeded broken-payload finding")
-[[ "$quick_patchelf" -eq 0 ]] \
-  || errors+=("quick invoked patchelf $quick_patchelf time(s), expected 0")
+[[ "$quick_audited" -eq 0 ]] \
+  || errors+=("quick examined $quick_audited payload(s), expected 0")
 [[ "$quick_getent" -eq 0 ]] \
   || errors+=("quick invoked getent $quick_getent time(s), expected 0")
 [[ "$quick_child" -eq 0 ]] \
   || errors+=("quick spawned child xlings $quick_child time(s), expected 0")
 [[ "$scope_only_rc" -eq 2 ]] \
   || errors+=("--scope without --deep exited $scope_only_rc, expected 2")
-[[ "$scope_only_patchelf" -eq 0 && "$scope_only_getent" -eq 0 ]] \
+[[ "$scope_only_audited" -eq 0 && "$scope_only_getent" -eq 0 ]] \
   || errors+=("--scope without --deep performed deep work")
 grep -q -- "--deep" <<<"$scope_only_out" \
   || errors+=("--scope without --deep did not explain the required depth")
 [[ "$deep_rc" -eq 1 ]] \
   || errors+=("deep scope exited $deep_rc, expected the seeded broken-payload finding: ${deep_out//$'\n'/ }")
-[[ "$deep_patchelf" -eq 1000 ]] \
-  || errors+=("deep scope invoked patchelf $deep_patchelf time(s), expected 1000")
+[[ "$deep_audited" -eq 1 ]] \
+  || errors+=("deep scope examined $deep_audited payload(s), expected exactly 1 (the scoped one)")
 [[ "$deep_getent" -eq 0 ]] \
   || errors+=("deep scope widened into glibc getent ($deep_getent call(s))")
 [[ "$deep_child" -eq 0 ]] \
   || errors+=("deep spawned child xlings $deep_child time(s), expected 0")
 grep -q "fixture@1" <<<"$deep_out" \
   || errors+=("deep output did not announce scope fixture@1")
-[[ "$deep_first" == "scope-announced" ]] \
-  || errors+=("deep scope was not visible before the first patchelf call")
+[[ -n "$deep_scope_line" && -n "$deep_cover_line"
+   && "$deep_scope_line" -lt "$deep_cover_line" ]] \
+  || errors+=("deep scope was not announced before the audit ran (scope line ${deep_scope_line:-none}, coverage line ${deep_cover_line:-none})")
 
 # A scope that cannot be proved unique is an input error. It must not silently
 # widen into the whole store, because that recreates the default hang under a
 # typo precisely when the user was trying to bound it.
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
 missing_rc=0
 RUN self doctor --deep --scope missing@1 >"$OUT_FILE" 2>&1 || missing_rc=$?
 missing_out="$(tr -d '\0' < "$OUT_FILE")"
 [[ "$missing_rc" -eq 2 ]] \
   || errors+=("missing scope exited $missing_rc, expected 2")
-[[ "$(wc -l < "$PATCHELF_TRACE")" -eq 0 ]] \
+[[ "$(audited_payloads)" -eq 0 ]] \
   || errors+=("missing scope widened into payload scanning")
 [[ "$(wc -l < "$GETENT_TRACE")" -eq 0 ]] \
   || errors+=("missing scope widened into getent probing")
@@ -250,7 +268,6 @@ grep -q "missing@1" <<<"$missing_out" \
 # Catalog resolution alone is insufficient proof of an audit scope: the exact
 # selected payload must exist locally. A known-but-uninstalled version fails
 # closed instead of turning into an empty successful audit or an all-store one.
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
 uninstalled_rc=0
 RUN self doctor --deep --scope fixture@2 >"$OUT_FILE" 2>&1 \
@@ -258,7 +275,7 @@ RUN self doctor --deep --scope fixture@2 >"$OUT_FILE" 2>&1 \
 uninstalled_out="$(tr -d '\0' < "$OUT_FILE")"
 [[ "$uninstalled_rc" -eq 2 ]] \
   || errors+=("uninstalled scope exited $uninstalled_rc, expected 2")
-[[ "$(wc -l < "$PATCHELF_TRACE")" -eq 0 ]] \
+[[ "$(audited_payloads)" -eq 0 ]] \
   || errors+=("uninstalled scope widened into payload scanning")
 [[ "$(wc -l < "$GETENT_TRACE")" -eq 0 ]] \
   || errors+=("uninstalled scope widened into getent probing")
@@ -279,14 +296,13 @@ data = json.loads(p.read_text())
 data["index_repos"].append({"name": "dup", "url": sys.argv[2]})
 p.write_text(json.dumps(data, indent=2))
 PY
-: > "$PATCHELF_TRACE"
 : > "$GETENT_TRACE"
 ambiguous_rc=0
 RUN self doctor --deep --scope fixture@1 >"$OUT_FILE" 2>&1 || ambiguous_rc=$?
 ambiguous_out="$(tr -d '\0' < "$OUT_FILE")"
 [[ "$ambiguous_rc" -eq 2 ]] \
   || errors+=("ambiguous scope exited $ambiguous_rc, expected 2")
-[[ "$(wc -l < "$PATCHELF_TRACE")" -eq 0 ]] \
+[[ "$(audited_payloads)" -eq 0 ]] \
   || errors+=("ambiguous scope widened into payload scanning")
 grep -qi "ambiguous" <<<"$ambiguous_out" \
   || errors+=("ambiguous-scope error did not explain the ambiguity")
@@ -304,13 +320,11 @@ DOCTOR_HOME_OVERRIDE="$FIX_HOME" RUN self init >/dev/null 2>&1 \
 cp --reflink=auto /bin/true "$FIX_HOME/data/xpkgs/audit-only/1/bin/elf"
 
 for fix_args in "--fix --dry-run" "--fix"; do
-  : > "$PATCHELF_TRACE"
-  rm -f "$FIRST_CALL_TRACE"
-  fix_rc=0
+    fix_rc=0
   # shellcheck disable=SC2086
   DOCTOR_HOME_OVERRIDE="$FIX_HOME" RUN self doctor $fix_args \
     >"$OUT_FILE" 2>&1 || fix_rc=$?
-  [[ "$(wc -l < "$PATCHELF_TRACE")" -gt 0 ]] \
+  [[ "$(audited_payloads)" -gt 0 ]] \
     || errors+=("doctor $fix_args did not imply deep detection (rc=$fix_rc)")
 done
 

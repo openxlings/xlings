@@ -45,14 +45,24 @@ std::string colored_err_(palette::Rgb c, const char* text);
 
 void write_to_file_(std::string_view prefix, std::string_view msg);
 
+// One line, one write, under the terminal lock. See log.cpp for the three
+// separate defects that collapsing these into a single call fixes.
+//
+// The templates below stay templates because `std::format_string` has to see
+// the arguments; everything after the formatting is here, out of line, so
+// there is exactly one implementation of what a log line looks like.
+void emit_line_(std::FILE* stream, std::string_view tag, palette::Rgb color,
+                bool bold, std::string_view msg);
+
+// Raw output that still has to take its turn on the terminal.
+void emit_raw_(std::FILE* stream, std::string_view text, bool newline);
+
 export template<typename... Args>
 void debug(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Debug) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print(stdout, "{} ", colored_(palette::dim(), "[debug]"));
-            if (!gContext_.empty()) std::print(stdout, "{} ", colored_(palette::dim(), std::format("[{}]", gContext_).c_str()));
-            std::println(stdout, "{}", msg);
+            emit_line_(stdout, "[debug]", palette::dim(), false, msg);
         }
         write_to_file_("[debug] ", msg);
     }
@@ -63,9 +73,7 @@ void info(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print(stdout, "{} ", colored_(palette::cyan(), "[xlings]"));
-            if (!gContext_.empty()) std::print(stdout, "{} ", colored_(palette::cyan(), std::format("[{}]", gContext_).c_str()));
-            std::println(stdout, "{}", msg);
+            emit_line_(stdout, "[xlings]", palette::cyan(), false, msg);
         }
         write_to_file_("[xlings] ", msg);
     }
@@ -76,9 +84,7 @@ void warn(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Warn) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
         if (!platform::is_tui_mode()) {
-            std::print(stderr, "{} ", colored_err_(palette::amber(), "[warn]"));
-            if (!gContext_.empty()) std::print(stderr, "{} ", colored_err_(palette::amber(), std::format("[{}]", gContext_).c_str()));
-            std::println(stderr, "{}", msg);
+            emit_line_(stderr, "[warn]", palette::amber(), false, msg);
         }
         write_to_file_("[warn] ", msg);
     }
@@ -88,14 +94,7 @@ export template<typename... Args>
 void error(std::format_string<Args...> fmt, Args&&... args) {
     auto msg = std::format(fmt, std::forward<Args>(args)...);
     if (!platform::is_tui_mode()) {
-        if (color_on_err_()) {
-            std::print(stderr, "{}{}[error]{} ",
-                       palette::bold, palette::sgr_fg(palette::red()), palette::reset);
-        } else {
-            std::print(stderr, "[error] ");
-        }
-        if (!gContext_.empty()) std::print(stderr, "{} ", colored_err_(palette::red(), std::format("[{}]", gContext_).c_str()));
-        std::println(stderr, "{}", msg);
+        emit_line_(stderr, "[error]", palette::red(), true, msg);
     }
     write_to_file_("[error] ", msg);
 }
@@ -104,7 +103,7 @@ export template<typename... Args>
 void println(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
-        if (!platform::is_tui_mode()) std::println(stdout, "{}", msg);
+        if (!platform::is_tui_mode()) emit_raw_(stdout, msg, true);
         write_to_file_("[status] ", msg);
     }
 }
@@ -113,7 +112,7 @@ export template<typename... Args>
 void print(std::format_string<Args...> fmt, Args&&... args) {
     if (gLevel_ <= Level::Info) {
         auto msg = std::format(fmt, std::forward<Args>(args)...);
-        std::print(stdout, "{}", msg);
+        emit_raw_(stdout, msg, false);
     }
 }
 

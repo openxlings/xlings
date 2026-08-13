@@ -310,6 +310,30 @@ struct AuditSelection {
     std::function<void(std::size_t done, std::size_t total,
                        std::string_view target, std::string_view version)>
         onProgress;
+
+    // Shared across the re-detections one `--fix` performs. Non-owning: the
+    // command owns the cache, because "one command" is precisely the window in
+    // which the only writer of a payload is this process. See PayloadScanCache.
+    //
+    // Null is valid and means "scan every time" -- which is what a plain
+    // `--deep` (one pass) wants, and what every test that has not opted in
+    // gets.
+    elfcheck::PayloadScanCache* payloadCache { nullptr };
+
+    // What the payload audit actually covered, reported when it finishes.
+    //
+    // "How long did it take" is the question this repository already answers.
+    // "How much did it look at" is the one it keeps needing and never had: a
+    // scan narrowed by `--scope`, one that skipped a nested store, and one
+    // that found nothing to do all used to print the same thing. A count is
+    // the difference between `--deep` having covered this home and having
+    // covered one package.
+    //
+    // `fromCache` is how many of those were served from PayloadScanCache
+    // rather than re-read. On a first pass it is zero; on `--fix`'s later
+    // passes it should be nearly all of them, and if it is not, the cache has
+    // stopped working and says so instead of just being slow again.
+    std::function<void(std::size_t scanned, std::size_t fromCache)> onAuditDone;
 };
 
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe,

@@ -7,6 +7,7 @@ module;
 module xlings.ui;
 
 import std;
+import xlings.core.console;
 import xlings.core.palette;
 
 namespace xlings::ui {
@@ -337,15 +338,42 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState, s
     auto body = layout::render_to_string(vbox(std::move(rows)), width,
                                          /*erase_eol=*/rewrite);
 
+    // Everything below happens under the terminal lock, INCLUDING the decision
+    // about where the cursor is. Reading the foreign-output epoch outside it
+    // would be a race with exactly the writer it is trying to notice.
+    std::lock_guard guard(console::output_mutex());
+
+    // Did anything else write since the last frame?
+    //
+    // `prevLines` is a promise that the cursor is still `prevLines` lines below
+    // where this frame started. A log line -- and during a download there are
+    // several, from worker threads -- breaks that promise, and moving up
+    // anyway lands the cursor in the middle of that text so the new frame gets
+    // painted over it. That is the reported "stray indent and mangled
+    // newlines".
+    //
+    // When it has been broken, the frame is APPENDED instead of overwritten.
+    // The user gets one extra copy of the progress block; they do not get
+    // their log output destroyed. Overwriting resumes on the next frame,
+    // because this one's position is known again.
+    static std::uint64_t seenEpoch = 0;
+    const auto epoch = console::foreign_output_epoch();
+    const bool positionKnown = (epoch == seenEpoch);
+    seenEpoch = epoch;
+
     // Build single output buffer: cursor-up + content + clear trailing.
     std::string output;
-    if (rewrite && prevLines > 0) {
+    if (rewrite && prevLines > 0 && positionKnown) {
         output += "\033[" + std::to_string(prevLines) + "A\r";
     }
     output += body;
     if (rewrite) output += "\033[J";
 
-    std::cout << output << std::flush;
+    // stdout as a FILE*, not std::cout: log::* writes there too, and on
+    // Windows `std::cout`'s streambuf and MSVC's console path for `std::print`
+    // are separate sinks that can emerge out of order. One sink, one lock.
+    std::fwrite(output.data(), 1, output.size(), stdout);
+    std::fflush(stdout);
 
     // Every row fits the terminal (fit_name_width_ above), so rendered rows
     // and physical lines are the same number and the cursor-up on the next

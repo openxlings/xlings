@@ -45,13 +45,56 @@ constexpr std::string_view no_lock_env() { return "XLINGS_NO_LOCK"; }
 // reintroducing the lost update this exists to prevent.
 constexpr std::string_view reentry_env() { return "XLINGS_STATE_LOCK_HELD"; }
 
+// Override the wait, in seconds. `0` means wait indefinitely.
+//
+// Automation that would rather fail than queue can set it low; a machine that
+// does long installs can set it high or to 0. The default below is what an
+// interactive user gets.
+constexpr std::string_view lock_timeout_env() { return "XLINGS_LOCK_TIMEOUT"; }
+
 std::string lock_scope_key(const std::filesystem::path& home);
 
+// How long to wait for another xlings before giving up.
+//
+// Was 30 seconds, which is shorter than almost any real install: the holder is
+// downloading, extracting, and running hooks under this lock, so the second
+// command reliably lost the race and reported failure for something that was
+// merely busy. Ten minutes covers a realistic concurrent install and is still
+// bounded, so a script cannot block forever on a wedged machine.
+//
+// The wait is no longer silent (see acquire_state_lock), which is what
+// actually fixes "the second install hangs" -- the length only decides when
+// waiting becomes failing.
 constexpr std::chrono::milliseconds default_lock_timeout() {
-    return std::chrono::seconds{30};
+    return std::chrono::minutes{10};
 }
 
 std::filesystem::path state_lock_path(const std::filesystem::path& home);
+
+// Who holds the lock, as a line fit to print. Empty when unknown.
+//
+// Read from a SIDECAR file next to the lock, never from the lock file itself:
+// writing the lock file goes through a rename, rename swaps the inode, and
+// flock lives on the descriptor of the old one -- so writing there would leave
+// the lock name pointing at an unlocked inode while this process still
+// believed it held the lock.
+//
+// A HINT, not a fact. The holder may have died between writing it and this
+// read; a pid may have been reused. It is only ever used to make a waiting
+// message more useful, and every caller must behave identically when it is
+// empty.
+std::string lock_holder_hint(const std::filesystem::path& home);
+
+std::filesystem::path state_lock_owner_path(const std::filesystem::path& home);
+
+// What this process will call itself in the sidecar. Set once from main.
+//
+// A bare pid is a poor message -- the waiting user wants to know whether the
+// thing blocking them is the install they started in another terminal or a
+// background job they forgot about. Kept out of acquire_state_lock's signature
+// so the twenty existing call sites do not all have to grow an argument for a
+// diagnostic string.
+void set_lock_command_hint(std::string command);
 
 class StateLock {
 public:
@@ -76,12 +119,18 @@ private:
 
     void clear_marker_();
 
+    void clear_owner_();
+
     platform::FileLock lock_;
     bool held_ { false };
     bool bypassed_ { false };
     bool inherited_ { false };
     bool ownsMarker_ { false };
     std::string previousMarker_;
+    // Removed on release. Best effort: a killed process leaves it behind, and
+    // that is why the reader treats it as a hint. The flock is what is
+    // authoritative, and the kernel always releases that one.
+    std::filesystem::path ownerFile_;
 };
 
 // Acquire the home-wide state lock, or explain why not.
@@ -89,14 +138,15 @@ private:
 // flock is released by the kernel when the holder exits, so a crashed xlings
 // cannot wedge the lock and there is no staleness to detect or clean up.
 //
-// The lock file's *contents* are deliberately never written. It would be
-// useful for a timeout message to name the holding pid, but
-// platform::write_string_to_file now replaces files by rename, and rename
-// swaps in a new inode. flock is held on the open descriptor of the old one,
-// so writing to the lock file through that path would leave the lock name
-// pointing at an unlocked inode -- and the next process would acquire it
-// successfully while this one still believes it holds the lock. The lock file
-// exists only as something to flock.
+// The lock file's *contents* are still deliberately never written -- see
+// lock_holder_hint for why the holder's identity goes in a sidecar instead.
+// The lock file exists only as something to flock.
+//
+// WAITING IS ANNOUNCED. It used to poll in silence for the whole timeout and
+// only then report, so a second `xlings install` produced no output at all
+// while it queued. That is indistinguishable from a hang, and it was reported
+// as one. The first failed attempt now prints who holds the lock and how long
+// this has been waiting, and it keeps saying so about once a second.
 std::expected<StateLock, std::string> acquire_state_lock(
         const std::filesystem::path& home,
         std::chrono::milliseconds timeout = default_lock_timeout());

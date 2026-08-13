@@ -605,12 +605,16 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
     // nothing answered it, so a CN outage looked like a dead package rather
     // than a mirror with a gap.
     if (urls.size() > 1) {
+        // Newline-separated, NOT hand-indented. The log layer now aligns
+        // continuation lines under the message itself (log.cpp's emit_line_),
+        // so the four spaces this used to add produced a second indent on top
+        // of that one. One place decides what a wrapped log line looks like.
         std::string candidates;
         for (const auto& u : urls) {
-            if (!candidates.empty()) candidates += "\n    ";
+            if (!candidates.empty()) candidates += '\n';
             candidates += u;
         }
-        log::debug("[download] {} candidates ({}):\n    {}",
+        log::debug("[download] {} candidates ({}):\n{}",
                    task.name, urls.size(), candidates);
     }
     const std::string primaryUrl = urls.front();

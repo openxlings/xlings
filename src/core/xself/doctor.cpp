@@ -1555,10 +1555,15 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             auditLastSpoke = now;
             audit.onProgress(auditDone, auditTotal, root.target, root.version);
         };
+        const auto cacheHitsBefore =
+            audit.payloadCache ? audit.payloadCache->hits() : 0;
         for (const auto& root : payloadAuditRoots) {
             auditTick(root);
             ++auditDone;
-            for (const auto& f : elfcheck::scan_payload(root.path)) {
+            const auto scanned = audit.payloadCache
+                ? audit.payloadCache->scan(root.path)
+                : elfcheck::scan_payload(root.path);
+            for (const auto& f : scanned) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
                     .level  = FindingLevel::Error,
@@ -1570,6 +1575,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                         root.target, root.version),
                 });
             }
+        }
+        // Gated on `deep`, not merely on having found roots.
+        //
+        // A quick run has an empty root list, so without this it reported
+        // "0 payload(s) examined" -- announcing an audit it was never asked to
+        // perform, on every plain `xlings self doctor`. Caught by
+        // tui_output_contract, which noticed the line at all before it noticed
+        // it was too wide.
+        if (audit.deep && audit.onAuditDone) {
+            const auto hitsNow =
+                audit.payloadCache ? audit.payloadCache->hits() : 0;
+            audit.onAuditDone(auditDone, hitsNow - cacheHitsBefore);
         }
         }
 
@@ -3057,22 +3074,60 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     }
 
     std::optional<xim::PackageCatalog> localCatalog;
+
+    // One cache for this command. `--fix` re-detects after every repair phase,
+    // and without this each of those re-walks every payload's bytes: measured
+    // at 363 payloads / 73 GB, one pass alone was 2m3s before the in-process
+    // ELF reader and 14s after it, times up to eight passes.
+    //
+    // Scoped to the command, not to the process and not to disk -- see
+    // PayloadScanCache for why that boundary is the honest one.
+    elfcheck::PayloadScanCache payloadCache{std::string(xim::kPayloadStampFile)};
+
     AuditSelection audit{.deep = deepAudit};
+    audit.payloadCache = &payloadCache;
+
+    // Which pass this is, so a repeated count does not read as a loop.
+    //
+    // A `--fix` legitimately audits several times, and every one of them
+    // counts from zero. With only "auditing payloads 37/363" on screen that is
+    // indistinguishable from the same scan restarting, and it was reported as
+    // exactly that -- "重复 循环问题". The pass number is the whole fix.
+    std::size_t auditPass = 0;
+
     // Both kinds, deliberately: the plain CLI renders LogEvent and ignores
     // ProgressEvent, while the TUI and the agent protocol consume
     // ProgressEvent and would show nothing for a LogEvent. Emitting one leaves
     // the other with the silence this exists to remove.
-    audit.onProgress = [&stream](std::size_t done, std::size_t total,
-                                 std::string_view target, std::string_view version) {
+    audit.onProgress = [&stream, &auditPass](
+                           std::size_t done, std::size_t total,
+                           std::string_view target, std::string_view version) {
         stream.emit(ProgressEvent{
             .phase = "auditing",
             .percent = total ? static_cast<float>(done) / static_cast<float>(total) : 0.0f,
-            .message = std::format("auditing payloads {}/{}", done, total),
+            .message = std::format("auditing payloads (pass {}) {}/{}",
+                                   auditPass, done, total),
         });
         stream.emit(LogEvent{
             LogLevel::info,
-            std::format("auditing payloads {}/{} — {}@{}", done, total, target, version),
+            std::format("auditing payloads (pass {}) {}/{} — {}@{}",
+                        auditPass, done, total, target, version),
         });
+        std::cout.flush();
+    };
+
+    // What the audit covered, once it has. Closes the "deep audit scope: ..."
+    // line that opened it, and is the only channel that distinguishes an audit
+    // of this whole home from an audit of one package -- see onAuditDone.
+    audit.onAuditDone = [&stream, &auditPass](std::size_t scanned,
+                                              std::size_t fromCache) {
+        std::string detail = std::format(
+            "deep audit (pass {}): {} payload(s) examined", auditPass, scanned);
+        if (fromCache > 0) {
+            detail += std::format(", {} unchanged since the last pass",
+                                  fromCache);
+        }
+        stream.emit(LogEvent{LogLevel::info, std::move(detail)});
         std::cout.flush();
     };
     // The catalog is needed by the REPAIR, not only by the audit — it is how a
@@ -3191,6 +3246,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         state = load_state_();
     }
 
+    ++auditPass;
     auto scan = detect_(state, probe, audit);
 
     if (!fix) {
@@ -3222,6 +3278,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     const auto refresh = [&] {
         Config::reload_state();
         state = load_state_();
+        ++auditPass;
         scan  = detect_(state, probe, audit);
     };
 

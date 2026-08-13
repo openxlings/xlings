@@ -173,6 +173,24 @@ void init_console_output() {
         ::SetConsoleOutputCP(CP_UTF8);
         ::SetConsoleCP(CP_UTF8);
 
+        // stdout unbuffered, on Windows only.
+        //
+        // MSVC's CRT has no line buffering: `_IOLBF` is accepted and behaves
+        // as `_IOFBF`, so stdout to a console accumulates in a 4 KB buffer
+        // and flushes at whatever byte boundary fills it -- including the
+        // middle of a line. stderr is unbuffered, so `log::warn` overtook
+        // `log::info` written earlier, and a half-flushed stdout line was
+        // completed after it. Both were part of the reported "换行很奇怪".
+        //
+        // On glibc stdout to a terminal is already line-buffered and the
+        // ordering is correct, which is why this is not done there: it would
+        // trade a fix for nothing against extra write syscalls.
+        //
+        // The output paths flush explicitly as well (see log.cpp); this is
+        // the belt to that braces, and it also covers anything writing
+        // through stdio that this repository does not own.
+        ::setvbuf(stdout, nullptr, _IONBF, 0);
+
         // Both handles. Only stdout used to be switched into VT mode, but
         // `log::warn` and `log::error` write to stderr — so on a console
         // their SGR was emitted to a handle that does not interpret it, and
@@ -365,9 +383,14 @@ FileLock::~FileLock() { release(); }
 bool FileLock::acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error) {
+                     std::string& error,
+                     const std::function<void(std::chrono::milliseconds)>& onWait) {
     release();
-    auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto started = std::chrono::steady_clock::now();
+    const bool bounded = timeout.count() > 0;
+    const auto deadline = started + timeout;
+    bool announced = false;
+    auto lastSpoke = started;
     while (true) {
         handle_ = ::CreateFileW(
             path.wstring().c_str(),
@@ -387,10 +410,21 @@ bool FileLock::acquire(const std::filesystem::path& path,
             error = "cancelled while waiting for cache lock";
             return false;
         }
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (bounded && std::chrono::steady_clock::now() >= deadline) {
             error = std::format("timed out waiting for cache lock {}",
                                 path.string());
             return false;
+        }
+        if (onWait) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - started);
+            // First tick immediately; see the note on the declaration.
+            if (!announced || now - lastSpoke >= std::chrono::seconds{1}) {
+                announced = true;
+                lastSpoke = now;
+                onWait(elapsed);
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
