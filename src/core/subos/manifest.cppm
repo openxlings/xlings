@@ -3,7 +3,6 @@ export module xlings.core.subos.manifest;
 import std;
 
 import xlings.libs.json;
-import xlings.platform;
 
 // `subos_info` — what a subos is, recorded in the subos's own `.xlings.json`.
 //

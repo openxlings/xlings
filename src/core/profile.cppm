@@ -8,10 +8,6 @@ export module xlings.core.profile;
 import std;
 
 import xlings.core.config;
-import xlings.libs.json;
-import xlings.core.log;
-import xlings.platform;
-import xlings.core.utils;
 import xlings.core.xvm.db;
 import xlings.core.xvm.types;
 

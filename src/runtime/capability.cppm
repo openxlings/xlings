@@ -2,7 +2,6 @@ export module xlings.runtime.capability;
 
 import std;
 
-import xlings.runtime.event;
 import xlings.runtime.event_stream;
 import xlings.runtime.cancellation;
 

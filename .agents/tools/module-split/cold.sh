@@ -5,10 +5,11 @@
 # recompiled.  The GLOBAL dependency cache (~/.mcpp/build-cache) stays warm
 # on purpose: we are measuring xlings's own sources, not its dependencies.
 set -uo pipefail
-WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LABEL="${1:?usage: cold.sh <label> [runs]}"
 RUNS="${2:-1}"
 OUT="$WT/build/bench"
+mkdir -p "$OUT"
 cd "$WT" || exit 1
 for i in $(seq 1 "$RUNS"); do
   rm -rf target

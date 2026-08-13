@@ -37,12 +37,10 @@ export import xlings.core.xself.doctor;
 // module without depending on the compact-managed module file directly.
 export import xlings.core.xself.compat;
 
-import xlings.libs.json;
 import xlings.runtime;
 // Leaf module (std + json only). `self` needs the same answer to "is this a
 // global option" that the CLI's own validator uses; importing the spec is what
 // stops the two from drifting into disagreeing about `--yes`.
-import xlings.cli.spec;
 
 namespace xlings::xself {
 

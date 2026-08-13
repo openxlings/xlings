@@ -2,7 +2,6 @@ export module xlings.core.xvm.removal;
 
 import std;
 
-import xlings.core.log;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;

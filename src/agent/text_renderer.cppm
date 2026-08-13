@@ -8,7 +8,6 @@ export module xlings.agent.text_renderer;
 
 import std;
 
-import xlings.libs.json;
 import xlings.runtime.event;
 
 namespace xlings::agent {

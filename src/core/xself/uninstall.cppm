@@ -2,9 +2,7 @@ export module xlings.core.xself.uninstall;
 
 import std;
 import xlings.core.config;
-import xlings.core.log;
 import xlings.core.xself.shell_profile;
-import xlings.platform;
 
 // `xlings self uninstall [-y] [--keep-data] [--dry-run]`
 //

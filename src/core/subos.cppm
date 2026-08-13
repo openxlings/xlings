@@ -28,8 +28,6 @@ export module xlings.core.subos;
 import std;
 
 import xlings.core.config;
-import xlings.core.home_config;
-import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;

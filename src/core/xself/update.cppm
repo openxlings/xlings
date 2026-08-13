@@ -2,8 +2,6 @@ export module xlings.core.xself.update;
 
 import std;
 
-import xlings.core.log;
-import xlings.platform;
 
 namespace xlings::xself {
 

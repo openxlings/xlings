@@ -3,12 +3,9 @@ export module xlings.core.xim.libxpkg.types.subos;
 import std;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
-import xlings.core.common;
 import xlings.core.config;
-import xlings.core.log;
 import xlings.core.xvm.db;
 import xlings.core.xvm.removal;
-import xlings.libs.json;
 import mcpplibs.xpkg.executor;
 
 // Default xim handlers for `type = "subos"` packages.

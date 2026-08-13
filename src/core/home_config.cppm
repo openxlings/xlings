@@ -3,7 +3,6 @@ export module xlings.core.home_config;
 import std;
 
 import xlings.libs.json;
-import xlings.platform;
 import xlings.core.xvm.lock;
 
 // Serialized read-modify-write of `<home>/.xlings.json`.

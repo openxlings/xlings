@@ -8,7 +8,6 @@ module;
 export module xlings.ui:layout;
 
 import std;
-import xlings.platform;
 import xlings.core.palette;
 import :theme;
 

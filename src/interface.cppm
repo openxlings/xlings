@@ -18,8 +18,6 @@ export module xlings.interface;
 import std;
 
 import mcpplibs.cmdline;
-import xlings.libs.json;
-import xlings.platform;
 import xlings.runtime;
 
 namespace xlings::interface {

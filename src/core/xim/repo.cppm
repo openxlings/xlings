@@ -4,10 +4,6 @@ module;
 export module xlings.core.xim.repo;
 
 import std;
-import xlings.libs.json;
-import xlings.core.log;
-import xlings.core.compact;
-import xlings.platform;
 import xlings.core.config;
 import xlings.core.mirror;
 import xlings.core.xim.indexfetch;

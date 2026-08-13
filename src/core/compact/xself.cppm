@@ -18,7 +18,6 @@
 export module xlings.core.xself.compat;
 
 import std;
-import xlings.core.log;
 import xlings.platform;
 import xlings.core.xself.profile_resources;
 

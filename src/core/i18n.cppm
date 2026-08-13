@@ -2,7 +2,6 @@ export module xlings.core.i18n;
 
 import std;
 
-import xlings.platform;
 
 namespace xlings::i18n {
 

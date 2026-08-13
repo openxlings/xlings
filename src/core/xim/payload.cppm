@@ -2,7 +2,6 @@ export module xlings.core.xim.payload;
 
 import std;
 
-import xlings.platform;
 import xlings.core.config;
 
 export namespace xlings::xim {

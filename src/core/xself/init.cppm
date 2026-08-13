@@ -3,9 +3,6 @@ export module xlings.core.xself.init;
 import std;
 
 import xlings.core.config;
-import xlings.libs.json;
-import xlings.core.log;
-import xlings.platform;
 // Cross-version compat (currently: legacy alias cleanup, profile upgrade).
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;

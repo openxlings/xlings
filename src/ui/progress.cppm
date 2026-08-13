@@ -7,7 +7,6 @@ module;
 export module xlings.ui:progress;
 
 import std;
-import xlings.core.palette;
 import :theme;
 import :layout;
 

@@ -10,9 +10,6 @@ export module xlings.core.mirror.expand;
 import std;
 
 import xlings.core.config;
-import xlings.core.log;
-import xlings.libs.json;
-import xlings.platform;
 import xlings.core.mirror.types;
 import xlings.core.mirror.registry;
 import xlings.core.mirror.forms;

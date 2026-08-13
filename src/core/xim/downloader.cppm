@@ -7,14 +7,10 @@ export module xlings.core.xim.downloader;
 import std;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.log;
-import xlings.core.palette;
-import xlings.core.compact;
-import xlings.platform;
 import xlings.core.config;
 import xlings.libs.tinyhttps;
 import xlings.runtime.cancellation;
 import xlings.core.mirror;
-import xlings.libs.sha256;
 // Re-export extract_archive so existing importers (installer) keep working.
 export import xlings.core.xim.extract;
 

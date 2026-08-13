@@ -2,8 +2,6 @@ export module xlings.core.xself.config;
 
 import std;
 
-import xlings.core.config;
-import xlings.libs.json;
 import xlings.runtime;
 
 namespace xlings::xself {

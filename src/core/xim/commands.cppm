@@ -12,22 +12,13 @@ import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
-import xlings.core.log;
 import xlings.core.config;
-import xlings.core.profile;
 import xlings.runtime;
-import xlings.libs.json;
-import xlings.core.i18n;
 import xlings.platform;
 import xlings.platform.target;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.db;
-import xlings.core.xvm.lock;
-import xlings.core.xvm.commands;
-import xlings.core.xvm.shim;
-import xlings.core.profile;
 import xlings.runtime.cancellation;
-import xlings.core.version_order;
 // Leaf module (std + log + platform only), so importing it here does not
 // recreate the xim.commands <-> xself cycle that keeps `self update` shelling
 // out to a subprocess.

@@ -3,8 +3,6 @@ export module xlings.core.xvm.lock;
 import std;
 
 import xlings.platform;
-import xlings.core.log;
-import xlings.core.utils;
 
 // Serialize the commands that mutate xlings state.
 //

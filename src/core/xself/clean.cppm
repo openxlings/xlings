@@ -2,9 +2,6 @@ export module xlings.core.xself.clean;
 
 import std;
 
-import xlings.core.config;
-import xlings.core.log;
-import xlings.core.profile;
 
 namespace xlings::xself {
 

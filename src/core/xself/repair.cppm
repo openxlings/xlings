@@ -1,8 +1,6 @@
 export module xlings.core.xself.repair;
 
 import std;
-import xlings.core.log;
-import xlings.platform;
 
 // The repair ladder behind `xlings self doctor --fix`.
 //

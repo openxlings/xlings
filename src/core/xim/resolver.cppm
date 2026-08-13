@@ -8,8 +8,6 @@ import xlings.core.xim.catalog;
 import xlings.core.xim.install_state;
 import xlings.core.config;
 import xlings.core.xim.compatibility;
-import xlings.core.log;
-import xlings.core.semver;
 import xlings.platform;
 
 export namespace xlings::xim {

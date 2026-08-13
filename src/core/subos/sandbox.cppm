@@ -22,13 +22,9 @@ export module xlings.core.subos.sandbox;
 import std;
 
 import xlings.core.config;
-import xlings.libs.json;
-import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
-import xlings.core.utils;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
-import xlings.core.xim.compatibility;
 import xlings.core.subos.gpu;
 import xlings.core.xvm.shim;   // resolve_owner_home: reject another home's shim
 

@@ -2,11 +2,8 @@ export module xlings.core.cmdprocessor;
 
 import std;
 
-import xlings.core.log;
-import xlings.libs.json;
 import xlings.core.config;
 import xlings.core.subos;
-import xlings.platform;
 import xlings.runtime;
 import xlings.core.xself;
 import mcpplibs.xpkg.executor;

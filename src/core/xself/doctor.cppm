@@ -16,13 +16,9 @@ import xlings.core.xself.compat;
 
 import xlings.core.config;
 import xlings.core.glyph;
-import xlings.libs.json;
-import xlings.core.log;
-import xlings.platform;
 import xlings.runtime;
 import xlings.core.elf_same_source;
 import xlings.core.entry_binary;
-import xlings.core.version_order;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;

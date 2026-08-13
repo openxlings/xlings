@@ -3,11 +3,8 @@ export module xlings.core.xim.index_cmd;
 import std;
 import xlings.libs.json;
 import xlings.core.config;
-import xlings.core.home_config;
 import xlings.core.log;
-import xlings.core.version_order;
 import xlings.core.xim.indexfetch;
-import xlings.platform;
 import xlings.runtime;
 
 // `xlings index` — see which index snapshots exist and choose between them.

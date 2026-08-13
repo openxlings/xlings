@@ -4,10 +4,7 @@ import std;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.loader;
 import mcpplibs.xpkg.index;
-import xlings.libs.json;
-import xlings.core.log;
 import xlings.core.config;
-import xlings.platform;
 
 // All libxpkg functions live in mcpplibs::xpkg namespace regardless of module name
 namespace xpkg = mcpplibs::xpkg;

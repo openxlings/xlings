@@ -2,14 +2,9 @@ export module xlings.core.xvm.commands;
 
 import std;
 
-import xlings.core.common;
 import xlings.core.config;
-import xlings.core.log;
-import xlings.core.palette;
 import xlings.core.subos.manifest;
-import xlings.platform;
 import xlings.runtime;
-import xlings.libs.json;
 import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.xself;

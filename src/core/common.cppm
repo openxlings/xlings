@@ -4,8 +4,6 @@ export module xlings.core.common;
 
 import std;
 
-import xlings.core.config;
-import xlings.core.xself;
 
 namespace xlings::common {
 

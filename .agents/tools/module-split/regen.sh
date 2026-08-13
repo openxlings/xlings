@@ -29,6 +29,9 @@ print(f'removed {n} generated file(s)')
 PY
 python3 "$HERE/split.py" --all --write | tail -2
 python3 "$HERE/outline.py" --all --write | tail -2
+# Phase 3 runs last: it needs every interface in its final form to know which
+# imports the interfaces still name.
+python3 "$HERE/trim-imports.py" --write | tail -1
 python3 - <<'PY'
 import glob
 c = sum(open(f).read().count('\n') for f in glob.glob('src/**/*.cppm', recursive=True))

@@ -24,7 +24,6 @@ export module xlings.core.mirror.adaptive;
 
 import std;
 
-import xlings.core.log;
 import xlings.libs.tinyhttps;
 
 namespace xlings::mirror::adaptive { // anonymous namespace

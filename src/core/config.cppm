@@ -3,9 +3,6 @@ export module xlings.core.config;
 import std;
 
 import xlings.libs.json;
-import xlings.core.log;
-import xlings.platform;
-import xlings.core.utils;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;

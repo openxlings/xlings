@@ -33,9 +33,6 @@ export module xlings.core.entry_binary;
 
 import std;
 
-import xlings.core.log;
-import xlings.core.version_order;
-import xlings.platform;
 
 export namespace xlings::entry_binary {
 

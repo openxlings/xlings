@@ -1,21 +1,10 @@
 export module xlings.capabilities;
 
 import std;
-import xlings.platform;
 import xlings.runtime.event;
 import xlings.runtime.event_stream;
 import xlings.runtime.capability;
-import xlings.libs.json;
-import xlings.core.xim.commands;
-import xlings.core.xim.index_cmd;
-import xlings.core.xvm.commands;
-import xlings.core.config;
-import xlings.core.home_config;
-import xlings.core.subos;
-import xlings.core.xself;
-import xlings.platform;
 import xlings.runtime.cancellation;
-import xlings.core.utf8;
 
 namespace xlings::capabilities {
 

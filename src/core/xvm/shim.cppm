@@ -10,10 +10,7 @@ export module xlings.core.xvm.shim;
 
 import std;
 
-import xlings.libs.json;
 import xlings.core.config;
-import xlings.core.log;
-import xlings.platform;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 

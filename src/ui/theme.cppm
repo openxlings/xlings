@@ -6,7 +6,6 @@ module;
 export module xlings.ui:theme;
 
 import std;
-import xlings.platform;
 import xlings.core.glyph;
 import xlings.core.palette;
 

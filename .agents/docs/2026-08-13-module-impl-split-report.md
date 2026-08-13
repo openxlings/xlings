@@ -71,6 +71,11 @@ Both refs are measured **in one worktree**, checking each out in turn: same
 path, same filesystem, same toolchain fingerprint, same warm dependency cache.
 The only variable is the source content.
 
+Only `src/` is swapped — `mcpp.toml` is held at the branch's version for both
+sides. That is deliberate: the dev target is `gcc@16.1.0` either way, so holding
+the manifest constant keeps the comparison to the source content and keeps the
+release-toolchain bump (§8a) out of it.
+
 - **Cold build** — `rm -rf target && mcpp build`, repeated. The project's own
   target directory is removed so every project TU recompiles; the global
   dependency cache (`~/.mcpp/build-cache`) stays warm on purpose, because the
@@ -103,15 +108,109 @@ the split only helped the second kind, the first kind's numbers would say so.
 | `compare_segment` | `xlings.core.semver` | 23 | **control** — `inline`, unmoved |
 
 `compare_segment` is the control: it stays `inline` in `semver.cppm` on **both**
-refs, so it must show no improvement. If it does, the measurement is noise
-rather than an effect.
+refs, so an edit to it invalidates semver's BMI either way and the **same**
+downstream set rebuilds. It therefore separates two effects that would otherwise
+be confounded:
+
+- **rebuild set** — an implementation edit stops invalidating the BMI at all, so
+  nothing downstream rebuilds. Only the moved probes get this.
+- **rebuild cost** — whatever does rebuild downstream is now a small interface
+  instead of a large one. The control gets this too.
+
+The control is expected to improve, just much less. If it improved as much as the
+moved probes, the split would not be what the numbers are measuring.
 
 Harness: `.agents/tools/module-split/{cold.sh,incr.py}`, driver
-`build/bench/measure_side.sh`.
+`.agents/tools/module-split/measure-side.sh`.
 
 ## 4. Measurements
 
-*(filled in below from the runs)*
+### Cold build — every project TU recompiled
+
+| ref | runs (s) | median |
+|---|---|---|
+| `main` @ b1563fe | 67.17 / 55.27 / 56.40 | **56.40** |
+| this branch | 36.97 / 27.28 / 26.85 | **27.28** |
+
+**2.07× faster**, and the direction was not a given: translation units roughly
+doubled (110 interfaces → 110 interfaces + 92 implementation units). Smaller
+BMIs pay more than the extra TUs cost. The first run on each side is the high
+one — that is page cache for freshly written files, which is why the median is
+the figure quoted.
+
+### Binary size
+
+| ref | dev binary (`-O0 -g`) |
+|---|---|
+| `main` | 124,238,424 B |
+| this branch | 124,368,072 B (**+0.10%**) |
+
+Dropping implicit `inline` costs cross-TU inlining without LTO, so this was
+worth checking rather than assuming. At `-O0` the answer is "no change worth
+naming"; a release-mode (`-O2`) size and runtime comparison is **not** measured
+here.
+
+### One implementation edit
+
+Two runs per probe. Both are shown rather than a median: with n=2 a median *is*
+the mean, so one outlier would move it silently.
+
+| probe | downstream | `main` (s) | branch (s) | best-to-best |
+|---|---|---|---|---|
+| `parse_sudo_env` | 66 | 63.12 / 54.04 | 4.46 / 4.60 | **12.1×** |
+| `level_string` | 54 | 62.42 / 51.38 | 4.49 / 4.56 | **11.4×** |
+| `strip_ansi` | 44 | 62.63 / 50.01 | 4.64 / 4.71 | **10.8×** |
+| `workspace_install_targets` (class member) | 41 | 49.00 / 58.95 | 6.43 / 6.31 | **7.8×** |
+| `parse_index_repos_json` | 41 | 62.13 / 49.08 | 19.69 / 6.36 | **7.7×** |
+| `shim_filename_` | 16 | 45.55 / 35.89 | 7.86 / 7.78 | **4.6×** |
+| `compare_segment` — **control**, `inline` on both | 23 | 43.58 / 54.53 | 17.24 / 17.54 | 2.5× |
+
+**On `main`, editing one function body costs about as much as building the whole
+project from scratch** — 54–63s against a 56.40s cold build. That is the shape
+the fan-out predicted: a high-fan-out interface edit rebuilds nearly everything,
+and before the split every body edit *was* an interface edit.
+
+The control lands at 2.5× while the moved probes land at 4.6–12.1×. The control's
+2.5× is the interfaces downstream simply being smaller to recompile; the gap
+between 2.5× and 12× is what moving the body out actually bought.
+
+The branch's `parse_index_repos_json` first run (19.69s against 6.36s on the
+second) is an outlier, not a pattern — the same probe measured 6.51 / 6.32 in an
+earlier run of the same harness.
+
+### `mcpp test` — where the split LOSES
+
+| ref | wall clock | result |
+|---|---|---|
+| `main` | **953.81s** | 38 passed, 0 failed |
+| this branch | 1104.83s (**1.16× slower**) | 38 passed, 0 failed |
+
+This is the one measurement that goes the wrong way, and the mechanism is not a
+guess. Per test binary:
+
+| ref | min | median | max | sum over 38 |
+|---|---|---|---|---|
+| `main` | 20.86s | 21.18s | 41.16s | 832.5s |
+| this branch | 23.96s | 24.92s | 45.53s | 1011.7s |
+
+**+4.72s per binary, and 38 × 4.72 = +179s is the entire gap.** The overhead is
+near-constant across binaries regardless of the test file's own size — min +3.10,
+median +3.74, max +4.37. A compile-side cost would scale with the file being
+compiled; a link-side cost would not. Each test binary now links roughly 202
+object files instead of 112.
+
+So: **the split trades link time for compile time.** Compilation gets much
+faster; linking gets slower, and `mcpp test` is link-dominated because it links
+39 large static binaries. A workflow that links once (`mcpp build`) wins 2×; a
+workflow that links 39 times loses 16%.
+
+The obvious follow-up is on the test harness rather than the split: 38 binaries
+each statically linking the whole project is what makes link cost dominate, and
+one binary (or a shared library) would remove it. That is out of scope here.
+
+The branch figure carries a ~27s pessimism: `src/` was regenerated part-way
+through that run, forcing a module rebuild the main-side run did not pay. It
+biases against the branch, so the 1.16× is if anything slightly overstated.
 
 ## 5. Two gcc@16.1.0 internal compiler errors
 
@@ -155,6 +254,10 @@ In a module interface, `inline` means "put this body in the BMI so importers can
 inline it". Removing it is a performance-visibility decision, not a move — the
 maintainer's call, not a mechanical migration's. Stripping it would take the
 interface down by roughly another 13% and is the largest remaining lever.
+
+Measured on `main`'s own tree, the figure is **1,953 lines** — identical. So these
+are not lines the split left behind or failed to move; they are exactly what was
+already `inline` before it started, carried over untouched.
 
 ## 7. Invariants checked statically
 
@@ -257,8 +360,8 @@ reproduces the macOS failure exactly — main builds clean, the split does not �
 this was diagnosable in 40 seconds all along, and three CI cycles were spent
 before trying it. A *minimal* probe of the same shape does **not** reproduce it;
 it needs the whole project, which is what made the failure look
-macOS-libc-specific. `build/bench/clang_variant.sh` builds any variant with clang
-in an isolated copy; `clang_bisect.sh` binary-searches one file's members.
+macOS-libc-specific. `.agents/tools/module-split/clang-variant.sh` builds any variant with clang
+in an isolated copy; `clang-bisect.sh` binary-searches one file's members.
 
 ### 8c. My own bug, for the record
 
@@ -275,7 +378,7 @@ now runnable locally, and the first three take under a minute each:
 ```bash
 rm -rf target && mcpp build                        # gcc@16.1.0   (dev)
 mcpp build --target x86_64-linux-musl              # gcc@16.1.0-musl (release)
-bash build/bench/clang_variant.sh check --all      # llvm@20.1.7  (macOS family)
+bash .agents/tools/module-split/clang-variant.sh check --all      # llvm@20.1.7  (macOS family)
 python3 .agents/tools/module-split/export-surface.py
 ```
 
@@ -286,11 +389,16 @@ Windows (`llvm@20.1.7`, MSVC-flavoured) and real macOS remain CI-only.
 
 ## 10. What this report does not verify
 
-- **1,228 lines of the moved code sit behind `_WIN32` / `__APPLE__` guards** that
-  a Linux build never compiles — `platform/windows.cpp` (330),
-  `platform/macos.cpp` (181), `subos/sandbox.cpp` (121) and others. The macOS and
-  Windows CI jobs are the gate; Windows and aarch64 are green, macOS is what the
-  latest push tests.
+- **728 lines of the moved code are never compiled by a Linux build** —
+  `platform/windows.cpp` (326), `platform/macos.cpp` (151), `platform.cpp` (65),
+  `xself/uninstall.cpp` (50) and a long tail. The macOS and Windows CI jobs are
+  the gate for those, and both pass.
+
+  An earlier draft of this report said 1,228. That counter flagged any block whose
+  condition merely *mentioned* `_WIN32` or `__APPLE__`, which wrongly included
+  `#if !defined(_WIN32)` — true on Linux, and 208 of the miscounted lines were
+  `platform/unix.cpp`'s POSIX code that Linux does compile. The figure above comes
+  from evaluating the conditions with `__linux__` defined and the others not.
 - Runtime behaviour beyond the unit suite: the e2e block needs a release tarball
   and network access, and runs in CI (green).
 - Release-mode (`-O2`) runtime performance. Dropping implicit `inline` costs

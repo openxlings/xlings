@@ -13,9 +13,6 @@ export module xlings.core.mirror.registry;
 import std;
 
 import xlings.core.config;
-import xlings.core.log;
-import xlings.libs.json;
-import xlings.platform;
 import xlings.core.mirror.types;
 
 namespace xlings::mirror {

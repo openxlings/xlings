@@ -21,8 +21,6 @@ import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
 import xlings.core.closure_check;
-import xlings.libs.json;
-import xlings.core.common;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;

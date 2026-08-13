@@ -24,13 +24,9 @@ export module xlings.core.xim.indexfetch;
 import std;
 import xlings.libs.json;
 import xlings.libs.tinyhttps;
-import xlings.libs.sha256;
-import xlings.core.log;
 import xlings.core.config;
 import xlings.core.mirror;
-import xlings.platform;
 import xlings.core.xim.extract;
-import xlings.core.version_order;
 
 export namespace xlings::xim {
 

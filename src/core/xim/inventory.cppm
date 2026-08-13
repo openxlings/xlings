@@ -3,7 +3,6 @@ export module xlings.core.xim.inventory;
 import std;
 import xlings.core.config;
 import xlings.core.profile;
-import xlings.core.version_order;
 import xlings.core.xim.catalog;
 import xlings.core.xim.install_state;
 import xlings.core.xim.payload;
@@ -11,7 +10,6 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.types;
-import xlings.platform;
 
 // What is installed, taken from the records that decide it.
 //
