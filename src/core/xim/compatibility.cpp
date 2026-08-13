@@ -28,6 +28,32 @@ const mcpplibs::xpkg::PlatformResource* find_entry(
     return nullptr;
 }
 
+bool declares_no_download_source(
+    const mcpplibs::xpkg::Package& package,
+    const mcpplibs::xpkg::PlatformResource* entry,
+    std::string_view os) {
+    // No entry at all is "this version is not described here", which is a
+    // different answer with a different remedy. Refusing to conflate them is
+    // the point of the narrow name.
+    if (entry == nullptr) return false;
+
+    // Mirrors the condition under which libxpkg lands on SourceKind::None,
+    // field for field. The order follows its resolution order so the two
+    // cannot disagree about which field wins.
+    if (entry->is_res) return false;
+    if (!entry->url.empty()) return false;
+    for (const auto& [arch, resource] : entry->archs) {
+        if (!resource.url.empty()) return false;
+    }
+
+    const auto& matrix = package.xpm;
+    if (auto it = matrix.platform_sources.find(std::string(os));
+            it != matrix.platform_sources.end()) {
+        return it->second.empty();
+    }
+    return matrix.source.empty();
+}
+
 std::set<std::string> entry_architectures(
     const mcpplibs::xpkg::PlatformResource& entry) {
     std::set<std::string> archs;

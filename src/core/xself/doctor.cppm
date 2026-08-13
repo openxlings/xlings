@@ -310,6 +310,15 @@ struct AuditSelection {
     std::function<void(std::size_t done, std::size_t total,
                        std::string_view target, std::string_view version)>
         onProgress;
+
+    // Shared across the re-detections one `--fix` performs. Non-owning: the
+    // command owns the cache, because "one command" is precisely the window in
+    // which the only writer of a payload is this process. See PayloadScanCache.
+    //
+    // Null is valid and means "scan every time" -- which is what a plain
+    // `--deep` (one pass) wants, and what every test that has not opted in
+    // gets.
+    elfcheck::PayloadScanCache* payloadCache { nullptr };
 };
 
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe,

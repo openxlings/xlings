@@ -2096,7 +2096,24 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             pkg->xpm, node.name, node.version, platform, hostArch,
             dlConfig.preferredMirror);
         if (!resource) {
-            log::warn("skipping {}: {}", node.name, resource.error());
+            // A payload-free package is not a failure, and saying it is was
+            // noise on every install of one. `declares_no_download_source`
+            // asks the recipe rather than reading libxpkg's error text; see
+            // the note on it in compatibility.cppm for why that distinction
+            // is load-bearing rather than cosmetic.
+            //
+            // Nothing else changes: the `continue` below only skips the
+            // DOWNLOAD. The node still installs, its hooks still run, and the
+            // checks that would catch a recipe which merely FORGOT its url --
+            // an empty payload, declared programs that never registered, a
+            // failed install hook recording itself -- all still run and all
+            // still report.
+            if (declares_no_download_source(*pkg, entry, platform)) {
+                log::debug("{}: no download source declared; "
+                           "install hooks only", node.name);
+            } else {
+                log::warn("skipping {}: {}", node.name, resource.error());
+            }
             continue;
         }
 

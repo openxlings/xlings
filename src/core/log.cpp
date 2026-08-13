@@ -6,6 +6,7 @@ module xlings.core.log;
 
 import std;
 import xlings.platform;
+import xlings.core.console;
 import xlings.core.palette;
 
 namespace xlings::log {
@@ -104,6 +105,90 @@ void write_to_file_(std::string_view prefix, std::string_view msg) {
         gFile_ << msg << "\n";
         gFile_.flush();
     }
+}
+
+// One log line, composed in memory and written with a single call.
+//
+// THE THREE THINGS THIS FIXES, all of which were one bug from outside:
+//
+// 1. ATOMICITY. This used to be `print(prefix)`, `print(context)`,
+//    `println(msg)`. Three writes, no lock, while download workers and a
+//    200ms progress redraw were writing to the same console -- so a frame
+//    could land between the prefix and the message and strand `[xlings] ` at
+//    the start of somebody else's line. That is the "stray indent".
+//
+// 2. CONTINUATION LINES. A message containing newlines got the prefix on its
+//    first line only; the rest started at column 0, so a multi-line warning
+//    read as ragged garbage. They are now indented to the prefix width, which
+//    is what the one hand-indented call site (downloader's mirror candidate
+//    list) was already doing by hand.
+//
+// 3. STREAM MIXING. Everything terminal-bound now goes through `stdout`/
+//    `stderr` as FILE*, and holds console::output_mutex while doing it. That
+//    matters most on Windows: MSVC's `std::print` writes to a console via
+//    WriteConsoleW, bypassing the FILE* buffer that `std::cout` fills, so the
+//    two are genuinely different sinks there and can emerge out of order.
+//    One sink plus one lock removes the question.
+//
+// The width is computed from the PLAIN tag, not the coloured one: the
+// coloured string carries SGR escapes that occupy no columns, and indenting by
+// its byte length would push continuations a dozen characters too far right.
+void emit_line_(std::FILE* stream, std::string_view tag, palette::Rgb color,
+                bool bold, std::string_view msg) {
+    const bool toErr = (stream == stderr);
+    const bool colored = gColor_
+        && (toErr ? palette::colors_enabled_err() : palette::colors_enabled());
+
+    std::string line;
+    line.reserve(tag.size() + gContext_.size() + msg.size() + 16);
+
+    std::size_t width = 0;
+    const auto appendTag = [&](std::string_view text) {
+        if (colored) {
+            if (bold) line += palette::bold;
+            line += palette::sgr_fg(color);
+            line += text;
+            line += palette::reset;
+        } else {
+            line += text;
+        }
+        line += ' ';
+        width += text.size() + 1;
+    };
+
+    appendTag(tag);
+    std::string contextTag;
+    if (!gContext_.empty()) {
+        contextTag = std::format("[{}]", gContext_);
+        appendTag(contextTag);
+    }
+
+    const std::string indent(width, ' ');
+    for (const auto ch : msg) {
+        line += ch;
+        if (ch == '\n') line += indent;
+    }
+    line += '\n';
+
+    {
+        std::lock_guard guard(console::output_mutex());
+        std::fwrite(line.data(), 1, line.size(), stream);
+        // A log line is a complete unit of output; leaving half of it in a
+        // buffer is how it ends up interleaved with the next writer's bytes.
+        // MSVC in particular does not line-buffer stdout at all.
+        std::fflush(stream);
+        // The progress renderer's cursor arithmetic is now wrong. Telling it
+        // so is what stops the next frame being painted over this line.
+        console::note_foreign_output();
+    }
+}
+
+void emit_raw_(std::FILE* stream, std::string_view text, bool newline) {
+    std::lock_guard guard(console::output_mutex());
+    std::fwrite(text.data(), 1, text.size(), stream);
+    if (newline) std::fputc('\n', stream);
+    std::fflush(stream);
+    console::note_foreign_output();
 }
 
 }

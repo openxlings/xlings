@@ -167,16 +167,6 @@ int cmd_why(const std::string& target, const std::string& dep,
 }
 
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall) {
-    // Serialize against any other xlings mutating this home, then re-read
-    // state under the lock: Config loaded it at process start, outside the
-    // lock, so acting on that snapshot is how two commands lose each other's
-    // work. See xvm/lock.cppm.
-    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
-    if (!stateLock) {
-        log::error("{}", stateLock.error());
-        return 1;
-    }
-
     // An emulated build installs emulated packages -- correctly, since they
     // have to match this process's ABI, and slowly, since every one of them
     // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
@@ -189,8 +179,20 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                   platform::build().arch, platform::host().arch,
                   platform::host().str());
     }
-    Config::reload_state();
 
+    // Load the index BEFORE taking the home lock.
+    //
+    // The lock protects this home's version database and workspace. The
+    // catalog is a read of the INDEX -- a different tree, with its own
+    // synchronisation -- and `sync_all_repos` below can spend many seconds on
+    // the network. Holding the home lock across that made a second `xlings
+    // install` wait on the first one's index fetch even when the two were
+    // installing unrelated packages and neither had written anything yet.
+    //
+    // This is the safe half of narrowing the lock. The expensive half --
+    // downloading and extracting outside it -- is a real change to what two
+    // concurrent installs may observe and is deliberately NOT done here; see
+    // .agents/docs/2026-08-14-four-perf-and-output-defects-plan.md §2 (L2).
     auto& catalog = get_catalog(CatalogAccess::InstallReady);
     if (!catalog.is_loaded()) {
         log::info("package index not available, updating...");
@@ -222,6 +224,20 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
             + (w.scope == PackageScope::Project ? "project" : "global")
             + " scope): " + w.error});
     }
+
+    // Serialize against any other xlings mutating this home, then re-read
+    // state under the lock: Config loaded it at process start, outside the
+    // lock, so acting on that snapshot is how two commands lose each other's
+    // work. See xvm/lock.cppm.
+    //
+    // Everything that reads or writes THIS HOME is below this line. The
+    // catalog work above reads the index only.
+    auto stateLock = xvm::acquire_state_lock(Config::paths().homeDir);
+    if (!stateLock) {
+        log::error("{}", stateLock.error());
+        return 1;
+    }
+    Config::reload_state();
 
     auto platform = detect_platform();
     std::vector<std::string> targetVec(targets.begin(), targets.end());

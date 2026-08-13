@@ -1558,7 +1558,10 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         for (const auto& root : payloadAuditRoots) {
             auditTick(root);
             ++auditDone;
-            for (const auto& f : elfcheck::scan_payload(root.path)) {
+            const auto scanned = audit.payloadCache
+                ? audit.payloadCache->scan(root.path)
+                : elfcheck::scan_payload(root.path);
+            for (const auto& f : scanned) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
                     .level  = FindingLevel::Error,
@@ -3057,21 +3060,44 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     }
 
     std::optional<xim::PackageCatalog> localCatalog;
+
+    // One cache for this command. `--fix` re-detects after every repair phase,
+    // and without this each of those re-walks every payload's bytes: measured
+    // at 363 payloads / 73 GB, one pass alone was 2m3s before the in-process
+    // ELF reader and 14s after it, times up to eight passes.
+    //
+    // Scoped to the command, not to the process and not to disk -- see
+    // PayloadScanCache for why that boundary is the honest one.
+    elfcheck::PayloadScanCache payloadCache{std::string(xim::kPayloadStampFile)};
+
     AuditSelection audit{.deep = deepAudit};
+    audit.payloadCache = &payloadCache;
+
+    // Which pass this is, so a repeated count does not read as a loop.
+    //
+    // A `--fix` legitimately audits several times, and every one of them
+    // counts from zero. With only "auditing payloads 37/363" on screen that is
+    // indistinguishable from the same scan restarting, and it was reported as
+    // exactly that -- "重复 循环问题". The pass number is the whole fix.
+    std::size_t auditPass = 0;
+
     // Both kinds, deliberately: the plain CLI renders LogEvent and ignores
     // ProgressEvent, while the TUI and the agent protocol consume
     // ProgressEvent and would show nothing for a LogEvent. Emitting one leaves
     // the other with the silence this exists to remove.
-    audit.onProgress = [&stream](std::size_t done, std::size_t total,
-                                 std::string_view target, std::string_view version) {
+    audit.onProgress = [&stream, &auditPass](
+                           std::size_t done, std::size_t total,
+                           std::string_view target, std::string_view version) {
         stream.emit(ProgressEvent{
             .phase = "auditing",
             .percent = total ? static_cast<float>(done) / static_cast<float>(total) : 0.0f,
-            .message = std::format("auditing payloads {}/{}", done, total),
+            .message = std::format("auditing payloads (pass {}) {}/{}",
+                                   auditPass, done, total),
         });
         stream.emit(LogEvent{
             LogLevel::info,
-            std::format("auditing payloads {}/{} — {}@{}", done, total, target, version),
+            std::format("auditing payloads (pass {}) {}/{} — {}@{}",
+                        auditPass, done, total, target, version),
         });
         std::cout.flush();
     };
@@ -3191,6 +3217,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         state = load_state_();
     }
 
+    ++auditPass;
     auto scan = detect_(state, probe, audit);
 
     if (!fix) {
@@ -3222,6 +3249,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     const auto refresh = [&] {
         Config::reload_state();
         state = load_state_();
+        ++auditPass;
         scan  = detect_(state, probe, audit);
     };
 

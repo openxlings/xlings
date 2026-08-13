@@ -8,6 +8,7 @@ module;
 export module xlings.ui:layout;
 
 import std;
+import xlings.core.console;
 import xlings.core.palette;
 import :theme;
 
@@ -431,8 +432,17 @@ inline auto render_to_string(ftxui::Element doc, int width,
 }
 
 // Render `doc` at exactly `width` columns and write it to stdout.
+//
+// One sink and one lock, like every other terminal writer -- see
+// xlings.core.console. A panel printed with `std::cout` while a log line went
+// out through `stdout` could arrive in the wrong order on Windows, where the
+// two are separately buffered.
 inline void print_doc(ftxui::Element doc, int width) {
-    std::cout << render_to_string(std::move(doc), width) << std::flush;
+    const auto text = render_to_string(std::move(doc), width);
+    std::lock_guard guard(console::output_mutex());
+    std::fwrite(text.data(), 1, text.size(), stdout);
+    std::fflush(stdout);
+    console::note_foreign_output();
 }
 
 // Convenience for the common "build rows, print them" shape.

@@ -70,6 +70,37 @@ const mcpplibs::xpkg::PlatformResource* find_entry(
     std::string_view os,
     std::string_view version);
 
+// A recipe that declares no download source at all for this platform.
+//
+// WHY THIS IS A QUESTION WORTH ASKING SEPARATELY
+//
+// Some packages have no payload on purpose. `nvidia-gl-host-link` and
+// `wsl-gl-host-link` create symlinks to whatever the host's driver installed;
+// `interposer-stub`'s consumers build their object at install time. Their
+// version entries are literally `["0.1.1"] = { }`, and that emptiness is the
+// declaration -- there is nothing to fetch and never was.
+//
+// The installer used to report those as `skipping <pkg>: resource has neither
+// url nor source`, at warn level, on every install. Nothing was wrong: the
+// download is skipped and the install hooks still run, which is the entire
+// design. The warning was the bug.
+//
+// It cannot be told apart from a REAL failure by looking at the error, because
+// `mcpplibs::xpkg::resolve_resource` returns a bare string for every reason it
+// can fail -- an unsupported platform, an unknown version, a ref cycle, a
+// missing per-arch checksum, and this. Matching on that text would turn
+// libxpkg's wording into an interface xlings depends on, and the first upstream
+// rephrasing would silently re-classify a broken recipe as an intentional one.
+//
+// So this asks the recipe instead, over the same fields libxpkg reads, and
+// takes the `entry` the caller already resolved -- no second version lookup,
+// no second ref chase. It answers only the narrow question in its name;
+// "no entry for this version" is a different thing and is not this.
+bool declares_no_download_source(
+    const mcpplibs::xpkg::Package& package,
+    const mcpplibs::xpkg::PlatformResource* entry,
+    std::string_view os);
+
 // Architectures this entry names outright, canonicalised.
 std::set<std::string> entry_architectures(
     const mcpplibs::xpkg::PlatformResource& entry);

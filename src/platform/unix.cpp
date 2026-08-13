@@ -256,7 +256,8 @@ FileLock::~FileLock() { release(); }
 bool FileLock::acquire(const std::filesystem::path& path,
                      std::chrono::milliseconds timeout,
                      const std::function<bool()>& cancelled,
-                     std::string& error) {
+                     std::string& error,
+                     const std::function<void(std::chrono::milliseconds)>& onWait) {
     release();
     fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0600);
     if (fd_ < 0) {
@@ -264,7 +265,11 @@ bool FileLock::acquire(const std::filesystem::path& path,
                             path.string(), std::strerror(errno));
         return false;
     }
-    auto deadline = std::chrono::steady_clock::now() + timeout;
+    const auto started = std::chrono::steady_clock::now();
+    const bool bounded = timeout.count() > 0;
+    const auto deadline = started + timeout;
+    bool announced = false;
+    auto lastSpoke = started;
     while (::flock(fd_, LOCK_EX | LOCK_NB) != 0) {
         if (errno != EWOULDBLOCK && errno != EAGAIN) {
             error = std::format("failed to lock {}: {}",
@@ -277,11 +282,25 @@ bool FileLock::acquire(const std::filesystem::path& path,
             release();
             return false;
         }
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (bounded && std::chrono::steady_clock::now() >= deadline) {
             error = std::format("timed out waiting for cache lock {}",
                                 path.string());
             release();
             return false;
+        }
+        if (onWait) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - started);
+            // The FIRST tick fires immediately rather than after an interval.
+            // Waiting even one second before saying anything reproduces the
+            // problem in miniature: the user's very first impression of a
+            // contended command is silence.
+            if (!announced || now - lastSpoke >= std::chrono::seconds{1}) {
+                announced = true;
+                lastSpoke = now;
+                onWait(elapsed);
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }

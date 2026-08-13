@@ -4,6 +4,7 @@ export module xlings.core.elf_same_source;
 
 import std;
 import xlings.platform;
+import xlings.core.elfread;
 import xlings.core.log;
 import xlings.core.version_order;
 
@@ -410,13 +411,40 @@ inline std::string locate_patchelf(const std::filesystem::path& scanned) {
     return out;
 }
 
+// A payload that is really another home's store.
+//
+// `xim-x-mcpp/<v>/registry/data/xpkgs/...` is a complete xlings store carried
+// inside an mcpp payload -- mcpp installs its own packages there. Walking into
+// it audits a store this home does not own, cannot repair, and re-audits once
+// per installed mcpp version. Measured on a real home: 4,845 ELFs and 26.93 GB,
+// 48% of the entire audit's bytes, none of it actionable.
+//
+// Keyed on the directory NAME plus a marker rather than on the full path, so it
+// holds for any package that vendors a store, not only for mcpp.
+inline bool is_nested_store_root_(const std::filesystem::path& dir) {
+    if (dir.filename() != "xpkgs") return false;
+    const auto parent = dir.parent_path();
+    if (parent.filename() != "data") return false;
+    // `<something>/data/xpkgs` is the store layout. Requiring the grandparent
+    // to exist keeps this from matching a payload that merely has a `data`
+    // directory at its root -- which IS the shape of our own store root, and
+    // is why the caller never passes one.
+    return !parent.parent_path().empty();
+}
+
 // Every ELF under DIR whose loader and libc come from different payloads.
 //
-// Reads the two fields with patchelf, which is the same tool that wrote them
-// and is already a hard dependency of the install path. When patchelf is
-// missing the scan yields nothing rather than failing the install: an
-// unverifiable install is not the same as a bad one, and refusing here would
-// turn a missing tool into a broken package manager.
+// Reads the two fields in-process (see xlings.core.elfread), which is what
+// makes this affordable to run over a whole store: the previous reader forked
+// `patchelf` twice per ELF through a shell and patchelf read each file in full,
+// so a single pass over a real 73 GB home moved 56.54 GB and took two minutes.
+//
+// The fields are the same fields, deliberately: elfread reproduces patchelf's
+// RUNPATH-over-RPATH precedence and its "no .interp means no answer" behaviour,
+// and tests/unit/test_elfread.cpp cross-checks the two readers against real
+// files. patchelf remains the writer of these fields; it is no longer required
+// to be installed in order to READ them, which used to make a missing tool
+// indistinguishable from a clean scan.
 //
 // Shared with doctor deliberately. Report and repair have drifted three times
 // in this repo; the shape it takes is a finding that fixing does not clear.
@@ -426,60 +454,137 @@ scan_payload(const std::filesystem::path& dir) {
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return out;
 
-    auto trim = [](std::string v) {
-        while (!v.empty() && (v.back() == '\n' || v.back() == '\r')) v.pop_back();
-        return v;
-    };
-    const auto patchelf = locate_patchelf(dir);
-    if (patchelf.empty()) return out;
-
-    // run_command_capture merges stderr into stdout. On the payload path
-    // `patchelf` is the real binary and prints only its answer; on the
-    // fallback path it can still be one of our shims, which emit their own
-    // bracketed advisory lines first, and taking the whole capture as the
-    // value put a log message where a path belongs. The value is therefore the
-    // last line that looks like one -- correct for both.
-    auto run = [&](const std::string& args) -> std::string {
-        auto [rc, o] = platform::run_command_capture(
-            std::format("\"{}\" {}", patchelf, args));
-        if (rc != 0) return {};
-        std::string value;
-        for (const auto lineView : std::views::split(o, '\n')) {
-            auto line = trim(std::string(lineView.begin(), lineView.end()));
-            if (line.empty() || line.front() == '[') continue;
-            value = std::move(line);
-        }
-        return value;
-    };
-
-    for (auto it = std::filesystem::recursive_directory_iterator(
-             dir, std::filesystem::directory_options::skip_permission_denied, ec);
-         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+    auto it = std::filesystem::recursive_directory_iterator(
+        dir, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
         if (ec) break;
-        if (!it->is_regular_file(ec) || it->is_symlink(ec)) continue;
-        const auto path = it->path().string();
 
-        // Cheap gate first: only real ELFs are worth two patchelf calls.
-        std::ifstream f(path, std::ios::binary);
-        char magic[4] = {};
-        if (!f.read(magic, 4)) continue;
-        if (!(magic[0] == '\x7f' && magic[1] == 'E'
-              && magic[2] == 'L' && magic[3] == 'F')) continue;
-
-        const auto interp = run(std::format("--print-interpreter \"{}\"", path));
-        if (interp.empty()) continue;   // library or static: nothing to pair
-
-        const auto rpath = run(std::format("--print-rpath \"{}\"", path));
-        std::vector<std::string> entries;
-        for (const auto part : std::views::split(rpath, ':')) {
-            std::string e(part.begin(), part.end());
-            if (!e.empty()) entries.push_back(std::move(e));
+        if (it->is_directory(ec) && is_nested_store_root_(it->path())) {
+            // Announced, not silent. A scan that quietly covers less than it
+            // says is this repository's recurring failure -- "never happened"
+            // and "succeeded" printing the same thing.
+            log::debug("elfcheck: skipping nested store {}", it->path().string());
+            it.disable_recursion_pending();
+            continue;
         }
 
-        auto finding = check(path, interp, entries);
+        if (!it->is_regular_file(ec) || it->is_symlink(ec)) continue;
+
+        auto info = elfread::read(it->path());
+        if (!info) continue;                    // not an ELF we can read
+        if (info->interpreter.empty()) continue; // library or static: nothing to pair
+
+        auto finding = check(it->path().string(), info->interpreter,
+                             info->searchPaths);
         if (finding.violated) out.push_back(std::move(finding));
     }
     return out;
 }
+
+// One command's worth of scan results, keyed on whether the payload changed.
+//
+// WHY A CACHE AT ALL
+//
+// `self doctor --fix` re-detects after every repair phase -- six times
+// unconditionally, eight when it prunes -- because the payload repairs run in
+// SUBPROCESSES that write the state file, and a stale in-process copy makes a
+// successful cure read as a failure. That re-detection is correct and must
+// stay. What is wasteful is that it re-walks every payload's bytes, including
+// the overwhelming majority that no phase could possibly have touched.
+//
+// WHY NOT JUST SKIP THE LATE PASSES
+//
+// The obvious alternative is to re-audit only after the phases that can change
+// payload bytes (the reinstall ladder) and skip it after the metadata-only
+// ones. That is faster still and it is a WORSE trade: it is a claim about what
+// each phase does, enforced nowhere, and if a phase ever gains a side effect
+// the audit stops seeing it and says nothing. This cache makes no such claim.
+// Every pass still asks about every payload; a payload whose key moved is
+// re-read no matter which phase moved it.
+//
+// THE KEY, and why the caller supplies part of it
+//
+// A payload's install stamp is rewritten by every install, and it is written
+// through a rename -- which changes the containing DIRECTORY's write time as
+// well. So the directory's own mtime already moves on any install, extraction
+// or repair. The stamp is included on top of it because rewriting an existing
+// file in place would leave the directory untouched, and elfpatch does exactly
+// that during an install.
+//
+// The stamp's FILENAME belongs to xim (payload.cppm owns the constant), and
+// this module sits below xim. Rather than spell it a second time here -- the
+// shape that has already cost this repository a reporter and a repairer
+// disagreeing about the same rule -- the caller passes the stamp path in.
+//
+// PROCESS-SCOPED ON PURPOSE. Persisting it across runs would make it a claim
+// about what happens between commands -- a user running `patchelf` by hand, an
+// installer from another home -- which nothing here can see. One command is
+// exactly the window in which "we are the only writer" is true.
+class PayloadScanCache {
+public:
+    // `stampName` is the install marker's filename, e.g. xim's
+    // kPayloadStampFile. Empty means "no marker to consult", which degrades to
+    // keying on the directory alone rather than to caching nothing.
+    explicit PayloadScanCache(std::string stampName)
+        : stampName_(std::move(stampName)) {}
+
+    std::vector<Finding> scan(const std::filesystem::path& dir) {
+        const auto key = key_of_(dir);
+        const auto path = dir.string();
+        if (auto it = entries_.find(path); it != entries_.end()) {
+            if (it->second.key == key) {
+                ++hits_;
+                return it->second.findings;
+            }
+        }
+        ++misses_;
+        auto findings = scan_payload(dir);
+        entries_.insert_or_assign(path, Entry{key, findings});
+        return findings;
+    }
+
+    [[nodiscard]] std::size_t hits() const { return hits_; }
+    [[nodiscard]] std::size_t misses() const { return misses_; }
+
+private:
+    struct Key {
+        std::int64_t stampTime { 0 };
+        std::uint64_t stampSize { 0 };
+        std::int64_t dirTime { 0 };
+        bool operator==(const Key&) const = default;
+    };
+
+    struct Entry {
+        Key key;
+        std::vector<Finding> findings;
+    };
+
+    static std::int64_t write_time_(const std::filesystem::path& p) {
+        std::error_code ec;
+        const auto t = std::filesystem::last_write_time(p, ec);
+        if (ec) return 0;
+        return t.time_since_epoch().count();
+    }
+
+    Key key_of_(const std::filesystem::path& dir) const {
+        Key key;
+        key.dirTime = write_time_(dir);
+        if (stampName_.empty()) return key;
+        const auto stamp = dir / stampName_;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(stamp, ec)) {
+            key.stampTime = write_time_(stamp);
+            const auto size = std::filesystem::file_size(stamp, ec);
+            key.stampSize = ec ? 0 : size;
+        }
+        return key;
+    }
+
+    std::string stampName_;
+    std::map<std::string, Entry> entries_;
+    std::size_t hits_ { 0 };
+    std::size_t misses_ { 0 };
+};
 
 } // namespace xlings::elfcheck

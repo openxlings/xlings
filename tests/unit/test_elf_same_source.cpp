@@ -474,3 +474,116 @@ TEST(SameSource, WithinAFamilyAHostLibcStillViolates) {
     EXPECT_TRUE(f.violated);
     EXPECT_EQ(f.reason, ec::Finding::Reason::PayloadMismatch);
 }
+
+// ── the per-command scan cache ───────────────────────────────────────
+//
+// `self doctor --fix` re-detects after every repair phase -- up to eight
+// passes -- and each one used to re-walk every payload's bytes. The cache
+// makes the repeats cheap. Its ONE correctness requirement is that a payload
+// the repair ladder actually reinstalled is re-read, because that is the
+// payload whose verdict was supposed to change.
+//
+// A cache that never invalidated would make `--fix` report the damage it just
+// repaired, forever, while looking faster. That is this repository's signature
+// failure -- an answer indistinguishable from the right one -- so it gets a
+// test that fails when the invalidation stops working, not one that merely
+// shows the cache returns something.
+
+namespace {
+
+struct CacheTree {
+    std::filesystem::path root =
+        std::filesystem::weakly_canonical(std::filesystem::temp_directory_path())
+        / std::format("xlings-scan-cache-{}",
+                      std::chrono::steady_clock::now().time_since_epoch().count());
+    CacheTree() { std::filesystem::create_directories(payload()); }
+    ~CacheTree() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+
+    std::filesystem::path payload() const {
+        return root / "data" / "xpkgs" / "xim-x-demo" / "1.0.0";
+    }
+    std::filesystem::path stamp() const {
+        return payload() / ".xpkg-install.json";
+    }
+    void write_stamp(std::string_view text) const {
+        std::ofstream(stamp(), std::ios::trunc) << text;
+    }
+};
+
+}  // namespace
+
+TEST(PayloadScanCache, RepeatedScanOfAnUnchangedPayloadIsAHit) {
+    CacheTree tree;
+    tree.write_stamp("{\"version\":\"1.0.0\"}\n");
+
+    ec::PayloadScanCache cache{".xpkg-install.json"};
+    cache.scan(tree.payload());
+    cache.scan(tree.payload());
+    cache.scan(tree.payload());
+
+    EXPECT_EQ(cache.misses(), 1u);
+    EXPECT_EQ(cache.hits(), 2u);
+}
+
+// The one that matters: a reinstall must be seen.
+//
+// The stamp is rewritten by every install (installer.cpp's
+// write_payload_stamp), so a changed stamp is exactly the signal that the
+// payload under it is not the one that was scanned.
+TEST(PayloadScanCache, RewritingTheInstallStampInvalidates) {
+    CacheTree tree;
+    tree.write_stamp("{\"version\":\"1.0.0\"}\n");
+
+    ec::PayloadScanCache cache{".xpkg-install.json"};
+    cache.scan(tree.payload());
+    ASSERT_EQ(cache.misses(), 1u);
+
+    // A different size is enough; a same-size rewrite is covered by the write
+    // time, which the filesystem updates. Asserting on size alone would pass
+    // for the wrong reason.
+    tree.write_stamp("{\"version\":\"1.0.0\",\"registered\":3}\n");
+
+    cache.scan(tree.payload());
+    EXPECT_EQ(cache.misses(), 2u) << "a reinstalled payload was served from cache";
+    EXPECT_EQ(cache.hits(), 0u);
+}
+
+// A payload with no stamp at all -- installed before stamps existed -- must
+// still be cacheable, and must still notice a change. The directory's own
+// write time carries it: adding or removing an entry updates it, and an
+// install writes its stamp through a rename, which does too.
+TEST(PayloadScanCache, UnstampedPayloadFallsBackToTheDirectory) {
+    CacheTree tree;
+
+    ec::PayloadScanCache cache{".xpkg-install.json"};
+    cache.scan(tree.payload());
+    cache.scan(tree.payload());
+    EXPECT_EQ(cache.misses(), 1u);
+    EXPECT_EQ(cache.hits(), 1u);
+
+    // Sleep past the filesystem's timestamp granularity before touching the
+    // directory. Without this the test is a coin flip on filesystems with
+    // coarse mtime, and a flaky invalidation test is worse than none.
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    std::ofstream(tree.payload() / "new-file") << "x";
+
+    cache.scan(tree.payload());
+    EXPECT_EQ(cache.misses(), 2u) << "a changed payload directory was served from cache";
+}
+
+// Two different payloads are two entries, not one shared verdict.
+TEST(PayloadScanCache, KeyedPerPayloadNotGlobally) {
+    CacheTree tree;
+    const auto other = tree.root / "data" / "xpkgs" / "xim-x-other" / "2.0.0";
+    std::filesystem::create_directories(other);
+
+    ec::PayloadScanCache cache{".xpkg-install.json"};
+    cache.scan(tree.payload());
+    cache.scan(other);
+    EXPECT_EQ(cache.misses(), 2u);
+    EXPECT_EQ(cache.hits(), 0u);
+
+    cache.scan(tree.payload());
+    cache.scan(other);
+    EXPECT_EQ(cache.hits(), 2u);
+}
