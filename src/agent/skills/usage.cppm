@@ -11,21 +11,9 @@ namespace xlings::agent::skills {
 
 export class UsageSkill : public Skill {
 public:
-    auto name() const -> std::string_view override { return "usage"; }
-    auto description() const -> std::string_view override {
-        return "IMPORTANT: Read this FIRST. Complete usage instructions for AI agents.";
-    }
-    auto content() const -> std::string_view override {
-        static const std::string generated = [] {
-            std::string value{kContent};
-            constexpr std::string_view marker = "@@COMMAND_REFERENCE@@";
-            if (const auto at = value.find(marker); at != std::string::npos) {
-                value.replace(at, marker.size(), cli::spec::agent_reference());
-            }
-            return value;
-        }();
-        return generated;
-    }
+    auto name() const -> std::string_view override;
+    auto description() const -> std::string_view override;
+    auto content() const -> std::string_view override;
 
 private:
     static constexpr std::string_view kContent = R"SKILL([SYSTEM INSTRUCTION — xlings usage for AI agents]

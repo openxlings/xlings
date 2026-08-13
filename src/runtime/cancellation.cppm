@@ -5,11 +5,11 @@ import std;
 namespace xlings {
 
 export struct CancelledException : std::runtime_error {
-    CancelledException() : std::runtime_error("operation cancelled") {}
+    CancelledException();
 };
 
 export struct PausedException : std::runtime_error {
-    PausedException() : std::runtime_error("operation paused") {}
+    PausedException();
 };
 
 // State: 0=Active, 1=Paused, 2=Cancelled
@@ -20,42 +20,21 @@ export class CancellationToken {
     std::condition_variable cv_;
 
 public:
-    void pause() {
-        state_.store(1, std::memory_order_release);
-        cv_.notify_all();
-    }
+    void pause();
 
-    void resume() {
-        state_.store(0, std::memory_order_release);
-        cv_.notify_all();
-    }
+    void resume();
 
-    void cancel() {
-        state_.store(2, std::memory_order_release);
-        cv_.notify_all();
-    }
+    void cancel();
 
-    void reset() {
-        state_.store(0, std::memory_order_release);
-    }
+    void reset();
 
-    bool is_active() const {
-        return state_.load(std::memory_order_acquire) == 0;
-    }
+    bool is_active() const;
 
-    bool is_paused() const {
-        return state_.load(std::memory_order_acquire) == 1;
-    }
+    bool is_paused() const;
 
-    bool is_cancelled() const {
-        return state_.load(std::memory_order_acquire) == 2;
-    }
+    bool is_cancelled() const;
 
-    void throw_if_cancelled() {
-        auto s = state_.load(std::memory_order_acquire);
-        if (s == 2) throw CancelledException{};
-        if (s == 1) throw PausedException{};
-    }
+    void throw_if_cancelled();
 
     // Wait on a condition variable while also checking for cancellation/pause and timeout.
     // Returns true if predicate was satisfied, false if cancelled/paused or timed out.

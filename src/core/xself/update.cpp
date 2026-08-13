@@ -1,0 +1,79 @@
+module xlings.core.xself.update;
+
+import std;
+import xlings.core.log;
+import xlings.platform;
+
+namespace xlings::xself {
+
+int cmd_update() {
+    log::info("updating package index...");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
+    int rc = platform::exec("xlings update");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "");
+    if (rc != 0) {
+        log::error("failed to update package index");
+        return rc;
+    }
+
+    // Reach the newest index snapshot for THIS step only.
+    //
+    // Routing (#476) can put an older client on an older index snapshot -- and
+    // that snapshot's own `pkgs/x/xlings.lua` names the `latest` of its era. A
+    // client routed back would therefore be told it is already current and
+    // could never upgrade, so it could never return to the newer index: a
+    // deadlock guaranteed by construction, not a rare race.
+    //
+    // The upgrade path is exempt from routing. Only one recipe has to be
+    // readable from the newer snapshot, and that recipe's shape (XLINGS_RES
+    // plus per-arch sha256) has been stable across every release so far. If
+    // the install fails partway the tree is newer than the client, and the
+    // next `xlings update` routes it back -- the state self-heals.
+    log::info("installing xlings@latest...");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
+    rc = platform::exec("xlings install xlings@latest -y");
+    platform::set_env_variable("XLINGS_INDEX_PIN", "");
+    if (rc != 0) {
+        // This used to warn and return 0. A failed upgrade then looked
+        // exactly like a successful one: the install error scrolled past
+        // under the progress bar, `self update` exited 0, and the user went
+        // on running the old binary believing they were current. Observed
+        // for real -- 0.4.69 against a CN mirror that had not been topped up
+        // yet answered 404, and the command still reported success.
+        //
+        // Whichever way it failed -- absent from the index, download error,
+        // hook failure -- the user asked to be upgraded and was not, so say
+        // so and exit non-zero.
+        log::error("could not install xlings@latest — you are still on the "
+                   "current version");
+        log::error("  hint: run `xlings install xlings@latest -y` to see why");
+        return rc;
+    }
+
+    rc = platform::exec("xlings use xlings latest");
+    if (rc != 0) {
+        log::error("installed xlings@latest but could not activate it");
+        log::error("  hint: run `xlings use xlings latest` to see why");
+        return rc;
+    }
+
+    // The migration nudge, printed rather than performed.
+    //
+    // This function is running the OLD binary -- it has just replaced itself
+    // on disk and is about to exit. It cannot do the migration: the code that
+    // knows how is in the binary that is not running yet, and a half-finished
+    // pass over a home it can no longer reason about is worse than none.
+    //
+    // What it can do is say so at the moment the mismatch is created. The new
+    // client repeats it (see cmd_doctor's migration hint) until a --fix
+    // actually brings the home in line, so this is a nudge and not the only
+    // chance to see it.
+    log::info("");
+    log::info("packages installed by the previous client may still be "
+              "registered in its format");
+    log::info("  run  xlings self doctor --fix");
+
+    return 0;
+}
+
+}

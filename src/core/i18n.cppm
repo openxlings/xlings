@@ -2,7 +2,6 @@ export module xlings.core.i18n;
 
 import std;
 
-import xlings.platform;
 
 namespace xlings::i18n {
 
@@ -165,31 +164,13 @@ constexpr MsgEntry gMessages_[] = {
 static_assert(sizeof(gMessages_) / sizeof(gMessages_[0]) == MSG_COUNT,
               "gMessages_ size must match Msg enum count");
 
-std::string gLang_;
+export void set_language(const std::string& lang);
 
-export void set_language(const std::string& lang) {
-    gLang_ = lang;
-}
+export [[nodiscard]] const std::string& language();
 
-export [[nodiscard]] const std::string& language() {
-    if (gLang_.empty()) {
-        gLang_ = platform::get_system_language();
-        if (gLang_ != "zh") {
-            gLang_ = "en";
-        }
-    }
-    return gLang_;
-}
+export [[nodiscard]] bool is_chinese();
 
-export [[nodiscard]] bool is_chinese() {
-    return language() == "zh";
-}
-
-export [[nodiscard]] std::string_view tr(Msg id) {
-    int idx = static_cast<int>(id);
-    if (idx < 0 || idx >= MSG_COUNT) return "";
-    return is_chinese() ? gMessages_[idx].zh : gMessages_[idx].en;
-}
+export [[nodiscard]] std::string_view tr(Msg id);
 
 export template<typename... Args>
 [[nodiscard]] std::string trf(Msg id, Args&&... args) {

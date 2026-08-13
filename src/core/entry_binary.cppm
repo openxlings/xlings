@@ -33,9 +33,6 @@ export module xlings.core.entry_binary;
 
 import std;
 
-import xlings.core.log;
-import xlings.core.version_order;
-import xlings.platform;
 
 export namespace xlings::entry_binary {
 
@@ -44,45 +41,13 @@ namespace fs = std::filesystem;
 // The bootstrap file of a home. Mirrors the resolution in xvm/commands.cppm's
 // self-replace, including its fallback, so the reader and the writer cannot
 // disagree about which file is the entry.
-fs::path path_of(const fs::path& homeDir) {
-#ifdef _WIN32
-    auto p = homeDir / "bin" / "xlings.exe";
-    if (!fs::exists(p)) p = homeDir / "xlings.exe";
-#else
-    auto p = homeDir / "bin" / "xlings";
-    if (!fs::exists(p)) p = homeDir / "xlings";
-#endif
-    return p;
-}
+fs::path path_of(const fs::path& homeDir);
 
 // The version that file reports when asked. Empty when it is absent, cannot
 // run, or answers in a shape we do not recognise -- all three are "no
 // observation", never "version 0". A caller must not turn an empty string into
 // a verdict; see the doctor finding that consumes this.
-std::string version_of(const fs::path& entry) {
-    std::error_code ec;
-    if (!fs::exists(entry, ec) || ec) return {};
-    auto [rc, out] = platform::run_command_capture(
-        platform::shell_quote(entry.string()) + " --version 2>&1");
-    if (rc != 0) return {};
-    // `xlings <version>` -- take the last whitespace-delimited token of the
-    // first non-empty line. Tolerant on purpose: a future banner change must
-    // degrade to "no observation", not to a wrong observation.
-    std::string_view text { out };
-    auto nl = text.find('\n');
-    auto line = text.substr(0, nl == std::string_view::npos ? text.size() : nl);
-    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
-        line.remove_suffix(1);
-    }
-    auto sp = line.rfind(' ');
-    if (sp == std::string_view::npos) return {};
-    auto token = std::string(line.substr(sp + 1));
-    // A version starts with a digit. Anything else -- an error message, a
-    // usage line -- is not an observation of a version.
-    if (token.empty() || !std::isdigit(static_cast<unsigned char>(token[0])))
-        return {};
-    return token;
-}
+std::string version_of(const fs::path& entry);
 
 // Replace the entry binary, and say what changed.
 //
@@ -99,29 +64,6 @@ std::string version_of(const fs::path& entry) {
 // happen. The standing divergence is doctor's job; this is the moment it is
 // created.
 bool replace_with(const fs::path& payloadBinary, const fs::path& entry,
-                  std::string_view coordinate, std::string_view toVersion) {
-    // Read BEFORE the swap: afterwards the old version is unrecoverable, and
-    // "we changed something, we cannot say from what" is not a report.
-    const auto before = version_of(entry);
-    if (!platform::atomic_replace_executable(payloadBinary, entry)) {
-        log::warn("[xlings] could not replace the entry binary {} <- {}",
-                  entry.string(), payloadBinary.string());
-        return false;
-    }
-    if (before.empty() || before == toVersion) {
-        log::debug("[xlings] entry binary -> {} ({})", toVersion, coordinate);
-        return true;
-    }
-    if (version_order::compare(toVersion, before) < 0) {
-        log::warn("[xlings] entry binary DOWNGRADED {} -> {} ({})",
-                  before, toVersion, coordinate);
-        log::warn("  every shim in this home dispatches through it; an older "
-                  "client may not understand records a newer index wrote");
-        return true;
-    }
-    log::info("[xlings] entry binary {} -> {} ({})", before, toVersion,
-              coordinate);
-    return true;
-}
+                  std::string_view coordinate, std::string_view toVersion);
 
 }  // namespace xlings::entry_binary

@@ -54,11 +54,6 @@ Run `xlings agent skills usage` now to learn the full usage guide.)PROMPT";
 //   2. Import its module above
 //   3. Add a register call below
 
-export SkillRegistry build_registry() {
-    SkillRegistry reg;
-    reg.add(std::make_unique<skills::UsageSkill>());
-    reg.add(std::make_unique<skills::ContributingSkill>());
-    return reg;
-}
+export SkillRegistry build_registry();
 
 }  // namespace xlings::agent::resources

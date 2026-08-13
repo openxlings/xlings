@@ -4,7 +4,6 @@ export module xlings.core.closure_check;
 
 import std;
 import xlings.platform;
-import xlings.core.log;
 import xlings.core.version_order;
 import xlings.core.elf_same_source;
 

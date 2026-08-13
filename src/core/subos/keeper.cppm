@@ -44,7 +44,6 @@ export module xlings.core.subos.keeper;
 
 import std;
 import xlings.core.config;
-import xlings.core.log;
 
 export namespace xlings::subos::keeper {
 

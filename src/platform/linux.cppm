@@ -23,28 +23,9 @@ namespace platform_impl {
     export constexpr char PATH_SEPARATOR = ':';
     export constexpr std::string_view OS_NAME = "linux";
 
-    export std::filesystem::path get_executable_path() {
-        char buf[4096];
-        ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if (n == -1) return {};
-        buf[n] = '\0';
-        return std::filesystem::path(buf);
-    }
+    export std::filesystem::path get_executable_path();
 
-    export std::pair<int, std::string> run_command_capture(const std::string& cmd) {
-        std::string full = cmd + " 2>&1";
-        FILE* pipe = ::popen(full.c_str(), "r");
-        if (!pipe) {
-            return {-1, std::string{}};
-        }
-        std::string output;
-        std::array<char, 256> buffer{};
-        while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
-            output += buffer.data();
-        }
-        int status = ::pclose(pipe);
-        return {status, output};
-    }
+    export std::pair<int, std::string> run_command_capture(const std::string& cmd);
 
     // ─── Cancellable process management ───
 
@@ -53,166 +34,37 @@ namespace platform_impl {
         int pipe_fd{-1};
     };
 
-    export auto spawn_command(const std::string& cmd) -> ProcessHandle {
-        int pipefd[2];
-        if (::pipe(pipefd) == -1) return {-1, -1};
-
-        pid_t pid = ::fork();
-        if (pid == -1) {
-            ::close(pipefd[0]);
-            ::close(pipefd[1]);
-            return {-1, -1};
-        }
-
-        if (pid == 0) {
-            // Child: new process group so we can kill the whole group
-            ::setpgid(0, 0);
-            ::close(pipefd[0]);
-            ::dup2(pipefd[1], STDOUT_FILENO);
-            ::dup2(pipefd[1], STDERR_FILENO);
-            ::close(pipefd[1]);
-            ::execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
-            ::_exit(127);
-        }
-
-        // Parent
-        ::close(pipefd[1]);
-        // Set read end to non-blocking
-        int flags = ::fcntl(pipefd[0], F_GETFL, 0);
-        if (flags != -1) ::fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
-
-        return {static_cast<int>(pid), pipefd[0]};
-    }
+    export auto spawn_command(const std::string& cmd) -> ProcessHandle;
 
     export auto wait_or_kill(const ProcessHandle& h,
                              CancellationToken* cancel,
-                             std::chrono::milliseconds timeout) -> std::pair<int, std::string> {
-        if (h.pid <= 0) return {-1, ""};
+                             std::chrono::milliseconds timeout) -> std::pair<int, std::string>;
 
-        std::string output;
-        std::array<char, 4096> buf{};
-        auto deadline = std::chrono::steady_clock::now() + timeout;
+    export void clear_console();
 
-        while (true) {
-            // Read any available output (non-blocking)
-            while (true) {
-                ssize_t n = ::read(h.pipe_fd, buf.data(), buf.size());
-                if (n > 0) {
-                    output.append(buf.data(), static_cast<std::size_t>(n));
-                } else {
-                    break;
-                }
-            }
+    export std::string get_home_dir();
 
-            // Check if child exited
-            int status = 0;
-            pid_t result = ::waitpid(h.pid, &status, WNOHANG);
-            if (result == h.pid) {
-                // Read remaining output
-                while (true) {
-                    ssize_t n = ::read(h.pipe_fd, buf.data(), buf.size());
-                    if (n > 0) output.append(buf.data(), static_cast<std::size_t>(n));
-                    else break;
-                }
-                ::close(h.pipe_fd);
-                int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-                return {code, output};
-            }
+    export void set_env_variable(const std::string& key, const std::string& value);
 
-            // Check cancellation
-            if (cancel && cancel->is_cancelled()) {
-                break;
-            }
-
-            // Check timeout
-            if (std::chrono::steady_clock::now() >= deadline) {
-                break;
-            }
-
-            // Sleep briefly before next poll
-            std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        }
-
-        // Kill the process group: SIGTERM first
-        ::kill(-h.pid, SIGTERM);
-
-        // Grace period: 2 seconds
-        auto kill_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        while (std::chrono::steady_clock::now() < kill_deadline) {
-            int status = 0;
-            pid_t result = ::waitpid(h.pid, &status, WNOHANG);
-            if (result == h.pid) {
-                ::close(h.pipe_fd);
-                return {-1, output};
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        }
-
-        // Force kill
-        ::kill(-h.pid, SIGKILL);
-        int status = 0;
-        ::waitpid(h.pid, &status, 0);
-        ::close(h.pipe_fd);
-        return {-1, output};
-    }
-
-    export void clear_console() {
-        std::system("clear");
-    }
-
-    export std::string get_home_dir() {
-        if (const char* home = std::getenv("HOME")) return home;
-        return ".";
-    }
-
-    export void set_env_variable(const std::string& key, const std::string& value) {
-        ::setenv(key.c_str(), value.c_str(), 1);
-    }
-
-    export void make_files_executable(const std::filesystem::path& dir) {
-        if (!std::filesystem::exists(dir)) return;
-        for (auto it = std::filesystem::directory_iterator(dir); it != std::default_sentinel; ++it) {
-            if (it->is_regular_file())
-                ::chmod(it->path().c_str(), 0755);
-        }
-    }
+    export void make_files_executable(const std::filesystem::path& dir);
 
     export bool create_directory_link(const std::filesystem::path& link,
-                                      const std::filesystem::path& target) {
-        std::error_code ec;
-        if (std::filesystem::is_symlink(link)) {
-            std::filesystem::remove(link, ec);
-        } else if (std::filesystem::exists(link)) {
-            std::filesystem::remove_all(link, ec);
-        }
-        auto linkTarget = target;
-        auto rel = std::filesystem::relative(target, link.parent_path(), ec);
-        if (!ec && !rel.empty()) linkTarget = rel;
-        ec.clear();
-        std::filesystem::create_directory_symlink(linkTarget, link, ec);
-        return !static_cast<bool>(ec);
-    }
+                                      const std::filesystem::path& target);
 
     // No-op on Linux — terminal generally supports ANSI natively.
-    export void init_console_output() {}
+    export void init_console_output();
 
     // Check if stdout is a TTY (supports cursor save/restore).
-    export bool supports_rewrite_output() {
-        return ::isatty(STDOUT_FILENO) != 0;
-    }
+    export bool supports_rewrite_output();
 
     // Check if stderr is a TTY. Separate from stdout because warnings and
     // errors go to stderr: `xlings install > log` still has an interactive
     // stderr, and `2>&1 | cat` has neither.
-    export bool stderr_is_terminal() {
-        return ::isatty(STDERR_FILENO) != 0;
-    }
+    export bool stderr_is_terminal();
 
     // Check if stdin is a TTY — i.e. whether there is someone there to answer
     // an interactive prompt.
-    export bool stdin_is_terminal() {
-        return ::isatty(STDIN_FILENO) != 0;
-    }
+    export bool stdin_is_terminal();
 
     export template<typename... Args>
     void println(std::format_string<Args...> fmt, Args&&... args) {
@@ -220,19 +72,12 @@ namespace platform_impl {
     }
 
     export inline void println(const std::string& msg) {
-        std::println("{}", msg);
+        std::println(stdout, "{}", msg);
     }
 
-    export int get_pid() {
-        return static_cast<int>(::getpid());
-    }
+    export int get_pid();
 
-    export bool is_process_alive(int pid) {
-        if (pid <= 0) return false;
-        // Check /proc/<pid> existence
-        auto proc_path = std::filesystem::path("/proc") / std::to_string(pid);
-        return std::filesystem::exists(proc_path);
-    }
+    export bool is_process_alive(int pid);
 
     // query_terminal_is_light() lives in :unix — shared with macOS.
 

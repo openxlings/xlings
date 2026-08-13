@@ -174,11 +174,26 @@ LITERAL_PATTERNS = (
     re.compile(r'\bcmdline::Option\("([a-zA-Z][\w-]*)"\)'),
 )
 
-PARSER_SOURCES = (
-    "src/core/subos.cppm",
-    "src/core/xself.cppm",
-    "src/cli.cppm",
+# The modules whose hand-written argv loops this pass reads.  Named by stem and
+# scanned on BOTH sides: a module's interface unit and its implementation unit
+# are one module, and an argv loop can live in either.  Naming `.cppm` alone
+# made this pass silently match zero literals once the loops moved to the
+# implementation units — the guard reported a pattern regression rather than the
+# file move that caused it.
+PARSER_MODULES = (
+    "src/core/subos",
+    "src/core/xself",
+    "src/cli",
 )
+
+
+def parser_sources():
+    found = []
+    for stem in PARSER_MODULES:
+        for ext in (".cppm", ".cpp"):
+            if (ROOT / (stem + ext)).exists():
+                found.append(stem + ext)
+    return found
 
 # Flags consumed and removed before any command sees them, or diagnostics-only
 # spellings that are deliberately undocumented.
@@ -196,7 +211,7 @@ def spec_flags(spec):
 def reverse(spec, failures):
     published = spec_flags(spec)
     checked = 0
-    for relative in PARSER_SOURCES:
+    for relative in parser_sources():
         text = (ROOT / relative).read_text()
         for pattern in LITERAL_PATTERNS:
             for match in pattern.finditer(text):
@@ -261,7 +276,7 @@ def main():
     if reverse_checked < 20:
         failures.append(f"reverse pass matched only {reverse_checked} parser "
                         f"literals -- LITERAL_PATTERNS no longer match the "
-                        f"argv loops in {', '.join(PARSER_SOURCES)}")
+                        f"argv loops in {', '.join(parser_sources())}")
 
     if failures:
         print("CommandSpec / parser parity failed:\n", file=sys.stderr)

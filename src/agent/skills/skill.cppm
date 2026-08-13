@@ -28,24 +28,13 @@ export struct Skill {
 
 export class SkillRegistry {
 public:
-    void add(std::unique_ptr<Skill> skill) {
-        skills_.push_back(std::move(skill));
-    }
+    void add(std::unique_ptr<Skill> skill);
 
-    auto list() const -> const std::vector<std::unique_ptr<Skill>>& {
-        return skills_;
-    }
+    auto list() const -> const std::vector<std::unique_ptr<Skill>>&;
 
-    auto find(std::string_view name) const -> const Skill* {
-        for (auto& s : skills_) {
-            if (s->name() == name) return s.get();
-        }
-        return nullptr;
-    }
+    auto find(std::string_view name) const -> const Skill*;
 
-    auto count() const -> std::size_t {
-        return skills_.size();
-    }
+    auto count() const -> std::size_t;
 
 private:
     std::vector<std::unique_ptr<Skill>> skills_;

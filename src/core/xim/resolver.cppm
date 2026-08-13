@@ -8,8 +8,6 @@ import xlings.core.xim.catalog;
 import xlings.core.xim.install_state;
 import xlings.core.config;
 import xlings.core.xim.compatibility;
-import xlings.core.log;
-import xlings.core.semver;
 import xlings.platform;
 
 export namespace xlings::xim {
@@ -18,20 +16,11 @@ export namespace xlings::xim {
 enum class Color_ { White, Gray, Black };
 
 // Parse a target like "gcc@15" into (name, version_hint)
-std::pair<std::string, std::string> parse_target_(const std::string& target) {
-    auto at = target.find('@');
-    if (at == std::string::npos) return { target, "" };
-    return { target.substr(0, at), target.substr(at + 1) };
-}
+std::pair<std::string, std::string> parse_target_(const std::string& target);
 
-std::string node_key_(std::string_view canonicalName, std::string_view version) {
-    if (version.empty()) return std::string(canonicalName);
-    return std::string(canonicalName) + "@" + std::string(version);
-}
+std::string node_key_(std::string_view canonicalName, std::string_view version);
 
-std::string node_key_(const PackageMatch& match) {
-    return node_key_(match.canonicalName, match.version);
-}
+std::string node_key_(const PackageMatch& match);
 
 // What version of `name` is active in the caller's workspace, if any.
 // Injected rather than read here so the resolver stays free of Config/xvm.
@@ -52,16 +41,7 @@ using ActiveVersionFn = std::function<std::string(const std::string&)>;
 // active or the active version does not satisfy: a pin is an optimisation,
 // never a way to end up with a version the target excluded.
 std::string pin_target_to_active(const std::string& target,
-                                 const ActiveVersionFn& activeOf) {
-    if (!activeOf) return target;
-    auto [namePart, versionHint] = parse_target_(target);
-    if (namePart.empty()) return target;
-    auto bareName = namePart.substr(namePart.rfind(':') + 1);
-    auto active = activeOf(bareName);
-    if (active.empty()) return target;
-    if (!semver::satisfies_expr(active, versionHint)) return target;
-    return namePart + "@" + active;
-}
+                                 const ActiveVersionFn& activeOf);
 
 // Resolve targets into a full install plan.
 //
@@ -81,201 +61,6 @@ resolve(PackageCatalog& catalog,
         std::span<const std::string> targets,
         const std::string& platform,
         const ActiveVersionFn& activeOf = {},
-        const std::string& hostArch = host_architecture()) {
-
-    InstallPlan plan;
-
-    // Built once for the whole resolution. Nothing registers while a plan is
-    // being computed, so one snapshot is correct for every node in it -- and
-    // the question it answers is about what a PREVIOUS run left behind.
-    const LedgerIndex ledgerIndex(
-        Config::versions(), Config::paths().homeDir.string());
-
-    std::unordered_map<std::string, Color_> color;
-    std::unordered_map<std::string, PlanNode> nodeMap;
-
-    std::function<bool(const std::string&, std::vector<std::string>&, DepKind)> expand =
-        [&](const std::string& target, std::vector<std::string>& path, DepKind kind) -> bool {
-        // Pin before resolving, and fall back to the unpinned target if the
-        // pinned one no longer exists in the catalog -- an active version can
-        // outlive its declaration, and that must degrade to "resolve normally"
-        // rather than to "package not found".
-        const auto pinned = pin_target_to_active(target, activeOf);
-        auto resolved = catalog.resolve_target(pinned, platform);
-        if (!resolved && pinned != target) {
-            resolved = catalog.resolve_target(target, platform);
-        }
-        if (!resolved) {
-            plan.errors.push_back(resolved.error());
-            return false;
-        }
-
-        auto match = *resolved;
-        auto key = node_key_(match);
-
-        auto it = color.find(key);
-        if (it != color.end()) {
-            if (it->second == Color_::Gray) {
-                std::string cycle;
-                for (auto& p : path) cycle += p + " -> ";
-                cycle += key;
-                plan.errors.push_back(std::format("cyclic dependency detected: {}", cycle));
-                return false;
-            }
-            // Already processed. If we're encountering this node via a
-            // Runtime walk this time but it was first seen as Build,
-            // upgrade its kind so the installer activates it. Build does
-            // NOT downgrade Runtime — Runtime always wins.
-            if (kind == DepKind::Runtime) {
-                auto nit = nodeMap.find(key);
-                if (nit != nodeMap.end() && nit->second.kind == DepKind::Build)
-                    nit->second.kind = DepKind::Runtime;
-            }
-            return true;
-        }
-
-        color[key] = Color_::Gray;
-        path.push_back(key);
-
-        PlanNode node;
-        node.rawName = match.rawName;
-        node.name = match.name;
-        node.version = match.version;
-        node.namespaceName = match.namespaceName;
-        node.canonicalName = match.canonicalName;
-        node.repoName = match.repoName;
-        node.pkgFile = match.pkgFile;
-        node.storeRoot = match.storeRoot;
-        node.scope = match.scope;
-        // Foreign payloads plan as NOT installed, so the artifact is
-        // downloaded and the install hook has something to unpack.
-        //
-        // An INCOMPLETE payload plans as not installed for the same reason,
-        // and the planner has to agree with the installer here or the two
-        // contradict each other on screen: the installer re-runs the hook of
-        // an incomplete payload, while a planner that still called it
-        // installed printed "nothing to do" and then "already installed" in
-        // the same run that reinstalled it. Same predicate, both places.
-        node.alreadyInstalled = match.installed && !match.payloadForeign
-            && !installation_state(
-                   ledgerIndex, match.namespaceName, match.name, match.version,
-                   match.storeRoot
-                       / package_store_name(match.namespaceName, match.name)
-                       / match.version)
-                   .is_incomplete();
-        node.kind = kind;
-
-        auto pkg = catalog.load_package(match);
-        if (pkg) {
-            // Evidence-graded, and asked of the entry this node would
-            // download. Refusing here keeps the "zero requests for an
-            // unsupported target" contract, but only for a resource that
-            // enumerates its architectures and does not list this one -- a
-            // package-level `archs` union is never enough to stop a plan.
-            const auto* entry = find_entry(*pkg, platform, node.version);
-            const auto compatibility = check_target_compatibility(
-                *pkg, entry, platform, hostArch);
-            if (!compatibility.supported) {
-                std::string chain;
-                for (const auto& item : path) {
-                    if (!chain.empty()) chain += " -> ";
-                    chain += item;
-                }
-                plan.errors.push_back(std::format("{}: {}", chain,
-                    compatibility_error(match.canonicalName, compatibility)));
-                color[key] = Color_::Black;
-                path.pop_back();
-                return false;
-            }
-            node.pkgType = static_cast<int>(pkg->type);
-
-            auto rtIt = pkg->xpm.runtime_deps.find(platform);
-            if (rtIt != pkg->xpm.runtime_deps.end()) node.runtime_deps = rtIt->second;
-            auto bdIt = pkg->xpm.build_deps.find(platform);
-            if (bdIt != pkg->xpm.build_deps.end()) node.build_deps = bdIt->second;
-            auto depsIt = pkg->xpm.deps.find(platform);
-            if (depsIt != pkg->xpm.deps.end()) node.deps = depsIt->second;
-
-            // Pull the package's own exports for this platform (parsed from
-            // xpm.<platform>.exports.runtime by the libxpkg loader). An empty
-            // `loader` means "this package doesn't provide a dynamic linker";
-            // predicate-driven elfpatch reads this.
-            auto exIt = pkg->xpm.exports.find(platform);
-            if (exIt != pkg->xpm.exports.end()) {
-                node.exports.loader  = exIt->second.runtime.loader;
-                node.exports.libdirs = exIt->second.runtime.libdirs;
-                node.exports.abi     = exIt->second.runtime.abi;
-            }
-
-            // What the recipe promises this package provides. Verified after
-            // the whole install completes -- not here -- because a package may
-            // legitimately delegate its registration to a deferred install
-            // (gcc on Windows hands off to mingw-w64).
-            node.programs = pkg->programs;
-
-            DepKind rt_kind = (kind == DepKind::Build) ? DepKind::Build
-                                                       : DepKind::Runtime;
-            for (auto& dep : node.runtime_deps) {
-                if (!expand(dep, path, rt_kind)) { /* keep collecting */ }
-            }
-            for (auto& dep : node.build_deps) {
-                if (!expand(dep, path, DepKind::Build)) { /* keep collecting */ }
-            }
-        } else {
-            log::warn("failed to load package {}: {}", key, pkg.error());
-        }
-
-        nodeMap[key] = std::move(node);
-        color[key] = Color_::Black;
-        path.pop_back();
-        return true;
-    };
-
-    for (auto& target : targets) {
-        std::vector<std::string> path;
-        expand(target, path, DepKind::Runtime);
-    }
-
-    if (plan.has_errors()) {
-        return plan;
-    }
-
-    std::vector<std::string> topoOrder;
-    std::unordered_set<std::string> visited;
-
-    std::function<void(const std::string&)> topoVisit =
-        [&](const std::string& key) {
-        if (visited.count(key)) return;
-        visited.insert(key);
-
-        auto it = nodeMap.find(key);
-        if (it == nodeMap.end()) return;
-
-        for (auto& dep : it->second.deps) {
-            // Pin exactly as expand() did, or this recomputes a key the node
-            // map does not have and the edge is silently dropped.
-            const auto pinned = pin_target_to_active(dep, activeOf);
-            auto depMatch = catalog.resolve_target(pinned, platform);
-            if (!depMatch && pinned != dep) {
-                depMatch = catalog.resolve_target(dep, platform);
-            }
-            if (depMatch) topoVisit(node_key_(*depMatch));
-        }
-        topoOrder.push_back(key);
-    };
-
-    for (auto& [key, _] : nodeMap) {
-        topoVisit(key);
-    }
-
-    for (auto& key : topoOrder) {
-        auto it = nodeMap.find(key);
-        if (it != nodeMap.end()) {
-            plan.nodes.push_back(std::move(it->second));
-        }
-    }
-
-    return plan;
-}
+        const std::string& hostArch = host_architecture());
 
 } // namespace xlings::xim

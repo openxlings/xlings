@@ -1,0 +1,496 @@
+module;
+
+#include "ftxui/dom/elements.hpp"
+#include "ftxui/screen/screen.hpp"
+#include "ftxui/screen/color.hpp"
+
+module xlings.ui;
+
+import std;
+import xlings.core.palette;
+
+namespace xlings::ui {
+
+PanelLayout measure_panel_(std::string_view title,
+                           std::span<const InfoField> fields,
+                           std::span<const InfoField> extra) {
+    PanelLayout L;
+
+    auto scan = [&](std::span<const InfoField> fs) {
+        for (auto& f : fs) {
+            L.labelW = std::max(L.labelW, layout::display_width(f.label));
+            if (f.is_highlight || f.is_alert) L.markerW = 2;
+        }
+    };
+    scan(fields);
+    scan(extra);
+    L.labelW = std::max(L.labelW, 12);  // keeps short panels looking like a column
+
+    int valueMax = 0;
+    auto widest = [&](std::span<const InfoField> fs) {
+        for (auto& f : fs) valueMax = std::max(valueMax, field_value_width_(f));
+    };
+    widest(fields);
+    widest(extra);
+
+    L.lead = 2 + L.markerW + L.labelW + 2;
+    int titleW = 2 + 2 + layout::display_width(title);
+    int natural = std::max({ L.lead + valueMax, titleW, 42 });
+
+    L.width = layout::fit_width(natural);
+    L.valueW = L.width - L.lead;
+    L.stacked = (L.valueW < kMinValueW) || (L.labelW > L.width / 2);
+    if (L.stacked) L.valueW = std::max(1, L.width - kStackIndent);
+    return L;
+}
+
+void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
+                    const PanelLayout& L) {
+    using namespace ftxui;
+
+    for (auto& f : fields) {
+        // The active/notable marker is a glyph, not a color. `xlings use`
+        // used to say "this version is the active one" in green and nothing
+        // else, so NO_COLOR, a pipe, or a colorblind reader lost the one
+        // fact the command exists to report.
+        auto marker = L.markerW == 0
+            ? text("")
+            : (f.is_alert
+                   ? (text(std::string(theme::icon::warn) + " ") | color(theme::amber()))
+                   : f.is_highlight
+                       ? (text(std::string(theme::icon::active) + " ") | color(theme::green()))
+                       : text("  "));
+
+        auto value_style = [&](Element e) {
+            if (f.is_alert)     return e | color(theme::amber()) | bold;
+            if (f.is_highlight) return e | color(theme::green()) | bold;
+            return e | color(theme::text_color());
+        };
+
+        auto lines = layout::wrap_to_width(f.value, L.valueW);
+
+        if (L.stacked) {
+            rows.push_back(hbox({
+                text("  "),
+                marker,
+                text(f.label) | color(theme::dim_color()),
+            }));
+            for (auto& line : lines) {
+                if (line.empty()) continue;
+                rows.push_back(hbox({
+                    text(std::string(kStackIndent, ' ')),
+                    value_style(text(line)),
+                }));
+            }
+            continue;
+        }
+
+        rows.push_back(hbox({
+            text("  "),
+            marker,
+            text(layout::pad_to_width(f.label, L.labelW)) | color(theme::dim_color()),
+            text("  "),
+            value_style(text(lines.front())),
+        }));
+        // Continuation lines sit under the value column, so the label column
+        // still reads as a column.
+        for (std::size_t i = 1; i < lines.size(); ++i) {
+            rows.push_back(hbox({
+                text(std::string(static_cast<std::size_t>(L.lead), ' ')),
+                value_style(text(lines[i])),
+            }));
+        }
+    }
+}
+
+void print_info_panel(std::string_view title, std::span<const InfoField> fields, std::span<const InfoField> extra) {
+    using namespace ftxui;
+
+    auto L = measure_panel_(title, fields, extra);
+
+    // The divider spans the panel. It used to be forty hardcoded box glyphs
+    // whatever the panel measured, so a 230-column `self doctor` header sat
+    // on a forty-column rule and read as a frame that failed to draw.
+    auto divider = [&] {
+        return text("  " + layout::repeat(theme::icon::divider, L.width - 4))
+               | color(theme::border_color());
+    };
+
+    Elements rows;
+    rows.push_back(hbox({
+        text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
+        text(std::string(title)) | theme::highlight(),
+    }));
+    rows.push_back(divider());
+
+    render_fields_(rows, fields, L);
+
+    if (!extra.empty()) {
+        rows.push_back(divider());
+        render_fields_(rows, extra, L);
+    }
+
+    rows.push_back(text(""));
+
+    layout::print_rows(std::move(rows), L.width);
+}
+
+void print_styled_list(std::string_view title,
+                       std::span<const ListRow> items,
+                       bool show_marker) {
+    using namespace ftxui;
+
+    constexpr int kMarkerW = 4;   // "  ◆ " or four spaces
+    constexpr int kGap = 2;
+
+    int nameMax = 0, descMax = 0, statusMax = 0;
+    for (auto& row : items) {
+        nameMax = std::max(nameMax, layout::display_width(row.name));
+        descMax = std::max(descMax, layout::display_width(row.desc));
+        statusMax = std::max(statusMax, layout::display_width(row.status));
+    }
+    // The status column is planned as part of the name block, not of the
+    // description, so it is never the thing that gets dropped or truncated.
+    const int statusBlock = statusMax > 0 ? kGap + statusMax : 0;
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax + statusBlock,
+                                     descMax,
+                                     2 + layout::display_width(title));
+
+    Elements rows;
+    if (!title.empty()) {
+        rows.push_back(text("  " + std::string(title)) | bold | color(theme::text_color()));
+        rows.push_back(text(""));
+    }
+
+    for (auto& row : items) {
+        const auto& name = row.name;
+        const auto& desc = row.desc;
+        auto marker = show_marker
+            ? (text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()))
+            : text("    ");
+
+        if (P.stacked) {
+            // The name is wider than the terminal. It still does not get cut:
+            // it wraps. A package name that does not round-trip into the next
+            // `xlings install` is worse than a taller list.
+            auto nameLines = layout::wrap_to_width(
+                name, std::max(1, P.width - kMarkerW));
+            for (std::size_t i = 0; i < nameLines.size(); ++i) {
+                rows.push_back(hbox({
+                    i == 0 ? marker : text(std::string(kMarkerW, ' ')),
+                    text(nameLines[i]) | bold | color(theme::magenta()),
+                }));
+            }
+            // Its own line, never elided. The stacked branch is where the
+            // terminal is already too narrow for the name, which is exactly
+            // when a dropped qualifier would do the most damage.
+            if (!row.status.empty()) {
+                rows.push_back(hbox({
+                    text(std::string(kMarkerW + kGap, ' ')),
+                    text(row.status) | color(theme::amber()),
+                }));
+            }
+            if (P.descW > 0 && !desc.empty()) {
+                rows.push_back(hbox({
+                    text(std::string(kMarkerW + kGap, ' ')),
+                    text(layout::truncate_to_width(desc, P.descW)) | color(theme::dim_color()),
+                }));
+            }
+            continue;
+        }
+
+        Elements cells;
+        cells.push_back(marker);
+        cells.push_back(text(layout::pad_to_width(name, nameMax))
+                        | bold | color(theme::magenta()));
+        if (statusMax > 0) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::pad_to_width(row.status, statusMax))
+                            | color(theme::amber()));
+        }
+        if (P.descW > 0 && !desc.empty()) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::truncate_to_width(desc, P.descW))
+                            | color(theme::dim_color()));
+        }
+        rows.push_back(hbox(std::move(cells)));
+    }
+    rows.push_back(text(""));
+
+    layout::print_rows(std::move(rows), P.width);
+}
+
+void print_install_plan(std::span<const std::pair<std::string, std::string>> packages) {
+    using namespace ftxui;
+
+    constexpr int kMarkerW = 6;   // "    ◆ "
+    constexpr int kGap = 2;
+
+    int nameMax = 0, descMax = 0;
+    for (auto& [nameVer, desc] : packages) {
+        nameMax = std::max(nameMax, layout::display_width(nameVer));
+        descMax = std::max(descMax, layout::display_width(desc));
+    }
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, descMax);
+
+    // Print header
+    Elements header;
+    header.push_back(hbox({
+        text("  Packages to install (") | color(theme::text_color()),
+        text(std::to_string(packages.size())) | bold | color(theme::text_color()),
+        text("):") | color(theme::text_color()),
+    }));
+    header.push_back(text(""));
+    // The blank row above is the spacing. print_rows terminates every row,
+    // including that one, so a further "\n" here would double it.
+    layout::print_rows(std::move(header), P.width);
+
+    // Print package lines (will be replaced by download progress via
+    // cursor-up). One row per package, always — the progress renderer counts
+    // the rows it has to move back over, so this list truncates rather than
+    // wraps whatever the width.
+    Elements pkgRows;
+    for (auto& [nameVer, desc] : packages) {
+        Elements cells;
+        cells.push_back(text("    " + std::string(theme::icon::package) + " ")
+                        | color(theme::magenta()));
+        // The one place a package name may be elided: this list is
+        // overwritten row-for-row and cannot grow a second line. It is
+        // elided visibly, with an ellipsis, rather than clipped at the
+        // screen edge.
+        auto shown = P.stacked
+            ? layout::truncate_to_width(nameVer, std::max(1, P.width - kMarkerW))
+            : layout::pad_to_width(nameVer, P.nameW);
+        cells.push_back(text(shown) | bold | color(theme::magenta()));
+        if (!P.stacked && P.descW > 0 && !desc.empty()) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(text(layout::truncate_to_width(desc, P.descW))
+                            | color(theme::dim_color()));
+        }
+        pkgRows.push_back(hbox(std::move(cells)));
+    }
+    pkgRows.push_back(text(""));
+
+    layout::print_rows(std::move(pkgRows), P.width);
+}
+
+void print_subos_list(
+    std::span<const std::tuple<std::string, std::string, int, bool>> entries) {
+    using namespace ftxui;
+
+    constexpr int kMarkerW = 4;
+    constexpr int kGap = 2;
+
+    auto detail_of = [](const std::string& dir, int tools) {
+        return "(" + dir + "  tools: " + std::to_string(tools) + ")";
+    };
+
+    int nameMax = 0, detailMax = 0;
+    for (auto& [name, dir, tools, active] : entries) {
+        nameMax = std::max(nameMax, layout::display_width(name));
+        detailMax = std::max(detailMax, layout::display_width(detail_of(dir, tools)));
+    }
+    auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, detailMax);
+
+    Elements rows;
+    rows.push_back(text("  Sub-OS environments:") | bold | color(theme::text_color()));
+    rows.push_back(text(""));
+
+    for (auto& [name, dir, tools, active] : entries) {
+        auto marker = active
+            ? (text("  " + std::string(theme::icon::active) + " ") | color(theme::cyan()))
+            : text("    ");
+        auto nameEl = active
+            ? (text(layout::pad_to_width(name, P.nameW)) | bold | color(theme::cyan()))
+            : (text(layout::pad_to_width(name, P.nameW)) | color(theme::text_color()));
+
+        Elements cells { marker, nameEl };
+        if (P.descW > 0) {
+            cells.push_back(text(std::string(kGap, ' ')));
+            cells.push_back(
+                text(layout::truncate_to_width(detail_of(dir, tools), P.descW))
+                | color(theme::dim_color()));
+        }
+        rows.push_back(hbox(std::move(cells)));
+    }
+    rows.push_back(text(""));
+
+    layout::print_rows(std::move(rows), P.width);
+}
+
+void print_subos_resolved(std::string_view query, std::string_view selected) {
+    std::println("{}  {} resolved subos '{}' -> {}{}{}{}",
+                 palette::fg(palette::cyan()), theme::icon::arrow, query,
+                 palette::strong(), selected, palette::off(), palette::off());
+}
+
+void print_subos_created(const std::string& name, const std::string& dir) {
+    using namespace subos_ansi_;
+    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
+    if (!dir.empty()) {
+        std::println("{}    dir:{} {}", gray(), reset(), dir);
+    }
+}
+
+void print_subos_switched(const std::string& name, const std::string& dir) {
+    using namespace subos_ansi_;
+    // [global] tag distinguishes the persistent "--global" action from the
+    // per-shell spawn (which is the default `xlings subos use NAME`).
+    if (dir.empty()) {
+        std::println("{}  {} switched to subos {}{}{}{}  [global]{}",
+                     cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), reset());
+    } else {
+        std::println("{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
+                     cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), dir, reset());
+    }
+}
+
+void print_subos_removed(const std::string& name) {
+    using namespace subos_ansi_;
+    std::println("{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
+}
+
+void print_subos_entering(const std::string& name) {
+    using namespace subos_ansi_;
+    std::println("{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
+                 magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), reset());
+}
+
+void print_subos_already_in(const std::string& name) {
+    using namespace subos_ansi_;
+    std::println("{}  {} already in subos {}{}{}{}",
+                 gray(), theme::icon::info, bold(), name, reset(), gray());
+    std::print("{}", reset());
+}
+
+void print_subos_nesting(const std::string& from, const std::string& to) {
+    using namespace subos_ansi_;
+    std::println("{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
+                 amber(), theme::icon::extracting,
+                 bold(), from, reset(), amber(),
+                 bold(), to, reset(), amber(),
+                 bold(), from, reset(), amber(), reset());
+}
+
+void print_install_summary(int success, int failed) {
+    using namespace ftxui;
+
+    Elements rows;
+    std::vector<std::string> measured;
+    rows.push_back(text(""));
+
+    if (success > 0) {
+        auto msg = std::to_string(success) + " package(s) installed";
+        measured.push_back(msg);
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
+            text(msg) | color(theme::green()) | bold,
+        }));
+    }
+    if (failed > 0) {
+        auto msg = std::to_string(failed) + " package(s) failed";
+        measured.push_back(msg);
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::failed) + " ") | color(theme::red()),
+            text(msg) | color(theme::red()) | bold,
+        }));
+    }
+    rows.push_back(text(""));
+
+    layout::print_rows(std::move(rows), message_width_(measured));
+}
+
+void print_remove_plan(const std::string& subos,
+                       const std::string& name,
+                       const std::string& version) {
+    using namespace ftxui;
+
+    auto label = remove_target_label_(name, version);
+
+    Elements rows;
+    rows.push_back(text(""));
+    rows.push_back(hbox({
+        text("  Package to remove:") | color(theme::text_color()),
+    }));
+    rows.push_back(text(""));
+    auto suffix = "  (subos: " + subos + ")";
+    rows.push_back(hbox({
+        text("    " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
+        text(label) | bold | color(theme::magenta()),
+        text(suffix) | color(theme::dim_color()),
+    }));
+    rows.push_back(text(""));
+
+    std::vector<std::string> measured { "Package to remove:", label + suffix + "  " };
+    layout::print_rows(std::move(rows), message_width_(measured));
+}
+
+void print_remove_summary(const std::string& subos,
+                          const std::string& name,
+                          const std::string& version,
+                          bool detached,
+                          const std::vector<std::string>& pinnedBy) {
+    using namespace ftxui;
+
+    auto label = remove_target_label_(name, version);
+
+    auto suffix = subos.empty() ? std::string{} : "  (subos: " + subos + ")";
+
+    Elements rows;
+    std::vector<std::string> measured;
+    rows.push_back(text(""));
+    if (detached) {
+        measured.push_back(label + " detached" + suffix);
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
+            text(label + " detached") | color(theme::green()) | bold,
+            suffix.empty() ? text("")
+                           : (text(suffix) | color(theme::dim_color())),
+        }));
+        // Say how many, and name them only while the line still fits.
+        //
+        // ftxui clips at the screen edge, and on a pipe that is 80 columns:
+        // a home with 20 referencing subos rendered four names and a
+        // half-word, which reads as a complete list and is not. That is the
+        // same "looks finished, isn't" failure this whole change removes, so
+        // the cap is applied here where the count is known rather than left
+        // to the terminal. The COUNT is the load-bearing fact — it tells the
+        // user this is not one more `remove` away — and it always fits.
+        constexpr std::size_t kMaxNamed = 2;
+        if (pinnedBy.empty()) {
+            // Pinned by something the subos scan cannot name (a project-local
+            // subos, say). Still say the payload stayed.
+            measured.emplace_back("payload kept — another subos still uses it");
+            rows.push_back(text("    payload kept — another subos still uses it")
+                           | color(theme::dim_color()));
+        } else {
+            std::string line = std::format("    payload kept — {} other subos still use it",
+                                           pinnedBy.size());
+            if (pinnedBy.size() <= kMaxNamed) {
+                std::string names;
+                for (const auto& n : pinnedBy) {
+                    if (!names.empty()) names += ", ";
+                    names += n;
+                }
+                line = std::format("    payload kept — still used by {}", names);
+            }
+            measured.push_back(line);
+            rows.push_back(text(line) | color(theme::dim_color()));
+            rows.push_back(text("    remove it there too to delete it for good")
+                           | color(theme::dim_color()));
+        }
+    } else {
+        measured.push_back(label + " removed" + suffix);
+        rows.push_back(hbox({
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
+            text(label + " removed") | color(theme::green()) | bold,
+            suffix.empty() ? text("")
+                           : (text(suffix) | color(theme::dim_color())),
+        }));
+    }
+    rows.push_back(text(""));
+
+    layout::print_rows(std::move(rows), message_width_(measured));
+}
+
+}

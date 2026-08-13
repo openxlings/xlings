@@ -41,7 +41,7 @@ struct Target {
     std::string os;    // linux | macosx | windows
     std::string arch;  // x86_64 | aarch64 | arm64 (macOS) | x86 | unknown
 
-    std::string str() const { return os + "-" + arch; }
+    std::string str() const;
 };
 
 // Written out rather than `= default`: a defaulted hidden-friend comparison in
@@ -80,47 +80,16 @@ constexpr std::string_view build_arch() {
 }
 
 // The ABI of this process. Compile-time, and deliberately so.
-const Target& build() {
-    static const Target value{std::string(build_os()), std::string(build_arch())};
-    return value;
-}
+const Target& build();
 
 // What the kernel reports. Falls back to build() when it cannot be read, so a
 // caller never has to handle "unknown machine" separately -- the interesting
 // case is only ever "these two disagree".
-const Target& host() {
-    static const Target value = [] {
-        Target target{std::string(build_os()), std::string(build_arch())};
-#if defined(_WIN32)
-        SYSTEM_INFO info{};
-        ::GetNativeSystemInfo(&info);
-        switch (info.wProcessorArchitecture) {
-            case PROCESSOR_ARCHITECTURE_ARM64: target.arch = "aarch64"; break;
-            case PROCESSOR_ARCHITECTURE_AMD64: target.arch = "x86_64"; break;
-            case PROCESSOR_ARCHITECTURE_INTEL: target.arch = "x86"; break;
-            default: break;
-        }
-#else
-        struct utsname info{};
-        if (::uname(&info) == 0) {
-            const std::string_view machine{info.machine};
-            if (machine == "aarch64" || machine == "arm64") {
-                target.arch = build_os() == "macosx" ? "arm64" : "aarch64";
-            } else if (machine == "x86_64" || machine == "amd64") {
-                target.arch = "x86_64";
-            } else if (machine == "i386" || machine == "i686") {
-                target.arch = "x86";
-            }
-        }
-#endif
-        return target;
-    }();
-    return value;
-}
+const Target& host();
 
 // True when this binary is running on hardware it was not built for -- Rosetta
 // 2, WOW64, qemu-user, box64. Not an error: the emulated build works, and
 // switching to a native one is the user's call.
-bool is_emulated() { return build().arch != host().arch; }
+bool is_emulated();
 
 }  // namespace xlings::platform
