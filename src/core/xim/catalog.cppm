@@ -235,6 +235,11 @@ class PackageCatalog {
     // right there in the index — see resolve_target.
     std::vector<std::string> platforms_offering_(const std::string& target) const;
 
+    // "not in the index" and "not in the index YET" were the same string.
+    // Names the revision the answer was decided against, so the two become
+    // distinguishable. See the definition for why that matters.
+    std::string not_found_(const std::string& target) const;
+
 public:
     std::expected<void, std::string> rebuild(bool forceRebuild = false);
 

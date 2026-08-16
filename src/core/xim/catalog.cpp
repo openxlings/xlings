@@ -268,8 +268,7 @@ resolve_local_identity_from_repos(
     auto matches = std::move(primaryMatches);
     matches = detail_::dedupe_matches_(std::move(matches));
     if (matches.empty()) {
-        return std::unexpected(std::format(
-            "package '{}' not found", target));
+        return std::unexpected(std::format("package '{}' not found", target));
     }
     if (matches.size() != 1) {
         // Same namespace priority the full resolver applies, for the same
@@ -610,6 +609,91 @@ std::vector<std::string> PackageCatalog::platforms_offering_(const std::string& 
     return out;
 }
 
+// The revision an index answer was based on, for the ONE message that needs
+// it: "not found".
+//
+// "Not in the index" and "not in the index YET" are different facts and were
+// the same string. During the window between a package being merged and the
+// synced index carrying it, `install` fails with the exact text it uses for a
+// package that does not exist -- so a human retries and shrugs, CI goes red
+// and looks like a defect in the pull request, and (measured, five times in
+// one day) an ALREADY-FIXED defect can look unfixed until someone compares
+// timestamps.
+//
+// The delay itself is not a bug and cannot be removed -- it is a publish step
+// plus a CDN. What can be removed is the ambiguity, and the information is
+// already on disk: the synced index is a git working tree.
+//
+// Read directly rather than by running `git`: this is an error path, it must
+// not depend on git being on PATH at the moment of failure, and a revision we
+// cannot read is not worth failing over -- the caller just gets the plain
+// message back.
+std::string index_revision_(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto gitDir = dir / ".git";
+    if (!fs::exists(gitDir, ec)) return {};
+
+    auto read_first_line = [](const fs::path& f) -> std::string {
+        std::ifstream in(f);
+        std::string line;
+        if (!std::getline(in, line)) return {};
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.pop_back();
+        return line;
+    };
+
+    auto head = read_first_line(gitDir / "HEAD");
+    if (head.empty()) return {};
+
+    std::string sha;
+    if (head.starts_with("ref: ")) {
+        auto refName = head.substr(5);
+        sha = read_first_line(gitDir / refName);
+        if (sha.empty()) {
+            // Packed refs: the loose file is absent after `git gc` or a fresh
+            // clone, which is the common case for a synced index.
+            std::ifstream packed(gitDir / "packed-refs");
+            std::string line;
+            while (std::getline(packed, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                auto sp = line.find(' ');
+                if (sp == std::string::npos) continue;
+                if (line.compare(sp + 1, refName.size(), refName) == 0
+                    && line.size() == sp + 1 + refName.size()) {
+                    sha = line.substr(0, sp);
+                    break;
+                }
+            }
+        }
+    } else {
+        sha = head;          // detached HEAD is already the sha
+    }
+    if (sha.size() < 7) return {};
+    return sha.substr(0, 7);
+}
+
+// "not found" plus the revision it was decided against, when we can read one.
+std::string PackageCatalog::not_found_(const std::string& target) const {
+    std::string where;
+    auto add = [&](const std::vector<RepoState>& repos) {
+        for (const auto& r : repos) {
+            auto rev = index_revision_(r.spec.dir);
+            if (rev.empty()) continue;
+            if (!where.empty()) where += ", ";
+            where += r.spec.name + "@" + rev;
+        }
+    };
+    add(projectRepos_);
+    add(globalRepos_);
+    if (where.empty()) return std::format("package '{}' not found", target);
+    return std::format(
+        "package '{}' not found in the synced index ({})\n"
+        "  if it was just published, the index may not carry it yet — "
+        "run `xlings update`",
+        target, where);
+}
+
 std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const std::string& target,
                    const std::string& platform) const {
     auto matches = collect_matches_(target, platform);
@@ -631,7 +715,7 @@ std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const st
                 "package '{}' has no build for {} (available on: {})",
                 target, platform.empty() ? "this platform" : platform, list));
         }
-        return std::unexpected(std::format("package '{}' not found", target));
+        return std::unexpected(not_found_(target));
     }
     if (matches.size() > 1) {
         matches = prefer_project_scope_(std::move(matches));
