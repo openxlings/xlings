@@ -650,36 +650,53 @@ std::string PackageCatalog::not_found_(const std::string& target) const {
     // Five minutes. Long enough that "you already have the newest index" is
     // true, short enough that a real publish-window miss still gets the hint.
     constexpr long long kFreshSeconds = 300;
+    // Three. A normal home has six index repos and the same one can appear in
+    // both lists, so the untrimmed line ran past 160 columns and named
+    // `scode@78fe9f0` twice -- which reads as a bug in the message. Found by
+    // rendering it, which is the one check the reader of this message gets and
+    // the author usually does not.
+    constexpr std::size_t kMaxNamed = 3;
 
-    std::string where;
+    std::vector<std::string> seen;
     long long freshest = -1;
     auto add = [&](const std::vector<RepoState>& repos) {
         for (const auto& r : repos) {
             auto rev = get_repo_revision_label(r.spec.dir);
             if (rev.empty()) continue;
-            if (!where.empty()) where += ", ";
-            where += r.spec.name + "@" + rev;
+            auto label = r.spec.name + "@" + rev;
+            // The same repo reached through the project and global lists is
+            // one snapshot, not two.
+            if (std::ranges::find(seen, label) != seen.end()) continue;
+            seen.push_back(std::move(label));
             auto age = get_repo_sync_age_seconds(r.spec.dir);
             if (age >= 0 && (freshest < 0 || age < freshest)) freshest = age;
         }
     };
     add(projectRepos_);
     add(globalRepos_);
-    if (where.empty()) return std::format("package '{}' not found", target);
+    if (seen.empty()) return std::format("package '{}' not found", target);
+
+    std::string where;
+    for (std::size_t i = 0; i < seen.size() && i < kMaxNamed; ++i) {
+        if (!where.empty()) where += ", ";
+        where += seen[i];
+    }
+    if (seen.size() > kMaxNamed)
+        where += std::format(", +{} more", seen.size() - kMaxNamed);
 
     auto msg = std::format("package '{}' not found in the synced index ({})",
                            target, where);
-    if (freshest >= 0 && freshest < kFreshSeconds) {
-        msg += std::format(
-            "\n  the index was synced {} ago, so this name is either wrong or "
-            "not published yet", detail_::humanize_age_(freshest));
-    } else {
-        if (freshest >= 0) {
-            msg += std::format("\n  that index was synced {} ago",
-                               detail_::humanize_age_(freshest));
-        }
+    if (freshest >= 0)
+        msg += std::format(", synced {} ago", detail_::humanize_age_(freshest));
+
+    // The advice, only where it can be the explanation. Told to someone who
+    // synced a minute ago it is the noise this message exists to remove.
+    if (freshest < 0 || freshest >= kFreshSeconds) {
         msg += "\n  if it was just published, the index may not carry it yet "
                "— run `xlings update`";
+    } else {
+        msg += "\n  the index is current, so this name is either wrong or not "
+               "published yet";
     }
     return msg;
 }
