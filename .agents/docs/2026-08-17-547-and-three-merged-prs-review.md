@@ -1034,3 +1034,100 @@ tests/unit/test_runtime.cpp(771): error: Expected equality of these values:
 > 「多加一个入口」几乎总是比「找出已有的那几个入口为什么不一致」容易想到。
 > 这是 `reference_one_question_many_answerers` 的实践版：
 > **在提出新答案之前，先数一遍现在有几个答案。**
+
+---
+
+## 10. 实现之后：这份方案里被推翻的五条
+
+> 2026-08-17 追加。落地 PR #553 / 2026.8.17.1。
+> 按本仓库的惯例：**方案里错的地方要留在方案里**，删掉它等于把「当时是怎么想的」
+> 一起删掉，而下一个人会重新想一遍。
+
+### 10.1 「回滚必须把文件挪回去」—— 错，而且错在更深的地方
+
+§5 缺陷 1 说：回滚分支应当 `rename` 回去而不是 `remove_all`。照做，然后
+**测试红了**：`APartialMoveRestoresEveryFileItDisplaced` 发现文件根本没回来。
+
+原因不是回滚写错了，是**「回滚到未触碰」从来就不可达**。快路径 `remove_all`
+不是原子的 —— 在一棵有文件被占用的树上，它会先删掉所有能删的再报错。
+**等我们知道有东西被占用时，别的文件已经没了。**
+
+所以 §5 提的修法（rename 回去）只是把一个不可能实现的承诺换了个写法。
+真正可达的不变式是：**残留不能读起来像「已安装」** —— 因为
+`payload_has_content` 对它为真，下一次 `xlings install` 会接收残骸。
+落地改成 `Partial` 把目录 stamp 成 incomplete，`install_state` 最先检查它。
+
+**这条是测试写出来的，不是想出来的。**
+
+### 10.2 「冻结目录就能在 Linux 上走到失败分支」—— 错
+
+第二版测试用 `chmod a-w` 让 rename 失败。也红了：`clear_readonly_` 会把目录
+chmod 回可写 —— 那正是它存在的理由（Windows 的只读位）。
+
+推论：**在 POSIX 上，我们自己的树里没有任何东西能抵抗我们。**
+打开的 fd 不阻止 unlink，权限我们随时能改回来。`Partial` 分支在
+Linux/macOS 上**结构性不可达**。
+
+于是把落点 `settle_removal` 提成一个真函数并用真实残留驱动它，
+而**不去断言那条分支** —— 断言一条测试从未进入的路径，是一个什么都不意味着的绿。
+
+### 10.3 「`self init` 永远是 Describe」—— 错，一半
+
+§决策点 3c 的归属表把 `init.cpp:162` 标成 Describe，理由是「`self init` 跑在
+install 和 update 上，不是创建」。
+
+**E2E-67/S1 抓到了：** `ensure_home_layout` 在**全新 home** 上就是在创建
+`default` —— 而 Describe 禁止回落到默认值，于是新 home 的 `default`
+一个 runtime 都没记。
+
+正确的分叉是 `subos.cpp` 本来就在用的那个：**配置文件存不存在**（在任何写入之前采样）。
+一个函数可以同时是两种意图，取决于它遇到的世界。
+
+> 顺带一条方法论：这条是被一个**为相反失败而写的**测试抓到的
+> （E2E-67 原本防的是「默认值一升，已有 subos 被重新声明」）。
+> 一条规则的两半都上门禁，才抓得到从另一头掉下去的那次。
+
+### 10.4 「旧 client 读新块没问题」—— 错
+
+§决策点 1 说方案 A「老 client 写的块在新 client 眼里仍然合法」，这是对的；
+但发布说明里我顺手写成了双向兼容，那是错的。
+
+旧 client 的 `validate_block` 会把「`runtime` 缺席」判成 `RuntimeMalformed`，
+它的 `--fix` 会用**它那个年代的** `DEFAULT_RUNTIME` 重写。
+不崩溃、不丢 `envs`，但一个诚实的「未知」会被降级回一个猜测。
+
+**这是降级路径的代价。它没有测试覆盖，只有发布说明 §7 那段文字** —— 写下来，
+是因为「没测到」和「测过了」在文档里长得一样，而这正是本文 §9 那张表在说的事。
+
+### 10.5 「#552 只需要修 CRLF」—— 不够
+
+§6.3 说 `index_revision_` 的 packed-refs 分支漏剥 `\r`。真的，但那是表面。
+
+实现时才发现 `get_repo_head_hash` **早就存在**，而且**认识两种索引形态** ——
+git 工作树，以及没有 `.git` 的 artifact 安装（`.xlings-index-version`）。
+新写的读取器对后者一律返回空，**会让整个特性对那些 home 静默失效**，
+而 artifact 恰恰是 v0.4.52 之后的主流形态。
+
+所以 #552 的问题不是「有个 CRLF bug」，是**它是第二个回答者** ——
+本文 §9 那张表里的一行，我在写 §6 时只看见了它的症状。
+
+---
+
+## 11. 落地清单对照
+
+| 方案项 | 状态 |
+|---|---|
+| 1 `Intent` + `BlockSpec` + `runtime_for()` | ✅ |
+| 2 sysroot 观测源 | ✅（含悬空链接、musl、非 store 链接的单测） |
+| 3 七站点归队 + `preserved_runtime` 删除 | ✅ 同 commit |
+| 4 I6 放宽 | ✅ |
+| 5 `make_block(BlockSpec)` + provenance 二选一 | ✅ 外加 `describe_block` 的创建记录承接（方案里没有，10.1 同源的反向错误） |
+| 6 `SubosRuntimeUnknown` / `SubosRuntimeDrift` / `--from` warn | ✅ |
+| 7 mcpp 侧文案 | ⏳ **另一个 repo，另一个 PR**（mcpp#427） |
+| §5 #551 回滚 | ✅ 但按 10.1 重新定义 |
+| §5 trash 出版本命名空间 + 真的清理 | ✅ |
+| §5 五站点收敛 | ⏳ **未做** —— `subos remove` / `self uninstall` 仍在裸用 `remove_all`。函数已经可复用，收敛是独立 PR |
+| §4 删 `forSearch` | ✅ |
+| §6 #552 CRLF / advice 收窄 / 可测性 | ✅（并按 10.5 合并为一个读取器） |
+| §7 Windows CI 拆 job | ✅ |
+| §3 #549 控制台自检载体 | ⏳ **未做** —— D4 仍然开着 |
