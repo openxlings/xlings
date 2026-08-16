@@ -1378,14 +1378,9 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         // there is no `--runtime` on `install` to have declined, so a
         // constant here would record "the user took the default" about a
         // question nobody was asked. The sysroot may still answer it.
-        auto freshRuntime =
-            mf::runtime_for(subosDir, fresh, mf::Intent::Describe);
-        fresh[std::string(mf::BLOCK)] = mf::make_block({
-            .runtime   = std::move(freshRuntime),
-            .by        = std::format("xlings {}", Info::VERSION),
-            .hostGlibc = platform::host_glibc_version(),
-            .intent    = mf::Intent::Describe,
-        });
+        fresh[std::string(mf::BLOCK)] = mf::describe_block(
+            subosDir, fresh, std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
         doc = std::move(fresh);
     }
     if (!doc->contains(std::string(mf::BLOCK))
@@ -1394,14 +1389,9 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         // the active runtime. Writing the default over it was the whole of
         // openxlings/xlings#547: 17 subos on one measured home record
         // glibc@2.39 right here and were being declared glibc@2.44.
-        auto keptRuntime =
-            mf::runtime_for(subosDir, *doc, mf::Intent::Describe);
-        (*doc)[std::string(mf::BLOCK)] = mf::make_block({
-            .runtime   = std::move(keptRuntime),
-            .by        = std::format("xlings {}", Info::VERSION),
-            .hostGlibc = platform::host_glibc_version(),
-            .intent    = mf::Intent::Describe,
-        });
+        (*doc)[std::string(mf::BLOCK)] = mf::describe_block(
+            subosDir, *doc, std::format("xlings {}", Info::VERSION),
+            platform::host_glibc_version());
     }
 
     // C1 -- the subos layer's "exactly one", for the case where nothing else

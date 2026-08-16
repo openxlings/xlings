@@ -357,6 +357,31 @@ constexpr std::string_view kLibDirs_[] = {"lib", "lib64", "usr/lib", "usr/lib64"
 
 }  // namespace
 
+nlohmann::json describe_block(const fs::path& subosDir,
+                              const nlohmann::json& doc,
+                              std::string_view by,
+                              std::string_view hostGlibc) {
+    auto block = make_block({
+        .runtime   = runtime_for(subosDir, doc, Intent::Describe),
+        .by        = std::string(by),
+        .hostGlibc = std::string(hostGlibc),
+        .intent    = Intent::Describe,
+    });
+    // Carry a real creation record across. Only a COMPLETE one: half a pair
+    // would satisfy neither this function's readers nor I8, and a `created_by`
+    // with no date says less than nothing.
+    if (doc.contains(std::string(BLOCK)) && doc[std::string(BLOCK)].is_object()) {
+        const auto& old = doc[std::string(BLOCK)];
+        const auto at = old.value("created_at", std::string{});
+        const auto bywhom = old.value("created_by", std::string{});
+        if (!at.empty() && !bywhom.empty()) {
+            block["created_at"] = at;
+            block["created_by"] = bywhom;
+        }
+    }
+    return block;
+}
+
 std::string sysroot_runtime(const fs::path& subosDir) {
     std::error_code ec;
     if (subosDir.empty()) return {};

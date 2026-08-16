@@ -161,13 +161,9 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     // Describe: this subos already exists — `self init` runs on install and
     // update, never on creation. Nobody was asked for a runtime here, so
     // nothing may be invented; see manifest::Intent.
-    auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Describe);
-    json[std::string(mf::BLOCK)] = mf::make_block({
-        .runtime   = std::move(runtime),
-        .by        = std::format("xlings {}", Info::VERSION),
-        .hostGlibc = platform::host_glibc_version(),
-        .intent    = mf::Intent::Describe,
-    });
+    json[std::string(mf::BLOCK)] = mf::describe_block(
+        subos_dir, json, std::format("xlings {}", Info::VERSION),
+        platform::host_glibc_version());
     ensure_parent_dirs_(path);
     platform::write_string_to_file(path.string(), json.dump(2));
 }

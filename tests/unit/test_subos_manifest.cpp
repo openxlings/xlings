@@ -1067,3 +1067,56 @@ TEST(SubosRuntimeFor, TheWorkspaceRecordOutranksTheSysroot) {
     EXPECT_EQ(m::runtime_for(fx.subos(), doc, m::Intent::Describe),
               "glibc@2.44");
 }
+
+// ── describe_block: a rebuild must not delete a fact either ─────────────
+//
+// Deleting a real record and inventing a fake one are the same error seen
+// from two sides. A rebuild is triggered by the block being INVALID, which
+// can be true for reasons that have nothing to do with provenance -- a
+// corrupted `envs` -- and a subos that really was created by `subos new` has
+// a real creation date sitting in the block being replaced.
+
+TEST(SubosDescribeBlock, CarriesAGenuineCreationRecordAcross) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {},
+        "subos_info": {
+            "schema_version": 1, "runtime": "glibc@2.39", "envs": 42,
+            "created_at": "2026-01-02T03:04:05Z", "created_by": "xlings 1.0"
+        }
+    })");
+    ASSERT_FALSE(m::validate_block(doc).empty()) << "envs is invalid on purpose";
+
+    auto block = m::describe_block({}, doc, "xlings test");
+    EXPECT_EQ(block.value("created_at", ""), "2026-01-02T03:04:05Z");
+    EXPECT_EQ(block.value("created_by", ""), "xlings 1.0");
+    EXPECT_FALSE(block.value("described_at", "").empty())
+        << "and it still records that THIS run described it";
+    EXPECT_EQ(block.value("runtime", ""), "glibc@2.39")
+        << "the declaration survives the rebuild too";
+}
+
+// Half a pair is not a record. Carrying a `created_by` with no date would say
+// less than nothing, and it would satisfy neither I8 nor a reader.
+TEST(SubosDescribeBlock, DoesNotCarryHalfACreationRecord) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {},
+        "subos_info": {"schema_version": 1, "created_by": "xlings 1.0"}
+    })");
+    auto block = m::describe_block({}, doc, "xlings test");
+    EXPECT_FALSE(block.contains("created_at"));
+    EXPECT_FALSE(block.contains("created_by"));
+    EXPECT_FALSE(block.value("described_at", "").empty());
+}
+
+// Nothing to carry: the ordinary backfill of a subos that predates the block.
+TEST(SubosDescribeBlock, ABlocklessSubosGetsDescribedProvenanceOnly) {
+    auto doc = nlohmann::json::parse(R"({"workspace": {}})");
+    auto block = m::describe_block({}, doc, "xlings test");
+    EXPECT_FALSE(block.contains("created_at"));
+    EXPECT_FALSE(block.contains("runtime")) << "no evidence -> no claim";
+    EXPECT_EQ(block.value("described_by", ""), "xlings test");
+
+    nlohmann::json out = doc;
+    out["subos_info"] = block;
+    EXPECT_TRUE(m::validate_block(out).empty());
+}

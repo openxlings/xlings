@@ -1967,12 +1967,10 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     // as an absent key rather than as the default.
                     const auto keptRuntime = mf::runtime_for(
                         p.subosDir, document, mf::Intent::Describe);
-                    document[std::string(mf::BLOCK)] = mf::make_block({
-                        .runtime   = keptRuntime,
-                        .by        = std::format("xlings {}", Info::VERSION),
-                        .hostGlibc = platform::host_glibc_version(),
-                        .intent    = mf::Intent::Describe,
-                    });
+                    document[std::string(mf::BLOCK)] = mf::describe_block(
+                        p.subosDir, document,
+                        std::format("xlings {}", Info::VERSION),
+                        platform::host_glibc_version());
                     changed = true;
                     note(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",

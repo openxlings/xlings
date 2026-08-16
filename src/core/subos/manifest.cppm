@@ -313,6 +313,25 @@ std::string utc_now_iso();
 // and a failed probe read the same way, and neither reads as a claim.
 nlohmann::json make_block(const BlockSpec& spec);
 
+// The block for a subos that ALREADY EXISTS -- the one call every Describe
+// site makes.
+//
+// Four sites were repeating the same five-line spec, and the three things
+// they all have to get right are exactly the three that were easy to get
+// wrong: Describe intent, the runtime from `runtime_for` rather than a
+// constant, and carrying a genuine creation record across the rebuild.
+//
+// That last one matters for the same reason as everything else here. A
+// rebuild is triggered by the block being INVALID, which can be true for
+// reasons that have nothing to do with provenance (a corrupted `envs`), and
+// a subos that really was created by `subos new` has a real `created_at`.
+// Replacing it with `described_at` alone would delete a fact -- the mirror
+// image of inventing one.
+nlohmann::json describe_block(const fs::path& subosDir,
+                              const nlohmann::json& doc,
+                              std::string_view by,
+                              std::string_view hostGlibc = {});
+
 // What a subos is OBSERVED to run, out of the workspace in its own manifest.
 //
 // A subos that predates `subos_info` recorded no binding, but it is not silent
