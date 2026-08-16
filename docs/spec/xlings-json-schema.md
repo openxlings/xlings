@@ -187,14 +187,51 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `schema_version` | `integer` | 当前为 `1` |
-| `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.44` 即 Linux/glibc）。由 `xlings subos new --runtime` 指定；缺省用内置默认（2026.8.9.1 起为 `glibc@2.44`，此前为 `glibc@2.39`） |
+| `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.44` 即 Linux/glibc）。**（2026.8.17.1+）可缺席**，见下方「已知未知」 |
 | `host_glibc` | `string` | **（2026.8.9+，可选）** 写入该块时探测到的宿主 glibc 版本（如 `"2.39"`）。缺失 = 未知（旧 manifest、非 glibc 宿主、探测失败），读者必须把未知当"不可证"，不得当 0 比较。供闭环规则 A（`our_glibc >= host_glibc`）判定 |
 | `envs` | `object` | 以**声明包的 binding** 为键。包卸载时 xlings 删除整段；recipe 不写清理代码 |
-| `created_at` / `created_by` | `string` | 创建时间与创建者版本 |
+| `created_at` / `created_by` | `string` | **创建**时间与创建者版本。只有真正创建这个 SubOS 的那次运行会写 |
+| `described_at` / `described_by` | `string` | **（2026.8.17.1+）** 事后**描述**一个已存在 SubOS 的时间与版本。与 `created_*` **二选一**，两者都缺才是缺陷 |
+
+#### `runtime` 缺席 =「已知未知」（2026.8.17.1+）
+
+三种状态，读者必须区分：
+
+| 盘上的样子 | 含义 |
+|---|---|
+| 没有 `subos_info` 块 | 这个 SubOS 建于 `subos_info` 存在之前（旧格式） |
+| 有块，**没有 `runtime` 键** | **看过了，说不出来** —— 没有任何记录或载荷能回答 |
+| 有块，`runtime` 是良构 binding | 声明成立 |
+
+`runtime` 存在时**必须**是 `<name>@<version>`；空字符串不是合法写法（缺席才是）。
+
+**为什么需要这一档。** 2026.8.17.1 之前不变式要求 `runtime` 必须良构，于是一次
+没有证据的描述只有两个选择：编一个，或者产出一个 `--fix` 会永远重写的块。
+它编了一个 —— 实测某台真机上两个 SubOS 因此声明 `glibc@2.44`，而它们的
+`lib/libc.so.6` 指向 2.39 的载荷（openxlings/xlings#547）。
+**一个常量和一个真实答案在盘上长得一模一样**，这一档就是为了让它们不一样。
+
+下游读到缺席时应当**降级并说明原因**，而不是替它选一个默认值。
+
+#### 创建 vs 描述
+
+`created_*` 与 `described_*` 记的是两件不同的事，写哪一对取决于那次运行在做什么：
+
+- **创建**（`xlings subos new`、全新 home 的 `self init`）→ `created_*`
+- **描述**（`self doctor --fix`、`xlings install` 补块、升级路径）→ `described_*`
+
+重铸一个已有的块时，**真实的 `created_*` 会被带过去** —— 一次描述可以补上
+`described_*`，但不该抹掉「这个 SubOS 曾经被谁在什么时候创建」。
+
+（此前所有回填都写 `created_at`，于是同一台机器上两个不同的 SubOS 带着**逐字节
+相同**的创建时间：那是它们被描述的同一秒，不是被创建的同一秒。）
 
 **`runtime` 是创建期属性，默认值变更只影响新建 SubOS。** 绑定持久化在每个
 SubOS 自己的 manifest 里；修复路径（`self doctor --fix`、块重铸）**保留合法的
-已记录 binding**，只在 binding 本身缺失/畸形时才落回默认值。依赖解析侧由
+已记录 binding**。**（2026.8.17.1+）** binding 缺失/畸形时不再直接落回默认值，
+而是依次问：SubOS 的 workspace 记录的活跃 runtime → `lib*/libc.so.6` 符号链接
+指向的载荷（唯一一个**观测**而非记录的来源）→ 都答不上来就**不写这个键**。
+内置默认只在**创建**路径上使用。依赖解析侧由
 pin-to-active 保证：已激活的 glibc 版本在满足约束时压过索引最新，所以已有
 SubOS 不会因默认值或索引 `latest` 的变化被拉上新 runtime。
 
