@@ -119,9 +119,17 @@ RUN_WATCHED() {
     while ((i < ${#queue[@]})); do
       local pid="${queue[$i]}" children=""
       i=$((i + 1))
-      if [[ -r "/proc/$pid/task/$pid/children" ]]; then
-        children="$(<"/proc/$pid/task/$pid/children")"
-      fi
+      # NOT `[[ -r ... ]] && read`. That is a TOCTOU: this loop polls every
+      # 2ms while the tree is actively spawning and reaping, so a /proc entry
+      # can vanish between the test and the read. Bash then reports
+      #   /proc/<pid>/task/<pid>/children: No such file or directory
+      # and, under `set -e`, kills the whole test -- which is how this landed
+      # as a red e2e on a PR that only changed an error message.
+      #
+      # `cat` in a substitution, failure tolerated: a child that has already
+      # exited is not a child this needs to count. One subprocess per pid per
+      # poll is affordable here; a flaky gate is not.
+      children="$(cat "/proc/$pid/task/$pid/children" 2>/dev/null || true)"
       local child exe
       for child in $children; do
         queue+=("$child")

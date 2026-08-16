@@ -225,7 +225,15 @@ class PackageCatalog {
                    bool forSearch = false);
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
-                                               const std::string& platform) const;
+                                               const std::string& platform,
+                                               bool forSearch = false) const;
+
+    // Which platforms DO have a build of this target, for the case where
+    // this one has none. Empty when the target is genuinely absent.
+    //
+    // Exists so "not found" can stop being said about a package that is
+    // right there in the index — see resolve_target.
+    std::vector<std::string> platforms_offering_(const std::string& target) const;
 
 public:
     std::expected<void, std::string> rebuild(bool forceRebuild = false);
