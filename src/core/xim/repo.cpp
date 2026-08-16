@@ -705,11 +705,19 @@ std::string get_repo_head_hash(const std::filesystem::path& repoDir) {
             if (!hash.empty()) return hash;
         }
 
-        // Packed refs. The loose file is absent after `git gc` and after a
-        // fresh clone -- which is the shape a synced index is normally in, so
-        // "no loose ref" is the common case rather than the odd one. Every
-        // index directory on the machine this was written on has a
-        // packed-refs and no loose ref for some branches.
+        // Packed refs, when the loose file is absent.
+        //
+        // NOT "the common shape for a freshly synced index" -- that claim was
+        // inherited from the reader this replaces and it does not survive
+        // measurement: all four index repos on the machine this was written on
+        // have BOTH a `packed-refs` and a loose `refs/heads/<branch>`, and a
+        // plain `git clone` writes the loose ref for the branch it checks out.
+        //
+        // What actually produces a packed-only ref is `git gc` / `git
+        // pack-refs`, which runs on its own schedule inside a long-lived
+        // index checkout. So this is a real fallback on a real timeline, just
+        // not the default one -- and worth saying precisely, because a
+        // fallback believed to be the common path is one nobody tests.
         auto packedFile = repoDir / ".git" / "packed-refs";
         if (!fs::exists(packedFile)) return {};
         auto packed = platform::read_file_to_string(packedFile.string());
