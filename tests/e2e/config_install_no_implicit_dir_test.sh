@@ -67,6 +67,44 @@ function uninstall()
 end
 LUA
 
+# A second fixture, for a distinction the first one alone cannot pin down:
+# "does not exist" vs "exists, but has no build for THIS platform". Reporting
+# the second as the first sends the reader looking for a package that is
+# sitting in the index they just synced.
+#
+# Both directions matter, and each alone is satisfiable by a wrong
+# implementation:
+#   * config-no-payload@9.9.9 -- a version nobody has. Must still say "not
+#     found", and must NOT name platforms, which would state the opposite of
+#     the truth about a package that is fine here. (An implementation that
+#     ignored the version reported "no build for linux (available on: linux,
+#     macosx, windows)" -- naming the platform it called unsupported.)
+#   * config-other-platform   -- built only elsewhere. Must say so, and say
+#     where.
+cat > "$LOCAL_INDEX_DIR/pkgs/c/config-other-platform.lua" <<'LUA'
+package = {
+    spec = "1",
+    name = "config-other-platform",
+    description = "Test fixture: exists, but not for the platform asking",
+    type = "config",
+    archs = {"x86_64", "aarch64"},
+    status = "stable",
+    xpm = {
+        -- Deliberately not the host. Linux is where CI runs this; the macOS
+        -- leg drops its own row below so the fixture keeps its meaning there.
+        windows = { ["latest"] = { ref = "1.0.0" }, ["1.0.0"] = {} },
+        macosx  = { ["latest"] = { ref = "1.0.0" }, ["1.0.0"] = {} },
+    },
+}
+
+function install() return true end
+function config()  return true end
+LUA
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  sed -i.bak '/macosx  = /d' "$LOCAL_INDEX_DIR/pkgs/c/config-other-platform.lua"
+  rm -f "$LOCAL_INDEX_DIR/pkgs/c/config-other-platform.lua.bak"
+fi
+
 printf 'xim_indexrepos = {}\n' > "$LOCAL_INDEX_DIR/xim-indexrepos.lua"
 
 cat > "$HOME_DIR/.xlings.json" <<JSON
@@ -158,7 +196,24 @@ if [[ -f "$UNINSTALL_COUNT_FILE" ]]; then
   UNINSTALL_COUNT_AFTER_MISSING="$(cat "$UNINSTALL_COUNT_FILE")"
 fi
 
+OTHER_RC=0
+OTHER_OUT="$(RUN info config-other-platform 2>&1)" || OTHER_RC=$?
+
 FAILURES=()
+[[ "$OTHER_RC" -ne 0 ]] \
+  || FAILURES+=("a package with no build for this platform exited 0: $OTHER_OUT")
+grep -qi "no build for" <<<"$OTHER_OUT" \
+  || FAILURES+=("another-platform package was not reported as such: $OTHER_OUT")
+grep -qi "windows" <<<"$OTHER_OUT" \
+  || FAILURES+=("another-platform package did not name where it IS available: $OTHER_OUT")
+# `if`, not `grep ... && FAILURES+=(...)`. Under `set -e` that compound
+# returns grep's status, so the PASSING case -- grep finding nothing -- would
+# kill the script with no output at all. Same shape the four-defect doc
+# recorded in §9.3.
+if grep -qiE "package .* not found" <<<"$OTHER_OUT"; then
+  FAILURES+=("another-platform package was reported as 'not found': $OTHER_OUT")
+fi
+
 [[ "$REMOVE_RC" -eq 0 ]] \
   || FAILURES+=("payloadless config remove exited $REMOVE_RC: $REMOVE_OUT")
 [[ "$UNINSTALL_COUNT" == "1" ]] \
