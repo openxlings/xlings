@@ -216,13 +216,21 @@ namespace {
 
 namespace fs = std::filesystem;
 
+// `std::default_sentinel`, not a default-constructed iterator.
+//
+// libc++ (the macOS toolchain here) gives the filesystem iterators only
+// `operator==(default_sentinel_t)` under C++20, so `it != fs::…_iterator{}`
+// does not compile there at all -- it is a Linux-only spelling that looks
+// portable. The rest of this tree already uses the sentinel; see
+// installer.cpp's extract loop.
+
 // Every regular file under `root`, deepest-last order irrelevant.
 std::vector<fs::path> regular_files_(const fs::path& root) {
     std::error_code ignore;
     std::vector<fs::path> files;
     for (auto it = fs::recursive_directory_iterator(
              root, fs::directory_options::skip_permission_denied, ignore);
-         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
+         it != std::default_sentinel; it.increment(ignore)) {
         if (it->is_regular_file(ignore)) files.push_back(it->path());
     }
     return files;
@@ -233,7 +241,7 @@ void clear_readonly_(const fs::path& root) {
     fs::permissions(root, fs::perms::owner_write, fs::perm_options::add, ignore);
     for (auto it = fs::recursive_directory_iterator(
              root, fs::directory_options::skip_permission_denied, ignore);
-         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
+         it != std::default_sentinel; it.increment(ignore)) {
         fs::permissions(it->path(), fs::perms::owner_write,
                         fs::perm_options::add, ignore);
     }
@@ -257,7 +265,7 @@ int sweep_payload_trash(const fs::path& trashRoot) {
     if (trashRoot.empty() || !fs::is_directory(trashRoot, ec)) return 0;
     int held = 0;
     for (auto it = fs::directory_iterator(trashRoot, ec);
-         !ec && it != fs::directory_iterator{}; it.increment(ec)) {
+         !ec && it != std::default_sentinel; it.increment(ec)) {
         std::error_code rm;
         clear_readonly_(it->path());
         fs::remove_all(it->path(), rm);

@@ -82,7 +82,7 @@ struct StoreFixture {
         std::error_code ec;
         std::size_t n = 0;
         for (auto it = fs::recursive_directory_iterator(payload(), ec);
-             !ec && it != fs::recursive_directory_iterator{}; it.increment(ec)) {
+             !ec && it != std::default_sentinel; it.increment(ec)) {
             if (it->is_regular_file(ec)) ++n;
         }
         return n;
@@ -94,7 +94,7 @@ struct StoreFixture {
         std::error_code ec;
         std::vector<std::string> names;
         for (auto it = fs::directory_iterator(pkgDir(), ec);
-             !ec && it != fs::directory_iterator{}; it.increment(ec)) {
+             !ec && it != std::default_sentinel; it.increment(ec)) {
             if (it->is_directory(ec)) names.push_back(it->path().filename().string());
         }
         std::ranges::sort(names);
