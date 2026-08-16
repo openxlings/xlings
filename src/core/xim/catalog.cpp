@@ -452,14 +452,15 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
 }
 
 std::vector<PackageMatch> PackageCatalog::collect_matches_(const std::string& target,
-                                               const std::string& platform) const {
+                                               const std::string& platform,
+                                               bool forSearch) const {
     auto parsed = detail_::parse_target_(target);
     std::vector<PackageMatch> primaryMatches;
     std::vector<PackageMatch> subMatches;
 
     auto collect = [&](const std::vector<RepoState>& repos) {
         for (const auto& repo : repos) {
-            auto matches = build_matches_(repo, parsed, platform);
+            auto matches = build_matches_(repo, parsed, platform, forSearch);
             if (repo.spec.subIndex) {
                 for (auto& match : matches) {
                     subMatches.push_back(std::move(match));
@@ -570,10 +571,54 @@ void PackageCatalog::announce_demotion_(const std::string& target,
               chosen.demoted.front());
 }
 
+std::vector<std::string> PackageCatalog::platforms_offering_(const std::string& target) const {
+    // `forSearch` keeps a candidate whose version selection came up empty for
+    // the current platform — which is precisely the set we need to inspect.
+    // (That flag had no caller until now: `search` reaches the index another
+    // way, so the one place it was built for was the one place not using it.)
+    auto parsed = detail_::parse_target_(target);
+    std::vector<std::string> out;
+    auto scan = [&](const std::vector<RepoState>& repos) {
+        for (const auto& repo : repos) {
+            for (auto& m : build_matches_(repo, parsed, /*platform=*/"",
+                                          /*forSearch=*/true)) {
+                auto pkg = repo.index.load_package(m.rawName);
+                if (!pkg) continue;
+                for (auto& [plat, versions] : pkg->xpm.entries) {
+                    if (versions.empty()) continue;
+                    if (std::ranges::find(out, plat) == out.end())
+                        out.push_back(plat);
+                }
+            }
+        }
+    };
+    scan(projectRepos_);
+    scan(globalRepos_);
+    std::ranges::sort(out);
+    return out;
+}
+
 std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const std::string& target,
                    const std::string& platform) const {
     auto matches = collect_matches_(target, platform);
     if (matches.empty()) {
+        // "does not exist" and "exists, but not for this platform" are
+        // different facts, and reporting the second as the first sends the
+        // reader looking for a package that is right there in the index.
+        //
+        // It also made two commands contradict each other: `xlings search
+        // msvc` listed `xim:msvc` while `xlings info msvc` on the same Linux
+        // box answered "not found" — measured, not hypothetical.
+        if (auto elsewhere = platforms_offering_(target); !elsewhere.empty()) {
+            std::string list;
+            for (auto& p : elsewhere) {
+                if (!list.empty()) list += ", ";
+                list += p;
+            }
+            return std::unexpected(std::format(
+                "package '{}' has no build for {} (available on: {})",
+                target, platform.empty() ? "this platform" : platform, list));
+        }
         return std::unexpected(std::format("package '{}' not found", target));
     }
     if (matches.size() > 1) {
