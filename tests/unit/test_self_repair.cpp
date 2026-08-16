@@ -11,6 +11,7 @@
 
 import std;
 import xlings.core.xself.repair;
+import xlings.core.xself.update;
 
 using xlings::xself::RepairKind;
 using xlings::xself::RepairPolicy;
@@ -343,4 +344,39 @@ TEST(SelfRepairShellSafety, AcceptsTheShapesRealPackagesUse) {
     EXPECT_FALSE(is_shell_safe_token(""));
     EXPECT_FALSE(is_shell_safe_token("--yes"));
     EXPECT_FALSE(is_shell_safe_token("a\nb"));
+}
+
+// ── `self update` must not report success without updating (#554) ────────
+//
+// Measured on a real home the day 2026.8.17.1 shipped: `self update` exited 0
+// and left the user on 0.4.51. `use xlings latest` resolves WITHIN the
+// currently active provider, so a home that ever carried a `local:` build
+// keeps re-picking it -- and `use` returns 0 because it did activate
+// something.
+//
+// The rule is about the PROVIDER, not the version. Both directions matter and
+// the wrong implementation passes only one of them.
+TEST(SelfUpdateLanding, ABareVersionIsTheIndexBuild) {
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build("2026.8.17.1"));
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build("0.4.51"));
+}
+
+TEST(SelfUpdateLanding, ANamespacedVersionIsNot) {
+    EXPECT_FALSE(xlings::xself::update_landed_on_index_build("local:0.4.51"));
+    EXPECT_FALSE(xlings::xself::update_landed_on_index_build("scode:1.0"));
+}
+
+// The false positive that the obvious implementation ships with: an
+// already-current home changes nothing, and that is success. A check on "did
+// the version move" fails every no-op update.
+TEST(SelfUpdateLanding, AnAlreadyCurrentHomeIsNotAFailure) {
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build("2026.8.17.1"))
+        << "running `self update` twice must not start failing the second time";
+}
+
+// No observation is not a verdict -- the same rule entry_binary::version_of
+// follows. A workspace that records no active version has a different defect,
+// and this command must not claim to have diagnosed it.
+TEST(SelfUpdateLanding, NoRecordedActiveVersionIsNotAVerdict) {
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build(""));
 }
