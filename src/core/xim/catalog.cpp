@@ -585,7 +585,19 @@ std::vector<std::string> PackageCatalog::platforms_offering_(const std::string& 
                 auto pkg = repo.index.load_package(m.rawName);
                 if (!pkg) continue;
                 for (auto& [plat, versions] : pkg->xpm.entries) {
-                    if (versions.empty()) continue;
+                    // THE REQUESTED VERSION has to resolve there — not merely
+                    // "this platform has some build".
+                    //
+                    // Without this the message answers a question nobody
+                    // asked: `config-no-payload@9.9.9` fails because 9.9.9
+                    // does not exist, and reporting "has no build for linux
+                    // (available on: linux, macosx, windows)" states the
+                    // opposite of the truth while naming the very platform it
+                    // says is unsupported. Caught by E2E-76, which is the
+                    // right shape for it — the unit of the defect is a whole
+                    // command's output, not a function's return.
+                    if (detail_::select_version_(*pkg, plat, parsed.version).empty())
+                        continue;
                     if (std::ranges::find(out, plat) == out.end())
                         out.push_back(plat);
                 }
