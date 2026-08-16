@@ -531,6 +531,68 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 : std::format("xlings install {}", mismatch->declared),
         });
     }
+
+    // D6 — the declaration and the SYSROOT disagree.
+    //
+    // Every check above compares a record against another record. Both are
+    // written by us, so both can be wrong in the same direction and agree --
+    // which is exactly what happened: two subos on a measured home declared
+    // glibc@2.44 while `lib/libc.so.6` pointed into the glibc 2.39 payload,
+    // their workspace named no runtime at all, and D5 therefore said nothing.
+    // The symlink was sitting there the whole time and no code read it.
+    //
+    // Reported, never repaired. Which of the two is right is not decidable
+    // here -- the declaration may be the intent and the sysroot the accident,
+    // or the reverse -- and silently rewriting a declaration changes what the
+    // subos claims to BE. That is a decision with a person on the other end.
+    fs::path servedVia;
+    if (const auto served = mf::sysroot_runtime(subosDir, &servedVia);
+        !served.empty() && mf::is_binding(info.runtime)
+        && served != info.runtime) {
+        // Relative to the subos, so the reader can go and look at it.
+        const auto shown = servedVia.lexically_relative(subosDir).empty()
+            ? servedVia : servedVia.lexically_relative(subosDir);
+        out.push_back({
+            .kind    = FindingKind::SubosRuntimeDrift,
+            .level   = FindingLevel::Warning,
+            .target  = subosName,
+            .version = info.runtime,
+            // Names the SERVED binding, not its family. The two sides are
+            // usually the same package at different versions, and "links
+            // against glibc, not what the declaration promises" is a sentence
+            // about nothing.
+            .detail  = std::format(
+                "subos '{}' declares runtime {}, but {} points into {} -- a "
+                "binary built here links against {}, not against {}",
+                subosName, info.runtime, shown.string(), served, served,
+                info.runtime),
+            .remedy  = std::format(
+                "xlings use {} {}   (adopt what is serving), or `xlings "
+                "install {}` to make the declaration true",
+                mf::binding_name(served), mf::binding_version(served),
+                info.runtime),
+        });
+    }
+
+    // D7 — the subos describes itself but cannot say what it runs.
+    //
+    // A Notice, and deliberately not an error: it is the HONEST outcome of a
+    // backfill with no evidence, and it is strictly better than the constant
+    // that used to be written here. It must be visible (something downstream
+    // will degrade) without making `self doctor` exit non-zero on a home that
+    // has nothing wrong with it -- see UnverifiedPayload for the same call.
+    if (info.schema_version != 0 && info.runtime.empty()) {
+        out.push_back({
+            .kind    = FindingKind::SubosRuntimeUnknown,
+            .level   = FindingLevel::Notice,
+            .target  = subosName,
+            .detail  = std::format(
+                "subos '{}' does not record a runtime -- nothing here "
+                "declares, activates or serves one, so tools that need to "
+                "know which libc this is will fall back", subosName),
+            .remedy  = "xlings install glibc   (then it will be recorded)",
+        });
+    }
     return out;
 }
 
@@ -1905,17 +1967,23 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     // A broken block can still carry a valid runtime binding.
                     // Rewriting with DEFAULT_RUNTIME here used to re-declare
                     // the subos against whatever the current default is — a
-                    // repair must not change what the subos IS.
-                    const auto keptRuntime =
-                        mf::preserved_runtime(document, mf::DEFAULT_RUNTIME);
-                    document[std::string(mf::BLOCK)] = mf::make_block(
-                        keptRuntime,
+                    // repair must not change what the subos IS. Describe, so
+                    // an unprovable runtime comes back EMPTY and is written
+                    // as an absent key rather than as the default.
+                    const auto keptRuntime = mf::runtime_for(
+                        p.subosDir, document, mf::Intent::Describe);
+                    document[std::string(mf::BLOCK)] = mf::describe_block(
+                        p.subosDir, document,
                         std::format("xlings {}", Info::VERSION),
                         platform::host_glibc_version());
                     changed = true;
                     note(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",
-                                     p.activeSubos, keptRuntime));
+                                     p.activeSubos,
+                                     keptRuntime.empty()
+                                         ? "unknown — nothing here records or "
+                                           "serves one"
+                                         : keptRuntime));
                 }
                 if (!adoptRuntime.empty()) {
                     const auto observed = mf::observed_runtime(
@@ -2629,6 +2697,16 @@ Counts count_(const Scan& scan) {
                 if (f.level == FindingLevel::Error) ++c.broken;
                 else ++c.warnings;
                 break;
+            case FindingKind::SubosRuntimeDrift:
+                ++c.warnings;
+                break;
+            case FindingKind::SubosRuntimeUnknown:
+                // Counts as nothing, on purpose, and for the reason spelled
+                // out on UnverifiedPayload: it reports state we could not
+                // observe, not a defect we found. A home whose subos honestly
+                // cannot name its libc is not broken -- exiting non-zero over
+                // it would train everyone to ignore the command.
+                break;
             case FindingKind::IncompletePayload:
                 // Counted as broken for both reasons the comment above gives:
                 // it must reach the exit code, and `healed` is computed as
@@ -2871,6 +2949,24 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                         ? glyph::mark(glyph::failed, "subos runtime")
                         : glyph::mark(glyph::warn, "subos runtime"),
                     f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::SubosRuntimeDrift:
+                add(glyph::mark(glyph::warn, "subos runtime drift"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::SubosRuntimeUnknown:
+                // Always printed, though it counts as nothing.
+                //
+                // It was behind --verbose until it was tried: doctor inspects
+                // the ACTIVE subos and no other, so there is at most ONE of
+                // these per run and the "a home with dozens would bury the
+                // real findings" worry does not apply. Hidden, it is a notice
+                // nobody ever sees -- and it is the one line that explains why
+                // a downstream tool is about to degrade.
+                add(glyph::mark(glyph::note, "subos runtime"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;

@@ -139,8 +139,26 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     namespace mf = xlings::subos::manifest;
     auto path = subos_dir / ".xlings.json";
 
+    // Which of the two things this run is doing, decided by the one fact that
+    // distinguishes them.
+    //
+    // `ensure_home_layout` calls this on install AND on update, so it is a
+    // CREATION on a fresh home and a DESCRIPTION on every home after that.
+    // Getting it wrong in either direction is a defect with a name:
+    //
+    //   always Describe  a brand-new home's `default` records no runtime at
+    //                    all, even though this run is the one making it and
+    //                    the default is exactly what "nobody said otherwise"
+    //                    means. Caught by E2E-67/S1.
+    //   always Create    an upgraded home gets re-declared against whatever
+    //                    the default is today, which is #547.
+    //
+    // Same test `subos.cpp` applies at its own fork: the config file's
+    // existence, sampled BEFORE anything below writes one.
+    const bool creating = !fs::exists(path);
+
     nlohmann::json json = nlohmann::json::object();
-    if (fs::exists(path)) {
+    if (!creating) {
         try {
             auto parsed = nlohmann::json::parse(
                 platform::read_file_to_string(path.string()), nullptr, false);
@@ -158,10 +176,16 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
     if (mf::validate_block(json).empty()) return;
 
-    json[std::string(mf::BLOCK)] =
-        mf::make_block(mf::preserved_runtime(json, mf::DEFAULT_RUNTIME),
-                       std::format("xlings {}", Info::VERSION),
-                       platform::host_glibc_version());
+    const auto by = std::format("xlings {}", Info::VERSION);
+    json[std::string(mf::BLOCK)] = creating
+        ? mf::make_block({
+              .runtime   = mf::runtime_for(subos_dir, json, mf::Intent::Create),
+              .by        = by,
+              .hostGlibc = platform::host_glibc_version(),
+              .intent    = mf::Intent::Create,
+          })
+        : mf::describe_block(subos_dir, json, by,
+                             platform::host_glibc_version());
     ensure_parent_dirs_(path);
     platform::write_string_to_file(path.string(), json.dump(2));
 }

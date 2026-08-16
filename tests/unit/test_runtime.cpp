@@ -699,6 +699,56 @@ TEST(Capability, ExecutePromptCancelled) {
 // ─── TaskManager Tests ───
 // ============================================================
 
+// ── bounded waits ────────────────────────────────────────────────────
+//
+// These tests poll a worker thread, and every one of them used the same
+// literal: 100 iterations of 10ms. On a two-core Windows runner under load
+// that one second ran out, `TaskManager.PromptHandling` went red on main with
+// the SAME commit that was green on its PR branch, and the failure skipped
+// every E2E step behind it.
+//
+// The budget is not the assertion. What is being tested is "the task reaches
+// this state", not "it reaches it inside one second" -- so the wait is
+// generous and the diagnostic, not the duration, is what a timeout produces.
+// A wall-clock deadline rather than an iteration count, because the thing
+// that makes a loaded runner slow also makes each iteration longer.
+//
+// XLINGS_TEST_WAIT_MS overrides it, for a test that wants to prove a timeout.
+namespace {
+
+std::chrono::milliseconds test_wait_budget() {
+    if (const char* env = std::getenv("XLINGS_TEST_WAIT_MS")) {
+        if (auto v = std::atoi(env); v > 0) return std::chrono::milliseconds(v);
+    }
+    return std::chrono::seconds(30);
+}
+
+// Poll until `pred()` or the budget runs out. Returns whether it happened.
+template <class Pred>
+bool wait_until_(Pred pred) {
+    const auto deadline = std::chrono::steady_clock::now() + test_wait_budget();
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return pred();
+}
+
+std::string status_name_(xlings::task::TaskStatus s) {
+    using S = xlings::task::TaskStatus;
+    switch (s) {
+        case S::pending:        return "pending";
+        case S::running:        return "running";
+        case S::waiting_prompt: return "waiting_prompt";
+        case S::completed:      return "completed";
+        case S::failed:         return "failed";
+        case S::cancelled:      return "cancelled";
+    }
+    return "?";
+}
+
+}  // namespace
+
 TEST(TaskManager, SubmitAndComplete) {
     xlings::capability::Registry reg;
     reg.register_capability(std::make_unique<MockSearchCapability>());
@@ -707,13 +757,13 @@ TEST(TaskManager, SubmitAndComplete) {
     auto tid = tm.submit("search_packages", R"({"query":"gcc"})");
     EXPECT_FALSE(tid.empty());
 
-    for (int i { 0 }; i < 100; ++i) {
-        if (tm.info(tid).status == xlings::task::TaskStatus::completed) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_until_([&] {
+        return tm.info(tid).status == xlings::task::TaskStatus::completed;
+    });
 
     auto taskInfo = tm.info(tid);
-    EXPECT_EQ(taskInfo.status, xlings::task::TaskStatus::completed);
+    EXPECT_EQ(taskInfo.status, xlings::task::TaskStatus::completed)
+        << "stuck in " << status_name_(taskInfo.status);
     EXPECT_EQ(taskInfo.capabilityName, "search_packages");
 }
 
@@ -724,10 +774,9 @@ TEST(TaskManager, EventsRetrieval) {
     xlings::task::TaskManager tm { reg };
     auto tid = tm.submit("search_packages", R"({"query":"gcc"})");
 
-    for (int i { 0 }; i < 100; ++i) {
-        if (tm.info(tid).status == xlings::task::TaskStatus::completed) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_until_([&] {
+        return tm.info(tid).status == xlings::task::TaskStatus::completed;
+    });
 
     auto evts = tm.events(tid);
     EXPECT_GE(evts.size(), 3);  // LogEvent + DataEvent + CompletedEvent
@@ -745,30 +794,30 @@ TEST(TaskManager, PromptHandling) {
 
     bool foundPrompt { false };
     std::string promptId;
-    for (int i { 0 }; i < 100; ++i) {
-        auto taskInfo = tm.info(tid);
-        if (taskInfo.status == xlings::task::TaskStatus::waiting_prompt) {
-            auto evts = tm.events(tid);
-            for (auto& rec : evts) {
-                if (auto* p = std::get_if<xlings::PromptEvent>(&rec.event)) {
-                    promptId = p->id;
-                    foundPrompt = true;
-                }
+    wait_until_([&] {
+        if (tm.info(tid).status != xlings::task::TaskStatus::waiting_prompt)
+            return false;
+        for (auto& rec : tm.events(tid)) {
+            if (auto* p = std::get_if<xlings::PromptEvent>(&rec.event)) {
+                promptId = p->id;
+                foundPrompt = true;
             }
-            break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+        return true;
+    });
 
-    ASSERT_TRUE(foundPrompt);
+    ASSERT_TRUE(foundPrompt)
+        << "never reached waiting_prompt; last status "
+        << status_name_(tm.info(tid).status);
     tm.respond(tid, promptId, "y");
 
-    for (int i { 0 }; i < 100; ++i) {
-        if (tm.info(tid).status == xlings::task::TaskStatus::completed) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_until_([&] {
+        return tm.info(tid).status == xlings::task::TaskStatus::completed;
+    });
 
-    EXPECT_EQ(tm.info(tid).status, xlings::task::TaskStatus::completed);
+    EXPECT_EQ(tm.info(tid).status, xlings::task::TaskStatus::completed)
+        << "responded to prompt " << promptId << " but the task stayed in "
+        << status_name_(tm.info(tid).status);
 }
 
 TEST(TaskManager, ConcurrentTasks) {
@@ -780,10 +829,7 @@ TEST(TaskManager, ConcurrentTasks) {
     auto t2 = tm.submit("search_packages", R"({})");
     auto t3 = tm.submit("search_packages", R"({})");
 
-    for (int i { 0 }; i < 200; ++i) {
-        if (!tm.has_active_tasks()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    wait_until_([&] { return !tm.has_active_tasks(); });
 
     EXPECT_FALSE(tm.has_active_tasks());
     EXPECT_EQ(tm.info(t1).status, xlings::task::TaskStatus::completed);

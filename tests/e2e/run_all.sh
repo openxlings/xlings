@@ -139,6 +139,7 @@ TESTS=(
     "E2E-79 |config_hook_resolves_declared_dep_test.sh||"
     "E2E-80 |subos_graphics_wiring_report_test.sh||"
     "E2E-81 |entry_binary_and_isolation_test.sh||"
+    "E2E-82 |subos_runtime_describe_test.sh||"
     # ── the orphan backlog, cleared 2026.8.11.2 ──
     #
     # Twelve tests that were in this directory and in no manifest or workflow.

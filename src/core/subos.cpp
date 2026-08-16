@@ -333,7 +333,8 @@ void update_current_symlink_(EventStream& stream,
 // The block is added even when `.xlings.json` already exists, which is the
 // difference from the surrounding code: the file predates the block, so
 // "the file is there" does not mean "the subos describes itself".
-bool ensure_subos_info_(const fs::path& dir, std::string_view runtime) {
+bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
+                        std::string_view requested) {
     auto json = read_config_json_(dir / ".xlings.json");
     if (!json.is_object()) json = nlohmann::json::object();
     if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
@@ -343,12 +344,15 @@ bool ensure_subos_info_(const fs::path& dir, std::string_view runtime) {
     if (manifest::validate_block(json).empty()) return true;
 
     // An unusable block can still carry a valid runtime binding, and that
-    // binding — not the caller's fallback — is what the subos was declared
-    // against. preserved_runtime keeps it through the rebuild.
-    json[std::string(manifest::BLOCK)] = manifest::make_block(
-        manifest::preserved_runtime(json, runtime),
-        std::format("xlings {}", Info::VERSION),
-        platform::host_glibc_version());
+    // binding — not the caller's request — is what the subos was declared
+    // against. runtime_for keeps it through the rebuild.
+    auto runtime = manifest::runtime_for(dir, json, intent, requested);
+    json[std::string(manifest::BLOCK)] = manifest::make_block({
+        .runtime   = std::move(runtime),
+        .by        = std::format("xlings {}", Info::VERSION),
+        .hostGlibc = platform::host_glibc_version(),
+        .intent    = intent,
+    });
     try {
         write_config_json_(dir / ".xlings.json", json);
     } catch (const std::exception& e) {
@@ -429,11 +433,17 @@ int create(const std::string& name, const fs::path& customDir,
             j["storage"] = sandbox::storage_to_string_(storage);
         if (storage == sandbox::StorageMode::Image)
             j["imageSize"] = imageSize;
-        j[std::string(manifest::BLOCK)] = manifest::make_block(
-            effectiveRuntime, std::format("xlings {}", Info::VERSION),
-            platform::host_glibc_version());
+        auto newRuntime = manifest::runtime_for(
+            dir, j, manifest::Intent::Create, effectiveRuntime);
+        j[std::string(manifest::BLOCK)] = manifest::make_block({
+            .runtime   = std::move(newRuntime),
+            .by        = std::format("xlings {}", Info::VERSION),
+            .hostGlibc = platform::host_glibc_version(),
+            .intent    = manifest::Intent::Create,
+        });
         write_config_json_(subosConfig, j);
-    } else if (!ensure_subos_info_(dir, effectiveRuntime)) {
+    } else if (!ensure_subos_info_(dir, manifest::Intent::Create,
+                                   effectiveRuntime)) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::Internal,
             .message = "failed to write the subos manifest for '" + name + "'",
@@ -840,12 +850,30 @@ int new_from(const std::string& name, const fs::path& customDir,
     if (!subosCfg.contains("workspace"))
         subosCfg["workspace"] = nlohmann::json::object();
     if (!manifest::validate_block(subosCfg).empty()) {
-        subosCfg[std::string(manifest::BLOCK)] = manifest::make_block(
-            manifest::preserved_runtime(
-                subosCfg,
-                runtime.empty() ? manifest::DEFAULT_RUNTIME : runtime),
-            std::format("xlings {}", Info::VERSION),
-            platform::host_glibc_version());
+        auto forkRuntime = manifest::runtime_for(
+            dstDir, subosCfg, manifest::Intent::Create, runtime);
+        subosCfg[std::string(manifest::BLOCK)] = manifest::make_block({
+            .runtime   = std::move(forkRuntime),
+            .by        = std::format("xlings {}", Info::VERSION),
+            .hostGlibc = platform::host_glibc_version(),
+            .intent    = manifest::Intent::Create,
+        });
+    }
+    // `--runtime` loses to what the fork actually carries, and that is right:
+    // copy_tree_ just brought the base's payloads across, and declaring them
+    // against a libc they were not built for would be a lie the fork cannot
+    // satisfy. What was NOT right is doing it in silence -- the flag parsed,
+    // was accepted, and vanished. Say so at the moment it stops mattering.
+    if (!runtime.empty()) {
+        const auto effective =
+            manifest::parse(subosCfg).runtime;
+        if (!effective.empty() && effective != runtime) {
+            log::warn("--runtime {} ignored: '{}' inherits {} from its base, "
+                      "which is what the payloads it just copied were built "
+                      "against", runtime, name, effective);
+            log::warn("  to choose a runtime, create without --from: "
+                      "xlings subos new {} --runtime {}", name, runtime);
+        }
     }
     write_config_json_(subosCfgPath, subosCfg);
 

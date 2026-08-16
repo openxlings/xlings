@@ -1372,15 +1372,25 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         }
         nlohmann::json fresh;
         fresh["workspace"] = nlohmann::json::object();
-        fresh[std::string(mf::BLOCK)] = mf::make_block(
-            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION),
+        // Describe, not Create. This is `install` finding a subos whose
+        // config file is missing -- an OLD or damaged subos, never a fresh
+        // one: `subos new` writes the block before any install runs. And
+        // there is no `--runtime` on `install` to have declined, so a
+        // constant here would record "the user took the default" about a
+        // question nobody was asked. The sysroot may still answer it.
+        fresh[std::string(mf::BLOCK)] = mf::describe_block(
+            subosDir, fresh, std::format("xlings {}", Info::VERSION),
             platform::host_glibc_version());
         doc = std::move(fresh);
     }
     if (!doc->contains(std::string(mf::BLOCK))
         || !doc->at(std::string(mf::BLOCK)).is_object()) {
-        (*doc)[std::string(mf::BLOCK)] = mf::make_block(
-            mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION),
+        // The file is here and carries a workspace -- which routinely names
+        // the active runtime. Writing the default over it was the whole of
+        // openxlings/xlings#547: 17 subos on one measured home record
+        // glibc@2.39 right here and were being declared glibc@2.44.
+        (*doc)[std::string(mf::BLOCK)] = mf::describe_block(
+            subosDir, *doc, std::format("xlings {}", Info::VERSION),
             platform::host_glibc_version());
     }
 
@@ -2928,90 +2938,6 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     return {};
 }
 
-namespace {
-
-// Delete a payload directory on a machine where something may still be
-// holding a file inside it.
-//
-// Windows, and only Windows, has three ways to refuse:
-//
-//   read-only attributes   payloads come out of .vsix/.msi archives that
-//                          carry the bit; POSIX only needs the DIRECTORY
-//                          writable to unlink a child, so this never shows
-//                          up on Linux or macOS.
-//   an open FILE           `cl.exe` leaves `vctip.exe` and `mspdbsrv.exe`
-//                          running INSIDE the toolset it was launched from,
-//                          for tens of seconds after it exits.
-//   an open DIRECTORY      a process whose current directory is in the tree.
-//
-// The first is cleared, the second is worked around by MOVING the files
-// (renaming an open file is allowed on Windows -- that is how an updater
-// replaces a running .exe -- while deleting it is not), and the third is
-// accepted: a payload with no files left is not installed, which is what
-// uninstall promises. The leftover directories carry no meaning and are
-// removed on a later run.
-//
-// Discovered by mcpp, which hit all three in one afternoon
-// (mcpp-community/mcpp#440). It lives here rather than there because
-// `xlings remove <pkg>` has exactly the same problem, and a consumer cannot
-// fix a file another process holds any better than this can.
-bool remove_payload_dir(const std::filesystem::path& root) {
-    namespace fs = std::filesystem;
-    std::error_code ec, ignore;
-
-    fs::remove_all(root, ec);
-    if (!ec) return true;
-    if (!fs::exists(root, ignore)) return true;
-
-    for (auto it = fs::recursive_directory_iterator(
-             root, fs::directory_options::skip_permission_denied, ignore);
-         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
-        fs::permissions(it->path(), fs::perms::owner_write,
-                        fs::perm_options::add, ignore);
-    }
-    ec.clear();
-    fs::remove_all(root, ec);
-    if (!ec) return true;
-
-    std::vector<fs::path> files;
-    for (auto it = fs::recursive_directory_iterator(
-             root, fs::directory_options::skip_permission_denied, ignore);
-         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
-        if (it->is_regular_file(ignore)) files.push_back(it->path());
-    }
-    if (!files.empty()) {
-        auto trash = root.parent_path() /
-                     (".trash-" + root.filename().string());
-        fs::remove_all(trash, ignore);
-        fs::create_directories(trash, ignore);
-        std::size_t moved = 0;
-        for (std::size_t i = 0; i < files.size(); ++i) {
-            std::error_code ren;
-            fs::rename(files[i],
-                       trash / (std::to_string(i) + "-" +
-                                files[i].filename().string()), ren);
-            if (!ren) ++moved;
-        }
-        if (moved != files.size()) {       // half-moved is worse than untouched
-            fs::remove_all(trash, ignore);
-            return false;
-        }
-        ec.clear();
-        fs::remove_all(root, ec);
-        fs::remove_all(trash, ignore);
-        if (!ec) return true;
-    }
-
-    // Files gone, directories held: not installed any more.
-    for (auto it = fs::recursive_directory_iterator(
-             root, fs::directory_options::skip_permission_denied, ignore);
-         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
-        if (it->is_regular_file(ignore)) return false;
-    }
-    return true;
-}
-
-}  // namespace
 
 std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(const std::string& name) {
     auto platform = detect_platform_();
@@ -3322,11 +3248,24 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         index_->mark_installed(name, false);
     }
     std::error_code ec;
-    if (!remove_payload_dir(installDir)) {
-        log::warn("failed to remove payload dir {} -- something is still "
-                  "holding a file inside it (on Windows a compiler can leave "
-                  "a background process running in its own toolset). Re-run "
-                  "once it has exited.", installDir.string());
+    // Sweep first: whatever an earlier removal had to park is dead weight,
+    // and clearing it here is the "removed on a later run" this strategy
+    // promises. Cheap -- an empty or absent trash directory is one stat.
+    sweep_payload_trash(payload_trash_root(installDir));
+    if (remove_payload_dir(installDir, resolvedMatch ? resolvedMatch->version
+                                                     : std::string{})
+            == RemoveOutcome::Partial) {
+        // A warning, not an error: the package IS uninstalled -- unregistered,
+        // and its leftovers stamped incomplete so a reinstall rebuilds rather
+        // than adopting them. What the user needs to know is that the disk is
+        // not free yet and why, which is a fact about another process.
+        log::warn("some files under {} could not be removed -- something is "
+                  "still holding one (on Windows a compiler leaves vctip.exe / "
+                  "mspdbsrv.exe running inside its own toolset for a while "
+                  "after it exits)", installDir.string());
+        log::warn("  they are marked incomplete, so nothing will mistake them "
+                  "for an install; re-run `xlings remove {}` once that process "
+                  "has gone", name);
     }
 
     // installDir is the version directory (e.g. .../xim-x-node/22.17.1).
