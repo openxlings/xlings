@@ -1,10 +1,22 @@
 module xlings.core.xself.update;
 
 import std;
+import xlings.core.config;
+import xlings.core.entry_binary;
+import xlings.core.xvm.db;
 import xlings.core.log;
 import xlings.platform;
 
 namespace xlings::xself {
+
+bool update_landed_on_index_build(std::string_view activeVersion) {
+    // Empty is NOT a failure: it means nothing recorded an active version,
+    // which is a different defect and one this command must not claim to have
+    // diagnosed. Same rule `version_of` follows -- no observation is not a
+    // verdict.
+    if (activeVersion.empty()) return true;
+    return activeVersion.find(':') == std::string_view::npos;
+}
 
 int cmd_update() {
     log::info("updating package index...");
@@ -55,6 +67,45 @@ int cmd_update() {
         log::error("installed xlings@latest but could not activate it");
         log::error("  hint: run `xlings use xlings latest` to see why");
         return rc;
+    }
+
+    // Did the update actually land on the index build? (#554)
+    //
+    // `use ... latest` resolves WITHIN the currently active provider, which is
+    // defensible on its own -- switching provider for an ambiguous name behind
+    // someone's back is worse. But it means that on a home which has ever
+    // carried a `local:` build, `latest` keeps resolving to that build:
+    //
+    //     from 2026.8.17.1 active   ->  xlings -> 2026.8.17.1
+    //     from local:0.4.51 active  ->  xlings -> local:0.4.51
+    //
+    // `use` returns 0 either way, because it did activate something. So this
+    // command reported success and left the user on 0.4.51, silently and
+    // forever -- measured on a real home the day 2026.8.17.1 shipped.
+    //
+    // The test is the PROVIDER, not the version. "Did the version change" is
+    // the obvious check and it is wrong: on an already-current home nothing
+    // changes and that is success, so it would fail every no-op update. What
+    // this command means by "updated" is "running the build the index just
+    // handed us", and a namespaced active version (`local:0.4.51`) is exactly
+    // the statement that it is not -- an index install records a bare version.
+    if (const auto active =
+            xvm::get_active_version(Config::effective_workspace(), "xlings");
+        !update_landed_on_index_build(active)) {
+        const auto entry =
+            entry_binary::version_of(entry_binary::path_of(Config::paths().homeDir));
+        log::error("nothing was upgraded: xlings is still active at '{}'{}",
+                   active,
+                   entry.empty() ? std::string{}
+                                 : std::format(" (the entry binary reports {})",
+                                               entry));
+        log::error("  `latest` resolves within the provider that is already "
+                   "active, so a `{}` build keeps winning it",
+                   active.substr(0, active.find(':')));
+        log::error("  run:  xlings list xlings          (see what is installed)");
+        log::error("  then: xlings use xlings <version> (a version with no "
+                   "`<provider>:` prefix)");
+        return 1;
     }
 
     // The migration nudge, printed rather than performed.
