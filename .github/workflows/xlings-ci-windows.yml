@@ -224,10 +224,24 @@ jobs:
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
+      # `continue-on-error`, with the verdict re-asserted at the end of the
+      # job.
+      #
+      # This step both BUILDS and tests, and a failure here skipped the 15
+      # steps after it -- every E2E, on the one platform whose defects the E2E
+      # suite exists to catch. Observed on main: a timing-sensitive unit test
+      # flaked (the same commit was green on its PR branch) and the Windows
+      # leg produced no end-to-end signal at all for a Windows-only fix.
+      #
+      # A red job with full signal beats a red job with none. The `Unit test
+      # verdict` step below is what keeps it red.
       - name: Build and run unit tests
+        id: unit
+        continue-on-error: true
         shell: pwsh
         run: |
           mcpp build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp test
           if ($LASTEXITCODE -ne 0) {
             $status = $LASTEXITCODE
@@ -251,6 +265,20 @@ jobs:
             Write-Host "::endgroup::"
             exit $status
           }
+
+      # If the BUILD failed there is nothing to run E2E against, and every
+      # step below would fail for a reason that has nothing to do with it.
+      # Distinguished from "the unit tests failed", which the E2E suite is
+      # perfectly able to run past.
+      - name: Stop if the build itself failed
+        if: steps.unit.outcome == 'failure'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "target")) {
+            Write-Host "::error::build produced no target/ -- skipping E2E"
+            exit 1
+          }
+          Write-Host "unit tests failed but the build succeeded; E2E continues"
 
       - name: Prepare fixture index repo
         shell: bash
@@ -334,3 +362,13 @@ jobs:
         with:
           name: xlings-windows-x86_64
           path: build/release.zip
+
+      # The unit step is `continue-on-error` so it cannot skip the E2E suite;
+      # this is where its result becomes the job's. Without it a unit failure
+      # would report success, which is the opposite defect and a worse one.
+      - name: Unit test verdict
+        if: always() && steps.unit.outcome == 'failure'
+        shell: pwsh
+        run: |
+          Write-Host "::error::unit tests failed (see the 'Build and run unit tests' step)"
+          exit 1

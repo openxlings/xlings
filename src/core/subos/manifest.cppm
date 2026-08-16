@@ -76,14 +76,72 @@ struct Provider {
 
 struct Info {
     int                   schema_version = 0;
+    // May be EMPTY, and empty is a statement: "we looked and could not tell".
+    // Distinct from the block being absent, which means "written before this
+    // block existed". A reader must not substitute a default for either --
+    // see `runtime_for` for why a constant here is a fabricated record.
     std::string           runtime;
     std::vector<Provider> envs;      // sorted by binding; see resolve()
+    // Provenance. Exactly one pair is written, and which one says what
+    // happened: a subos that was CREATED carries created_*, one that was
+    // merely DESCRIBED after the fact carries described_*. Writing created_at
+    // on a backfill dates a months-old subos to the moment someone ran
+    // `doctor --fix` -- measured on a real home, where two different subos
+    // carried a byte-identical `created_at` because they were described in
+    // the same run, not created in the same second.
     std::string           created_at;
     std::string           created_by;
+    std::string           described_at;
+    std::string           described_by;
     // Host glibc version ("2.39") probed when the block was written. Empty =
     // unknown: pre-C1 manifests, non-glibc hosts, failed probe. Rule A's
     // right-hand side; a reader must treat unknown as unprovable, not as 0.
     std::string           host_glibc;
+};
+
+// ── who is asking, and therefore what may be invented ────────────────────
+//
+// Six places write this block. Five of them routed through one function and
+// one wrote `DEFAULT_RUNTIME` directly, which is how a subos whose workspace
+// plainly recorded glibc@2.39 came to declare glibc@2.44. The fix is not a
+// seventh writer: it is that all of them ask the same question, and that the
+// ONE thing they legitimately disagree about becomes a parameter.
+//
+// That one thing is whether a constant may stand in for an answer:
+//
+//   Create    someone is making a new subos and could have said `--runtime`.
+//             `DEFAULT_RUNTIME` is what "they didn't say" means, so it is
+//             legitimate -- and legitimate ONLY here.
+//   Describe  the subos already exists and is already running something.
+//             Nobody was asked and nobody can be. A constant here does not
+//             record a default, it records a guess as a fact.
+//
+// `xlings install` has no `--runtime` flag anywhere in the tree (the only
+// parser for it is `subos new`), which is what makes the installer's two
+// sites Describe rather than Create however much they look like creation.
+enum class Intent {
+    Create,
+    Describe,
+};
+
+// What to write. A struct rather than five positional arguments because the
+// provenance pair and the runtime key are both conditional on `intent`, and
+// callers kept getting the argument order right for the wrong reason.
+struct BlockSpec {
+    std::string runtime;    // empty -> the `runtime` key is OMITTED
+    std::string by;         // "xlings <version>"
+    std::string hostGlibc;  // empty -> the key is omitted
+    Intent      intent = Intent::Create;
+};
+
+// The package names that can serve as a subos's C runtime.
+//
+// Derived from the same set `family_of` maps rather than a second list, so a
+// new OS adds one row in one place. Order is the tie-break when a workspace
+// somehow records two: deterministic and documented beats "whichever the map
+// iterated first".
+inline constexpr std::array<std::string_view, 5> RUNTIME_PACKAGES = {
+    "glibc", "musl", "wasi-libc", "macos_sdk", "ucrt",
 };
 
 // ── runtime family ──────────────────────────────────────────────────────
@@ -244,12 +302,16 @@ Info parse(const nlohmann::json& doc);
 
 std::string utc_now_iso();
 
-// The block a freshly created subos gets. `envs` is an explicit empty object.
-// `hostGlibc` is written only when known — an absent key is the documented
-// spelling of "unknown", so a pre-C1 manifest and a failed probe read the
-// same way.
-nlohmann::json make_block(std::string_view runtime, std::string_view createdBy,
-                          std::string_view hostGlibc = {});
+// The block a subos gets. `envs` is an explicit empty object.
+//
+// Three keys are conditional, and each absence is a statement:
+//   * `runtime`    absent  — we looked and could not tell (spec.runtime empty)
+//   * `host_glibc` absent  — the probe found nothing / not a glibc host
+//   * `created_*` vs `described_*` — created, or merely described afterwards
+//
+// An absent key is the documented spelling of "unknown", so a pre-C1 manifest
+// and a failed probe read the same way, and neither reads as a claim.
+nlohmann::json make_block(const BlockSpec& spec);
 
 // What a subos is OBSERVED to run, out of the workspace in its own manifest.
 //
@@ -263,30 +325,59 @@ nlohmann::json make_block(std::string_view runtime, std::string_view createdBy,
 std::string observed_runtime(const nlohmann::json& doc,
                              std::string_view family);
 
-// The runtime a REBUILT block should carry. A block can be invalid for
-// reasons that have nothing to do with its runtime (schema_version, envs,
-// provenance), and every rebuild path used to reset the runtime to the
-// caller's fallback as a side effect. After a default bump that side effect
-// silently re-declares an existing subos against a libc its payloads were
-// never built for — the exact "changed underneath you" C1 forbids.
+// What the SYSROOT is actually serving, out of the symlink farm in the subos.
 //
-// Three sources, most authoritative first:
+// This is the only source that is an OBSERVATION rather than a record. Every
+// other answer to "which libc is this" is something a previous run wrote
+// down; this one is what the loader will actually open. It is what makes the
+// difference between a declaration being checkable and being merely stated.
+//
+// The family comes from the STORE PATH the link lands in
+// (`.../xpkgs/xim-x-glibc/2.39/...` -> `glibc@2.39`), never from the file
+// name — a filename->family table would be a second place to be wrong about
+// what a payload is.
+//
+// Empty when there is no such link, or it does not point into a store.
+std::string sysroot_runtime(const fs::path& subosDir);
+
+// The runtime a block should carry. THE answer — every writer calls this.
+//
+// A block can be invalid for reasons that have nothing to do with its runtime
+// (schema_version, envs, provenance), and every rebuild path used to reset
+// the runtime to a caller-supplied fallback as a side effect. After a default
+// bump that side effect silently re-declares an existing subos against a libc
+// its payloads were never built for — the exact "changed underneath you" C1
+// forbids.
+//
+// Sources, most authoritative first:
 //
 //   1. a valid recorded binding — the subos said what it is;
-//   2. the workspace's active runtime — the subos never said, but it is
+//   2. `requested` (`--runtime`) — a human said what it should be.
+//      CREATE ONLY: there is no way to say it anywhere else;
+//   3. the workspace's active runtime — the subos never said, but it is
 //      demonstrably running something, and declaring it against anything else
 //      is the same re-declaration as (1) guards, reached from the
 //      never-recorded side instead of the invalid-block side;
-//   3. the caller's fallback — nothing is known, so a new subos's default is
-//      the only answer left.
+//   4. the sysroot observation — no record anywhere, but the payload behind
+//      `lib/libc.so.6` is not an opinion;
+//   5. `DEFAULT_RUNTIME`. CREATE ONLY. Under Describe this step does not
+//      exist and the result is EMPTY, which `make_block` writes as an absent
+//      `runtime` key — "we looked and could not tell", which a reader can act
+//      on, rather than a constant it cannot distinguish from a real answer.
 //
-// (2) is what makes the upgrade seamless for every home created before
-// `subos_info` existed. Without it those homes are declared against the
-// current default the first time anything rebuilds their block, and then
+// (3) and (4) are what make the upgrade seamless for every home created
+// before `subos_info` existed. Without them those homes are declared against
+// the current default the first time anything rebuilds their block, and then
 // `self doctor` calls them broken and `use` refuses to activate the runtime
 // they were already on.
-std::string preserved_runtime(const nlohmann::json& doc,
-                              std::string_view fallback);
+//
+// (3) outranks (4) deliberately, and disagreement between them is NOT
+// resolved quietly — doctor reports it (SubosRuntimeDrift). Two answers to
+// one question is the defect; picking one and staying silent would hide it.
+std::string runtime_for(const fs::path& subosDir,
+                        const nlohmann::json& doc,
+                        Intent intent,
+                        std::string_view requested = {});
 
 // ── env declarations ────────────────────────────────────────────────────
 

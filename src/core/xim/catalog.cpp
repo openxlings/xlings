@@ -451,15 +451,14 @@ std::vector<PackageMatch> PackageCatalog::build_matches_(const RepoState& state,
 }
 
 std::vector<PackageMatch> PackageCatalog::collect_matches_(const std::string& target,
-                                               const std::string& platform,
-                                               bool forSearch) const {
+                                               const std::string& platform) const {
     auto parsed = detail_::parse_target_(target);
     std::vector<PackageMatch> primaryMatches;
     std::vector<PackageMatch> subMatches;
 
     auto collect = [&](const std::vector<RepoState>& repos) {
         for (const auto& repo : repos) {
-            auto matches = build_matches_(repo, parsed, platform, forSearch);
+            auto matches = build_matches_(repo, parsed, platform);
             if (repo.spec.subIndex) {
                 for (auto& match : matches) {
                     subMatches.push_back(std::move(match));
@@ -570,6 +569,19 @@ void PackageCatalog::announce_demotion_(const std::string& target,
               chosen.demoted.front());
 }
 
+namespace detail_ {
+
+// "4 hours", "12 minutes", "31 seconds". Coarse on purpose: the reader is
+// deciding whether to run `xlings update`, not measuring anything.
+std::string humanize_age_(long long seconds) {
+    if (seconds < 90)    return std::format("{} seconds", seconds);
+    if (seconds < 5400)  return std::format("{} minutes", seconds / 60);
+    if (seconds < 172800) return std::format("{} hours", seconds / 3600);
+    return std::format("{} days", seconds / 86400);
+}
+
+}  // namespace detail_
+
 std::vector<std::string> PackageCatalog::platforms_offering_(const std::string& target) const {
     // `forSearch` keeps a candidate whose version selection came up empty for
     // the current platform — which is precisely the set we need to inspect.
@@ -609,89 +621,67 @@ std::vector<std::string> PackageCatalog::platforms_offering_(const std::string& 
     return out;
 }
 
-// The revision an index answer was based on, for the ONE message that needs
-// it: "not found".
+// "not found" plus the revision it was decided against, and -- only when it
+// can actually be the explanation -- the advice to sync.
 //
-// "Not in the index" and "not in the index YET" are different facts and were
-// the same string. During the window between a package being merged and the
-// synced index carrying it, `install` fails with the exact text it uses for a
-// package that does not exist -- so a human retries and shrugs, CI goes red
-// and looks like a defect in the pull request, and (measured, five times in
-// one day) an ALREADY-FIXED defect can look unfixed until someone compares
-// timestamps.
+// "Not in the index" and "not in the index YET" were the same string. Between
+// a package being merged and the synced index carrying it there is a publish
+// step and a CDN, and during that window `install` fails with the exact text
+// it uses for a package that does not exist: a human retries and shrugs, CI
+// goes red and reads as a defect in the pull request, and (measured, five
+// times in one day during the MSVC work) an ALREADY-FIXED defect looks
+// unfixed until someone lines up timestamps.
 //
-// The delay itself is not a bug and cannot be removed -- it is a publish step
-// plus a CDN. What can be removed is the ambiguity, and the information is
-// already on disk: the synced index is a git working tree.
+// The delay is not the bug and cannot be removed. The ambiguity can, and the
+// information is already on disk.
 //
-// Read directly rather than by running `git`: this is an error path, it must
-// not depend on git being on PATH at the moment of failure, and a revision we
-// cannot read is not worth failing over -- the caller just gets the plain
-// message back.
-std::string index_revision_(const std::filesystem::path& dir) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    auto gitDir = dir / ".git";
-    if (!fs::exists(gitDir, ec)) return {};
-
-    auto read_first_line = [](const fs::path& f) -> std::string {
-        std::ifstream in(f);
-        std::string line;
-        if (!std::getline(in, line)) return {};
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
-            line.pop_back();
-        return line;
-    };
-
-    auto head = read_first_line(gitDir / "HEAD");
-    if (head.empty()) return {};
-
-    std::string sha;
-    if (head.starts_with("ref: ")) {
-        auto refName = head.substr(5);
-        sha = read_first_line(gitDir / refName);
-        if (sha.empty()) {
-            // Packed refs: the loose file is absent after `git gc` or a fresh
-            // clone, which is the common case for a synced index.
-            std::ifstream packed(gitDir / "packed-refs");
-            std::string line;
-            while (std::getline(packed, line)) {
-                if (line.empty() || line[0] == '#') continue;
-                auto sp = line.find(' ');
-                if (sp == std::string::npos) continue;
-                if (line.compare(sp + 1, refName.size(), refName) == 0
-                    && line.size() == sp + 1 + refName.size()) {
-                    sha = line.substr(0, sp);
-                    break;
-                }
-            }
-        }
-    } else {
-        sha = head;          // detached HEAD is already the sha
-    }
-    if (sha.size() < 7) return {};
-    return sha.substr(0, 7);
-}
-
-// "not found" plus the revision it was decided against, when we can read one.
+// The revision comes from `get_repo_head_hash`, which already existed and
+// already knew BOTH shapes an index comes in -- a git working tree and an
+// artifact install with no `.git` at all. A second reader here would have
+// been blind to the artifact shape and would have silently produced the plain
+// message for every home that has one: the same defect this file keeps
+// finding, committed while fixing it.
+//
+// The `xlings update` line is gated on the index actually being stale.
+// Attached to every miss it is noise -- told to someone who synced thirty
+// seconds ago it is advice that cannot help, which is what it was supposed to
+// stop being.
 std::string PackageCatalog::not_found_(const std::string& target) const {
+    // Five minutes. Long enough that "you already have the newest index" is
+    // true, short enough that a real publish-window miss still gets the hint.
+    constexpr long long kFreshSeconds = 300;
+
     std::string where;
+    long long freshest = -1;
     auto add = [&](const std::vector<RepoState>& repos) {
         for (const auto& r : repos) {
-            auto rev = index_revision_(r.spec.dir);
+            auto rev = get_repo_revision_label(r.spec.dir);
             if (rev.empty()) continue;
             if (!where.empty()) where += ", ";
             where += r.spec.name + "@" + rev;
+            auto age = get_repo_sync_age_seconds(r.spec.dir);
+            if (age >= 0 && (freshest < 0 || age < freshest)) freshest = age;
         }
     };
     add(projectRepos_);
     add(globalRepos_);
     if (where.empty()) return std::format("package '{}' not found", target);
-    return std::format(
-        "package '{}' not found in the synced index ({})\n"
-        "  if it was just published, the index may not carry it yet — "
-        "run `xlings update`",
-        target, where);
+
+    auto msg = std::format("package '{}' not found in the synced index ({})",
+                           target, where);
+    if (freshest >= 0 && freshest < kFreshSeconds) {
+        msg += std::format(
+            "\n  the index was synced {} ago, so this name is either wrong or "
+            "not published yet", detail_::humanize_age_(freshest));
+    } else {
+        if (freshest >= 0) {
+            msg += std::format("\n  that index was synced {} ago",
+                               detail_::humanize_age_(freshest));
+        }
+        msg += "\n  if it was just published, the index may not carry it yet "
+               "— run `xlings update`";
+    }
+    return msg;
 }
 
 std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const std::string& target,

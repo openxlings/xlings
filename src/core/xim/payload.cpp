@@ -210,4 +210,140 @@ void write_payload_failure_marker(const std::filesystem::path& dir,
         (dir / std::filesystem::path(kPayloadStampFile)).string(), text);
 }
 
+// ── removing a payload something may be holding ──────────────────────
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// Every regular file under `root`, deepest-last order irrelevant.
+std::vector<fs::path> regular_files_(const fs::path& root) {
+    std::error_code ignore;
+    std::vector<fs::path> files;
+    for (auto it = fs::recursive_directory_iterator(
+             root, fs::directory_options::skip_permission_denied, ignore);
+         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
+        if (it->is_regular_file(ignore)) files.push_back(it->path());
+    }
+    return files;
+}
+
+void clear_readonly_(const fs::path& root) {
+    std::error_code ignore;
+    fs::permissions(root, fs::perms::owner_write, fs::perm_options::add, ignore);
+    for (auto it = fs::recursive_directory_iterator(
+             root, fs::directory_options::skip_permission_denied, ignore);
+         it != fs::recursive_directory_iterator{}; it.increment(ignore)) {
+        fs::permissions(it->path(), fs::perms::owner_write,
+                        fs::perm_options::add, ignore);
+    }
+}
+
+}  // namespace
+
+fs::path payload_trash_root(const fs::path& payloadDir) {
+    // Walk up looking for the store. Not "three levels up": callers pass a
+    // version directory today, and a guess about depth is a guess that
+    // silently relocates the trash the day someone passes something else.
+    for (auto dir = payloadDir; dir.has_relative_path(); dir = dir.parent_path()) {
+        if (dir.filename() == "xpkgs") return dir.parent_path() / "trash";
+        if (dir.parent_path() == dir) break;
+    }
+    return {};
+}
+
+int sweep_payload_trash(const fs::path& trashRoot) {
+    std::error_code ec;
+    if (trashRoot.empty() || !fs::is_directory(trashRoot, ec)) return 0;
+    int held = 0;
+    for (auto it = fs::directory_iterator(trashRoot, ec);
+         !ec && it != fs::directory_iterator{}; it.increment(ec)) {
+        std::error_code rm;
+        clear_readonly_(it->path());
+        fs::remove_all(it->path(), rm);
+        if (rm || fs::exists(it->path(), rm)) ++held;
+    }
+    // An empty trash directory is noise in the data dir; take it with us.
+    if (held == 0) fs::remove(trashRoot, ec);
+    return held;
+}
+
+RemoveOutcome remove_payload_dir(const fs::path& root, std::string_view version) {
+    std::error_code ec, ignore;
+
+    // Fast path. Note this is already destructive on a partially held tree --
+    // `remove_all` deletes what it can reach before it fails -- which is why
+    // there is no "put it back" branch anywhere below.
+    fs::remove_all(root, ec);
+    if (!ec) return RemoveOutcome::Removed;
+    if (!fs::exists(root, ignore)) return RemoveOutcome::Removed;
+
+    // Refusal 1: the read-only attribute, which comes across in .vsix/.msi
+    // payloads. Free to clear and it costs one pass.
+    clear_readonly_(root);
+    ec.clear();
+    fs::remove_all(root, ec);
+    if (!ec) return RemoveOutcome::Removed;
+
+    auto files = regular_files_(root);
+    if (files.empty()) {
+        // Refusal 3: only directories are left and something holds one. A
+        // payload with no files is not installed, which is what uninstall
+        // promises; the skeleton carries no meaning and a later run gets it.
+        return RemoveOutcome::Removed;
+    }
+
+    // Refusal 2: an open FILE. Windows allows renaming one, which is how an
+    // updater replaces a running .exe -- so displace what will not delete.
+    // A rename cannot lose a file: it either moves or stays put.
+    const auto trashRoot = payload_trash_root(root);
+    if (!trashRoot.empty()) {
+        fs::create_directories(trashRoot, ignore);
+        fs::path trash;
+        for (int n = 0; n < 1000; ++n) {
+            auto candidate = trashRoot /
+                (root.parent_path().filename().string() + "-" +
+                 root.filename().string() + (n ? "-" + std::to_string(n) : ""));
+            if (!fs::exists(candidate, ignore)) { trash = candidate; break; }
+        }
+        if (!trash.empty()) {
+            fs::create_directories(trash, ignore);
+            if (fs::is_directory(trash, ignore)) {
+                for (std::size_t i = 0; i < files.size(); ++i) {
+                    std::error_code ren;
+                    fs::rename(files[i],
+                               trash / (std::to_string(i) + "-" +
+                                        files[i].filename().string()), ren);
+                }
+                ec.clear();
+                fs::remove_all(root, ec);
+                // Moving an open file does not close it, so this is EXPECTED
+                // to fail for exactly the file that made the move necessary.
+                // Whatever is left stays under the trash root -- outside the
+                // version namespace -- and `sweep_payload_trash` gets it.
+                std::error_code sweep;
+                fs::remove_all(trash, sweep);
+                fs::remove(trashRoot, ignore);   // no-op unless now empty
+            }
+        }
+    }
+
+    return settle_removal(root, version);
+}
+
+RemoveOutcome settle_removal(const fs::path& root, std::string_view version) {
+    std::error_code ignore;
+    if (!fs::exists(root, ignore)) return RemoveOutcome::Removed;
+    if (regular_files_(root).empty()) return RemoveOutcome::Removed;
+
+    // Something is still here. The danger is NOT the leftover bytes, it is
+    // that `payload_has_content` is true for them: the package would read as
+    // installed and the next `xlings install` would adopt the wreckage rather
+    // than replace it. Stamping it incomplete is what install_state checks
+    // first, so a reinstall rebuilds instead.
+    write_payload_failure_marker(
+        root, version,
+        "uninstall could not remove every file -- something is holding one");
+    return RemoveOutcome::Partial;
+}
 }

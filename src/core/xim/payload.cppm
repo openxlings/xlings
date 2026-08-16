@@ -100,4 +100,97 @@ void write_payload_failure_marker(const std::filesystem::path& dir,
                                   std::string_view version,
                                   std::string_view reason);
 
+// ── removing a payload something may be holding ──────────────────────
+//
+// Windows, and only Windows, has three ways to refuse a delete:
+//
+//   read-only attributes   payloads come out of .vsix/.msi archives that
+//                          carry the bit; POSIX only needs the DIRECTORY
+//                          writable to unlink a child, so this never shows
+//                          up on Linux or macOS.
+//   an open FILE           `cl.exe` leaves `vctip.exe` and `mspdbsrv.exe`
+//                          running INSIDE the toolset it was launched from,
+//                          for tens of seconds after it exits. (Visible in
+//                          our own Windows CI: "Terminate orphan process:
+//                          pid (8696) (vctip)".)
+//   an open DIRECTORY      a process whose current directory is in the tree.
+//
+// The first is cleared, the second is worked around by MOVING the files
+// (renaming an open file is allowed on Windows -- that is how an updater
+// replaces a running .exe -- while deleting it is not), and the third is
+// accepted: a payload with no files left is not installed, which is what
+// uninstall promises.
+//
+// Lives here rather than in installer.cpp for two reasons that turned out to
+// be the same reason: `xlings subos remove` and `xlings self uninstall` have
+// the identical problem, and a function in a .cpp's anonymous namespace
+// cannot be unit tested -- which is why its rollback path shipped inverted.
+//
+// Two outcomes, because there is no third one to have.
+//
+// "Roll back to untouched" is not reachable and never was. The fast path is
+// `remove_all`, which is not atomic: on a tree where one file is held it
+// deletes everything it can reach and then reports failure, so by the time we
+// know something is holding a file, other files are already gone. Probing
+// first -- trying a delete to find the holder -- makes the diagnosis a second
+// act of destruction, which is the shape this is trying to avoid.
+//
+// So the question is not "did we damage it" (we did, that was the request)
+// but "will the NEXT install repair it". A leftover payload is dangerous for
+// exactly one reason: `payload_has_content` is true, so the package reads as
+// installed and a reinstall adopts the wreckage instead of replacing it.
+// `Partial` therefore stamps the directory incomplete, which install_state
+// checks before anything else -- the same marker a failed install leaves.
+enum class RemoveOutcome {
+    Removed,   // no regular files left; the package is not installed
+    Partial,   // some files could not be removed -- stamped incomplete so
+               // that `xlings install` rebuilds it rather than adopting it
+};
+
+// Where displaced files are parked, derived from the store the payload lives
+// in.
+//
+// Two constraints, and together they leave exactly one place:
+//   * same filesystem — the whole strategy is `rename`, and a cross-device
+//     rename fails;
+//   * outside `xpkgs` — seven places in this tree read every subdirectory of
+//     `xpkgs/<pkg>/` as a version and every subdirectory of `xpkgs/` as a
+//     package, and NOT ONE of them skips dotfiles. A `.trash-22.17.1` beside
+//     the version directories becomes a version called `.trash-22.17.1` in
+//     `xlings list`, in doctor's payload audit and in the reference count.
+//
+// So: `<...>/data/trash`, a sibling of `<...>/data/xpkgs`. Empty when the
+// payload is not inside a store, in which case the move strategy is skipped
+// rather than guessing a location something else reads as content.
+std::filesystem::path payload_trash_root(const std::filesystem::path& payloadDir);
+
+// Try hard to remove a payload directory. See RemoveOutcome.
+//
+// `version` is only used to stamp the leftovers on a Partial outcome; pass
+// what the caller is uninstalling.
+RemoveOutcome remove_payload_dir(const std::filesystem::path& root,
+                                 std::string_view version = {});
+
+// The verdict, once every removal strategy has been tried: Removed when no
+// regular files are left, Partial otherwise -- and Partial STAMPS, which is
+// the part that matters.
+//
+// Separated from `remove_payload_dir` because it is the only half of this
+// that can be tested off Windows. Nothing in a tree we own can resist us on
+// POSIX: `clear_readonly_` chmods any directory back to writable, and an open
+// file descriptor does not prevent unlink -- so the Partial BRANCH is
+// genuinely unreachable on Linux and macOS, and a test that claimed to cover
+// it would be asserting on a path it never entered. This function is real
+// production code driven with real leftovers, not a stub standing in for one.
+RemoveOutcome settle_removal(const std::filesystem::path& root,
+                             std::string_view version);
+
+// Clear whatever earlier removals had to park. Cheap, idempotent, and the
+// answer to "removed on a later run" -- which the first version of this code
+// promised without anything anywhere doing it.
+//
+// Returns how many entries are still held, so a caller can say so instead of
+// implying the store is clean.
+int sweep_payload_trash(const std::filesystem::path& trashRoot);
+
 }  // namespace xlings::xim

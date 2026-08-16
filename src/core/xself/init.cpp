@@ -158,10 +158,16 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
     if (mf::validate_block(json).empty()) return;
 
-    json[std::string(mf::BLOCK)] =
-        mf::make_block(mf::preserved_runtime(json, mf::DEFAULT_RUNTIME),
-                       std::format("xlings {}", Info::VERSION),
-                       platform::host_glibc_version());
+    // Describe: this subos already exists — `self init` runs on install and
+    // update, never on creation. Nobody was asked for a runtime here, so
+    // nothing may be invented; see manifest::Intent.
+    auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Describe);
+    json[std::string(mf::BLOCK)] = mf::make_block({
+        .runtime   = std::move(runtime),
+        .by        = std::format("xlings {}", Info::VERSION),
+        .hostGlibc = platform::host_glibc_version(),
+        .intent    = mf::Intent::Describe,
+    });
     ensure_parent_dirs_(path);
     platform::write_string_to_file(path.string(), json.dump(2));
 }

@@ -449,7 +449,11 @@ TEST(SubosManifestResolve, FlagsAValueItCouldNotExpand) {
 TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
-    d["subos_info"] = m::make_block(m::DEFAULT_RUNTIME, "xlings test");
+    d["subos_info"] = m::make_block({
+        .runtime = std::string(m::DEFAULT_RUNTIME),
+        .by      = "xlings test",
+        .intent  = m::Intent::Create,
+    });
 
     EXPECT_TRUE(m::validate_block(d).empty());
 
@@ -472,7 +476,12 @@ TEST(SubosManifestBlock, DefaultRuntimeIsAWellFormedBinding) {
 TEST(SubosManifestBlock, HostGlibcIsRecordedWhenKnown) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
-    d["subos_info"] = m::make_block(m::DEFAULT_RUNTIME, "xlings test", "2.39");
+    d["subos_info"] = m::make_block({
+        .runtime   = std::string(m::DEFAULT_RUNTIME),
+        .by        = "xlings test",
+        .hostGlibc = "2.39",
+        .intent    = m::Intent::Create,
+    });
 
     EXPECT_TRUE(m::validate_block(d).empty());
     EXPECT_EQ(m::parse(d).host_glibc, "2.39");
@@ -481,7 +490,11 @@ TEST(SubosManifestBlock, HostGlibcIsRecordedWhenKnown) {
 TEST(SubosManifestBlock, HostGlibcIsOmittedWhenUnknown) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
-    d["subos_info"] = m::make_block(m::DEFAULT_RUNTIME, "xlings test");
+    d["subos_info"] = m::make_block({
+        .runtime = std::string(m::DEFAULT_RUNTIME),
+        .by      = "xlings test",
+        .intent  = m::Intent::Create,
+    });
 
     EXPECT_FALSE(d["subos_info"].contains("host_glibc"));
     EXPECT_TRUE(m::parse(d).host_glibc.empty());
@@ -503,20 +516,25 @@ TEST(SubosManifestPreserve, KeepsAValidRuntimeThroughARebuild) {
         {"envs", 42},                    // invalid on purpose
     };
     EXPECT_FALSE(m::validate_block(d).empty());
-    EXPECT_EQ(m::preserved_runtime(d, m::DEFAULT_RUNTIME), "glibc@2.39");
+    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Create, m::DEFAULT_RUNTIME),
+              "glibc@2.39");
+    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Describe), "glibc@2.39");
 }
 
-TEST(SubosManifestPreserve, FallsBackWhenTheRuntimeItselfIsMalformed) {
+TEST(SubosManifestPreserve, CreateFallsBackWhenTheRuntimeItselfIsMalformed) {
     nlohmann::json d;
     d["subos_info"] = { {"runtime", "glibc"} };   // no version half
-    EXPECT_EQ(m::preserved_runtime(d, "glibc@2.44"), "glibc@2.44");
+    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.44");
 
     nlohmann::json absent;
     absent["subos_info"] = nlohmann::json::object();
-    EXPECT_EQ(m::preserved_runtime(absent, "glibc@2.44"), "glibc@2.44");
+    EXPECT_EQ(m::runtime_for({}, absent, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.44");
 
     nlohmann::json noBlock = nlohmann::json::object();
-    EXPECT_EQ(m::preserved_runtime(noBlock, "glibc@2.44"), "glibc@2.44");
+    EXPECT_EQ(m::runtime_for({}, noBlock, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.44");
 }
 
 // ── the subos layer's one live version ───────────────────────────────
@@ -721,59 +739,103 @@ TEST(SubosPrivilegedEnv, AValueOutsideOurStoreIsNotPrivileged) {
                                       "/usr/lib/x86_64-linux-gnu"));
 }
 
-// ── preserved_runtime: what a rebuilt block declares ────────────────────
+// ── runtime_for: the ONE answer to "what runtime is this subos" ─────────
 //
-// Measured on a real home before these were written: of ~25 subos, three
-// carried a runtime binding and the rest predated `subos_info` entirely.
-// Every one of those was declared against the current DEFAULT_RUNTIME the
-// first time anything rebuilt its block -- after which `self doctor` reported
-// an error and `use` refused to activate the runtime the subos was already
-// running. The declaration has to come from what the subos IS, and the
-// workspace in the same file already says so.
+// Six places used to write the `subos_info` block and each decided this for
+// itself. Five routed through one helper and the sixth wrote the constant
+// directly, which is how a subos whose workspace plainly recorded glibc@2.39
+// came to declare glibc@2.44 -- measured on a real home, on the very subos
+// that then failed to build anything (openxlings/xlings#547).
+//
+// The precedence table below IS the contract. Everything that writes the
+// block calls this, and the only thing callers may disagree about is whether
+// a constant may stand in for an answer: `Intent`.
 
-TEST(SubosPreservedRuntime, ARecordedBindingWins) {
+TEST(SubosRuntimeFor, ARecordedBindingWins) {
     auto doc = nlohmann::json::parse(R"({
         "subos_info": {"runtime": "glibc@2.39"},
         "workspace": {"glibc": {"active": "2.44"}}
     })");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.39");
 }
 
-TEST(SubosPreservedRuntime, NoRecordedBindingTakesTheObservedActiveRuntime) {
+TEST(SubosRuntimeFor, NoRecordedBindingTakesTheObservedActiveRuntime) {
     auto doc = nlohmann::json::parse(R"({
         "workspace": {"glibc": {"active": "2.39", "installed": ["2.39"]}}
     })");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39")
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Describe), "glibc@2.39")
         << "a legacy subos running 2.39 must not be re-declared against 2.44";
 }
 
-TEST(SubosPreservedRuntime, AnInvalidRecordedBindingStillPrefersTheObserved) {
+TEST(SubosRuntimeFor, AnInvalidRecordedBindingStillPrefersTheObserved) {
     auto doc = nlohmann::json::parse(R"({
         "subos_info": {"runtime": "glibc"},
         "workspace": {"glibc": {"active": "2.39"}}
     })");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Describe), "glibc@2.39");
 }
 
-TEST(SubosPreservedRuntime, TheWorkspaceVersionMayCarryItsNamespace) {
+TEST(SubosRuntimeFor, TheWorkspaceVersionMayCarryItsNamespace) {
     auto doc = nlohmann::json::parse(R"({
         "workspace": {"glibc": {"active": "xim:2.39"}}
     })");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.39");
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Describe), "glibc@2.39");
 }
 
-TEST(SubosPreservedRuntime, NothingKnownFallsBackToTheDefault) {
+TEST(SubosRuntimeFor, AnotherPackagesVersionIsNotARuntime) {
     auto doc = nlohmann::json::parse(R"({"workspace": {"gcc": {"active": "16"}}})");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.44")
-        << "another package's version is not this subos's runtime";
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.44");
+    EXPECT_TRUE(m::runtime_for({}, doc, m::Intent::Describe).empty());
 }
 
-TEST(SubosPreservedRuntime, AnEmptyActiveIsNotAnObservation) {
+TEST(SubosRuntimeFor, AnEmptyActiveIsNotAnObservation) {
     auto doc = nlohmann::json::parse(R"({
         "workspace": {"glibc": {"active": "", "installed": []}}
     })");
-    EXPECT_EQ(m::preserved_runtime(doc, "glibc@2.44"), "glibc@2.44");
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Create, "glibc@2.44"),
+              "glibc@2.44");
+    EXPECT_TRUE(m::runtime_for({}, doc, m::Intent::Describe).empty());
 }
+
+// A workspace that names a NON-glibc runtime is read too. The old helper
+// asked only about the family its fallback happened to name, so this function
+// states no opinion about which libc a platform has.
+TEST(SubosRuntimeFor, ReadsAnyKnownRuntimeFamily) {
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"musl": {"active": "1.2.5"}}
+    })");
+    EXPECT_EQ(m::runtime_for({}, doc, m::Intent::Describe), "musl@1.2.5");
+}
+
+// ── the difference between Create and Describe ──────────────────────────
+//
+// This is the whole of #547 in two assertions. `xlings install` has no
+// `--runtime` flag anywhere in the tree, so a constant written on its behalf
+// records "the user took the default" about a question nobody was asked.
+
+TEST(SubosRuntimeFor, DescribeNeverInventsARuntime) {
+    nlohmann::json empty = nlohmann::json::parse(R"({"workspace": {}})");
+    EXPECT_TRUE(m::runtime_for({}, empty, m::Intent::Describe).empty())
+        << "Describe must produce EMPTY, not the current default -- a "
+           "constant here is indistinguishable from a real declaration";
+}
+
+TEST(SubosRuntimeFor, CreateStillTakesTheDefault) {
+    nlohmann::json empty = nlohmann::json::parse(R"({"workspace": {}})");
+    EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Create),
+              m::DEFAULT_RUNTIME);
+}
+
+TEST(SubosRuntimeFor, DescribeIgnoresARequestedRuntime) {
+    nlohmann::json empty = nlohmann::json::parse(R"({"workspace": {}})");
+    EXPECT_TRUE(m::runtime_for({}, empty, m::Intent::Describe, "glibc@9.9")
+                    .empty())
+        << "there is no way to request a runtime on a Describe path, so "
+           "honouring one would be honouring something nobody typed";
+}
+
 
 // The family is read out of the fallback, so this function states nothing
 // about which runtime family a platform uses.
@@ -787,13 +849,221 @@ TEST(SubosObservedRuntime, TheFamilyComesFromTheCaller) {
 }
 
 // A rebuilt block must still validate, or doctor reports the manifest as
-// broken forever. This is why "record nothing" is not an option for a legacy
-// subos: validate_block requires a well-formed binding.
-TEST(SubosPreservedRuntime, TheRebuiltBlockValidates) {
+// broken forever -- and then `--fix` rewrites it, forever, never converging.
+TEST(SubosRuntimeFor, TheRebuiltBlockValidates) {
     auto doc = nlohmann::json::parse(R"({
         "workspace": {"glibc": {"active": "2.39"}}
     })");
-    doc["subos_info"] = m::make_block(m::preserved_runtime(doc, m::DEFAULT_RUNTIME),
-                                      "xlings test", "2.39");
+    doc["subos_info"] = m::make_block({
+        .runtime   = m::runtime_for({}, doc, m::Intent::Describe),
+        .by        = "xlings test",
+        .hostGlibc = "2.39",
+        .intent    = m::Intent::Describe,
+    });
     EXPECT_TRUE(m::validate_block(doc).empty());
+    EXPECT_EQ(m::parse(doc).runtime, "glibc@2.39");
+}
+
+// ── "unknown" has to be expressible, or a guess gets written instead ────
+//
+// This is the invariant that CAUSED #547. I6 used to require a well-formed
+// binding, so a describe with no evidence had two options: invent one, or
+// emit a block `--fix` would rewrite on every future run. It invented one.
+
+TEST(SubosManifestBlock, AnUnknownRuntimeIsOmittedAndStillValidates) {
+    nlohmann::json doc = nlohmann::json::parse(R"({"workspace": {}})");
+    doc["subos_info"] = m::make_block({
+        .runtime = m::runtime_for({}, doc, m::Intent::Describe),   // empty
+        .by      = "xlings test",
+        .intent  = m::Intent::Describe,
+    });
+
+    EXPECT_FALSE(doc["subos_info"].contains("runtime"))
+        << "empty must be an ABSENT key, not an empty string -- every reader "
+           "already treats absent as unknown and would need a second spelling";
+    EXPECT_TRUE(m::validate_block(doc).empty())
+        << "an honest unknown is not a malformed manifest";
+    EXPECT_TRUE(m::parse(doc).runtime.empty());
+}
+
+// The two states a reader must be able to tell apart, which is the whole
+// point of writing a block at all when we cannot name the runtime.
+TEST(SubosManifestBlock, OldFormatAndKnownUnknownAreDistinguishable) {
+    nlohmann::json legacy = nlohmann::json::parse(R"({"workspace": {}})");
+    nlohmann::json known  = nlohmann::json::parse(R"({"workspace": {}})");
+    known["subos_info"] = m::make_block({
+        .by = "xlings test", .intent = m::Intent::Describe,
+    });
+
+    // legacy: no block at all -> written before subos_info existed
+    EXPECT_EQ(m::parse(legacy).schema_version, 0);
+    // known-unknown: block present, schema set, runtime absent
+    EXPECT_EQ(m::parse(known).schema_version, m::SCHEMA_VERSION);
+    EXPECT_TRUE(m::parse(known).runtime.empty());
+}
+
+// A malformed runtime is still a defect. Relaxing "absent is legal" must not
+// relax "present means well formed".
+TEST(SubosManifestBlock, APresentButMalformedRuntimeIsStillReported) {
+    nlohmann::json doc = nlohmann::json::parse(R"({
+        "workspace": {},
+        "subos_info": {
+            "schema_version": 1, "runtime": "glibc", "envs": {},
+            "created_at": "t", "created_by": "x"
+        }
+    })");
+    const auto findings = m::validate_block(doc);
+    ASSERT_FALSE(findings.empty());
+    EXPECT_EQ(findings.front().kind, m::Defect::RuntimeMalformed);
+}
+
+// ── provenance: created, or merely described ────────────────────────────
+//
+// Measured on a real home: `default` and `gfxbuild` carried a byte-identical
+// `created_at`, because both were DESCRIBED in the same run by the release
+// that introduced the block -- not created in the same second. `default` is
+// that home's original subos and predates the timestamp by months.
+
+TEST(SubosManifestBlock, DescribeDoesNotClaimACreationDate) {
+    nlohmann::json doc = nlohmann::json::parse(R"({"workspace": {}})");
+    doc["subos_info"] = m::make_block({
+        .runtime = "glibc@2.39", .by = "xlings test",
+        .intent  = m::Intent::Describe,
+    });
+
+    EXPECT_FALSE(doc["subos_info"].contains("created_at"));
+    EXPECT_FALSE(doc["subos_info"].contains("created_by"));
+    EXPECT_FALSE(m::parse(doc).described_at.empty());
+    EXPECT_EQ(m::parse(doc).described_by, "xlings test");
+    EXPECT_TRUE(m::validate_block(doc).empty())
+        << "described_* must satisfy I8 -- requiring created_* is what forced "
+           "every backfill to fabricate one";
+}
+
+TEST(SubosManifestBlock, CreateStillRecordsCreation) {
+    nlohmann::json doc = nlohmann::json::parse(R"({"workspace": {}})");
+    doc["subos_info"] = m::make_block({
+        .runtime = "glibc@2.39", .by = "xlings test",
+        .intent  = m::Intent::Create,
+    });
+    EXPECT_FALSE(doc["subos_info"].contains("described_at"));
+    EXPECT_FALSE(m::parse(doc).created_at.empty());
+}
+
+TEST(SubosManifestBlock, NoProvenanceAtAllIsStillADefect) {
+    nlohmann::json doc = nlohmann::json::parse(R"({
+        "workspace": {},
+        "subos_info": {"schema_version": 1, "runtime": "glibc@2.39", "envs": {}}
+    })");
+    const auto findings = m::validate_block(doc);
+    ASSERT_EQ(findings.size(), 1u);
+    EXPECT_EQ(findings.front().kind, m::Defect::ProvenanceMissing);
+}
+
+// ── sysroot_runtime: the one source that is an OBSERVATION ──────────────
+//
+// Every other answer to "which libc is this" is something a previous run
+// wrote down, so two records can be wrong in the same direction and agree --
+// which is exactly what happened. Measured on a real home: two subos declared
+// glibc@2.44 while `lib/libc.so.6` pointed into the 2.39 payload, their
+// workspace named no runtime at all, and every check passed.
+//
+// These build a real tree, because the thing under test is a symlink.
+
+namespace {
+
+struct SysrootFixture {
+    fs::path root;
+
+    explicit SysrootFixture(std::string_view tag) {
+        root = fs::temp_directory_path() /
+               ("xlings-sysroot-" + std::string(tag));
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        fs::create_directories(root / "home" / "data" / "xpkgs", ec);
+        fs::create_directories(subos() / "lib", ec);
+    }
+    ~SysrootFixture() { std::error_code ec; fs::remove_all(root, ec); }
+
+    SysrootFixture(const SysrootFixture&) = delete;
+    SysrootFixture& operator=(const SysrootFixture&) = delete;
+
+    fs::path subos() const { return root / "home" / "subos" / "default"; }
+    fs::path store() const { return root / "home" / "data" / "xpkgs"; }
+
+    // Link <subos>/lib/<name> at <store>/<pkg>/<version>/lib64/<name>.
+    // `materialize=false` leaves the link DANGLING on purpose: a payload that
+    // has since been collected still tells us what this subos was wired to.
+    void link(std::string_view name, std::string_view pkg,
+              std::string_view version, bool materialize = true) {
+        std::error_code ec;
+        auto target = store() / std::string(pkg) / std::string(version) / "lib64"
+                    / std::string(name);
+        if (materialize) {
+            fs::create_directories(target.parent_path(), ec);
+            std::ofstream(target) << "x";
+        }
+        fs::create_symlink(target, subos() / "lib" / std::string(name), ec);
+    }
+};
+
+}  // namespace
+
+TEST(SubosSysrootRuntime, ReadsTheFamilyFromTheStorePathNotTheFileName) {
+    SysrootFixture fx{"basic"};
+    fx.link("libc.so.6", "xim-x-glibc", "2.39");
+    EXPECT_EQ(m::sysroot_runtime(fx.subos()), "glibc@2.39");
+}
+
+// A collected payload leaves a dangling link, and a dangling link is still
+// evidence. Asking "does it exist" would read it as no evidence at all --
+// the same mistake the SysrootDangling finding exists to name.
+TEST(SubosSysrootRuntime, ADanglingLinkIsStillAnObservation) {
+    SysrootFixture fx{"dangling"};
+    fx.link("libc.so.6", "xim-x-glibc", "2.39", /*materialize=*/false);
+    EXPECT_EQ(m::sysroot_runtime(fx.subos()), "glibc@2.39");
+}
+
+TEST(SubosSysrootRuntime, MuslIsReadTheSameWay) {
+    SysrootFixture fx{"musl"};
+    fx.link("ld-musl-x86_64.so.1", "xim-x-musl", "1.2.5");
+    EXPECT_EQ(m::sysroot_runtime(fx.subos()), "musl@1.2.5");
+}
+
+TEST(SubosSysrootRuntime, NoLinkIsNoAnswer) {
+    SysrootFixture fx{"none"};
+    EXPECT_TRUE(m::sysroot_runtime(fx.subos()).empty());
+}
+
+// A link that leaves the store answers nothing. Reporting the last two path
+// components regardless would manufacture a binding out of any symlink.
+TEST(SubosSysrootRuntime, ALinkOutsideAnyStoreIsNotAnObservation) {
+    SysrootFixture fx{"host"};
+    std::error_code ec;
+    fs::create_symlink("/usr/lib/x86_64-linux-gnu/libc.so.6",
+                       fx.subos() / "lib" / "libc.so.6", ec);
+    EXPECT_TRUE(m::sysroot_runtime(fx.subos()).empty());
+}
+
+// The whole point of the source: no record anywhere, and still a true answer.
+TEST(SubosRuntimeFor, FallsBackToTheSysrootWhenNothingRecordsARuntime) {
+    SysrootFixture fx{"describe"};
+    fx.link("libc.so.6", "xim-x-glibc", "2.39");
+    auto doc = nlohmann::json::parse(R"({"workspace": {}})");
+    EXPECT_EQ(m::runtime_for(fx.subos(), doc, m::Intent::Describe),
+              "glibc@2.39")
+        << "the workspace records nothing, but the loader will open 2.39";
+}
+
+// Precedence: the record still wins. Disagreement is a DOCTOR finding, not a
+// silent choice made here -- which of the two is the accident is not
+// decidable from inside this function.
+TEST(SubosRuntimeFor, TheWorkspaceRecordOutranksTheSysroot) {
+    SysrootFixture fx{"precedence"};
+    fx.link("libc.so.6", "xim-x-glibc", "2.39");
+    auto doc = nlohmann::json::parse(R"({
+        "workspace": {"glibc": {"active": "2.44"}}
+    })");
+    EXPECT_EQ(m::runtime_for(fx.subos(), doc, m::Intent::Describe),
+              "glibc@2.44");
 }

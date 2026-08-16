@@ -165,10 +165,22 @@ std::vector<Finding> validate_block(const nlohmann::json& doc) {
                                                     : "absent"});
     }
 
-    const auto runtime = b.value("runtime", std::string{});
-    if (!is_binding(runtime)) {
-        out.push_back({Defect::RuntimeMalformed,
-                       runtime.empty() ? "absent" : runtime});
+    // I6, relaxed: PRESENT means it must be well formed; ABSENT is legal and
+    // means "we looked and could not tell".
+    //
+    // The old rule made "unknown" inexpressible, and that is the whole reason
+    // a constant got written instead. Requiring a binding here meant a
+    // backfill with no evidence had exactly two options -- invent one, or
+    // produce a block that `--fix` would rewrite on the next run forever --
+    // so it invented one. Reporting is doctor's job (SubosRuntimeUnknown),
+    // not this invariant's: an honest "unknown" is not a malformed manifest.
+    if (b.contains("runtime")) {
+        const auto& r = b["runtime"];
+        const auto runtime = r.is_string() ? r.get<std::string>() : r.dump();
+        if (!r.is_string() || !is_binding(runtime)) {
+            out.push_back({Defect::RuntimeMalformed,
+                           runtime.empty() ? "empty" : runtime});
+        }
     }
 
     // "An empty collection is not a missing one": `envs` is written as {} at
@@ -203,8 +215,16 @@ std::vector<Finding> validate_block(const nlohmann::json& doc) {
         }
     }
 
-    if (b.value("created_at", std::string{}).empty()
-        || b.value("created_by", std::string{}).empty()) {
+    // Either pair satisfies it. `created_*` means this run made the subos;
+    // `described_*` means it already existed and we only wrote down what it
+    // is. Requiring `created_*` is what forced every backfill to fabricate a
+    // creation date, so the check that was meant to catch missing provenance
+    // was instead the reason provenance got invented.
+    const bool created = !b.value("created_at", std::string{}).empty()
+                      && !b.value("created_by", std::string{}).empty();
+    const bool described = !b.value("described_at", std::string{}).empty()
+                        && !b.value("described_by", std::string{}).empty();
+    if (!created && !described) {
         out.push_back({Defect::ProvenanceMissing, ""});
     }
     return out;
@@ -232,6 +252,8 @@ Info parse(const nlohmann::json& doc) {
     info.runtime        = b.value("runtime", std::string{});
     info.created_at     = b.value("created_at", std::string{});
     info.created_by     = b.value("created_by", std::string{});
+    info.described_at   = b.value("described_at", std::string{});
+    info.described_by   = b.value("described_by", std::string{});
     info.host_glibc     = b.value("host_glibc", std::string{});
 
     if (b.contains("envs") && b["envs"].is_object()) {
@@ -264,14 +286,27 @@ std::string utc_now_iso() {
     return buf;
 }
 
-nlohmann::json make_block(std::string_view runtime, std::string_view createdBy, std::string_view hostGlibc) {
+nlohmann::json make_block(const BlockSpec& spec) {
     nlohmann::json b;
     b["schema_version"] = SCHEMA_VERSION;
-    b["runtime"]        = std::string(runtime);
-    b["envs"]           = nlohmann::json::object();
-    b["created_at"]     = utc_now_iso();
-    b["created_by"]     = std::string(createdBy);
-    if (!hostGlibc.empty()) b["host_glibc"] = std::string(hostGlibc);
+    // Omitted rather than written empty. An empty string would be a value,
+    // and every reader that asks `is_binding()` would have to learn a second
+    // spelling of "no"; an absent key already means that everywhere else in
+    // this block.
+    if (!spec.runtime.empty()) b["runtime"] = spec.runtime;
+    b["envs"] = nlohmann::json::object();
+    if (spec.intent == Intent::Create) {
+        b["created_at"] = utc_now_iso();
+        b["created_by"] = spec.by;
+    } else {
+        // NOT created_*. This subos existed before this run; stamping it with
+        // a creation date invents a fact, and it is the fact `I8` exists to
+        // check -- so the fabricated value satisfied the check that was meant
+        // to catch it.
+        b["described_at"] = utc_now_iso();
+        b["described_by"] = spec.by;
+    }
+    if (!spec.hostGlibc.empty()) b["host_glibc"] = spec.hostGlibc;
     return b;
 }
 
@@ -293,17 +328,108 @@ std::string observed_runtime(const nlohmann::json& doc,
     return is_binding(binding) ? binding : std::string{};
 }
 
-std::string preserved_runtime(const nlohmann::json& doc,
-                              std::string_view fallback) {
+namespace {
+
+// `xim-x-glibc` -> `glibc`. The store encodes `<namespace>-x-<name>`; the
+// binding never carries the namespace, so the tail is what we want.
+std::string_view store_package_name_(std::string_view storeDir) {
+    const auto sep = storeDir.find("-x-");
+    return sep == std::string_view::npos ? storeDir : storeDir.substr(sep + 3);
+}
+
+// The files a C runtime payload puts in the sysroot farm. Probed in order and
+// the FIRST one that lands in a store wins.
+//
+// The list exists to find *a link into a payload*; it deliberately does not
+// decide what family that payload is -- the store path does that. So a name
+// missing from this list costs us an observation, never a wrong one.
+constexpr std::string_view kLibcProbes_[] = {
+    "libc.so.6",                  // glibc
+    "ld-linux-x86-64.so.2",       // glibc loader, x86_64
+    "ld-linux-aarch64.so.1",      // glibc loader, aarch64
+    "libc.musl-x86_64.so.1",      // musl
+    "libc.musl-aarch64.so.1",
+    "ld-musl-x86_64.so.1",
+    "ld-musl-aarch64.so.1",
+};
+
+constexpr std::string_view kLibDirs_[] = {"lib", "lib64", "usr/lib", "usr/lib64"};
+
+}  // namespace
+
+std::string sysroot_runtime(const fs::path& subosDir) {
+    std::error_code ec;
+    if (subosDir.empty()) return {};
+
+    for (const auto& sub : kLibDirs_) {
+        const auto dir = subosDir / std::string(sub);
+        if (!fs::is_directory(dir, ec)) continue;
+        for (const auto& probe : kLibcProbes_) {
+            const auto link = dir / std::string(probe);
+            // symlink_status, not exists(): a link into a payload that has
+            // since been collected is DANGLING, and it still tells us which
+            // payload this subos was wired to. Asking "does it exist" would
+            // read a dangling link as no evidence -- the same mistake
+            // SysrootDangling was created to name.
+            if (!fs::is_symlink(fs::symlink_status(link, ec))) continue;
+
+            // read_symlink, then make absolute against the link's directory:
+            // the farm may hold relative targets, and canonical() would fail
+            // outright on a dangling one.
+            auto target = fs::read_symlink(link, ec);
+            if (ec) { ec.clear(); continue; }
+            if (target.is_relative()) target = dir / target;
+            target = target.lexically_normal();
+
+            // Walk to `.../xpkgs/<store>/<version>/...`.
+            std::vector<std::string> parts;
+            for (const auto& c : target) parts.push_back(c.string());
+            for (std::size_t i = 0; i + 2 < parts.size(); ++i) {
+                if (parts[i] != "xpkgs") continue;
+                const auto name = store_package_name_(parts[i + 1]);
+                const auto& version = parts[i + 2];
+                if (name.empty() || version.empty()) break;
+                auto binding = std::format("{}@{}", name, version);
+                if (is_binding(binding)) return binding;
+                break;
+            }
+        }
+    }
+    return {};
+}
+
+std::string runtime_for(const fs::path& subosDir, const nlohmann::json& doc,
+                        Intent intent, std::string_view requested) {
+    // 1 — the subos said what it is.
     if (doc.contains(std::string(BLOCK)) && doc[std::string(BLOCK)].is_object()) {
         const auto r = doc[std::string(BLOCK)].value("runtime", std::string{});
         if (is_binding(r)) return r;
     }
-    if (auto observed = observed_runtime(doc, binding_name(fallback));
-        !observed.empty()) {
-        return observed;
+
+    // 2 — a human said what it should be. There is exactly one parser for
+    // `--runtime` in the tree (`subos new`), which is why this step cannot
+    // exist under Describe: not "they declined to answer", but "nobody asked".
+    if (intent == Intent::Create && is_binding(requested)) {
+        return std::string(requested);
     }
-    return std::string(fallback);
+
+    // 3 — the record `use` maintains. Asked for every family rather than for
+    // glibc, so this function states no opinion about which libc a platform
+    // has; RUNTIME_PACKAGES order is the documented tie-break.
+    for (const auto& family : RUNTIME_PACKAGES) {
+        if (auto observed = observed_runtime(doc, family); !observed.empty()) {
+            return observed;
+        }
+    }
+
+    // 4 — what the sysroot is actually serving. Not a record; the only step
+    // here that survives a lost or never-written workspace.
+    if (auto seen = sysroot_runtime(subosDir); !seen.empty()) return seen;
+
+    // 5 — Create only. Under Describe the answer is EMPTY, on purpose: see
+    // the header for why a constant here is a fabricated record.
+    return intent == Intent::Create ? std::string(DEFAULT_RUNTIME)
+                                    : std::string{};
 }
 
 bool add_env(nlohmann::json& doc, std::string_view binding, const EnvDecl& decl) {

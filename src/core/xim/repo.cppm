@@ -151,6 +151,24 @@ bool sync_all_repos(bool force = false);
 
 // Read the git HEAD hash for a repo directory.
 // Returns empty string for non-git repos or on any error.
+//
+// Two shapes, one answer. A git working tree yields the sha; an
+// artifact-managed index (no `.git` at all -- the shape a packaged index
+// install produces) yields `artifact:<version>` off `.xlings-index-version`.
+// Both are stable identities for "which snapshot answered", which is why
+// there must not be a second reader that only knows one of them.
 std::string get_repo_head_hash(const std::filesystem::path& repoDir);
+
+// The same identity, shortened for a message: a 40-char sha becomes 7 chars,
+// an `artifact:<version>` is already short and is returned whole.
+std::string get_repo_revision_label(const std::filesystem::path& repoDir);
+
+// How long ago this index was last synced, in seconds. -1 when unknown.
+//
+// The revision answers "which snapshot"; this answers "how stale", and only
+// the second one can decide whether `xlings update` is useful advice. Told to
+// someone who synced thirty seconds ago it is the noise this whole message
+// was rewritten to remove.
+long long get_repo_sync_age_seconds(const std::filesystem::path& repoDir);
 
 } // namespace xlings::xim

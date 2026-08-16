@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.14.1";
+    static constexpr std::string_view VERSION = "2026.8.17.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 

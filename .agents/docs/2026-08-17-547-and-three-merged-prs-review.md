@@ -1,22 +1,39 @@
-# #547 与三个已合入 PR 的复盘：分析与优化方案
+# #547 与四个 PR（#549/#550/#551 已合，#552 开着）的复盘
 
-日期：2026-08-17 · 基线：`bf9751d`（#551 合入后的 main） · 状态：待 review
+日期：2026-08-17 · 基线：`bf9751d` + `3c6c51b`（#552 分支） · 状态：待 review
+
+> **修订记录**
+> - v1：按「覆盖不足」立论，方案 8 项，含 `subos repair --all`。
+> - **v2（当前）**：review 追问「没用的 subos 为什么也要修」→ 重新测量 →
+>   发现补写已有六个入口、第六个在写假话 → §2.2b / §2.3b 新增，
+>   §2.6 决策点 2 重写，方案从 8 项减到 6 项。**追问推翻了第一版的前提。**
+> - v2 同时纳入 #552（§6）。
+> - **v3**：review 追问「第 6 处是不是创建级别的」→ 拆成 A/B 两个站点分别定性
+>   （§决策点 3b：B 无可辩解，A 看起来像创建但不是，因为 `install` 根本没有
+>   `--runtime` 可指定）→ 由此给出**六个写入方的统一形状**（§决策点 3c：
+>   一个 `runtime_for()` + `Intent{Create,Describe}`，差别只在最后一行兜底）→
+>   顺带发现第 7 个缺陷（`new --from --runtime X` 静默丢弃 X）。方案 6 项 → 7 项。
 
 ---
 
-## 0. 三行结论
+## 0. 四行结论
 
-1. **#547 的现象描述有一半是错的，而真相更难受。** `self doctor --fix` 确实会回填
-   `subos_info` —— 只回填**当前活跃的那个 subos**。真正的两个缺陷是：(A) 其余 subos
-   没有任何入口，而代码注释指向的 `subos doctor --fix` **这个命令不存在**；
-   (B) 回填出来的声明**可能是假的** —— 在你自己的真机上，5 个有块的 subos 里有 2 个
-   声明 `glibc@2.44` 而 sysroot 实际服务 `2.39`，其中一个就是 issue 里那个 `mcpp-test`。
+1. **#547 的现象描述有一半是错的，而真相在另一个地方。**
+   `self doctor --fix` 确实会回填 `subos_info`（只回填活跃 subos），
+   `xim install` 也会（`installer.cpp:1375/1382`）—— **覆盖基本不是问题。**
+   问题是**内容**：六个写入方里五个走 `preserved_runtime`，
+   **第六个直接写 `DEFAULT_RUNTIME` 常量**。你真机上 5 个有块的 subos 里有 2 个
+   声明 `glibc@2.44` 而 sysroot 实际服务 `2.39` —— 其中一个就是 issue 里那个
+   `mcpp-test`。**它不是「没有块」，它是「有一个假的块」，而今天没有任何检查看得见。**
 2. **#550 把自己诊断的那个缺陷又造了一遍。** 它的核心论点是「参数没有调用者就不是功能」，
    而它给 `collect_matches_` 新加的 `forSearch` 参数，唯一的调用者没有传它。
 3. **#551 有三个问题，其中一个是数据丢失。** 回滚分支 `remove_all(trash)` 删掉的正是它已经
    挪出去的文件 —— 注释说「挪了一半比原封不动更糟」，然后代码把「挪了一半」变成了「删了一半」。
    另外 `.trash-*` 会泄漏进版本命名空间（7 处代码把 `xpkgs/<pkg>/*` 的每个子目录当版本读），
    且这套逻辑只有 1 个调用点、0 个测试，而它唯一有意义的平台的 CI 在跑到任何 E2E 之前就红了。
+4. **#552 方向对，但 PR 里装了三样不相干的东西**，其中 `mcpp.lock` 是一次**真实的依赖变更**
+   （移除 9 个 pin、`ftxui` 从 `compat` 搬到 `mcpplibs`），藏在一个改错误文案的 PR 里。
+   代码本身还有一处 CRLF 不一致，以及正文承诺的「advice 收窄」代码没做。
 
 ---
 
@@ -90,6 +107,42 @@ subos/mcpp-test/.xlings.json  → {"workspace":{}}   原样未动
 `xlings update` / `xlings install xlings@latest` / `xlings use xlings latest`，
 不触碰任何 subos manifest。
 
+### 2.2b 但覆盖不是主要缺陷 —— 懒补写已经在跑了，而且它补错了
+
+> 本节是 review 中被追问「没用的 subos 为什么也要修？用的时候再修不行吗？」之后
+> 补做的测量。**结论：这个追问是对的，而且它推翻了 §2.6 的第一版方案。**
+
+【读码】`subos_info` 块的写入方一共 **六处**：
+
+| # | 位置 | 场景 | runtime 从哪来 |
+|---|---|---|---|
+| 1 | `xself/init.cpp:162` | `self install/init` 修 `default` | `preserved_runtime` ✅ |
+| 2 | `subos.cpp:348` | `ensure_subos_info_` | `preserved_runtime` ✅ |
+| 3 | `subos.cpp:432` | `subos new` | `effectiveRuntime`（新建，正确）✅ |
+| 4 | `subos.cpp:843` | `subos new --from`（fork） | `preserved_runtime` ✅ |
+| 5 | `doctor.cpp:1911` | `self doctor --fix` | `preserved_runtime` ✅ |
+| 6 | **`installer.cpp:1375` / `1382`** | **`xim install`：某个包声明了 `subos_env`** | **`mf::DEFAULT_RUNTIME` 直接写** ❌ |
+
+第 6 处是关键。它的代码是：
+
+```cpp
+fresh[std::string(mf::BLOCK)] = mf::make_block(
+    mf::DEFAULT_RUNTIME, std::format("xlings {}", Info::VERSION),
+    platform::host_glibc_version());
+```
+
+`preserved_runtime` 一次都没被调用。所以：
+
+1. **「用的时候再补」不是一个待做的设计，是一个已经在跑的实现** ——
+   往一个无块的老 subos 里装任何带 `subos_env` 声明的包（mesa、nvidia-gl、jdk…），
+   块就地补上了。覆盖问题基本上已经被它解决了。
+2. **而它补出来的 runtime 是无条件的常量。** 哪怕该 subos 的 workspace 明明白白写着
+   `glibc.active = 2.39`，这条路径也会把它声明成 `glibc@2.44`。
+
+**六个回答者里五个走同一个函数，第六个不走。** 这是 `reference_one_question_many_answerers`
+最纯粹的形态 —— 而且它是最容易被漏掉的那种：五个都对，所以 code review 时
+「有没有统一入口」这个问题的答案看起来是「有」。
+
 ### 2.3 实测：你真机上的覆盖率与两条假声明
 
 ```bash
@@ -122,6 +175,42 @@ mcpp-test        declares glibc@2.44   sysroot lib/libc.so.6 → xim-x-glibc/2.3
 |---|---|---|
 | workspace 有 active glibc **且** sysroot 有 libc 符号链接 | 17 | 正确，`preserved_runtime` 源 (2) 就够 |
 | 两者都没有 | 15 | **任何写入都是猜的** —— 这 15 个正是需要「未知」的 |
+
+### 2.3b 那两条假声明从哪来 —— 以及回填会伪造 provenance
+
+【实测】那 2 条假声明的块头：
+
+```
+agent-influence   created_at=2026-08-14T01:21:20Z  by=xlings 2026.8.14.1
+mcpp-test         created_at=2026-08-15T14:31:16Z  by=xlings 2026.8.14.1
+```
+
+两者都在 `DEFAULT_RUNTIME` 移到 2.44 之后创建，声明 2.44 **在创建的那一刻是对的**；
+之后装进去的是 glibc@2.39，sysroot 跟着变了，**声明没有跟着变，也没有任何检查发现**。
+所以这两条的成因是「创建时声明 vs 事后实际安装」的漂移，
+不一定是回填 —— §2.1 那次实测证明回填**也能**产生同样的假声明，但这两个具体的
+subos 归因未定。**两条路径都能造出它，这本身就是问题。**
+
+关键在于：**今天没有任何检查能看见这个漂移。** doctor D5 用的是 workspace 记录，
+而这两个 subos 的 workspace 里根本没有 `glibc` 项 → `activeVersion` 为空 →
+落到「cold intent」分支，`--fix` 刻意不采纳。而 sysroot 里那条
+`lib/libc.so.6 → xpkgs/xim-x-glibc/2.39/...` 的符号链接 —— **摆在那里，没有一行代码看它。**
+
+**顺带一条实测出来的、我第一版漏掉的缺陷：回填会伪造 provenance。**
+
+```
+default    created_at=2026-08-05T03:35:16Z  by=xlings 2026.8.5.1
+gfxbuild   created_at=2026-08-05T03:35:16Z  by=xlings 2026.8.5.1   ← 逐字节相同
+```
+
+两个不同的 subos 共享**同一秒**的 `created_at`。它们不是同一秒被创建的，
+是同一秒被**描述**的 —— 2026.8.5.1 正是引入 `subos_info` 的那个版本。
+`default` 是这个 home 的原始 subos，远早于 2026-08-05。
+
+【读码】`make_block()` 无条件写 `created_at = utc_now_iso()`。
+**于是每一次回填都在一个早已存在的 subos 上盖一个假的出生日期。**
+这跟我们想修的是同一类缺陷：一条从未被观测的事实，被一个常量顶替了。
+`I8 = ProvenanceMissing` 因此永远不会触发 —— 它被一个假值满足了。
 
 ### 2.4 根因：现在的不变式不允许表达「未知」
 
@@ -176,21 +265,70 @@ issue 说「这句措辞（指向 `xlings self update` 的补救）是 xlings �
 
 #### 决策点 2：谁来补，补到哪些 subos
 
-不是三选一，是三件事各管一段：
+> **本节在 review 后重写。第一版提了 `subos use` hook + `subos repair --all` +
+> doctor 全量报告三件事。§2.2b 的测量把前提推翻了 —— 懒补写已经存在，
+> 缺的从来不是覆盖。下面是收窄后的方案。**
 
-| 入口 | 覆盖 | 为什么是它 |
+**原则：一个 subos 的描述，在有人真的要用它的时候补；没人用的，什么都不做。**
+
+##### 为什么「什么都不做」是对的，不只是省事
+
+给那 15 个无证据的 subos 补写，写进去的是：
+`schema_version` + `envs:{}` + `created_at` + `created_by` + `host_glibc`，**没有 runtime**。
+信息量为零 —— 而**代价不为零**：§2.3b 已经实测到，`created_at` 会记成回填的时刻。
+**给一个空 subos 补块 = 凭空造一条假的出生记录，换来零信息。**
+
+##### 但「用的时候」必须定义清楚 —— hook 在 `subos use` 上有洞
+
+【读码】`profile_resources.cppm:87`：
+
+```sh
+XLINGS_BIN="$XLINGS_HOME/subos/${XLINGS_ACTIVE_SUBOS:-current}/bin"
+```
+
+**`XLINGS_ACTIVE_SUBOS` 是一个继承的环境变量，profile 直接读它，不跑任何 xlings 代码。**
+于是「进入一个 subos」有四种方式，只有第一种会执行 xlings：
+
+| 方式 | 会跑 xlings 吗 |
+|---|---|
+| `xlings subos use <name>`（spawn / emit-shell / global） | ✅ 会 |
+| 那个 spawn 出来的 shell 的**任何子进程** | ❌ 继承 env |
+| `--global` 之后开的**任何新 shell** | ❌ profile 读 `subos/current` 符号链接 |
+| tmux / 新终端 / CI 里 `export XLINGS_ACTIVE_SUBOS=...` | ❌ |
+
+`--global` 的用户**一辈子只跑一次 `subos use`**。这正是 issue 报告者的形状：
+`default` 是 current，从来不会再被 `use` 一次。**所以 hook 在 `subos use` 上，
+对最常见的那个 subos 永远不触发。**
+
+##### 结论：hook 在「已经在写这个文件、已经拿着锁」的地方
+
+| 入口 | 覆盖 | 状态 |
 |---|---|---|
-| **`subos use <name>`（迁移主路径）** | 被进入的那一个 | 进入 subos 正是需要它的描述的时刻；此刻这个 shell 就要进去，不存在「另一个 shell 正在里面」的额外风险。**不需要新命令，老 home 用着用着就修好了。** |
-| **`self doctor` 报告（只报不修）** | 全部 | `st.otherSubos` 已经在手 —— 【读码】`doctor.cpp:1829` 的 `inspect_subos_references(st.db, st.otherSubos)` 就在用它。加一条 `OtherSubos` 级别的 Notice：「N 个 subos 未描述自身，运行 `xlings subos repair --all`」 |
-| **`xlings subos repair [<name>\|--all]`（新子命令）** | 指定/全部 | 显式、可脚本化、可被 mcpp 的报错文案指向。**这是 §2.5 里 mcpp 需要的那句真话。** |
+| `xim install`（`installer.cpp:1375/1382`） | 活跃 subos | **已存在** —— 只需把 `DEFAULT_RUNTIME` 换成 `preserved_runtime` |
+| `self doctor --fix`（`doctor.cpp:1911`） | 活跃 subos | **已存在且正确** —— 只需第 3 源 |
+| `self install/init`（`init.cpp:162`） | `default` | **已存在且正确** |
 
-**不做**：让 `self doctor --fix` 自动枚举并修改所有 subos。理由不是并发，是**语义**：
-`--fix` 修的是「这个 home 当前的运行状态」，而给 15 个空 subos 补写描述是一次迁移，
-不是一次修复。混进去会让 `healed N` 的 N 失去意义。
+**三个入口已经全在了。一行新命令都不需要加。**
+
+**删掉的（第一版有、现在不做）**：
+
+- ~~`xlings subos repair [--all]`~~ —— YAGNI。真正的读取方（mcpp）读的是**活跃** subos，
+  而活跃 subos 已有三个补写入口。等出现「需要修一个我不在里面的 subos」的具体场景再说。
+- ~~doctor 对其它 32 个 subos 出 Notice~~ —— 那是 32 行噪音。
+  `doctor.cpp` 自己在 `UnverifiedPayload` 那里写过理由：「a home with 29 of them
+  exiting non-zero would train everyone to ignore the command」。同样适用。
+- ~~`subos use` hook~~ —— 上面证明它对最常见的情况不触发；加了会让人以为覆盖问题解决了。
+
+**mcpp 的补救文案**因此指向 `xlings self doctor --fix`（活跃 subos，已经能修，
+0.64s）——【实测】§2.1 证明它今天就有效，只是修出来的内容可能是假的，
+而那正是决策点 3 要解决的。
 
 #### 决策点 3：runtime 从哪里推
 
-把 `preserved_runtime` 从 3 源改成 4 源，**仍然是同一个函数**（不新增回答者）：
+> **优先级表的最终版在决策点 3c**（它多了 `--runtime` 那一行和 Create/Describe 两列）。
+> 本节留的是**为什么要加第 3 源**，那部分不受 3c 影响。
+
+核心：把「常量兜底」换成一个**观测**源，并且推不出来时不写：
 
 ```
 1. 块里已有的良构 binding                      ── subos 自己说过
@@ -211,32 +349,192 @@ issue 说「这句措辞（指向 `xlings self update` 的补救）是 xlings �
 ——`manifest.cppm:51` 的注释「Scope: NEW subos only」—— 但 `preserved_runtime` 的
 fallback 参数把它漏进了每一条重建路径）。
 
-#### 落地清单
+#### 决策点 3b：第 6 处到底是不是「创建级别」的？——两个站点，答案不同
 
-| # | 改动 | 文件 |
+> review 追问：「第 6 处好像只能是默认的，是创建级别的？如果没有指定的话？」
+> 这个怀疑值得，因为 `installer.cpp` 那里其实是**两个站点**，性质不一样。
+
+【读码】两处的触发条件：
+
+| 站点 | 触发条件 | 手上有什么 |
 |---|---|---|
-| 1 | I6 放宽：`runtime` 缺席合法 | `subos/manifest.cpp:168` |
-| 2 | `make_block` 接受空 runtime 时不写该键 | `subos/manifest.cpp:267` |
-| 3 | `preserved_runtime` 加第 3 源（sysroot 观测），去掉常量兜底；新签名返回 `optional` 或空串 | `subos/manifest.{cpp,cppm}` |
-| 4 | 新 finding `SubosRuntimeUnknown`(Notice) / `SubosRuntimeDrift`(Warning) | `xself/doctor.cppm` + `doctor.cpp` |
-| 5 | `subos use` 进入前调用 `ensure_subos_info_` | `subos.cpp` |
-| 6 | `xlings subos repair [<name>\|--all]` | `subos.cpp:1439` 的 dispatch |
-| 7 | doctor 对其它 subos 的未描述状态出 Notice + 指向 6 | `doctor.cpp:1829` 附近 |
-| 8 | mcpp 侧文案改指 `xlings subos repair`（**另一个 repo，另一个 PR**） | mcpp#427 |
+| **A** `installer.cpp:1375` | `.xlings.json` **整个文件不存在** | 只有目录 |
+| **B** `installer.cpp:1382` | 文件存在（**带 workspace**），但没有 `subos_info` 块 | workspace 记录 |
+
+**B 是无可辩解的。** 文件在、workspace 在，而 workspace 里可能明明白白写着
+`glibc.active = "2.39"` —— 真机上 32 个无块 subos 里有 **17 个**正是这个形状。
+把它们声明成 `glibc@2.44` 不是「默认」，是**无视手上已有的答案**。
+
+**A 看起来像创建，但它不是。** 三条理由，按强度排列：
+
+1. **这里不存在「没有指定」这回事 —— 因为没人被问过。**
+   【读码】`--runtime` 这个标志**只存在于 `subos new` 的解析器**里
+   （`subos.cpp:1461`，全仓唯一一处）。`xlings install` 没有、也不该有它。
+   所以 A 站点写 `DEFAULT_RUNTIME`，不是「用户没指定所以用默认」，
+   而是**把「从来没问过」记录成了「用户接受了默认」**。
+   这和 §2.3b 那个假 `created_at` 是同一类伪造。
+2. **真正的创建走的是另一条路。** `subos new` 在 `subos.cpp:432` 先写配置文件，
+   带着 `effectiveRuntime`。等到 `xim install` 跑起来时，块早就在了 ——
+   A 站点**永远不会看到一个刚被 `subos new` 建出来的 subos**。
+   它只会看到**配置文件丢了的既有 subos**。
+3. **A 站点也不是没有证据可看。** 配置文件丢了不代表 sysroot 空了 ——
+   `lib/libc.so.6` 那条符号链接和 `.xlings.json` 是两件独立的东西。
+   （真机上恰好那 2 个无配置的 subos（`agent-os-2` / `test-6`）也确实没有 `lib/`，
+   都是 sandbox 脚手架；但这是这两个样本的事实，不是这条路径的性质。）
+
+**那 A 站点在真的什么证据都没有时写什么？—— 写「未知」，而且这比常量更好，
+因为它会自我修正：**
+
+```
+xlings install glibc@2.44        # 写块的那一刻，runtime 还没装上 → 未知
+                                 # 装完之后 workspace 记下了 glibc@2.44
+xlings self doctor               # 下一次 Describe 读到它 → 声明变成 glibc@2.44
+```
+
+**证据出现，答案就变准。** 而一个常量只可能碰巧对一次，并且永远无法被纠正 ——
+因为它长得就像一条有效声明。这正是 `reference_absent_record_needs_observation`
+说的那件事。
+
+#### 决策点 3c：统一 1–6 —— 一个函数，两种意图
+
+> review 要求：「统一 1–6 的行为」。下面是具体形状。
+
+问题不是「有六个写入方」，而是**六个写入方各自决定 runtime 从哪来**。
+统一的办法不是砍到一个写入方（它们各自有存在理由），而是**让六个都问同一个函数**，
+并且把它们的差别收敛成**一个参数**：
+
+```cpp
+// manifest.cppm
+enum class Intent {
+    Create,    // 有人正在新建一个 subos，并且可能说了 --runtime
+    Describe,  // subos 已经存在、已经在跑某个东西；不许发明
+};
+
+struct BlockSpec {
+    std::string runtime;    // 空 = 未知 → 不写该键
+    std::string by;         // "xlings <version>"
+    std::string hostGlibc;
+    Intent      intent;     // Create → created_at；Describe → described_at
+};
+
+// 「这个 subos 的 runtime 是什么」——全仓唯一的答案。
+// `requested` 只在 Create 下被读取；Describe 传空。
+std::string runtime_for(const fs::path& subosDir,
+                        const nlohmann::json& doc,
+                        Intent intent,
+                        std::string_view requested = {});
+
+nlohmann::json make_block(const BlockSpec& spec);   // 替换现有三参数版本
+```
+
+**优先级表（唯一一张）**：
+
+| 顺序 | 源 | 性质 | Create | Describe |
+|---|---|---|---|---|
+| 1 | 块里已有的良构 binding | 声明 | ✅ | ✅ |
+| 2 | `--runtime`（`requested`） | 人的意图 | ✅ | 参数不存在 |
+| 3 | workspace 的 active runtime | 记录 | ✅ | ✅ |
+| 4 | sysroot `lib*/libc.so.6` 指向的载荷 | **观测** | ✅ | ✅ |
+| 5 | `DEFAULT_RUNTIME` | 常量 | ✅ 兜底 | ❌ **→ 空串 → 不写 runtime 键** |
+
+**唯一的差别就在最后一行。** `DEFAULT_RUNTIME` 的作用域因此**字面上**等于它自己
+注释里写的那句 —— `manifest.cppm:51`：「Scope: NEW subos only」。
+
+**六个站点的归属**：
+
+| # | 站点 | Intent | 现在传的 | 改成 |
+|---|---|---|---|---|
+| 1 | `init.cpp:162` | Describe | `preserved_runtime(json, DEFAULT)` | `runtime_for(dir, json, Describe)` |
+| 2 | `subos.cpp:348` `ensure_subos_info_` | **Create** | `preserved_runtime(json, runtime)` | 加 Intent 形参；由调用方 3 传入 |
+| 3 | `subos.cpp:432` `subos new` | **Create** | `make_block(effectiveRuntime, …)` | `runtime_for(dir, {}, Create, effectiveRuntime)` |
+| 4 | `subos.cpp:843` `new --from` | **Create** | `preserved_runtime(cfg, runtime?:DEFAULT)` | `runtime_for(dir, cfg, Create, runtime)` |
+| 5 | `doctor.cpp:1911` | Describe | `preserved_runtime(doc, DEFAULT)` | `runtime_for(p.subosDir, doc, Describe)` |
+| **6a** | `installer.cpp:1375` | **Describe** | **`DEFAULT` 直接写** | `runtime_for(dir, {}, Describe)` |
+| **6b** | `installer.cpp:1382` | **Describe** | **`DEFAULT` 直接写** | `runtime_for(dir, *doc, Describe)` |
+
+**2 个 Create、5 个 Describe。今天有 2 个 Describe 站点在按 Create 的规则写。**
+
+##### 统一时白捡的第 7 个缺陷：`new --from … --runtime X` 会静默忽略 X
+
+【读码】`subos.cpp:843`：
+
+```cpp
+manifest::preserved_runtime(subosCfg,
+    runtime.empty() ? manifest::DEFAULT_RUNTIME : runtime)
+```
+
+`preserved_runtime` 的第 1 源是「块里已有的 binding」。fork 的时候
+`copy_tree_` 刚把 base 的 manifest 拷过来，**base 的块必然在**，
+于是它永远赢过 `--runtime` —— **用户显式指定的值被静默丢弃。**
+
+行为本身可以辩护（fork 复制的是 base 的载荷，声明成别的就是在骗人），
+**但「静默」不行**。统一之后 `runtime_for` 能看见 requested 与结果不一致，
+应当报出来：
+
+```
+[warn] --runtime glibc@2.44 ignored: fork of 'base' carries glibc@2.39,
+       which is what its copied payloads were built against
+       use `xlings subos new <name>` without --from to pick a runtime
+```
+
+#### 决策点 4：provenance 不许伪造
+
+【读码】`make_block` 无条件写 `created_at = utc_now_iso()` / `created_by = <当前版本>`。
+回填时这两个值都是假的（§2.3b 实测）。
+
+改法：`make_block` 增加一个「这是回填还是创建」的入参 —— 回填时**不写 `created_at`**，
+改写 `described_at` / `described_by`。I8 (`ProvenanceMissing`) 相应地接受「二者其一」。
+这样 `subos info` 能如实说出「这个 subos 是 2026-08-05 被**描述**的，创建时间未知」。
+
+#### 落地清单（收窄后：7 项，全部在既有入口上，无新命令）
+
+| # | 改动 | 文件 | 性质 |
+|---|---|---|---|
+| 1 | 新增 `Intent` + `BlockSpec` + `runtime_for()`（决策点 3c 那张优先级表） | `subos/manifest.{cpp,cppm}` | **核心：唯一答案** |
+| 2 | `runtime_for` 的第 4 源：读 `<subos>/lib*/libc.so.6` 符号链接 → `<pkg>@<ver>` | `subos/manifest.cpp` | **核心：观测** |
+| 3 | **七个站点全部改调 `runtime_for`**（决策点 3c 的归属表），`preserved_runtime` 退役 | `init.cpp` `subos.cpp`×3 `doctor.cpp` **`installer.cpp`×2** | **核心：归队** |
+| 4 | I6 放宽：`runtime` 缺席合法（存在则必须良构） | `subos/manifest.cpp:168` | 表达「未知」的前提 |
+| 5 | `make_block(BlockSpec)`：空 runtime 不写该键；`created_at` / `described_at` 二选一 | `subos/manifest.cpp:267` | 决策点 4 |
+| 6 | 新 finding `SubosRuntimeUnknown`(Notice) / `SubosRuntimeDrift`(Warning)；`new --from` 忽略 `--runtime` 时出 warn | `xself/doctor.{cppm,cpp}` + `subos.cpp:843` | 让不一致可见 |
+| 7 | mcpp 侧文案改指 `xlings self doctor --fix`（**另一个 repo，另一个 PR**） | mcpp#427 | |
+
+**不做**（第一版有，被 review 砍掉）：`subos repair --all`、`subos use` hook、
+doctor 扫描其它 subos。理由见决策点 2。
+
+**为什么 1–3 必须在同一个 PR 里**：`runtime_for` 加进来而站点没改完，
+就是第七个回答者。**统一的价值全在「一个都不剩」上** ——
+`preserved_runtime` 必须在同一个 commit 里被删掉，让「还有站点没归队」变成编译错误
+而不是需要有人去查的事情。
 
 #### 验收（每条都要能证伪）
 
-1. 隔离 home，两个 subos 都 `{"workspace":{}}`，**且都无 libc 符号链接** →
-   `subos repair --all` 后两个都有块，**且都没有 `runtime` 键**；`self doctor` 出
-   2 条 `SubosRuntimeUnknown` Notice，退出码 0。
-2. 同上但给 `subos/b/lib/libc.so.6` 造一个指向 `xpkgs/xim-x-glibc/2.39/...` 的链接 →
-   b 的块 `runtime == "glibc@2.39"`，a 仍然无 runtime 键。
-3. **收敛性**：对 (1) 的结果连跑三次 `self doctor --fix`，`.xlings.json` 字节不变
-   （`created_at` 除外则必须不变 —— 若变化说明块在被反复重写）。
-4. **回归 §2.3 的那两条假声明**：构造 `runtime=glibc@2.44` + sysroot 指向 2.39 →
-   必须出 `SubosRuntimeDrift`，且 `--fix` **不得**静默改写。
-5. 老 client 兼容：用 2026.8.14.1 的二进制读一个新写的、无 runtime 键的块 →
-   不得崩溃、不得把它当损坏（`is_binding` 已保证，但要真的跑一次）。
+0. **归队完整性**（编译期）：`preserved_runtime` 在树里搜不到任何调用者，
+   且符号本身已删除。**这条不是测试，是「1–3 必须同 PR」的机械保证。**
+1. **站点 6b**：隔离 home，subos 有 `.xlings.json`（含 `workspace.glibc.active = "2.39"`）
+   但无块 → 走一次带 `subos_env` 声明的安装 → 块的 `runtime == "glibc@2.39"`。
+   **这条今天必红**（会写成 `glibc@2.44`），是整个改动的主门禁。
+1b. **站点 6a**：同上但 `.xlings.json` **整个不存在**、且 `lib/libc.so.6` 指向
+   `xpkgs/xim-x-glibc/2.39/...` → 块的 `runtime == "glibc@2.39"`；
+   把那条符号链接也删掉 → **无 `runtime` 键**（而不是 `glibc@2.44`）。
+   这两条一起证明 §决策点 3b 的结论：A 站点不是创建级别的。
+1c. **Create 仍然走默认**：`subos new fresh`（无 `--runtime`、空目录）→
+   `runtime == DEFAULT_RUNTIME`。**这条保证收窄没有误伤新建路径。**
+1d. **`new --from` 不再静默**：`subos new f --from base --runtime glibc@2.44`
+   而 base 声明 2.39 → 结果仍是 2.39，**且 stderr 出现说明 X 被忽略的 warn**。
+2. **未知可表达**：subos 无块、无 workspace 记录、无 libc 符号链接 →
+   `self doctor --fix` 后块存在且**没有 `runtime` 键**；`self doctor` 出 1 条
+   `SubosRuntimeUnknown` Notice，**退出码 0**。
+3. **收敛性**：对 (2) 的结果连跑三次 `self doctor --fix`，`.xlings.json` **逐字节不变**。
+   （今天这条会红：`created_at` 每次重写。）
+4. **sysroot 源**：给 `subos/b/lib/libc.so.6` 造一个指向 `xpkgs/xim-x-glibc/2.39/...`
+   的链接、workspace 为空 → `runtime == "glibc@2.39"`，不是 `2.44`。
+5. **漂移可见**：构造 `runtime=glibc@2.44` + sysroot 指向 2.39 → 必须出
+   `SubosRuntimeDrift`，且 `--fix` **不得**静默改写（改的是声明的含义，得由人决定）。
+   **这条能在你真机上直接验**：`agent-influence` 和 `mcpp-test` 就是现成样本。
+6. **provenance**：回填出来的块**没有 `created_at`**，有 `described_at`。
+7. **老 client 兼容**：用 2026.8.14.1 的二进制读一个无 `runtime` 键的块 →
+   不得崩溃、不得判为损坏（`is_binding` 已保证，但要真的跑一次 —— 见
+   `reference_recipe_capability_probe`：对着真的旧二进制验）。
 
 ---
 
@@ -493,7 +791,149 @@ src/core/profile.cpp:338
 
 ---
 
-## 6. 横切：Windows CI 现在是红的，而且它红的方式最坏
+## 6. #552（开着）：「不在索引里」与「还没同步到」的第三次拆分
+
+> 本节在 review 中被要求一并纳入。**本文档本身就在这个 PR 里** —— 见 §6.4。
+
+### 6.1 它做对的，而且它属于一个清晰的序列
+
+这是同一个 conflation 的第三刀：
+
+| PR | 拆开的两件事 |
+|---|---|
+| #550 | 「不存在」 vs 「存在、但这个平台没有构建」 |
+| **#552** | 「不存在」 vs 「**存在、但同步过来的索引还没有它**」 |
+| （剩下的） | 「不存在」 vs 「存在、但你没权限 / 镜像没有」 |
+
+诊断是准的，而且**信息本来就在盘上**（同步下来的索引是一个 git 工作树）。
+**直接读 `.git` 而不是 fork `git`** 是对的选择，理由和 2026.8.14.1 那次
+「读 ELF header 而不是 fork patchelf」一模一样：错误路径不该在失败的那一刻
+新增一个对 PATH 上有没有 git 的依赖。读不到就退回原文案，静默降级。
+loose ref / `packed-refs` / detached HEAD 三种形态都覆盖了。
+
+### 6.2 缺陷 1：PR 正文承诺的收窄，代码没有做
+
+正文说：
+
+> the existing `xlings update` advice is attached to the case it actually
+> applies to instead of to every miss
+
+【读码】`not_found_()` 的实现是：只要**任何一个 repo 能读出 revision**，
+就拼上那句 `if it was just published, ... run xlings update`。
+正常 home 里 `xim-pkgindex` 永远是 git 工作树 → **这句话仍然贴在每一次 miss 上**，
+包括打错字。**revision 加上了，advice 一点也没收窄。**
+
+> **优化**：真正能把两者分开的，是**这份索引有多旧**。revision 回答的是
+> 「哪个快照」（CI 需要，用来和 merge commit 对时间线），而人需要的是
+> 「我这份是什么时候同步的」。两个都便宜：
+> ```
+> package 'mcpp@2026.8.16.3' not found in the synced index
+>   (xim@288efe5, synced 4 hours ago)
+>   → if it was just published, run `xlings update`     ← 仅当 synced 超过阈值
+> ```
+> 同步时间可以从 `.git/FETCH_HEAD` 或索引目录的 mtime 读到，同样不需要 fork git。
+> **门槛之下不打印那句 advice**，正文承诺的收窄才算兑现。
+
+### 6.3 缺陷 2：CRLF 在两个读取器之间处理不一致
+
+【读码】同一个函数里两处读文件：
+
+```cpp
+auto read_first_line = [](const fs::path& f) -> std::string {
+    ...
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+        line.pop_back();          // ← 剥掉 \r
+    return line;
+};
+...
+std::ifstream packed(gitDir / "packed-refs");
+while (std::getline(packed, line)) {
+    ...
+    if (line.compare(sp + 1, refName.size(), refName) == 0
+        && line.size() == sp + 1 + refName.size()) {   // ← 没剥 \r，长度精确匹配
+```
+
+`packed-refs` 那条路径**没有**剥 `\r`，而它用的是**精确长度**比对。
+在任何让该文件带上 CRLF 的场景下（Windows 上 `core.autocrlf` 被改过、
+索引被非 git 工具写过），匹配必然失败 → `sha` 为空 → 退回原文案。
+**失败方式是「消息变回旧样子」，没有任何提示** —— 这正是本文档 §8 在讲的那个形状。
+
+同一函数里两种换行处理，是最容易在 review 中滑过去的不一致。
+
+另一处更小的：loose ref 文件内容没有做十六进制校验。符号引用链
+（`ref: refs/heads/x` 指向另一个符号引用）会被当成 sha，截成 `ref: re` 打出来。
+罕见，但 `sha.size() >= 7` 这个门槛挡不住它。
+
+### 6.4 缺陷 3：这个 PR 里装了三样不相干的东西
+
+【实测】`gh pr view 552 --json files`：
+
+| 文件 | 增删 | 与 PR 标题的关系 |
+|---|---|---|
+| `src/core/xim/catalog.{cpp,cppm}` | +92 −3 | ✅ 就是它 |
+| `.agents/docs/2026-08-17-...-review.md` | +571 −0 | ❌ **就是本文档** |
+| `mcpp.lock` | +10 −56 | ❌ **依赖解析变了** |
+
+`mcpp.lock` 那条不是格式化 —— 它**移除了 9 个 pin**
+（`compat.{bzip2,lua,lz4,mbedtls,xz,zlib,zstd}`），并且把 `ftxui` 从
+`compat` 命名空间挪到了 `mcpplibs`，hash 也换了：
+
+```
+-[package."ftxui"]  namespace = "compat"     hash = "fnv1a:6ecc43e2f9201d7d"
++[package."ftxui"]  namespace = "mcpplibs"   hash = "fnv1a:b3ae3d5c6e5a7a91"
+```
+
+同时删掉了文件头那段解释「这个文件记录什么、为什么不 pin 未来构建」的注释。
+
+**这是一次真实的依赖变更，藏在一个改错误文案的 PR 里。**
+`project_ci_index_ref_pin` 记的正是这条路上的雷：动 mcpp 要同步 6 个 workflow 的
+`XIM_PKGINDEX_REF`。一个命名空间搬家 + 7 个 pin 消失，在「不 pin 未来构建」的
+lock 语义下**可能无害，也可能是下一次 CI 玄学的源头**，而没有人会在
+review 一条错误文案时去查它。
+
+> **优化**：拆成三个 PR。`mcpp.lock` 单独一个并说明为什么变
+> （是 mcpp 版本变了？索引变了？还是本地跑了一次 `mcpp build` 顺手带上的？）；
+> 文档单独一个；catalog 那 92 行留在这里。
+
+### 6.5 缺陷 4：又一次「新逻辑、零测试」
+
+`index_revision_` 是一个**纯函数**：输入一个目录，输出一个短 sha。
+造 fixture 极其便宜 —— 临时目录里写 `.git/HEAD` + loose ref、写 `packed-refs`、
+写 detached HEAD、写一份 CRLF 的 `packed-refs`（§6.3 那条今天会红）、
+写一个非 git 目录。**五个用例，一个下午都不用。**
+
+PR 正文说的验证是「把 reader 抽出来单独编译，对着真的同步索引跑了一遍」——
+那是**一次性的、不可重放的**手工验证。#550 有 E2E，#551 有 0 个，#552 有 0 个。
+
+> **这是连续第三个 PR 把新逻辑塞在 `.cpp` 的匿名/文件作用域里，因此够不到单测。**
+> `remove_payload_dir`（#551）、`index_revision_`（#552）都是这个形状。
+> 不是「忘了写测试」，是**放的位置让测试写不了**。建议立一条约定：
+> 新增的、有分支的纯函数放进可 import 的模块里，哪怕只为可测。
+
+### 6.6 一处值得肯定的、作者自己可能没看见的事
+
+新消息带一个内嵌 `\n`。【读码】`log.cpp:136` 的 `emit_line_` 在 2026.8.14.1 的
+O1/O2 里已经做对了这件事：按 tag 宽度缩进后续行，整条在互斥锁下一次写出并 flush。
+**#552 是这个能力的第一个使用者，而且它是安全的。**
+
+不过消息里那两个显式空格会和自动缩进**叠加**（`[error] ` 8 列 + 2 列 = 10 列）。
+作者在正文里说本地构建被 stale `gcm.cache` 挡住了 —— 也就是说
+**这条消息渲染出来的样子，作者自己没看到过**。建议合入前贴一张真实输出。
+
+### 6.7 #552 的落地建议
+
+| 项 | 动作 |
+|---|---|
+| `mcpp.lock` | **拆出去**，单独 PR，说明变更来源 |
+| 本文档 | **拆出去**，docs PR |
+| §6.3 CRLF | 修，并加 fixture |
+| §6.2 advice 收窄 | 加同步时间 + 阈值，兑现正文的承诺 |
+| §6.5 可测性 | `index_revision_` 挪到可 import 的位置 + 5 个用例 |
+| 输出样子 | 贴一张真实渲染 |
+
+---
+
+## 7. 横切：Windows CI 现在是红的，而且它红的方式最坏
 
 【实测】`gh run list --workflow=xlings-ci-windows.yml`：
 
@@ -536,36 +976,61 @@ tests/unit/test_runtime.cpp(771): error: Expected equality of these values:
 
 ---
 
-## 7. 优先级与落地顺序
+## 8. 优先级与落地顺序
 
 | 序 | 项 | 为什么是这个顺序 | 规模 |
 |---|---|---|---|
 | **P0** | #551 缺陷 1（回滚删文件） | 唯一一条会**丢数据**的 | ~20 行 + 1 测试 |
 | **P0** | Windows CI 拆 job / 放宽 flake 上限 | 在它修好之前，**下面每一条在 Windows 上都验证不了** | workflow + 1 处测试 |
+| **P0** | #552 把 `mcpp.lock` 拆出去 | 一次依赖变更藏在文案 PR 里，合了就查不出来了 | 拆分而已 |
+| **P1** | #547 §2.6 的第 1–3 项（`runtime_for` + sysroot 观测 + 七个站点归队） | **就是那条假声明的成因**；三条必须同 PR，否则等于加第七个回答者 | ~150 行 |
 | **P1** | #551 缺陷 2（trash 泄漏进版本命名空间） | 卸载失败会污染 `list`/doctor/引用计数 | ~30 行 + 1 测试 |
-| **P1** | #547 全套（§2.6 的 8 项） | 影响面最大（真机 32/39），但不阻塞别的 | ~300 行 + 5 条验收 |
+| **P2** | #547 §2.6 的第 4–6 项（I6 放宽 + provenance + 三条 finding/warn） | 让 15 个无证据 subos 有个诚实的表达 | ~120 行 |
+| **P2** | #552 §6.2/6.3/6.5（收窄 advice、CRLF、可测性） | PR 还开着，趁现在改 | ~60 行 + 5 用例 |
 | **P2** | #551 缺陷 3（5 个站点收敛 + Windows E2E） | 正确但不紧急 | 中等 |
-| **P2** | #550 删掉没人用的 `forSearch` | 卫生 | 3 行 |
+| **P3** | #550 删掉没人用的 `forSearch` | 卫生 | 3 行 |
 | **P3** | #549 的两个洞（控制台自检、CI pin 漂移） | 都是「让将来能结案」，不是「现在坏了」 | 各自独立 PR |
 
-**建议拆 PR**：P0 两条合一个（都是「让下一步能被验证」）；#547 单独一个；
-#551 的收敛单独一个；#550 那 3 行搭车。**不要把 #547 和 #551 放进同一个 PR** ——
-一个是迁移语义，一个是文件系统语义，混在一起没法单独回滚。
+**建议拆 PR**：
+
+- P0 三条各自独立（`mcpp.lock` 那条本来就是「拆出去」）。
+- **#547 拆成两个**：先落 P1 的两条（纯粹修正一个错值，无 schema 语义变化，好回滚），
+  再落 P2 的表达层（改不变式、改 provenance，语义面更大）。
+- **不要把 #547 和 #551 放进同一个 PR** —— 一个是迁移语义，一个是文件系统语义。
 
 ---
 
-## 8. 一句话的横切观察
+## 9. 一句话的横切观察
 
-这四件事（#547 的假声明、#550 的空参数、#551 的假回滚、#549 的不可证伪）
-是同一个形状的四个面：
+这五件事是同一个形状的五个面：
 
 > **一段代码宣称了一件它没有观测过的事，而宣称和事实长得一模一样。**
 
-- `preserved_runtime` 用常量兜底 → 宣称一个从未观测的 runtime；
-- `collect_matches_(…, forSearch)` → 宣称一条没人走的路径；
-- `remove_all(trash)` 回滚 → 宣称「已回滚」而实际是「已删除」；
-- D4 的判别实验没有 CI 载体 → 宣称「待实测」而实际是「永不实测」。
+| | 宣称 | 实际 |
+|---|---|---|
+| #547 `installer.cpp:1375/1382` | 「这个 subos 跑 glibc@2.44」 | 从没看过它跑什么 |
+| #547 同上，另一面 | 「用户没指定所以用默认」 | `install` 根本没有 `--runtime` 可指定 |
+| #547 `new --from --runtime X` | （什么都不说） | X 被丢弃了 |
+| #547 `created_at` | 「这个 subos 生于 2026-08-05」 | 那是回填的时刻 |
+| #550 `collect_matches_(…, forSearch)` | 「这条路径被支持」 | 没有调用者 |
+| #551 `remove_all(trash)` | 「已回滚」 | 已删除 |
+| #552 packed-refs CRLF | 「读不到 revision」 | 读得到，只是多了一个 `\r` |
+| #549 D4 | 「待实测」 | 没有任何载体能测 |
 
 `project_silent_success_pattern` 记的是「没发生」与「成功了」输出相同。
-这四条是它的上游：**「没观测」与「已确认」在代码里长得相同。**
-每一条的修法都一样 —— **让缺席可被表达，并且让它看起来就是缺席。**
+这六条是它的上游：**「没观测」与「已确认」在代码里长得相同。**
+修法始终是同一个 —— **让缺席可被表达，并且让它看起来就是缺席。**
+
+### 附：这一轮真正教会我的一件事
+
+第一版方案（`subos repair --all` + `subos use` hook + doctor 全量扫描）
+是在**没有量过谁在写这个块**的情况下写出来的。它假设缺陷是「覆盖不够」，
+于是设计了三个新的覆盖入口。
+
+被追问「没用的 subos 为什么也要修」之后再去量，才发现：
+**补写已经有六个入口了，第六个在写假话。** 正确的动作不是加第七个，
+是让第六个归队 —— 从 8 项减到 6 项，而且删掉的全是新增的面。
+
+> 「多加一个入口」几乎总是比「找出已有的那几个入口为什么不一致」容易想到。
+> 这是 `reference_one_question_many_answerers` 的实践版：
+> **在提出新答案之前，先数一遍现在有几个答案。**

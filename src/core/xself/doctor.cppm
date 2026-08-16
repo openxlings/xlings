@@ -160,6 +160,20 @@ enum class FindingKind {
     // built against it may still run off the host's libc, which is precisely
     // the hermetic boundary the runtime field exists to make checkable.
     SubosRuntimeMissing,
+    // The declaration and the SYSROOT disagree. Every other runtime check
+    // compares one record we wrote against another record we wrote, so both
+    // can be wrong the same way and agree; this one compares against what
+    // `lib/libc.so.6` actually points at. Measured on a real home: two subos
+    // declared glibc@2.44 while the sysroot served 2.39 and nothing noticed,
+    // because their workspace named no runtime for D5 to compare against.
+    // Reported, never repaired -- which of the two is the accident is not
+    // decidable from here.
+    SubosRuntimeDrift,
+    // The subos describes itself but records no runtime. A Notice: it is the
+    // honest result of describing a subos with no evidence, and it is what
+    // the old code could not express -- so it wrote the current default
+    // instead, which reads as a claim and cannot be told apart from one.
+    SubosRuntimeUnknown,
     // A binary whose interpreter and whose libc come from different payloads
     // of the same package. `ld.so` and `libc.so.6` are two halves of one
     // build, talking over GLIBC_PRIVATE symbols that promise nothing across

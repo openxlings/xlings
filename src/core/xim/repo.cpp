@@ -698,15 +698,79 @@ std::string get_repo_head_hash(const std::filesystem::path& repoDir) {
         // Symbolic ref: read the referenced file
         auto ref = content.substr(5);
         auto refFile = repoDir / ".git" / ref;
-        if (!fs::exists(refFile)) return {};
+        if (fs::exists(refFile)) {
+            auto hash = platform::read_file_to_string(refFile.string());
+            while (!hash.empty() && (hash.back() == '\n' || hash.back() == '\r' || hash.back() == ' '))
+                hash.pop_back();
+            if (!hash.empty()) return hash;
+        }
 
-        auto hash = platform::read_file_to_string(refFile.string());
-        while (!hash.empty() && (hash.back() == '\n' || hash.back() == '\r' || hash.back() == ' '))
-            hash.pop_back();
-        return hash;
+        // Packed refs. The loose file is absent after `git gc` and after a
+        // fresh clone -- which is the shape a synced index is normally in, so
+        // "no loose ref" is the common case rather than the odd one. Every
+        // index directory on the machine this was written on has a
+        // packed-refs and no loose ref for some branches.
+        auto packedFile = repoDir / ".git" / "packed-refs";
+        if (!fs::exists(packedFile)) return {};
+        auto packed = platform::read_file_to_string(packedFile.string());
+        std::size_t pos = 0;
+        while (pos < packed.size()) {
+            auto eol = packed.find('\n', pos);
+            auto line = packed.substr(pos, eol == std::string::npos
+                                            ? std::string::npos : eol - pos);
+            pos = (eol == std::string::npos) ? packed.size() : eol + 1;
+            // Strip CR here as well as at every other read in this function.
+            // Doing it in one place and not the other is how a CRLF file
+            // turns into "no revision" with nothing said -- the caller then
+            // prints the message it was trying to improve on.
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                line.pop_back();
+            if (line.empty() || line[0] == '#' || line[0] == '^') continue;
+            auto sp = line.find(' ');
+            if (sp == std::string::npos) continue;
+            if (line.substr(sp + 1) == ref) return line.substr(0, sp);
+        }
+        return {};
     } catch (...) {
         return {};
     }
+}
+
+std::string get_repo_revision_label(const std::filesystem::path& repoDir) {
+    auto hash = get_repo_head_hash(repoDir);
+    if (hash.starts_with("artifact:")) return hash;
+    // Only shorten what is actually a sha. A short string that is not one is
+    // returned whole rather than truncated into something that looks like a
+    // sha and is not.
+    const bool hex = hash.size() >= 7
+        && std::ranges::all_of(hash, [](unsigned char c) {
+               return std::isxdigit(c) != 0;
+           });
+    return hex ? hash.substr(0, 7) : hash;
+}
+
+long long get_repo_sync_age_seconds(const std::filesystem::path& repoDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    // FETCH_HEAD is written by every fetch, so it dates the SYNC rather than
+    // the commit -- an index cloned once and never refreshed has an old
+    // FETCH_HEAD and a recent HEAD mtime, and the question here is staleness.
+    // `.xlings-index-version` plays the same role for the artifact shape.
+    const fs::path candidates[] = {
+        repoDir / ".git" / "FETCH_HEAD",
+        repoDir / ".xlings-index-version",
+        repoDir / ".git" / "HEAD",
+    };
+    std::optional<fs::file_time_type> newest;
+    for (const auto& c : candidates) {
+        auto t = fs::last_write_time(c, ec);
+        if (ec) { ec.clear(); continue; }
+        if (!newest || t > *newest) newest = t;
+    }
+    if (!newest) return -1;
+    const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+        fs::file_time_type::clock::now() - *newest).count();
+    return age < 0 ? 0 : age;
 }
 
 }

@@ -225,8 +225,7 @@ class PackageCatalog {
                    bool forSearch = false);
 
     std::vector<PackageMatch> collect_matches_(const std::string& target,
-                                               const std::string& platform,
-                                               bool forSearch = false) const;
+                                               const std::string& platform) const;
 
     // Which platforms DO have a build of this target, for the case where
     // this one has none. Empty when the target is genuinely absent.
