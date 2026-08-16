@@ -1123,7 +1123,7 @@ git 工作树，以及没有 `.git` 的 artifact 安装（`.xlings-index-version
 | 4 I6 放宽 | ✅ |
 | 5 `make_block(BlockSpec)` + provenance 二选一 | ✅ 外加 `describe_block` 的创建记录承接（方案里没有，10.1 同源的反向错误） |
 | 6 `SubosRuntimeUnknown` / `SubosRuntimeDrift` / `--from` warn | ✅ |
-| 7 mcpp 侧文案 | ⏳ **另一个 repo，另一个 PR**（mcpp#427） |
+| 7 mcpp 侧文案 | ✅ mcpp-community/mcpp#447 已合并 —— 三处，不是一处 |
 | §5 #551 回滚 | ✅ 但按 10.1 重新定义 |
 | §5 trash 出版本命名空间 + 真的清理 | ✅ |
 | §5 五站点收敛 | ⏳ **未做，而且不是「顺手就能做」** —— 见下 |
@@ -1131,6 +1131,7 @@ git 工作树，以及没有 `.git` 的 artifact 安装（`.xlings-index-version
 | §6 #552 CRLF / advice 收窄 / 可测性 | ✅（并按 10.5 合并为一个读取器） |
 | §7 Windows CI 拆 job | ✅ |
 | §3 #549 控制台自检载体 | ⏳ **未做** —— D4 仍然开着 |
+| 发布 + 生态验证 | ✅ 2026.8.17.1 已发布；四项产物检查 + 六项 sandbox 断言全过，见发布说明 §10–§11 |
 
 ### 11.1 为什么「五站点收敛」不是顺手的事
 
