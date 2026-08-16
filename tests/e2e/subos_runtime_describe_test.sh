@@ -28,6 +28,13 @@
 #
 # S2 is the one that could not exist before: I6 required a well-formed
 # binding, so "unknown" was inexpressible and a guess got written instead.
+#
+# The CREATE half is E2E-67 (`subos_runtime_binding_test.sh`) and is not
+# duplicated here. It is the other side of the same rule and it earns its
+# keep: making `self init` unconditionally Describe -- which looks right,
+# since it runs on install and update -- leaves a brand-new home's `default`
+# with no runtime at all. E2E-67/S1 caught exactly that while this file was
+# green, which is the argument for both existing.
 
 set -euo pipefail
 
