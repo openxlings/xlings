@@ -1120,3 +1120,34 @@ TEST(SubosDescribeBlock, ABlocklessSubosGetsDescribedProvenanceOnly) {
     out["subos_info"] = block;
     EXPECT_TRUE(m::validate_block(out).empty());
 }
+
+// Which link answered. A finding that says "lib/libc.so.6 points into X"
+// while it actually read `lib64/ld-musl-x86_64.so.1` names a file it never
+// opened -- and the probe list spans four directories and seven names, so the
+// caller cannot infer it.
+TEST(SubosSysrootRuntime, ReportsWhichLinkAnsweredWhenAsked) {
+    SysrootFixture fx{"fromlink"};
+    fx.link("libc.so.6", "xim-x-glibc", "2.39");
+
+    fs::path via;
+    EXPECT_EQ(m::sysroot_runtime(fx.subos(), &via), "glibc@2.39");
+    EXPECT_EQ(via, fx.subos() / "lib" / "libc.so.6");
+}
+
+TEST(SubosSysrootRuntime, TheReportedLinkIsTheMuslOneForAMuslSubos) {
+    SysrootFixture fx{"fromlink-musl"};
+    fx.link("ld-musl-x86_64.so.1", "xim-x-musl", "1.2.5");
+
+    fs::path via;
+    EXPECT_EQ(m::sysroot_runtime(fx.subos(), &via), "musl@1.2.5");
+    EXPECT_EQ(via.filename(), "ld-musl-x86_64.so.1")
+        << "reported '" << via.filename().string()
+        << "' -- naming libc.so.6 here would be a file that does not exist";
+}
+
+TEST(SubosSysrootRuntime, NoAnswerLeavesTheLinkUntouched) {
+    SysrootFixture fx{"fromlink-none"};
+    fs::path via = "sentinel";
+    EXPECT_TRUE(m::sysroot_runtime(fx.subos(), &via).empty());
+    EXPECT_EQ(via, "sentinel") << "no observation must not overwrite the out-param";
+}

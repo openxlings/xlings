@@ -357,7 +357,14 @@ std::string observed_runtime(const nlohmann::json& doc,
 // what a payload is.
 //
 // Empty when there is no such link, or it does not point into a store.
-std::string sysroot_runtime(const fs::path& subosDir);
+//
+// `fromLink`, when given, receives the link that answered. A finding that
+// says "lib/libc.so.6 points into X" while it actually read
+// `lib64/ld-musl-x86_64.so.1` names a file it never opened -- and this whole
+// change is about messages that state more than they checked. The probe list
+// spans four directories and seven names, so the caller cannot infer it.
+std::string sysroot_runtime(const fs::path& subosDir,
+                            fs::path* fromLink = nullptr);
 
 // The runtime a block should carry. THE answer — every writer calls this.
 //

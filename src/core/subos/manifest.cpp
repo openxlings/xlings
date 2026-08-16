@@ -382,7 +382,7 @@ nlohmann::json describe_block(const fs::path& subosDir,
     return block;
 }
 
-std::string sysroot_runtime(const fs::path& subosDir) {
+std::string sysroot_runtime(const fs::path& subosDir, fs::path* fromLink) {
     std::error_code ec;
     if (subosDir.empty()) return {};
 
@@ -415,7 +415,10 @@ std::string sysroot_runtime(const fs::path& subosDir) {
                 const auto& version = parts[i + 2];
                 if (name.empty() || version.empty()) break;
                 auto binding = std::format("{}@{}", name, version);
-                if (is_binding(binding)) return binding;
+                if (is_binding(binding)) {
+                    if (fromLink) *fromLink = link;
+                    return binding;
+                }
                 break;
             }
         }

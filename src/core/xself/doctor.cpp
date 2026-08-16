@@ -545,9 +545,13 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     // here -- the declaration may be the intent and the sysroot the accident,
     // or the reverse -- and silently rewriting a declaration changes what the
     // subos claims to BE. That is a decision with a person on the other end.
-    if (const auto served = mf::sysroot_runtime(subosDir);
+    fs::path servedVia;
+    if (const auto served = mf::sysroot_runtime(subosDir, &servedVia);
         !served.empty() && mf::is_binding(info.runtime)
         && served != info.runtime) {
+        // Relative to the subos, so the reader can go and look at it.
+        const auto shown = servedVia.lexically_relative(subosDir).empty()
+            ? servedVia : servedVia.lexically_relative(subosDir);
         out.push_back({
             .kind    = FindingKind::SubosRuntimeDrift,
             .level   = FindingLevel::Warning,
@@ -558,9 +562,10 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
             // against glibc, not what the declaration promises" is a sentence
             // about nothing.
             .detail  = std::format(
-                "subos '{}' declares runtime {}, but lib/libc.so.6 points into "
-                "{} -- a binary built here links against {}, not against {}",
-                subosName, info.runtime, served, served, info.runtime),
+                "subos '{}' declares runtime {}, but {} points into {} -- a "
+                "binary built here links against {}, not against {}",
+                subosName, info.runtime, shown.string(), served, served,
+                info.runtime),
             .remedy  = std::format(
                 "xlings use {} {}   (adopt what is serving), or `xlings "
                 "install {}` to make the declaration true",
