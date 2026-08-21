@@ -64,6 +64,23 @@ void append_row_(std::string& out, std::string_view label,
 }
 
 void emit(const Diagnostic& d) {
+    // The invariants are checked HERE, not only in the unit test.
+    //
+    // `validate()` was written first and called only from tests, which meant it
+    // constrained the diagnostics the test author invented and none of the ones
+    // the product actually emits. Checking on the real path makes it apply to
+    // every call site, including ones added later by someone who never reads
+    // this file.
+    //
+    // Reported at debug rather than enforced: a malformed diagnostic still
+    // carries a message the user needs, and refusing to print it would turn a
+    // style violation into a silent failure -- which is the whole bug class
+    // this module exists to remove. `-v` and every e2e run surface it.
+    if (auto why = validate(d)) {
+        log::debug("[diag] '{}' violates the diagnostic contract: {}",
+                   d.code.empty() ? "<no code>" : d.code, *why);
+    }
+
     const auto text = render(d);
     switch (d.level) {
         case Level::Error: log::error("{}", text); break;
