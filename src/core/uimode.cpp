@@ -27,7 +27,6 @@ UiCapabilities gCaps_ {};
     return Detected{
         .stdoutIsTerminal = palette::stdout_is_terminal(),
         .colorAllowed     = palette::colors_enabled(),
-        .width            = std::nullopt,   // filled by the ui layer, which owns width
     };
 }
 
@@ -72,7 +71,6 @@ UiCapabilities gCaps_ {};
     // reader is a program. See EventStream::set_interactive for what guessing
     // an answer cost.
     c.interactive = interactivePreference && !agentMode && env.stdoutIsTerminal;
-    c.width = env.width;
     return c;
 }
 

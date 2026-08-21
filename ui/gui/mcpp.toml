@@ -21,8 +21,9 @@ version   = "0.1.0"
 [targets.ui-gui]
 kind = "lib"
 
-[dependencies]
-theme = { path = "../../libs/theme" }
-
+# No dependency on `theme` yet: `imgui.core` exports no colour calls, so this
+# package has nothing to colour. It goes back the moment it does -- declaring
+# it now would be an unused edge in the graph, and unused edges are how the
+# whitelist that keeps `ui/*` off core's data modules stops meaning anything.
 [dependencies.mcpplibs]
 imgui = "0.0.6"

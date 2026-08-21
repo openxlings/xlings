@@ -2,17 +2,21 @@ module xlings.ui.gui;
 
 import std;
 import imgui.core;
-import xlings.theme;
-
 namespace xlings::ui::gui {
 
 namespace {
 
 // The severity as a leading tag, because `imgui.core` re-exports a small
 // surface -- Begin/End/Button/TextUnformatted and the docking helpers -- and
-// no colour or layout calls. `severity_color` below is still the contract
-// point and is covered by tests; when the imgui module widens, this becomes a
-// colour instead of a prefix and nothing else moves.
+// no colour or layout calls at all.
+//
+// There WAS a `severity_color()` here mapping Severity onto the shared theme
+// slots. It had no caller, and an exported function with no caller is exactly
+// what `ui/selector.cpp` was for a year before this change went and wired it
+// up. When `imgui.core` exports PushStyleColor/TextColored, the mapping is
+// three lines (Error->Slot::Error, Warn->Slot::Warn, Note->Slot::Accent) and
+// belongs here then -- not now, sitting unused and claiming to prove that the
+// GUI and the terminal share a theme.
 std::string_view tag_(Severity s) {
     switch (s) {
         case Severity::Error: return "[error] ";
@@ -29,18 +33,6 @@ void line_(std::string_view text) {
 }
 
 }  // namespace
-
-[[nodiscard]] theme::Rgb severity_color(Severity s, theme::Background bg) {
-    // Straight through the shared theme. A GUI with its own idea of "error
-    // red" is a second place to change when somebody picks a theme, and the
-    // one that gets forgotten.
-    switch (s) {
-        case Severity::Error: return theme::color(theme::Slot::Error, bg);
-        case Severity::Warn:  return theme::color(theme::Slot::Warn,  bg);
-        case Severity::Note:  return theme::color(theme::Slot::Accent, bg);
-    }
-    return theme::color(theme::Slot::Text, bg);
-}
 
 bool draw(Model& model) {
     bool open = true;

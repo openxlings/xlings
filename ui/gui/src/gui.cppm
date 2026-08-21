@@ -1,7 +1,6 @@
 export module xlings.ui.gui;
 
 import std;
-import xlings.theme;
 
 // The graphical frontend, drawn from the SAME objects the terminal draws from.
 //
@@ -61,10 +60,6 @@ struct Model {
     std::optional<Action> pending;
     bool busy { false };
 };
-
-// The colour a severity draws in, taken from the shared theme so the GUI and
-// the terminal cannot drift into different ideas of "error".
-[[nodiscard]] theme::Rgb severity_color(Severity s, theme::Background bg);
 
 // Immediate-mode draw of the whole window. Call once per frame between
 // NewFrame and Render. Returns true while the window should stay open.

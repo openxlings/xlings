@@ -41,8 +41,13 @@ struct UiCapabilities {
     bool color          { false };
     bool cursorRewrite  { false };  // may redraw in place
     bool interactive    { false };  // somebody can answer a question
-    std::optional<int> width;       // nullopt = no limit (not a terminal)
 };
+
+// Width is deliberately NOT here. `ui::layout::term_width()` already owns it,
+// including the XLINGS_TERM_WIDTH override and the "a pipe has no limit rather
+// than a default of 80" rule. Carrying a copy would be a second answer to a
+// question that has one -- which is the defect this whole module exists to
+// remove, so reproducing it here would be a poor start.
 
 [[nodiscard]] constexpr std::string_view to_string(UiMode m) {
     return m == UiMode::Tui ? "tui" : "cli";
@@ -58,7 +63,6 @@ struct UiCapabilities {
 struct Detected {
     bool stdoutIsTerminal { false };
     bool colorAllowed     { false };  // terminal AND not NO_COLOR/TERM=dumb
-    std::optional<int> width;
 };
 
 [[nodiscard]] Detected detect();

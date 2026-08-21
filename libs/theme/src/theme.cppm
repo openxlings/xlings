@@ -85,7 +85,10 @@ struct Theme {
 // swallowed: a mis-typed slot silently ignored is indistinguishable from a
 // theme that simply does not do much -- this project's recurring bug shape.
 struct LoadIssue {
-    enum class Kind { NotFound, Unreadable, BadJson, UnknownSlot, BadColor };
+    // Only what PARSING can go wrong with. "the file is not there" and "the
+    // file could not be read" are the caller's to detect and report -- listing
+    // them here would be two enumerators nothing ever produces.
+    enum class Kind { BadJson, UnknownSlot, BadColor };
     Kind kind {};
     std::string detail;      // the offending key/value, when there is one
     std::string suggestion;  // nearest known slot name, for UnknownSlot
