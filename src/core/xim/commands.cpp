@@ -1,3 +1,14 @@
+module;
+
+// For `stdout`. The `std::println` calls below name their stream explicitly:
+// stream-less `std::println("{}", x)` makes clang instantiate
+// `basic_format_string` with the format string itself as an argument and fail
+// with "call to deleted constructor of formatter<basic_format_string<...>>".
+// Whether it does depends on what else the TU imports, so it is not something
+// a reader can predict from this file -- naming the stream removes the
+// deduction rather than relying on the current import set.
+#include <cstdio>
+
 module xlings.core.xim.commands;
 
 import std;
@@ -209,18 +220,25 @@ int cmd_why(const std::string& target, const std::string& dep,
         auto content = platform::read_file_to_string(recPath.string());
         auto json = nlohmann::json::parse(content, nullptr, false);
         if (json.is_discarded()) continue;
-        std::println("{}", json.value("package", std::string{}));
+        // `stdout` named explicitly. Stream-less `std::println("{}", x)`
+        // makes clang instantiate `basic_format_string` with the format string
+        // itself as an argument ("call to deleted constructor of
+        // formatter<basic_format_string<...>>"), and whether it does depends on
+        // what else the TU imports -- this file compiled under clang until an
+        // unrelated import was added to it. Naming the stream removes the
+        // deduction entirely.
+        std::println(stdout, "{}", json.value("package", std::string{}));
         for (const auto& d : json.value("deps", nlohmann::json::array())) {
             const auto spec = d.value("spec", std::string{});
             if (!dep.empty() && spec.find(dep) == std::string::npos) continue;
-            std::println("  {}", spec);
-            std::println("    resolved  {}   (source: {})",
+            std::println(stdout, "  {}", spec);
+            std::println(stdout, "    resolved  {}   (source: {})",
                          d.value("version", std::string{}),
                          d.value("source", std::string{}));
-            std::println("    payload   {}",
+            std::println(stdout, "    payload   {}",
                          Config::display_path(d.value("install_dir", std::string{})));
             for (const auto& l : d.value("libdirs", nlohmann::json::array())) {
-                std::println("    libdir    {}",
+                std::println(stdout, "    libdir    {}",
                              Config::display_path(l.get<std::string>()));
             }
         }
