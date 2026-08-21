@@ -86,22 +86,49 @@ void set_rundir(const std::string& dir) {
     }
 
 [[nodiscard]] std::string get_system_language() {
-        try {
-            auto loc = std::locale("");
-            auto name = loc.name();
-
-            if (name.empty() || name == "C" || name == "POSIX") {
-                return "en";
-            }
-
-            if (auto pos = name.find_first_of("_-.@"); pos != std::string::npos) {
-                return name.substr(0, pos);
-            }
-
-            return name;
-        } catch (const std::runtime_error&) {
-            return "en";
+        // Read the environment, NOT `std::locale("")`.
+        //
+        // The previous implementation constructed `std::locale("")` and, on
+        // failure, `catch`-ed into `return "en"`. Measured on both libcs:
+        //
+        //     LANG=en_US.UTF-8   setlocale(LC_ALL,"")   std::locale("")
+        //     glibc dynamic      (null)                 threw "name not valid"
+        //     musl static        en_US.UTF-8            threw "name not valid"
+        //
+        // musl's `newlocale()` supports only C/POSIX, so libstdc++'s
+        // `_S_create_c_locale` throws for every real locale name -- and the
+        // released Linux binary IS static musl. glibc is no better in
+        // practice: it depends on whether that exact locale was generated on
+        // the target machine. So "auto" could only ever return "en", and
+        // "the system really is English" and "detection failed outright"
+        // produced identical output. A feature with a built-in bug nobody
+        // could observe.
+        //
+        // The environment variables are the actual contract on POSIX and cost
+        // nothing to read. Windows has no LANG, so it asks the OS directly
+        // (see platform_impl::user_ui_language).
+    #if defined(_WIN32)
+        auto tag = platform_impl::user_ui_language();  // e.g. "zh-CN"
+    #else
+        std::string tag;
+        // Precedence per POSIX: LC_ALL overrides everything, LC_MESSAGES is
+        // the category that governs diagnostics, LANG is the fallback default.
+        for (const char* key : { "LC_ALL", "LC_MESSAGES", "LANG" }) {
+            if (const char* v = std::getenv(key); v && *v) { tag = v; break; }
         }
+    #endif
+
+        // "C" and "POSIX" are the explicit request for no localisation.
+        if (tag.empty() || tag == "C" || tag == "POSIX") return "en";
+
+        // zh_CN.UTF-8 / zh-CN / zh@pinyin -> zh
+        if (auto pos = tag.find_first_of("_-.@"); pos != std::string::npos) {
+            tag.resize(pos);
+        }
+        for (auto& ch : tag) {
+            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        }
+        return tag.empty() ? "en" : tag;
     }
 
 std::pair<int, std::string> run_command_capture(const std::string& cmd) {

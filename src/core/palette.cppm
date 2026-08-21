@@ -2,6 +2,7 @@ export module xlings.core.palette;
 
 import std;
 import xlings.platform;
+import xlings.theme;
 
 // The color table and the single answer to "may we emit color at all".
 //
@@ -151,7 +152,12 @@ inline void set_background(Background bg)      { detail::cached_() = bg; }
 
 // ─── Color table ───────────────────────────────────────────
 
-struct Rgb { unsigned char r, g, b; };
+// The colour TABLE now lives in the `theme` package; palette keeps the
+// question it is actually about -- can this terminal take colour, and is the
+// background dark or light. Aliased rather than re-declared so the ~40
+// existing `palette::Rgb` uses keep compiling and cannot drift into a second
+// incompatible type.
+using Rgb = theme::Rgb;
 
 namespace dark_ {
     inline constexpr Rgb cyan    {  34, 211, 238 };  // cyan-400
@@ -181,15 +187,28 @@ inline auto pick_(const Rgb& d, const Rgb& l) -> Rgb {
     return current_background() == Background::Light ? l : d;
 }
 
-inline auto cyan()    -> Rgb { return pick_(dark_::cyan,    light_::cyan); }
-inline auto green()   -> Rgb { return pick_(dark_::green,   light_::green); }
-inline auto amber()   -> Rgb { return pick_(dark_::amber,   light_::amber); }
-inline auto red()     -> Rgb { return pick_(dark_::red,     light_::red); }
-inline auto magenta() -> Rgb { return pick_(dark_::magenta, light_::magenta); }
-inline auto dim()     -> Rgb { return pick_(dark_::dim,     light_::dim); }
-inline auto text()    -> Rgb { return pick_(dark_::text,    light_::text); }
-inline auto surface() -> Rgb { return pick_(dark_::surface, light_::surface); }
-inline auto border()  -> Rgb { return pick_(dark_::border,  light_::border); }
+// Resolved through the active theme, not from the table above.
+//
+// The `dark_`/`light_` constants are kept as the reference values the built-in
+// default is asserted against (test_theme), but nothing reads them at runtime
+// any more -- otherwise `xlings config --theme mono` would change the ftxui
+// panels and leave `log::`'s own prefixes on the old colours, which is exactly
+// the kind of half-applied setting this round is about.
+inline auto slot_(theme::Slot s) -> Rgb {
+    return theme::color(s, current_background() == Background::Light
+                              ? theme::Background::Light
+                              : theme::Background::Dark);
+}
+
+inline auto cyan()    -> Rgb { return slot_(theme::Slot::Accent);  }
+inline auto green()   -> Rgb { return slot_(theme::Slot::Success); }
+inline auto amber()   -> Rgb { return slot_(theme::Slot::Warn);    }
+inline auto red()     -> Rgb { return slot_(theme::Slot::Error);   }
+inline auto magenta() -> Rgb { return slot_(theme::Slot::Alt);     }
+inline auto dim()     -> Rgb { return slot_(theme::Slot::Muted);   }
+inline auto text()    -> Rgb { return slot_(theme::Slot::Text);    }
+inline auto surface() -> Rgb { return slot_(theme::Slot::Surface); }
+inline auto border()  -> Rgb { return slot_(theme::Slot::Border);  }
 
 // ─── SGR, for the writers that do not go through ftxui ─────
 

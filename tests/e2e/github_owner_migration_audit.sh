@@ -49,7 +49,12 @@ for pattern in "${forbidden_patterns[@]}"; do
   fi
 done
 
-if ! rg -q --fixed-strings "xlings.d2learn.org" README.md README.zh.md docs/README.md config/i18n .agents/skills/xlings-quickstart; then
+# config/i18n was dropped with the 0.0.4 Lua-era leftovers it contained (it
+# still described xim/xvm/d2x/xself, commands removed in 0.4.8). rg errors to
+# stderr on a missing path even when it matches elsewhere, so a stale entry
+# here would print one harmless line on every CI run forever -- which is how
+# real errors get skipped.
+if ! rg -q --fixed-strings "xlings.d2learn.org" README.md README.zh.md docs/README.md .agents/skills/xlings-quickstart; then
   echo "FAIL: xlings.d2learn.org should remain for the minimal migration" >&2
   failed=1
 fi

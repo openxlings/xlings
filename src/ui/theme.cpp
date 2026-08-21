@@ -12,20 +12,24 @@ import xlings.core.palette;
 
 namespace xlings::ui::theme {
 
-auto title()     -> Decorator { return ftxui::bold | ftxui::color(cyan()); }
+namespace style {
 
-auto success()   -> Decorator { return ftxui::bold | ftxui::color(green()); }
+auto title()     -> Decorator { return ftxui::bold | ftxui::color(theme::accent()); }
 
-auto warning()   -> Decorator { return ftxui::bold | ftxui::color(amber()); }
+auto success()   -> Decorator { return ftxui::bold | ftxui::color(theme::success()); }
 
-auto error()     -> Decorator { return ftxui::bold | ftxui::color(red()); }
+auto warning()   -> Decorator { return ftxui::bold | ftxui::color(theme::warn()); }
 
-auto hint()      -> Decorator { return ftxui::dim | ftxui::color(dim_color()); }
+auto error()     -> Decorator { return ftxui::bold | ftxui::color(theme::error()); }
 
-auto highlight() -> Decorator { return ftxui::bold | ftxui::color(magenta()); }
+auto hint()      -> Decorator { return ftxui::dim | ftxui::color(theme::muted()); }
 
-auto label()     -> Decorator { return ftxui::color(dim_color()); }
+auto highlight() -> Decorator { return ftxui::bold | ftxui::color(theme::alt()); }
 
-auto body()      -> Decorator { return ftxui::color(text_color()); }
+auto label()     -> Decorator { return ftxui::color(theme::muted()); }
+
+auto body()      -> Decorator { return ftxui::color(theme::text()); }
+
+}  // namespace style
 
 }

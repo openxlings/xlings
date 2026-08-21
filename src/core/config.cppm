@@ -105,6 +105,14 @@ private:
     std::string mirror_;
     std::string indexBase_;   // xim.index-base override (region-resolved); empty = default xlings-res
     std::string lang_;
+    // Frontend preferences. Flat keys next to `mirror`/`lang` because they
+    // answer the same class of question ("which source / language / frontend /
+    // colours"), and because `lang` is already flat, already in the schema and
+    // already asserted flat by an e2e test -- moving it into a nested block to
+    // look tidier would cost a compat layer and buy nothing.
+    std::string uiMode_;        // "cli" | "tui" | "auto"/"" 
+    std::string theme_;         // path reference, or a shipped theme's name
+    std::optional<bool> tuiInteractive_;
     std::string globalActiveSubos_ = "default";
     xvm::VersionDB globalVersions_;
     xvm::VersionDB projectVersions_;
@@ -148,6 +156,10 @@ private:
 
     static void load_resource_servers_from_json_(const nlohmann::json& json,
                                                  MirrorServerMap& out);
+
+    // Frontend preferences, read from whichever layer is being loaded.
+    // Non-static because they land on the instance being populated.
+    void load_ui_prefs_from_json_(const nlohmann::json& json);
 
     // Read a subos `.xlings.json` workspace section. Returns the new
     // SubosWorkspace bundle so callers get both `active` (Workspace) and
@@ -304,6 +316,17 @@ public:
     [[nodiscard]] static std::string display_path(const std::string& p);
     [[nodiscard]] static const std::string& mirror();
     [[nodiscard]] static const std::string& lang();
+
+    // "cli" | "tui" | "" (auto). Empty means detect; see ui::resolve.
+    [[nodiscard]] static const std::string& ui_mode();
+
+    // A path reference to a theme file, or a shipped theme's bare name.
+    // Empty means the built-in default compiled into the binary.
+    [[nodiscard]] static const std::string& theme();
+
+    // nullopt = not configured; the default is ON for terminals (gated by
+    // ui::capabilities_of, which knows whether anyone is actually there).
+    [[nodiscard]] static std::optional<bool> tui_interactive();
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
     // Use this for download fallbacks; `resource_servers()` remains the

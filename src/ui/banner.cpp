@@ -16,7 +16,7 @@ void help_section_(ftxui::Elements& rows, std::string_view heading,
     using namespace ftxui;
     if (entries.empty()) return;
 
-    rows.push_back(text("  " + std::string(heading)) | bold | color(theme::text_color()));
+    rows.push_back(text("  " + std::string(heading)) | bold | color(theme::text()));
     for (auto& [name, desc] : entries) {
         if (P.stacked) {
             for (auto& part : layout::wrap_to_width(
@@ -26,7 +26,7 @@ void help_section_(ftxui::Elements& rows, std::string_view heading,
             if (P.descW > 0 && !desc.empty()) {
                 rows.push_back(text(std::string(kHelpIndent + kHelpGap, ' ')
                                     + layout::truncate_to_width(desc, P.descW))
-                               | color(theme::text_color()));
+                               | color(theme::text()));
             }
             continue;
         }
@@ -36,7 +36,7 @@ void help_section_(ftxui::Elements& rows, std::string_view heading,
         if (P.descW > 0 && !desc.empty()) {
             cells.push_back(text(std::string(kHelpGap, ' ')));
             cells.push_back(text(layout::truncate_to_width(desc, P.descW))
-                            | color(theme::text_color()));
+                            | color(theme::text()));
         }
         rows.push_back(hbox(std::move(cells)));
     }
@@ -91,30 +91,30 @@ void print_subcommand_help(std::string_view name, std::string_view description, 
 
     // Title
     rows.push_back(hbox({
-        text("  xlings ") | color(theme::dim_color()),
-        text(std::string(name)) | theme::title(),
+        text("  xlings ") | color(theme::muted()),
+        text(std::string(name)) | theme::style::title(),
     }));
     rows.push_back(text(""));
 
     // Description
     if (!description.empty()) {
         for (auto& line : layout::wrap_to_width(description, std::max(1, P.width - 2))) {
-            rows.push_back(text("  " + line) | color(theme::text_color()));
+            rows.push_back(text("  " + line) | color(theme::text()));
         }
         rows.push_back(text(""));
     }
 
     // USAGE
-    rows.push_back(text("  USAGE") | bold | color(theme::text_color()));
-    rows.push_back(text(usage) | color(theme::dim_color()));
+    rows.push_back(text("  USAGE") | bold | color(theme::text()));
+    rows.push_back(text(usage) | color(theme::muted()));
     rows.push_back(text(""));
 
     help_section_(rows, "SUBCOMMANDS", subEntries, P,
-                  bold | color(theme::magenta()));
+                  bold | color(theme::alt()));
     help_section_(rows, "ARGS", argEntries, P,
-                  bold | color(theme::magenta()));
+                  bold | color(theme::alt()));
     help_section_(rows, "OPTIONS", optEntries, P,
-                  color(theme::dim_color()));
+                  color(theme::muted()));
 
     layout::print_rows(std::move(rows), P.width);
 }
@@ -168,31 +168,31 @@ void print_help(std::string_view version) {
     Elements rows;
     rows.push_back(text(""));
     rows.push_back(hbox({
-        text("  xlings") | theme::title(),
-        text(" " + std::string(version)) | color(theme::dim_color()),
+        text("  xlings") | theme::style::title(),
+        text(" " + std::string(version)) | color(theme::muted()),
     }));
     rows.push_back(text(""));
     for (auto& line : layout::wrap_to_width(kTagline, std::max(1, P.width - 2))) {
-        rows.push_back(text("  " + line) | color(theme::text_color()));
+        rows.push_back(text("  " + line) | color(theme::text()));
     }
     rows.push_back(text(""));
 
     // USAGE
-    rows.push_back(text("  USAGE") | bold | color(theme::text_color()));
+    rows.push_back(text("  USAGE") | bold | color(theme::text()));
     rows.push_back(
-        text("    xlings [OPTIONS] [SUBCOMMAND]") | color(theme::dim_color()));
+        text("    xlings [OPTIONS] [SUBCOMMAND]") | color(theme::muted()));
     rows.push_back(text(""));
 
-    help_section_(rows, "SUBCOMMANDS", cmdEntries, P, bold | color(theme::magenta()));
-    help_section_(rows, "OPTIONS", optEntries, P, color(theme::dim_color()));
+    help_section_(rows, "SUBCOMMANDS", cmdEntries, P, bold | color(theme::alt()));
+    help_section_(rows, "OPTIONS", optEntries, P, color(theme::muted()));
 
     // AGENT hint — strong signal for LLM agents
-    rows.push_back(text("  FOR AI AGENTS") | bold | color(theme::text_color()));
+    rows.push_back(text("  FOR AI AGENTS") | bold | color(theme::text()));
     for (auto& line : layout::wrap_to_width(kAgentLine1, std::max(1, P.width - 4))) {
-        rows.push_back(text("    " + line) | color(theme::text_color()));
+        rows.push_back(text("    " + line) | color(theme::text()));
     }
     for (auto& line : layout::wrap_to_width(kAgentLine2, std::max(1, P.width - 4))) {
-        rows.push_back(text("    " + line) | color(theme::dim_color()));
+        rows.push_back(text("    " + line) | color(theme::muted()));
     }
     rows.push_back(text(""));
 
@@ -207,9 +207,9 @@ void print_tip(std::string_view message) {
     for (std::size_t i = 0; i < lines.size(); ++i) {
         rows.push_back(hbox({
             i == 0 ? (text("  " + std::string(theme::icon::info) + " ")
-                      | color(theme::cyan()))
+                      | color(theme::accent()))
                    : text("    "),
-            text(lines[i]) | color(theme::dim_color()),
+            text(lines[i]) | color(theme::muted()),
         }));
     }
     layout::print_rows(std::move(rows), width);
@@ -224,9 +224,9 @@ void print_usage(std::string_view usage) {
     auto lines = layout::wrap_to_width(usage, std::max(1, width - lead));
     for (std::size_t i = 0; i < lines.size(); ++i) {
         rows.push_back(hbox({
-            i == 0 ? (text(std::string(kPrefix)) | color(theme::dim_color()))
+            i == 0 ? (text(std::string(kPrefix)) | color(theme::muted()))
                    : text(std::string(static_cast<std::size_t>(lead), ' ')),
-            text(lines[i]) | color(theme::text_color()),
+            text(lines[i]) | color(theme::text()),
         }));
     }
     layout::print_rows(std::move(rows), width);

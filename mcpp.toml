@@ -1,3 +1,9 @@
+# Members are independent packages with their own mcpp.toml, referenced by
+# path. The frontends belong here as they land; `theme` is first because it is
+# a genuine leaf and every frontend needs it.
+[workspace]
+members = ["libs/theme"]
+
 [package]
 name = "xlings"
 version = "2026.8.17.2"
@@ -43,6 +49,7 @@ linkage = "static"
 
 [dependencies]
 ftxui = "6.1.9"
+theme = { path = "libs/theme" }
 
 [dependencies.compat]
 libarchive = "3.8.7"

@@ -27,15 +27,15 @@ std::string phase_icon(Phase p) {
 
 ftxui::Color phase_color(Phase p) {
     switch (p) {
-        case Phase::Pending:      return theme::dim_color();
-        case Phase::Downloading:  return theme::cyan();
-        case Phase::Extracting:   return theme::amber();
-        case Phase::Installing:   return theme::amber();
-        case Phase::Configuring:  return theme::amber();
-        case Phase::Done:         return theme::green();
-        case Phase::Failed:       return theme::red();
+        case Phase::Pending:      return theme::muted();
+        case Phase::Downloading:  return theme::accent();
+        case Phase::Extracting:   return theme::warn();
+        case Phase::Installing:   return theme::warn();
+        case Phase::Configuring:  return theme::warn();
+        case Phase::Done:         return theme::success();
+        case Phase::Failed:       return theme::error();
     }
-    return theme::dim_color();
+    return theme::muted();
 }
 
 std::string phase_label(Phase p) {
@@ -98,7 +98,7 @@ ftxui::Element name_as_progress(const std::string& shownName, float progress, ft
     Element result;
     if (!cursorPart.empty()) {
         Element cursorEl = text(cursorPart)
-            | color(theme::amber()) | bold | blink;
+            | color(theme::warn()) | bold | blink;
         result = hbox({ litEl, cursorEl, dimEl });
     } else {
         result = hbox({ litEl, dimEl });
@@ -133,13 +133,13 @@ void print_progress(std::span<const StatusEntry> entries) {
 
         if (e.phase == Phase::Pending) {
             nameEl = name_as_progress(e.name, 0.0f,
-                theme::dim_color(), theme::border_color(), nameWidth, false);
+                theme::muted(), theme::border(), nameWidth, false);
             statusStr = "pending";
         } else if (e.phase == Phase::Downloading || e.phase == Phase::Extracting ||
                    e.phase == Phase::Installing || e.phase == Phase::Configuring) {
             float pct = e.progress;
             nameEl = name_as_progress(e.name, pct,
-                pc, theme::border_color(), nameWidth, true, true);
+                pc, theme::border(), nameWidth, true, true);
             if (pct > 0.0f) {
                 int whole = static_cast<int>(pct * 100.0f);
                 int frac = static_cast<int>(pct * 1000.0f) % 10;
@@ -149,11 +149,11 @@ void print_progress(std::span<const StatusEntry> entries) {
             }
         } else if (e.phase == Phase::Done) {
             nameEl = name_as_progress(e.name, 1.0f,
-                theme::green(), theme::green(), nameWidth, true);
+                theme::success(), theme::success(), nameWidth, true);
             statusStr = "done";
         } else { // Failed
             nameEl = name_as_progress(e.name, 1.0f,
-                theme::red(), theme::red(), nameWidth, true);
+                theme::error(), theme::error(), nameWidth, true);
             statusStr = "failed";
             if (!e.message.empty()) statusStr += ": " + e.message;
         }
@@ -162,10 +162,10 @@ void print_progress(std::span<const StatusEntry> entries) {
         while (statusStr.size() < statusWidth) statusStr = " " + statusStr;
 
         auto statusEl = text(" " + statusStr);
-        if (e.phase == Phase::Done) statusEl = statusEl | color(theme::green());
-        else if (e.phase == Phase::Failed) statusEl = statusEl | color(theme::red()) | bold;
-        else if (e.phase == Phase::Pending) statusEl = statusEl | color(theme::dim_color());
-        else statusEl = statusEl | color(theme::dim_color());
+        if (e.phase == Phase::Done) statusEl = statusEl | color(theme::success());
+        else if (e.phase == Phase::Failed) statusEl = statusEl | color(theme::error()) | bold;
+        else if (e.phase == Phase::Pending) statusEl = statusEl | color(theme::muted());
+        else statusEl = statusEl | color(theme::muted());
 
         rows.push_back(hbox({ icon, nameEl, statusEl }));
     }
@@ -222,9 +222,9 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState, s
 
         if (!p.started) {
             icon = text("    " + std::string(theme::icon::pending) + " ")
-                | color(theme::dim_color());
+                | color(theme::muted());
             nameEl = name_as_progress(p.name, 0.0f,
-                theme::dim_color(), theme::border_color(), nameWidth, false);
+                theme::muted(), theme::border(), nameWidth, false);
             statusStr = "pending";
         } else if (!p.finished) {
             float pct = (p.totalBytes > 0)
@@ -232,9 +232,9 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState, s
                 : 0.0f;
             totalDownloaded += p.downloadedBytes;
             icon = text("    " + std::string(theme::icon::downloading) + " ")
-                | color(theme::cyan());
+                | color(theme::accent());
             nameEl = name_as_progress(p.name, pct,
-                theme::cyan(), theme::border_color(), nameWidth, true, rewrite);
+                theme::accent(), theme::border(), nameWidth, true, rewrite);
             if (pct > 0.0f) {
                 int whole = static_cast<int>(pct * 100.0f);
                 int frac = static_cast<int>(pct * 1000.0f) % 10;
@@ -245,26 +245,26 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState, s
         } else if (p.success) {
             totalDownloaded += p.totalBytes;
             icon = text("    " + std::string(theme::icon::done) + " ")
-                | color(theme::green());
+                | color(theme::success());
             nameEl = name_as_progress(p.name, 1.0f,
-                theme::green(), theme::green(), nameWidth, true);
+                theme::success(), theme::success(), nameWidth, true);
             statusStr = "done";
         } else {
             totalDownloaded += p.totalBytes;
             icon = text("    " + std::string(theme::icon::failed) + " ")
-                | color(theme::red()) | bold;
+                | color(theme::error()) | bold;
             nameEl = name_as_progress(p.name, 1.0f,
-                theme::red(), theme::red(), nameWidth, true);
+                theme::error(), theme::error(), nameWidth, true);
             statusStr = "failed";
         }
 
         while (statusStr.size() < statusWidth) statusStr = " " + statusStr;
 
         auto statusEl = text(" " + statusStr);
-        if (p.finished && p.success) statusEl = statusEl | color(theme::green());
-        else if (p.finished) statusEl = statusEl | color(theme::red()) | bold;
-        else if (!p.started) statusEl = statusEl | color(theme::dim_color());
-        else statusEl = statusEl | color(theme::dim_color());
+        if (p.finished && p.success) statusEl = statusEl | color(theme::success());
+        else if (p.finished) statusEl = statusEl | color(theme::error()) | bold;
+        else if (!p.started) statusEl = statusEl | color(theme::muted());
+        else statusEl = statusEl | color(theme::muted());
 
         rows.push_back(hbox({ icon, nameEl, statusEl }));
     }
@@ -326,11 +326,11 @@ int render_download_progress(std::span<const DownloadProgressEntry> progState, s
 
     rows.push_back(text(""));
     rows.push_back(hbox({
-        text("  " + std::string(theme::icon::arrow) + " ") | color(theme::cyan()),
-        gauge(overallPct) | size(WIDTH, EQUAL, gaugeW) | color(theme::cyan()),
-        text("  " + pctStr) | bold | color(theme::text_color()),
-        text(speedStr) | color(theme::cyan()),
-        text(etaStr) | color(theme::dim_color()),
+        text("  " + std::string(theme::icon::arrow) + " ") | color(theme::accent()),
+        gauge(overallPct) | size(WIDTH, EQUAL, gaugeW) | color(theme::accent()),
+        text("  " + pctStr) | bold | color(theme::text()),
+        text(speedStr) | color(theme::accent()),
+        text(etaStr) | color(theme::muted()),
     }));
     // erase_eol rather than padding: the frame is drawn over the previous
     // one, and a trimmed line that is shorter than its predecessor would

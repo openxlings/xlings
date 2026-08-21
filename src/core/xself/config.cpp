@@ -2,6 +2,7 @@ module xlings.core.xself.config;
 
 import std;
 import xlings.core.config;
+import xlings.core.uimode;
 import xlings.libs.json;
 import xlings.runtime;
 
@@ -23,6 +24,10 @@ int cmd_config(EventStream& stream) {
     if (!mirror.empty()) addField("mirror", mirror);
     auto lang = Config::lang();
     if (!lang.empty()) addField("lang", lang);
+    addField("ui mode", std::string(ui::to_string(ui::current_mode())));
+    if (auto theme = Config::theme(); !theme.empty()) addField("theme", theme);
+    if (auto inter = Config::tui_interactive())
+        addField("tui.interactive", *inter ? "true" : "false");
 
     auto& repos = Config::global_index_repos();
     for (auto& repo : repos) {

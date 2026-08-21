@@ -15,6 +15,8 @@ import xlings.core.config;
 import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
+import xlings.core.diag;
+import xlings.core.uimode;
 import xlings.runtime;
 import xlings.ui;
 import xlings.core.i18n;
@@ -561,6 +563,46 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         log::println("mirror = {}", value);
     }
 
+    // --ui-mode / --theme / --interactive
+    //
+    // Deliberately the same mechanism as --mirror: option -> collected edit ->
+    // one locked read-modify-write of ~/.xlings.json -> read back by Config,
+    // project layer overriding global. `lang` already proved that pipeline
+    // works end to end (it even has an e2e); these keys just use it.
+    if (auto mode = args.value("ui-mode")) {
+        std::string value(*mode);
+        if (value != "auto" && !ui::parse_mode(value)) {
+            diag::emit({
+                .code    = "cli.bad_ui_mode",
+                .summary = std::format("'{}' is not a UI mode", value),
+                .facts   = { { "valid", "cli, tui, auto" } },
+                .actions = { { "set one", "xlings config --ui-mode tui" } },
+            });
+            return 2;
+        }
+        edits.push_back([value](nlohmann::json& j) { j["uiMode"] = value; });
+        log::println("uiMode = {}", value);
+    }
+    if (auto theme = args.value("theme")) {
+        std::string value(*theme);
+        edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
+        log::println("theme = {}", value);
+    }
+    if (auto inter = args.value("interactive")) {
+        std::string value(*inter);
+        if (value != "true" && value != "false") {
+            diag::emit({
+                .code    = "cli.bad_interactive",
+                .summary = std::format("'{}' is not true or false", value),
+                .actions = { { "set one", "xlings config --interactive false" } },
+            });
+            return 2;
+        }
+        const bool on = (value == "true");
+        edits.push_back([on](nlohmann::json& j) { j["tui"]["interactive"] = on; });
+        log::println("tui.interactive = {}", value);
+    }
+
     auto commit_edits = [&]() -> bool {
         if (edits.empty()) return true;
         auto committed = update_home_config(
@@ -638,6 +680,14 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     if (!mirror.empty()) fields.push_back({"mirror", mirror});
     auto lang = Config::lang();
     if (!lang.empty()) fields.push_back({"lang", lang});
+    // Shown unconditionally, unlike mirror/lang: the resolved frontend is the
+    // answer to "why does my output look like this", and hiding it when it was
+    // auto-detected is exactly when the question gets asked.
+    fields.push_back({"ui mode", std::string(ui::to_string(ui::current_mode()))});
+    if (auto theme = Config::theme(); !theme.empty())
+        fields.push_back({"theme", theme});
+    if (auto inter = Config::tui_interactive())
+        fields.push_back({"tui.interactive", *inter ? "true" : "false"});
 
     auto& repos = Config::global_index_repos();
     for (auto& repo : repos) {
@@ -812,17 +862,72 @@ int run(int argc, char* argv[]) {
         }
     });
 
+    // `lang` had a complete pipeline -- CLI option, locked write into
+    // ~/.xlings.json, project override, `xlings config` echo, a documented
+    // schema field, an e2e assertion, and a bilingual table -- and NOTHING
+    // called this. It was a setting users could set, xlings would echo, and
+    // that changed no output at all.
+    i18n::set_language(Config::lang());
+
     // Build Capability Registry (for Agent/MCP use — CLI keeps direct dispatch)
     auto registry = capabilities::build_registry();
 
     // Scan for global flags (--verbose, -v, --quiet, -q, --agent) anywhere
     // in argv so they work regardless of position.
     bool agent_mode = false;
+    std::string uiModeFlag;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
         if (a == "--verbose" || a == "-v") log::set_level(log::Level::Debug);
         else if (a == "--quiet" || a == "-q") log::set_level(log::Level::Error);
         else if (a == "--agent") agent_mode = true;
+        else if (a.starts_with("--ui-mode=")) {
+            uiModeFlag = std::string(a.substr(std::string_view{"--ui-mode="}.size()));
+        }
+        else if (a == "--ui-mode" && i + 1 < argc) {
+            uiModeFlag = std::string(argv[i + 1]);
+        }
+    }
+
+    // Resolve the frontend ONCE, here, from flag > config > auto -- the same
+    // precedence `mirror` uses. Before this the answer was assembled
+    // independently by `--agent` and by `interface`, so a third caller had to
+    // assemble a third.
+    {
+        std::optional<ui::UiMode> preferred;
+        if (!uiModeFlag.empty() && uiModeFlag != "auto") {
+            preferred = ui::parse_mode(uiModeFlag);
+            if (!preferred) {
+                diag::emit({
+                    .code    = "cli.bad_ui_mode",
+                    .summary = std::format("'{}' is not a UI mode", uiModeFlag),
+                    .facts   = { { "valid", "cli, tui, auto" } },
+                    .actions = { { "try", "xlings --ui-mode tui list" } },
+                });
+                return 2;
+            }
+        } else if (uiModeFlag.empty()) {
+            preferred = ui::parse_mode(Config::ui_mode());
+        }
+
+        const auto env = ui::detect();
+        const auto resolved = ui::resolve(preferred, agent_mode, env);
+        // Degrading in silence is how a user concludes a setting does nothing.
+        if (!resolved.degradedReason.empty()) {
+            diag::emit({
+                .level   = diag::Level::Note,
+                .code    = "ui.mode_degraded",
+                .summary = std::format("using the {} frontend instead of {}",
+                                       ui::to_string(resolved.mode),
+                                       preferred ? ui::to_string(*preferred)
+                                                 : "tui"),
+                .facts   = { { "why", resolved.degradedReason } },
+            });
+        }
+        ui::set_current(resolved.mode,
+                        ui::capabilities_of(resolved.mode,
+                                            Config::tui_interactive().value_or(true),
+                                            agent_mode, env));
     }
 
     // Is there anyone to answer a question?
@@ -875,7 +980,9 @@ int run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
         if (a == "--verbose" || a == "-v" || a == "--quiet" || a == "-q"
-            || a == "--agent") continue;
+            || a == "--agent" || a.starts_with("--ui-mode")) continue;
+        // `--ui-mode tui` (space form): drop the value too.
+        if (i > 1 && std::string_view{argv[i - 1]} == "--ui-mode") continue;
         fargv.push_back(argv[i]);
     }
     int fargc = static_cast<int>(fargv.size());
@@ -1075,6 +1182,11 @@ int run(int argc, char* argv[]) {
         .option("verbose").short_name('v').help("Enable verbose output").global()
         .option("quiet").short_name('q').help("Suppress non-essential output").global()
         .option("agent").help("Plain-text output without TUI formatting (for LLM agents)").global()
+        // Declared here as well as scanned by hand above: the scan runs before
+        // the parser exists (the frontend has to be resolved before anything
+        // prints), and the parser rejects options it has never heard of.
+        .option("ui-mode").takes_value().value_name("MODE")
+            .help("Frontend for this run (cli/tui/auto)").global()
 
         // install
         .subcommand("install")
@@ -1264,6 +1376,9 @@ int run(int argc, char* argv[]) {
             .description("Show or modify xlings configuration")
             .option(cmdline::Option("lang").takes_value().value_name("LANG").help("Set language (en/zh)"))
             .option(cmdline::Option("mirror").takes_value().value_name("MIRROR").help("Set mirror (GLOBAL/CN)"))
+            .option(cmdline::Option("ui-mode").takes_value().value_name("MODE").help("Set UI mode (cli/tui/auto)"))
+            .option(cmdline::Option("theme").takes_value().value_name("THEME").help("Set colour theme (name or path)"))
+            .option(cmdline::Option("interactive").takes_value().value_name("BOOL").help("Inline prompts in tui mode (true/false)"))
             .option(cmdline::Option("add-xpkg").takes_value().value_name("FILE").help("Add xpkg file to package index"))
             .option(cmdline::Option("index-repo").takes_value().value_name("NS:URL").help("Add/update index repo (e.g. myns:https://...git)"))
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {

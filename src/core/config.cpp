@@ -488,6 +488,7 @@ Config::Config() {
                     mirror_ = json["mirror"].get<std::string>();
                 if (json.contains("lang") && json["lang"].is_string())
                     lang_ = json["lang"].get<std::string>();
+                load_ui_prefs_from_json_(json);
                 // Load global versions
                 load_global_versions_from_json_(json);
                 globalIndexRepos_ = parse_index_repos_json(json, mirror_);
@@ -590,6 +591,10 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                 mirror_ = json["mirror"].get<std::string>();
             if (json.contains("lang") && json["lang"].is_string())
                 lang_ = json["lang"].get<std::string>();
+            // Project overrides global, same as mirror/lang: a repo may ship
+            // its own colours, and `theme` is a path reference so it can point
+            // at a file inside the checkout.
+            load_ui_prefs_from_json_(json);
             if (json.contains("workspace") && json["workspace"].is_object()) {
                 projectWorkspace_ = xvm::workspace_from_json(json["workspace"]);
             }
@@ -824,7 +829,30 @@ void Config::reload_state() { instance_().reload_state_(); }
 
 [[nodiscard]] const std::string& Config::mirror() { return instance_().mirror_; }
 
+void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
+    if (json.contains("uiMode") && json["uiMode"].is_string())
+        uiMode_ = json["uiMode"].get<std::string>();
+    if (json.contains("theme") && json["theme"].is_string())
+        theme_ = json["theme"].get<std::string>();
+    // Nested under `tui` because it is that frontend's own setting -- it means
+    // nothing in `cli` mode. Contrast `uiMode`/`theme`/`lang`, which are
+    // global choices and stay flat.
+    if (json.contains("tui") && json["tui"].is_object()) {
+        const auto& tui = json["tui"];
+        if (tui.contains("interactive") && tui["interactive"].is_boolean())
+            tuiInteractive_ = tui["interactive"].get<bool>();
+    }
+}
+
 [[nodiscard]] const std::string& Config::lang() { return instance_().lang_; }
+
+[[nodiscard]] const std::string& Config::ui_mode() { return instance_().uiMode_; }
+
+[[nodiscard]] const std::string& Config::theme() { return instance_().theme_; }
+
+[[nodiscard]] std::optional<bool> Config::tui_interactive() {
+    return instance_().tuiInteractive_;
+}
 
 [[nodiscard]] std::vector<std::string> Config::resource_servers(std::string_view mirror) {
     return instance_().candidate_resource_servers_for_(mirror);

@@ -50,13 +50,13 @@ select_package(std::span<const std::pair<std::string, std::string>> items) {
 
     screen.Loop(Renderer(component, [&] {
         return vbox({
-            text(" Select a package:") | theme::title(),
-            separator() | color(theme::border_color()),
+            text(" Select a package:") | theme::style::title(),
+            separator() | color(theme::border()),
             component->Render() | vscroll_indicator | frame
                 | size(HEIGHT, LESS_THAN, 20),
-            separator() | color(theme::border_color()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::hint(),
-        }) | borderRounded | color(theme::border_color());
+            separator() | color(theme::border()),
+            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
+        }) | borderRounded | color(theme::border());
     }));
 
     if (confirmed && selected >= 0 && selected < (int)items.size()) {
@@ -95,7 +95,7 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
         if (state.focused) {
             e = e | bold | inverted;
         } else {
-            e = e | color(theme::text_color());
+            e = e | color(theme::text());
         }
         return e;
     };
@@ -117,13 +117,13 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
 
     screen.Loop(Renderer(component, [&] {
         auto box = vbox({
-            text(" " + std::string(title)) | theme::title(),
-            separator() | color(theme::border_color()),
+            text(" " + std::string(title)) | theme::style::title(),
+            separator() | color(theme::border()),
             component->Render() | vscroll_indicator | frame
                 | size(HEIGHT, LESS_THAN, 15),
-            separator() | color(theme::border_color()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::hint(),
-        }) | borderRounded | color(theme::border_color())
+            separator() | color(theme::border()),
+            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
+        }) | borderRounded | color(theme::border())
            | size(WIDTH, LESS_THAN, 72);
 
         return box | center;
