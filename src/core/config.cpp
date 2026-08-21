@@ -854,6 +854,24 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     return instance_().tuiInteractive_;
 }
 
+[[nodiscard]] bool Config::hint_seen(std::string_view id) {
+    namespace fs = std::filesystem;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    std::error_code ec;
+    if (!fs::exists(configPath, ec)) return false;
+    try {
+        auto content = platform::read_file_to_string(configPath.string());
+        auto json = nlohmann::json::parse(content, nullptr, false);
+        if (json.is_discarded() || !json.is_object()) return false;
+        auto it = json.find("hintsSeen");
+        if (it == json.end() || !it->is_array()) return false;
+        for (const auto& e : *it) {
+            if (e.is_string() && e.get<std::string>() == id) return true;
+        }
+    } catch (...) {}
+    return false;
+}
+
 [[nodiscard]] std::filesystem::path Config::resolve_theme_path() {
     namespace fs = std::filesystem;
     auto& self = instance_();
@@ -1207,6 +1225,29 @@ void Config::record_client_version(const std::string& version) {
         } catch (...) { return; }
     }
     json["version"] = version;
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+}
+
+void Config::mark_hint_seen(std::string_view id) {
+    namespace fs = std::filesystem;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    nlohmann::json json = nlohmann::json::object();
+    if (fs::exists(configPath)) {
+        try {
+            auto content = platform::read_file_to_string(configPath.string());
+            json = nlohmann::json::parse(content, nullptr, false);
+            // Same refusal as record_client_version: never replace a document
+            // we could not parse. Trading an unshown hint for a lost versions
+            // DB is not a trade.
+            if (json.is_discarded() || !json.is_object()) return;
+        } catch (...) { return; }
+    }
+    auto& seen = json["hintsSeen"];
+    if (!seen.is_array()) seen = nlohmann::json::array();
+    for (const auto& e : seen) {
+        if (e.is_string() && e.get<std::string>() == id) return;
+    }
+    seen.push_back(std::string(id));
     platform::write_string_to_file(configPath.string(), json.dump(2));
 }
 

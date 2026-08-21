@@ -90,6 +90,12 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
     }
 
     MenuOption menu_opt;
+    // ftxui tracks the SELECTED entry and the FOCUSED one separately; the
+    // marker below draws from `focused`, which starts at 0 regardless of what
+    // `selected` was initialised to. Without this the cursor opens on the
+    // newest version while "(current)" sits two rows down -- the picker would
+    // be pointing away from where the user is.
+    menu_opt.focused_entry = selected;
     menu_opt.entries_option.transform = [](const EntryState& state) {
         auto e = text((state.focused ? "> " : "  ") + state.label);
         if (state.focused) {
@@ -100,7 +106,14 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
         return e;
     };
     auto menu = Menu(&labels, &selected, menu_opt);
-    auto screen = ScreenInteractive::Fullscreen();
+    // Inline, NOT full-screen.
+    //
+    // A widget that takes over the terminal cannot appear in a CI log, cannot
+    // be piped, and has to restore the screen on every exit path including a
+    // signal. Staying in the scrollback removes all of that: the block is
+    // drawn, answered, collapsed to its result, and the history above it is
+    // untouched.
+    auto screen = ScreenInteractive::TerminalOutput();
 
     auto component = CatchEvent(menu, [&](Event event) {
         if (event == Event::Return) {
@@ -126,7 +139,10 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
         }) | borderRounded | color(theme::border())
            | size(WIDTH, LESS_THAN, 72);
 
-        return box | center;
+        // Left-aligned, not centred. Centring is a full-screen habit: inline,
+        // the block sits in the scrollback among left-aligned log lines, and a
+        // floating box reads as a different program's output.
+        return box;
     }));
 
     if (!confirmed) return std::nullopt;

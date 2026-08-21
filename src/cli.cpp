@@ -311,6 +311,29 @@ void dispatch_data_event(const DataEvent& e) {
 }
 
 // ─── EventStream consumer: handle PromptEvent via ui:: interactive functions ───
+// Told once, ever.
+//
+// Interactive prompts are ON by default for terminals, so the first one a user
+// meets is unannounced -- they typed `xlings use gcc` and got a widget. One
+// line the first time says what the keys are and how to turn it off for good;
+// after that it would be nagging.
+//
+// Persisted in the home config rather than a process-local flag: the
+// equivalent helper in `xself::repair` is a `static bool`, which means "once
+// per run" and would print this on every single invocation.
+void show_interactive_hint_once_() {
+    constexpr std::string_view kId = "tui.interactive.first-run";
+    if (Config::hint_seen(kId)) return;
+    Config::mark_hint_seen(kId);
+    diag::emit({
+        .level   = diag::Level::Note,
+        .code    = "ui.interactive_first_run",
+        .summary = "xlings can ask instead of printing a list",
+        .facts   = { { "keys", "up/down to move, enter to pick, esc to skip" } },
+        .actions = { { "turn it off", "xlings config --interactive false" } },
+    });
+}
+
 void handle_prompt(EventStream& stream, const PromptEvent& p) {
     // Binary yes/no → confirm dialog
     if (p.options.size() == 2 && p.options[0] == "y" && p.options[1] == "n") {
@@ -320,14 +343,23 @@ void handle_prompt(EventStream& stream, const PromptEvent& p) {
         return;
     }
 
-    // Multiple options → package selector
+    // Multiple options → inline picker
     if (!p.options.empty()) {
         std::vector<std::pair<std::string, std::string>> items;
+        int preselect = 0;
         for (auto& opt : p.options) {
-            items.emplace_back(opt, "");
+            // Mark the current one. Without it the list is a set of equally
+            // plausible strings and the user has to remember which they are
+            // already on -- which is the question that sent them here.
+            if (opt == p.defaultValue) preselect = static_cast<int>(items.size());
+            items.emplace_back(opt, opt == p.defaultValue ? "(current)" : "");
         }
-        auto result = ui::select_package(items);
-        stream.respond(p.id, result.value_or(""));
+        show_interactive_hint_once_();
+        // The question, not a fixed "Select a package:" -- the caller knows
+        // what it is asking and the widget should not overwrite it.
+        auto idx = ui::select_option(p.question, items, "", preselect);
+        stream.respond(p.id, idx ? p.options[static_cast<std::size_t>(*idx)]
+                                 : std::string{});
         return;
     }
 

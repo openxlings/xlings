@@ -336,6 +336,16 @@ public:
     // nullopt = not configured; the default is ON for terminals (gated by
     // ui::capabilities_of, which knows whether anyone is actually there).
     [[nodiscard]] static std::optional<bool> tui_interactive();
+
+    // One-shot hints, remembered ACROSS RUNS.
+    //
+    // `xself::print_migration_hint_once` is a `static bool` -- per process, so
+    // reusing it for "show this the first time ever" would show it every time.
+    // An array rather than a bool per hint: these will not stay singular, and
+    // a list means adding one does not change the schema.
+    [[nodiscard]] static bool hint_seen(std::string_view id);
+
+    static void mark_hint_seen(std::string_view id);
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
     // Use this for download fallbacks; `resource_servers()` remains the

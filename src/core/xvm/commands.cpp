@@ -684,6 +684,10 @@ collect_version_candidates_(const std::string& target, bool all) {
     }
 
     out.versions = filter_to_subos_installed_(target, global_all);
+    // Newest first, like every other candidate list. `get_all_versions` walks
+    // a std::map, so without this the picker offers 0.0.100 above 0.0.24 and
+    // the panel does too.
+    version_order::sort_desc(out.versions);
     if (out.versions.empty()) {
         // Installed somewhere, just not opted into here. This used to print
         // three separate `log::error` lines -- the negation, the evidence and
@@ -749,6 +753,36 @@ int cmd_use_by_name(const std::string& target, EventStream& stream, bool all, bo
     // is already active re-materializes headers and libraries.
     if (candidates->versions.size() == 1) {
         return cmd_use(target, candidates->versions.front(), stream, strict);
+    }
+
+    // Several to choose from and somebody to ask: ask.
+    //
+    // `ui/selector.cpp` has had a working inline version picker since 2026-07
+    // with ZERO callers -- the 2026-07-29 survey recorded it as dead code and
+    // it was still dead a year later. The command that most obviously wants it
+    // is this one: `xlings use gcc` knows the answer is one of five and made
+    // the user read a panel and retype.
+    //
+    // Core does not (and must not) know about ftxui, so the question goes out
+    // as a Request and the frontend decides how to render it. Non-interactive
+    // frontends never see it -- EventStream refuses rather than guessing --
+    // and the panel below stays the answer for them.
+    if (!all && stream.interactive()) {
+        PromptEvent pick;
+        pick.id = "select_version";
+        pick.question = std::format("Which {} ?", target);
+        pick.options = candidates->versions;
+        pick.defaultValue = candidates->active;
+        auto chosen = stream.prompt(std::move(pick));
+        if (chosen == EventStream::kCannotAsk) {
+            // Somebody registered no responder and there is no terminal --
+            // fall through to the panel, which is a complete answer.
+        } else if (chosen.empty()) {
+            log::println("cancelled");
+            return 0;
+        } else {
+            return cmd_use(target, chosen, stream, strict);
+        }
     }
 
     return cmd_list_versions(target, stream, all);
