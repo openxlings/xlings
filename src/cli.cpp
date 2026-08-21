@@ -17,6 +17,7 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.uimode;
+import xlings.theme;
 import xlings.runtime;
 import xlings.ui;
 import xlings.core.i18n;
@@ -583,8 +584,29 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         edits.push_back([value](nlohmann::json& j) { j["uiMode"] = value; });
         log::println("uiMode = {}", value);
     }
-    if (auto theme = args.value("theme")) {
-        std::string value(*theme);
+    if (auto themeArg = args.value("theme")) {
+        std::string value(*themeArg);
+        if (value == "list") {
+            log::println("themes:");
+            log::println("  default            (built in)");
+            const auto dir = Config::paths().homeDir / "config" / "themes";
+            std::error_code lec;
+            if (std::filesystem::is_directory(dir, lec)) {
+                for (const auto& e : platform::dir_entries(dir)) {
+                    if (e.path().extension() != ".json") continue;
+                    log::println("  {:<18} {}", e.path().stem().string(),
+                                 Config::display_path(e.path()));
+                }
+            }
+            log::println("");
+            log::println("  active: {}", theme::current().name);
+            // Said explicitly because the shipped files are overwritten on
+            // upgrade -- editing one in place looks like it works right up
+            // until the next release.
+            log::println("  to customise: copy a file, then "
+                         "`xlings config --theme ./my-theme.json`");
+            return 0;
+        }
         edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
         log::println("theme = {}", value);
     }
@@ -783,6 +805,82 @@ int run_profile_(int argc, char* argv[], EventStream& stream) {
     return action == "-h" || action == "--help" ? 0 : 1;
 }
 
+// Install the configured colour theme, saying so when it cannot be used.
+//
+// Every failure here is REPORTED. Falling back to the default in silence is
+// the shape this whole round is about: "I configured a theme" and "my theme
+// file has a typo in it" would produce identical output, and the user would
+// conclude the setting does nothing.
+void load_configured_theme_() {
+    const auto path = Config::resolve_theme_path();
+    if (path.empty()) return;              // built-in default, nothing to do
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        diag::emit({
+            .level   = diag::Level::Warn,
+            .code    = "theme.not_found",
+            .summary = "the configured theme file is not there",
+            .source  = Config::display_path(path),
+            .facts   = { { "using instead", "the built-in default" } },
+            .actions = { { "list what is available", "xlings config --theme list" },
+                         { "or go back to default", "xlings config --theme default" } },
+        });
+        return;
+    }
+
+    std::string content;
+    try {
+        content = platform::read_file_to_string(path.string());
+    } catch (...) {
+        diag::emit({
+            .level   = diag::Level::Warn,
+            .code    = "theme.unreadable",
+            .summary = "the configured theme file could not be read",
+            .source  = Config::display_path(path),
+            .facts   = { { "using instead", "the built-in default" } },
+            .actions = { { "check permissions", "ls -l " + path.string() } },
+        });
+        return;
+    }
+
+    auto loaded = theme::load_from_json(content, theme::builtin_default());
+    for (const auto& issue : loaded.issues) {
+        diag::Diagnostic d {
+            .level  = diag::Level::Warn,
+            .source = Config::display_path(path),
+        };
+        switch (issue.kind) {
+            case theme::LoadIssue::Kind::BadJson:
+                d.code = "theme.bad_json";
+                d.summary = "the theme file is not valid JSON";
+                d.actions = { { "using instead", "the built-in default" } };
+                break;
+            case theme::LoadIssue::Kind::UnknownSlot:
+                d.code = "theme.unknown_slot";
+                d.summary = std::format("'{}' is not a colour slot", issue.detail);
+                if (!issue.suggestion.empty()) {
+                    d.actions = { { "did you mean", issue.suggestion } };
+                } else {
+                    d.actions = { { "valid slots",
+                        "accent, alt, success, warn, error, text, muted, "
+                        "border, surface" } };
+                }
+                break;
+            default:
+                d.code = "theme.bad_color";
+                d.summary = std::format("'{}' is not a colour", issue.detail);
+                d.actions = { { "expected", "#RRGGBB or #RGB" } };
+                break;
+        }
+        diag::emit(d);
+    }
+    // Applied even with issues: the parts that parsed are still what the user
+    // asked for, and dropping all of them because one line was wrong would be
+    // a worse answer than reporting the line.
+    theme::set_current(std::move(loaded.theme));
+}
+
 int run(int argc, char* argv[]) {
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
@@ -868,6 +966,7 @@ int run(int argc, char* argv[]) {
     // called this. It was a setting users could set, xlings would echo, and
     // that changed no output at all.
     i18n::set_language(Config::lang());
+    load_configured_theme_();
 
     // Build Capability Registry (for Agent/MCP use — CLI keeps direct dispatch)
     auto registry = capabilities::build_registry();

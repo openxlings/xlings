@@ -324,6 +324,15 @@ public:
     // Empty means the built-in default compiled into the binary.
     [[nodiscard]] static const std::string& theme();
 
+    // The theme file `theme()` points at, or empty for the built-in default.
+    //
+    // A bare name is sugar for `config/themes/<name>.json`; anything with a
+    // separator or a suffix is a path, resolved against the project root when
+    // it came from a project config and against the home otherwise -- the same
+    // rule local index repo sources already use, so a project can ship its own
+    // colours exactly the way it can ship its own index.
+    [[nodiscard]] static std::filesystem::path resolve_theme_path();
+
     // nullopt = not configured; the default is ON for terminals (gated by
     // ui::capabilities_of, which knows whether anyone is actually there).
     [[nodiscard]] static std::optional<bool> tui_interactive();

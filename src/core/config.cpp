@@ -854,6 +854,32 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     return instance_().tuiInteractive_;
 }
 
+[[nodiscard]] std::filesystem::path Config::resolve_theme_path() {
+    namespace fs = std::filesystem;
+    auto& self = instance_();
+    auto value = self.theme_;
+    if (value.empty() || value == "default") return {};
+
+    const bool looksLikePath = value.contains('/') || value.contains('\\')
+                            || value.ends_with(".json") || value.starts_with(".");
+    if (!looksLikePath) {
+        // Bare name: one of the shipped files. Not searched anywhere else --
+        // a name that resolves differently depending on the working directory
+        // is how a config value stops being reproducible.
+        return self.paths_.homeDir / "config" / "themes" / (value + ".json");
+    }
+
+    fs::path source(value);
+    if (source.is_absolute()) return source.lexically_normal();
+    // Relative to whichever config claimed it. `hasProjectConfig_` is the same
+    // discriminator resolve_repo_source uses, so the two path-valued keys
+    // cannot disagree about what "./x" means.
+    const auto base = (self.hasProjectConfig_ && !self.forceGlobalScope_
+                       && !self.projectDir_.empty())
+        ? self.projectDir_ : self.paths_.homeDir;
+    return (base / source).lexically_normal();
+}
+
 [[nodiscard]] std::vector<std::string> Config::resource_servers(std::string_view mirror) {
     return instance_().candidate_resource_servers_for_(mirror);
 }
