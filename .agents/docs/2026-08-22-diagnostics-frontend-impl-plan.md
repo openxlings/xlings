@@ -168,3 +168,27 @@
 3. 自我 review 一轮
 4. release + 本地 `gtc` 补 GitCode 资源
 5. 真实验证:`xlings subos <name> --sandbox --cmd "..."` 覆盖 use / install / remove / config / 主题 / 交互 / agent 模式
+
+---
+
+## 实施记录(2026.8.22.1 / PR #556)
+
+**落地**:T0 T1(部分) T2 T3 T4 T5 T6(部分) T7 T8 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19
+
+**未做,及原因**:
+
+| | 状态 | 为什么 |
+|---|---|---|
+| **T1** `log::` Sink | 只做了单条多行;`set_sink()` 未落地 | GUI 走独立二进制,不再急需;core 仍直写 FILE* |
+| **T6** `View::Document` | 只立了 `diag` 地基,26 个 kind 仍走旧 `DataEvent` | 双轨并存;迁移是下一轮的主体 |
+| **T9** did-you-mean 推广 | 只在 theme 槽位上做了(含距离阈值) | `edit_distance_` 尚未提到 `core/textmatch`;包名/子命令/版本号仍无建议 |
+| **T12** msgid 化 | 只接了线(`set_language` + `auto` 修复) | 文案未迁到 `tr()`;`--agent` 未打印 msgid |
+| `ui/cli` `ui/tui` 拆成成员 | 未做 | 需要先把 `core/` 抽成成员(Phase B);`theme` 和 `gui` 已经是成员 |
+| E2E 覆盖"拒绝确认" | 未做 | 需要可安装的 fixture;单测覆盖了,e2e 文件里写明了为什么不在那儿 |
+
+**两处推翻了原计划**(都是跑既有测试发现的,不是读代码):
+
+1. **T16 的交互默认值**:计划写"默认 true",E2E-48 N3 用真 pty 断言 `use <name>` 不许阻塞 —— 那是 2026.7.30 的既有决定。改成 opt-in。
+2. **T15 的拒绝策略**:一刀切拒绝会破坏 `install <pkg>`(不带 `-y`)完成这个被断言的行为。缺陷不是"猜",是"猜否并称之为成功" —— 策略交给调用方声明。
+
+**两个平台陷阱**(本地 `mcpp build --toolchain llvm@20.1.7` gate 抓到):`\x` 转义吃掉后续 hex 位;无 stream 的 `std::println` 在 clang 下把格式串当参数 —— 后者的触发条件是"这个 TU 还 import 了什么",从文件本身无法预测。
