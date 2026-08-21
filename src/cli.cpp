@@ -618,30 +618,14 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     }
     if (auto themeArg = args.value("theme")) {
         std::string value(*themeArg);
-        if (value == "list") {
-            log::println("themes:");
-            log::println("  default            (built in)");
-            const auto dir = Config::paths().homeDir / "config" / "themes";
-            std::error_code lec;
-            if (std::filesystem::is_directory(dir, lec)) {
-                for (const auto& e : platform::dir_entries(dir)) {
-                    if (e.path().extension() != ".json") continue;
-                    log::println("  {:<18} {}", e.path().stem().string(),
-                                 Config::display_path(e.path()));
-                }
-            }
-            log::println("");
-            log::println("  active: {}", theme::current().name);
-            // Said explicitly because the shipped files are overwritten on
-            // upgrade -- editing one in place looks like it works right up
-            // until the next release.
-            log::println("  to customise: copy a file, then "
-                         "`xlings config --theme ./my-theme.json`");
-            return 0;
+        // `list` is a query, not an edit; handled after commit_edits below so
+        // it cannot swallow edits collected alongside it.
+        if (value != "list") {
+            edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
+            log::println("theme = {}", value);
         }
-        edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
-        log::println("theme = {}", value);
     }
+
     if (auto inter = args.value("interactive")) {
         std::string value(*inter);
         if (value != "true" && value != "false") {
@@ -670,6 +654,32 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         }
         return true;
     };
+
+    // --theme list
+    if (args.value("theme") == "list") {
+        // Edits collected alongside it land first: `xlings config --mirror CN
+        // --theme list` must not print the list and drop the mirror.
+        if (!commit_edits()) return 1;
+        log::println("themes:");
+        log::println("  default            (built in)");
+        const auto dir = Config::paths().homeDir / "config" / "themes";
+        std::error_code lec;
+        if (std::filesystem::is_directory(dir, lec)) {
+            for (const auto& e : platform::dir_entries(dir)) {
+                if (e.path().extension() != ".json") continue;
+                log::println("  {:<18} {}", e.path().stem().string(),
+                             Config::display_path(e.path()));
+            }
+        }
+        log::println("");
+        log::println("  active: {}", theme::current().name);
+        // Said explicitly because the shipped files are overwritten on
+        // upgrade -- editing one in place looks like it works right up until
+        // the next release.
+        log::println("  to customise: copy a file, then "
+                     "`xlings config --theme ./my-theme.json`");
+        return 0;
+    }
 
     // --add-xpkg
     if (auto xpkg = args.value("add-xpkg")) {

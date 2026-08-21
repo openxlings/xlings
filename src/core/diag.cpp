@@ -95,6 +95,22 @@ void emit(const Diagnostic& d) {
     for (const auto& a : d.actions) {
         if (a.label.empty()) return "action with an empty label";
     }
+    // The two-column layout pads labels by BYTE length, which is only correct
+    // while they are ASCII. Checked rather than assumed: `render()` cites this
+    // invariant as its reason for not reaching for a display-width function,
+    // and an unchecked invariant is just a comment. (Values and summaries are
+    // free to be anything -- they are never padded.)
+    const auto ascii = [](std::string_view s) {
+        return std::ranges::all_of(s, [](unsigned char c) { return c < 0x80; });
+    };
+    for (const auto& f : d.facts) {
+        if (!ascii(f.label)) return "fact label is not ASCII; column padding "
+                                    "measures bytes, so it would misalign";
+    }
+    for (const auto& a : d.actions) {
+        if (!ascii(a.label)) return "action label is not ASCII; column padding "
+                                    "measures bytes, so it would misalign";
+    }
     return std::nullopt;
 }
 

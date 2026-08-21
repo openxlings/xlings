@@ -75,7 +75,13 @@ public:
     // claimed the question. Distinct from "" (cancelled/timed out) because the
     // caller must react differently: a cancel is the user's answer, this is
     // the absence of one.
-    static constexpr std::string_view kCannotAsk = "\x01cannot-ask";
+    //
+    // Split across two literals on purpose: `\x` consumes as many hex digits
+    // as follow it, so "\x01cannot-ask" is read as \x01ca + "nnot-ask" --
+    // gcc lets that through, clang rejects it outright ("hex escape sequence
+    // out of range"). Adjacent string literals concatenate after escape
+    // processing, which ends the escape at the quote.
+    static constexpr std::string_view kCannotAsk = "\x01" "cannot-ask";
 
     // Prompt with optional cancellation and timeout support.
     // Returns empty string on cancel/timeout, `kCannotAsk` when not interactive.
