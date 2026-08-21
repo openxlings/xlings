@@ -80,22 +80,22 @@ bool replace_with(const fs::path& payloadBinary, const fs::path& entry,
     // "we changed something, we cannot say from what" is not a report.
     const auto before = version_of(entry);
     if (!platform::atomic_replace_executable(payloadBinary, entry)) {
-        log::warn("[xlings] could not replace the entry binary {} <- {}",
+        log::warn("could not replace the entry binary {} <- {}",
                   entry.string(), payloadBinary.string());
         return false;
     }
     if (before.empty() || before == toVersion) {
-        log::debug("[xlings] entry binary -> {} ({})", toVersion, coordinate);
+        log::debug("entry binary -> {} ({})", toVersion, coordinate);
         return true;
     }
     if (version_order::compare(toVersion, before) < 0) {
-        log::warn("[xlings] entry binary DOWNGRADED {} -> {} ({})",
+        log::warn("entry binary DOWNGRADED {} -> {} ({})",
                   before, toVersion, coordinate);
         log::warn("  every shim in this home dispatches through it; an older "
                   "client may not understand records a newer index wrote");
         return true;
     }
-    log::info("[xlings] entry binary {} -> {} ({})", before, toVersion,
+    log::info("entry binary {} -> {} ({})", before, toVersion,
               coordinate);
     return true;
 }

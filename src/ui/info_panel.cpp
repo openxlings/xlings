@@ -332,6 +332,18 @@ void print_subos_created(const std::string& name, const std::string& dir) {
     }
 }
 
+void print_subos_forked(const std::string& name, const std::string& from,
+                        const std::string& dir) {
+    using namespace subos_ansi_;
+    // Says what plain `subos new` cannot: which base this one came from. That
+    // is the whole reason the user passed `--from`, so leaving it out would
+    // make the fixed output answer a question nobody asked.
+    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done,
+                 bold(), name, reset(), reset());
+    if (!from.empty()) std::println("{}    from:{} {}", gray(), reset(), from);
+    if (!dir.empty())  std::println("{}    dir:{}  {}", gray(), reset(), dir);
+}
+
 void print_subos_switched(const std::string& name, const std::string& dir) {
     using namespace subos_ansi_;
     // [global] tag distinguishes the persistent "--global" action from the

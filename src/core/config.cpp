@@ -967,6 +967,45 @@ void Config::reload_state() { instance_().reload_state_(); }
                             self.projectSubosMode_);
 }
 
+[[nodiscard]] std::string Config::version_source(const std::string& target) {
+    auto& self = instance_();
+
+    const auto claims = [&](const xvm::Workspace& ws) {
+        auto it = ws.find(target);
+        return it != ws.end() && !it->second.empty();
+    };
+
+    // Walk the layers in the order `merged_workspace` resolves them, LAST
+    // writer first: whoever the merge would let win is the one to name. Asking
+    // in the other order names a layer that is being overridden, which is
+    // worse than saying nothing -- it sends the user to edit a file that is
+    // not in control.
+    if (self.hasProjectConfig_ && !self.forceGlobalScope_) {
+        if (claims(self.projectSubosWorkspace_)) {
+            return display_path(self.project_subos_dir_() / ".xlings.json");
+        }
+        if (claims(self.projectWorkspace_)) {
+            // The project manifest is the layer users actually hand-edit, so
+            // name the field too -- "which file" is half an answer when the
+            // file has a dozen keys.
+            //
+            // Rendered relative to the project root, not absolutely: the
+            // absolute form of a scratch checkout runs past 100 columns on its
+            // own, and the reader is standing in that directory. `display_path`
+            // is the wrong tool here -- it abbreviates against XLINGS_HOME,
+            // which a project directory is not under.
+            return "./.xlings.json  ->  workspace." + target;
+        }
+    }
+    if (claims(self.globalWorkspace_)) {
+        // The global workspace lives in the ACTIVE SUBOS's file, not in
+        // `~/.xlings.json` -- naming the latter would send the user to a file
+        // that does not contain the pin.
+        return display_path(self.paths_.subosDir / ".xlings.json");
+    }
+    return {};
+}
+
 [[nodiscard]] const xvm::Workspace& Config::workspace() {
     auto& self = instance_();
     if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalWorkspace_;

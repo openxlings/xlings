@@ -1,5 +1,7 @@
 module xlings.core.xvm.errors;
 
+import xlings.core.version_order;
+
 import std;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.db;
@@ -234,6 +236,47 @@ XvmUserError describe(const BindingError& error, std::string provider) {
         .version = error.version,
         .hint = std::string(hint),
     };
+}
+
+diag::Diagnostic not_in_subos(const NotInSubos& what) {
+    diag::Diagnostic d {
+        .code    = "xvm.not_in_subos",
+        .summary = std::format("{} is not installed in this subos ({})",
+                               what.target,
+                               what.subos.empty() ? "default" : what.subos),
+        .nothingChanged = what.nothingChanged,
+    };
+
+    // Naming the subos that DO have it is worth more than listing versions,
+    // because it turns "why is this missing" into a two-word answer, so it
+    // goes first when the caller bothered to look.
+    if (!what.otherSubos.empty()) {
+        std::string list;
+        for (const auto& n : what.otherSubos) {
+            if (!list.empty()) list += ", ";
+            list += n;
+        }
+        d.facts.push_back({ "installed in subos", std::move(list) });
+        d.actions.push_back({ "switch there",
+            std::format("xlings subos use {}", what.otherSubos.front()) });
+    }
+
+    if (!what.versionsElsewhere.empty()) {
+        d.facts.push_back(diag::candidates(
+            "installed elsewhere", what.versionsElsewhere, 6,
+            std::format("xlings use {} --all", what.target)));
+    }
+
+    auto pick = what.suggestedVersion;
+    if (pick.empty() && !what.versionsElsewhere.empty()) {
+        auto sorted = what.versionsElsewhere;
+        version_order::sort_desc(sorted);
+        pick = sorted.front();
+    }
+    d.actions.push_back({ "install it here",
+        pick.empty() ? std::format("xlings install {}", what.target)
+                     : std::format("xlings install {}@{}", what.target, pick) });
+    return d;
 }
 
 std::string render(const XvmUserError& error, bool nothingChanged) {

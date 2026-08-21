@@ -37,6 +37,34 @@ import xlings.core.xim.index_cmd;
 namespace xlings::cli {
 
 // ─── EventStream consumer: dispatch DataEvent to ui:: functions ───
+// Kinds that reach the wire but deliberately have no terminal renderer.
+//
+// Two different reasons, both legitimate, and the difference has to be written
+// down or the check below cannot tell either of them from "somebody forgot":
+//
+//   * capability-only -- emitted from `capabilities.cpp`, which the CLI does
+//     not route through. They exist for `xlings interface` / MCP, where the
+//     NDJSON writer serialises any kind generically.
+//   * wire duplicate -- emitted on a CLI path, but the terminal output for
+//     that path already comes from `log::` right next to the emit. The event
+//     carries the same facts in structured form for programmatic consumers.
+//     These are the ones that should eventually become `View::Document` and
+//     lose their `log::` twin; until then they are duplicated on purpose, not
+//     dropped.
+//
+// Anything NOT on this list and NOT rendered above is a screen the user never
+// sees. `subos new --from` shipped in exactly that state.
+bool kind_is_interface_only_(std::string_view kind) {
+    static constexpr std::string_view kCapabilityOnly[] = {
+        "system_info", "index_versions", "subos_shims", "repo_list", "env",
+    };
+    static constexpr std::string_view kWireDuplicate[] = {
+        "remove_blocked", "update_plan", "update_summary",
+    };
+    return std::ranges::contains(kCapabilityOnly, kind)
+        || std::ranges::contains(kWireDuplicate, kind);
+}
+
 void dispatch_data_event(const DataEvent& e) {
     auto json = nlohmann::json::parse(e.json, nullptr, false);
     if (json.is_discarded()) {
@@ -192,6 +220,10 @@ void dispatch_data_event(const DataEvent& e) {
         ui::print_subos_created(
             json.value("name", ""), json.value("dir", ""));
     }
+    else if (e.kind == "subos_forked") {
+        ui::print_subos_forked(json.value("name", ""), json.value("from", ""),
+                               json.value("base", ""));
+    }
     else if (e.kind == "subos_switched") {
         ui::print_subos_switched(
             json.value("name", ""), json.value("dir", ""));
@@ -261,8 +293,17 @@ void dispatch_data_event(const DataEvent& e) {
         auto prevLines = json.value("prevLines", 0);
         ui::render_download_progress(entries, nameWidth, elapsedSec, sizesReady, prevLines);
     }
-    else {
-        log::debug("unhandled DataEvent kind: {}", e.kind);
+    else if (!kind_is_interface_only_(e.kind)) {
+        // A screen with no renderer is a screen the user never sees, and at
+        // `debug` nobody finds out. `subos new --from` shipped in exactly this
+        // state: one emit, zero consumers, no other output on the success
+        // path -- it simply printed nothing and exited 0.
+        //
+        // Warn rather than error: an unrendered event is a gap in this
+        // frontend, not a failed command, and failing the command would be a
+        // worse bug than the one being reported.
+        log::warn("no renderer for '{}' -- this screen was dropped; "
+                  "please report it", e.kind);
     }
 }
 
@@ -729,18 +770,37 @@ int run(int argc, char* argv[]) {
             // contract has to be a property of the renderer, or every command
             // re-derives it and one of them gets it wrong. log:: itself
             // cannot do this: core does not depend on ui.
-            auto emit = [](std::string_view text, std::string_view indent) {
+            // Wrapped into ONE message with embedded newlines, not one
+            // `log::error` per wrapped line.
+            //
+            // The per-line form turned a single sentence into several
+            // independent-looking errors: a message wrapping at 100 columns
+            // produced `[error] package 'x' not found in the synced index
+            // (xim@...,` followed by `[error] dsh@..., +3 more)` -- the second
+            // half of a clause, wearing its own severity marker. `log::` already
+            // indents continuation lines to the tag width; it just had no
+            // callers using that.
+            const auto wrapped = [](std::string_view text,
+                                    std::string_view indent) {
                 const int prefix = 8  // "[error] "
                     + ui::layout::display_width(indent);
                 const int width = std::max(1,
                     ui::layout::fit_width(
                         prefix + ui::layout::display_width(text)) - prefix);
+                std::string out;
                 for (auto& line : ui::layout::wrap_to_width(text, width)) {
-                    log::error("{}{}", indent, line);
+                    if (!out.empty()) out += '\n';
+                    out += indent;
+                    out += line;
                 }
+                return out;
             };
-            emit(er->message, "");
-            if (!er->hint.empty()) emit(er->hint, "  ");
+            auto block = wrapped(er->message, "");
+            if (!er->hint.empty()) {
+                block += '\n';
+                block += wrapped(er->hint, "  ");
+            }
+            log::error("{}", block);
         }
         else if (auto* l = std::get_if<LogEvent>(&e)) {
             switch (l->level) {
@@ -765,6 +825,16 @@ int run(int argc, char* argv[]) {
         else if (a == "--agent") agent_mode = true;
     }
 
+    // Is there anyone to answer a question?
+    //
+    // Two ways to be sure there is not: the caller said so (`--agent`), or
+    // stdout is not a terminal. Either way, refusing to ask beats inventing an
+    // answer -- see EventStream::set_interactive for the removal that reported
+    // success while doing nothing.
+    if (agent_mode || !ui::layout::stdout_is_terminal()) {
+        stream.set_interactive(false);
+    }
+
     // --agent: replace TUI listener with plain-text renderer, disable colors.
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should
     // still reach the terminal, just without ANSI decoration.
@@ -778,7 +848,9 @@ int run(int argc, char* argv[]) {
                 agent::render_data_event(*d);
             }
             else if (auto* p = std::get_if<PromptEvent>(&e)) {
-                // In agent mode, auto-respond with default (use --yes for confirms)
+                // Reached only when something registered an auto-responder;
+                // an unanswerable prompt is refused inside EventStream and
+                // never emitted. Kept so a registered responder still works.
                 stream.respond(p->id, p->defaultValue);
             }
             else if (auto* er = std::get_if<ErrorEvent>(&e)) {

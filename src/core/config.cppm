@@ -367,6 +367,25 @@ public:
     // Get effective workspace: project overrides subos
     [[nodiscard]] static xvm::Workspace effective_workspace();
 
+    // WHO ASKED FOR THIS VERSION.
+    //
+    // `effective_workspace()` merges three layers and hands back the winner
+    // with no record of which layer it came from. That is fine right up until
+    // the answer is wrong: a project `.xlings.json` pinning
+    // `"mcpp": "2026.99.9.9"` made every `mcpp` invocation fail with
+    //
+    //     xlings: version '2026.99.9.9' not found for 'mcpp'
+    //
+    // and nothing anywhere named the file. The user is handed a version string
+    // they never typed and whose origin is unsearchable without grepping the
+    // disk.
+    //
+    // Returns a display string naming the file and field that set `target`,
+    // or empty when no layer claims it. Display form (`@xlings/...`, project
+    // paths relative to the project root) because it goes straight into a
+    // diagnostic.
+    [[nodiscard]] static std::string version_source(const std::string& target);
+
     // INVARIANT: a reader and its writer must resolve to the SAME map.
     //
     // They did not. `workspace_mut()` honored forceGlobalScope_ and

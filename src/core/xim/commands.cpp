@@ -13,6 +13,8 @@ import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
 import xlings.core.log;
+import xlings.core.diag;
+import xlings.core.xvm.errors;
 import xlings.core.config;
 import xlings.core.profile;
 import xlings.runtime;
@@ -31,6 +33,45 @@ import xlings.core.version_order;
 import xlings.core.xself.repair;
 
 namespace xlings::xim {
+
+// A confirmation that refuses to invent an answer.
+//
+// `EventStream::prompt` returns `kCannotAsk` when nobody is there. Mapping
+// that to "no" (or to the default) is what made `xlings remove foo --agent`
+// print "cancelled" and exit 0 while the package stayed installed -- a caller
+// reading the exit code was told the removal succeeded.
+//
+// Returns true to proceed. On refusal it has already emitted the diagnostic;
+// `*rc` carries the exit code the command should return.
+bool confirmed_or_refused_(EventStream& stream, std::string id,
+                           std::string question, std::string defaultValue,
+                           std::string_view what, int* rc) {
+    PromptEvent req;
+    req.id = std::move(id);
+    req.question = std::move(question);
+    req.options = {"y", "n"};
+    req.defaultValue = std::move(defaultValue);
+    const auto asked = req.question;
+    auto answer = stream.prompt(std::move(req));
+
+    if (answer == EventStream::kCannotAsk) {
+        diag::emit({
+            .code    = "cli.needs_confirmation",
+            .summary = "this needs confirmation, and there is nobody to ask",
+            .facts   = { { "what it would do", std::string(what) } },
+            .actions = { { "to proceed", "re-run with -y" } },
+            .nothingChanged = true,
+        });
+        *rc = 2;
+        return false;
+    }
+    if (answer != "y") {
+        log::println("cancelled");
+        *rc = 0;
+        return false;
+    }
+    return true;
+}
 
 PackageCatalog& get_catalog(CatalogAccess access) {
     static PackageCatalog mgr;
@@ -507,15 +548,11 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
 
     // Confirm via EventStream prompt
     if (!allAlreadyInstalled && !yes) {
-        PromptEvent confirmReq;
-        confirmReq.id = "confirm_install";
-        confirmReq.question = "Proceed with installation?";
-        confirmReq.options = {"y", "n"};
-        confirmReq.defaultValue = "y";
-        auto answer = stream.prompt(std::move(confirmReq));
-        if (answer != "y") {
-            log::println("cancelled");
-            return 0;
+        int rc = 0;
+        if (!confirmed_or_refused_(stream, "confirm_install",
+                                   "Proceed with installation?", "y",
+                                   "install the packages listed above", &rc)) {
+            return rc;
         }
     }
 
@@ -760,16 +797,21 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                 // than removes, and the cross-subos refcount path would then
                 // report "✓ removed (subos: tmp)" for a version the user never
                 // had. Refuse, and say where it actually lives.
-                log::warn("xlings: '{}' is not installed in current subos '{}'",
-                          bareName, subos);
-                std::string list;
-                for (auto& n : referencing) {
-                    if (!list.empty()) list += ", ";
-                    list += n;
-                }
-                log::warn("  installed in subos: {}", list);
-                log::warn("  hint: `xlings subos use {}` then `xlings remove {}`",
-                          referencing.front(), bareName);
+                // Same builder as `use` and the shim: one wording, one code.
+                // Level stays Warn and the exit code stays 0 -- `remove` of
+                // something that is not here is a no-op scripts re-run
+                // defensively, which is a different contract from `use`.
+                auto d = xvm::not_in_subos({
+                    .target     = bareName,
+                    .subos      = subos,
+                    .otherSubos = referencing,
+                });
+                d.level = diag::Level::Warn;
+                d.summary = std::format(
+                    "{} is not installed in this subos ({}), so there is "
+                    "nothing to remove", bareName,
+                    subos.empty() ? "default" : subos);
+                diag::emit(d);
                 return 0;
             }
 
@@ -867,9 +909,15 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                     // `removed.*subos` summary), so keep it -- with a visible
                     // diagnostic, and without breaking scripts that re-run
                     // `remove` defensively.
-                    log::warn(
-                        "xlings: '{}' is not installed in current subos '{}'",
-                        bareName, subos);
+                    diag::emit({
+                        .level   = diag::Level::Warn,
+                        .code    = "xim.remove_absent",
+                        .summary = std::format(
+                            "{} is not installed in this subos ({}), so there "
+                            "is nothing to remove", bareName,
+                            subos.empty() ? "default" : subos),
+                        .actions = { { "see what is here", "xlings list" } },
+                    });
                     return 0;
                 }
             }
@@ -1127,16 +1175,16 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
         std::string suffix = displayVersion.empty()
             ? std::string{}
             : "@" + displayVersion;
-        PromptEvent confirmReq;
-        confirmReq.id = "confirm_remove";
-        confirmReq.question = std::format(
-            "Remove {}{} from subos '{}' ?", displayName, suffix, subos);
-        confirmReq.options = {"y", "n"};
-        confirmReq.defaultValue = "n";
-        auto answer = stream.prompt(std::move(confirmReq));
-        if (answer != "y") {
-            log::println("cancelled");
-            return 0;
+        int rc = 0;
+        if (!confirmed_or_refused_(
+                stream, "confirm_remove",
+                std::format("Remove {}{} from subos '{}' ?",
+                            displayName, suffix, subos),
+                "n",
+                std::format("remove {}{} from subos '{}'",
+                            displayName, suffix, subos),
+                &rc)) {
+            return rc;
         }
     }
 
@@ -1698,17 +1746,16 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     }
 
     if (!yes) {
-        PromptEvent confirmReq;
-        confirmReq.id = "confirm_update";
-        confirmReq.question = std::format(
-            "Upgrade {} from {} to {} ?",
-            match->canonicalName, currentActive, latest);
-        confirmReq.options = {"y", "n"};
-        confirmReq.defaultValue = "y";
-        auto answer = stream.prompt(std::move(confirmReq));
-        if (answer != "y") {
-            log::println("cancelled");
-            return 0;
+        int rc = 0;
+        if (!confirmed_or_refused_(
+                stream, "confirm_update",
+                std::format("Upgrade {} from {} to {} ?",
+                            match->canonicalName, currentActive, latest),
+                "y",
+                std::format("upgrade {} from {} to {}",
+                            match->canonicalName, currentActive, latest),
+                &rc)) {
+            return rc;
         }
     }
 

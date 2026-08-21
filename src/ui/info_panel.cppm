@@ -130,6 +130,13 @@ namespace subos_ansi_ {
 
 void print_subos_created(const std::string& name, const std::string& dir);
 
+// `subos new --from <base>` returns through a different function than plain
+// `subos new`, and that branch emitted a DataEvent nobody rendered -- so the
+// whole success path was silent. One flag apart, one branch printed a panel
+// and the other said nothing at all.
+void print_subos_forked(const std::string& name, const std::string& from,
+                        const std::string& dir);
+
 void print_subos_switched(const std::string& name, const std::string& dir);
 
 void print_subos_removed(const std::string& name);
