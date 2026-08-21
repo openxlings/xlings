@@ -102,8 +102,15 @@ Log "node --version (without XLINGS_PROJECT_DIR): $nodeErr"
 if ($nodeRc -eq 0) {
     Fail "shim without XLINGS_PROJECT_DIR should have failed"
 }
-if ($nodeErr -notmatch "xlings:") {
+# See the .sh sibling: "xlings:" was one of three prefixes this condition used
+# to carry, and 2026.8.22.1 collapsed them into one wording with none. Assert
+# what actually means "xlings spoke, not node" -- the severity marker and the
+# diagnostic itself. `-match` is a regex, so the brackets are escaped.
+if ($nodeErr -notmatch "\[error\]") {
     Fail "expected xlings shim error without XLINGS_PROJECT_DIR (got: $nodeErr)"
+}
+if ($nodeErr -notmatch "is not installed in this subos") {
+    Fail "expected the not-in-subos diagnostic (got: $nodeErr)"
 }
 
 # Cleanup temp dir

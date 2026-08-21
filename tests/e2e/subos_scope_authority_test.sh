@@ -133,7 +133,11 @@ RUN_PROJ install sc-probe -y >/dev/null 2>&1 || fail "S3: project install failed
   || fail "S3: project install did not create the shim in the project subos"
 
 out="$(RUN_PROJ remove sc-probe -y 2>&1 || true)"
-if grep -q "is not installed in current subos" <<<"$out"; then
+# NEGATIVE assertion, so the pattern has to track the message or it stops
+# testing without failing. 2026.8.22.1 collapsed six wordings for this state
+# into one and dropped "current" for "this"; the old literal would now never
+# match and this check would pass vacuously forever.
+if grep -qE "is not installed in (this|current) subos" <<<"$out"; then
   fail "S3: remove looked in a different subos than install wrote to; got:\n$out"
 fi
 if [[ -e "$PROJ_BIN/sc-probe" ]]; then

@@ -16,6 +16,7 @@ const CommandSpec& root() {
             {"--agent", "Use stable plain-text output", true},
             {"-v, --verbose", "Enable verbose output", true},
             {"-q, --quiet", "Suppress non-essential output", true},
+            {"--ui-mode <MODE>", "Frontend for this run (cli/tui/auto)", true},
         },
         .children = {
             {"install", "Install packages", {}, {{"packages", "Package names", false, true}},
@@ -34,7 +35,7 @@ const CommandSpec& root() {
             {"use", "Switch tool version", {}, {{"target", "Tool name", true}, {"version", "Optional version", false}},
                 {{"-a, --all", "Show every subos"}, {"--strict", "Require a coherent release"}}, {}},
             {"config", "Show or modify configuration", {}, {},
-                {{"--lang <LANG>", "Set language"}, {"--mirror <MIRROR>", "Set mirror"}, {"--add-xpkg <FILE>", "Add package recipe"}, {"--index-repo <NS:URL>", "Add index repository"}}, {}},
+                {{"--lang <LANG>", "Set language"}, {"--mirror <MIRROR>", "Set mirror"}, {"--ui-mode <MODE>", "Set UI mode (cli/tui/auto)"}, {"--theme <THEME>", "Set colour theme (name, path, or list)"}, {"--interactive <BOOL>", "Inline prompts in tui mode"}, {"--add-xpkg <FILE>", "Add package recipe"}, {"--index-repo <NS:URL>", "Add index repository"}}, {}},
             {"subos", "Manage SubOS environments", {}, {}, {}, {
                 {"new", "Create a SubOS", {}, {{"name", "SubOS name", true}}, {{"--storage <MODE>", "shared, tmpfs or image"}, {"--image-size <SIZE>", "Image size"}, {"--from <SOURCE>", "Fork source"}, {"--runtime <SPEC>", "Runtime binding, e.g. glibc@2.44"}}, {}},
                 {"use", "Enter a SubOS", {}, {{"name", "Optional SubOS name; omit to list candidates", false}}, {{"--global", "Persist the active SubOS"}, {"--shell [KIND]", "Emit shell activation code"}, {"--sandbox [BACKEND]", "Enable sandbox (bwrap or proot on Linux)"}, {"--cmd <COMMAND>", "Run one command"}, {"--keep", "Keep the namespace keeper"}, {"--no-keep", "Disable the namespace keeper"}, {"--ttl <SECONDS>", "Keeper idle timeout"}, {"--gpu", "Expose GPU devices (bwrap only)"}}, {}},

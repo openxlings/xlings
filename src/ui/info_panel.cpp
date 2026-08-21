@@ -1,5 +1,15 @@
 module;
 
+// For `stdout`. Every `std::println` below names its stream: the stream-less
+// overload makes clang instantiate `basic_format_string` with the format string
+// itself as an argument, and whether it does depends on what else the
+// translation unit imports -- xim/commands.cpp compiled under clang for months
+// with five such calls until one unrelated `import` was added to it. Not
+// something a reader of this file can predict, so it is removed rather than
+// managed. `stdout` currently arrives via the ftxui headers; relying on that
+// is the same class of accident.
+#include <cstdio>
+
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "ftxui/screen/color.hpp"
@@ -319,16 +329,16 @@ void print_subos_list(
 }
 
 void print_subos_resolved(std::string_view query, std::string_view selected) {
-    std::println("{}  {} resolved subos '{}' -> {}{}{}{}",
+    std::println(stdout, "{}  {} resolved subos '{}' -> {}{}{}{}",
                  palette::fg(palette::cyan()), theme::icon::arrow, query,
                  palette::strong(), selected, palette::off(), palette::off());
 }
 
 void print_subos_created(const std::string& name, const std::string& dir) {
     using namespace subos_ansi_;
-    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
+    std::println(stdout, "{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
     if (!dir.empty()) {
-        std::println("{}    dir:{} {}", gray(), reset(), dir);
+        std::println(stdout, "{}    dir:{} {}", gray(), reset(), dir);
     }
 }
 
@@ -338,10 +348,10 @@ void print_subos_forked(const std::string& name, const std::string& from,
     // Says what plain `subos new` cannot: which base this one came from. That
     // is the whole reason the user passed `--from`, so leaving it out would
     // make the fixed output answer a question nobody asked.
-    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done,
+    std::println(stdout, "{}  {} subos created: {}{}{}{}", green(), theme::icon::done,
                  bold(), name, reset(), reset());
-    if (!from.empty()) std::println("{}    from:{} {}", gray(), reset(), from);
-    if (!dir.empty())  std::println("{}    dir:{}  {}", gray(), reset(), dir);
+    if (!from.empty()) std::println(stdout, "{}    from:{} {}", gray(), reset(), from);
+    if (!dir.empty())  std::println(stdout, "{}    dir:{}  {}", gray(), reset(), dir);
 }
 
 void print_subos_switched(const std::string& name, const std::string& dir) {
@@ -349,35 +359,35 @@ void print_subos_switched(const std::string& name, const std::string& dir) {
     // [global] tag distinguishes the persistent "--global" action from the
     // per-shell spawn (which is the default `xlings subos use NAME`).
     if (dir.empty()) {
-        std::println("{}  {} switched to subos {}{}{}{}  [global]{}",
+        std::println(stdout, "{}  {} switched to subos {}{}{}{}  [global]{}",
                      cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), reset());
     } else {
-        std::println("{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
+        std::println(stdout, "{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
                      cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), dir, reset());
     }
 }
 
 void print_subos_removed(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
+    std::println(stdout, "{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
 }
 
 void print_subos_entering(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
+    std::println(stdout, "{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
                  magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), reset());
 }
 
 void print_subos_already_in(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} already in subos {}{}{}{}",
+    std::println(stdout, "{}  {} already in subos {}{}{}{}",
                  gray(), theme::icon::info, bold(), name, reset(), gray());
     std::print("{}", reset());
 }
 
 void print_subos_nesting(const std::string& from, const std::string& to) {
     using namespace subos_ansi_;
-    std::println("{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
+    std::println(stdout, "{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
                  amber(), theme::icon::extracting,
                  bold(), from, reset(), amber(),
                  bold(), to, reset(), amber(),
