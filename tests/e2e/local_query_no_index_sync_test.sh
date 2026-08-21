@@ -113,7 +113,10 @@ run_local "help" 'Usage:|xlings' --help
 run_local "version" '[0-9]+\.[0-9]+' --version
 
 log "remove lookup"
-run_local "remove" 'not installed in current subos|package index not available' remove gcc -y
+# "in this subos" since 2026.8.22.1, when six wordings for this state collapsed
+# into one; "current" kept so the check still means something if this test is
+# ever run against an older binary.
+run_local "remove" 'not installed in (this|current) subos|package index not available' remove gcc -y
 
 # Interface mode owns stdin for control messages while a capability runs.
 # Give it one list_packages request, close stdin immediately, and require the
