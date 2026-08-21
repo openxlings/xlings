@@ -67,17 +67,27 @@ struct Detected {
 
 [[nodiscard]] Detected detect();
 
+// Where a mode preference came from.
+//
+// It decides whether a degradation is worth announcing, and the distinction is
+// not cosmetic. `--ui-mode tui` typed on THIS invocation is a demand: silently
+// doing something else is how a user concludes the flag does nothing. A stored
+// `"uiMode": "tui"` is a preference, and piping the output of a command is the
+// everyday way to not honour it -- announcing that on every `xlings list |
+// grep foo` would be a line of noise per invocation, forever.
+enum class PreferenceOrigin { Flag, Config };
+
 // Resolve mode from preference + environment.
 //
-// `preferred` is nullopt for "auto". Returns the mode AND, when the answer is
-// not what was asked for, a reason -- because silent degradation is how a user
-// ends up believing they configured something that never took effect.
+// `preferred` is nullopt for "auto". Returns the mode AND, when a DEMAND could
+// not be met, a reason.
 struct Resolution {
     UiMode mode { UiMode::Cli };
-    std::string degradedReason;   // empty when the preference was honored
+    std::string degradedReason;   // empty when nothing worth announcing happened
 };
 
 [[nodiscard]] Resolution resolve(std::optional<UiMode> preferred,
+                                 PreferenceOrigin origin,
                                  bool agentMode,
                                  const Detected& env);
 

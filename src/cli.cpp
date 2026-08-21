@@ -1036,7 +1036,9 @@ int run(int argc, char* argv[]) {
     // assemble a third.
     {
         std::optional<ui::UiMode> preferred;
+        auto origin = ui::PreferenceOrigin::Config;
         if (!uiModeFlag.empty() && uiModeFlag != "auto") {
+            origin = ui::PreferenceOrigin::Flag;
             preferred = ui::parse_mode(uiModeFlag);
             if (!preferred) {
                 diag::emit({
@@ -1052,7 +1054,7 @@ int run(int argc, char* argv[]) {
         }
 
         const auto env = ui::detect();
-        const auto resolved = ui::resolve(preferred, agent_mode, env);
+        const auto resolved = ui::resolve(preferred, origin, agent_mode, env);
         // Degrading in silence is how a user concludes a setting does nothing.
         if (!resolved.degradedReason.empty()) {
             diag::emit({

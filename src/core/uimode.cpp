@@ -31,24 +31,29 @@ UiCapabilities gCaps_ {};
 }
 
 [[nodiscard]] Resolution resolve(std::optional<UiMode> preferred,
+                                 PreferenceOrigin origin,
                                  bool agentMode,
                                  const Detected& env) {
+    // Only a demand made on this invocation is worth reporting when it cannot
+    // be met; see PreferenceOrigin.
+    const auto because = [&](std::string reason) {
+        return origin == PreferenceOrigin::Flag ? std::move(reason)
+                                                : std::string{};
+    };
     // --agent is not a rendering; it is "there is a machine on the other end".
     // It pins cli because a machine wants stable plain text, and it outranks a
     // configured preference because it was typed on this invocation.
     if (agentMode) {
         if (preferred == UiMode::Tui) {
-            return { UiMode::Cli, "--agent was passed, which implies plain text" };
+            return { UiMode::Cli,
+                     because("--agent was passed, which implies plain text") };
         }
         return { UiMode::Cli, {} };
     }
 
     if (!env.stdoutIsTerminal) {
         if (preferred == UiMode::Tui) {
-            // Say so. A user who put `"uiMode": "tui"` in their config and
-            // pipes the output should learn why it looks different, not
-            // conclude the setting does nothing.
-            return { UiMode::Cli, "stdout is not a terminal" };
+            return { UiMode::Cli, because("stdout is not a terminal") };
         }
         return { UiMode::Cli, {} };
     }
