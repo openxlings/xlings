@@ -80,6 +80,11 @@ struct NotInSubos {
     // The version to offer installing here. Empty picks the newest of
     // `versionsElsewhere`.
     std::string suggestedVersion;
+    // Where the request for this target came from, when a config layer set
+    // it. Without this, a project pinning `"demo": "9.9.9"` produced "demo is
+    // not installed in this subos" and the user was never told which file
+    // asked for demo in the first place.
+    std::string source;
     // True when the caller has verified nothing was written.
     bool nothingChanged { false };
 };

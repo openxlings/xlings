@@ -376,6 +376,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
             .target           = target,
             .subos            = Config::subos_scope().name,
             .suggestedVersion = resolved,
+            .source           = Config::version_source(target),
             .nothingChanged   = true,
         }));
         return 1;
@@ -698,6 +699,7 @@ collect_version_candidates_(const std::string& target, bool all) {
             .target            = target,
             .subos             = Config::subos_scope().name,
             .versionsElsewhere = global_all,
+            .source            = Config::version_source(target),
         });
         if (!global_all.empty()) {
             d.actions.push_back({ "see every subos",

@@ -17,30 +17,6 @@ version = "6.1.9"
 source  = "index+compat@6.1.9"
 hash    = "fnv1a:6ecc43e2f9201d7d"
 
-[package."compat.glfw"]
-namespace = "compat"
-version = "3.4"
-source  = "index+compat@3.4"
-hash    = "fnv1a:25c182a9f7ad22a1"
-
-[package."compat.glx-runtime"]
-namespace = "compat"
-version = "2026.08.08"
-source  = "index+compat@2026.08.08"
-hash    = "fnv1a:40611099934b5eff"
-
-[package."compat.imgui"]
-namespace = "compat"
-version = "1.92.8-docking"
-source  = "index+compat@1.92.8-docking"
-hash    = "fnv1a:0147c1b9ebe57377"
-
-[package."compat.khrplatform"]
-namespace = "compat"
-version = "2026.05.31"
-source  = "index+compat@2026.05.31"
-hash    = "fnv1a:82c86f54b19de49e"
-
 [package."compat.libarchive"]
 namespace = "compat"
 version = "3.8.7"
@@ -65,96 +41,6 @@ version = "3.6.1"
 source  = "index+compat@3.6.1"
 hash    = "fnv1a:83dea67ac1379be3"
 
-[package."compat.opengl"]
-namespace = "compat"
-version = "2026.05.31"
-source  = "index+compat@2026.05.31"
-hash    = "fnv1a:e669f321c29172f4"
-
-[package."compat.x11"]
-namespace = "compat"
-version = "1.8.13"
-source  = "index+compat@1.8.13"
-hash    = "fnv1a:f2208fbdecbd67e3"
-
-[package."compat.xau"]
-namespace = "compat"
-version = "1.0.12"
-source  = "index+compat@1.0.12"
-hash    = "fnv1a:62167ef821a42a07"
-
-[package."compat.xcb"]
-namespace = "compat"
-version = "1.17.0"
-source  = "index+compat@1.17.0"
-hash    = "fnv1a:683e5d9f1b4ca3cb"
-
-[package."compat.xcb-proto"]
-namespace = "compat"
-version = "1.17.0"
-source  = "index+compat@1.17.0"
-hash    = "fnv1a:a5ed9c026c060332"
-
-[package."compat.xcursor"]
-namespace = "compat"
-version = "1.2.3"
-source  = "index+compat@1.2.3"
-hash    = "fnv1a:6c8d04b4e9e8390a"
-
-[package."compat.xdmcp"]
-namespace = "compat"
-version = "1.1.5"
-source  = "index+compat@1.1.5"
-hash    = "fnv1a:b0f0a73de4cb877b"
-
-[package."compat.xext"]
-namespace = "compat"
-version = "1.3.7"
-source  = "index+compat@1.3.7"
-hash    = "fnv1a:1e964da43fd3b960"
-
-[package."compat.xfixes"]
-namespace = "compat"
-version = "6.0.2"
-source  = "index+compat@6.0.2"
-hash    = "fnv1a:595eff4f776220dd"
-
-[package."compat.xi"]
-namespace = "compat"
-version = "1.8.3"
-source  = "index+compat@1.8.3"
-hash    = "fnv1a:32c77b1830ad7e41"
-
-[package."compat.xinerama"]
-namespace = "compat"
-version = "1.1.6"
-source  = "index+compat@1.1.6"
-hash    = "fnv1a:393cd8d49a290f6e"
-
-[package."compat.xorgproto"]
-namespace = "compat"
-version = "2025.1"
-source  = "index+compat@2025.1"
-hash    = "fnv1a:5e6da43addccb21e"
-
-[package."compat.xrandr"]
-namespace = "compat"
-version = "1.5.5"
-source  = "index+compat@1.5.5"
-hash    = "fnv1a:909de0a858912daf"
-
-[package."compat.xrender"]
-namespace = "compat"
-version = "0.9.12"
-source  = "index+compat@0.9.12"
-hash    = "fnv1a:1e14b9d690cdaa0b"
-
-[package."compat.xtrans"]
-namespace = "compat"
-version = "1.6.0"
-source  = "index+compat@1.6.0"
-hash    = "fnv1a:415789d6fb481fdf"
-
 [package."compat.xz"]
 namespace = "compat"
 version = "5.8.3"
@@ -178,12 +64,6 @@ namespace = "mcpplibs"
 version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:8ee8a8e51ac69885"
-
-[package."imgui"]
-namespace = "mcpplibs"
-version = "0.0.6"
-source  = "index+mcpplibs@0.0.6"
-hash    = "fnv1a:056bca285e74a794"
 
 [package."mcpplibs.tinyhttps"]
 namespace = "mcpplibs"

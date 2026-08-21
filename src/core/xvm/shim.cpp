@@ -440,6 +440,7 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
                 .target            = program_name,
                 .subos             = Config::subos_scope().name,
                 .versionsElsewhere = get_all_versions(db, program_name),
+                .source            = Config::version_source(program_name),
             }));
         } else {
             // Genuinely different state: opted into this subos, but nothing is

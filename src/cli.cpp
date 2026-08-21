@@ -1055,21 +1055,35 @@ int run(int argc, char* argv[]) {
                 .facts   = { { "why", resolved.degradedReason } },
             });
         }
+        // Interactive prompting is OPT-IN, not on by default.
+        //
+        // The obvious default is "on for terminals", and it is wrong. E2E-48
+        // (non_interactive_contract_test.sh, N3) locks down the reason: a pty
+        // is not evidence that a human is there. Agents and automation
+        // routinely allocate one, so "is this a terminal" selects the
+        // BLOCKING branch for exactly the callers that cannot answer. That
+        // picker was removed on purpose in 2026.7.30 and `--pick`, its
+        // explicit door, was removed with it.
+        //
+        // A stored preference is different in kind: `xlings config
+        // --interactive true` is a promise that somebody will be at the
+        // keyboard, made once, by the person who would be. That is the signal
+        // a tty never was.
         ui::set_current(resolved.mode,
                         ui::capabilities_of(resolved.mode,
-                                            Config::tui_interactive().value_or(true),
+                                            Config::tui_interactive().value_or(false),
                                             agent_mode, env));
     }
 
     // Is there anyone to answer a question?
     //
-    // Two ways to be sure there is not: the caller said so (`--agent`), or
-    // stdout is not a terminal. Either way, refusing to ask beats inventing an
-    // answer -- see EventStream::set_interactive for the removal that reported
-    // success while doing nothing.
-    if (agent_mode || !ui::layout::stdout_is_terminal()) {
-        stream.set_interactive(false);
-    }
+    // One answer, resolved above: an explicit preference, gated by whether a
+    // terminal is even attached and whether the caller announced itself as a
+    // machine. Asking `ui::` rather than re-deriving it here is the point --
+    // the version of this that tested `!agent_mode && stdout_is_terminal()`
+    // locally was a second opinion, and second opinions are what this whole
+    // change is about.
+    stream.set_interactive(ui::current_capabilities().interactive);
 
     // --agent: replace TUI listener with plain-text renderer, disable colors.
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should

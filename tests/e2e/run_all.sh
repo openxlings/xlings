@@ -116,6 +116,7 @@ TESTS=(
     "E2E-58 |arch_evidence_contract_test.sh||"
     "E2E-59 |index_version_contract_test.sh||"
     "E2E-60 |subos_env_declaration_test.sh||"
+    "E2E-61 |diagnostics_contract_test.sh||"
     "E2E-61 |subos_env_probe_compat_test.sh||"
     "E2E-62 |loader_libc_same_source_test.sh||"
     "E2E-63 |subos_env_libc_guard_test.sh||"

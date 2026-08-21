@@ -34,27 +34,48 @@ import xlings.core.xself.repair;
 
 namespace xlings::xim {
 
-// A confirmation that refuses to invent an answer.
+// A confirmation, and what to do when nobody can answer it.
 //
-// `EventStream::prompt` returns `kCannotAsk` when nobody is there. Mapping
-// that to "no" (or to the default) is what made `xlings remove foo --agent`
-// print "cancelled" and exit 0 while the package stayed installed -- a caller
-// reading the exit code was told the removal succeeded.
+// THE BUG, PRECISELY
 //
+// `--agent` used to answer every prompt with its `defaultValue`. The two
+// confirmations default in OPPOSITE directions, so one fallback meant two
+// different things:
+//
+//   confirm_install  default "y"  -> proceeds. Observable, and the documented
+//                                    behaviour (E2E-48 asserts `install <pkg>`
+//                                    completes with stdin closed).
+//   confirm_remove   default "n"  -> prints "cancelled", exits 0, and the
+//                                    package is still installed. A caller
+//                                    reading the exit code is told the
+//                                    removal succeeded.
+//
+// So the defect is not "guessing" in general -- it is guessing NO and calling
+// it success. An affirmative default performs the action and says so; a
+// negative one performs nothing and must not claim otherwise.
+//
+// Hence the policy is the caller's to state, because only the caller knows
+// which of the two its default is.
+enum class WhenNobodyCanAnswer {
+    Proceed,   // the default is affirmative: do it, as this has always done
+    Refuse,    // the default declines: stopping silently would read as success
+};
+
 // Returns true to proceed. On refusal it has already emitted the diagnostic;
 // `*rc` carries the exit code the command should return.
 bool confirmed_or_refused_(EventStream& stream, std::string id,
                            std::string question, std::string defaultValue,
-                           std::string_view what, int* rc) {
+                           std::string_view what,
+                           WhenNobodyCanAnswer policy, int* rc) {
     PromptEvent req;
     req.id = std::move(id);
     req.question = std::move(question);
     req.options = {"y", "n"};
-    req.defaultValue = std::move(defaultValue);
-    const auto asked = req.question;
+    req.defaultValue = defaultValue;
     auto answer = stream.prompt(std::move(req));
 
     if (answer == EventStream::kCannotAsk) {
+        if (policy == WhenNobodyCanAnswer::Proceed) return true;
         diag::emit({
             .code    = "cli.needs_confirmation",
             .summary = "this needs confirmation, and there is nobody to ask",
@@ -551,7 +572,8 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         int rc = 0;
         if (!confirmed_or_refused_(stream, "confirm_install",
                                    "Proceed with installation?", "y",
-                                   "install the packages listed above", &rc)) {
+                                   "install the packages listed above",
+                                   WhenNobodyCanAnswer::Proceed, &rc)) {
             return rc;
         }
     }
@@ -1183,7 +1205,7 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                 "n",
                 std::format("remove {}{} from subos '{}'",
                             displayName, suffix, subos),
-                &rc)) {
+                WhenNobodyCanAnswer::Refuse, &rc)) {
             return rc;
         }
     }
@@ -1754,7 +1776,7 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
                 "y",
                 std::format("upgrade {} from {} to {}",
                             match->canonicalName, currentActive, latest),
-                &rc)) {
+                WhenNobodyCanAnswer::Proceed, &rc)) {
             return rc;
         }
     }

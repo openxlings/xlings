@@ -21,7 +21,11 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `mirror` | `string` | 镜像标识，影响默认 index 仓库 URL 及资源服务器选择 |
-| `lang` | `string` | 界面语言（如 `"zh"`、`"en"`） |
+| `lang` | `string` | 界面语言：`"auto"`（默认，跟随系统）/ `"zh"` / `"en"` |
+| `uiMode` | `string` | 前端：`"auto"`（默认）/ `"cli"` / `"tui"`。详见 [diagnostics.md](diagnostics.md#7-前端与模式) |
+| `theme` | `string` | 配色主题的**路径引用**，或自带主题的名字。详见 [themes.md](themes.md) |
+| `tui` | `object` | tui 前端自己的设置。目前只有 `interactive`（布尔，默认 `false`）|
+| `hintsSeen` | `array` | 已经展示过的一次性提示 id。由 xlings 维护，不需要手写 |
 | `activeSubos` | `string` | 当前激活的全局 SubOS 名称 |
 | `versions` | `object` | 全局版本数据库，键为**目标名**（不一定是包名），值见下方"versions 条目格式" |
 | `version` | `string` | 建立/最后体检这个 home 的 xlings 版本。`self doctor --fix` 成功后写入，用来判断包记录是否还是旧客户端的格式 |
@@ -130,6 +134,9 @@
 | `subos` | `string` | 项目绑定的命名 SubOS 名称 |
 | `mirror` | `string` | 覆盖全局镜像设置 |
 | `lang` | `string` | 覆盖全局语言设置 |
+| `uiMode` | `string` | 覆盖全局前端设置 |
+| `theme` | `string` | 覆盖全局主题；相对路径按**项目根**解析，所以项目可以自带配色 |
+| `tui` | `object` | 覆盖全局 tui 设置 |
 | `index_repos` | `array` | 项目级索引仓库（格式同全局） |
 | `XLINGS_RES` | `object \| string \| array` | 项目级资源服务器（格式同全局） |
 

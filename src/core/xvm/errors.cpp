@@ -244,6 +244,7 @@ diag::Diagnostic not_in_subos(const NotInSubos& what) {
         .summary = std::format("{} is not installed in this subos ({})",
                                what.target,
                                what.subos.empty() ? "default" : what.subos),
+        .source  = what.source,
         .nothingChanged = what.nothingChanged,
     };
 
