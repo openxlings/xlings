@@ -2,7 +2,7 @@
 # path. The frontends belong here as they land; `theme` is first because it is
 # a genuine leaf and every frontend needs it.
 [workspace]
-members = ["libs/theme"]
+members = ["libs/theme", "ui/gui"]
 
 [package]
 name = "xlings"
@@ -22,6 +22,24 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 [targets.xlings]
 kind = "bin"
 main = "src/main.cpp"
+
+# The graphical frontend is its OWN binary, not another way for `xlings` to
+# draw. Measured: static musl's dlopen is a stub, and GLFW/GL find X11,
+# Wayland and the driver through dlopen -- so the release binary cannot open a
+# window whatever it is built with. `required_features` makes it a silent skip
+# there rather than a build failure, and `xlings install xlings-gui` is how a
+# Linux user gets one (the graphics stack is already closed in the index).
+[targets.xlings-gui]
+kind = "bin"
+main = "apps/gui/main.cpp"
+required_features = ["gui"]
+
+[features]
+default = []
+gui = []
+
+[feature-deps.gui]
+ui-gui = { path = "ui/gui" }
 
 [toolchain]
 default = "gcc@16.1.0"
