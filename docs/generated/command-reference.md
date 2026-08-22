@@ -10,7 +10,7 @@
 
 Universal package management and SubOS environments
 
-Options: `-h, --help` — Show help for the selected command; `--version` — Show version; `-y, --yes` — Skip confirmation prompts; `--agent` — Use stable plain-text output; `-v, --verbose` — Enable verbose output; `-q, --quiet` — Suppress non-essential output
+Options: `-h, --help` — Show help for the selected command; `--version` — Show version; `-y, --yes` — Skip confirmation prompts; `--agent` — Use stable plain-text output; `-v, --verbose` — Enable verbose output; `-q, --quiet` — Suppress non-essential output; `--ui-mode <MODE>` — Frontend for this run (cli/tui/auto)
 
 ## `xlings install [packages]...`
 
@@ -58,7 +58,7 @@ Options: `-a, --all` — Show every subos; `--strict` — Require a coherent rel
 
 Show or modify configuration
 
-Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--add-xpkg <FILE>` — Add package recipe; `--index-repo <NS:URL>` — Add index repository
+Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--index-repo <NS:URL>` — Add index repository
 
 ## `xlings subos`
 
