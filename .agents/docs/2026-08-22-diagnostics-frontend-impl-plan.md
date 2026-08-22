@@ -192,3 +192,35 @@
 2. **T15 的拒绝策略**:一刀切拒绝会破坏 `install <pkg>`(不带 `-y`)完成这个被断言的行为。缺陷不是"猜",是"猜否并称之为成功" —— 策略交给调用方声明。
 
 **两个平台陷阱**(本地 `mcpp build --toolchain llvm@20.1.7` gate 抓到):`\x` 转义吃掉后续 hex 位;无 stream 的 `std::println` 在 clang 下把格式串当参数 —— 后者的触发条件是"这个 TU 还 import 了什么",从文件本身无法预测。
+
+---
+
+## 追加轮次(2026.8.22.2 / PR #557)
+
+来源:用户在真实使用 2026.8.22.1 后的反馈 —— 项目钉住的版本没装时,那条提示还是红色 `[error]`,列了 5 个版本,并且让用户手输 `xlings install mcpp@2026.9.17.1`。三点都对。
+
+**改动**
+
+1. **`Warn` 而非 `Error`,退出码仍为 1。** 严重级说"这有多糟",退出码说"发生了什么",两者允许不一致。判据写进了 `docs/spec/diagnostics.md` §3:xlings 知道确切出路的用 `Warn`,需要用户自己去找答案的用 `Error`。
+2. **动作是 `xlings install`(无参)** —— 读项目声明的那条命令。手输坐标是让用户重做项目文件已经写好的事,且项目声明多个依赖时是错的。
+3. **候选只留最新 2 个**。读者是去跑动作的,长列表把动作挤下屏幕。
+
+**写测试时发现的:同一状态有两个答案。** shim 走一条诊断,`xlings use` 走另一条(error + 一个要重敲的坐标)。这正是 2026.8.22.1 整轮在治的形状,出现在 2026.8.22.1 刚建的东西里。`not_in_subos` 现在走同一个 project 分支。
+
+**自我 review 发现的:门控问的是错的问题。**
+
+友好措辞挂在 `has_project_config()` 上 —— 那回答的是"这儿有没有项目",而决定 `xlings install` 是不是正确建议的,是**哪一层钉的这个版本**。该命令只读向上找到的 `.xlings.json`;全局 subos 文件和 project-subos 文件同样钉版本、同样渲染 `from` 行,它都不读。于是一个全局钉住的程序,在一个因别的原因有项目文件的目录里,得到:
+
+```
+[warn] this project asks for a version of demo that is not installed yet
+  from                  .../proj/.xlings/subos/_/.xlings.json
+  set this project up   xlings install
+```
+
+三处都错:项目没要求它、`from` 指的不是项目清单、给的命令会装别的然后退出 0 —— **succeeded-having-done-nothing,由治 succeeded-having-done-nothing 的改动生产出来**。
+
+`version_source` 本来就算出了是哪一层却把它丢掉,4 个调用方再各自用代理重建。现在是 `version_origin`,一次返回两半,代理在这儿已经没法拼出来了。
+
+**测试**:E2E-61 加 S2b(级别 / 措辞 / 动作必须是无参 install)与 S2c(全局钉 + 项目文件同时存在)。S2c 在旧代理门控下**实测失败**,上面那段就是它的失败输出 —— 否则它和"没有违规"无法区分。
+
+写 S2c 时我自己先写了 `grep -qv ... || fail`,那是恒真的空断言(只要有任意一行不匹配就成立)。同一个坑本轮已经踩过一次(`subos_scope_authority` S3),现在文件里写了注释说明为什么用 `if grep; then fail`。
