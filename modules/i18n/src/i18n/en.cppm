@@ -38,6 +38,7 @@ inline constexpr Entry kEntries[] = {
     // The keys line and the picker titles. Prompts are user-facing prose and
     // are translated; what the keys DO (arrows, enter, esc) is not text the
     // user types, so the glyphs stay.
+    { "ui.select_subos",       "Which SubOS ?" },
     { "ui.select_keys",        "up/down move   enter select   esc cancel" },
     { "ui.select_package",     "Select a package" },
     // ── Subcommand descriptions ──────────────────────────

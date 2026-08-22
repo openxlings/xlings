@@ -27,8 +27,21 @@ inline constexpr Entry kEntries[] = {
       "现代化的包管理与开发环境工具" },
 
     // ── 交互提示 ─────────────────────────────────────────
+    { "ui.select_subos",       "选择一个 SubOS" },
     { "ui.select_keys",        "上下 移动   回车 选中   esc 取消" },
     { "ui.select_package",     "选择一个软件包" },
+    // ── 面板表头与交互提示(键即英文原文)──────────────
+    { "Sub-OS environments:",                        "SubOS 子系统环境:" },
+    { "Packages to install",                         "待安装的软件包" },
+    { "Package to remove:",                          "待移除的软件包:" },
+    { "Search results:",                             "搜索结果:" },
+    { "Installed packages (all subos):",             "已安装的软件包(全部子系统):" },
+    { "Installed packages (current subos):",         "已安装的软件包(当前子系统):" },
+    { "versions (all subos)",                        "的版本(全部子系统)" },
+    { "versions (current subos)",                    "的版本(当前子系统)" },
+    { "Multiple matches found. Select a package:",   "匹配到多个,选择一个软件包:" },
+    { "Proceed with installation?",                  "确认安装?" },
+
     // ── 命令 / 选项 / 参数的描述(键即英文原文)──────────
     // 见 en.cppm:spec.cpp 不做改动,英文既是源文本也是回退。
     // 命令名、旗标名、占位符不在此列 —— 那些是用户要敲的东西。

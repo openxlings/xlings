@@ -388,13 +388,40 @@ default                        mono                        high-contrast
 
 它是被 `test_i18n_coverage.py` 里那条"用户会照抄的字面量必须原样保留"的断言抓到的 —— 断言的对象选对了,就会顺带抓到与它本来目的无关的问题。
 
-### 7.4 未做
+### 7.4 第二轮追加(同一个 PR)
+
+| | 内容 | 结果 |
+|---|---|---|
+| **B** | `build_owner_coordinates` 遍历反转 | `info gcc` 1.26s → **0.14s**;输出五组逐字节一致 |
+| **I1b** | 选择器三形态,按主题选 | `default`=inline / `mono`=plain / `high-contrast`=framed |
+| **I2** | `subos use` / `remove` / `stop` 无参进入选择 | 非交互时保持原有列表与退出码 |
+| **N3** | 面板表头 i18n(8 条) | `已安装的软件包(当前子系统):` / `搜索结果:` / `SubOS 子系统环境:` / `gcc 的版本(全部子系统)` |
+| **N4** | 交互提示语 i18n | 选择器两条 + `select_package` + `confirm_install` |
+
+zh 条目从 144 增至 **155**。
+
+#### 反转的两次错误,都由测试抓到
+
+**其一,漏了 `bindingGroup` 的提前返回分支。** 带组的 pair 在原实现里只看组根、完全不走图;我把它们当成图节点,可达集变得**比原来更宽**。`ValidModernGroupCanFallBackToItsRoot` 失败。
+
+**其二,种子扫的是版本 DB 而非 `requested`。** 一个在 workspace 的 `installed[]` 里、但版本 DB 无记录的版本(inactive 且 payload 已失)永远进不了集合,于是 `list <target> --all` 少了一行。`E2E-70 query_heavy_home_test.sh` 失败。
+
+第二个尤其值得记:**它是"变快"与"少做事"的分界线上的错误** —— 输出比对做的是 `info`/`list` 在**我这台机器的 home** 上,而那个 home 恰好没有"inactive 且 payload 缺失"的版本,所以五组比对全绿。**逐字节比对只在你比对的那些输入上成立。** 抓住它的是一个专门构造了这种 fixture 的 e2e。
+
+最终形态是三类来源分别建模:
+
+| 来源 | 匹配后的效果 | 代价 |
+|---|---|---|
+| `direct` / `payload`(走图时每个节点都会贡献) | 扩散到整个连通分量 | 一次 BFS |
+| `provider`(只有起始 pair 贡献) | 只匹配该 pair 自己 | 无 |
+| `bindingGroup`(原本就不走图) | 逐 pair 直查 | 无 |
+| `requested` 中而 DB 无记录 | 逐 pair 直查兜底 | 无 |
+
+### 7.5 未做
 
 | | 为什么 |
 |---|---|
-| **P2** `info` 的剩余 1.26s | 需要把标识符 intern 成整数索引,是动 `list`/`doctor`/`remove` 共用路径的结构性改动,单独立项 |
-| **I2–I4** 交互扩到 31 处 | §3.3 的 14–30 项;本轮先把选择器形态与 `config` 五项做定,形态定了再批量接入 |
-| **N3** 面板表头 i18n | `subos use` 的列表标题等约 12 处 |
-| **N4** 交互提示语 i18n | 选择器的两条已接(`ui.select_keys` / `ui.select_package`),其余 6 处待接 |
+| **I3–I4** 交互 18–30 项 | §3.3 中优先级为中/低的十余项;高优先四项(14–17)已完成 |
+| 标识符 intern 化 | `info` 已达 0.14s,进一步优化没有需求驱动;记录在 §1.3 备查 |
 
 **i18n 当前条目数:144(zh),覆盖底线 100 已由 `test_i18n_coverage.py` 钉住。**

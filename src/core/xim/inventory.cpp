@@ -416,6 +416,23 @@ RelatedCoordinates build_owner_coordinates(const xvm::VersionDB& db, const std::
                     [&](const auto& c) { return candidate_may_match(c, filter, match); });
             } else {
                 mayMatch = couldMatch->contains(pair);
+                if (!mayMatch) {
+                    // The reachable set is seeded from the version DB, and a
+                    // requested pair need not have a record there -- an
+                    // inactive version whose payload is gone lives in a
+                    // workspace's `installed[]` and nowhere else. The old
+                    // per-pair walk started from `direct_owner_candidates_for`,
+                    // which answers for such a pair (it still yields its own
+                    // direct coordinate), so dropping it here silently lost a
+                    // row. `E2E-70` caught exactly that.
+                    //
+                    // Cheap: no walk, three coordinates.
+                    mayMatch = std::ranges::any_of(
+                        direct_owner_candidates_for(db, pair),
+                        [&](const auto& c) {
+                            return candidate_may_match(c, filter, match);
+                        });
+                }
             }
             if (!mayMatch) {
                 const auto* unique = metadata.by_short_name(pair.first);

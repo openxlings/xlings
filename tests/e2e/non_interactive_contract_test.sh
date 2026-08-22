@@ -365,6 +365,22 @@ if grep -q "probe 2.0.0" <<<"$gone"; then
 stderr: $(cat "$n9/stderr")"
 fi
 
+# ── N10: `subos use` with no name lists, and never blocks ────────────
+#
+# The shape the whole picker work is about: print 45 names, then ask the user
+# to type one of them back. It is now offered as a selection when somebody can
+# answer -- and the point of THIS test is the other half: with nobody there it
+# must still print the list and exit 0, exactly as before.
+log "N10: subos use with no name lists without blocking"
+rc="$(rc_of RUN subos use)"
+[[ "$rc" == "0" ]] || fail "N10: expected exit 0 for a listing, got $rc"
+out="$(RUN subos use 2>&1 || true)"
+grep -qiE "environments|子系统" <<<"$out" \
+  || fail "N10: the subos list was not printed:\n$out"
+if grep -qi "\[error\]" <<<"$out"; then
+  fail "N10: a listing was rendered as an error:\n$out"
+fi
+
 # ── N7: listing is a listing ─────────────────────────────────────────
 #
 # `list_installed_versions` is served by the same code that `use` used to

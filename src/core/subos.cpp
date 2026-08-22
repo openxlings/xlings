@@ -41,6 +41,7 @@ import xlings.core.subos.graphics;
 import xlings.core.subos.sandbox;
 import xlings.core.subos.manifest;
 import xlings.cli.spec;
+import xlings.i18n;
 
 namespace xlings::subos {
 
@@ -233,6 +234,33 @@ UseNameResolution_ resolve_use_name_(std::string_view query,
                                     EventStream& stream) {
     auto resolution = resolve_candidate_(query);
     if (query.empty()) {
+        // A list of every subos, followed by "now type one of these".
+        //
+        // That is the shape the picker exists for, and this is the command
+        // that produces the longest list -- 45 on a working machine. Offered
+        // when somebody can answer; the list below is unchanged for everyone
+        // else, and is a complete answer rather than an error.
+        if (!resolution.candidates.empty() && stream.interactive()) {
+            PromptEvent pick;
+            pick.id = "select_subos";
+            pick.question = std::string(i18n::tr("ui.select_subos"));
+            pick.kind = PromptEvent::Kind::Select;
+            for (const auto& c : resolution.candidates) pick.options.push_back(c.name);
+            pick.defaultValue = Config::paths().activeSubos;
+
+            std::optional<UseNameResolution_> done;
+            std::visit(EventStream::on{
+                [&](EventStream::Chosen&& c) {
+                    done = UseNameResolution_{.selected = std::move(c.value)};
+                },
+                [&](EventStream::Cancelled&&) {
+                    log::println("cancelled");
+                    done = UseNameResolution_{};
+                },
+                [&](EventStream::NobodyToAsk&&) {},   // fall through to the list
+            }, stream.prompt(std::move(pick)));
+            if (done) return *done;
+        }
         const auto hint = resolution.candidates.empty()
             ? "Create: xlings subos new <name>"
             : "Use: xlings subos use <name>";
@@ -1437,6 +1465,45 @@ int run_info_(const std::string& name, EventStream& stream) {
     return 0;
 }
 
+// "which subos" when the command needs one and none was given.
+//
+// Every one of these printed `missing <name> for: xlings subos <sub>` -- true,
+// and it makes the user run `xlings subos list`, read 45 names and type one
+// back. The list is already known; offering it is the same move
+// `resolve_use_name_` makes for `use`.
+//
+// Returns empty when the caller should stop; `*rc` carries the exit code.
+// Non-interactive keeps the old message and the old exit code exactly, so
+// scripts see no change.
+// `report` is `run()`'s own usage-error lambda, passed in rather than
+// reimplemented: it carries the exit path and formatting the rest of that
+// function already uses.
+std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
+                                const std::function<void(const std::string&)>& report,
+                                int* rc) {
+    auto resolution = resolve_candidate_("");
+    if (!resolution.candidates.empty() && stream.interactive()) {
+        PromptEvent pick;
+        pick.id = "select_subos";
+        pick.question = std::string(i18n::tr("ui.select_subos"));
+        pick.kind = PromptEvent::Kind::Select;
+        for (const auto& c : resolution.candidates) pick.options.push_back(c.name);
+        pick.defaultValue = Config::paths().activeSubos;
+
+        std::string chosen;
+        std::visit(EventStream::on{
+            [&](EventStream::Chosen&& c) { chosen = std::move(c.value); },
+            [&](EventStream::Cancelled&&) { log::println("cancelled"); *rc = 0; },
+            [&](EventStream::NobodyToAsk&&) {},   // fall through
+        }, stream.prompt(std::move(pick)));
+        if (!chosen.empty()) return chosen;
+        if (*rc == 0) return {};
+    }
+    report(std::format("missing <name> for: xlings subos {}", verb));
+    *rc = 1;
+    return {};
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -1691,15 +1758,25 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
-        if (argc < 4) { usageError("missing <name> for: xlings subos remove|rm"); return 1; }
-        return remove(argv[3], stream);
+        std::string target = argc > 3 ? argv[3] : std::string{};
+        if (target.empty()) {
+            int rc = 0;
+            target = pick_subos_or_fail_("remove|rm", stream, usageError, &rc);
+            if (target.empty()) return rc;
+        }
+        return remove(target, stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
     if (sub == "stop") {
         // M4/D9: stop the auto-keeper for a sandboxed subos.
         // Safe to invoke even when no keeper is running — it's a no-op.
-        if (argc < 4) { usageError("missing <name> for: xlings subos stop"); return 1; }
-        return keeper::stop_keeper(argv[3]);
+        std::string target = argc > 3 ? argv[3] : std::string{};
+        if (target.empty()) {
+            int rc = 0;
+            target = pick_subos_or_fail_("stop", stream, usageError, &rc);
+            if (target.empty()) return rc;
+        }
+        return keeper::stop_keeper(target);
     }
 
     usageError("unknown subcommand: " + sub);

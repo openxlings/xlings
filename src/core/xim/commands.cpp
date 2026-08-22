@@ -460,7 +460,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 }
                 PromptEvent req;
                 req.id = "select_package";
-                req.question = "Multiple matches found. Select a package:";
+                req.question = std::string(i18n::tr("Multiple matches found. Select a package:"));
                 req.options = options;
 
                 std::optional<std::string> picked;
@@ -645,7 +645,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     if (!allAlreadyInstalled && !yes) {
         int rc = 0;
         if (!confirmed_or_refused_(stream, "confirm_install",
-                                   "Proceed with installation?", "y",
+                                   std::string(i18n::tr("Proceed with installation?")), "y",
                                    "install the packages listed above",
                                    WhenNobodyCanAnswer::Proceed, &rc)) {
             return rc;
@@ -1368,7 +1368,7 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
         itemsJson.push_back({match.canonicalName, desc});
     }
     nlohmann::json searchPayload;
-    searchPayload["title"] = "Search results:";
+    searchPayload["title"] = std::string(i18n::tr("Search results:"));
     searchPayload["items"] = std::move(itemsJson);
     searchPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", searchPayload.dump()});
@@ -1481,8 +1481,9 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
                              desc, status});
     }
     nlohmann::json listPayload;
-    listPayload["title"] = all ? "Installed packages (all subos):"
-                               : "Installed packages (current subos):";
+    listPayload["title"] = std::string(all
+        ? i18n::tr("Installed packages (all subos):")
+        : i18n::tr("Installed packages (current subos):"));
     listPayload["items"] = std::move(listItems);
     listPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", listPayload.dump()});

@@ -23,6 +23,7 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
+import xlings.i18n;
 
 namespace xlings::xvm {
 
@@ -682,7 +683,7 @@ collect_version_candidates_(const std::string& target, bool all) {
 
     if (all) {
         out.versions = global_all;
-        out.title = target + " versions (all subos)";
+        out.title = target + " " + std::string(i18n::tr("versions (all subos)"));
         return out;
     }
 
@@ -712,7 +713,7 @@ collect_version_candidates_(const std::string& target, bool all) {
         diag::emit(d);
         return std::unexpected(1);
     }
-    out.title = target + " versions (current subos)";
+    out.title = target + " " + std::string(i18n::tr("versions (current subos)"));
     return out;
 }
 
