@@ -462,6 +462,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 req.id = "select_package";
                 req.question = std::string(i18n::tr("Multiple matches found. Select a package:"));
                 req.options = options;
+                req.kind = PromptEvent::Kind::Select;
 
                 std::optional<std::string> picked;
                 int earlyRc = -1;
