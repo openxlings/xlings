@@ -46,14 +46,23 @@ try {
     Write-Host $selfUpdate
     throw "shim rewrite reported a locked path while replacing the running binary"
   }
-  # Positive evidence that the step ran, not merely that it did not throw.
-  # `self install` onto its own home takes the "already in target dir, fixing
-  # links" path -- which is the one that rewrites the running .exe's shim, and
-  # therefore the one under test. Without this assertion a silent no-op would
-  # look exactly like a pass.
-  if ($selfUpdate -notmatch 'fixing links|install:') {
+  # Positive evidence that the step COMPLETED, not merely that it started.
+  #
+  # This used to accept `install:` -- which is printed BEFORE the reinstall
+  # confirmation, so a cancelled run matched it. And every run was cancelled
+  # until 2026.8.22.3: `ask_yes_no` returned its `false` default on EOF, so
+  # this test passed on the exit code of a cancellation and never once
+  # overwrote a running binary, which is the one thing it exists to check
+  # (issue #473).
+  #
+  # `- ok` is printed only by the path that finished.
+  if ($selfUpdate -notmatch '- ok|fixing links') {
     Write-Host $selfUpdate
-    throw "self install over the running binary produced no evidence it ran"
+    throw "self install over the running binary did not complete"
+  }
+  if ($selfUpdate -match '\[xlings:self\] cancelled') {
+    Write-Host $selfUpdate
+    throw "self install was cancelled, so the running-binary overwrite never happened"
   }
   if (-not (Test-Path $installed)) { throw "the running binary was displaced without a replacement" }
   & $installed --version | Out-Null

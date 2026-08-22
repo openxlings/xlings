@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `fail` was USED on line 47 and never defined -- so the one assertion in this
+# file reported "fail: command not found" instead of its message. The test
+# still went red (127), but the CI log said nothing about what was wrong, which
+# on a release-only job is most of the cost.
+fail() {
+  echo "candidate-smoke: $*" >&2
+  exit 1
+}
+
 archive=${1:?archive path required}
 sidecar=${2:?sidecar path required}
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -39,13 +48,24 @@ run_candidate "$installed" self doctor
 # shim path is shared with Windows -- where it did not (issue #473) -- and a
 # contract only one platform checks is one the other can quietly lose.
 self_update_out=$(cd "$package_root" && run_candidate "$installed" self install 2>&1)
-# Positive evidence the step ran: `self install` onto its own home takes the
-# "already in target dir, fixing links" path, which is the one that rewrites
-# the running binary's shim. Without this a silent no-op would look like a pass.
-grep -qE 'fixing links|install:' <<<"$self_update_out" || {
+# Positive evidence the step COMPLETED, not merely that it started.
+#
+# This used to accept `install:` as evidence -- and `install:` is printed
+# before the reinstall confirmation, so a cancelled run matched it. That is
+# what happened on every run until 2026.8.22.3: `ask_yes_no` returned its
+# `false` default on EOF, the reinstall was cancelled, and this test passed on
+# the exit code of a cancellation without ever overwriting a running binary --
+# the one thing it exists to check (issue #473).
+#
+# `- ok` is printed only on the path that finished.
+grep -qE '\- ok|fixing links' <<<"$self_update_out" || {
   echo "$self_update_out"
-  fail "self install over the running binary produced no evidence it ran"
+  fail "self install over the running binary did not complete"
 }
+if grep -qE '^\[xlings:self\] cancelled' <<<"$self_update_out"; then
+  echo "$self_update_out"
+  fail "self install was cancelled, so the running-binary overwrite never happened"
+fi
 test -x "$installed"
 run_candidate "$installed" --version >/dev/null
 
