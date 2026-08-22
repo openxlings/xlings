@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.22.1";
+    static constexpr std::string_view VERSION = "2026.8.22.2";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -422,11 +422,31 @@ public:
     // they never typed and whose origin is unsearchable without grepping the
     // disk.
     //
-    // Returns a display string naming the file and field that set `target`,
-    // or empty when no layer claims it. Display form (`@xlings/...`, project
-    // paths relative to the project root) because it goes straight into a
-    // diagnostic.
-    [[nodiscard]] static std::string version_source(const std::string& target);
+    // Returns the file and field that set `target`, plus WHICH LAYER won --
+    // the two halves of the same answer, so that a caller cannot get one of
+    // them from here and reconstruct the other from a proxy. `source` is
+    // display form (`@xlings/...`, project paths relative to the project
+    // root) because it goes straight into a diagnostic, and is empty when no
+    // layer claims the target.
+    struct VersionOrigin {
+        std::string source;
+        // The PROJECT MANIFEST (`./.xlings.json -> workspace.<target>`) is
+        // the winning layer, which is exactly the condition under which
+        // `xlings install` with no arguments fixes the problem: that command
+        // walks up for a `.xlings.json` and installs the `workspace` it
+        // declares.
+        //
+        // Deliberately narrower than "a project config exists". The other two
+        // layers also produce a non-empty `source`, and for both of them a
+        // bare `xlings install` installs something ELSE and exits 0:
+        //   - the global pin lives in the active subos's file, which that
+        //     command never reads;
+        //   - the project-subos file is not read by it either.
+        // Pointing a user at a command that succeeds without fixing anything
+        // is the failure this whole diagnostic exists to stop.
+        bool fromProjectManifest { false };
+    };
+    [[nodiscard]] static VersionOrigin version_origin(const std::string& target);
 
     // INVARIANT: a reader and its writer must resolve to the SAME map.
     //

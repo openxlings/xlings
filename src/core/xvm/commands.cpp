@@ -372,11 +372,13 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // versions this subos has -- and getting a version into a subos belongs to
     // `install`, which resolves dependencies and materialises them.
     if (filter_to_subos_installed_(target, {resolved}).empty()) {
+        const auto origin = Config::version_origin(target);
         diag::emit(not_in_subos({
             .target           = target,
             .subos            = Config::subos_scope().name,
             .suggestedVersion = resolved,
-            .source           = Config::version_source(target),
+            .source           = origin.source,
+            .fromProject      = origin.fromProjectManifest,
             .nothingChanged   = true,
         }));
         return 1;
@@ -695,11 +697,13 @@ collect_version_candidates_(const std::string& target, bool all) {
         // the hint all in red bold -- for a state where two of the three lines
         // were not errors at all. One block, one marker, and the actions lead
         // with the thing the user almost certainly wants.
+        const auto origin = Config::version_origin(target);
         auto d = not_in_subos({
             .target            = target,
             .subos             = Config::subos_scope().name,
             .versionsElsewhere = global_all,
-            .source            = Config::version_source(target),
+            .source            = origin.source,
+            .fromProject       = origin.fromProjectManifest,
         });
         if (!global_all.empty()) {
             d.actions.push_back({ "see every subos",

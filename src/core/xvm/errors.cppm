@@ -85,6 +85,15 @@ struct NotInSubos {
     // not installed in this subos" and the user was never told which file
     // asked for demo in the first place.
     std::string source;
+    // The PROJECT MANIFEST selected this, so `xlings install` with no
+    // arguments is the way out -- that command reads exactly this file.
+    //
+    // Fill it from `Config::version_origin().fromProjectManifest` and nothing
+    // else. In particular NOT from "a project config exists": the global pin
+    // and the project-subos file both also produce a non-empty `source`, and
+    // for both of them a bare `xlings install` installs something else and
+    // exits 0.
+    bool fromProject { false };
     // True when the caller has verified nothing was written.
     bool nothingChanged { false };
 };

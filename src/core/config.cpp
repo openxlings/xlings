@@ -1039,7 +1039,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
                             self.projectSubosMode_);
 }
 
-[[nodiscard]] std::string Config::version_source(const std::string& target) {
+[[nodiscard]] Config::VersionOrigin Config::version_origin(const std::string& target) {
     auto& self = instance_();
 
     const auto claims = [&](const xvm::Workspace& ws) {
@@ -1054,7 +1054,11 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     // not in control.
     if (self.hasProjectConfig_ && !self.forceGlobalScope_) {
         if (claims(self.projectSubosWorkspace_)) {
-            return display_path(self.project_subos_dir_() / ".xlings.json");
+            // NOT `fromProjectManifest`: a bare `xlings install` does not read
+            // this file, so offering it as the fix would exit 0 and change
+            // nothing here.
+            return { display_path(self.project_subos_dir_() / ".xlings.json"),
+                     false };
         }
         if (claims(self.projectWorkspace_)) {
             // The project manifest is the layer users actually hand-edit, so
@@ -1066,14 +1070,18 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
             // own, and the reader is standing in that directory. `display_path`
             // is the wrong tool here -- it abbreviates against XLINGS_HOME,
             // which a project directory is not under.
-            return "./.xlings.json  ->  workspace." + target;
+            return { "./.xlings.json  ->  workspace." + target, true };
         }
     }
     if (claims(self.globalWorkspace_)) {
         // The global workspace lives in the ACTIVE SUBOS's file, not in
         // `~/.xlings.json` -- naming the latter would send the user to a file
         // that does not contain the pin.
-        return display_path(self.paths_.subosDir / ".xlings.json");
+        //
+        // Reachable WITH a project config present: the project may declare
+        // other packages and say nothing about this one. That is why the flag
+        // below cannot be `hasProjectConfig_`.
+        return { display_path(self.paths_.subosDir / ".xlings.json"), false };
     }
     return {};
 }
