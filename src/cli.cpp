@@ -1410,17 +1410,46 @@ int run(int argc, char* argv[]) {
                 std::vector<O> options;
                 std::vector<O> children;
                 for (const auto& argument : command->arguments) {
-                    arguments.push_back({argument.name, argument.description,
+                    arguments.push_back({argument.name,
+                                         std::string(i18n::tr(argument.description)),
                                          argument.required});
                 }
+                // Descriptions go through `tr` with the ENGLISH TEXT as the
+                // key.
+                //
+                // `spec.cpp` is not touched: `tr` returns the key when no
+                // catalogue has it, so English is the source text and its own
+                // fallback. A language file states only the lines it has
+                // translated, which is the same per-key overlay rule the
+                // themes and the rest of i18n follow -- and it means a
+                // description added to the spec is never missing, only
+                // untranslated.
+                //
+                // The SYNTAX is never translated: `-g, --global` and
+                // `<packages>` are what the user types.
                 for (const auto& option : command->options) {
-                    options.push_back({option.syntax, option.description});
+                    options.push_back({option.syntax,
+                                       std::string(i18n::tr(option.description))});
                 }
                 for (const auto& child : command->children) {
-                    children.push_back({child.name, child.description});
+                    children.push_back({child.name,
+                                        std::string(i18n::tr(child.description))});
                 }
-                ui::print_subcommand_help(command->name, command->description,
-                                          arguments, options, children);
+                // The FULL path, not the leaf name.
+                //
+                // `command->name` for the nested `use` is just "use", so
+                // `xlings subos use -h` printed a title of `xlings use` and a
+                // usage line of `xlings use [OPTIONS] [name]` -- which is a
+                // real and completely different command (switch tool version).
+                // Anyone copying that line ran the wrong one.
+                std::string fullName;
+                for (const auto& part : commandPath) {
+                    if (!fullName.empty()) fullName += ' ';
+                    fullName += part;
+                }
+                ui::print_subcommand_help(
+                    fullName, i18n::tr(command->description),
+                    arguments, options, children);
                 return 0;
             }
 

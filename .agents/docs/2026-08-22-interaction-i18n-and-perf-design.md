@@ -312,3 +312,41 @@ $ xlings subos use
 ## 6. 当前状态
 
 方案待 review。§4.2 的形态取舍需要你定;其余为缺陷修复与已确认要求。
+
+---
+
+## 7. 实施记录
+
+### 7.1 已落地
+
+| | 内容 | 结果 |
+|---|---|---|
+| **P1** | `coordinate_from_payload_path` 零分配 | `info gcc` 2.40s → **1.26s**;输出逐字节相同(5 组比对) |
+| **I1** | 选择器改内联无框 + 配色 | 见 §4.2;`tests/scripts/test_selector_contrast.py` 已入 CI |
+| **T20** | `config` 五个设置缺值时进入选择 | 有值不变;无值时交互开→选择器,关→列出取值 exit 2 |
+| **N2** | `spec.cpp` 的 103 条描述接 i18n | `xlings subos -h` 全中文,旗标/占位符保持英文 |
+
+### 7.2 方案中被实施推翻的两处
+
+**N1(合并 `spec.cpp` 与 `cli.cpp` 的描述)不必做。** 方案假设 parity 检查要求两份描述一致,实际它**只比对旗标**(实测 271 个拼写),描述可以不同。而且用户看到的帮助全部来自 `spec.cpp`(`spec::find()` → `print_subcommand_help`),`cli.cpp` 的 49 处 `.description()` 只喂给 cmdline 库自身的 usage,从不显示。所以只翻 `spec.cpp` 即可,零合并成本。
+
+**键不用新造,英文原文即是键。** 方案设想给 103 条各配一个 `cmd.*.desc` 形式的 ID,那需要同时改 `spec.cpp` 和 `en.cppm` 两处 206 行。改用英文原文作键后:`spec.cpp` **一个字未改**,`en.cppm` 无需新增(`tr()` 找不到就返回键,而键就是英文原文),只有 `zh.cppm` 增量补 103 条。这与 §2.4 给标签定的规则本来就一致,方案里没把它推广到描述上是遗漏。
+
+### 7.3 写测试时发现的缺陷(与 i18n 无关)
+
+`xlings subos use -h` 的标题与用法行显示的是 **`xlings use`** —— 丢了 `subos` 这一层,而 `xlings use` 是一条真实存在、语义完全不同的命令(切换工具版本)。照抄那一行的人会跑错命令。
+
+根因:`print_subcommand_help(command->name, …)` 传的是叶子名,而调用处本来就持有完整的 `commandPath`。
+
+它是被 `test_i18n_coverage.py` 里那条"用户会照抄的字面量必须原样保留"的断言抓到的 —— 断言的对象选对了,就会顺带抓到与它本来目的无关的问题。
+
+### 7.4 未做
+
+| | 为什么 |
+|---|---|
+| **P2** `info` 的剩余 1.26s | 需要把标识符 intern 成整数索引,是动 `list`/`doctor`/`remove` 共用路径的结构性改动,单独立项 |
+| **I2–I4** 交互扩到 31 处 | §3.3 的 14–30 项;本轮先把选择器形态与 `config` 五项做定,形态定了再批量接入 |
+| **N3** 面板表头 i18n | `subos use` 的列表标题等约 12 处 |
+| **N4** 交互提示语 i18n | 选择器的两条已接(`ui.select_keys` / `ui.select_package`),其余 6 处待接 |
+
+**i18n 当前条目数:144(zh),覆盖底线 100 已由 `test_i18n_coverage.py` 钉住。**
