@@ -338,8 +338,11 @@ void handle_prompt(EventStream& stream, const PromptEvent& p) {
     // Binary yes/no → confirm dialog
     if (p.options.size() == 2 && p.options[0] == "y" && p.options[1] == "n") {
         bool defaultYes = (p.defaultValue == "y");
-        bool result = ui::confirm(p.question, defaultYes);
-        stream.respond(p.id, result ? "y" : "n");
+        auto result = ui::confirm(p.question, defaultYes);
+        // No answer -> respond with "", which EventStream reports as
+        // `Cancelled`. Every confirmation's caller already handles that by
+        // doing nothing and saying so.
+        stream.respond(p.id, !result ? "" : (*result ? "y" : "n"));
         return;
     }
 

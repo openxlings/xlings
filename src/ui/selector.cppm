@@ -37,6 +37,11 @@ std::string read_line(std::string_view prompt);
 //
 // Indented two columns like every panel above it. It used to start at column
 // 0, so the question sat outside the block it was asking about.
-bool confirm(std::string_view message, bool defaultYes);
+// Ask a yes/no question on the terminal.
+//
+// Returns nullopt when stdin ended without an answer -- distinct from `false`,
+// which is somebody saying no. The question goes to stderr so it survives
+// `> log`.
+std::optional<bool> confirm(std::string_view message, bool defaultYes);
 
 } // namespace xlings::ui

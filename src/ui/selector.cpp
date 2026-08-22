@@ -170,19 +170,33 @@ std::string read_line(std::string_view prompt) {
     return line;
 }
 
-bool confirm(std::string_view message, bool defaultYes) {
+std::optional<bool> confirm(std::string_view message, bool defaultYes) {
     std::string prompt = defaultYes ? "[Y/n] " : "[y/N] ";
-    // Inline prompt (not an ftxui-rendered document), so it writes SGR
-    // directly — from the shared palette, which also turns it off under
-    // NO_COLOR / a pipe.
-    std::print("{}  {} {}{}{}{}{}",
+    // STDERR, not stdout.
+    //
+    // A question is not output. Written to stdout, `xlings install foo > log`
+    // puts the question in the file and shows the user a process that appears
+    // to have hung -- with a terminal on stdin, so it really is waiting for
+    // them. This matters now in a way it did not before: confirmations were
+    // effectively never asked until the gate moved off the picker preference.
+    //
+    // Inline (not an ftxui document), so it writes SGR directly — from the
+    // shared palette, which also turns it off under NO_COLOR / a pipe.
+    std::print(stderr, "{}  {} {}{}{}{}{}",
                palette::fg(palette::cyan()), theme::icon::arrow, palette::off(),
                message,
                palette::fg(palette::dim()), prompt, palette::off());
-    std::cout.flush();
+    std::fflush(stderr);
 
     std::string input;
-    if (!std::getline(std::cin, input)) return defaultYes;
+    // EOF is NOT the default.
+    //
+    // Returning `defaultYes` here is the same guess `NobodyToAsk` exists to
+    // stop, smuggled onto the interactive path: stdin ended, nobody said
+    // anything, and answering on their behalf would install or refuse
+    // something silently. `nullopt` lets the caller report that nothing
+    // happened.
+    if (!std::getline(std::cin, input)) return std::nullopt;
     if (input.empty()) return defaultYes;
 
     return input[0] == 'y' || input[0] == 'Y';

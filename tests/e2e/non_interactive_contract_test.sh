@@ -261,6 +261,68 @@ if [[ "$HAVE_PTY" == "1" ]]; then
   [[ "$rc" == "0" ]] || fail "N6: install -y under a pty exited $rc"
 fi
 
+# ── N8: the question goes to stderr, and EOF is not an answer ────────
+#
+# Confirmations are asked whenever stdin is a terminal now, which makes two
+# things load-bearing that were not before:
+#
+#   * The question must not go to STDOUT. `xlings remove foo > log` with a
+#     terminal on stdin would put it in the file and show the user a process
+#     that looks hung -- and really is waiting for them.
+#   * EOF must not be answered on the user's behalf. `ui::confirm` returned its
+#     default there, which is the guess the whole non-interactive contract
+#     exists to prevent, smuggled onto the interactive path.
+#
+# `RUN_PTY` cannot express this: it uses `script`, which merges everything the
+# child writes into one stream. What is needed is a pty on STDIN ONLY, with
+# stdout and stderr as separate pipes -- which is exactly the shape that
+# breaks.
+log "N8: the confirmation goes to stderr, and EOF cancels rather than guesses"
+n8="$RUNTIME_DIR/n8"
+mkdir -p "$n8"
+set +e
+XLINGS_BIN="$XLINGS_BIN" XLINGS_HOME="$HOME_DIR" N8_DIR="$n8" python3 - <<'PY8'
+import os, pty, subprocess, sys, time
+
+env = dict(os.environ)
+env["XLINGS_ACTIVE_SUBOS"] = "default"
+d = env["N8_DIR"]
+
+# A pty for stdin, plain pipes for stdout/stderr.
+master, slave = pty.openpty()
+p = subprocess.Popen([env["XLINGS_BIN"], "remove", "ni-two"],
+                     stdin=slave, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env)
+os.close(slave)
+# Close the master so the child sees EOF on a terminal: somebody was there and
+# then was not, which is not the same as answering.
+time.sleep(1.0)
+os.close(master)
+try:
+    out, err = p.communicate(timeout=30)
+except subprocess.TimeoutExpired:
+    p.kill()
+    open(os.path.join(d, "timeout"), "w").write("1")
+    out, err = p.communicate()
+open(os.path.join(d, "stdout"), "wb").write(out)
+open(os.path.join(d, "stderr"), "wb").write(err)
+open(os.path.join(d, "rc"), "w").write(str(p.returncode))
+PY8
+set -e
+[[ -f "$n8/timeout" ]] && fail "N8: the command hung on an unanswered confirmation"
+if grep -qiE '\[y/N\]|\[Y/n\]' "$n8/stdout"; then
+  fail "N8: the confirmation prompt was written to stdout:
+$(cat "$n8/stdout")"
+fi
+grep -qiE '\[y/N\]|\[Y/n\]' "$n8/stderr" \
+  || fail "N8: no confirmation was asked at all on a terminal stdin:
+stdout: $(cat "$n8/stdout")
+stderr: $(cat "$n8/stderr")"
+# EOF is not a yes. Nothing may have been removed.
+after="$(probe_says ni-two)"
+grep -q "probe" <<<"$after" \
+  || fail "N8: an unanswered confirmation removed the package anyway"
+
 # ── N7: listing is a listing ─────────────────────────────────────────
 #
 # `list_installed_versions` is served by the same code that `use` used to
