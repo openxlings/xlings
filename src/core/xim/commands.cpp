@@ -1513,9 +1513,22 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
         // `catalog.search` is what `install` uses. Same matcher, same result,
         // and the exit code stays non-zero because `info` still has nothing
         // to show.
-        auto fuzzy = target.find(':') == std::string::npos
+        // ONLY when the index genuinely does not have the name.
+        //
+        // `resolve_target` reports two different failures, and they are not
+        // interchangeable: "ambiguous across namespaces" is a precise answer
+        // about a name the index HAS (alpha:demo and beta:demo both exist),
+        // while "not found" is the one a fuzzy list can improve on. Running
+        // the fuzzy path over both replaced an exact diagnostic with a guess
+        // -- E2E-31 asserts that exact wording and went red.
+        const auto notFound = match.error().find("not found") != std::string::npos;
+        auto fuzzy = (notFound && target.find(':') == std::string::npos)
             ? catalog.search(target, infoPlatform)
             : decltype(catalog.search(target, infoPlatform)){};
+        // A match with no version is not a usable suggestion: the command it
+        // would print ends in a bare `@`. Drop those rather than offer a line
+        // that fails when copied.
+        std::erase_if(fuzzy, [](const auto& f) { return f.version.empty(); });
         if (!fuzzy.empty()) {
             if (fuzzy.size() > 5) fuzzy.resize(5);
             std::vector<std::string> names;
