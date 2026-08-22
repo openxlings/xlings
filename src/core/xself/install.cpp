@@ -513,16 +513,31 @@ bool same_dir_(const fs::path& a, const fs::path& b) {
     return ca == cb;
 }
 
-// A y/n on the EventStream, with `self install`'s own answer for "nobody was
-// there": DECLINE and say so.
+// What to do when nobody can answer. Same idea as `xim`'s enum of the same
+// shape, and for the same reason: only the caller knows which way its own
+// question defaults, so only the caller can say what silence means.
 //
-// Deliberately not `xim`'s `confirmed_or_refused_`: that one lives in the
-// package layer and carries a per-caller Proceed/Refuse policy. Every question
-// here is "may I overwrite an existing installation", and the answer to that
-// with nobody watching is no -- there is no direction in which guessing yes is
-// safe, which is exactly what the old `ask_yes_no(question, !downgrade)` did.
+// A first cut gave every question here a blanket Refuse, on the reasoning that
+// "may I overwrite an installation" is never safely guessed as yes. That is
+// true of two of the three and wrong about the third: reinstalling the SAME
+// version is idempotent, and a scripted `xlings self install` means exactly
+// that. The release pipeline's Windows smoke test found it -- it runs
+// `self install` over the running binary to check issue #473, and a refusal
+// leaves it nothing to check.
+//
+// Worth recording what that test was doing BEFORE: `ask_yes_no` returned its
+// `false` default on EOF, so the reinstall was cancelled every single run and
+// the test passed on an exit code from a cancellation. It has never once
+// overwritten a running binary. Proceed is what makes it start.
+enum class IfNobodyAnswers {
+    Proceed,   // affirmative default; doing it unattended is safe
+    Decline,   // negative default for an OPTIONAL extra -- say what was kept
+               // and carry on; the command has not failed
+    Refuse,    // negative default for the command ITSELF -- stop and say why
+};
+
 bool confirm_(EventStream& stream, std::string id, std::string question,
-              std::string defaultValue) {
+              std::string defaultValue, IfNobodyAnswers policy) {
     PromptEvent req;
     req.id = std::move(id);
     req.question = std::format("[xlings:self] {}", question);
@@ -534,6 +549,23 @@ bool confirm_(EventStream& stream, std::string id, std::string question,
         [](EventStream::Chosen&& c) { return c.value == "y"; },
         [](EventStream::Cancelled&&) { return false; },
         [&](EventStream::NobodyToAsk&&) {
+            if (policy == IfNobodyAnswers::Proceed) return true;
+            if (policy == IfNobodyAnswers::Decline) {
+                // NOT an error, and specifically not on stderr: the command is
+                // continuing, having taken the safe side of an optional
+                // question. Reporting it as a failure made PowerShell treat a
+                // successful `self install` as a terminating error -- which is
+                // how the release pipeline found this.
+                diag::emit({
+                    .level   = diag::Level::Note,
+                    .code    = "xself.kept_existing",
+                    .summary = "nobody to ask, so the existing data and subos "
+                               "were left as they are",
+                    .actions = { { "to replace them, run it where you can answer",
+                                   "xlings self install" } },
+                });
+                return false;
+            }
             diag::emit({
                 .code    = "xself.needs_confirmation",
                 .summary = "this would overwrite an installation, and there "
@@ -647,14 +679,19 @@ int cmd_install(EventStream& stream) {
     bool overwriteDataSubos = false;
     if (!fromTempExtract) {
         if (!pkgVersion.empty() && !installedVersion.empty() && pkgVersion == installedVersion) {
+            // Idempotent: the payload is replaced with an identical one.
             if (!confirm_(stream, "self_reinstall",
-                          "same version installed, reinstall?", "n")) {
+                          "same version installed, reinstall?", "n",
+                          IfNobodyAnswers::Proceed)) {
                 std::println("[xlings:self] cancelled\n");
                 return 0;
             }
             if (fs::exists(targetHome / "data") || fs::exists(targetHome / "subos")) {
+                // Destructive and unrecoverable: it discards installed
+                // packages and every subos. Nobody there means no.
                 overwriteDataSubos = confirm_(stream, "self_overwrite_data",
-                                              "overwrite data and subos?", "n");
+                                              "overwrite data and subos?", "n",
+                                              IfNobodyAnswers::Decline);
             }
         } else if (fs::exists(targetHome / "bin") && fs::exists(targetHome / "subos")) {
             // Name both versions, and say which DIRECTION this is.
@@ -684,8 +721,13 @@ int cmd_install(EventStream& stream) {
                 question = std::format("replace v{} with v{}?",
                                        installedVersion, pkgVersion);
             }
+            // The asymmetry the question wording above explains, stated as
+            // policy rather than smuggled in as a default value: an upgrade
+            // proceeds unattended, going BACKWARDS needs somebody to say so.
             if (!confirm_(stream, "self_overwrite", question,
-                          downgrade ? "n" : "y")) {
+                          downgrade ? "n" : "y",
+                          downgrade ? IfNobodyAnswers::Refuse
+                                    : IfNobodyAnswers::Proceed)) {
                 std::println("[xlings:self] cancelled\n");
                 return 0;
             }
