@@ -99,12 +99,23 @@ log "S2b: a project pin asks you to set the project up, not to retype it"
 cat > "$PROJ_DIR/.xlings.json" <<'JSON'
 { "workspace": { "demo": "9.9.9" } }
 JSON
-out="$(RUN_IN_PROJ use demo 2>&1 || true)"
+set +e
+out="$(RUN_IN_PROJ use demo 2>&1)"
+rc=$?
+set -e
 # WARN, not error: the command failed (exit stays non-zero) but the project is
 # one documented command away from working, and xlings knows which one. A red
 # [error] for "your project needs installing" reads as a fault in the tool.
 grep -q '^\[warn\]' <<<"$out" \
   || fail "S2b: a project pin was reported as an error, not a warning:
+$out"
+# The half of that claim a reader would not think to check. Softening the
+# SEVERITY while leaving the EXIT CODE alone is the entire contract -- if the
+# exit code had followed the marker down to 0, every script driving xlings
+# would now be told this succeeded. Asserted here as well as in S2d because
+# this is the path a person types.
+[[ $rc -ne 0 ]] \
+  || fail "S2b: the severity was softened and the exit code went with it:
 $out"
 grep -q "this project asks for a version of" <<<"$out" \
   || fail "S2b: the wording does not say it came from the project:
