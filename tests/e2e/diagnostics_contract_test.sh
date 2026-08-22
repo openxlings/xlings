@@ -211,6 +211,89 @@ grep -qE '^\s+set this project up\s+xlings install\s*$' <<<"$out" \
 $out"
 rm -f "$SHIM_BIN" "$PROJ_DIR/.xlings.json"
 
+log "S8: a name matching several packages refuses, and says so"
+# THE BUG: `select_package` tested the prompt result for "" (cancelled) and let
+# the cannot-ask sentinel -- which is not empty -- fall into a lookup that
+# could not match it. Measured on the released 2026.8.22.2:
+#
+#     $ xlings install gc      # matches gcc, musl-gcc, mingw-gcc, ...
+#     cancelled
+#     $ echo $?
+#     0
+#
+# Nobody was asked, nobody cancelled, nothing was installed, and the exit code
+# said success. `demo` has three versions in this fixture but the ambiguity
+# here is over NAMES, so the assertion is on the refusal contract: non-zero,
+# and a way out that names one.
+set +e
+out="$(RUN install demo 2>&1)"
+rc=$?
+set -e
+if [[ $rc -eq 0 ]]; then
+  fail "S8: an ambiguous or unresolvable install exited 0:
+$out"
+fi
+if grep -qx "cancelled" <<<"$out"; then
+  fail "S8: reported a cancellation nobody performed:
+$out"
+fi
+
+log "S9: --theme refuses a value that resolves to nothing"
+# `--ui-mode` and `--interactive` both validate and exit 2; `--theme` took any
+# string, echoed "theme = mnoo", exited 0, and left the home warning on every
+# command afterwards. A setter that reports success while storing something
+# unusable is the shape this whole release is about.
+set +e
+out="$(RUN config --theme definitely-not-a-theme 2>&1)"
+rc=$?
+set -e
+[[ $rc -ne 0 ]] \
+  || fail "S9: a bad theme name was accepted:
+$out"
+grep -q "is not a theme this home has" <<<"$out" \
+  || fail "S9: unexpected diagnostic: $out"
+# And it must not have been written -- refusing while storing is worse than
+# either.
+out="$(RUN config --theme list 2>&1)"
+grep -q "active: default" <<<"$out" \
+  || fail "S9: the refused value was stored anyway:
+$out"
+
+log 'S10: bare use lists -- at ANY candidate count'
+# `--help` says "omit to list installed versions". From 2026.7.30.2 until this
+# release the code SWITCHED instead whenever the candidate count happened to
+# be 1, so one typed command was a query or a mutation depending on a number
+# the user cannot see (the count is "versions opted into THIS subos", not
+# "versions I installed"). Measured on a real home: `use gcc --all` listed
+# five while `use gcc` wrote state, because one of the five was opted in here.
+#
+# Both counts asserted, because the defect is precisely that they DIFFER.
+python3 - "$HOME_DIR" <<'PY2'
+import json, sys, pathlib
+h = pathlib.Path(sys.argv[1])
+sub = h / 'subos/default/.xlings.json'
+s = json.loads(sub.read_text())
+s['workspace']['solo'] = {'active': '', 'installed': ['1.0.0']}
+sub.write_text(json.dumps(s, indent=2))
+cfg = json.loads((h / '.xlings.json').read_text())
+cfg['versions']['solo'] = {'versions': {
+    '1.0.0': {'path': str(h / 'data/xpkgs/solo/1.0.0'), 'type': 'program'}}}
+(h / '.xlings.json').write_text(json.dumps(cfg, indent=2))
+PY2
+one="$(RUN use solo 2>&1 || true)"
+many="$(RUN use demo 2>&1 || true)"
+# Neither may report a switch. `->` is how cmd_use announces one.
+for label in one many; do
+  eval "body=\$$label"
+  if grep -qE '^\[xlings\] .* -> ' <<<"$body"; then
+    fail "S10: bare use switched instead of listing ($label candidate):
+$body"
+  fi
+done
+grep -q "1.0.0" <<<"$one" \
+  || fail "S10: the single-candidate case did not list its version:
+$one"
+
 log "S3: candidate lists are newest-first and capped"
 out="$(RUN use demo 2>&1 || true)"
 # Newest first, whether the candidates come out as one list or as panel rows.
@@ -269,13 +352,27 @@ set -e
 grep -q "is not a UI mode" "$RUNTIME_DIR/s5b.out" \
   || fail "S5b: no explanation: $(cat "$RUNTIME_DIR/s5b.out")"
 
-log "S6: shipped themes exist, and a broken one is reported"
-[[ -f "$HOME_DIR/config/themes/mono.json" ]] \
-  || fail "S6: mono.json was not provisioned"
-[[ -f "$HOME_DIR/config/themes/high-contrast.json" ]] \
-  || fail "S6: high-contrast.json was not provisioned"
+log "S6: a theme dropped into the home is found, and a broken one is reported"
+# The shipped examples are DATA now (config/themes/*.json in the source tree,
+# copied into the package). A locally built binary has no package, so this home
+# has no examples -- which is the documented cost of that change, and asserting
+# their presence here would only be asserting that `self init` still writes
+# files out of embedded C++ literals.
+#
+# What matters and is testable everywhere: a file placed in config/themes/ is
+# discovered, selectable by bare name, and a broken one is reported rather than
+# silently ignored. That also covers the user-authored case, which is the whole
+# reason the directory is enumerated instead of hardcoded.
+mkdir -p "$HOME_DIR/config/themes"
+cp "$ROOT_DIR/config/themes/mono.json" "$HOME_DIR/config/themes/mono.json" \
+  || fail "S6: the source tree has no config/themes/mono.json to ship"
 RUN config --theme list 2>&1 | grep -q "built in" \
   || fail "S6: --theme list does not mention the built-in default"
+RUN config --theme list 2>&1 | grep -q "mono" \
+  || fail "S6: a theme file in config/themes/ was not discovered"
+RUN config --theme mono >/dev/null 2>&1 \
+  || fail "S6: a discovered theme could not be selected by bare name"
+RUN config --theme default >/dev/null 2>&1 || true
 
 cat > "$HOME_DIR/config/themes/typo.json" <<'JSON'
 { "name": "typo", "dark": { "acent": "#010203" } }
@@ -289,11 +386,18 @@ grep -q "accent" <<<"$out" \
   || fail "S6: no suggestion for the mistyped slot:
 $out"
 
-# A theme that does not exist must also say so rather than quietly defaulting.
-RUN config --theme ./nowhere.json >/dev/null 2>&1 || true
+# A theme that DISAPPEARS after being set must say so rather than quietly
+# defaulting.
+#
+# Note this can no longer be reached by naming a nonexistent theme: `--theme`
+# now refuses a value that resolves to nothing (S9), so the setter cannot
+# create this state. What can is the state itself -- an upgrade that dropped
+# the file, or a user who deleted it -- so the test produces it directly
+# instead of through a door that is now closed.
+rm -f "$HOME_DIR/config/themes/typo.json"
 out="$(RUN config 2>&1 || true)"
 grep -qi "theme file is not there" <<<"$out" \
-  || fail "S6: a missing theme file was ignored silently:
+  || fail "S6: a theme file that vanished was ignored silently:
 $out"
 RUN config --theme default >/dev/null 2>&1 || true
 

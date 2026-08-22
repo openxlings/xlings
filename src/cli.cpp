@@ -20,7 +20,7 @@ import xlings.core.uimode;
 import xlings.theme;
 import xlings.runtime;
 import xlings.ui;
-import xlings.core.i18n;
+import xlings.i18n;
 import xlings.platform;
 import xlings.capabilities;
 import xlings.agent;
@@ -338,8 +338,11 @@ void handle_prompt(EventStream& stream, const PromptEvent& p) {
     // Binary yes/no → confirm dialog
     if (p.options.size() == 2 && p.options[0] == "y" && p.options[1] == "n") {
         bool defaultYes = (p.defaultValue == "y");
-        bool result = ui::confirm(p.question, defaultYes);
-        stream.respond(p.id, result ? "y" : "n");
+        auto result = ui::confirm(p.question, defaultYes);
+        // No answer -> respond with "", which EventStream reports as
+        // `Cancelled`. Every confirmation's caller already handles that by
+        // doing nothing and saying so.
+        stream.respond(p.id, !result ? "" : (*result ? "y" : "n"));
         return;
     }
 
@@ -621,6 +624,47 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         // `list` is a query, not an edit; handled after commit_edits below so
         // it cannot swallow edits collected alongside it.
         if (value != "list") {
+            // Refuse a value that resolves to nothing, exactly as --ui-mode
+            // and --interactive above do.
+            //
+            // This one used to take any string. `xlings config --theme mnoo`
+            // printed "theme = mnoo" and exited 0; the problem surfaced on the
+            // NEXT command as a warning, and on every command after that. A
+            // setter that reports success while storing something unusable is
+            // the same shape as the diagnostics this release is about -- and
+            // it is how a home ends up permanently warning about a theme.
+            //
+            // Resolved through `resolve_theme_path` so the check and the
+            // runtime read agree by construction rather than by review.
+            if (value != "default") {
+                const auto probe = Config::resolve_theme_path_for(value);
+                std::error_code tec;
+                if (probe.empty() || !std::filesystem::is_regular_file(probe, tec)) {
+                    std::vector<std::string> known { "default" };
+                    const auto dir = Config::paths().homeDir / "config" / "themes";
+                    std::error_code lec;
+                    if (std::filesystem::is_directory(dir, lec)) {
+                        for (const auto& e : platform::dir_entries(dir)) {
+                            if (e.path().extension() == ".json")
+                                known.push_back(e.path().stem().string());
+                        }
+                    }
+                    diag::emit({
+                        .code    = "cli.bad_theme",
+                        .summary = std::format("'{}' is not a theme this home has",
+                                               value),
+                        .source  = probe.empty() ? std::string{}
+                                                 : Config::display_path(probe),
+                        .facts   = { diag::candidates("available", known,
+                                                      known.size()) },
+                        .actions = { { "see them", "xlings config --theme list" },
+                                     { "or point at a file",
+                                       "xlings config --theme ./my-theme.json" } },
+                        .nothingChanged = true,
+                    });
+                    return 2;
+                }
+            }
             edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
             log::println("theme = {}", value);
         }
@@ -731,43 +775,19 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         return commit_edits() ? 0 : 1;
     }
 
-    // No options: show current config via TUI info panel
-    auto& p = Config::paths();
-    std::vector<ui::InfoField> fields;
-    fields.push_back({"XLINGS_HOME", p.homeDir.string()});
-    fields.push_back({"XLINGS_DATA", Config::display_path(p.dataDir)});
-    fields.push_back({"XLINGS_SUBOS", Config::display_path(p.subosDir)});
-    fields.push_back({"active subos", p.activeSubos, true});
-    fields.push_back({"bin", Config::display_path(p.binDir)});
-
-    auto mirror = Config::mirror();
-    if (!mirror.empty()) fields.push_back({"mirror", mirror});
-    auto lang = Config::lang();
-    if (!lang.empty()) fields.push_back({"lang", lang});
-    // Shown unconditionally, unlike mirror/lang: the resolved frontend is the
-    // answer to "why does my output look like this", and hiding it when it was
-    // auto-detected is exactly when the question gets asked.
-    fields.push_back({"ui mode", std::string(ui::to_string(ui::current_mode()))});
-    if (auto theme = Config::theme(); !theme.empty())
-        fields.push_back({"theme", theme});
-    if (auto inter = Config::tui_interactive())
-        fields.push_back({"tui.interactive", *inter ? "true" : "false"});
-
-    auto& repos = Config::global_index_repos();
-    for (auto& repo : repos) {
-        fields.push_back({"index-repo", repo.name + " : " + repo.url});
-    }
-
-    if (Config::has_project_config()) {
-        fields.push_back({"project data", Config::project_data_dir().string()});
-        auto& projectRepos = Config::project_index_repos();
-        for (auto& repo : projectRepos) {
-            fields.push_back({"project repo", repo.name + " : " + repo.url});
-        }
-    }
-
-    ui::print_info_panel("xlings config", fields);
-    return 0;
+    // No options: show the current configuration.
+    //
+    // Delegated, not duplicated. This function used to build its own
+    // `std::vector<ui::InfoField>` -- a near-copy of `xself::cmd_config`'s
+    // table, and the two had already drifted: one showed `theme` only when
+    // set, the other always; one called the row `tui.interactive`, the other
+    // `interactive`. Only this one was reachable from `xlings config`, so
+    // edits to the other were invisible no matter how correct.
+    //
+    // The delegate emits a DataEvent, which reaches this same renderer AND
+    // `xlings interface` -- so the panel a person sees and the record a
+    // program reads come from one place.
+    return xself::cmd_config(stream);
 }
 
 // `xlings profile list|commit|rollback` — generations of the active subos.
@@ -1095,7 +1115,8 @@ int run(int argc, char* argv[]) {
     // the version of this that tested `!agent_mode && stdout_is_terminal()`
     // locally was a second opinion, and second opinions are what this whole
     // change is about.
-    stream.set_interactive(ui::current_capabilities().interactive);
+    stream.set_can_confirm(ui::current_capabilities().canConfirm);
+    stream.set_can_select(ui::current_capabilities().canSelect);
 
     // --agent: replace TUI listener with plain-text renderer, disable colors.
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should
@@ -1479,9 +1500,12 @@ int run(int argc, char* argv[]) {
             }))
 
         // use — accepts both `<name> <ver>` (legacy form) and `<name>@<ver>`
-        // (one-shot form, matching install/remove). Bare `<name>` switches
-        // when exactly one version is installed and lists them (exit 0) when
-        // several are, rather than blocking on a picker — see
+        // (one-shot form, matching install/remove). Bare `<name>` LISTS —
+        // always, at any candidate count — and switches only when a version
+        // is named, or when the user picks one from the inline selector that
+        // `xlings config --interactive true` turns on. It used to switch
+        // silently when the count happened to be 1, which made one command
+        // mean two things depending on state the user could not see; see
         // xvm::cmd_use_by_name. `--all` widens the candidate set to the
         // global view (every version every subos has ever installed).
         .subcommand("use")

@@ -7,6 +7,7 @@ module;
 module xlings.ui;
 
 import std;
+import xlings.i18n;
 
 namespace xlings::ui {
 
@@ -105,15 +106,16 @@ void print_subcommand_help(std::string_view name, std::string_view description, 
     }
 
     // USAGE
-    rows.push_back(text("  USAGE") | bold | color(theme::text()));
+    rows.push_back(text("  " + std::string(i18n::tr("help.usage")))
+                   | bold | color(theme::text()));
     rows.push_back(text(usage) | color(theme::muted()));
     rows.push_back(text(""));
 
-    help_section_(rows, "SUBCOMMANDS", subEntries, P,
+    help_section_(rows, std::string(i18n::tr("help.subcommands")), subEntries, P,
                   bold | color(theme::alt()));
-    help_section_(rows, "ARGS", argEntries, P,
+    help_section_(rows, std::string(i18n::tr("help.args")), argEntries, P,
                   bold | color(theme::alt()));
-    help_section_(rows, "OPTIONS", optEntries, P,
+    help_section_(rows, std::string(i18n::tr("help.options")), optEntries, P,
                   color(theme::muted()));
 
     layout::print_rows(std::move(rows), P.width);
@@ -125,26 +127,29 @@ void print_help(std::string_view version) {
     using Pair = std::pair<std::string, std::string>;
 
     struct CmdEntry { std::string name; std::string desc; };
+    // Names are literal, descriptions are keys. That split is the whole rule:
+    // `install` is what you type, "Install packages" is what we say about it.
+    const auto D = [](std::string_view key) { return std::string(i18n::tr(key)); };
     CmdEntry cmds[] = {
-        {"install",  "Install packages (e.g. xlings install gcc@15 node)"},
-        {"remove",   "Remove a package"},
-        {"update",   "Update package index or a specific package"},
-        {"search",   "Search for packages"},
-        {"list",     "List installed packages"},
-        {"info",     "Show package information"},
-        {"use",      "Switch tool version"},
-        {"config",   "Show or modify configuration"},
-        {"subos",    "Manage sub-OS environments"},
-        {"self",     "Manage xlings itself (install, update, clean)"},
-        {"script",   "Run xlings scripts"},
-        {"agent",    "Built-in skills and plain-text mode for LLM agents"},
+        {"install",  D("cmd.install.desc")},
+        {"remove",   D("cmd.remove.desc")},
+        {"update",   D("cmd.update.desc")},
+        {"search",   D("cmd.search.desc")},
+        {"list",     D("cmd.list.desc")},
+        {"info",     D("cmd.info.desc")},
+        {"use",      D("cmd.use.desc")},
+        {"config",   D("cmd.config.desc")},
+        {"subos",    D("cmd.subos.desc")},
+        {"self",     D("cmd.self.desc")},
+        {"script",   D("cmd.script.desc")},
+        {"agent",    D("cmd.agent.desc")},
     };
     struct OptEntry { std::string flag; std::string desc; };
     OptEntry opts[] = {
-        {"-y, --yes",       "Skip confirmation prompts"},
-        {"-v, --verbose",   "Enable verbose output"},
-        {"-q, --quiet",     "Suppress non-essential output"},
-        {"    --agent",     "Plain-text output for LLM agents (no TUI/ANSI)"},
+        {"-y, --yes",       D("opt.yes.desc")},
+        {"-v, --verbose",   D("opt.verbose.desc")},
+        {"-q, --quiet",     D("opt.quiet.desc")},
+        {"    --agent",     D("opt.agent.desc")},
     };
 
     std::vector<Pair> cmdEntries;
@@ -152,12 +157,17 @@ void print_help(std::string_view version) {
     std::vector<Pair> optEntries;
     for (auto& o : opts) optEntries.emplace_back(o.flag, o.desc);
 
-    constexpr std::string_view kTagline =
-        "A modern package manager and development environment tool";
-    constexpr std::string_view kAgentLine1 =
-        "If you are an LLM/AI agent, run `xlings agent` FIRST.";
-    constexpr std::string_view kAgentLine2 =
-        "It contains usage instructions designed specifically for you.";
+    // Section headings and prose go through `tr`; the command names, flag
+    // names and the usage line's placeholders do not. What a reader can type
+    // stays as it is -- translating `install` or `[OPTIONS]` would produce
+    // help that does not describe this program.
+    const std::string tagline(i18n::tr("help.tagline"));
+    const auto agentHint = std::string(i18n::tr("help.agent_hint"));
+    const auto nl = agentHint.find('\n');
+    const std::string kAgentLine1 = agentHint.substr(0, nl);
+    const std::string kAgentLine2 =
+        nl == std::string::npos ? std::string{} : agentHint.substr(nl + 1);
+    const std::string_view kTagline = tagline;
 
     std::span<const Pair> sections[] = { cmdEntries, optEntries };
     auto P = plan_help_(sections,
@@ -178,16 +188,20 @@ void print_help(std::string_view version) {
     rows.push_back(text(""));
 
     // USAGE
-    rows.push_back(text("  USAGE") | bold | color(theme::text()));
+    rows.push_back(text("  " + std::string(i18n::tr("help.usage")))
+                   | bold | color(theme::text()));
     rows.push_back(
         text("    xlings [OPTIONS] [SUBCOMMAND]") | color(theme::muted()));
     rows.push_back(text(""));
 
-    help_section_(rows, "SUBCOMMANDS", cmdEntries, P, bold | color(theme::alt()));
-    help_section_(rows, "OPTIONS", optEntries, P, color(theme::muted()));
+    help_section_(rows, std::string(i18n::tr("help.subcommands")), cmdEntries, P,
+                  bold | color(theme::alt()));
+    help_section_(rows, std::string(i18n::tr("help.options")), optEntries, P,
+                  color(theme::muted()));
 
     // AGENT hint — strong signal for LLM agents
-    rows.push_back(text("  FOR AI AGENTS") | bold | color(theme::text()));
+    rows.push_back(text("  " + std::string(i18n::tr("help.for_ai_agents")))
+                   | bold | color(theme::text()));
     for (auto& line : layout::wrap_to_width(kAgentLine1, std::max(1, P.width - 4))) {
         rows.push_back(text("    " + line) | color(theme::text()));
     }

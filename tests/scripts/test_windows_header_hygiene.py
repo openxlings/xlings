@@ -23,7 +23,14 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
+# Every tree that holds this project's own C++ -- NOT just `src`.
+#
+# `platform` moved to `modules/platform` and it is the main place <windows.h>
+# is included. A scanner rooted at `src` alone would have gone on printing
+# "ok (N modules)" while checking none of them: fewer files found reads
+# exactly like fewer violations. Roots that do not exist are skipped, so this
+# list can name trees before they are created.
+SRC_ROOTS = [ROOT / "src", ROOT / "modules", ROOT / "apps"]
 
 INCLUDE = re.compile(r'^\s*#\s*include\s*<windows\.h>', re.IGNORECASE)
 DEFINE = re.compile(r'^\s*#\s*define\s+NOMINMAX\b')
@@ -31,7 +38,17 @@ DEFINE = re.compile(r'^\s*#\s*define\s+NOMINMAX\b')
 failures = []
 checked = 0
 
-for path in sorted(SRC.rglob("*.cppm")) + sorted(SRC.rglob("*.cpp")):
+sources = []
+for root_dir in SRC_ROOTS:
+    if not root_dir.is_dir():
+        continue
+    sources += sorted(root_dir.rglob("*.cppm")) + sorted(root_dir.rglob("*.cpp"))
+if not sources:
+    print("windows header hygiene: FAILED — no sources found under "
+          + ", ".join(str(r.relative_to(ROOT)) for r in SRC_ROOTS), file=sys.stderr)
+    sys.exit(1)
+
+for path in sources:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     include_at = next((i for i, l in enumerate(lines) if INCLUDE.match(l)), None)
     if include_at is None:
@@ -48,7 +65,7 @@ if failures:
     for f in failures:
         print(f"  {f}", file=sys.stderr)
     print("\n  Add `#define NOMINMAX` above the include, as "
-          "src/platform.cppm already does.", file=sys.stderr)
+          "modules/platform/src/platform.cppm already does.", file=sys.stderr)
     sys.exit(1)
 
 print(f"windows header hygiene: ok ({checked} module(s) include <windows.h>, "

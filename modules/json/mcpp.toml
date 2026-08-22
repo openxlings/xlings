@@ -1,0 +1,16 @@
+# nlohmann/json, wrapped as a module.
+#
+# `src/json/json.hpp` is the vendored upstream header (with its LICENSE);
+# `src/json.cppm` is the thin module that exports it so the rest of the
+# project can `import` rather than `#include`. A leaf -- it imports nothing,
+# not even `std`.
+[package]
+namespace = "xlings"
+name      = "json"
+version   = "0.1.0"
+
+[targets.json]
+kind = "lib"
+
+[build]
+include_dirs = ["src/json"]

@@ -1,0 +1,12 @@
+# SHA-256 (FIPS 180-4), in process.
+#
+# A leaf: `std` only. It exists because the hashes this project checks are
+# checked while a download is being verified, and shelling out to `sha256sum`
+# would make that depend on what is installed on the machine.
+[package]
+namespace = "xlings"
+name      = "sha256"
+version   = "0.1.0"
+
+[targets.sha256]
+kind = "lib"

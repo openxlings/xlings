@@ -1,7 +1,8 @@
 # 配色主题 (Themes)
 
 > 状态: 生效 (2026.8.22.1 起)
-> 实现: `libs/theme/`(独立 mcpp 成员包)· `src/core/xself/theme_resources.cppm`
+> 实现: `modules/theme/`(独立 mcpp 成员包)· `config/themes/*.json`(随发行包交付的样例)
+> 使用说明: [`../theme.md`](../theme.md)
 
 ## 1. 选一个
 
@@ -101,7 +102,7 @@ high-contrast    config/themes/  极端环境:强光、投影、劣质终端
 
 ## 8. 模块边界
 
-`libs/theme` 是 workspace 的独立成员,**零依赖**(只用 `std` 和 JSON 读取器)。它拥有 `Rgb` 和 `Background`,而不是从 `core/palette` 借:
+`modules/theme` 是 workspace 的独立成员,**零依赖**(只用 `std` 和 JSON 读取器)。它拥有 `Rgb` 和 `Background`,而不是从 `core/palette` 借:
 
 - `theme` 回答"用哪个颜色";
 - `palette` 回答"这个终端能不能上色、背景是深是浅" —— 这个需要 `xlings.platform`。

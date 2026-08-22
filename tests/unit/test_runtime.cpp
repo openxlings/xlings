@@ -14,7 +14,7 @@
 #endif
 
 import std;
-import xlings.core.i18n;
+import xlings.i18n;
 import xlings.core.log;
 import xlings.core.utils;
 import xlings.ui;
@@ -54,6 +54,14 @@ import xlings.libs.sha256;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
 import mcpplibs.cmdline;
+
+// `prompt()` returns a variant of three outcomes (see EventStream::Outcome).
+// These tests are about the round trip and not about the variant, so the value
+// is pulled out once here.
+static std::string chosen_or_empty_(const xlings::EventStream::Outcome& o) {
+    if (auto* c = std::get_if<xlings::EventStream::Chosen>(&o)) return c->value;
+    return {};
+}
 
 namespace {
 
@@ -483,12 +491,12 @@ TEST(EventStream, PromptAndRespond) {
         }
     });
 
-    auto answer = stream.prompt({
+    auto answer = chosen_or_empty_(stream.prompt({
         .id = "p1",
         .question = "Override?",
         .options = {"y", "n"},
         .defaultValue = "n"
-    });
+    }));
 
     EXPECT_EQ(captured_question, "Override?");
     EXPECT_EQ(answer, "y");
@@ -503,12 +511,12 @@ TEST(EventStream, PromptDefaultOnEmpty) {
         }
     });
 
-    auto answer = stream.prompt({
+    auto answer = chosen_or_empty_(stream.prompt({
         .id = "p2",
         .question = "Continue?",
         .options = {},
         .defaultValue = "yes"
-    });
+    }));
     EXPECT_EQ(answer, "yes");
 }
 
@@ -520,12 +528,12 @@ TEST(EventStream, PromptBlocksUntilRespond) {
     stream.on_event([](const xlings::Event&) {});
 
     std::thread taskThread([&] {
-        answer = stream.prompt({
+        answer = chosen_or_empty_(stream.prompt({
             .id = "p_async",
             .question = "Confirm?",
             .options = {"y", "n"},
             .defaultValue = "n"
-        });
+        }));
         promptReturned.store(true);
     });
 
@@ -546,10 +554,10 @@ TEST(EventStream, ConcurrentPromptsFromMultipleTasks) {
     stream.on_event([](const xlings::Event&) {});
 
     std::thread t1([&] {
-        answer1 = stream.prompt({.id = "pa", .question = "Q1"});
+        answer1 = chosen_or_empty_(stream.prompt({.id = "pa", .question = "Q1"}));
     });
     std::thread t2([&] {
-        answer2 = stream.prompt({.id = "pb", .question = "Q2"});
+        answer2 = chosen_or_empty_(stream.prompt({.id = "pb", .question = "Q2"}));
     });
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -608,12 +616,12 @@ public:
     auto execute(xlings::capability::Params params,
                  xlings::EventStream& stream) -> xlings::capability::Result override {
         stream.emit(xlings::ProgressEvent{"installing", 0.5f, "Installing..."});
-        auto answer = stream.prompt({
+        auto answer = chosen_or_empty_(stream.prompt({
             .id = "confirm_install",
             .question = "Proceed with install?",
             .options = {"y", "n"},
             .defaultValue = "y"
-        });
+        }));
         if (answer == "n") {
             return R"({"status":"cancelled"})";
         }

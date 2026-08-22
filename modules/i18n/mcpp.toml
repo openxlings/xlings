@@ -1,0 +1,34 @@
+# Message catalogues, as their own package.
+#
+# WHY BUILT IN, WHEN THEMES ARE NOT
+#
+# The test is whether a user ever AUTHORS one. `mono.json` and
+# `high-contrast.json` exist to be copied and edited, so they are files
+# (config/themes/). Nobody edits a translation table, so embedding it costs
+# nothing and removes an entire delivery chain -- packaged, copied, read,
+# parsed -- along with every way that chain can fail. A binary with no
+# accessible files still speaks.
+#
+# ONE FILE PER LANGUAGE
+#
+# `src/i18n/en.cppm` is the base and must be complete; every other language
+# states only what it changes and falls back to en per message. Same shape as
+# the themes it deliberately differs from in storage: a full built-in default
+# plus difference-only overlays.
+#
+# Adding a language is ADDING A FILE. The bilingual struct-array this replaces
+# would have had every row edited for each new language -- unreviewable by the
+# third one.
+[package]
+namespace = "xlings"
+name      = "i18n"
+version   = "0.1.0"
+
+[targets.i18n]
+kind = "lib"
+
+# Members may depend on members (mcpp docs, workspace §2.3); only depending on
+# the ROOT package is forbidden. So `language()` keeps resolving "auto" through
+# platform's system probe instead of making every caller inject it.
+[dependencies]
+platform = { path = "../platform" }

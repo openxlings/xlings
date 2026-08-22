@@ -18,4 +18,4 @@ version   = "0.1.0"
 kind = "lib"
 
 [build]
-include_dirs = ["../../src/libs/json"]
+include_dirs = ["../json/src/json"]

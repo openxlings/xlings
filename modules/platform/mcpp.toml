@@ -1,0 +1,39 @@
+# The OS boundary, as its own package.
+#
+# WHY IT COMES OUT CLEANLY DESPITE ITS SIZE
+#
+# 3230 lines and 81 importers, but its own dependency list is one entry:
+# `xlings.runtime.cancellation` (115 lines, itself a leaf). The breadth is all
+# upstream. That makes it the easiest node in the graph to lift out, not the
+# hardest -- what matters for extraction is what a module DEPENDS ON, not what
+# depends on it.
+#
+# BUILD FLAGS ARE NOT INHERITED
+#
+# mcpp propagates `[toolchain]` and `[target.<triple>]` from the workspace root
+# to members; `[build]` is NOT on that list. The root carries
+# `-DLIBARCHIVE_STATIC -DUNICODE -D_UNICODE`, and a member missing a macro it
+# needs does not fail to build -- it builds something else. On Windows a
+# missing -DUNICODE resolves the generic-name Win32 APIs to their ANSI
+# variants, which changes behaviour on non-ASCII paths and goes red on exactly
+# one of three CI platforms.
+#
+# Measured before the move, per flag:
+#   -DUNICODE/-D_UNICODE   not needed -- platform/windows.cpp calls the
+#                          explicit `W` APIs (10 of them) and contains zero
+#                          TCHAR / _T() / LPCTSTR
+#   -DLIBARCHIVE_STATIC    not needed -- `archive` appears nowhere in platform
+#   include_dirs           not needed -- every #include is a system header
+#
+# So this file declares no [build] section on purpose. Re-run that check before
+# adding a source file here.
+[package]
+namespace = "xlings"
+name      = "platform"
+version   = "0.1.0"
+
+[targets.platform]
+kind = "lib"
+
+[dependencies]
+cancellation = { path = "../cancellation" }

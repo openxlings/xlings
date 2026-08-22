@@ -1,18 +1,41 @@
 # Members are independent packages with their own mcpp.toml, referenced by
-# path. The frontends belong here as they land; `theme` is first because it is
-# a genuine leaf and every frontend needs it.
+# path. Listed leaves-first, which is also dependency order:
+#
+#   cancellation  leaf, std only
+#   platform      -> cancellation      (81 of 211 TUs import it)
+#   theme         leaf, std + the JSON header
+#   apps/gui      the GUI binary's library half
+#
+# `apps/` holds what becomes a binary; `modules/` holds what gets linked into
+# one. `src/` is what has not been separated yet -- core, cli, ui, runtime --
+# and shrinking it is the direction.
+#
+# The vendored units moved too (json wraps nlohmann's header, tinyhttps wraps
+# mcpplibs'): a module this project builds and exports is a module of this
+# project, whoever wrote the code inside. Keeping them under `src/libs` while
+# `modules/` existed meant two names for one idea, and `libs/` vs `src/libs/`
+# already read as the same thing.
 [workspace]
-members = ["libs/theme", "ui/gui"]
+members = [
+    "modules/json",
+    "modules/sha256",
+    "modules/cancellation",
+    "modules/platform",
+    "modules/i18n",
+    "modules/tinyhttps",
+    "modules/theme",
+    "apps/gui",
+]
 
 [package]
 name = "xlings"
-version = "2026.8.22.2"
+version = "2026.8.22.3"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
 
 [build]
-include_dirs = ["src/libs/json"]
+include_dirs = ["modules/json/src/json"]
 # Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
@@ -39,7 +62,7 @@ default = []
 gui = []
 
 [feature-deps.gui]
-ui-gui = { path = "ui/gui" }
+ui-gui = { path = "apps/gui" }
 
 [toolchain]
 default = "gcc@16.1.0"
@@ -67,7 +90,16 @@ linkage = "static"
 
 [dependencies]
 ftxui = "6.1.9"
-theme = { path = "libs/theme" }
+theme        = { path = "modules/theme" }
+platform     = { path = "modules/platform" }
+cancellation = { path = "modules/cancellation" }
+i18n         = { path = "modules/i18n" }
+json         = { path = "modules/json" }
+sha256       = { path = "modules/sha256" }
+# Named `xhttp` here to avoid colliding with `mcpplibs.tinyhttps`, which this
+# member wraps. mcpp resolves dependency names in one namespace, so a member
+# that wraps a registry package cannot share its bare name.
+xhttp        = { path = "modules/tinyhttps" }
 
 [dependencies.compat]
 libarchive = "3.8.7"
@@ -75,7 +107,6 @@ libarchive = "3.8.7"
 [dependencies.mcpplibs]
 cmdline = "0.0.2"
 xpkg = "0.0.57"
-tinyhttps = "0.2.9"
 capi.lua = "0.0.3"
 
 [dev-dependencies]

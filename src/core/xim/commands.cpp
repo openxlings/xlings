@@ -30,7 +30,7 @@ import xlings.core.config;
 import xlings.core.profile;
 import xlings.runtime;
 import xlings.libs.json;
-import xlings.core.i18n;
+import xlings.i18n;
 import xlings.platform;
 import xlings.platform.target;
 import xlings.libs.tinyhttps;
@@ -83,26 +83,34 @@ bool confirmed_or_refused_(EventStream& stream, std::string id,
     req.question = std::move(question);
     req.options = {"y", "n"};
     req.defaultValue = defaultValue;
-    auto answer = stream.prompt(std::move(req));
-
-    if (answer == EventStream::kCannotAsk) {
-        if (policy == WhenNobodyCanAnswer::Proceed) return true;
-        diag::emit({
-            .code    = "cli.needs_confirmation",
-            .summary = "this needs confirmation, and there is nobody to ask",
-            .facts   = { { "what it would do", std::string(what) } },
-            .actions = { { "to proceed", "re-run with -y" } },
-            .nothingChanged = true,
-        });
-        *rc = 2;
-        return false;
-    }
-    if (answer != "y") {
-        log::println("cancelled");
-        *rc = 0;
-        return false;
-    }
-    return true;
+    req.kind = PromptEvent::Kind::Confirm;
+    // Every outcome is spelled out. Adding a fourth would not compile here
+    // until it was, which is the whole point of the variant.
+    return std::visit(EventStream::on{
+        [&](EventStream::Chosen&& c) {
+            if (c.value == "y") return true;
+            log::println("cancelled");
+            *rc = 0;
+            return false;
+        },
+        [&](EventStream::Cancelled&&) {
+            log::println("cancelled");
+            *rc = 0;
+            return false;
+        },
+        [&](EventStream::NobodyToAsk&&) {
+            if (policy == WhenNobodyCanAnswer::Proceed) return true;
+            diag::emit({
+                .code    = "cli.needs_confirmation",
+                .summary = "this needs confirmation, and there is nobody to ask",
+                .facts   = { { "what it would do", std::string(what) } },
+                .actions = { { "to proceed", "re-run with -y" } },
+                .nothingChanged = true,
+            });
+            *rc = 2;
+            return false;
+        },
+    }, stream.prompt(std::move(req)));
 }
 
 PackageCatalog& get_catalog(CatalogAccess access) {
@@ -431,7 +439,21 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 // -y mode: auto-select first match
                 match = fuzzy.front();
             } else {
-                // Interactive selection via EventStream prompt
+                // A name that matches several packages. Ask when somebody is
+                // there; when nobody is, REFUSE -- installing the wrong
+                // package is worse than installing nothing, and the previous
+                // code silently did neither:
+                //
+                //   $ xlings install gc          # matches gcc, musl-gcc, ...
+                //   cancelled
+                //   $ echo $?
+                //   0
+                //
+                // It tested `chosen.empty()` for "cancelled" and let the
+                // cannot-ask sentinel -- which is not empty -- fall into the
+                // lookup below, where nothing could match it. Nobody was
+                // asked, nobody cancelled, nothing was installed, and the
+                // exit code said success. See EventStream::Outcome.
                 std::vector<std::string> options;
                 for (auto& f : fuzzy) {
                     options.push_back(f.canonicalName + "@" + f.version);
@@ -439,22 +461,56 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 PromptEvent req;
                 req.id = "select_package";
                 req.question = "Multiple matches found. Select a package:";
-                req.options = std::move(options);
-                auto chosen = stream.prompt(std::move(req));
-                if (chosen.empty()) {
-                    log::println("cancelled");
-                    return 0;
-                }
-                // Find matching fuzzy result
+                req.options = options;
+
+                std::optional<std::string> picked;
+                int earlyRc = -1;
+                std::visit(EventStream::on{
+                    [&](EventStream::Chosen&& c) { picked = std::move(c.value); },
+                    [&](EventStream::Cancelled&&) {
+                        log::println("cancelled");
+                        earlyRc = 0;
+                    },
+                    [&](EventStream::NobodyToAsk&&) {
+                        diag::emit({
+                            .code    = "xim.ambiguous_target",
+                            .summary = std::format(
+                                "'{}' matches more than one package", target),
+                            .facts   = { diag::candidates("candidates", options,
+                                                          options.size()) },
+                            .actions = {
+                                { "name one",
+                                  std::format("xlings install {}", options.front()) },
+                                { "or take the first",
+                                  std::format("xlings install {} -y", target) },
+                            },
+                            .nothingChanged = true,
+                        });
+                        earlyRc = 2;
+                    },
+                }, stream.prompt(std::move(req)));
+                if (earlyRc >= 0) return earlyRc;
+
                 for (auto& f : fuzzy) {
-                    if ((f.canonicalName + "@" + f.version) == chosen) {
+                    if ((f.canonicalName + "@" + f.version) == *picked) {
                         match = f;
                         break;
                     }
                 }
                 if (!match) {
-                    log::println("cancelled");
-                    return 0;
+                    // An answer that names none of the options. Not a cancel:
+                    // somebody said something and it did not fit.
+                    diag::emit({
+                        .code    = "xim.ambiguous_target",
+                        .summary = std::format(
+                            "'{}' is not one of the offered packages", *picked),
+                        .facts   = { diag::candidates("candidates", options,
+                                                      options.size()) },
+                        .actions = { { "name one",
+                            std::format("xlings install {}", options.front()) } },
+                        .nothingChanged = true,
+                    });
+                    return 2;
                 }
             }
         }
@@ -837,21 +893,46 @@ int cmd_remove(const std::string& target, bool yes, EventStream& stream,
                 // than removes, and the cross-subos refcount path would then
                 // report "✓ removed (subos: tmp)" for a version the user never
                 // had. Refuse, and say where it actually lives.
-                // Same builder as `use` and the shim: one wording, one code.
-                // Level stays Warn and the exit code stays 0 -- `remove` of
-                // something that is not here is a no-op scripts re-run
-                // defensively, which is a different contract from `use`.
-                auto d = xvm::not_in_subos({
-                    .target     = bareName,
-                    .subos      = subos,
-                    .otherSubos = referencing,
+                //
+                // NOT `xvm::not_in_subos`. That builder was written for "you
+                // wanted to USE this", and 2026.8.22.1 reused it here for its
+                // wording -- inheriting its ACTIONS, which end with
+                //
+                //     install it here   xlings install <name>
+                //
+                // offered to somebody who had just asked to remove it. The
+                // last step out of a failed removal cannot be the inverse of
+                // the request. The same condition is answered ~100 lines below
+                // by `xim.remove_absent` with an action that fits, so the
+                // reuse bought one wording at the price of two answerers.
+                //
+                // Same code as that one now, and the same shape: the fact says
+                // where it lives, the actions stay on the verb the user typed.
+                // Level Warn and exit 0 -- `remove` of something that is not
+                // here is a no-op scripts re-run defensively, which is a
+                // different contract from `use`.
+                std::string where;
+                for (const auto& n : referencing) {
+                    if (!where.empty()) where += ", ";
+                    where += n;
+                }
+                diag::emit({
+                    .level   = diag::Level::Warn,
+                    .code    = "xim.remove_absent",
+                    .summary = std::format(
+                        "{} is not installed in this subos ({}), so there is "
+                        "nothing to remove", bareName,
+                        subos.empty() ? "default" : subos),
+                    .facts   = { { "installed in subos", where } },
+                    .actions = {
+                        { "see what is here", "xlings list" },
+                        // The only next step the user plausibly wants, and it
+                        // is a removal rather than an installation.
+                        { "remove it there",
+                          std::format("xlings subos use {} && xlings remove {}",
+                                      referencing.front(), bareName) },
+                    },
                 });
-                d.level = diag::Level::Warn;
-                d.summary = std::format(
-                    "{} is not installed in this subos ({}), so there is "
-                    "nothing to remove", bareName,
-                    subos.empty() ? "default" : subos);
-                diag::emit(d);
                 return 0;
             }
 

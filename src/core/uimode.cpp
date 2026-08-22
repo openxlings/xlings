@@ -2,6 +2,7 @@ module xlings.core.uimode;
 
 import std;
 import xlings.core.palette;
+import xlings.platform;
 
 namespace xlings::ui {
 
@@ -26,6 +27,9 @@ UiCapabilities gCaps_ {};
     // Re-deriving any of it here would be a fifth knob.
     return Detected{
         .stdoutIsTerminal = palette::stdout_is_terminal(),
+        // From platform rather than palette: palette answers questions about
+        // what may be DRAWN, and all of those are about the output side.
+        .stdinIsTerminal  = platform::stdin_is_terminal(),
         .colorAllowed     = palette::colors_enabled(),
     };
 }
@@ -71,11 +75,17 @@ UiCapabilities gCaps_ {};
     c.color = (mode == UiMode::Tui) && env.colorAllowed;
     // Redrawing in place needs a terminal AND a frontend that draws frames.
     c.cursorRewrite = (mode == UiMode::Tui) && env.stdoutIsTerminal;
-    // Interactivity is a preference, but it is gated by physics: nobody is
-    // there to press a key on a pipe, and --agent says outright that the
-    // reader is a program. See EventStream::set_interactive for what guessing
-    // an answer cost.
-    c.interactive = interactivePreference && !agentMode && env.stdoutIsTerminal;
+
+    // A confirmation may be asked whenever there is an input side to answer on
+    // and the caller has not declared itself a program. NOT gated on the
+    // stored preference: `-y` documents that a question exists, so whether it
+    // is asked is a contract, not a look-and-feel setting.
+    c.canConfirm = !agentMode && env.stdinIsTerminal;
+
+    // A selection blocks with no default, so it additionally requires the
+    // stored preference -- a promise, made once by the person who would be at
+    // the keyboard, which a tty never was.
+    c.canSelect = c.canConfirm && interactivePreference;
     return c;
 }
 

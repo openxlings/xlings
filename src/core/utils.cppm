@@ -24,7 +24,6 @@ export namespace xlings::utils {
 
 [[nodiscard]] std::vector<std::string> split_string(const std::string& str, char delimiter);
 
-bool ask_yes_no(const std::string& question, bool defaultYes = false);
 
 std::string ask_input(const std::string& prompt, const std::string& defaultValue = "");
 

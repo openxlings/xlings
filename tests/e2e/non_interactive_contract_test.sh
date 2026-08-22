@@ -150,18 +150,34 @@ probe_says() {
 # a real package, so the bit is set here rather than pretending in Lua.
 find "$HOME_DIR/data/xpkgs" -type f -name 'ni-*' -exec chmod +x {} +
 
-# ── N1: one candidate → switch, exit 0 ───────────────────────────────
-log "N1: a single installed version switches without asking"
+# ── N1: one candidate → LIST, exit 0, nothing changed ────────────────
+#
+# This case used to assert the opposite: that a single candidate SWITCHED.
+# That was 2026.7.30.2's rule -- "whether the command has a single correct
+# outcome is detectable, and that is what decides" -- and on its own terms it
+# is sound.
+#
+# What it collided with is `--help`, which has always said of the version
+# argument: "omit to list installed versions". So one typed command was a
+# QUERY or a MUTATION depending on the candidate count, and the count is
+# "versions opted into THIS subos" -- not "versions I installed", and not
+# anything the user can see before pressing enter. Measured on a real home:
+# `use gcc --all` listed five while `use gcc` wrote state, because one of the
+# five was opted into that subos.
+#
+# So the meaning is fixed instead of the outcome: bare `use <name>` lists, at
+# any count. Naming a version switches (N5). The sysroot repair that relied on
+# re-running `use` on the active version is now spelled `use <name> <version>`,
+# which works at any count rather than only at exactly one.
+log "N1: a single installed version lists, exactly as several do"
 rc="$(rc_of RUN use ni-one)"
 [[ "$rc" == "0" ]] || fail "N1: expected exit 0, got $rc"
-out="$(probe_says ni-one)"
-grep -q "probe 1.0.0" <<<"$out" || fail "N1: shim does not run the version; got:\n$out"
-# It must actually *switch*, not print the list and shrug. The old path took
-# the same non-interactive branch here as it did for N2, so without this the
-# case passes for the wrong reason.
 out="$(RUN use ni-one 2>&1 || true)"
-grep -q -- "ni-one -> 1.0.0" <<<"$out" \
-  || fail "N1: no switch was performed, only a listing; got:\n$out"
+grep -q "1.0.0" <<<"$out" || fail "N1: the version was not listed; got:\n$out"
+# And specifically NOT a switch. `->` is how cmd_use announces one.
+if grep -q -- "ni-one -> " <<<"$out"; then
+  fail "N1: bare use switched instead of listing; got:\n$out"
+fi
 
 # ── N2: several candidates → list them, exit 0, nothing changed ──────
 #
@@ -243,6 +259,110 @@ rc="$(rc_of RUN remove ni-one -y)"
 if [[ "$HAVE_PTY" == "1" ]]; then
   rc="$(rc_of RUN_PTY install ni-one -y)"
   [[ "$rc" == "0" ]] || fail "N6: install -y under a pty exited $rc"
+fi
+
+# ── N8: the question goes to stderr, and EOF is not an answer ────────
+#
+# Confirmations are asked whenever stdin is a terminal now, which makes two
+# things load-bearing that were not before:
+#
+#   * The question must not go to STDOUT. `xlings remove foo > log` with a
+#     terminal on stdin would put it in the file and show the user a process
+#     that looks hung -- and really is waiting for them.
+#   * EOF must not be answered on the user's behalf. `ui::confirm` returned its
+#     default there, which is the guess the whole non-interactive contract
+#     exists to prevent, smuggled onto the interactive path.
+#
+# `RUN_PTY` cannot express this: it uses `script`, which merges everything the
+# child writes into one stream. What is needed is a pty on STDIN ONLY, with
+# stdout and stderr as separate pipes -- which is exactly the shape that
+# breaks.
+log "N8: the confirmation goes to stderr, and EOF cancels rather than guesses"
+n8="$RUNTIME_DIR/n8"
+mkdir -p "$n8"
+set +e
+XLINGS_BIN="$XLINGS_BIN" XLINGS_HOME="$HOME_DIR" N8_DIR="$n8" python3 - <<'PY8'
+import os, pty, subprocess, sys, time
+
+env = dict(os.environ)
+env["XLINGS_ACTIVE_SUBOS"] = "default"
+d = env["N8_DIR"]
+
+# A pty for stdin, plain pipes for stdout/stderr.
+master, slave = pty.openpty()
+p = subprocess.Popen([env["XLINGS_BIN"], "remove", "ni-two"],
+                     stdin=slave, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env)
+os.close(slave)
+# Close the master so the child sees EOF on a terminal: somebody was there and
+# then was not, which is not the same as answering.
+time.sleep(1.0)
+os.close(master)
+try:
+    out, err = p.communicate(timeout=30)
+except subprocess.TimeoutExpired:
+    p.kill()
+    open(os.path.join(d, "timeout"), "w").write("1")
+    out, err = p.communicate()
+open(os.path.join(d, "stdout"), "wb").write(out)
+open(os.path.join(d, "stderr"), "wb").write(err)
+open(os.path.join(d, "rc"), "w").write(str(p.returncode))
+PY8
+set -e
+[[ -f "$n8/timeout" ]] && fail "N8: the command hung on an unanswered confirmation"
+if grep -qiE '\[y/N\]|\[Y/n\]' "$n8/stdout"; then
+  fail "N8: the confirmation prompt was written to stdout:
+$(cat "$n8/stdout")"
+fi
+grep -qiE '\[y/N\]|\[Y/n\]' "$n8/stderr" \
+  || fail "N8: no confirmation was asked at all on a terminal stdin:
+stdout: $(cat "$n8/stdout")
+stderr: $(cat "$n8/stderr")"
+# EOF is not a yes. Nothing may have been removed.
+after="$(probe_says ni-two)"
+grep -q "probe" <<<"$after" \
+  || fail "N8: an unanswered confirmation removed the package anyway"
+
+# ── N9: an answered confirmation is honoured ─────────────────────────
+#
+# The other half of N8, and the one that would go unnoticed: a confirmation
+# that is asked, displayed correctly, and then ignores what the user typed
+# passes every assertion above. So type "y" into the pty and require that the
+# removal actually happened.
+log "N9: typing y at the confirmation performs the action"
+n9="$RUNTIME_DIR/n9"
+mkdir -p "$n9"
+set +e
+XLINGS_BIN="$XLINGS_BIN" XLINGS_HOME="$HOME_DIR" N9_DIR="$n9" python3 - <<'PY9'
+import os, pty, subprocess, time
+
+env = dict(os.environ)
+env["XLINGS_ACTIVE_SUBOS"] = "default"
+d = env["N9_DIR"]
+
+master, slave = pty.openpty()
+p = subprocess.Popen([env["XLINGS_BIN"], "remove", "ni-two"],
+                     stdin=slave, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env)
+os.close(slave)
+time.sleep(1.0)
+os.write(master, b"y\n")
+try:
+    out, err = p.communicate(timeout=60)
+except subprocess.TimeoutExpired:
+    p.kill()
+    open(os.path.join(d, "timeout"), "w").write("1")
+    out, err = p.communicate()
+os.close(master)
+open(os.path.join(d, "stderr"), "wb").write(err)
+open(os.path.join(d, "rc"), "w").write(str(p.returncode))
+PY9
+set -e
+[[ -f "$n9/timeout" ]] && fail "N9: the command hung after the answer was typed"
+gone="$(probe_says ni-two 2>&1 || true)"
+if grep -q "probe 2.0.0" <<<"$gone"; then
+  fail "N9: the confirmation was answered y and nothing was removed:
+stderr: $(cat "$n9/stderr")"
 fi
 
 # ── N7: listing is a listing ─────────────────────────────────────────

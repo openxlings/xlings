@@ -37,10 +37,24 @@ enum class UiMode {
     Tui,   // ftxui rendering, inline. Never full-screen -- see the design doc.
 };
 
+// TWO TIERS OF ASKING, because the two kinds of question fail differently.
+//
+// A CONFIRMATION carries a default and a documented escape (`-y`). Asking it
+// whenever a terminal is attached is what `--yes` has always claimed happens,
+// and refusing to ask made that flag describe a question that never occurred:
+// `xlings remove foo` on a terminal printed "this needs confirmation, and
+// there is nobody to ask" while the user sat at the keyboard.
+//
+// A SELECTION has no default and no timeout -- it blocks until somebody
+// presses a key. A pty is not evidence that anybody will (agents and CI
+// routinely allocate one), which is why 2026.7.30 removed the blocking picker
+// and 2026.8.22.1 made it opt-in. That decision stands, and it applies to
+// selections only.
 struct UiCapabilities {
     bool color          { false };
     bool cursorRewrite  { false };  // may redraw in place
-    bool interactive    { false };  // somebody can answer a question
+    bool canConfirm     { false };  // y/n, has a default: ask whenever stdin is a tty
+    bool canSelect      { false };  // pick-from-list, blocks: opt-in via config
 };
 
 // Width is deliberately NOT here. `ui::layout::term_width()` already owns it,
@@ -62,6 +76,11 @@ struct UiCapabilities {
 // What the environment can actually support, before preference is applied.
 struct Detected {
     bool stdoutIsTerminal { false };
+    // Whether a question can be ANSWERED is a property of the input side.
+    // Gating on stdout got both directions wrong: `xlings install foo | tee
+    // log` has a piped stdout and a human at the keyboard, and a stdout
+    // terminal says nothing about whether anything will ever arrive on stdin.
+    bool stdinIsTerminal  { false };
     bool colorAllowed     { false };  // terminal AND not NO_COLOR/TERM=dumb
 };
 

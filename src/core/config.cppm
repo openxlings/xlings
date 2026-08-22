@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.22.2";
+    static constexpr std::string_view VERSION = "2026.8.22.3";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -332,6 +332,13 @@ public:
     // rule local index repo sources already use, so a project can ship its own
     // colours exactly the way it can ship its own index.
     [[nodiscard]] static std::filesystem::path resolve_theme_path();
+
+    // The same resolution, applied to a candidate value rather than to the
+    // stored one. `xlings config --theme <x>` uses it to refuse a value that
+    // resolves to nothing -- and it must be THIS function, not a second
+    // lookup, or the setter and the reader can disagree about what a name
+    // means and the disagreement only shows up on the next command.
+    [[nodiscard]] static std::filesystem::path resolve_theme_path_for(std::string value);
 
     // nullopt = not configured; the default is ON for terminals (gated by
     // ui::capabilities_of, which knows whether anyone is actually there).

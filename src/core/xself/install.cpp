@@ -8,6 +8,8 @@ import xlings.core.xvm.lock;
 import xlings.libs.json;
 import xlings.libs.tinyhttps;
 import xlings.core.log;
+import xlings.core.diag;
+import xlings.runtime;
 import xlings.platform;
 import xlings.core.utils;
 import xlings.core.version_order;
@@ -511,7 +513,42 @@ bool same_dir_(const fs::path& a, const fs::path& b) {
     return ca == cb;
 }
 
-int cmd_install() {
+// A y/n on the EventStream, with `self install`'s own answer for "nobody was
+// there": DECLINE and say so.
+//
+// Deliberately not `xim`'s `confirmed_or_refused_`: that one lives in the
+// package layer and carries a per-caller Proceed/Refuse policy. Every question
+// here is "may I overwrite an existing installation", and the answer to that
+// with nobody watching is no -- there is no direction in which guessing yes is
+// safe, which is exactly what the old `ask_yes_no(question, !downgrade)` did.
+bool confirm_(EventStream& stream, std::string id, std::string question,
+              std::string defaultValue) {
+    PromptEvent req;
+    req.id = std::move(id);
+    req.question = std::format("[xlings:self] {}", question);
+    req.options = {"y", "n"};
+    req.defaultValue = std::move(defaultValue);
+    req.kind = PromptEvent::Kind::Confirm;
+
+    return std::visit(EventStream::on{
+        [](EventStream::Chosen&& c) { return c.value == "y"; },
+        [](EventStream::Cancelled&&) { return false; },
+        [&](EventStream::NobodyToAsk&&) {
+            diag::emit({
+                .code    = "xself.needs_confirmation",
+                .summary = "this would overwrite an installation, and there "
+                           "is nobody to ask",
+                .facts   = { { "what it would do", req.question } },
+                .actions = { { "run it where you can answer",
+                               "xlings self install" } },
+                .nothingChanged = true,
+            });
+            return false;
+        },
+    }, stream.prompt(std::move(req)));
+}
+
+int cmd_install(EventStream& stream) {
     warn_root_context_();
     auto srcDir = detect_source_dir();
     if (srcDir.empty()) {
@@ -610,12 +647,14 @@ int cmd_install() {
     bool overwriteDataSubos = false;
     if (!fromTempExtract) {
         if (!pkgVersion.empty() && !installedVersion.empty() && pkgVersion == installedVersion) {
-            if (!utils::ask_yes_no("\n[xlings:self] same version installed, reinstall? ", false)) {
+            if (!confirm_(stream, "self_reinstall",
+                          "same version installed, reinstall?", "n")) {
                 std::println("[xlings:self] cancelled\n");
                 return 0;
             }
             if (fs::exists(targetHome / "data") || fs::exists(targetHome / "subos")) {
-                overwriteDataSubos = utils::ask_yes_no("[xlings:self] overwrite data and subos? ", false);
+                overwriteDataSubos = confirm_(stream, "self_overwrite_data",
+                                              "overwrite data and subos?", "n");
             }
         } else if (fs::exists(targetHome / "bin") && fs::exists(targetHome / "subos")) {
             // Name both versions, and say which DIRECTION this is.
@@ -637,17 +676,16 @@ int cmd_install() {
                 && version_order::compare(pkgVersion, installedVersion) < 0;
             std::string question;
             if (installedVersion.empty()) {
-                question = "\n[xlings:self] overwrite existing installation? ";
+                question = "overwrite existing installation?";
             } else if (downgrade) {
-                question = std::format(
-                    "\n[xlings:self] DOWNGRADE v{} -> v{}, overwrite? ",
-                    installedVersion, pkgVersion);
+                question = std::format("DOWNGRADE v{} -> v{}, overwrite?",
+                                       installedVersion, pkgVersion);
             } else {
-                question = std::format(
-                    "\n[xlings:self] replace v{} with v{}? ",
-                    installedVersion, pkgVersion);
+                question = std::format("replace v{} with v{}?",
+                                       installedVersion, pkgVersion);
             }
-            if (!utils::ask_yes_no(question, !downgrade)) {
+            if (!confirm_(stream, "self_overwrite", question,
+                          downgrade ? "n" : "y")) {
                 std::println("[xlings:self] cancelled\n");
                 return 0;
             }
@@ -752,6 +790,36 @@ int cmd_install() {
     }
     if (!fs::exists(targetHome / "config") && fs::exists(srcDir / "config")) {
         copy_directory_contents(srcDir / "config", targetHome / "config");
+    }
+
+    // The shipped example themes, refreshed on EVERY install including an
+    // upgrade.
+    //
+    // The whole-directory copy above only fires when `config/` does not exist,
+    // so on an upgrade it does nothing -- and until this release that gap was
+    // covered by `ensure_shipped_themes_` writing the files out of embedded
+    // string literals. Removing the embedded copy (they are data now, shipped
+    // in the payload) would have left an upgraded home stuck on whatever
+    // version of these files it first received.
+    //
+    // BY FILE, not by directory: `config/themes/` is a place users may put
+    // their own themes, and `--theme list` enumerates whatever is there.
+    // Ownership is per-file -- xlings replaces the names it ships and touches
+    // nothing else.
+    if (fs::exists(srcDir / "config" / "themes")) {
+        std::error_code tec;
+        fs::create_directories(targetHome / "config" / "themes", tec);
+        for (const auto& name : { "mono.json", "high-contrast.json" }) {
+            const auto from = srcDir / "config" / "themes" / name;
+            if (!fs::exists(from, tec)) continue;
+            fs::copy_file(from, targetHome / "config" / "themes" / name,
+                          fs::copy_options::overwrite_existing, tec);
+            if (tec) {
+                log::warn("[xlings:self] could not refresh the shipped theme "
+                          "{}: {}", name, tec.message());
+                tec.clear();
+            }
+        }
     }
 
     // 4. Fix permissions (platform-dispatched)

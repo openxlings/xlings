@@ -1,0 +1,28 @@
+{
+  "_comment": "shipped by xlings as an example of the theme format. Copy it and point `xlings config --theme <path>` at your copy -- this file is replaced on upgrade. Slots left out inherit the built-in default, which is why each file states only what it changes.",
+  "name": "mono",
+
+  "dark": {
+    "accent":  "#E6EDF3",
+    "alt":     "#E6EDF3",
+    "success": "#C9D1D9",
+    "warn":    "#C9D1D9",
+    "error":   "#F0F6FC",
+    "text":    "#F0F6FC",
+    "muted":   "#8B949E",
+    "border":  "#30363D",
+    "surface": "#0D1117"
+  },
+
+  "light": {
+    "accent":  "#1F2328",
+    "alt":     "#1F2328",
+    "success": "#424A53",
+    "warn":    "#424A53",
+    "error":   "#0E1116",
+    "text":    "#0E1116",
+    "muted":   "#656D76",
+    "border":  "#D0D7DE",
+    "surface": "#FFFFFF"
+  }
+}

@@ -754,14 +754,28 @@ int cmd_use_by_name(const std::string& target, EventStream& stream, bool all, bo
     auto candidates = collect_version_candidates_(target, all);
     if (!candidates) return candidates.error();
 
-    // Unambiguous: there is nothing to ask about. This also covers the
-    // documented sysroot-repair use of `use` -- switching to the version that
-    // is already active re-materializes headers and libraries.
-    if (candidates->versions.size() == 1) {
-        return cmd_use(target, candidates->versions.front(), stream, strict);
-    }
+    // NO single-candidate auto-switch.
+    //
+    // `--help` has always said "omit to list installed versions", and from
+    // 2026.7.30.2 until now the code switched instead whenever the candidate
+    // count happened to be 1. The same typed command was therefore a QUERY or
+    // a MUTATION depending on a number the user cannot see: the candidate set
+    // is "versions opted into THIS subos", not "versions I have installed".
+    // Measured on a real home -- `xlings use gcc --all` listed five while
+    // `xlings use gcc` wrote state, because only one of the five was opted in
+    // here.
+    //
+    // The argument that introduced it (2026.7.30.2: "whether the command has
+    // a single correct outcome IS detectable") is sound on its own terms, but
+    // it buys determinism of the OUTCOME at the cost of determinism of the
+    // MEANING -- and the meaning was already documented.
+    //
+    // The sysroot repair that rode along on this branch -- re-running `use` on
+    // the active version to re-materialize headers and libraries -- keeps
+    // working as `xlings use <name> <version>`. That spelling is explicit and
+    // holds at any candidate count, rather than only at exactly one.
 
-    // Several to choose from and somebody to ask: ask.
+    // Somebody to ask, and something to ask about: ask.
     //
     // `ui/selector.cpp` has had a working inline version picker since 2026-07
     // with ZERO callers -- the 2026-07-29 survey recorded it as dead code and
@@ -779,16 +793,21 @@ int cmd_use_by_name(const std::string& target, EventStream& stream, bool all, bo
         pick.question = std::format("Which {} ?", target);
         pick.options = candidates->versions;
         pick.defaultValue = candidates->active;
-        auto chosen = stream.prompt(std::move(pick));
-        if (chosen == EventStream::kCannotAsk) {
-            // Somebody registered no responder and there is no terminal --
-            // fall through to the panel, which is a complete answer.
-        } else if (chosen.empty()) {
-            log::println("cancelled");
-            return 0;
-        } else {
-            return cmd_use(target, chosen, stream, strict);
-        }
+
+        std::optional<int> done;
+        std::visit(EventStream::on{
+            [&](EventStream::Chosen&& c) {
+                done = cmd_use(target, c.value, stream, strict);
+            },
+            [&](EventStream::Cancelled&&) {
+                log::println("cancelled");
+                done = 0;
+            },
+            // Nobody there: fall through to the panel below, which is a
+            // complete answer rather than an error.
+            [&](EventStream::NobodyToAsk&&) {},
+        }, stream.prompt(std::move(pick)));
+        if (done) return *done;
     }
 
     return cmd_list_versions(target, stream, all);
