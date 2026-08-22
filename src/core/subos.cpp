@@ -4,7 +4,16 @@ module;
 // pull these in, and we want execl/errno (POSIX) or CreateProcess
 // (Win32) without #include in the named-module purview (which the
 // standard forbids for headers that aren't importable units).
-#include <cstdio>  // stderr (used by std::println(stderr, ...))
+#include <cstdio>
+
+// stdout / stderr as FILE*, for std::println.
+//
+// EVERY std::println here names its stream, and that is load-bearing rather
+// than tidy: without one, clang deduces the format string itself as the first
+// ARGUMENT and instantiates formatter<basic_format_string<...>>, which is
+// deleted. gcc accepts the same code. Whether it trips is decided by what
+// else the translation unit imports, so it cannot be predicted from this
+// file -- adding one unrelated import to this TU is exactly what surfaced it.
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 // windows.h defines `min`/`max` as function-like macros, which turns any
@@ -384,8 +393,14 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
     try {
         write_config_json_(dir / ".xlings.json", json);
     } catch (const std::exception& e) {
+        // std::string on both, not a bare const char*.
+        //
+        // clang instantiated log::error<std::string, const char*> down a path
+        // that ends in formatter<const char*, wchar_t> -- deleted -- and gcc
+        // did not. Whether it trips depends on what else the TU imports, so
+        // it appeared here when an unrelated import was added.
         log::error("failed to write subos manifest {}: {}",
-                   (dir / ".xlings.json").string(), e.what());
+                   (dir / ".xlings.json").string(), std::string(e.what()));
         return false;
     }
     return true;
@@ -1049,11 +1064,11 @@ int use_emit_shell(const std::string& name,
     use_detail_::report_injected_env_(name, envVars);
 
     if (is_fish) {
-        std::println(R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
-        std::println(R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
+        std::println(stdout, R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
+        std::println(stdout, R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
         // Strip any old subos bin segments from PATH, then prepend the new
         // bin. fish's $PATH is a list, so we use string match -v.
-        std::println(R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
+        std::println(stdout, R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
@@ -1061,34 +1076,34 @@ int use_emit_shell(const std::string& name,
             // plain R"(...)" literal early -- and the truncation compiles,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(
+                std::println(stdout, 
                     R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
                     v.var, v.value);
             } else {
-                std::println(R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
+                std::println(stdout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
                              v.var, v.value);
             }
         }
         return 0;
     }
     if (is_pwsh) {
-        std::println(R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
-        std::println(R"($env:XLINGS_BIN = '{}')", bin_dir.string());
-        std::println(R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
+        std::println(stdout, R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
+        std::println(stdout, R"($env:XLINGS_BIN = '{}')", bin_dir.string());
+        std::println(stdout, R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
             // ';' rather than ':' -- these are path lists, and on Windows the
             // separator is the one the platform's own tools split on.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(
+                std::println(stdout, 
                     R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
                     v.var, v.value);
             } else {
                 // `$null -eq`, not `-not`: PowerShell's `-not` is true for an
                 // empty string too, which would overwrite a value the user
                 // deliberately set to "".
-                std::println(R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
+                std::println(stdout, R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
                              v.var, v.value);
             }
         }
@@ -1098,20 +1113,20 @@ int use_emit_shell(const std::string& name,
     auto orig_path = utils::get_env_or_default("PATH");
     auto new_path  = use_detail_::rebuild_path_for_subos_(
         orig_path, p.homeDir, bin_dir);
-    std::println(R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
-    std::println(R"(export XLINGS_BIN="{}";)", bin_dir.string());
-    std::println(R"(export PATH="{}";)", new_path);
+    std::println(stdout, R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
+    std::println(stdout, R"(export XLINGS_BIN="{}";)", bin_dir.string());
+    std::println(stdout, R"(export PATH="{}";)", new_path);
     for (const auto& v : envVars) {
         if (v.unresolved) continue;
         if (v.op == manifest::OP_PREPEND) {
             // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
             // so an unset variable does not become a trailing ':' -- which an
             // empty PATH-list element reads as "the current directory".
-            std::println(R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+            std::println(stdout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
             // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
             // is set-but-empty, which would overwrite a value the user chose.
-            std::println(R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
+            std::println(stdout, R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
         }
     }
     return 0;

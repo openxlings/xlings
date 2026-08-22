@@ -1500,8 +1500,59 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
         return 1;
     }
 
-    auto match = catalog.resolve_target(target, detect_platform());
+    const auto infoPlatform = detect_platform();
+    auto match = catalog.resolve_target(target, infoPlatform);
     if (!match) {
+        // The same name, two answers.
+        //
+        // `xlings install gc` matched five packages and offered them;
+        // `xlings info gc` said "not found in the synced index" -- for a name
+        // the index demonstrably knows about. One of those two was lying, and
+        // the user has no way to tell which.
+        //
+        // `catalog.search` is what `install` uses. Same matcher, same result,
+        // and the exit code stays non-zero because `info` still has nothing
+        // to show.
+        auto fuzzy = target.find(':') == std::string::npos
+            ? catalog.search(target, infoPlatform)
+            : decltype(catalog.search(target, infoPlatform)){};
+        if (!fuzzy.empty()) {
+            if (fuzzy.size() > 5) fuzzy.resize(5);
+            std::vector<std::string> names;
+            for (const auto& f : fuzzy) {
+                names.push_back(f.canonicalName + "@" + f.version);
+            }
+            // Offered when somebody can answer -- `info` is a query, so
+            // picking one shows it rather than installing anything.
+            if (stream.interactive()) {
+                PromptEvent pick;
+                pick.id = "select_package";
+                pick.question = std::string(
+                    i18n::tr("Multiple matches found. Select a package:"));
+                pick.options = names;
+                pick.kind = PromptEvent::Kind::Select;
+
+                std::optional<std::string> chosen;
+                int early = -1;
+                std::visit(EventStream::on{
+                    [&](EventStream::Chosen&& c) { chosen = std::move(c.value); },
+                    [&](EventStream::Cancelled&&) { log::println("cancelled"); early = 0; },
+                    [&](EventStream::NobodyToAsk&&) {},
+                }, stream.prompt(std::move(pick)));
+                if (early >= 0) return early;
+                if (chosen) return cmd_info(*chosen, stream, allVersions);
+            }
+            diag::emit({
+                .code    = "xim.ambiguous_target",
+                .summary = std::format("'{}' matches more than one package",
+                                       target),
+                .facts   = { diag::candidates("candidates", names, names.size()) },
+                .actions = { { "name one",
+                    std::format("xlings info {}", names.front()) } },
+                .nothingChanged = true,
+            });
+            return 2;
+        }
         log::error("{}", match.error());
         return 1;
     }
