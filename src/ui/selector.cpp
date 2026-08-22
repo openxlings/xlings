@@ -9,6 +9,7 @@ module xlings.ui;
 
 import std;
 import xlings.core.palette;
+import xlings.i18n;
 
 namespace xlings::ui {
 
@@ -49,14 +50,19 @@ select_package(std::span<const std::pair<std::string, std::string>> items) {
     });
 
     screen.Loop(Renderer(component, [&] {
+        // Same shape as select_option above; see the note there.
         return vbox({
-            text(" Select a package:") | theme::style::title(),
-            separator() | color(theme::border()),
+            hbox({
+                text("  " + std::string(theme::icon::package) + " ")
+                    | color(theme::accent()),
+                text(std::string(i18n::tr("ui.select_package")))
+                    | theme::style::title(),
+            }),
             component->Render() | vscroll_indicator | frame
                 | size(HEIGHT, LESS_THAN, 20),
-            separator() | color(theme::border()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
-        }) | borderRounded | color(theme::border());
+            text("    " + std::string(i18n::tr("ui.select_keys")))
+                | color(theme::muted()),
+        });
     }));
 
     if (confirmed && selected >= 0 && selected < (int)items.size()) {
@@ -97,12 +103,17 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
     // be pointing away from where the user is.
     menu_opt.focused_entry = selected;
     menu_opt.entries_option.transform = [](const EntryState& state) {
-        auto e = text((state.focused ? "> " : "  ") + state.label);
-        if (state.focused) {
-            e = e | bold | inverted;
-        } else {
-            e = e | color(theme::text());
-        }
+        // `▸` and a colour, NOT an inverted block.
+        //
+        // `inverted` paints the full row width, so on a wide terminal one
+        // short option becomes a bar across the screen -- and it is the only
+        // place in xlings that does that. The same marker the rest of the
+        // output uses for "this one" (`xlings subos`, `xlings use --all`)
+        // reads as the same product.
+        auto e = text((state.focused ? "  " + std::string(theme::icon::active) + " "
+                                     : "    ") + state.label);
+        e = state.focused ? (e | bold | color(theme::accent()))
+                          : (e | color(theme::text()));
         return e;
     };
     auto menu = Menu(&labels, &selected, menu_opt);
@@ -129,20 +140,30 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
     });
 
     screen.Loop(Renderer(component, [&] {
-        auto box = vbox({
-            text(" " + std::string(title)) | theme::style::title(),
-            separator() | color(theme::border()),
+        // NO BOX.
+        //
+        // The rounded border, the two separators and the hint line cost six
+        // rows to choose between two options, and none of the rest of xlings
+        // draws boxes -- `xlings subos`, `xlings list` and every diagnostic
+        // are left-aligned with a `◆` title and `▸` for the current item. A
+        // framed widget in the middle of that reads as another program's
+        // output.
+        //
+        // The border was also the least readable thing on screen: it used
+        // `theme::border()`, which is #334155 on the default dark theme --
+        // about 1.6:1 against the #0D1117 background. Six of the seven
+        // coloured elements here were that colour.
+        return vbox({
+            hbox({
+                text("  " + std::string(theme::icon::package) + " ")
+                    | color(theme::accent()),
+                text(std::string(title)) | theme::style::title(),
+            }),
             component->Render() | vscroll_indicator | frame
                 | size(HEIGHT, LESS_THAN, 15),
-            separator() | color(theme::border()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
-        }) | borderRounded | color(theme::border())
-           | size(WIDTH, LESS_THAN, 72);
-
-        // Left-aligned, not centred. Centring is a full-screen habit: inline,
-        // the block sits in the scrollback among left-aligned log lines, and a
-        // floating box reads as a different program's output.
-        return box;
+            text("    " + std::string(i18n::tr("ui.select_keys")))
+                | color(theme::muted()),
+        });
     }));
 
     if (!confirmed) return std::nullopt;

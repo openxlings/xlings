@@ -34,6 +34,12 @@ inline constexpr Entry kEntries[] = {
     { "help.tagline",
       "A modern package manager and development environment tool" },
 
+    // ── Interactive prompts ──────────────────────────────
+    // The keys line and the picker titles. Prompts are user-facing prose and
+    // are translated; what the keys DO (arrows, enter, esc) is not text the
+    // user types, so the glyphs stay.
+    { "ui.select_keys",        "up/down move   enter select   esc cancel" },
+    { "ui.select_package",     "Select a package" },
     // ── Subcommand descriptions ──────────────────────────
     // The NAMES are literal in the source; only what we say about them is a
     // key. `install` must stay `install` in every language or the help stops

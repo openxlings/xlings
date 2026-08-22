@@ -26,6 +26,9 @@ inline constexpr Entry kEntries[] = {
     { "help.tagline",
       "现代化的包管理与开发环境工具" },
 
+    // ── 交互提示 ─────────────────────────────────────────
+    { "ui.select_keys",        "上下 移动   回车 选中   esc 取消" },
+    { "ui.select_package",     "选择一个软件包" },
     // ── 子命令描述 ───────────────────────────────────────
     { "cmd.install.desc",  "安装软件包(例:xlings install gcc@15 node)" },
     { "cmd.remove.desc",   "移除一个软件包" },
