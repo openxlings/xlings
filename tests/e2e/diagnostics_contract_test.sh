@@ -95,6 +95,71 @@ grep -q 'workspace\.demo' <<<"$out" \
 $out"
 rm -f "$PROJ_DIR/.xlings.json"
 
+log "S2b: a project pin asks you to set the project up, not to retype it"
+cat > "$PROJ_DIR/.xlings.json" <<'JSON'
+{ "workspace": { "demo": "9.9.9" } }
+JSON
+out="$(RUN_IN_PROJ use demo 2>&1 || true)"
+# WARN, not error: the command failed (exit stays non-zero) but the project is
+# one documented command away from working, and xlings knows which one. A red
+# [error] for "your project needs installing" reads as a fault in the tool.
+grep -q '^\[warn\]' <<<"$out" \
+  || fail "S2b: a project pin was reported as an error, not a warning:
+$out"
+grep -q "this project asks for a version of" <<<"$out" \
+  || fail "S2b: the wording does not say it came from the project:
+$out"
+# The action must be the one the user should actually run. `xlings install`
+# with no args reads the manifest; naming the coordinate makes the user redo
+# what the file already says, and gets it wrong with more than one dependency.
+grep -qE '^\s+set this project up\s+xlings install\s*$' <<<"$out" \
+  || fail "S2b: the action is not the no-argument project install:
+$out"
+rm -f "$PROJ_DIR/.xlings.json"
+
+log "S2c: standing in a project does not make a GLOBAL pin the project's fault"
+# The gate for S2b's friendlier wording is which LAYER pinned the version, not
+# whether a project config happens to exist. Those are different questions, and
+# answering the second one instead sends the user to `xlings install` -- which
+# reads only the project manifest, so it would install the OTHER package below,
+# exit 0, and leave `demo` exactly as broken as it was. Succeeded-having-done-
+# nothing, produced by the fix for succeeded-having-done-nothing.
+python3 - "$HOME_DIR" <<'PY'
+import json, sys, pathlib
+sub = pathlib.Path(sys.argv[1]) / 'subos/default/.xlings.json'
+s = json.loads(sub.read_text())
+s['workspace']['demo']['active'] = '9.9.9'   # pinned HERE, in the subos file
+sub.write_text(json.dumps(s, indent=2))
+PY
+cat > "$PROJ_DIR/.xlings.json" <<'JSON'
+{ "workspace": { "somethingelse": "1.0.0" } }
+JSON
+out="$(RUN_IN_PROJ use demo 2>&1 || true)"
+grep -q '^\[error\]' <<<"$out" \
+  || fail "S2c: a global pin was softened to a warning because a project file
+happened to be in the directory:
+$out"
+# Spelled `if grep; then fail` and NOT `grep -qv ... || fail`: `grep -qv` is
+# true when ANY line fails to match, so that form passes no matter what the
+# output says. This file has shipped that mistake before.
+if grep -q "this project asks for" <<<"$out"; then
+  fail "S2c: a global pin was attributed to the project:
+$out"
+fi
+if grep -q "set this project up" <<<"$out"; then
+  fail "S2c: offered \`xlings install\`, which does not read the file that
+pinned this and would exit 0 having installed something else:
+$out"
+fi
+rm -f "$PROJ_DIR/.xlings.json"
+python3 - "$HOME_DIR" <<'PY'
+import json, sys, pathlib
+sub = pathlib.Path(sys.argv[1]) / 'subos/default/.xlings.json'
+s = json.loads(sub.read_text())
+s['workspace']['demo']['active'] = ''
+sub.write_text(json.dumps(s, indent=2))
+PY
+
 log "S3: candidate lists are newest-first and capped"
 out="$(RUN use demo 2>&1 || true)"
 # Newest first, whether the candidates come out as one list or as panel rows.

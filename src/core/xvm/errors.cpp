@@ -239,14 +239,50 @@ XvmUserError describe(const BindingError& error, std::string provider) {
 }
 
 diag::Diagnostic not_in_subos(const NotInSubos& what) {
+    // A PROJECT asking for something it has not installed is a different
+    // situation from a name that is simply missing, even though the state
+    // underneath is identical -- and the shim and `use` used to describe it
+    // two different ways depending on which one you happened to reach.
+    //
+    // When a project manifest is what selected this target, the user is one
+    // documented command away and xlings knows which: `xlings install` with no
+    // arguments reads the manifest. So it is a Warn (the exit code stays
+    // non-zero -- nothing was switched), and the action is that command rather
+    // than a coordinate the user would be retyping out of the file.
+    //
+    // `source` is non-empty whenever `fromProject` is set, by construction in
+    // `version_origin`. Checked anyway because this is a plain aggregate and
+    // the branch below renders a `from` row that would otherwise be blank --
+    // and a diagnostic that says "this project asks" while naming no file is
+    // worse than the one it replaced.
+    const bool fromProject = what.fromProject && !what.source.empty();
+
     diag::Diagnostic d {
+        .level   = fromProject ? diag::Level::Warn : diag::Level::Error,
         .code    = "xvm.not_in_subos",
-        .summary = std::format("{} is not installed in this subos ({})",
-                               what.target,
-                               what.subos.empty() ? "default" : what.subos),
+        .summary = fromProject
+            // Reads as a sentence about the NAME, because this path does not
+            // know which version was asked for -- the shim's own diagnostic
+            // does and says `name@version`. Saying "{} is the version ..."
+            // here made the package name stand where a version belongs.
+            ? std::format("this project asks for a version of {} that is not "
+                          "installed yet", what.target)
+            : std::format("{} is not installed in this subos ({})",
+                          what.target,
+                          what.subos.empty() ? "default" : what.subos),
         .source  = what.source,
         .nothingChanged = what.nothingChanged,
     };
+
+    if (fromProject) {
+        if (!what.versionsElsewhere.empty()) {
+            d.facts.push_back(diag::candidates(
+                "installed", what.versionsElsewhere, 2,
+                std::format("xlings list {}", what.target)));
+        }
+        d.actions.push_back({ "set this project up", "xlings install" });
+        return d;
+    }
 
     // Naming the subos that DO have it is worth more than listing versions,
     // because it turns "why is this missing" into a two-word answer, so it

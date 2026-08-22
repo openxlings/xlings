@@ -436,11 +436,13 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             // the shim used to say "xlings: '{}' is not installed in current
             // subos" while `use` said "in this subos ({})", so the two halves
             // of one product described one condition differently.
+            const auto origin = Config::version_origin(program_name);
             diag::emit(not_in_subos({
                 .target            = program_name,
                 .subos             = Config::subos_scope().name,
                 .versionsElsewhere = get_all_versions(db, program_name),
-                .source            = Config::version_source(program_name),
+                .source            = origin.source,
+                .fromProject       = origin.fromProjectManifest,
             }));
         } else {
             // Genuinely different state: opted into this subos, but nothing is
@@ -472,27 +474,60 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // The old form printed the bare failure plus every version in
         // std::map order and no way out at all: measured on a real home, one
         // 877-character line of 94 versions with `0.0.100` ahead of `0.0.24`.
+        //
+        // WARN when the project manifest is what asked, error otherwise.
+        //
+        // The command did fail either way -- nothing ran, and the exit code
+        // below stays non-zero so a script still sees that. But a project that
+        // simply has not been set up yet is one documented command away from
+        // working, and xlings knows which command; red bold "[error]" for
+        // "your project needs installing" reads as a fault in the tool.
+        //
+        // The gate is which LAYER pinned it, not whether a project config
+        // exists -- a project can sit in a directory whose pin for THIS
+        // program came from the global subos file, and there `xlings install`
+        // would install the project's other packages and exit 0 having left
+        // this exactly as broken as it was.
+        const auto origin = Config::version_origin(program_name);
         diag::Diagnostic d {
+            .level   = origin.fromProjectManifest ? diag::Level::Warn
+                                                  : diag::Level::Error,
             .code    = "xvm.pinned_version_missing",
-            .summary = std::format(
-                "{}@{} is selected here, and no such version is installed",
-                program_name, version),
-            .source  = Config::version_source(program_name),
+            .summary = origin.fromProjectManifest
+                ? std::format("{}@{} is the version this project asks for, "
+                              "and it is not installed yet",
+                              program_name, version)
+                : std::format("{}@{} is selected here, and no such version "
+                              "is installed", program_name, version),
+            .source  = origin.source,
         };
         auto all = get_all_versions(db, program_name);
         if (!all.empty()) {
+            // Two, not five. The point of this row is "you do have some of
+            // these" -- the reader is going to run the action, not shop the
+            // list, and a long row pushes the action off the screen.
             d.facts.push_back(diag::candidates(
-                "installed", all, 5,
+                "installed", all, 2,
                 std::format("xlings list {}", program_name)));
         }
-        d.actions.push_back({ "install the pinned one",
-            std::format("xlings install {}@{}", program_name, version) });
-        if (!d.source.empty()) {
-            // Deliberately does NOT repeat the source string: it is already
-            // on the `from` row two lines up, and an action row that restates
-            // its own context is how these blocks get long enough that nobody
-            // finishes reading them.
-            d.actions.push_back({ "or change the pin", "edit the file above" });
+        if (origin.fromProjectManifest) {
+            // `xlings install` with no arguments reads the project manifest
+            // and installs everything it declares. Naming the coordinate by
+            // hand instead would make the user do what the project file
+            // already says, and get it wrong when there is more than one
+            // declared dependency.
+            d.actions.push_back({ "set this project up", "xlings install" });
+        } else {
+            d.actions.push_back({ "install the pinned one",
+                std::format("xlings install {}@{}", program_name, version) });
+            if (!d.source.empty()) {
+                // Deliberately does NOT repeat the source string: it is
+                // already on the `from` row two lines up, and an action row
+                // that restates its own context is how these blocks get long
+                // enough that nobody finishes reading them.
+                d.actions.push_back({ "or change the pin",
+                                      "edit the file above" });
+            }
         }
         diag::emit(d);
         return 1;
