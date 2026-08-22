@@ -323,6 +323,48 @@ after="$(probe_says ni-two)"
 grep -q "probe" <<<"$after" \
   || fail "N8: an unanswered confirmation removed the package anyway"
 
+# ── N9: an answered confirmation is honoured ─────────────────────────
+#
+# The other half of N8, and the one that would go unnoticed: a confirmation
+# that is asked, displayed correctly, and then ignores what the user typed
+# passes every assertion above. So type "y" into the pty and require that the
+# removal actually happened.
+log "N9: typing y at the confirmation performs the action"
+n9="$RUNTIME_DIR/n9"
+mkdir -p "$n9"
+set +e
+XLINGS_BIN="$XLINGS_BIN" XLINGS_HOME="$HOME_DIR" N9_DIR="$n9" python3 - <<'PY9'
+import os, pty, subprocess, time
+
+env = dict(os.environ)
+env["XLINGS_ACTIVE_SUBOS"] = "default"
+d = env["N9_DIR"]
+
+master, slave = pty.openpty()
+p = subprocess.Popen([env["XLINGS_BIN"], "remove", "ni-two"],
+                     stdin=slave, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env)
+os.close(slave)
+time.sleep(1.0)
+os.write(master, b"y\n")
+try:
+    out, err = p.communicate(timeout=60)
+except subprocess.TimeoutExpired:
+    p.kill()
+    open(os.path.join(d, "timeout"), "w").write("1")
+    out, err = p.communicate()
+os.close(master)
+open(os.path.join(d, "stderr"), "wb").write(err)
+open(os.path.join(d, "rc"), "w").write(str(p.returncode))
+PY9
+set -e
+[[ -f "$n9/timeout" ]] && fail "N9: the command hung after the answer was typed"
+gone="$(probe_says ni-two 2>&1 || true)"
+if grep -q "probe 2.0.0" <<<"$gone"; then
+  fail "N9: the confirmation was answered y and nothing was removed:
+stderr: $(cat "$n9/stderr")"
+fi
+
 # ── N7: listing is a listing ─────────────────────────────────────────
 #
 # `list_installed_versions` is served by the same code that `use` used to
