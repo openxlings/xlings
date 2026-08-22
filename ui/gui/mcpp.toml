@@ -1,0 +1,29 @@
+# The graphical frontend, as its own package.
+#
+# WHY IT IS A SEPARATE PACKAGE AND A SEPARATE BINARY
+#
+# The `xlings` binary is static musl on Linux by contract -- one file, no
+# runtime dependencies, runs on any distribution, which is what lets it
+# bootstrap everything else. Measured: static musl's dlopen is a stub
+# (`dlopen("libm.so.6")` -> NULL, "Dynamic loading not supported"), and GLFW
+# finds X11/Wayland/libGL through dlopen, as does every GL driver. So that one
+# binary cannot open a window, and no amount of build configuration changes it.
+#
+# That constraint belongs to `xlings`, NOT to Linux: `xlings-gui` is an
+# ordinary dynamically linked program, and the graphics stack it needs is
+# already closed in the xlings index (libX11, wayland, libglvnd, mesa, ...).
+# `pkgs/g/godot.lua` is the template for shipping one.
+[package]
+namespace = "xlings"
+name      = "ui-gui"
+version   = "0.1.0"
+
+[targets.ui-gui]
+kind = "lib"
+
+# No dependency on `theme` yet: `imgui.core` exports no colour calls, so this
+# package has nothing to colour. It goes back the moment it does -- declaring
+# it now would be an unused edge in the graph, and unused edges are how the
+# whitelist that keeps `ui/*` off core's data modules stops meaning anything.
+[dependencies.mcpplibs]
+imgui = "0.0.6"

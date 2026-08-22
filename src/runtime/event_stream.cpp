@@ -42,15 +42,25 @@ void EventStream::clear_auto_responders() {
     auto_responders_.clear();
 }
 
+void EventStream::set_interactive(bool on) { interactive_ = on; }
+
+auto EventStream::interactive() const -> bool { return interactive_; }
+
 auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono::milliseconds timeout) -> std::string {
     auto id = req.id;
 
-    // Check auto-responders first (by prefix match)
+    // Check auto-responders first (by prefix match). An explicitly registered
+    // responder outranks non-interactivity: it IS somebody answering, just not
+    // a human.
     for (auto& [prefix, responder] : auto_responders_) {
         if (id.starts_with(prefix)) {
             return responder(req);
         }
     }
+
+    // Nobody to ask. Do not emit the question -- a prompt nothing can answer
+    // is noise on the way to a deadlock or, worse, to a fabricated answer.
+    if (!interactive_) return std::string(kCannotAsk);
 
     emit(Event{std::move(req)});
 

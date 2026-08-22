@@ -1,5 +1,7 @@
 module xlings.core.xself.init;
 
+import xlings.core.xself.theme_resources;
+
 import std;
 import xlings.core.config;
 import xlings.libs.json;
@@ -225,6 +227,35 @@ std::string extract_profile_version_(std::string_view text) {
 // The version of the bytes we're shipping comes from
 // xlings::xself::profile_resources::kVersion; the on-disk value comes from
 // the marker line we inject as the first comment of every profile.
+// Ship the optional colour themes into $XLINGS_HOME/config/themes/.
+//
+// Same treatment as the shell profiles next door, for the same reason: they
+// are generated content xlings owns, so a version marker decides when to
+// rewrite. The marker is a JSON field rather than a comment line because
+// these files are parsed, and a `#` comment would make them invalid.
+//
+// `default` is deliberately NOT written: it is compiled in, which is what
+// makes these two optional and makes a missing/read-only config directory a
+// non-event rather than a startup failure.
+void ensure_shipped_themes_(const fs::path& home_dir) {
+    const auto dir = home_dir / "config" / "themes";
+    for (const auto& t : theme_resources::kAll) {
+        const auto path = dir / std::string(t.filename);
+        if (fs::exists(path)) {
+            auto existing = platform::read_file_to_string(path.string());
+            // Cheap containment check rather than a JSON parse: this runs on
+            // every init, and a user who mangled the file into invalid JSON
+            // gets it replaced, which is the right outcome for a file they
+            // were told not to edit.
+            const auto marker = std::format("\"_version\": \"{}\"",
+                                            theme_resources::kVersion);
+            if (existing.find(marker) != std::string::npos) continue;
+        }
+        ensure_parent_dirs_(path);
+        platform::write_string_to_file(path.string(), std::string(t.content));
+    }
+}
+
 void write_or_upgrade_profile_(const fs::path& path,
                                       std::string_view content,
                                       std::string_view target_version) {
@@ -334,6 +365,8 @@ bool ensure_home_layout(const fs::path& home_dir) {
     write_or_upgrade_profile_(home_dir / "config" / "shell" / "xlings-profile.ps1",
                               profile_resources::pwsh,
                               profile_resources::kVersion);
+
+    ensure_shipped_themes_(home_dir);
 
     ensure_home_config_defaults_(home_dir);
 

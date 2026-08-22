@@ -29,6 +29,8 @@ private:
     // Auto-responders: prefix → handler
     std::vector<std::pair<std::string, AutoResponder>> auto_responders_;
 
+    bool interactive_ { true };
+
 public:
     EventStream() = default;
     ~EventStream() = default;
@@ -53,8 +55,36 @@ public:
 
     void clear_auto_responders();
 
+    // Whether anyone is there to answer.
+    //
+    // Off in `--agent` and when stdout is not a terminal. This is NOT the same
+    // as "answer with the default": the two confirmations in this codebase
+    // default in OPPOSITE directions (`confirm_install` = "y",
+    // `confirm_remove` = "n"), so a blanket auto-answer made
+    // `xlings remove foo --agent` print "cancelled" and exit 0 -- an agent
+    // reads that as a successful removal of a package that is still there.
+    //
+    // The documented contract has always been `--yes` for non-interactive use
+    // (see the agent skill: "ALWAYS add --yes"). Refusing to guess is what
+    // makes that contract enforceable instead of advisory.
+    void set_interactive(bool on);
+
+    [[nodiscard]] auto interactive() const -> bool;
+
+    // Returned by `prompt()` when there is nobody to ask and no auto-responder
+    // claimed the question. Distinct from "" (cancelled/timed out) because the
+    // caller must react differently: a cancel is the user's answer, this is
+    // the absence of one.
+    //
+    // Split across two literals on purpose: `\x` consumes as many hex digits
+    // as follow it, so "\x01cannot-ask" is read as \x01ca + "nnot-ask" --
+    // gcc lets that through, clang rejects it outright ("hex escape sequence
+    // out of range"). Adjacent string literals concatenate after escape
+    // processing, which ends the escape at the quote.
+    static constexpr std::string_view kCannotAsk = "\x01" "cannot-ask";
+
     // Prompt with optional cancellation and timeout support.
-    // Returns empty string on cancel/timeout.
+    // Returns empty string on cancel/timeout, `kCannotAsk` when not interactive.
     auto prompt(PromptEvent req,
                 CancellationToken* cancel = nullptr,
                 std::chrono::milliseconds timeout = std::chrono::milliseconds{30000}) -> std::string;

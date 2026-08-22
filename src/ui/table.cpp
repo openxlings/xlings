@@ -25,7 +25,7 @@ void print_table(std::span<const std::string> headers,
     auto table = Table(std::move(tableData));
     table.SelectAll().Border(ROUNDED);
     table.SelectRow(0).Decorate(bold);
-    table.SelectRow(0).Decorate(color(theme::cyan()));
+    table.SelectRow(0).Decorate(color(theme::accent()));
     table.SelectRow(0).SeparatorVertical(LIGHT);
     table.SelectRow(0).BorderBottom(LIGHT);
 
@@ -49,13 +49,13 @@ void print_search_results(
     auto table = Table(std::move(tableData));
     table.SelectAll().Border(ROUNDED);
     table.SelectRow(0).Decorate(bold);
-    table.SelectRow(0).Decorate(color(theme::cyan()));
+    table.SelectRow(0).Decorate(color(theme::accent()));
     table.SelectRow(0).BorderBottom(LIGHT);
 
     // Style package name column with magenta
     for (int i = 1; i < static_cast<int>(results.size()) + 1; ++i) {
         table.SelectCell(i, 0).Decorate(bold);
-        table.SelectCell(i, 0).Decorate(color(theme::magenta()));
+        table.SelectCell(i, 0).Decorate(color(theme::alt()));
     }
 
     layout::print_doc(table.Render(), width);

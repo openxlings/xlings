@@ -27,17 +27,32 @@ namespace detail {
 inline auto rgb_(palette::Rgb c) -> Color { return Color::RGB(c.r, c.g, c.b); }
 }
 
-inline auto cyan()         -> Color { return detail::rgb_(palette::cyan()); }
-inline auto green()        -> Color { return detail::rgb_(palette::green()); }
-inline auto amber()        -> Color { return detail::rgb_(palette::amber()); }
-inline auto red()          -> Color { return detail::rgb_(palette::red()); }
-inline auto magenta()      -> Color { return detail::rgb_(palette::magenta()); }
-inline auto dim_color()    -> Color { return detail::rgb_(palette::dim()); }
-inline auto text_color()   -> Color { return detail::rgb_(palette::text()); }
-inline auto surface()      -> Color { return detail::rgb_(palette::surface()); }
-inline auto border_color() -> Color { return detail::rgb_(palette::border()); }
+// ─── Colours, BY ROLE ──────────────────────────────────────
+//
+// These used to be named after the colour (`cyan()`, `dim_color()`, ...) and
+// were called 119 times, against 7 calls to the semantic Decorators below. A
+// theme file remapping roles would therefore have changed almost nothing --
+// the abstraction existed and the call sites went around it.
+//
+// Renaming is the whole fix: a role is themeable, a colour is not. `accent`
+// means "this is the current thing", and a theme deciding accent is orange
+// moves the progress bar, the active-version marker and the panel title
+// together, because they were always the same idea.
+inline auto accent()  -> Color { return detail::rgb_(palette::cyan()); }
+inline auto alt()     -> Color { return detail::rgb_(palette::magenta()); }
+inline auto success() -> Color { return detail::rgb_(palette::green()); }
+inline auto warn()    -> Color { return detail::rgb_(palette::amber()); }
+inline auto error()   -> Color { return detail::rgb_(palette::red()); }
+inline auto text()    -> Color { return detail::rgb_(palette::text()); }
+inline auto muted()   -> Color { return detail::rgb_(palette::dim()); }
+inline auto border()  -> Color { return detail::rgb_(palette::border()); }
+inline auto surface() -> Color { return detail::rgb_(palette::surface()); }
 
 // ─── Decorator helpers ─────────────────────────────────────
+//
+// Moved under `style::` so the colour accessors above could take the plain
+// role names. Seven call sites moved; the alternative was 119 awkward ones.
+namespace style {
 auto title()     -> Decorator;
 auto success()   -> Decorator;
 auto warning()   -> Decorator;
@@ -46,6 +61,7 @@ auto hint()      -> Decorator;
 auto highlight() -> Decorator;
 auto label()     -> Decorator;
 auto body()      -> Decorator;
+}  // namespace style
 
 // ─── Icons ─────────────────────────────────────────────────
 //

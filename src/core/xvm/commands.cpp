@@ -4,6 +4,8 @@ import std;
 import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
+import xlings.core.diag;
+import xlings.core.version_order;
 import xlings.core.palette;
 import xlings.core.subos.manifest;
 import xlings.platform;
@@ -370,12 +372,13 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // versions this subos has -- and getting a version into a subos belongs to
     // `install`, which resolves dependencies and materialises them.
     if (filter_to_subos_installed_(target, {resolved}).empty()) {
-        const auto scope = Config::subos_scope().name;
-        log::error("[xlings:use] '{}' is not installed in this subos ({})",
-                   target, scope.empty() ? "default" : scope);
-        log::error("  nothing was changed");
-        log::error("  hint: install it here first with `xlings install {}@{}`",
-                   target, resolved);
+        diag::emit(not_in_subos({
+            .target           = target,
+            .subos            = Config::subos_scope().name,
+            .suggestedVersion = resolved,
+            .source           = Config::version_source(target),
+            .nothingChanged   = true,
+        }));
         return 1;
     }
 
@@ -659,7 +662,14 @@ collect_version_candidates_(const std::string& target, bool all) {
     auto db = Config::versions();
 
     if (!has_target(db, target)) {
-        log::error("'{}' not found in version database", target);
+        diag::emit({
+            .code    = "xvm.unknown_target",
+            .summary = std::format("'{}' is not a name this home knows", target),
+            .actions = {
+                { "install it", std::format("xlings install {}", target) },
+                { "search",     std::format("xlings search {}", target) },
+            },
+        });
         return std::unexpected(1);
     }
 
@@ -675,24 +685,27 @@ collect_version_candidates_(const std::string& target, bool all) {
     }
 
     out.versions = filter_to_subos_installed_(target, global_all);
+    // Newest first, like every other candidate list. `get_all_versions` walks
+    // a std::map, so without this the picker offers 0.0.100 above 0.0.24 and
+    // the panel does too.
+    version_order::sort_desc(out.versions);
     if (out.versions.empty()) {
-        // Empty subos installed[] for this target — show a hint instead of an
-        // empty panel. The global list is informational so the user can pick
-        // a version to install.
-        log::error("'{}' is not installed in current subos", target);
+        // Installed somewhere, just not opted into here. This used to print
+        // three separate `log::error` lines -- the negation, the evidence and
+        // the hint all in red bold -- for a state where two of the three lines
+        // were not errors at all. One block, one marker, and the actions lead
+        // with the thing the user almost certainly wants.
+        auto d = not_in_subos({
+            .target            = target,
+            .subos             = Config::subos_scope().name,
+            .versionsElsewhere = global_all,
+            .source            = Config::version_source(target),
+        });
         if (!global_all.empty()) {
-            std::string avail;
-            for (auto& v : global_all) {
-                if (!avail.empty()) avail += " ";
-                avail += v;
-            }
-            log::error("  globally available: {}", avail);
-            log::error("  hint: xlings install {}@<version>"
-                       " (or `xlings use {} --all` to see global view)",
-                       target, target);
-        } else {
-            log::error("  hint: xlings install {}", target);
+            d.actions.push_back({ "see every subos",
+                std::format("xlings use {} --all", target) });
         }
+        diag::emit(d);
         return std::unexpected(1);
     }
     out.title = target + " versions (current subos)";
@@ -742,6 +755,36 @@ int cmd_use_by_name(const std::string& target, EventStream& stream, bool all, bo
     // is already active re-materializes headers and libraries.
     if (candidates->versions.size() == 1) {
         return cmd_use(target, candidates->versions.front(), stream, strict);
+    }
+
+    // Several to choose from and somebody to ask: ask.
+    //
+    // `ui/selector.cpp` has had a working inline version picker since 2026-07
+    // with ZERO callers -- the 2026-07-29 survey recorded it as dead code and
+    // it was still dead a year later. The command that most obviously wants it
+    // is this one: `xlings use gcc` knows the answer is one of five and made
+    // the user read a panel and retype.
+    //
+    // Core does not (and must not) know about ftxui, so the question goes out
+    // as a Request and the frontend decides how to render it. Non-interactive
+    // frontends never see it -- EventStream refuses rather than guessing --
+    // and the panel below stays the answer for them.
+    if (!all && stream.interactive()) {
+        PromptEvent pick;
+        pick.id = "select_version";
+        pick.question = std::format("Which {} ?", target);
+        pick.options = candidates->versions;
+        pick.defaultValue = candidates->active;
+        auto chosen = stream.prompt(std::move(pick));
+        if (chosen == EventStream::kCannotAsk) {
+            // Somebody registered no responder and there is no terminal --
+            // fall through to the panel, which is a complete answer.
+        } else if (chosen.empty()) {
+            log::println("cancelled");
+            return 0;
+        } else {
+            return cmd_use(target, chosen, stream, strict);
+        }
     }
 
     return cmd_list_versions(target, stream, all);

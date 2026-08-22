@@ -130,3 +130,5 @@ SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需
 | [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook、`xpm.source` 与多架构资源约定 |
 | [.xlings.json 字段](spec/xlings-json-schema.md) | 配置文件各字段语义 |
 | [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求/响应/事件协议 |
+| [诊断信息规约](spec/diagnostics.md) | 一个问题一个标记、`source`/`actions`、严重级、`--ui-mode`、交互与配置面 |
+| [配色主题](spec/themes.md) | 九个角色槽、部分覆盖、路径引用、自带主题 |

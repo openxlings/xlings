@@ -1,0 +1,21 @@
+# The colour scheme, as its own package.
+#
+# A leaf on purpose: it imports `std` and the JSON reader and nothing else.
+# That is what lets everyone depend on it without a cycle -- the frontends need
+# it, and so does `core/log.cppm` until the Sink work lands and core stops
+# writing SGR itself.
+#
+# It therefore owns `Rgb` and `Background` rather than borrowing them from
+# `core/palette`: palette's remaining job is deciding whether the terminal can
+# take colour at all, which is a different question from which colour to use
+# and needs `xlings.platform` to answer.
+[package]
+namespace = "xlings"
+name      = "theme"
+version   = "0.1.0"
+
+[targets.theme]
+kind = "lib"
+
+[build]
+include_dirs = ["../../src/libs/json"]

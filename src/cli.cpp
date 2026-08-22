@@ -15,6 +15,9 @@ import xlings.core.config;
 import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
+import xlings.core.diag;
+import xlings.core.uimode;
+import xlings.theme;
 import xlings.runtime;
 import xlings.ui;
 import xlings.core.i18n;
@@ -37,6 +40,34 @@ import xlings.core.xim.index_cmd;
 namespace xlings::cli {
 
 // ─── EventStream consumer: dispatch DataEvent to ui:: functions ───
+// Kinds that reach the wire but deliberately have no terminal renderer.
+//
+// Two different reasons, both legitimate, and the difference has to be written
+// down or the check below cannot tell either of them from "somebody forgot":
+//
+//   * capability-only -- emitted from `capabilities.cpp`, which the CLI does
+//     not route through. They exist for `xlings interface` / MCP, where the
+//     NDJSON writer serialises any kind generically.
+//   * wire duplicate -- emitted on a CLI path, but the terminal output for
+//     that path already comes from `log::` right next to the emit. The event
+//     carries the same facts in structured form for programmatic consumers.
+//     These are the ones that should eventually become `View::Document` and
+//     lose their `log::` twin; until then they are duplicated on purpose, not
+//     dropped.
+//
+// Anything NOT on this list and NOT rendered above is a screen the user never
+// sees. `subos new --from` shipped in exactly that state.
+bool kind_is_interface_only_(std::string_view kind) {
+    static constexpr std::string_view kCapabilityOnly[] = {
+        "system_info", "index_versions", "subos_shims", "repo_list", "env",
+    };
+    static constexpr std::string_view kWireDuplicate[] = {
+        "remove_blocked", "update_plan", "update_summary",
+    };
+    return std::ranges::contains(kCapabilityOnly, kind)
+        || std::ranges::contains(kWireDuplicate, kind);
+}
+
 void dispatch_data_event(const DataEvent& e) {
     auto json = nlohmann::json::parse(e.json, nullptr, false);
     if (json.is_discarded()) {
@@ -192,6 +223,10 @@ void dispatch_data_event(const DataEvent& e) {
         ui::print_subos_created(
             json.value("name", ""), json.value("dir", ""));
     }
+    else if (e.kind == "subos_forked") {
+        ui::print_subos_forked(json.value("name", ""), json.value("from", ""),
+                               json.value("base", ""));
+    }
     else if (e.kind == "subos_switched") {
         ui::print_subos_switched(
             json.value("name", ""), json.value("dir", ""));
@@ -261,12 +296,44 @@ void dispatch_data_event(const DataEvent& e) {
         auto prevLines = json.value("prevLines", 0);
         ui::render_download_progress(entries, nameWidth, elapsedSec, sizesReady, prevLines);
     }
-    else {
-        log::debug("unhandled DataEvent kind: {}", e.kind);
+    else if (!kind_is_interface_only_(e.kind)) {
+        // A screen with no renderer is a screen the user never sees, and at
+        // `debug` nobody finds out. `subos new --from` shipped in exactly this
+        // state: one emit, zero consumers, no other output on the success
+        // path -- it simply printed nothing and exited 0.
+        //
+        // Warn rather than error: an unrendered event is a gap in this
+        // frontend, not a failed command, and failing the command would be a
+        // worse bug than the one being reported.
+        log::warn("no renderer for '{}' -- this screen was dropped; "
+                  "please report it", e.kind);
     }
 }
 
 // ─── EventStream consumer: handle PromptEvent via ui:: interactive functions ───
+// Told once, ever.
+//
+// Interactive prompts are ON by default for terminals, so the first one a user
+// meets is unannounced -- they typed `xlings use gcc` and got a widget. One
+// line the first time says what the keys are and how to turn it off for good;
+// after that it would be nagging.
+//
+// Persisted in the home config rather than a process-local flag: the
+// equivalent helper in `xself::repair` is a `static bool`, which means "once
+// per run" and would print this on every single invocation.
+void show_interactive_hint_once_() {
+    constexpr std::string_view kId = "tui.interactive.first-run";
+    if (Config::hint_seen(kId)) return;
+    Config::mark_hint_seen(kId);
+    diag::emit({
+        .level   = diag::Level::Note,
+        .code    = "ui.interactive_first_run",
+        .summary = "xlings can ask instead of printing a list",
+        .facts   = { { "keys", "up/down to move, enter to pick, esc to skip" } },
+        .actions = { { "turn it off", "xlings config --interactive false" } },
+    });
+}
+
 void handle_prompt(EventStream& stream, const PromptEvent& p) {
     // Binary yes/no → confirm dialog
     if (p.options.size() == 2 && p.options[0] == "y" && p.options[1] == "n") {
@@ -276,14 +343,23 @@ void handle_prompt(EventStream& stream, const PromptEvent& p) {
         return;
     }
 
-    // Multiple options → package selector
+    // Multiple options → inline picker
     if (!p.options.empty()) {
         std::vector<std::pair<std::string, std::string>> items;
+        int preselect = 0;
         for (auto& opt : p.options) {
-            items.emplace_back(opt, "");
+            // Mark the current one. Without it the list is a set of equally
+            // plausible strings and the user has to remember which they are
+            // already on -- which is the question that sent them here.
+            if (opt == p.defaultValue) preselect = static_cast<int>(items.size());
+            items.emplace_back(opt, opt == p.defaultValue ? "(current)" : "");
         }
-        auto result = ui::select_package(items);
-        stream.respond(p.id, result.value_or(""));
+        show_interactive_hint_once_();
+        // The question, not a fixed "Select a package:" -- the caller knows
+        // what it is asking and the widget should not overwrite it.
+        auto idx = ui::select_option(p.question, items, "", preselect);
+        stream.respond(p.id, idx ? p.options[static_cast<std::size_t>(*idx)]
+                                 : std::string{});
         return;
     }
 
@@ -520,6 +596,51 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         log::println("mirror = {}", value);
     }
 
+    // --ui-mode / --theme / --interactive
+    //
+    // Deliberately the same mechanism as --mirror: option -> collected edit ->
+    // one locked read-modify-write of ~/.xlings.json -> read back by Config,
+    // project layer overriding global. `lang` already proved that pipeline
+    // works end to end (it even has an e2e); these keys just use it.
+    if (auto mode = args.value("ui-mode")) {
+        std::string value(*mode);
+        if (value != "auto" && !ui::parse_mode(value)) {
+            diag::emit({
+                .code    = "cli.bad_ui_mode",
+                .summary = std::format("'{}' is not a UI mode", value),
+                .facts   = { { "valid", "cli, tui, auto" } },
+                .actions = { { "set one", "xlings config --ui-mode tui" } },
+            });
+            return 2;
+        }
+        edits.push_back([value](nlohmann::json& j) { j["uiMode"] = value; });
+        log::println("uiMode = {}", value);
+    }
+    if (auto themeArg = args.value("theme")) {
+        std::string value(*themeArg);
+        // `list` is a query, not an edit; handled after commit_edits below so
+        // it cannot swallow edits collected alongside it.
+        if (value != "list") {
+            edits.push_back([value](nlohmann::json& j) { j["theme"] = value; });
+            log::println("theme = {}", value);
+        }
+    }
+
+    if (auto inter = args.value("interactive")) {
+        std::string value(*inter);
+        if (value != "true" && value != "false") {
+            diag::emit({
+                .code    = "cli.bad_interactive",
+                .summary = std::format("'{}' is not true or false", value),
+                .actions = { { "set one", "xlings config --interactive false" } },
+            });
+            return 2;
+        }
+        const bool on = (value == "true");
+        edits.push_back([on](nlohmann::json& j) { j["tui"]["interactive"] = on; });
+        log::println("tui.interactive = {}", value);
+    }
+
     auto commit_edits = [&]() -> bool {
         if (edits.empty()) return true;
         auto committed = update_home_config(
@@ -533,6 +654,32 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
         }
         return true;
     };
+
+    // --theme list
+    if (args.value("theme") == "list") {
+        // Edits collected alongside it land first: `xlings config --mirror CN
+        // --theme list` must not print the list and drop the mirror.
+        if (!commit_edits()) return 1;
+        log::println("themes:");
+        log::println("  default            (built in)");
+        const auto dir = Config::paths().homeDir / "config" / "themes";
+        std::error_code lec;
+        if (std::filesystem::is_directory(dir, lec)) {
+            for (const auto& e : platform::dir_entries(dir)) {
+                if (e.path().extension() != ".json") continue;
+                log::println("  {:<18} {}", e.path().stem().string(),
+                             Config::display_path(e.path()));
+            }
+        }
+        log::println("");
+        log::println("  active: {}", theme::current().name);
+        // Said explicitly because the shipped files are overwritten on
+        // upgrade -- editing one in place looks like it works right up until
+        // the next release.
+        log::println("  to customise: copy a file, then "
+                     "`xlings config --theme ./my-theme.json`");
+        return 0;
+    }
 
     // --add-xpkg
     if (auto xpkg = args.value("add-xpkg")) {
@@ -597,6 +744,14 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     if (!mirror.empty()) fields.push_back({"mirror", mirror});
     auto lang = Config::lang();
     if (!lang.empty()) fields.push_back({"lang", lang});
+    // Shown unconditionally, unlike mirror/lang: the resolved frontend is the
+    // answer to "why does my output look like this", and hiding it when it was
+    // auto-detected is exactly when the question gets asked.
+    fields.push_back({"ui mode", std::string(ui::to_string(ui::current_mode()))});
+    if (auto theme = Config::theme(); !theme.empty())
+        fields.push_back({"theme", theme});
+    if (auto inter = Config::tui_interactive())
+        fields.push_back({"tui.interactive", *inter ? "true" : "false"});
 
     auto& repos = Config::global_index_repos();
     for (auto& repo : repos) {
@@ -692,6 +847,82 @@ int run_profile_(int argc, char* argv[], EventStream& stream) {
     return action == "-h" || action == "--help" ? 0 : 1;
 }
 
+// Install the configured colour theme, saying so when it cannot be used.
+//
+// Every failure here is REPORTED. Falling back to the default in silence is
+// the shape this whole round is about: "I configured a theme" and "my theme
+// file has a typo in it" would produce identical output, and the user would
+// conclude the setting does nothing.
+void load_configured_theme_() {
+    const auto path = Config::resolve_theme_path();
+    if (path.empty()) return;              // built-in default, nothing to do
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+        diag::emit({
+            .level   = diag::Level::Warn,
+            .code    = "theme.not_found",
+            .summary = "the configured theme file is not there",
+            .source  = Config::display_path(path),
+            .facts   = { { "using instead", "the built-in default" } },
+            .actions = { { "list what is available", "xlings config --theme list" },
+                         { "or go back to default", "xlings config --theme default" } },
+        });
+        return;
+    }
+
+    std::string content;
+    try {
+        content = platform::read_file_to_string(path.string());
+    } catch (...) {
+        diag::emit({
+            .level   = diag::Level::Warn,
+            .code    = "theme.unreadable",
+            .summary = "the configured theme file could not be read",
+            .source  = Config::display_path(path),
+            .facts   = { { "using instead", "the built-in default" } },
+            .actions = { { "check permissions", "ls -l " + path.string() } },
+        });
+        return;
+    }
+
+    auto loaded = theme::load_from_json(content, theme::builtin_default());
+    for (const auto& issue : loaded.issues) {
+        diag::Diagnostic d {
+            .level  = diag::Level::Warn,
+            .source = Config::display_path(path),
+        };
+        switch (issue.kind) {
+            case theme::LoadIssue::Kind::BadJson:
+                d.code = "theme.bad_json";
+                d.summary = "the theme file is not valid JSON";
+                d.actions = { { "using instead", "the built-in default" } };
+                break;
+            case theme::LoadIssue::Kind::UnknownSlot:
+                d.code = "theme.unknown_slot";
+                d.summary = std::format("'{}' is not a colour slot", issue.detail);
+                if (!issue.suggestion.empty()) {
+                    d.actions = { { "did you mean", issue.suggestion } };
+                } else {
+                    d.actions = { { "valid slots",
+                        "accent, alt, success, warn, error, text, muted, "
+                        "border, surface" } };
+                }
+                break;
+            default:
+                d.code = "theme.bad_color";
+                d.summary = std::format("'{}' is not a colour", issue.detail);
+                d.actions = { { "expected", "#RRGGBB or #RGB" } };
+                break;
+        }
+        diag::emit(d);
+    }
+    // Applied even with issues: the parts that parsed are still what the user
+    // asked for, and dropping all of them because one line was wrong would be
+    // a worse answer than reporting the line.
+    theme::set_current(std::move(loaded.theme));
+}
+
 int run(int argc, char* argv[]) {
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
@@ -729,18 +960,37 @@ int run(int argc, char* argv[]) {
             // contract has to be a property of the renderer, or every command
             // re-derives it and one of them gets it wrong. log:: itself
             // cannot do this: core does not depend on ui.
-            auto emit = [](std::string_view text, std::string_view indent) {
+            // Wrapped into ONE message with embedded newlines, not one
+            // `log::error` per wrapped line.
+            //
+            // The per-line form turned a single sentence into several
+            // independent-looking errors: a message wrapping at 100 columns
+            // produced `[error] package 'x' not found in the synced index
+            // (xim@...,` followed by `[error] dsh@..., +3 more)` -- the second
+            // half of a clause, wearing its own severity marker. `log::` already
+            // indents continuation lines to the tag width; it just had no
+            // callers using that.
+            const auto wrapped = [](std::string_view text,
+                                    std::string_view indent) {
                 const int prefix = 8  // "[error] "
                     + ui::layout::display_width(indent);
                 const int width = std::max(1,
                     ui::layout::fit_width(
                         prefix + ui::layout::display_width(text)) - prefix);
+                std::string out;
                 for (auto& line : ui::layout::wrap_to_width(text, width)) {
-                    log::error("{}{}", indent, line);
+                    if (!out.empty()) out += '\n';
+                    out += indent;
+                    out += line;
                 }
+                return out;
             };
-            emit(er->message, "");
-            if (!er->hint.empty()) emit(er->hint, "  ");
+            auto block = wrapped(er->message, "");
+            if (!er->hint.empty()) {
+                block += '\n';
+                block += wrapped(er->hint, "  ");
+            }
+            log::error("{}", block);
         }
         else if (auto* l = std::get_if<LogEvent>(&e)) {
             switch (l->level) {
@@ -752,18 +1002,100 @@ int run(int argc, char* argv[]) {
         }
     });
 
+    // `lang` had a complete pipeline -- CLI option, locked write into
+    // ~/.xlings.json, project override, `xlings config` echo, a documented
+    // schema field, an e2e assertion, and a bilingual table -- and NOTHING
+    // called this. It was a setting users could set, xlings would echo, and
+    // that changed no output at all.
+    i18n::set_language(Config::lang());
+    load_configured_theme_();
+
     // Build Capability Registry (for Agent/MCP use — CLI keeps direct dispatch)
     auto registry = capabilities::build_registry();
 
     // Scan for global flags (--verbose, -v, --quiet, -q, --agent) anywhere
     // in argv so they work regardless of position.
     bool agent_mode = false;
+    std::string uiModeFlag;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
         if (a == "--verbose" || a == "-v") log::set_level(log::Level::Debug);
         else if (a == "--quiet" || a == "-q") log::set_level(log::Level::Error);
         else if (a == "--agent") agent_mode = true;
+        else if (a.starts_with("--ui-mode=")) {
+            uiModeFlag = std::string(a.substr(std::string_view{"--ui-mode="}.size()));
+        }
+        else if (a == "--ui-mode" && i + 1 < argc) {
+            uiModeFlag = std::string(argv[i + 1]);
+        }
     }
+
+    // Resolve the frontend ONCE, here, from flag > config > auto -- the same
+    // precedence `mirror` uses. Before this the answer was assembled
+    // independently by `--agent` and by `interface`, so a third caller had to
+    // assemble a third.
+    {
+        std::optional<ui::UiMode> preferred;
+        auto origin = ui::PreferenceOrigin::Config;
+        if (!uiModeFlag.empty() && uiModeFlag != "auto") {
+            origin = ui::PreferenceOrigin::Flag;
+            preferred = ui::parse_mode(uiModeFlag);
+            if (!preferred) {
+                diag::emit({
+                    .code    = "cli.bad_ui_mode",
+                    .summary = std::format("'{}' is not a UI mode", uiModeFlag),
+                    .facts   = { { "valid", "cli, tui, auto" } },
+                    .actions = { { "try", "xlings --ui-mode tui list" } },
+                });
+                return 2;
+            }
+        } else if (uiModeFlag.empty()) {
+            preferred = ui::parse_mode(Config::ui_mode());
+        }
+
+        const auto env = ui::detect();
+        const auto resolved = ui::resolve(preferred, origin, agent_mode, env);
+        // Degrading in silence is how a user concludes a setting does nothing.
+        if (!resolved.degradedReason.empty()) {
+            diag::emit({
+                .level   = diag::Level::Note,
+                .code    = "ui.mode_degraded",
+                .summary = std::format("using the {} frontend instead of {}",
+                                       ui::to_string(resolved.mode),
+                                       preferred ? ui::to_string(*preferred)
+                                                 : "tui"),
+                .facts   = { { "why", resolved.degradedReason } },
+            });
+        }
+        // Interactive prompting is OPT-IN, not on by default.
+        //
+        // The obvious default is "on for terminals", and it is wrong. E2E-48
+        // (non_interactive_contract_test.sh, N3) locks down the reason: a pty
+        // is not evidence that a human is there. Agents and automation
+        // routinely allocate one, so "is this a terminal" selects the
+        // BLOCKING branch for exactly the callers that cannot answer. That
+        // picker was removed on purpose in 2026.7.30 and `--pick`, its
+        // explicit door, was removed with it.
+        //
+        // A stored preference is different in kind: `xlings config
+        // --interactive true` is a promise that somebody will be at the
+        // keyboard, made once, by the person who would be. That is the signal
+        // a tty never was.
+        ui::set_current(resolved.mode,
+                        ui::capabilities_of(resolved.mode,
+                                            Config::tui_interactive().value_or(false),
+                                            agent_mode, env));
+    }
+
+    // Is there anyone to answer a question?
+    //
+    // One answer, resolved above: an explicit preference, gated by whether a
+    // terminal is even attached and whether the caller announced itself as a
+    // machine. Asking `ui::` rather than re-deriving it here is the point --
+    // the version of this that tested `!agent_mode && stdout_is_terminal()`
+    // locally was a second opinion, and second opinions are what this whole
+    // change is about.
+    stream.set_interactive(ui::current_capabilities().interactive);
 
     // --agent: replace TUI listener with plain-text renderer, disable colors.
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should
@@ -778,7 +1110,9 @@ int run(int argc, char* argv[]) {
                 agent::render_data_event(*d);
             }
             else if (auto* p = std::get_if<PromptEvent>(&e)) {
-                // In agent mode, auto-respond with default (use --yes for confirms)
+                // Reached only when something registered an auto-responder;
+                // an unanswerable prompt is refused inside EventStream and
+                // never emitted. Kept so a registered responder still works.
                 stream.respond(p->id, p->defaultValue);
             }
             else if (auto* er = std::get_if<ErrorEvent>(&e)) {
@@ -803,7 +1137,9 @@ int run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
         if (a == "--verbose" || a == "-v" || a == "--quiet" || a == "-q"
-            || a == "--agent") continue;
+            || a == "--agent" || a.starts_with("--ui-mode")) continue;
+        // `--ui-mode tui` (space form): drop the value too.
+        if (i > 1 && std::string_view{argv[i - 1]} == "--ui-mode") continue;
         fargv.push_back(argv[i]);
     }
     int fargc = static_cast<int>(fargv.size());
@@ -1003,6 +1339,11 @@ int run(int argc, char* argv[]) {
         .option("verbose").short_name('v').help("Enable verbose output").global()
         .option("quiet").short_name('q').help("Suppress non-essential output").global()
         .option("agent").help("Plain-text output without TUI formatting (for LLM agents)").global()
+        // Declared here as well as scanned by hand above: the scan runs before
+        // the parser exists (the frontend has to be resolved before anything
+        // prints), and the parser rejects options it has never heard of.
+        .option("ui-mode").takes_value().value_name("MODE")
+            .help("Frontend for this run (cli/tui/auto)").global()
 
         // install
         .subcommand("install")
@@ -1192,6 +1533,9 @@ int run(int argc, char* argv[]) {
             .description("Show or modify xlings configuration")
             .option(cmdline::Option("lang").takes_value().value_name("LANG").help("Set language (en/zh)"))
             .option(cmdline::Option("mirror").takes_value().value_name("MIRROR").help("Set mirror (GLOBAL/CN)"))
+            .option(cmdline::Option("ui-mode").takes_value().value_name("MODE").help("Set UI mode (cli/tui/auto)"))
+            .option(cmdline::Option("theme").takes_value().value_name("THEME").help("Set colour theme (name or path)"))
+            .option(cmdline::Option("interactive").takes_value().value_name("BOOL").help("Inline prompts in tui mode (true/false)"))
             .option(cmdline::Option("add-xpkg").takes_value().value_name("FILE").help("Add xpkg file to package index"))
             .option(cmdline::Option("index-repo").takes_value().value_name("NS:URL").help("Add/update index repo (e.g. myns:https://...git)"))
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {

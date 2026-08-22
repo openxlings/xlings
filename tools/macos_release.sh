@@ -50,7 +50,19 @@ if [[ -n "${MCPP_TARGET:-}" ]]; then
 fi
 "$MCPP_BIN" "${MCPP_ARGS[@]}" 2>&1 || fail "mcpp build failed"
 
-BIN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/xlings' -type f -perm -111 | sort | tail -1)"
+# NEWEST by mtime, not last by fingerprint.
+#
+# This was `| sort | tail -1`, which orders by the hex fingerprint directory
+# name -- so with two builds present it packages whichever hash sorts higher,
+# not the one you just built. Measured 2026-08-22 on a tree with
+# 98909161fe906353 (08:08) and e4d05cf9f1b951d4 (08:00): it chose the OLDER
+# one. CI never sees this because a fresh checkout has exactly one fingerprint,
+# and the version string is identical either way, so the obvious check --
+# "does the artifact report the right version?" -- passes on the wrong binary.
+#
+# `ls -t` is what .github/workflows/xlings-ci-linux.yml already uses for the
+# same job.
+BIN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)"
 [[ -f "$BIN_SRC" ]] || fail "C++ binary not found at $BIN_SRC"
 
 info "Verifying no LLVM toolchain dependency..."

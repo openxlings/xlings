@@ -1,5 +1,15 @@
 module;
 
+// For `stdout`. Every `std::println` below names its stream: the stream-less
+// overload makes clang instantiate `basic_format_string` with the format string
+// itself as an argument, and whether it does depends on what else the
+// translation unit imports -- xim/commands.cpp compiled under clang for months
+// with five such calls until one unrelated `import` was added to it. Not
+// something a reader of this file can predict, so it is removed rather than
+// managed. `stdout` currently arrives via the ftxui headers; relying on that
+// is the same class of accident.
+#include <cstdio>
+
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "ftxui/screen/color.hpp"
@@ -56,15 +66,15 @@ void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
         auto marker = L.markerW == 0
             ? text("")
             : (f.is_alert
-                   ? (text(std::string(theme::icon::warn) + " ") | color(theme::amber()))
+                   ? (text(std::string(theme::icon::warn) + " ") | color(theme::warn()))
                    : f.is_highlight
-                       ? (text(std::string(theme::icon::active) + " ") | color(theme::green()))
+                       ? (text(std::string(theme::icon::active) + " ") | color(theme::success()))
                        : text("  "));
 
         auto value_style = [&](Element e) {
-            if (f.is_alert)     return e | color(theme::amber()) | bold;
-            if (f.is_highlight) return e | color(theme::green()) | bold;
-            return e | color(theme::text_color());
+            if (f.is_alert)     return e | color(theme::warn()) | bold;
+            if (f.is_highlight) return e | color(theme::success()) | bold;
+            return e | color(theme::text());
         };
 
         auto lines = layout::wrap_to_width(f.value, L.valueW);
@@ -73,7 +83,7 @@ void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
             rows.push_back(hbox({
                 text("  "),
                 marker,
-                text(f.label) | color(theme::dim_color()),
+                text(f.label) | color(theme::muted()),
             }));
             for (auto& line : lines) {
                 if (line.empty()) continue;
@@ -88,7 +98,7 @@ void render_fields_(ftxui::Elements& rows, std::span<const InfoField> fields,
         rows.push_back(hbox({
             text("  "),
             marker,
-            text(layout::pad_to_width(f.label, L.labelW)) | color(theme::dim_color()),
+            text(layout::pad_to_width(f.label, L.labelW)) | color(theme::muted()),
             text("  "),
             value_style(text(lines.front())),
         }));
@@ -113,13 +123,13 @@ void print_info_panel(std::string_view title, std::span<const InfoField> fields,
     // on a forty-column rule and read as a frame that failed to draw.
     auto divider = [&] {
         return text("  " + layout::repeat(theme::icon::divider, L.width - 4))
-               | color(theme::border_color());
+               | color(theme::border());
     };
 
     Elements rows;
     rows.push_back(hbox({
-        text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
-        text(std::string(title)) | theme::highlight(),
+        text("  " + std::string(theme::icon::package) + " ") | color(theme::alt()),
+        text(std::string(title)) | theme::style::highlight(),
     }));
     rows.push_back(divider());
 
@@ -158,7 +168,7 @@ void print_styled_list(std::string_view title,
 
     Elements rows;
     if (!title.empty()) {
-        rows.push_back(text("  " + std::string(title)) | bold | color(theme::text_color()));
+        rows.push_back(text("  " + std::string(title)) | bold | color(theme::text()));
         rows.push_back(text(""));
     }
 
@@ -166,7 +176,7 @@ void print_styled_list(std::string_view title,
         const auto& name = row.name;
         const auto& desc = row.desc;
         auto marker = show_marker
-            ? (text("  " + std::string(theme::icon::package) + " ") | color(theme::magenta()))
+            ? (text("  " + std::string(theme::icon::package) + " ") | color(theme::alt()))
             : text("    ");
 
         if (P.stacked) {
@@ -178,7 +188,7 @@ void print_styled_list(std::string_view title,
             for (std::size_t i = 0; i < nameLines.size(); ++i) {
                 rows.push_back(hbox({
                     i == 0 ? marker : text(std::string(kMarkerW, ' ')),
-                    text(nameLines[i]) | bold | color(theme::magenta()),
+                    text(nameLines[i]) | bold | color(theme::alt()),
                 }));
             }
             // Its own line, never elided. The stacked branch is where the
@@ -187,13 +197,13 @@ void print_styled_list(std::string_view title,
             if (!row.status.empty()) {
                 rows.push_back(hbox({
                     text(std::string(kMarkerW + kGap, ' ')),
-                    text(row.status) | color(theme::amber()),
+                    text(row.status) | color(theme::warn()),
                 }));
             }
             if (P.descW > 0 && !desc.empty()) {
                 rows.push_back(hbox({
                     text(std::string(kMarkerW + kGap, ' ')),
-                    text(layout::truncate_to_width(desc, P.descW)) | color(theme::dim_color()),
+                    text(layout::truncate_to_width(desc, P.descW)) | color(theme::muted()),
                 }));
             }
             continue;
@@ -202,16 +212,16 @@ void print_styled_list(std::string_view title,
         Elements cells;
         cells.push_back(marker);
         cells.push_back(text(layout::pad_to_width(name, nameMax))
-                        | bold | color(theme::magenta()));
+                        | bold | color(theme::alt()));
         if (statusMax > 0) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(text(layout::pad_to_width(row.status, statusMax))
-                            | color(theme::amber()));
+                            | color(theme::warn()));
         }
         if (P.descW > 0 && !desc.empty()) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(text(layout::truncate_to_width(desc, P.descW))
-                            | color(theme::dim_color()));
+                            | color(theme::muted()));
         }
         rows.push_back(hbox(std::move(cells)));
     }
@@ -236,9 +246,9 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
     // Print header
     Elements header;
     header.push_back(hbox({
-        text("  Packages to install (") | color(theme::text_color()),
-        text(std::to_string(packages.size())) | bold | color(theme::text_color()),
-        text("):") | color(theme::text_color()),
+        text("  Packages to install (") | color(theme::text()),
+        text(std::to_string(packages.size())) | bold | color(theme::text()),
+        text("):") | color(theme::text()),
     }));
     header.push_back(text(""));
     // The blank row above is the spacing. print_rows terminates every row,
@@ -253,7 +263,7 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
     for (auto& [nameVer, desc] : packages) {
         Elements cells;
         cells.push_back(text("    " + std::string(theme::icon::package) + " ")
-                        | color(theme::magenta()));
+                        | color(theme::alt()));
         // The one place a package name may be elided: this list is
         // overwritten row-for-row and cannot grow a second line. It is
         // elided visibly, with an ellipsis, rather than clipped at the
@@ -261,11 +271,11 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
         auto shown = P.stacked
             ? layout::truncate_to_width(nameVer, std::max(1, P.width - kMarkerW))
             : layout::pad_to_width(nameVer, P.nameW);
-        cells.push_back(text(shown) | bold | color(theme::magenta()));
+        cells.push_back(text(shown) | bold | color(theme::alt()));
         if (!P.stacked && P.descW > 0 && !desc.empty()) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(text(layout::truncate_to_width(desc, P.descW))
-                            | color(theme::dim_color()));
+                            | color(theme::muted()));
         }
         pkgRows.push_back(hbox(std::move(cells)));
     }
@@ -293,23 +303,23 @@ void print_subos_list(
     auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, detailMax);
 
     Elements rows;
-    rows.push_back(text("  Sub-OS environments:") | bold | color(theme::text_color()));
+    rows.push_back(text("  Sub-OS environments:") | bold | color(theme::text()));
     rows.push_back(text(""));
 
     for (auto& [name, dir, tools, active] : entries) {
         auto marker = active
-            ? (text("  " + std::string(theme::icon::active) + " ") | color(theme::cyan()))
+            ? (text("  " + std::string(theme::icon::active) + " ") | color(theme::accent()))
             : text("    ");
         auto nameEl = active
-            ? (text(layout::pad_to_width(name, P.nameW)) | bold | color(theme::cyan()))
-            : (text(layout::pad_to_width(name, P.nameW)) | color(theme::text_color()));
+            ? (text(layout::pad_to_width(name, P.nameW)) | bold | color(theme::accent()))
+            : (text(layout::pad_to_width(name, P.nameW)) | color(theme::text()));
 
         Elements cells { marker, nameEl };
         if (P.descW > 0) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(
                 text(layout::truncate_to_width(detail_of(dir, tools), P.descW))
-                | color(theme::dim_color()));
+                | color(theme::muted()));
         }
         rows.push_back(hbox(std::move(cells)));
     }
@@ -319,17 +329,29 @@ void print_subos_list(
 }
 
 void print_subos_resolved(std::string_view query, std::string_view selected) {
-    std::println("{}  {} resolved subos '{}' -> {}{}{}{}",
+    std::println(stdout, "{}  {} resolved subos '{}' -> {}{}{}{}",
                  palette::fg(palette::cyan()), theme::icon::arrow, query,
                  palette::strong(), selected, palette::off(), palette::off());
 }
 
 void print_subos_created(const std::string& name, const std::string& dir) {
     using namespace subos_ansi_;
-    std::println("{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
+    std::println(stdout, "{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
     if (!dir.empty()) {
-        std::println("{}    dir:{} {}", gray(), reset(), dir);
+        std::println(stdout, "{}    dir:{} {}", gray(), reset(), dir);
     }
+}
+
+void print_subos_forked(const std::string& name, const std::string& from,
+                        const std::string& dir) {
+    using namespace subos_ansi_;
+    // Says what plain `subos new` cannot: which base this one came from. That
+    // is the whole reason the user passed `--from`, so leaving it out would
+    // make the fixed output answer a question nobody asked.
+    std::println(stdout, "{}  {} subos created: {}{}{}{}", green(), theme::icon::done,
+                 bold(), name, reset(), reset());
+    if (!from.empty()) std::println(stdout, "{}    from:{} {}", gray(), reset(), from);
+    if (!dir.empty())  std::println(stdout, "{}    dir:{}  {}", gray(), reset(), dir);
 }
 
 void print_subos_switched(const std::string& name, const std::string& dir) {
@@ -337,35 +359,35 @@ void print_subos_switched(const std::string& name, const std::string& dir) {
     // [global] tag distinguishes the persistent "--global" action from the
     // per-shell spawn (which is the default `xlings subos use NAME`).
     if (dir.empty()) {
-        std::println("{}  {} switched to subos {}{}{}{}  [global]{}",
+        std::println(stdout, "{}  {} switched to subos {}{}{}{}  [global]{}",
                      cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), reset());
     } else {
-        std::println("{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
+        std::println(stdout, "{}  {} switched to subos {}{}{}{}  [global]  ({}){}",
                      cyan(), theme::icon::arrow, bold(), name, reset(), cyan(), dir, reset());
     }
 }
 
 void print_subos_removed(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
+    std::println(stdout, "{}  {} subos removed: {}{}{}", green(), theme::icon::done, bold(), name, reset());
 }
 
 void print_subos_entering(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
+    std::println(stdout, "{}  {} entering subos {}{}{}{}{}  (exit to leave){}",
                  magenta(), theme::icon::arrow, green(), bold(), name, reset(), magenta(), reset());
 }
 
 void print_subos_already_in(const std::string& name) {
     using namespace subos_ansi_;
-    std::println("{}  {} already in subos {}{}{}{}",
+    std::println(stdout, "{}  {} already in subos {}{}{}{}",
                  gray(), theme::icon::info, bold(), name, reset(), gray());
     std::print("{}", reset());
 }
 
 void print_subos_nesting(const std::string& from, const std::string& to) {
     using namespace subos_ansi_;
-    std::println("{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
+    std::println(stdout, "{}  {} nesting subos {}{}{}{} -> {}{}{}{}  ('exit' returns to {}{}{}{}){}",
                  amber(), theme::icon::extracting,
                  bold(), from, reset(), amber(),
                  bold(), to, reset(), amber(),
@@ -383,16 +405,16 @@ void print_install_summary(int success, int failed) {
         auto msg = std::to_string(success) + " package(s) installed";
         measured.push_back(msg);
         rows.push_back(hbox({
-            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
-            text(msg) | color(theme::green()) | bold,
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::success()),
+            text(msg) | color(theme::success()) | bold,
         }));
     }
     if (failed > 0) {
         auto msg = std::to_string(failed) + " package(s) failed";
         measured.push_back(msg);
         rows.push_back(hbox({
-            text("  " + std::string(theme::icon::failed) + " ") | color(theme::red()),
-            text(msg) | color(theme::red()) | bold,
+            text("  " + std::string(theme::icon::failed) + " ") | color(theme::error()),
+            text(msg) | color(theme::error()) | bold,
         }));
     }
     rows.push_back(text(""));
@@ -410,14 +432,14 @@ void print_remove_plan(const std::string& subos,
     Elements rows;
     rows.push_back(text(""));
     rows.push_back(hbox({
-        text("  Package to remove:") | color(theme::text_color()),
+        text("  Package to remove:") | color(theme::text()),
     }));
     rows.push_back(text(""));
     auto suffix = "  (subos: " + subos + ")";
     rows.push_back(hbox({
-        text("    " + std::string(theme::icon::package) + " ") | color(theme::magenta()),
-        text(label) | bold | color(theme::magenta()),
-        text(suffix) | color(theme::dim_color()),
+        text("    " + std::string(theme::icon::package) + " ") | color(theme::alt()),
+        text(label) | bold | color(theme::alt()),
+        text(suffix) | color(theme::muted()),
     }));
     rows.push_back(text(""));
 
@@ -442,10 +464,10 @@ void print_remove_summary(const std::string& subos,
     if (detached) {
         measured.push_back(label + " detached" + suffix);
         rows.push_back(hbox({
-            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
-            text(label + " detached") | color(theme::green()) | bold,
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::success()),
+            text(label + " detached") | color(theme::success()) | bold,
             suffix.empty() ? text("")
-                           : (text(suffix) | color(theme::dim_color())),
+                           : (text(suffix) | color(theme::muted())),
         }));
         // Say how many, and name them only while the line still fits.
         //
@@ -462,7 +484,7 @@ void print_remove_summary(const std::string& subos,
             // subos, say). Still say the payload stayed.
             measured.emplace_back("payload kept — another subos still uses it");
             rows.push_back(text("    payload kept — another subos still uses it")
-                           | color(theme::dim_color()));
+                           | color(theme::muted()));
         } else {
             std::string line = std::format("    payload kept — {} other subos still use it",
                                            pinnedBy.size());
@@ -475,17 +497,17 @@ void print_remove_summary(const std::string& subos,
                 line = std::format("    payload kept — still used by {}", names);
             }
             measured.push_back(line);
-            rows.push_back(text(line) | color(theme::dim_color()));
+            rows.push_back(text(line) | color(theme::muted()));
             rows.push_back(text("    remove it there too to delete it for good")
-                           | color(theme::dim_color()));
+                           | color(theme::muted()));
         }
     } else {
         measured.push_back(label + " removed" + suffix);
         rows.push_back(hbox({
-            text("  " + std::string(theme::icon::done) + " ") | color(theme::green()),
-            text(label + " removed") | color(theme::green()) | bold,
+            text("  " + std::string(theme::icon::done) + " ") | color(theme::success()),
+            text(label + " removed") | color(theme::success()) | bold,
             suffix.empty() ? text("")
-                           : (text(suffix) | color(theme::dim_color())),
+                           : (text(suffix) | color(theme::muted())),
         }));
     }
     rows.push_back(text(""));

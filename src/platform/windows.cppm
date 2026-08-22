@@ -17,6 +17,25 @@ import xlings.runtime.cancellation;
 namespace xlings {
 namespace platform_impl {
 
+    // The UI language as a BCP-47 tag ("zh-CN", "en-US"), or empty.
+    //
+    // Windows has no LANG/LC_* to read, and `std::locale("")` is the wrong
+    // tool everywhere (see get_system_language). GetUserDefaultLocaleName is
+    // the documented way to ask, available since Vista.
+    export inline std::string user_ui_language() {
+        wchar_t buf[LOCALE_NAME_MAX_LENGTH] {};
+        const int n = ::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH);
+        if (n <= 0) return {};
+        // The tag is ASCII by definition, so a narrowing copy is exact and
+        // avoids dragging a codepage conversion in for four characters.
+        std::string out;
+        out.reserve(static_cast<std::size_t>(n));
+        for (int i = 0; i < n && buf[i] != L'\0'; ++i) {
+            out += static_cast<char>(buf[i] & 0x7F);
+        }
+        return out;
+    }
+
     export class FileLock {
     public:
         FileLock() = default;

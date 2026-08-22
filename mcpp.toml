@@ -1,6 +1,12 @@
+# Members are independent packages with their own mcpp.toml, referenced by
+# path. The frontends belong here as they land; `theme` is first because it is
+# a genuine leaf and every frontend needs it.
+[workspace]
+members = ["libs/theme", "ui/gui"]
+
 [package]
 name = "xlings"
-version = "2026.8.17.2"
+version = "2026.8.22.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -16,6 +22,24 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 [targets.xlings]
 kind = "bin"
 main = "src/main.cpp"
+
+# The graphical frontend is its OWN binary, not another way for `xlings` to
+# draw. Measured: static musl's dlopen is a stub, and GLFW/GL find X11,
+# Wayland and the driver through dlopen -- so the release binary cannot open a
+# window whatever it is built with. `required_features` makes it a silent skip
+# there rather than a build failure, and `xlings install xlings-gui` is how a
+# Linux user gets one (the graphics stack is already closed in the index).
+[targets.xlings-gui]
+kind = "bin"
+main = "apps/gui/main.cpp"
+required_features = ["gui"]
+
+[features]
+default = []
+gui = []
+
+[feature-deps.gui]
+ui-gui = { path = "ui/gui" }
 
 [toolchain]
 default = "gcc@16.1.0"
@@ -43,6 +67,7 @@ linkage = "static"
 
 [dependencies]
 ftxui = "6.1.9"
+theme = { path = "libs/theme" }
 
 [dependencies.compat]
 libarchive = "3.8.7"

@@ -1,6 +1,8 @@
 export module xlings.core;
 
 export import xlings.core.log;
+export import xlings.core.diag;
+export import xlings.core.uimode;
 export import xlings.core.glyph;
 export import xlings.core.palette;
 export import xlings.core.version_order;

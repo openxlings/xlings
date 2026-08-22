@@ -12,9 +12,12 @@ import std;
 import xlings.libs.json;
 import xlings.core.config;
 import xlings.core.log;
+import xlings.core.diag;
 import xlings.platform;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.errors;
+import xlings.core.version_order;
 
 namespace xlings::xvm {
 
@@ -82,7 +85,7 @@ bool home_knows_program(const std::filesystem::path& home,
     // invocation can't read its .xlings.json and would otherwise get a
     // misleading "<program>: not installed" instead of a permissions hint.
     if (std::ifstream probe(cfg, std::ios::binary); !probe.is_open()) {
-        log::warn("[xlings] cannot read {} (permission denied)",
+        log::warn("cannot read {} (permission denied)",
                   Config::display_path(cfg));
         log::warn("  this home may be owned by another user — avoid mixing "
                   "sudo and non-sudo xlings on the same home");
@@ -429,23 +432,31 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         }
 
         if (here.empty()) {
-            auto global_all = get_all_versions(db, program_name);
-            if (global_all.empty()) {
-                log::error("xlings: '{}' is not installed", program_name);
-                log::error("  hint: xlings install {}", program_name);
-            } else {
-                log::error("xlings: '{}' is not installed in current subos", program_name);
-                log::error("  hint: xlings install {}", program_name);
-            }
+            // Same state, same wording, same code as `xlings use` reports --
+            // the shim used to say "xlings: '{}' is not installed in current
+            // subos" while `use` said "in this subos ({})", so the two halves
+            // of one product described one condition differently.
+            diag::emit(not_in_subos({
+                .target            = program_name,
+                .subos             = Config::subos_scope().name,
+                .versionsElsewhere = get_all_versions(db, program_name),
+                .source            = Config::version_source(program_name),
+            }));
         } else {
-            log::error("xlings: no active version of '{}' in current subos", program_name);
-            std::string avail;
-            for (auto& v : here) {
-                if (!avail.empty()) avail += " ";
-                avail += v;
-            }
-            log::error("  available: {}", avail);
-            log::error("  hint: xlings use {} <version>", program_name);
+            // Genuinely different state: opted into this subos, but nothing is
+            // pointed at. Different code, because the way out is different.
+            diag::Diagnostic d {
+                .code    = "xvm.no_active_version",
+                .summary = std::format(
+                    "{} is installed in this subos, but no version is active",
+                    program_name),
+                .facts   = { diag::candidates("installed here", here, 6) },
+            };
+            auto newest = here;
+            version_order::sort_desc(newest);
+            d.actions.push_back({ "pick one",
+                std::format("xlings use {} {}", program_name, newest.front()) });
+            diag::emit(d);
         }
         return 1;
     }
@@ -453,13 +464,37 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // Resolve version (fuzzy match)
     auto resolved_version = match_version(db, program_name, version);
     if (resolved_version.empty()) {
-        log::error("xlings: version '{}' not found for '{}'", version, program_name);
+        // The user did not type this version. Something pinned it -- most
+        // often a project `.xlings.json` -- and before `version_source` there
+        // was no way for them to find out which file, because this layer only
+        // ever saw the merged answer.
+        //
+        // The old form printed the bare failure plus every version in
+        // std::map order and no way out at all: measured on a real home, one
+        // 877-character line of 94 versions with `0.0.100` ahead of `0.0.24`.
+        diag::Diagnostic d {
+            .code    = "xvm.pinned_version_missing",
+            .summary = std::format(
+                "{}@{} is selected here, and no such version is installed",
+                program_name, version),
+            .source  = Config::version_source(program_name),
+        };
         auto all = get_all_versions(db, program_name);
         if (!all.empty()) {
-            std::string avail = "  available:";
-            for (auto& v : all) avail += " " + v;
-            log::error("{}", avail);
+            d.facts.push_back(diag::candidates(
+                "installed", all, 5,
+                std::format("xlings list {}", program_name)));
         }
+        d.actions.push_back({ "install the pinned one",
+            std::format("xlings install {}@{}", program_name, version) });
+        if (!d.source.empty()) {
+            // Deliberately does NOT repeat the source string: it is already
+            // on the `from` row two lines up, and an action row that restates
+            // its own context is how these blocks get long enough that nobody
+            // finishes reading them.
+            d.actions.push_back({ "or change the pin", "edit the file above" });
+        }
+        diag::emit(d);
         return 1;
     }
 

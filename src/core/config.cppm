@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.17.2";
+    static constexpr std::string_view VERSION = "2026.8.22.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -105,6 +105,14 @@ private:
     std::string mirror_;
     std::string indexBase_;   // xim.index-base override (region-resolved); empty = default xlings-res
     std::string lang_;
+    // Frontend preferences. Flat keys next to `mirror`/`lang` because they
+    // answer the same class of question ("which source / language / frontend /
+    // colours"), and because `lang` is already flat, already in the schema and
+    // already asserted flat by an e2e test -- moving it into a nested block to
+    // look tidier would cost a compat layer and buy nothing.
+    std::string uiMode_;        // "cli" | "tui" | "auto"/"" 
+    std::string theme_;         // path reference, or a shipped theme's name
+    std::optional<bool> tuiInteractive_;
     std::string globalActiveSubos_ = "default";
     xvm::VersionDB globalVersions_;
     xvm::VersionDB projectVersions_;
@@ -148,6 +156,10 @@ private:
 
     static void load_resource_servers_from_json_(const nlohmann::json& json,
                                                  MirrorServerMap& out);
+
+    // Frontend preferences, read from whichever layer is being loaded.
+    // Non-static because they land on the instance being populated.
+    void load_ui_prefs_from_json_(const nlohmann::json& json);
 
     // Read a subos `.xlings.json` workspace section. Returns the new
     // SubosWorkspace bundle so callers get both `active` (Workspace) and
@@ -304,6 +316,36 @@ public:
     [[nodiscard]] static std::string display_path(const std::string& p);
     [[nodiscard]] static const std::string& mirror();
     [[nodiscard]] static const std::string& lang();
+
+    // "cli" | "tui" | "" (auto). Empty means detect; see ui::resolve.
+    [[nodiscard]] static const std::string& ui_mode();
+
+    // A path reference to a theme file, or a shipped theme's bare name.
+    // Empty means the built-in default compiled into the binary.
+    [[nodiscard]] static const std::string& theme();
+
+    // The theme file `theme()` points at, or empty for the built-in default.
+    //
+    // A bare name is sugar for `config/themes/<name>.json`; anything with a
+    // separator or a suffix is a path, resolved against the project root when
+    // it came from a project config and against the home otherwise -- the same
+    // rule local index repo sources already use, so a project can ship its own
+    // colours exactly the way it can ship its own index.
+    [[nodiscard]] static std::filesystem::path resolve_theme_path();
+
+    // nullopt = not configured; the default is ON for terminals (gated by
+    // ui::capabilities_of, which knows whether anyone is actually there).
+    [[nodiscard]] static std::optional<bool> tui_interactive();
+
+    // One-shot hints, remembered ACROSS RUNS.
+    //
+    // `xself::print_migration_hint_once` is a `static bool` -- per process, so
+    // reusing it for "show this the first time ever" would show it every time.
+    // An array rather than a bool per hint: these will not stay singular, and
+    // a list means adding one does not change the schema.
+    [[nodiscard]] static bool hint_seen(std::string_view id);
+
+    static void mark_hint_seen(std::string_view id);
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
     // Use this for download fallbacks; `resource_servers()` remains the
@@ -366,6 +408,25 @@ public:
 
     // Get effective workspace: project overrides subos
     [[nodiscard]] static xvm::Workspace effective_workspace();
+
+    // WHO ASKED FOR THIS VERSION.
+    //
+    // `effective_workspace()` merges three layers and hands back the winner
+    // with no record of which layer it came from. That is fine right up until
+    // the answer is wrong: a project `.xlings.json` pinning
+    // `"mcpp": "2026.99.9.9"` made every `mcpp` invocation fail with
+    //
+    //     xlings: version '2026.99.9.9' not found for 'mcpp'
+    //
+    // and nothing anywhere named the file. The user is handed a version string
+    // they never typed and whose origin is unsearchable without grepping the
+    // disk.
+    //
+    // Returns a display string naming the file and field that set `target`,
+    // or empty when no layer claims it. Display form (`@xlings/...`, project
+    // paths relative to the project root) because it goes straight into a
+    // diagnostic.
+    [[nodiscard]] static std::string version_source(const std::string& target);
 
     // INVARIANT: a reader and its writer must resolve to the SAME map.
     //

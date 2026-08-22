@@ -64,7 +64,18 @@ NODE_RC=$?
 set -e
 echo "node --version (without XLINGS_PROJECT_DIR): $NODE_ERR"
 [[ $NODE_RC -ne 0 ]] || fail "shim without XLINGS_PROJECT_DIR should have failed"
-assert_contains "$NODE_ERR" "xlings:" \
+# Assert that XLINGS reported this, not node.
+#
+# The old assertion looked for the literal "xlings:" -- one of three
+# inconsistent prefixes the same condition used to carry ("xlings: ",
+# "[xlings:use] ", none), all of which 2026.8.22.1 collapsed into one wording
+# with no prefix at all. The prefix was only ever a proxy for "the shim spoke",
+# so assert the two things that actually mean that: xlings's own severity
+# marker, and the diagnostic this condition is supposed to produce. Neither can
+# come from node.
+assert_contains "$NODE_ERR" "[error]" \
   "expected xlings shim error without XLINGS_PROJECT_DIR (got: $NODE_ERR)"
+assert_contains "$NODE_ERR" "is not installed in this subos" \
+  "expected the not-in-subos diagnostic (got: $NODE_ERR)"
 
 log "PASS: shim project context via XLINGS_PROJECT_DIR"

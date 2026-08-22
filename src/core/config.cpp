@@ -488,6 +488,7 @@ Config::Config() {
                     mirror_ = json["mirror"].get<std::string>();
                 if (json.contains("lang") && json["lang"].is_string())
                     lang_ = json["lang"].get<std::string>();
+                load_ui_prefs_from_json_(json);
                 // Load global versions
                 load_global_versions_from_json_(json);
                 globalIndexRepos_ = parse_index_repos_json(json, mirror_);
@@ -590,6 +591,10 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                 mirror_ = json["mirror"].get<std::string>();
             if (json.contains("lang") && json["lang"].is_string())
                 lang_ = json["lang"].get<std::string>();
+            // Project overrides global, same as mirror/lang: a repo may ship
+            // its own colours, and `theme` is a path reference so it can point
+            // at a file inside the checkout.
+            load_ui_prefs_from_json_(json);
             if (json.contains("workspace") && json["workspace"].is_object()) {
                 projectWorkspace_ = xvm::workspace_from_json(json["workspace"]);
             }
@@ -824,7 +829,74 @@ void Config::reload_state() { instance_().reload_state_(); }
 
 [[nodiscard]] const std::string& Config::mirror() { return instance_().mirror_; }
 
+void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
+    if (json.contains("uiMode") && json["uiMode"].is_string())
+        uiMode_ = json["uiMode"].get<std::string>();
+    if (json.contains("theme") && json["theme"].is_string())
+        theme_ = json["theme"].get<std::string>();
+    // Nested under `tui` because it is that frontend's own setting -- it means
+    // nothing in `cli` mode. Contrast `uiMode`/`theme`/`lang`, which are
+    // global choices and stay flat.
+    if (json.contains("tui") && json["tui"].is_object()) {
+        const auto& tui = json["tui"];
+        if (tui.contains("interactive") && tui["interactive"].is_boolean())
+            tuiInteractive_ = tui["interactive"].get<bool>();
+    }
+}
+
 [[nodiscard]] const std::string& Config::lang() { return instance_().lang_; }
+
+[[nodiscard]] const std::string& Config::ui_mode() { return instance_().uiMode_; }
+
+[[nodiscard]] const std::string& Config::theme() { return instance_().theme_; }
+
+[[nodiscard]] std::optional<bool> Config::tui_interactive() {
+    return instance_().tuiInteractive_;
+}
+
+[[nodiscard]] bool Config::hint_seen(std::string_view id) {
+    namespace fs = std::filesystem;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    std::error_code ec;
+    if (!fs::exists(configPath, ec)) return false;
+    try {
+        auto content = platform::read_file_to_string(configPath.string());
+        auto json = nlohmann::json::parse(content, nullptr, false);
+        if (json.is_discarded() || !json.is_object()) return false;
+        auto it = json.find("hintsSeen");
+        if (it == json.end() || !it->is_array()) return false;
+        for (const auto& e : *it) {
+            if (e.is_string() && e.get<std::string>() == id) return true;
+        }
+    } catch (...) {}
+    return false;
+}
+
+[[nodiscard]] std::filesystem::path Config::resolve_theme_path() {
+    namespace fs = std::filesystem;
+    auto& self = instance_();
+    auto value = self.theme_;
+    if (value.empty() || value == "default") return {};
+
+    const bool looksLikePath = value.contains('/') || value.contains('\\')
+                            || value.ends_with(".json") || value.starts_with(".");
+    if (!looksLikePath) {
+        // Bare name: one of the shipped files. Not searched anywhere else --
+        // a name that resolves differently depending on the working directory
+        // is how a config value stops being reproducible.
+        return self.paths_.homeDir / "config" / "themes" / (value + ".json");
+    }
+
+    fs::path source(value);
+    if (source.is_absolute()) return source.lexically_normal();
+    // Relative to whichever config claimed it. `hasProjectConfig_` is the same
+    // discriminator resolve_repo_source uses, so the two path-valued keys
+    // cannot disagree about what "./x" means.
+    const auto base = (self.hasProjectConfig_ && !self.forceGlobalScope_
+                       && !self.projectDir_.empty())
+        ? self.projectDir_ : self.paths_.homeDir;
+    return (base / source).lexically_normal();
+}
 
 [[nodiscard]] std::vector<std::string> Config::resource_servers(std::string_view mirror) {
     return instance_().candidate_resource_servers_for_(mirror);
@@ -965,6 +1037,45 @@ void Config::reload_state() { instance_().reload_state_(); }
                             self.projectWorkspace_,
                             self.projectSubosWorkspace_,
                             self.projectSubosMode_);
+}
+
+[[nodiscard]] std::string Config::version_source(const std::string& target) {
+    auto& self = instance_();
+
+    const auto claims = [&](const xvm::Workspace& ws) {
+        auto it = ws.find(target);
+        return it != ws.end() && !it->second.empty();
+    };
+
+    // Walk the layers in the order `merged_workspace` resolves them, LAST
+    // writer first: whoever the merge would let win is the one to name. Asking
+    // in the other order names a layer that is being overridden, which is
+    // worse than saying nothing -- it sends the user to edit a file that is
+    // not in control.
+    if (self.hasProjectConfig_ && !self.forceGlobalScope_) {
+        if (claims(self.projectSubosWorkspace_)) {
+            return display_path(self.project_subos_dir_() / ".xlings.json");
+        }
+        if (claims(self.projectWorkspace_)) {
+            // The project manifest is the layer users actually hand-edit, so
+            // name the field too -- "which file" is half an answer when the
+            // file has a dozen keys.
+            //
+            // Rendered relative to the project root, not absolutely: the
+            // absolute form of a scratch checkout runs past 100 columns on its
+            // own, and the reader is standing in that directory. `display_path`
+            // is the wrong tool here -- it abbreviates against XLINGS_HOME,
+            // which a project directory is not under.
+            return "./.xlings.json  ->  workspace." + target;
+        }
+    }
+    if (claims(self.globalWorkspace_)) {
+        // The global workspace lives in the ACTIVE SUBOS's file, not in
+        // `~/.xlings.json` -- naming the latter would send the user to a file
+        // that does not contain the pin.
+        return display_path(self.paths_.subosDir / ".xlings.json");
+    }
+    return {};
 }
 
 [[nodiscard]] const xvm::Workspace& Config::workspace() {
@@ -1114,6 +1225,29 @@ void Config::record_client_version(const std::string& version) {
         } catch (...) { return; }
     }
     json["version"] = version;
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+}
+
+void Config::mark_hint_seen(std::string_view id) {
+    namespace fs = std::filesystem;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    nlohmann::json json = nlohmann::json::object();
+    if (fs::exists(configPath)) {
+        try {
+            auto content = platform::read_file_to_string(configPath.string());
+            json = nlohmann::json::parse(content, nullptr, false);
+            // Same refusal as record_client_version: never replace a document
+            // we could not parse. Trading an unshown hint for a lost versions
+            // DB is not a trade.
+            if (json.is_discarded() || !json.is_object()) return;
+        } catch (...) { return; }
+    }
+    auto& seen = json["hintsSeen"];
+    if (!seen.is_array()) seen = nlohmann::json::array();
+    for (const auto& e : seen) {
+        if (e.is_string() && e.get<std::string>() == id) return;
+    }
+    seen.push_back(std::string(id));
     platform::write_string_to_file(configPath.string(), json.dump(2));
 }
 
