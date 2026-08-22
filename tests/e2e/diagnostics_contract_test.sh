@@ -160,6 +160,46 @@ s['workspace']['demo']['active'] = ''
 sub.write_text(json.dumps(s, indent=2))
 PY
 
+log "S2d: the SHIM says the same thing \`use\` does"
+# The user reported this by RUNNING THE PROGRAM, not by running `xlings use`,
+# and the shim writes its own summary strings -- so "the `use` path is covered"
+# is not coverage. Until 2026.8.22.2 the two paths described this one state
+# differently, which is the defect class E2E-61 exists for.
+#
+# A shim IS the entry binary under another name (`xself::create_shim` makes a
+# symlink), so one can be made without installing anything.
+SHIM_BIN="$HOME_DIR/subos/default/bin/demo"
+ln -sf "$XLINGS_BIN" "$SHIM_BIN"
+cat > "$PROJ_DIR/.xlings.json" <<'JSON'
+{ "workspace": { "demo": "9.9.9" } }
+JSON
+set +e
+out="$( cd "$PROJ_DIR" && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
+        XLINGS_TERM_WIDTH=100 "$SHIM_BIN" --version 2>&1 )"
+rc=$?
+set -e
+[[ $rc -ne 0 ]] \
+  || fail "S2d: a pin to an uninstalled version exited 0:
+$out"
+# Warn, and specifically NOT error -- while the exit code above stays non-zero.
+if grep -q '^\[error\]' <<<"$out"; then
+  fail "S2d: the shim reported an uninstalled project pin as an error:
+$out"
+fi
+grep -q "is the version this project asks for" <<<"$out" \
+  || fail "S2d: the shim does not say the project asked:
+$out"
+# The shim knows WHICH version was asked for, so it names it; the `use` path
+# does not and says it about the name instead. Same tone, same action, and each
+# says only what it actually knows.
+grep -q "demo@9\.9\.9" <<<"$out" \
+  || fail "S2d: the shim does not name the version that was pinned:
+$out"
+grep -qE '^\s+set this project up\s+xlings install\s*$' <<<"$out" \
+  || fail "S2d: the shim's action is not the no-argument project install:
+$out"
+rm -f "$SHIM_BIN" "$PROJ_DIR/.xlings.json"
+
 log "S3: candidate lists are newest-first and capped"
 out="$(RUN use demo 2>&1 || true)"
 # Newest first, whether the candidates come out as one list or as panel rows.
