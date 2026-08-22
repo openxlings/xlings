@@ -71,10 +71,48 @@ inline constexpr int kSlotCount = static_cast<int>(Slot::Count_);
 // populated -- a theme file supplies only what it wants to change and the rest
 // falls back to the built-in default, so by the time a Theme exists it is
 // complete.
+// How the inline picker draws itself.
+//
+// A theme is not only colours: a palette built for a monochrome terminal and
+// one built for a projector disagree about DECORATION too, and forcing both
+// through one widget means one of them is wrong. So the shape is part of the
+// theme, with the same overlay rule as the slots -- unstated means inherit.
+//
+//   Inline  `◆` title, `▸` on the selected row, muted key hints.
+//           The default: it is the visual language the rest of xlings already
+//           speaks (`xlings subos`, `xlings list`, every diagnostic).
+//   Plain   No glyphs, no accent colour, `>` for the selection, bold to
+//           distinguish it. For `mono`, whose entire reason to exist is that
+//           it does not decorate -- on a monochrome terminal an accent colour
+//           and a `▸` are two things that do not survive.
+//   Framed  A border drawn in `accent`, selected row inverted. For
+//           `high-contrast`: in sunlight or through a projector a strong
+//           boundary is the point, and the noise it adds elsewhere is what
+//           that theme is willing to pay.
+enum class SelectorStyle { Inline, Plain, Framed };
+
+[[nodiscard]] constexpr std::string_view selector_style_name(SelectorStyle s) {
+    switch (s) {
+        case SelectorStyle::Plain:  return "plain";
+        case SelectorStyle::Framed: return "framed";
+        case SelectorStyle::Inline: break;
+    }
+    return "inline";
+}
+
+[[nodiscard]] constexpr std::optional<SelectorStyle>
+selector_style_from_name(std::string_view name) {
+    if (name == "inline") return SelectorStyle::Inline;
+    if (name == "plain")  return SelectorStyle::Plain;
+    if (name == "framed") return SelectorStyle::Framed;
+    return std::nullopt;
+}
+
 struct Theme {
     std::string name { "default" };
     std::array<Rgb, kSlotCount> dark {};
     std::array<Rgb, kSlotCount> light {};
+    SelectorStyle selector { SelectorStyle::Inline };
 };
 
 // Compiled into the binary. Works with no files on disk at all, which is what

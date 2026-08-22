@@ -575,6 +575,93 @@ void apply_global_opts_(const mcpplibs::cmdline::ParsedArgs& args) {
     if (args.is_flag_set("quiet")) log::set_level(log::Level::Error);
 }
 
+// A setting whose values are a KNOWN, SHORT list.
+//
+// `xlings config --theme` with no value used to die in the argument parser
+// ("option --theme requires a value") -- which is true and useless: the values
+// are `default` plus whatever is in `config/themes/`, and the person asking is
+// usually asking precisely because they want to see them. Same for `--lang`
+// (two languages), `--mirror` (two), `--ui-mode` (three) and `--interactive`,
+// where the whole value space is `true` and `false`.
+//
+// So: with a value, it is applied and nothing is asked. Without one, the list
+// is the answer -- offered as a picker when somebody can answer, printed with
+// the values and a non-zero exit when nobody can. Never a bare parse error,
+// and never a silent default.
+// The sentinel `inject_omitted_values_` puts where a value was left out.
+//
+// Split across two literals: `\x` eats as many hex digits as follow, so
+// "\x01omitted" would read as \x01o + "mitted" -- gcc allows it, clang
+// rejects it outright.
+constexpr std::string_view kValueOmitted = "\x01" "omitted";
+
+struct EnumSetting {
+    std::string_view key;         // config key and flag name
+    std::string_view label;       // what to call it in the question
+    std::vector<std::string> values;
+    std::string current;          // marked in the picker; may be empty
+};
+
+// Returns the chosen value, or nullopt when the caller should stop. `*rc`
+// carries the exit code in that case.
+std::optional<std::string> choose_setting_value_(EventStream& stream,
+                                                 const EnumSetting& setting,
+                                                 int* rc) {
+    if (stream.interactive()) {
+        PromptEvent pick;
+        pick.id = std::string("select_") + std::string(setting.key);
+        pick.question = std::format("Which {} ?", setting.label);
+        pick.options = setting.values;
+        pick.defaultValue = setting.current;
+        pick.kind = PromptEvent::Kind::Select;
+
+        std::optional<std::string> chosen;
+        std::visit(EventStream::on{
+            [&](EventStream::Chosen&& c) { chosen = std::move(c.value); },
+            [&](EventStream::Cancelled&&) { log::println("cancelled"); *rc = 0; },
+            // Fall through to the printed list below: it is a complete answer,
+            // not an error, and the exit code says nothing was set.
+            [&](EventStream::NobodyToAsk&&) {},
+        }, stream.prompt(std::move(pick)));
+        if (chosen) return chosen;
+        if (*rc == 0) return std::nullopt;
+    }
+
+    // Joined by hand rather than through `diag::candidates`: that helper sorts
+    // by version, descending, which is right for versions and scrambles a list
+    // whose order is meaningful ("auto, en, zh" became "zh, en, auto").
+    std::string joined;
+    for (const auto& v : setting.values) {
+        if (!joined.empty()) joined += ", ";
+        joined += v;
+    }
+
+    std::vector<diag::Action> actions {
+        { "set one", std::format("xlings config --{} {}", setting.key,
+                                 setting.values.front()) },
+    };
+    // Suggesting "turn on interactive mode" as the way to choose interactive
+    // mode is a loop. Offered for every other setting, where it is the actual
+    // shortcut.
+    if (setting.key != "interactive") {
+        actions.push_back({ "or choose from a list",
+                            "xlings config --interactive true" });
+    }
+
+    diag::emit({
+        .code    = std::string("cli.") + std::string(setting.key) + "_needs_value",
+        .summary = std::format("--{} needs a value", setting.key),
+        .facts   = {
+            { "values", joined },
+            { "currently", setting.current.empty() ? "(unset)" : setting.current },
+        },
+        .actions = std::move(actions),
+        .nothingChanged = true,
+    });
+    *rc = 2;
+    return std::nullopt;
+}
+
 // config subcommand handler
 int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) {
     // Edits are collected rather than applied, then replayed against the
@@ -588,6 +675,16 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     // --lang
     if (auto lang = args.value("lang")) {
         std::string value(*lang);
+        if (value == kValueOmitted) {
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "lang", .label = "language",
+                .values = { "auto", "en", "zh" },
+                .current = Config::lang().empty() ? "auto" : Config::lang(),
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
         edits.push_back([value](nlohmann::json& j) { j["lang"] = value; });
         log::println("lang = {}", value);
     }
@@ -595,6 +692,16 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     // --mirror
     if (auto mirror = args.value("mirror")) {
         std::string value(*mirror);
+        if (value == kValueOmitted) {
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "mirror", .label = "mirror",
+                .values = { "GLOBAL", "CN" },
+                .current = Config::mirror(),
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
         edits.push_back([value](nlohmann::json& j) { j["mirror"] = value; });
         log::println("mirror = {}", value);
     }
@@ -607,6 +714,16 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     // works end to end (it even has an e2e); these keys just use it.
     if (auto mode = args.value("ui-mode")) {
         std::string value(*mode);
+        if (value == kValueOmitted) {
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "ui-mode", .label = "UI mode",
+                .values = { "auto", "cli", "tui" },
+                .current = std::string(ui::to_string(ui::current_mode())),
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
         if (value != "auto" && !ui::parse_mode(value)) {
             diag::emit({
                 .code    = "cli.bad_ui_mode",
@@ -621,6 +738,28 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
     }
     if (auto themeArg = args.value("theme")) {
         std::string value(*themeArg);
+        if (value == kValueOmitted) {
+            // The values are `default` plus whatever is in config/themes/ --
+            // enumerated, not hardcoded, so a theme the user dropped in is
+            // offered like any other. Same source as `--theme list`.
+            std::vector<std::string> known { "default" };
+            const auto dir = Config::paths().homeDir / "config" / "themes";
+            std::error_code lec;
+            if (std::filesystem::is_directory(dir, lec)) {
+                for (const auto& e : platform::dir_entries(dir)) {
+                    if (e.path().extension() == ".json")
+                        known.push_back(e.path().stem().string());
+                }
+            }
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "theme", .label = "theme",
+                .values = std::move(known),
+                .current = Config::theme().empty() ? "default" : Config::theme(),
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
         // `list` is a query, not an edit; handled after commit_edits below so
         // it cannot swallow edits collected alongside it.
         if (value != "list") {
@@ -672,6 +811,18 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
 
     if (auto inter = args.value("interactive")) {
         std::string value(*inter);
+        if (value == kValueOmitted) {
+            int rc = 0;
+            auto picked = choose_setting_value_(stream, {
+                .key = "interactive", .label = "interactive mode",
+                .values = { "true", "false" },
+                .current = Config::tui_interactive()
+                               ? (*Config::tui_interactive() ? "true" : "false")
+                               : "false",
+            }, &rc);
+            if (!picked) return rc;
+            value = *picked;
+        }
         if (value != "true" && value != "false") {
             diag::emit({
                 .code    = "cli.bad_interactive",
@@ -941,6 +1092,39 @@ void load_configured_theme_() {
     // asked for, and dropping all of them because one line was wrong would be
     // a worse answer than reporting the line.
     theme::set_current(std::move(loaded.theme));
+}
+
+// Settings whose value may be OMITTED, meaning "show me the choices".
+//
+// cmdline 0.0.2 has no optional-value option: `takes_value()` makes the value
+// mandatory and the parse fails before any of this program runs, with
+// "option --theme requires a value". That is accurate and unhelpful -- the
+// values are a short known list, and somebody typing the bare flag is usually
+// asking to see it.
+//
+// So argv is rewritten before parsing: a flag from this set that is last, or
+// followed by another option, gets a sentinel value. Everything downstream
+// sees an ordinary value and decides what to do with it (see
+// `choose_setting_value_`). This is the same heuristic every parser with real
+// optional-value support uses; doing it here keeps it out of the shared
+// library until that support exists.
+std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
+    static constexpr std::string_view kOptional[] = {
+        "--lang", "--mirror", "--ui-mode", "--theme", "--interactive",
+    };
+    std::vector<std::string> out;
+    out.reserve(static_cast<std::size_t>(argc) + 2);
+    for (int i = 0; i < argc; ++i) {
+        std::string_view tok(argv[i]);
+        out.emplace_back(tok);
+        if (tok.find('=') != std::string_view::npos) continue;
+        if (std::ranges::find(kOptional, tok) == std::ranges::end(kOptional)) continue;
+        // The value is missing when nothing follows, or when what follows is
+        // another option rather than a value.
+        const bool has_value = (i + 1 < argc) && argv[i + 1][0] != '-';
+        if (!has_value) out.emplace_back(kValueOmitted);
+    }
+    return out;
 }
 
 int run(int argc, char* argv[]) {
@@ -1226,17 +1410,46 @@ int run(int argc, char* argv[]) {
                 std::vector<O> options;
                 std::vector<O> children;
                 for (const auto& argument : command->arguments) {
-                    arguments.push_back({argument.name, argument.description,
+                    arguments.push_back({argument.name,
+                                         std::string(i18n::tr(argument.description)),
                                          argument.required});
                 }
+                // Descriptions go through `tr` with the ENGLISH TEXT as the
+                // key.
+                //
+                // `spec.cpp` is not touched: `tr` returns the key when no
+                // catalogue has it, so English is the source text and its own
+                // fallback. A language file states only the lines it has
+                // translated, which is the same per-key overlay rule the
+                // themes and the rest of i18n follow -- and it means a
+                // description added to the spec is never missing, only
+                // untranslated.
+                //
+                // The SYNTAX is never translated: `-g, --global` and
+                // `<packages>` are what the user types.
                 for (const auto& option : command->options) {
-                    options.push_back({option.syntax, option.description});
+                    options.push_back({option.syntax,
+                                       std::string(i18n::tr(option.description))});
                 }
                 for (const auto& child : command->children) {
-                    children.push_back({child.name, child.description});
+                    children.push_back({child.name,
+                                        std::string(i18n::tr(child.description))});
                 }
-                ui::print_subcommand_help(command->name, command->description,
-                                          arguments, options, children);
+                // The FULL path, not the leaf name.
+                //
+                // `command->name` for the nested `use` is just "use", so
+                // `xlings subos use -h` printed a title of `xlings use` and a
+                // usage line of `xlings use [OPTIONS] [name]` -- which is a
+                // real and completely different command (switch tool version).
+                // Anyone copying that line ran the wrong one.
+                std::string fullName;
+                for (const auto& part : commandPath) {
+                    if (!fullName.empty()) fullName += ' ';
+                    fullName += part;
+                }
+                ui::print_subcommand_help(
+                    fullName, i18n::tr(command->description),
+                    arguments, options, children);
                 return 0;
             }
 
@@ -1597,7 +1810,12 @@ int run(int argc, char* argv[]) {
         // discards it on its own). Surface the action's rc when app.run
         // succeeded so e.g. `xlings install <bad-pkg>` returns non-zero
         // to scripts and CI.
-        auto app_rc = app.run(argc, argv);
+        // argv, with a sentinel where an optional value was omitted.
+        auto rewritten = inject_omitted_values_(argc, argv);
+        std::vector<char*> rw;
+        rw.reserve(rewritten.size());
+        for (auto& a : rewritten) rw.push_back(a.data());
+        auto app_rc = app.run(static_cast<int>(rw.size()), rw.data());
         if (app_rc != 0) return app_rc;
         return action_rc;
     } catch (const std::filesystem::filesystem_error& e) {

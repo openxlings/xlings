@@ -23,6 +23,7 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
+import xlings.i18n;
 
 namespace xlings::xvm {
 
@@ -682,7 +683,7 @@ collect_version_candidates_(const std::string& target, bool all) {
 
     if (all) {
         out.versions = global_all;
-        out.title = target + " versions (all subos)";
+        out.title = target + " " + std::string(i18n::tr("versions (all subos)"));
         return out;
     }
 
@@ -712,7 +713,7 @@ collect_version_candidates_(const std::string& target, bool all) {
         diag::emit(d);
         return std::unexpected(1);
     }
-    out.title = target + " versions (current subos)";
+    out.title = target + " " + std::string(i18n::tr("versions (current subos)"));
     return out;
 }
 
@@ -793,6 +794,11 @@ int cmd_use_by_name(const std::string& target, EventStream& stream, bool all, bo
         pick.question = std::format("Which {} ?", target);
         pick.options = candidates->versions;
         pick.defaultValue = candidates->active;
+        // Stated, not inherited.  defaults to Select and this IS a
+        // selection, so the behaviour was already right -- but relying on the
+        // default is how the wrong tier goes unnoticed when a prompt is later
+        // copied into a confirmation. The asker declares what it built.
+        pick.kind = PromptEvent::Kind::Select;
 
         std::optional<int> done;
         std::visit(EventStream::on{

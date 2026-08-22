@@ -460,8 +460,9 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 }
                 PromptEvent req;
                 req.id = "select_package";
-                req.question = "Multiple matches found. Select a package:";
+                req.question = std::string(i18n::tr("Multiple matches found. Select a package:"));
                 req.options = options;
+                req.kind = PromptEvent::Kind::Select;
 
                 std::optional<std::string> picked;
                 int earlyRc = -1;
@@ -645,7 +646,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     if (!allAlreadyInstalled && !yes) {
         int rc = 0;
         if (!confirmed_or_refused_(stream, "confirm_install",
-                                   "Proceed with installation?", "y",
+                                   std::string(i18n::tr("Proceed with installation?")), "y",
                                    "install the packages listed above",
                                    WhenNobodyCanAnswer::Proceed, &rc)) {
             return rc;
@@ -1368,7 +1369,7 @@ int cmd_search(const std::string& keyword, EventStream& stream) {
         itemsJson.push_back({match.canonicalName, desc});
     }
     nlohmann::json searchPayload;
-    searchPayload["title"] = "Search results:";
+    searchPayload["title"] = std::string(i18n::tr("Search results:"));
     searchPayload["items"] = std::move(itemsJson);
     searchPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", searchPayload.dump()});
@@ -1481,8 +1482,9 @@ int cmd_list(const std::string& filter, EventStream& stream, bool all) {
                              desc, status});
     }
     nlohmann::json listPayload;
-    listPayload["title"] = all ? "Installed packages (all subos):"
-                               : "Installed packages (current subos):";
+    listPayload["title"] = std::string(all
+        ? i18n::tr("Installed packages (all subos):")
+        : i18n::tr("Installed packages (current subos):"));
     listPayload["items"] = std::move(listItems);
     listPayload["numbered"] = true;
     stream.emit(DataEvent{"styled_list", listPayload.dump()});
@@ -1499,8 +1501,72 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
         return 1;
     }
 
-    auto match = catalog.resolve_target(target, detect_platform());
+    const auto infoPlatform = detect_platform();
+    auto match = catalog.resolve_target(target, infoPlatform);
     if (!match) {
+        // The same name, two answers.
+        //
+        // `xlings install gc` matched five packages and offered them;
+        // `xlings info gc` said "not found in the synced index" -- for a name
+        // the index demonstrably knows about. One of those two was lying, and
+        // the user has no way to tell which.
+        //
+        // `catalog.search` is what `install` uses. Same matcher, same result,
+        // and the exit code stays non-zero because `info` still has nothing
+        // to show.
+        // ONLY when the index genuinely does not have the name.
+        //
+        // `resolve_target` reports two different failures, and they are not
+        // interchangeable: "ambiguous across namespaces" is a precise answer
+        // about a name the index HAS (alpha:demo and beta:demo both exist),
+        // while "not found" is the one a fuzzy list can improve on. Running
+        // the fuzzy path over both replaced an exact diagnostic with a guess
+        // -- E2E-31 asserts that exact wording and went red.
+        const auto notFound = match.error().find("not found") != std::string::npos;
+        auto fuzzy = (notFound && target.find(':') == std::string::npos)
+            ? catalog.search(target, infoPlatform)
+            : decltype(catalog.search(target, infoPlatform)){};
+        // A match with no version is not a usable suggestion: the command it
+        // would print ends in a bare `@`. Drop those rather than offer a line
+        // that fails when copied.
+        std::erase_if(fuzzy, [](const auto& f) { return f.version.empty(); });
+        if (!fuzzy.empty()) {
+            if (fuzzy.size() > 5) fuzzy.resize(5);
+            std::vector<std::string> names;
+            for (const auto& f : fuzzy) {
+                names.push_back(f.canonicalName + "@" + f.version);
+            }
+            // Offered when somebody can answer -- `info` is a query, so
+            // picking one shows it rather than installing anything.
+            if (stream.interactive()) {
+                PromptEvent pick;
+                pick.id = "select_package";
+                pick.question = std::string(
+                    i18n::tr("Multiple matches found. Select a package:"));
+                pick.options = names;
+                pick.kind = PromptEvent::Kind::Select;
+
+                std::optional<std::string> chosen;
+                int early = -1;
+                std::visit(EventStream::on{
+                    [&](EventStream::Chosen&& c) { chosen = std::move(c.value); },
+                    [&](EventStream::Cancelled&&) { log::println("cancelled"); early = 0; },
+                    [&](EventStream::NobodyToAsk&&) {},
+                }, stream.prompt(std::move(pick)));
+                if (early >= 0) return early;
+                if (chosen) return cmd_info(*chosen, stream, allVersions);
+            }
+            diag::emit({
+                .code    = "xim.ambiguous_target",
+                .summary = std::format("'{}' matches more than one package",
+                                       target),
+                .facts   = { diag::candidates("candidates", names, names.size()) },
+                .actions = { { "name one",
+                    std::format("xlings info {}", names.front()) } },
+                .nothingChanged = true,
+            });
+            return 2;
+        }
         log::error("{}", match.error());
         return 1;
     }

@@ -4,7 +4,16 @@ module;
 // pull these in, and we want execl/errno (POSIX) or CreateProcess
 // (Win32) without #include in the named-module purview (which the
 // standard forbids for headers that aren't importable units).
-#include <cstdio>  // stderr (used by std::println(stderr, ...))
+#include <cstdio>
+
+// stdout / stderr as FILE*, for std::println.
+//
+// EVERY std::println here names its stream, and that is load-bearing rather
+// than tidy: without one, clang deduces the format string itself as the first
+// ARGUMENT and instantiates formatter<basic_format_string<...>>, which is
+// deleted. gcc accepts the same code. Whether it trips is decided by what
+// else the translation unit imports, so it cannot be predicted from this
+// file -- adding one unrelated import to this TU is exactly what surfaced it.
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 // windows.h defines `min`/`max` as function-like macros, which turns any
@@ -41,6 +50,7 @@ import xlings.core.subos.graphics;
 import xlings.core.subos.sandbox;
 import xlings.core.subos.manifest;
 import xlings.cli.spec;
+import xlings.i18n;
 
 namespace xlings::subos {
 
@@ -233,6 +243,33 @@ UseNameResolution_ resolve_use_name_(std::string_view query,
                                     EventStream& stream) {
     auto resolution = resolve_candidate_(query);
     if (query.empty()) {
+        // A list of every subos, followed by "now type one of these".
+        //
+        // That is the shape the picker exists for, and this is the command
+        // that produces the longest list -- 45 on a working machine. Offered
+        // when somebody can answer; the list below is unchanged for everyone
+        // else, and is a complete answer rather than an error.
+        if (!resolution.candidates.empty() && stream.interactive()) {
+            PromptEvent pick;
+            pick.id = "select_subos";
+            pick.question = std::string(i18n::tr("ui.select_subos"));
+            pick.kind = PromptEvent::Kind::Select;
+            for (const auto& c : resolution.candidates) pick.options.push_back(c.name);
+            pick.defaultValue = Config::paths().activeSubos;
+
+            std::optional<UseNameResolution_> done;
+            std::visit(EventStream::on{
+                [&](EventStream::Chosen&& c) {
+                    done = UseNameResolution_{.selected = std::move(c.value)};
+                },
+                [&](EventStream::Cancelled&&) {
+                    log::println("cancelled");
+                    done = UseNameResolution_{};
+                },
+                [&](EventStream::NobodyToAsk&&) {},   // fall through to the list
+            }, stream.prompt(std::move(pick)));
+            if (done) return *done;
+        }
         const auto hint = resolution.candidates.empty()
             ? "Create: xlings subos new <name>"
             : "Use: xlings subos use <name>";
@@ -356,8 +393,14 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
     try {
         write_config_json_(dir / ".xlings.json", json);
     } catch (const std::exception& e) {
+        // std::string on both, not a bare const char*.
+        //
+        // clang instantiated log::error<std::string, const char*> down a path
+        // that ends in formatter<const char*, wchar_t> -- deleted -- and gcc
+        // did not. Whether it trips depends on what else the TU imports, so
+        // it appeared here when an unrelated import was added.
         log::error("failed to write subos manifest {}: {}",
-                   (dir / ".xlings.json").string(), e.what());
+                   (dir / ".xlings.json").string(), std::string(e.what()));
         return false;
     }
     return true;
@@ -1021,11 +1064,11 @@ int use_emit_shell(const std::string& name,
     use_detail_::report_injected_env_(name, envVars);
 
     if (is_fish) {
-        std::println(R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
-        std::println(R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
+        std::println(stdout, R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
+        std::println(stdout, R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
         // Strip any old subos bin segments from PATH, then prepend the new
         // bin. fish's $PATH is a list, so we use string match -v.
-        std::println(R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
+        std::println(stdout, R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
@@ -1033,34 +1076,34 @@ int use_emit_shell(const std::string& name,
             // plain R"(...)" literal early -- and the truncation compiles,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(
+                std::println(stdout, 
                     R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
                     v.var, v.value);
             } else {
-                std::println(R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
+                std::println(stdout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
                              v.var, v.value);
             }
         }
         return 0;
     }
     if (is_pwsh) {
-        std::println(R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
-        std::println(R"($env:XLINGS_BIN = '{}')", bin_dir.string());
-        std::println(R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
+        std::println(stdout, R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
+        std::println(stdout, R"($env:XLINGS_BIN = '{}')", bin_dir.string());
+        std::println(stdout, R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
             // ';' rather than ':' -- these are path lists, and on Windows the
             // separator is the one the platform's own tools split on.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(
+                std::println(stdout, 
                     R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
                     v.var, v.value);
             } else {
                 // `$null -eq`, not `-not`: PowerShell's `-not` is true for an
                 // empty string too, which would overwrite a value the user
                 // deliberately set to "".
-                std::println(R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
+                std::println(stdout, R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
                              v.var, v.value);
             }
         }
@@ -1070,20 +1113,20 @@ int use_emit_shell(const std::string& name,
     auto orig_path = utils::get_env_or_default("PATH");
     auto new_path  = use_detail_::rebuild_path_for_subos_(
         orig_path, p.homeDir, bin_dir);
-    std::println(R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
-    std::println(R"(export XLINGS_BIN="{}";)", bin_dir.string());
-    std::println(R"(export PATH="{}";)", new_path);
+    std::println(stdout, R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
+    std::println(stdout, R"(export XLINGS_BIN="{}";)", bin_dir.string());
+    std::println(stdout, R"(export PATH="{}";)", new_path);
     for (const auto& v : envVars) {
         if (v.unresolved) continue;
         if (v.op == manifest::OP_PREPEND) {
             // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
             // so an unset variable does not become a trailing ':' -- which an
             // empty PATH-list element reads as "the current directory".
-            std::println(R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+            std::println(stdout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
             // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
             // is set-but-empty, which would overwrite a value the user chose.
-            std::println(R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
+            std::println(stdout, R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
         }
     }
     return 0;
@@ -1437,6 +1480,45 @@ int run_info_(const std::string& name, EventStream& stream) {
     return 0;
 }
 
+// "which subos" when the command needs one and none was given.
+//
+// Every one of these printed `missing <name> for: xlings subos <sub>` -- true,
+// and it makes the user run `xlings subos list`, read 45 names and type one
+// back. The list is already known; offering it is the same move
+// `resolve_use_name_` makes for `use`.
+//
+// Returns empty when the caller should stop; `*rc` carries the exit code.
+// Non-interactive keeps the old message and the old exit code exactly, so
+// scripts see no change.
+// `report` is `run()`'s own usage-error lambda, passed in rather than
+// reimplemented: it carries the exit path and formatting the rest of that
+// function already uses.
+std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
+                                const std::function<void(const std::string&)>& report,
+                                int* rc) {
+    auto resolution = resolve_candidate_("");
+    if (!resolution.candidates.empty() && stream.interactive()) {
+        PromptEvent pick;
+        pick.id = "select_subos";
+        pick.question = std::string(i18n::tr("ui.select_subos"));
+        pick.kind = PromptEvent::Kind::Select;
+        for (const auto& c : resolution.candidates) pick.options.push_back(c.name);
+        pick.defaultValue = Config::paths().activeSubos;
+
+        std::string chosen;
+        std::visit(EventStream::on{
+            [&](EventStream::Chosen&& c) { chosen = std::move(c.value); },
+            [&](EventStream::Cancelled&&) { log::println("cancelled"); *rc = 0; },
+            [&](EventStream::NobodyToAsk&&) {},   // fall through
+        }, stream.prompt(std::move(pick)));
+        if (!chosen.empty()) return chosen;
+        if (*rc == 0) return {};
+    }
+    report(std::format("missing <name> for: xlings subos {}", verb));
+    *rc = 1;
+    return {};
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -1691,15 +1773,25 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
-        if (argc < 4) { usageError("missing <name> for: xlings subos remove|rm"); return 1; }
-        return remove(argv[3], stream);
+        std::string target = argc > 3 ? argv[3] : std::string{};
+        if (target.empty()) {
+            int rc = 0;
+            target = pick_subos_or_fail_("remove|rm", stream, usageError, &rc);
+            if (target.empty()) return rc;
+        }
+        return remove(target, stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
     if (sub == "stop") {
         // M4/D9: stop the auto-keeper for a sandboxed subos.
         // Safe to invoke even when no keeper is running — it's a no-op.
-        if (argc < 4) { usageError("missing <name> for: xlings subos stop"); return 1; }
-        return keeper::stop_keeper(argv[3]);
+        std::string target = argc > 3 ? argv[3] : std::string{};
+        if (target.empty()) {
+            int rc = 0;
+            target = pick_subos_or_fail_("stop", stream, usageError, &rc);
+            if (target.empty()) return rc;
+        }
+        return keeper::stop_keeper(target);
     }
 
     usageError("unknown subcommand: " + sub);

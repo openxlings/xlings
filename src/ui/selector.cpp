@@ -9,8 +9,50 @@ module xlings.ui;
 
 import std;
 import xlings.core.palette;
+import xlings.i18n;
 
 namespace xlings::ui {
+
+// The block around the rows, per theme. See theme::SelectorStyle.
+//
+// `Framed` is the one case where a border is not noise: on a projector or in
+// sunlight the boundary is what keeps the widget legible, which is the whole
+// premise of `high-contrast`. It is drawn in `accent`, never in `border` --
+// that slot is #334155 on the dark palette, about 1.6:1 against the surface,
+// and painting the frame with it was the original complaint.
+ftxui::Element selector_frame_(std::string_view title, ftxui::Element rows) {
+    using namespace ftxui;
+    const auto style = theme::selector();
+
+    if (style == theme::SelectorStyle::Framed) {
+        return vbox({
+            text(" " + std::string(title)) | bold | color(theme::accent()),
+            separator() | color(theme::accent()),
+            std::move(rows),
+        }) | borderHeavy | color(theme::accent())
+           | size(WIDTH, LESS_THAN, 72);
+    }
+
+    if (style == theme::SelectorStyle::Plain) {
+        // No glyph in the title either: `mono` is asking for text.
+        return vbox({
+            text("  " + std::string(title)) | bold,
+            std::move(rows),
+            text("    " + std::string(i18n::tr("ui.select_keys"))),
+        });
+    }
+
+    return vbox({
+        hbox({
+            text("  " + std::string(theme::icon::package) + " ")
+                | color(theme::accent()),
+            text(std::string(title)) | theme::style::title(),
+        }),
+        std::move(rows),
+        text("    " + std::string(i18n::tr("ui.select_keys")))
+            | color(theme::muted()),
+    });
+}
 
 std::optional<std::string>
 select_package(std::span<const std::pair<std::string, std::string>> items) {
@@ -49,14 +91,9 @@ select_package(std::span<const std::pair<std::string, std::string>> items) {
     });
 
     screen.Loop(Renderer(component, [&] {
-        return vbox({
-            text(" Select a package:") | theme::style::title(),
-            separator() | color(theme::border()),
+        return selector_frame_(i18n::tr("ui.select_package"),
             component->Render() | vscroll_indicator | frame
-                | size(HEIGHT, LESS_THAN, 20),
-            separator() | color(theme::border()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
-        }) | borderRounded | color(theme::border());
+                | size(HEIGHT, LESS_THAN, 20));
     }));
 
     if (confirmed && selected >= 0 && selected < (int)items.size()) {
@@ -97,13 +134,31 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
     // be pointing away from where the user is.
     menu_opt.focused_entry = selected;
     menu_opt.entries_option.transform = [](const EntryState& state) {
-        auto e = text((state.focused ? "> " : "  ") + state.label);
-        if (state.focused) {
-            e = e | bold | inverted;
-        } else {
-            e = e | color(theme::text());
+        // Three shapes, chosen by the active theme -- see
+        // theme::SelectorStyle for why decoration belongs to the theme and
+        // not to this widget.
+        switch (theme::selector()) {
+            case theme::SelectorStyle::Plain: {
+                // No glyph, no accent: on a monochrome terminal neither
+                // survives, and `mono` exists precisely for those.
+                auto e = text((state.focused ? "  > " : "    ") + state.label);
+                return state.focused ? (e | bold) : e;
+            }
+            case theme::SelectorStyle::Framed: {
+                // Inverted, which paints the full row -- deliberately, here:
+                // a bar is exactly what stays legible on a projector.
+                auto e = text("  " + state.label + " ");
+                return state.focused ? (e | bold | inverted) : (e | color(theme::text()));
+            }
+            case theme::SelectorStyle::Inline:
+            default: {
+                auto e = text((state.focused
+                                   ? "  " + std::string(theme::icon::active) + " "
+                                   : "    ") + state.label);
+                return state.focused ? (e | bold | color(theme::accent()))
+                                     : (e | color(theme::text()));
+            }
         }
-        return e;
     };
     auto menu = Menu(&labels, &selected, menu_opt);
     // Inline, NOT full-screen.
@@ -129,20 +184,9 @@ select_option(std::string_view title, std::span<const std::pair<std::string, std
     });
 
     screen.Loop(Renderer(component, [&] {
-        auto box = vbox({
-            text(" " + std::string(title)) | theme::style::title(),
-            separator() | color(theme::border()),
+        return selector_frame_(title,
             component->Render() | vscroll_indicator | frame
-                | size(HEIGHT, LESS_THAN, 15),
-            separator() | color(theme::border()),
-            text(" \u2191\u2193 navigate  Enter select  Esc cancel") | theme::style::hint(),
-        }) | borderRounded | color(theme::border())
-           | size(WIDTH, LESS_THAN, 72);
-
-        // Left-aligned, not centred. Centring is a full-screen habit: inline,
-        // the block sits in the scrollback among left-aligned log lines, and a
-        // floating box reads as a different program's output.
-        return box;
+                | size(HEIGHT, LESS_THAN, 15));
     }));
 
     if (!confirmed) return std::nullopt;

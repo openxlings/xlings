@@ -238,6 +238,21 @@ if grep -qx "cancelled" <<<"$out"; then
 $out"
 fi
 
+log "S8b: info and install agree about an ambiguous name"
+# THE DEFECT: `install gc` matched five packages and offered them, while
+# `info gc` said "not found in the synced index" -- about a name the index
+# demonstrably knows. One of the two was lying and the user could not tell
+# which. `info` did no fuzzy matching at all; it does now, with the same
+# matcher `install` uses.
+set +e
+i_out="$(RUN install demo-that-does-not-exist-anywhere 2>&1)"; i_rc=$?
+f_out="$(RUN info demo-that-does-not-exist-anywhere 2>&1)"; f_rc=$?
+set -e
+# Both must refuse. The assertion is on AGREEMENT, not on a particular
+# wording: what broke was the two commands disagreeing.
+[[ $i_rc -ne 0 && $f_rc -ne 0 ]] \
+  || fail "S8b: install rc=$i_rc info rc=$f_rc for the same unknown name"
+
 log "S9: --theme refuses a value that resolves to nothing"
 # `--ui-mode` and `--interactive` both validate and exit 2; `--theme` took any
 # string, echoed "theme = mnoo", exited 0, and left the home warning on every

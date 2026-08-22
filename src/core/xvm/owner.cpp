@@ -9,37 +9,61 @@ namespace xlings::xvm {
 
 std::optional<InstallCoordinate>
 coordinate_from_payload_path(std::string_view payloadPath) {
+    // ALLOCATION-FREE until the two components it actually wants.
+    //
+    // This used to copy the path, split it into a vector<string> -- one heap
+    // allocation per component -- and then read three of them. That is fine
+    // once and ruinous in a loop: `assemble_inventory` calls it for every
+    // version record in the home, and on a real home (1312 packages, 1808
+    // records) it was ~15000 allocations that made `xlings info` take 2.4
+    // seconds of pure CPU, independent of which package was asked about.
+    //
+    // The shape being parsed is `.../xpkgs/<store>/<version>[/...]`, and only
+    // the two components after the LAST `xpkgs` matter. Scanning right to
+    // left over string_views reads exactly those.
     if (payloadPath.empty()) return std::nullopt;
-    std::string path{payloadPath};
-    std::ranges::replace(path, '\\', '/');
 
-    std::vector<std::string> parts;
-    for (const auto piece : std::views::split(path, '/')) {
-        std::string component{piece.begin(), piece.end()};
-        if (!component.empty()) parts.push_back(std::move(component));
+    // Separator-agnostic without rewriting the string.
+    const auto is_sep = [](char c) { return c == '/' || c == '\\'; };
+
+    // Component boundaries, right to left, skipping empties (`//`, trailing
+    // separator) so the caller's path style does not change the answer.
+    const auto prev_component = [&](std::size_t& end) -> std::string_view {
+        while (end > 0 && is_sep(payloadPath[end - 1])) --end;
+        if (end == 0) return {};
+        std::size_t begin = end;
+        while (begin > 0 && !is_sep(payloadPath[begin - 1])) --begin;
+        auto piece = payloadPath.substr(begin, end - begin);
+        end = begin;
+        return piece;
+    };
+
+    // Walk back collecting components until `xpkgs`. Only the two directly
+    // after it are kept; anything deeper is a bindir and is discarded, which
+    // is what the old `parts.size() < storeIndex + 3` check expressed.
+    std::size_t cursor = payloadPath.size();
+    std::string_view store;
+    std::string_view version;
+    bool found = false;
+    for (;;) {
+        auto piece = prev_component(cursor);
+        if (piece.empty()) break;
+        if (piece == "xpkgs") { found = true; break; }
+        // Shift: the newest component becomes `store`, the previous `store`
+        // becomes `version`. When the loop ends at `xpkgs`, these hold the two
+        // that follow it.
+        version = store;
+        store   = piece;
     }
-
-    // Find the LAST `xpkgs` component: a home may itself live under a path
-    // containing that word, and the store is always the innermost one.
-    std::size_t storeIndex = parts.size();
-    for (std::size_t i = parts.size(); i-- > 0;) {
-        if (parts[i] == "xpkgs") { storeIndex = i; break; }
-    }
-    if (storeIndex == parts.size()) return std::nullopt;
-    // `<store>/<version>` must both follow it; anything deeper is a bindir.
-    if (parts.size() < storeIndex + 3) return std::nullopt;
-
-    const auto& store   = parts[storeIndex + 1];
-    const auto& version = parts[storeIndex + 2];
-    if (store.empty() || version.empty()) return std::nullopt;
+    if (!found || store.empty() || version.empty()) return std::nullopt;
 
     InstallCoordinate coord;
-    coord.version = version;
-    if (const auto sep = store.find("-x-"); sep != std::string::npos) {
-        coord.ns      = store.substr(0, sep);
-        coord.package = store.substr(sep + 3);
+    coord.version = std::string(version);
+    if (const auto sep = store.find("-x-"); sep != std::string_view::npos) {
+        coord.ns      = std::string(store.substr(0, sep));
+        coord.package = std::string(store.substr(sep + 3));
     } else {
-        coord.package = store;
+        coord.package = std::string(store);
     }
     if (coord.package.empty()) return std::nullopt;
     return coord;

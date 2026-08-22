@@ -2,6 +2,9 @@
   "_comment": "shipped by xlings as an example of the theme format. Copy it and point `xlings config --theme <path>` at your copy -- this file is replaced on upgrade. Slots left out inherit the built-in default, which is why each file states only what it changes.",
   "name": "high-contrast",
 
+  "_selector_note": "framed: a heavy border in `accent`, selected row inverted. In sunlight or through a projector the boundary is what keeps the widget legible, and the noise it costs elsewhere is what this theme is willing to pay.",
+  "selector": "framed",
+
   "dark": {
     "accent":  "#00FFFF",
     "alt":     "#FF00FF",

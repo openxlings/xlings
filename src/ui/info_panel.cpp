@@ -18,6 +18,7 @@ module xlings.ui;
 
 import std;
 import xlings.core.palette;
+import xlings.i18n;
 
 namespace xlings::ui {
 
@@ -246,7 +247,7 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
     // Print header
     Elements header;
     header.push_back(hbox({
-        text("  Packages to install (") | color(theme::text()),
+        text("  " + std::string(i18n::tr("Packages to install")) + " (") | color(theme::text()),
         text(std::to_string(packages.size())) | bold | color(theme::text()),
         text("):") | color(theme::text()),
     }));
@@ -303,7 +304,7 @@ void print_subos_list(
     auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, detailMax);
 
     Elements rows;
-    rows.push_back(text("  Sub-OS environments:") | bold | color(theme::text()));
+    rows.push_back(text("  " + std::string(i18n::tr("Sub-OS environments:"))) | bold | color(theme::text()));
     rows.push_back(text(""));
 
     for (auto& [name, dir, tools, active] : entries) {
@@ -432,7 +433,7 @@ void print_remove_plan(const std::string& subos,
     Elements rows;
     rows.push_back(text(""));
     rows.push_back(hbox({
-        text("  Package to remove:") | color(theme::text()),
+        text("  " + std::string(i18n::tr("Package to remove:"))) | color(theme::text()),
     }));
     rows.push_back(text(""));
     auto suffix = "  (subos: " + subos + ")";
