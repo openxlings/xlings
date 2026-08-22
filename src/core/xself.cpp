@@ -84,7 +84,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     };
     if (action == "install") {
         if (auto rc = reject_surplus(action); rc != 0) return rc;
-        return cmd_install();
+        return cmd_install(stream);
     }
     if (action == "uninstall") {
         UninstallOpts opts;

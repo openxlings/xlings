@@ -27,6 +27,19 @@ using xlings::PromptEvent;
 
 namespace {
 
+// The three outcomes, as predicates. Spelled once so the tests below read as
+// statements about behaviour rather than about std::variant.
+bool nobody_to_ask(const EventStream::Outcome& o) {
+    return std::holds_alternative<EventStream::NobodyToAsk>(o);
+}
+bool cancelled(const EventStream::Outcome& o) {
+    return std::holds_alternative<EventStream::Cancelled>(o);
+}
+std::string chosen_or_empty(const EventStream::Outcome& o) {
+    if (auto* c = std::get_if<EventStream::Chosen>(&o)) return c->value;
+    return {};
+}
+
 PromptEvent confirm_(std::string id, std::string def) {
     PromptEvent p;
     p.id = std::move(id);
@@ -44,18 +57,29 @@ TEST(PromptRefusal, NonInteractiveReturnsCannotAskNotTheDefault) {
 
     // Both directions, because the old bug was invisible in one of them: an
     // install that auto-answers "y" looks like it works.
-    EXPECT_EQ(stream.prompt(confirm_("confirm_install", "y")),
-              EventStream::kCannotAsk);
-    EXPECT_EQ(stream.prompt(confirm_("confirm_remove", "n")),
-              EventStream::kCannotAsk);
+    EXPECT_TRUE(nobody_to_ask(stream.prompt(confirm_("confirm_install", "y"))));
+    EXPECT_TRUE(nobody_to_ask(stream.prompt(confirm_("confirm_remove", "n"))));
 }
 
 TEST(PromptRefusal, CannotAskIsDistinctFromCancelled) {
-    // "" already means cancelled/timed out -- the user's answer. The absence
-    // of anyone to ask has to be a different value or callers cannot react
-    // differently, which is precisely how "cancelled" ended up standing in for
-    // "nobody was there".
-    EXPECT_NE(EventStream::kCannotAsk, "");
+    // A cancel is the user's answer; nobody-to-ask is the absence of one, and
+    // callers must react differently. These were both encoded in one string
+    // ("" vs a sentinel), which is precisely how "cancelled" ended up standing
+    // in for "nobody was there" in `select_package`.
+    //
+    // Now they are distinct types, so the confusion is not expressible -- and
+    // `std::visit` over an incomplete overload set does not compile, which is
+    // the guarantee the sentinel could not give.
+    EventStream interactive;
+    std::string asked;
+    interactive.on_event([&](const xlings::Event& e) {
+        if (auto* p = std::get_if<PromptEvent>(&e)) interactive.respond(p->id, "");
+    });
+    EXPECT_TRUE(cancelled(interactive.prompt(confirm_("confirm_remove", "n"))));
+
+    EventStream silent;
+    silent.set_interactive(false);
+    EXPECT_TRUE(nobody_to_ask(silent.prompt(confirm_("confirm_remove", "n"))));
 }
 
 TEST(PromptRefusal, NonInteractiveDoesNotEmitAQuestionNobodyCanAnswer) {
@@ -80,7 +104,7 @@ TEST(PromptRefusal, RegisteredResponderOutranksNonInteractivity) {
     stream.register_auto_responder("confirm_",
         [](const PromptEvent&) { return std::string("y"); });
 
-    EXPECT_EQ(stream.prompt(confirm_("confirm_remove", "n")), "y");
+    EXPECT_EQ(chosen_or_empty(stream.prompt(confirm_("confirm_remove", "n"))), "y");
 }
 
 TEST(PromptRefusal, InteractiveStreamsStillPromptNormally) {
@@ -95,6 +119,6 @@ TEST(PromptRefusal, InteractiveStreamsStillPromptNormally) {
             stream.respond(p->id, "y");
         }
     });
-    EXPECT_EQ(stream.prompt(confirm_("confirm_install", "y")), "y");
+    EXPECT_EQ(chosen_or_empty(stream.prompt(confirm_("confirm_install", "y"))), "y");
     EXPECT_EQ(asked, "confirm_install");
 }

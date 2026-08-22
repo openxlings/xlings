@@ -1,0 +1,28 @@
+{
+  "_comment": "shipped by xlings as an example of the theme format. Copy it and point `xlings config --theme <path>` at your copy -- this file is replaced on upgrade. Slots left out inherit the built-in default, which is why each file states only what it changes.",
+  "name": "high-contrast",
+
+  "dark": {
+    "accent":  "#00FFFF",
+    "alt":     "#FF00FF",
+    "success": "#00FF00",
+    "warn":    "#FFFF00",
+    "error":   "#FF4444",
+    "text":    "#FFFFFF",
+    "muted":   "#C0C0C0",
+    "border":  "#808080",
+    "surface": "#000000"
+  },
+
+  "light": {
+    "accent":  "#005F87",
+    "alt":     "#8700AF",
+    "success": "#005F00",
+    "warn":    "#875F00",
+    "error":   "#870000",
+    "text":    "#000000",
+    "muted":   "#3A3A3A",
+    "border":  "#767676",
+    "surface": "#FFFFFF"
+  }
+}

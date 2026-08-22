@@ -2,7 +2,6 @@ export module xlings.libs.tinyhttps;
 
 import std;
 import mcpplibs.tinyhttps;
-import xlings.core.log;
 
 export namespace xlings::tinyhttps {
 
@@ -171,5 +170,9 @@ bool fetch_to_file(const std::string& url, const std::filesystem::path& dest);
 RemoteFileMeta query_remote_meta(const std::string& url, int connectTimeoutSec);
 
 std::int64_t query_content_length(const std::string& url, int connectTimeoutSec);
+
+
+// The proxy the most recent request used, or empty. See tinyhttps.cpp.
+[[nodiscard]] std::string_view last_proxy();
 
 } // namespace xlings::tinyhttps

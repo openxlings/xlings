@@ -1,0 +1,18 @@
+# HTTPS fetch, wrapping mcpplibs.tinyhttps.
+#
+# It used to `import xlings.core.log` for a single `log::debug` about proxy
+# selection. A workspace member may not depend on the ROOT package, and that
+# one line was the only thing standing in the way -- so the proxy in use is now
+# reported through the return path instead of written to a log from three
+# layers down. A library that logs is a library that has an opinion about
+# where its caller's output goes.
+[package]
+namespace = "xlings"
+name      = "xhttp"
+version   = "0.1.0"
+
+[targets.xhttp]
+kind = "lib"
+
+[dependencies.mcpplibs]
+tinyhttps = "0.2.9"

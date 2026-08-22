@@ -65,11 +65,11 @@ version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:8ee8a8e51ac69885"
 
-[package."mcpplibs.tinyhttps"]
+[package."tinyhttps"]
 namespace = "mcpplibs"
 version = "0.2.9"
 source  = "index+mcpplibs@0.2.9"
-hash    = "fnv1a:3465dd0bd5d7aa20"
+hash    = "fnv1a:7dcd2b0fcf679705"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"

@@ -1,0 +1,13 @@
+# Cooperative cancellation, as its own package.
+#
+# A leaf: it imports `std` and nothing else. That is what lets `platform`
+# depend on it without dragging anything along -- `platform` is imported by 81
+# of this repository's 211 translation units, so anything it depends on is
+# effectively depended on by the whole product.
+[package]
+namespace = "xlings"
+name      = "cancellation"
+version   = "0.1.0"
+
+[targets.cancellation]
+kind = "lib"

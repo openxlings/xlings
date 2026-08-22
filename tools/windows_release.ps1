@@ -121,6 +121,13 @@ $helpOut = & "$OUT_DIR\bin\xlings.exe" -h 2>&1 | Out-String
 if ($helpOut -notmatch "subos") { Fail "xlings -h missing 'subos' command" }
 Info "OK: xlings -h shows subos/self commands"
 
+# Shipped example themes, copied as DATA -- see tools/linux_release.sh for why
+# they are no longer C++ string literals written out by `self init`.
+$themeSrc = "$PROJECT_DIR\config\themes"
+if (-not (Test-Path $themeSrc)) { Fail "config/themes missing from the source tree" }
+New-Item -ItemType Directory -Force -Path "$OUT_DIR\config\themes" | Out-Null
+Copy-Item "$themeSrc\*.json" "$OUT_DIR\config\themes\" -Force
+
 $initOut = & "$OUT_DIR\bin\xlings.exe" self init 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { Fail "xlings self init failed" }
 if ($initOut -notmatch "init ok") { Fail "self init output missing success marker" }
@@ -140,6 +147,16 @@ foreach ($d in $requiredRuntimeDirs) {
 }
 if (-not (Test-Path "$OUT_DIR\subos\current")) { Fail "subos\current junction missing after self init" }
 if (-not (Test-Path "$OUT_DIR\subos\default\bin\xlings.exe")) { Fail "subos/default/bin/xlings.exe missing after self init" }
+# Assert the themes are IN the artifact. A plain copy fails by producing fewer
+# files, not by erroring, and there was no check here at all before.
+foreach ($t in @("mono", "high-contrast")) {
+  $tp = "$OUT_DIR\config\themes\$t.json"
+  if (-not (Test-Path $tp)) { Fail "config/themes/$t.json missing from the package" }
+  try { Get-Content $tp -Raw | ConvertFrom-Json | Out-Null }
+  catch { Fail "config/themes/$t.json is not valid JSON" }
+}
+Info "OK: shipped themes present and parseable"
+
 Info "OK: self init materialized bootstrap home"
 
 # -- 5. Create archive -------------------------------------------

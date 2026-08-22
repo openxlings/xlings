@@ -873,9 +873,12 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 }
 
 [[nodiscard]] std::filesystem::path Config::resolve_theme_path() {
+    return resolve_theme_path_for(instance_().theme_);
+}
+
+[[nodiscard]] std::filesystem::path Config::resolve_theme_path_for(std::string value) {
     namespace fs = std::filesystem;
     auto& self = instance_();
-    auto value = self.theme_;
     if (value.empty() || value == "default") return {};
 
     const bool looksLikePath = value.contains('/') || value.contains('\\')

@@ -42,11 +42,14 @@ void EventStream::clear_auto_responders() {
     auto_responders_.clear();
 }
 
-void EventStream::set_interactive(bool on) { interactive_ = on; }
+void EventStream::set_interactive(bool on) { interactive_ = on; canConfirm_ = on; }
+void EventStream::set_can_confirm(bool on) { canConfirm_ = on; }
+void EventStream::set_can_select(bool on)  { interactive_ = on; }
 
 auto EventStream::interactive() const -> bool { return interactive_; }
+auto EventStream::can_confirm() const -> bool { return canConfirm_; }
 
-auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono::milliseconds timeout) -> std::string {
+auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono::milliseconds timeout) -> Outcome {
     auto id = req.id;
 
     // Check auto-responders first (by prefix match). An explicitly registered
@@ -54,13 +57,24 @@ auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono
     // a human.
     for (auto& [prefix, responder] : auto_responders_) {
         if (id.starts_with(prefix)) {
-            return responder(req);
+            auto answer = responder(req);
+            // A responder that hands back nothing has declined on the caller's
+            // behalf, which is an answer -- not an absence of one.
+            if (answer.empty()) return Cancelled{};
+            return Chosen{std::move(answer)};
         }
     }
 
     // Nobody to ask. Do not emit the question -- a prompt nothing can answer
     // is noise on the way to a deadlock or, worse, to a fabricated answer.
-    if (!interactive_) return std::string(kCannotAsk);
+    //
+    // Gated per KIND: a confirmation has a default and an escape hatch and may
+    // be asked on any terminal; a selection blocks with neither and stays
+    // opt-in. The asker states which it built (PromptEvent::Kind) rather than
+    // this layer inferring it from the id.
+    const bool allowed = (req.kind == PromptEvent::Kind::Confirm)
+                       ? canConfirm_ : interactive_;
+    if (!allowed) return NobodyToAsk{};
 
     emit(Event{std::move(req)});
 
@@ -72,7 +86,7 @@ auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono
         if (!satisfied) {
             // Cancelled or timed out — clean up any stale entry
             promptResponses_.erase(id);
-            return "";
+            return Cancelled{};
         }
     } else {
         promptCv_.wait(lock, [&] {
@@ -82,7 +96,8 @@ auto EventStream::prompt(PromptEvent req, CancellationToken* cancel, std::chrono
 
     auto response = std::move(promptResponses_[id]);
     promptResponses_.erase(id);
-    return response;
+    if (response.empty()) return Cancelled{};
+    return Chosen{std::move(response)};
 }
 
 void EventStream::respond(std::string_view promptId, std::string_view response) {

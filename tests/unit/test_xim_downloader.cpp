@@ -13,7 +13,7 @@
 #endif
 
 import std;
-import xlings.core.i18n;
+import xlings.i18n;
 import xlings.core.log;
 import xlings.core.utils;
 import xlings.ui;

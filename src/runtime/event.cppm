@@ -21,10 +21,26 @@ export struct LogEvent {
 };
 
 export struct PromptEvent {
+    // Which kind of question this is, because the two are gated differently
+    // and only the asker knows which it built.
+    //
+    // Confirm  y/n with a default and a documented escape (`-y`). Asked
+    //          whenever there is an input side to answer on: `--yes`
+    //          documents that a question exists, and for a long time none
+    //          was ever put.
+    // Select   pick one of `options`, no default, blocks until a key is
+    //          pressed. Opt-in via `xlings config --interactive true`,
+    //          because a pty is not evidence that anybody is at it.
+    //
+    // Derived from the id prefix before this field existed, which made a
+    // string convention load-bearing.
+    enum class Kind { Confirm, Select };
+
     std::string id;
     std::string question;
     std::vector<std::string> options;    // empty = free input
     std::string defaultValue;
+    Kind kind { Kind::Select };
 };
 
 // Stable wire codes for ErrorEvent. Mapped to the canonical "E_*" string in

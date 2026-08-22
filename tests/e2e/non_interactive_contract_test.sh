@@ -150,18 +150,34 @@ probe_says() {
 # a real package, so the bit is set here rather than pretending in Lua.
 find "$HOME_DIR/data/xpkgs" -type f -name 'ni-*' -exec chmod +x {} +
 
-# ── N1: one candidate → switch, exit 0 ───────────────────────────────
-log "N1: a single installed version switches without asking"
+# ── N1: one candidate → LIST, exit 0, nothing changed ────────────────
+#
+# This case used to assert the opposite: that a single candidate SWITCHED.
+# That was 2026.7.30.2's rule -- "whether the command has a single correct
+# outcome is detectable, and that is what decides" -- and on its own terms it
+# is sound.
+#
+# What it collided with is `--help`, which has always said of the version
+# argument: "omit to list installed versions". So one typed command was a
+# QUERY or a MUTATION depending on the candidate count, and the count is
+# "versions opted into THIS subos" -- not "versions I installed", and not
+# anything the user can see before pressing enter. Measured on a real home:
+# `use gcc --all` listed five while `use gcc` wrote state, because one of the
+# five was opted into that subos.
+#
+# So the meaning is fixed instead of the outcome: bare `use <name>` lists, at
+# any count. Naming a version switches (N5). The sysroot repair that relied on
+# re-running `use` on the active version is now spelled `use <name> <version>`,
+# which works at any count rather than only at exactly one.
+log "N1: a single installed version lists, exactly as several do"
 rc="$(rc_of RUN use ni-one)"
 [[ "$rc" == "0" ]] || fail "N1: expected exit 0, got $rc"
-out="$(probe_says ni-one)"
-grep -q "probe 1.0.0" <<<"$out" || fail "N1: shim does not run the version; got:\n$out"
-# It must actually *switch*, not print the list and shrug. The old path took
-# the same non-interactive branch here as it did for N2, so without this the
-# case passes for the wrong reason.
 out="$(RUN use ni-one 2>&1 || true)"
-grep -q -- "ni-one -> 1.0.0" <<<"$out" \
-  || fail "N1: no switch was performed, only a listing; got:\n$out"
+grep -q "1.0.0" <<<"$out" || fail "N1: the version was not listed; got:\n$out"
+# And specifically NOT a switch. `->` is how cmd_use announces one.
+if grep -q -- "ni-one -> " <<<"$out"; then
+  fail "N1: bare use switched instead of listing; got:\n$out"
+fi
 
 # ── N2: several candidates → list them, exit 0, nothing changed ──────
 #

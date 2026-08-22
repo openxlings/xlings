@@ -13,7 +13,7 @@
 #endif
 
 import std;
-import xlings.core.i18n;
+import xlings.i18n;
 import xlings.core.log;
 import xlings.core.utils;
 import xlings.ui;
@@ -128,50 +128,73 @@ std::optional<std::filesystem::path> find_fixture_repo(std::string_view name) {
 TEST(I18nTest, SetAndGetLanguageEn) {
     xlings::i18n::set_language("en");
     EXPECT_EQ(xlings::i18n::language(), "en");
-    EXPECT_FALSE(xlings::i18n::is_chinese());
 }
 
 TEST(I18nTest, SetAndGetLanguageZh) {
     xlings::i18n::set_language("zh");
     EXPECT_EQ(xlings::i18n::language(), "zh");
-    EXPECT_TRUE(xlings::i18n::is_chinese());
 }
 
-TEST(I18nTest, TranslateEnglish) {
+TEST(I18nTest, AutoMeansFollowTheSystem) {
+    // "" and "auto" both un-pin. Spelled as two cases because `--lang auto` is
+    // how a user goes back to following the system after pinning, and an
+    // implementation that only cleared on "" would silently keep the pin.
+    for (auto* v : { "", "auto" }) {
+        xlings::i18n::set_language(v);
+        const auto resolved = xlings::i18n::language();
+        EXPECT_FALSE(resolved.empty()) << v;
+        // Resolves to a language that HAS a catalogue -- never to a tag we
+        // cannot serve, which would make every lookup fall through to English
+        // while claiming to be something else.
+        EXPECT_TRUE(resolved == "en" || resolved == "zh") << resolved;
+    }
+}
+
+TEST(I18nTest, ChineseOverridesEnglish) {
     xlings::i18n::set_language("en");
-    auto msg = xlings::i18n::tr(xlings::i18n::Msg::INSTALL_DONE);
-    EXPECT_FALSE(msg.empty());
-    EXPECT_NE(msg.find("{}"), std::string_view::npos);  // has format placeholder
+    const auto en = xlings::i18n::tr("help.usage");
+    xlings::i18n::set_language("zh");
+    const auto zh = xlings::i18n::tr("help.usage");
+    EXPECT_EQ(en, "USAGE");
+    EXPECT_NE(zh, en) << "zh did not override a key it defines";
 }
 
-TEST(I18nTest, TranslateChinese) {
+TEST(I18nTest, MissingChineseKeyFallsBackToEnglishPerKey) {
+    // The overlay is per KEY, not per file: a language that translates some of
+    // the catalogue must still render the rest, or landing a translation
+    // incrementally would blank out everything not yet done.
     xlings::i18n::set_language("zh");
-    auto msg = xlings::i18n::tr(xlings::i18n::Msg::INSTALL_DONE);
-    EXPECT_FALSE(msg.empty());
+    // `common.builtin` is in en; whether zh has it or not, the result must be
+    // non-empty and must not be the raw key.
+    const auto v = xlings::i18n::tr("common.builtin");
+    EXPECT_FALSE(v.empty());
+    EXPECT_NE(v, "common.builtin");
+}
+
+TEST(I18nTest, EnglishIsComplete) {
+    // English is the base and the last stop before a key renders as itself, so
+    // an empty entry here would put a blank where a label belongs.
+    xlings::i18n::set_language("en");
+    for (const auto& e : xlings::i18n::english_catalogue()) {
+        EXPECT_FALSE(e.key.empty());
+        EXPECT_FALSE(e.text.empty()) << e.key;
+        EXPECT_EQ(xlings::i18n::tr(e.key), e.text) << e.key;
+    }
+}
+
+TEST(I18nTest, UnknownKeyRendersAsItselfNotAsBlank) {
+    // A key nobody translated has to be visible and greppable. Returning ""
+    // would silently delete a label and leave an empty column, which is the
+    // failure mode this whole release is about.
+    xlings::i18n::set_language("en");
+    EXPECT_EQ(xlings::i18n::tr("nobody.defined.this"), "nobody.defined.this");
 }
 
 TEST(I18nTest, TranslateFormat) {
     xlings::i18n::set_language("en");
-    auto msg = xlings::i18n::trf(xlings::i18n::Msg::INSTALL_DONE, std::string("gcc@15.1.0"));
+    const auto msg = xlings::i18n::trf("{} installed", std::string("gcc@15.1.0"));
     EXPECT_NE(msg.find("gcc@15.1.0"), std::string::npos);
-    EXPECT_EQ(msg.find("{}"), std::string::npos);  // no leftover placeholder
-}
-
-TEST(I18nTest, AllMessagesHaveContent) {
-    int count = static_cast<int>(xlings::i18n::Msg::MSG_COUNT_);
-    for (int lang = 0; lang < 2; ++lang) {
-        xlings::i18n::set_language(lang == 0 ? "en" : "zh");
-        for (int i = 0; i < count; ++i) {
-            auto msg = xlings::i18n::tr(static_cast<xlings::i18n::Msg>(i));
-            EXPECT_FALSE(msg.empty())
-                << "Message " << i << " is empty for lang=" << (lang == 0 ? "en" : "zh");
-        }
-    }
-}
-
-TEST(I18nTest, InvalidMsgReturnsEmpty) {
-    auto msg = xlings::i18n::tr(xlings::i18n::Msg::MSG_COUNT_);
-    EXPECT_TRUE(msg.empty());
+    EXPECT_EQ(msg.find("{}"), std::string::npos);
 }
 
 // ============================================================

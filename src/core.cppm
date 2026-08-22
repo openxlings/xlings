@@ -7,7 +7,7 @@ export import xlings.core.glyph;
 export import xlings.core.palette;
 export import xlings.core.version_order;
 export import xlings.core.utils;
-export import xlings.core.i18n;
+export import xlings.i18n;
 export import xlings.core.config;
 export import xlings.core.common;
 export import xlings.core.compact;

@@ -2,11 +2,18 @@ module xlings.libs.tinyhttps;
 
 import std;
 import mcpplibs.tinyhttps;
-import xlings.core.log;
 
 namespace xlings::tinyhttps {
 
 namespace detail_ {
+
+// Which proxy the most recent client was built with, or empty.
+//
+// Diagnostic only, and deliberately a record rather than a log line: this
+// module is a workspace member now and members may not depend on the root
+// package, where `log` lives. Whoever cares reports it in their own voice.
+std::string gLastProxy_;
+
 
 std::string url_host_(std::string_view url) {
     auto s = std::string{url};
@@ -75,7 +82,12 @@ auto make_client(int connectTimeoutSec, int readTimeoutSec, std::string_view url
     cfg.keepAlive = false;
     cfg.maxRedirects = 10;
     if (auto proxy = env_proxy_for_(url); !proxy.empty()) {
-        log::debug("tinyhttps: using proxy {} for {}", proxy, url);
+        // Recorded, not logged. This module became a workspace member and a
+        // member may not depend on the root package, where `log` lives -- and
+        // a fetch library writing to its caller's log was the wrong shape
+        // anyway. `last_proxy()` lets whoever cares report it in their own
+        // voice; nobody is forced to.
+        gLastProxy_ = proxy;
         cfg.proxy = std::move(proxy);
     }
     return mcpplibs::tinyhttps::HttpClient(std::move(cfg));
@@ -367,5 +379,8 @@ bool StallDetector::update(double elapsedSec, double downloadedBytes) {
     winB_ = downloadedBytes;
     return false;
 }
+
+
+[[nodiscard]] std::string_view last_proxy() { return detail_::gLastProxy_; }
 
 } // namespace xlings::tinyhttps
