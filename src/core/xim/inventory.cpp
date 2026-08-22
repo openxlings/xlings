@@ -307,6 +307,90 @@ OwnedCoordinate resolve_owner(std::span<const xvm::InstallCoordinate> candidates
     return {.coordinate = direct_coordinate(pair.first, pair.second)};
 }
 
+// Which pairs COULD match `filter`, for the pairs whose answer is a GRAPH
+// question. Computed once for the whole query.
+//
+// The per-pair form ran a walk from every pair and asked "can you reach a
+// coordinate matching the filter" -- 1808 walks on a real home, each building
+// its own visited set, and `xlings info` spent 1.26s on it before answering
+// two lines.
+//
+// That walk is UNDIRECTED: it follows `incoming` (who binds to me) and
+// `bindings` (who I bind to). So "P reaches a matching Q" and "Q reaches P"
+// are the same statement, and the whole answer is one traversal outward from
+// the matching nodes instead of one traversal inward per node.
+//
+// TWO KINDS OF SEED, because a pair's own candidate list is not uniform:
+//
+//   * `direct` and `payload` coordinates are pushed for EVERY node the walk
+//     visits, so a node matching on one of those makes its whole component
+//     match.
+//   * the `provider` coordinate is pushed only for the pair the walk STARTS
+//     from. A pair matching on its provider therefore matches alone; it does
+//     not drag its component in.
+//
+// Pairs carrying a `bindingGroup` are not here at all: `shallow_owner_-
+// candidates_for` early-returns for those without walking anything, so their
+// answer is a cheap per-pair test and the caller does it directly. Modelling
+// them as graph nodes would have made the set BROADER than the old code --
+// `XimInventoryOwnerTest.ValidModernGroupCanFallBackToItsRoot` caught exactly
+// that.
+std::set<TargetVersion> pairs_that_could_match(
+        const xvm::VersionDB& db,
+        std::string_view filter,
+        CoordinateMatch match,
+        const IncomingEdgeIndex& incoming) {
+    std::vector<TargetVersion> pending;
+    std::set<TargetVersion> reachable;
+
+    const auto matches = [&](const xvm::InstallCoordinate& c) {
+        return candidate_may_match(c, filter, match);
+    };
+
+    for (const auto& [target, info] : db) {
+        for (const auto& [version, data] : info.versions) {
+            if (data.bindingGroup) continue;   // handled per-pair by the caller
+            const TargetVersion pair{target, version};
+            bool spreads = matches(direct_coordinate(target, version));
+            if (!spreads) {
+                if (auto fromPath = xvm::coordinate_from_payload_path(data.path)) {
+                    spreads = matches(*fromPath);
+                }
+            }
+            if (spreads) {
+                pending.push_back(pair);
+                continue;
+            }
+            // Provider-only match: this pair, and nothing it is connected to.
+            if (std::ranges::any_of(direct_owner_candidates_for(db, pair), matches)) {
+                reachable.insert(pair);
+            }
+        }
+    }
+
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        if (!reachable.insert(current).second) continue;
+
+        if (const auto found = incoming.find(current); found != incoming.end()) {
+            for (const auto& source : found->second) {
+                if (!reachable.contains(source)) pending.push_back(source);
+            }
+        }
+        const auto info = db.find(current.first);
+        if (info == db.end()) continue;
+        for (const auto& [peerTarget, versions] : info->second.bindings) {
+            for (const auto& [ownVersion, peerVersion] : versions) {
+                if (ownVersion != current.second) continue;
+                const TargetVersion peer{peerTarget, peerVersion};
+                if (!reachable.contains(peer)) pending.push_back(peer);
+            }
+        }
+    }
+    return reachable;
+}
+
 RelatedCoordinates build_owner_coordinates(const xvm::VersionDB& db, const std::set<TargetVersion>& requested, std::string_view filter, std::span<const std::filesystem::path> storeRoots, MetadataLookup& metadata, InventoryTrace* trace, CoordinateMatch match) {
     RelatedCoordinates related;
     SelectionCache selectionCache;
@@ -314,15 +398,25 @@ RelatedCoordinates build_owner_coordinates(const xvm::VersionDB& db, const std::
     // Only a filtered query can skip a pair, so only a filtered query pays for
     // the reverse index the skip decision needs to be safe.
     std::optional<IncomingEdgeIndex> incoming;
-    if (!filter.empty()) incoming = build_incoming_edges(db);
+    std::optional<std::set<TargetVersion>> couldMatch;
+    if (!filter.empty()) {
+        incoming = build_incoming_edges(db);
+        couldMatch = pairs_that_could_match(db, filter, match, *incoming);
+    }
     for (const auto& pair : requested) {
         if (!filter.empty()) {
-            const auto shallow = shallow_owner_candidates_for(
-                db, pair, incoming ? &*incoming : nullptr);
-            auto mayMatch = std::ranges::any_of(
-                shallow, [&](const auto& candidate) {
-                    return candidate_may_match(candidate, filter, match);
-                });
+            // A pair in a binding group answers for itself: its candidate
+            // list is the group root plus its own coordinates, with no walk,
+            // so asking directly is already cheap.
+            const auto* data = version_data(db, pair);
+            bool mayMatch;
+            if (data != nullptr && data->bindingGroup) {
+                mayMatch = std::ranges::any_of(
+                    shallow_owner_candidates_for(db, pair, &*incoming),
+                    [&](const auto& c) { return candidate_may_match(c, filter, match); });
+            } else {
+                mayMatch = couldMatch->contains(pair);
+            }
             if (!mayMatch) {
                 const auto* unique = metadata.by_short_name(pair.first);
                 mayMatch = unique != nullptr

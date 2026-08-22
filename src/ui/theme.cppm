@@ -8,6 +8,7 @@ export module xlings.ui:theme;
 import std;
 import xlings.core.glyph;
 import xlings.core.palette;
+import xlings.theme;
 
 export namespace xlings::ui::theme {
 
@@ -45,6 +46,17 @@ inline auto warn()    -> Color { return detail::rgb_(palette::amber()); }
 inline auto error()   -> Color { return detail::rgb_(palette::red()); }
 inline auto text()    -> Color { return detail::rgb_(palette::text()); }
 inline auto muted()   -> Color { return detail::rgb_(palette::dim()); }
+
+// The active theme's picker shape, forwarded like the colours above.
+//
+// `ui::theme` exists so the frontends never name `xlings::theme` directly --
+// they get ftxui `Color`s and nothing else. Decoration is the same kind of
+// question as colour, so it comes through the same door rather than making
+// one widget reach across the layer.
+using SelectorStyle = xlings::theme::SelectorStyle;
+inline auto selector() -> SelectorStyle {
+    return xlings::theme::current().selector;
+}
 inline auto border()  -> Color { return detail::rgb_(palette::border()); }
 inline auto surface() -> Color { return detail::rgb_(palette::surface()); }
 

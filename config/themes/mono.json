@@ -2,6 +2,9 @@
   "_comment": "shipped by xlings as an example of the theme format. Copy it and point `xlings config --theme <path>` at your copy -- this file is replaced on upgrade. Slots left out inherit the built-in default, which is why each file states only what it changes.",
   "name": "mono",
 
+  "_selector_note": "plain: no glyph and no accent colour. Both are things a monochrome terminal or a colour-vision-deficient reader cannot use, and not decorating is what this theme is for.",
+  "selector": "plain",
+
   "dark": {
     "accent":  "#E6EDF3",
     "alt":     "#E6EDF3",

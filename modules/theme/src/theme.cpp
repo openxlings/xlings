@@ -177,6 +177,25 @@ void apply_section_(const nlohmann::json& section,
     // dark and light fall back independently: a theme that only states `dark`
     // is saying nothing about light terminals, and inventing an answer there
     // would produce a scheme its author never looked at.
+    // `selector` -- unstated inherits from the base, exactly like a slot.
+    //
+    // An unknown value is REPORTED rather than ignored: a theme that asks for
+    // a picker style xlings does not have would otherwise render the default
+    // and look like the setting does nothing, which is the failure this whole
+    // loader exists to avoid.
+    if (doc.contains("selector")) {
+        if (doc["selector"].is_string()) {
+            const auto name = doc["selector"].get<std::string>();
+            if (auto style = selector_style_from_name(name)) {
+                out.theme.selector = *style;
+            } else {
+                out.issues.push_back({ LoadIssue::Kind::UnknownSlot, name,
+                                       "inline, plain or framed" });
+            }
+        } else {
+            out.issues.push_back({ LoadIssue::Kind::BadColor, "selector", {} });
+        }
+    }
     if (doc.contains("dark"))  apply_section_(doc["dark"],  out.theme.dark,  "dark",  out.issues);
     if (doc.contains("light")) apply_section_(doc["light"], out.theme.light, "light", out.issues);
     return out;

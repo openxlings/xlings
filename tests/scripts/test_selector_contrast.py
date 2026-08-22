@@ -74,10 +74,35 @@ if any("theme::border()" in l for l in sel_lines):
         "selector.cpp still paints with theme::border(); it is #334155 on the "
         "default dark theme (~1.6:1) and was the reported problem")
 
+# Each shipped theme states which picker it wants, and the value must be one
+# the binary knows. A theme asking for a style that does not exist would render
+# the default and look like the setting does nothing.
+import json
+KNOWN = {"inline", "plain", "framed"}
+expected = {"mono": "plain", "high-contrast": "framed"}
+for name, want in expected.items():
+    f = ROOT / "config" / "themes" / f"{name}.json"
+    if not f.is_file():
+        failures.append(f"config/themes/{name}.json is missing")
+        continue
+    got = json.loads(f.read_text()).get("selector")
+    if got not in KNOWN:
+        failures.append(f"{name}.json asks for selector {got!r}, not one of {sorted(KNOWN)}")
+    elif got != want:
+        failures.append(f"{name}.json selector is {got!r}, expected {want!r}")
+
+# And the three styles must all be reachable from the code, or a theme could
+# name one that silently falls through to the default.
+sel_src = (ROOT / "src" / "ui" / "selector.cpp").read_text()
+for style in ("Plain", "Framed", "Inline"):
+    if f"SelectorStyle::{style}" not in sel_src:
+        failures.append(f"selector.cpp does not render SelectorStyle::{style}")
+
 if failures:
     print("selector contrast: FAILED", file=sys.stderr)
     for f in failures:
         print(f"  {f}", file=sys.stderr)
     sys.exit(1)
 
-print("selector contrast: ok (muted/text/accent all clear 4.5:1 on the dark surface)")
+print("selector contrast: ok (muted/text/accent clear 4.5:1; three styles "
+      "reachable; mono=plain, high-contrast=framed)")
