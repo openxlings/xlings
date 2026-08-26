@@ -606,22 +606,32 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
 // needs to read "these 98 belong to the musl you removed", not 98 paths. A
 // target outside the payload store gets its parent directory instead, which
 // is the most specific thing that is still true about it.
+// String arithmetic rather than `fs::path` iteration, deliberately. libc++
+// gives the path iterators only the comparisons C++20 requires, and a
+// range-for over a path does not compile in this translation unit at all --
+// the same shape as `it != fs::directory_iterator{}`, which is Linux-only for
+// the same reason. Two path components is all this needs, and taking them by
+// separator is portable everywhere.
 std::string dangling_payload_key_(const fs::path& target,
                                   const fs::path& payloadRoot) {
     const auto rootStr = payloadRoot.string();
     const auto targetStr = target.string();
     if (!rootStr.empty() && targetStr.starts_with(rootStr)) {
-        const auto relative =
-            fs::path(targetStr.substr(rootStr.size())).relative_path();
-        std::string key;
-        for (const auto& part : relative) {
-            if (!key.empty()) key += "/";
-            key += part.string();
-            // <package>/<version> identifies the payload; everything below is
-            // one file of it.
-            if (std::ranges::count(key, '/') >= 1) break;
+        constexpr std::string_view separators = "/\\";
+        std::string_view rest{targetStr};
+        rest.remove_prefix(rootStr.size());
+        if (const auto begin = rest.find_first_not_of(separators);
+            begin != std::string_view::npos) {
+            rest.remove_prefix(begin);
+            // <package>/<version> identifies the payload; everything below it
+            // is one file of that payload.
+            const auto first = rest.find_first_of(separators);
+            if (first == std::string_view::npos) return std::string(rest);
+            const auto second = rest.find_first_of(separators, first + 1);
+            return std::string(second == std::string_view::npos
+                                   ? rest
+                                   : rest.substr(0, second));
         }
-        if (!key.empty()) return key;
     }
     return target.parent_path().string();
 }
@@ -1819,7 +1829,11 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                 auto walker = fs::recursive_directory_iterator(
                     dir, fs::directory_options::skip_permission_denied, dec);
                 if (dec) continue;
-                for (; walker != fs::recursive_directory_iterator();
+                // `std::default_sentinel`, not a default-constructed
+                // iterator: libc++ gives the filesystem iterators only
+                // `operator==(default_sentinel_t)` under C++20, so the
+                // two-iterator spelling does not compile on macOS or Windows.
+                for (; walker != std::default_sentinel;
                      walker.increment(dec)) {
                     if (dec) break;
                     if (walker.depth() >= 10) walker.disable_recursion_pending();

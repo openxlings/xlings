@@ -316,12 +316,25 @@ void prune_empty_asset_dirs(const fs::path& absolute,
     std::error_code ec;
     const auto relativeToRoot = fs::relative(absolute, subosRoot, ec);
     if (ec || relativeToRoot.empty()) return;
-    // Outside the subos entirely -- `relative` walks upward with "..", and a
+    // Outside the subos entirely -- `fs::relative` climbs out with "..", and a
     // path that has to climb out is not one whose parents we own.
-    if (*relativeToRoot.begin() == "..") return;
+    const auto relativeString = relativeToRoot.generic_string();
+    if (relativeString == ".." || relativeString.starts_with("../")) return;
+
+    // Component count by walking parents rather than by iterating the path:
+    // libc++ gives the path iterators only what C++20 requires, and both the
+    // range-for and `std::distance` spellings fail to compile there.
+    const auto components = [](fs::path path) {
+        std::size_t count = 0;
+        while (!path.empty() && path != path.parent_path()) {
+            ++count;
+            path = path.parent_path();
+        }
+        return count;
+    };
 
     auto relative = relativeToRoot.parent_path();
-    while (std::distance(relative.begin(), relative.end()) >= 3) {
+    while (components(relative) >= 3) {
         std::error_code rmEc;
         if (!fs::remove(subosRoot / relative, rmEc)) break;
         relative = relative.parent_path();

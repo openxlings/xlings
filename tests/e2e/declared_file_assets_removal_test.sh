@@ -359,4 +359,118 @@ grep -q "dangling sysroot link" "$DOCTOR_LOG.2" \
   && fail "S4: doctor still reports after --fix — the two disagree"
 log "  ✓ reported, repaired, converged"
 
-log "PASS: declared_file_assets_removal"
+
+# ══════════════════════════════════════════════════════════════════════
+# S5: one package claims a DIRECTORY another package wants to fill
+# ══════════════════════════════════════════════════════════════════════
+#
+# The real shape this guards: `usr/include/scsi` is a whole-directory asset of
+# one package while another ships different files for the same directory.
+# `create_directories` treats a symlink-to-directory as "already there", so
+# placing a leaf under it writes INTO THE FIRST PACKAGE'S PAYLOAD -- a store
+# every subos on the machine reads and no uninstall cleans.
+#
+# Verified against the pre-fix binary with a five-line C++ program before this
+# guard was written: the link really does land in the payload.
+log "S5: a leaf placed under another package's directory asset"
+
+DIRPKG="$LOCAL_INDEX_DIR/pkgs/d/dirpkg.lua"
+mkdir -p "$(dirname "$DIRPKG")"
+cat > "$DIRPKG" <<'LUA'
+package = {
+    spec = "1", name = "dirpkg",
+    description = "fixture: claims a whole directory as one asset",
+    authors = {"xlings-ci"}, licenses = {"MIT"}, type = "package",
+    archs = {"x86_64", "arm64"}, status = "stable",
+    categories = {"test-fixture"},
+    xpm = { linux = { ["1.0.0"] = {} }, macosx = { ["1.0.0"] = {} },
+            windows = { ["1.0.0"] = {} } },
+}
+import("xim.libxpkg.pkginfo")
+import("xim.libxpkg.xvm")
+function install()
+    local d = pkginfo.install_dir()
+    os.tryrm(d); os.mkdir(d)
+    os.mkdir(path.join(d, "include", "merged"))
+    io.writefile(path.join(d, "include", "merged", "from-dirpkg.h"), "dirpkg")
+    return true
+end
+function config()
+    local binding = package.name .. "@" .. pkginfo.version()
+    xvm.add("dirpkg", { bindir = pkginfo.install_dir() })
+    -- Directory granularity: ONE node for the whole directory.
+    xvm.files{ src = path.join("include", "merged"),
+               dst = path.join("usr", "include", "merged"),
+               binding = binding }
+    return true
+end
+function uninstall() xvm.remove("dirpkg"); return true end
+LUA
+
+LEAFINTO="$LOCAL_INDEX_DIR/pkgs/l/leafinto.lua"
+cat > "$LEAFINTO" <<'LUA'
+package = {
+    spec = "1", name = "leafinto",
+    description = "fixture: fills a directory another package claims",
+    authors = {"xlings-ci"}, licenses = {"MIT"}, type = "package",
+    archs = {"x86_64", "arm64"}, status = "stable",
+    categories = {"test-fixture"},
+    xpm = { linux = { ["1.0.0"] = {} }, macosx = { ["1.0.0"] = {} },
+            windows = { ["1.0.0"] = {} } },
+}
+import("xim.libxpkg.pkginfo")
+import("xim.libxpkg.xvm")
+function install()
+    local d = pkginfo.install_dir()
+    os.tryrm(d); os.mkdir(d)
+    os.mkdir(path.join(d, "include", "merged"))
+    io.writefile(path.join(d, "include", "merged", "from-leafinto.h"), "leafinto")
+    return true
+end
+function config()
+    local binding = package.name .. "@" .. pkginfo.version()
+    xvm.add("leafinto", { bindir = pkginfo.install_dir() })
+    -- Leaf granularity: one node per FILE, inside the same directory.
+    xvm.files{ src = path.join("include", "merged", "from-leafinto.h"),
+               dst = path.join("usr", "include", "merged", "from-leafinto.h"),
+               binding = binding }
+    return true
+end
+function uninstall() xvm.remove("leafinto"); return true end
+LUA
+
+RUN subos new merge >/dev/null 2>&1 || fail "S5: subos new failed"
+RUN_IN merge install dirpkg@1.0.0 -y   >/dev/null 2>&1 || fail "S5: dirpkg install failed"
+[[ -L "$HOME_DIR/subos/merge/usr/include/merged" ]] \
+  || fail "S5: dirpkg did not claim the directory as one link — fixture is wrong"
+
+RUN_IN merge install leafinto@1.0.0 -y >/dev/null 2>&1 || fail "S5: leafinto install failed"
+
+DIRPAYLOAD="$HOME_DIR/data/xpkgs/xim-x-dirpkg/1.0.0/include/merged"
+[[ -e "$DIRPAYLOAD/from-leafinto.h" ]] \
+  && fail "S5: the placement wrote into dirpkg's PAYLOAD — every subos on this machine reads that"
+
+[[ -L "$HOME_DIR/subos/merge/usr/include/merged" ]] \
+  && fail "S5: the directory link was not unwrapped"
+[[ -d "$HOME_DIR/subos/merge/usr/include/merged" ]] \
+  || fail "S5: usr/include/merged is not a real directory"
+[[ -e "$HOME_DIR/subos/merge/usr/include/merged/from-leafinto.h" ]] \
+  || fail "S5: the arriving header was not placed"
+[[ -e "$HOME_DIR/subos/merge/usr/include/merged/from-dirpkg.h" ]] \
+  || fail "S5: unwrapping lost the other package's header — it must survive as its own link"
+log "  ✓ unwrapped losslessly; both packages' headers present, payload untouched"
+
+# Reverse order: the leaf package first, then the directory claimant. The
+# directory asset now lands on a real directory that already has contents, so
+# it replaces it -- and that is the case the INDEX has to avoid by declaring
+# both sides per-file. Recorded here rather than asserted as good: what this
+# run proves is only that nothing writes into a payload.
+RUN subos new merge2 >/dev/null 2>&1 || fail "S5: subos new merge2 failed"
+RUN_IN merge2 install leafinto@1.0.0 -y >/dev/null 2>&1 || fail "S5: reverse leafinto failed"
+RUN_IN merge2 install dirpkg@1.0.0 -y   >/dev/null 2>&1 || fail "S5: reverse dirpkg failed"
+LEAFPAYLOAD="$HOME_DIR/data/xpkgs/xim-x-leafinto/1.0.0/include/merged"
+[[ -e "$LEAFPAYLOAD/from-dirpkg.h" ]] \
+  && fail "S5: reverse order wrote into leafinto's PAYLOAD"
+log "  ✓ reverse order also leaves both payloads untouched"
+
+log "PASS: declared_file_assets_removal (S1-S5)"
