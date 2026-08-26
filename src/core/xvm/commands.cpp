@@ -210,7 +210,15 @@ bool ensure_real_parent_dirs_(const fs::path& destination) {
     for (auto& ancestor : ancestors | std::views::reverse) {
         if (!is_payload_link_(ancestor, payloadRoot)) continue;
         const auto payloadDir = fs::read_symlink(ancestor, ec);
-        if (ec) return false;
+        if (ec) {
+            // Refusing here is right -- writing through a link we cannot read
+            // is how a payload gets a file in it -- but refusing in silence
+            // would make it look like the asset was placed.
+            log::warn("[xvm] not writing under {}: it is a link into the "
+                      "payload store that cannot be read ({})",
+                      Config::display_path(ancestor), ec.message());
+            return false;
+        }
 
         ec.clear();
         fs::remove(ancestor, ec);
