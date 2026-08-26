@@ -33,6 +33,26 @@ enum class CatalogAccess { LocalOnly, InstallReady };
 // Shared IndexManager instance (lazy-initialized)
 PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly);
 
+// What version the index says a package is, without installing anything.
+//
+// Exists so that a decision which must agree with `xlings install <pkg>` can
+// be taken from the same source instead of from a constant kept in step by
+// hand. The first caller is the subos runtime binding, where a pinned
+// `glibc@<ver>` and the index's `latest` were one decision written in two
+// repositories -- and the day they disagreed, every NEW subos declared a
+// payload directory that does not exist (xim-pkgindex#692).
+//
+// LocalOnly on purpose: this answers from index files already on disk. A
+// caller asking "what would install pick" must not turn into a network round
+// trip, and does not need to -- `latest` is a fact about the snapshot this
+// home already has.
+//
+// nullopt = the index cannot answer (never synced, unreadable, no such
+// package, no version for this platform). It is NOT a version, and a caller
+// must not turn it into one silently: absent and "the newest" are different
+// facts, and only one of them is a decision.
+std::optional<std::string> index_version_of(std::string_view package);
+
 std::string detect_platform();
 
 // Forward declaration for deferred install request processing

@@ -383,7 +383,14 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
     // An unusable block can still carry a valid runtime binding, and that
     // binding — not the caller's request — is what the subos was declared
     // against. runtime_for keeps it through the rebuild.
-    auto runtime = manifest::runtime_for(dir, json, intent, requested);
+    // The default is resolved rather than compiled in, for the same reason
+    // create() resolves it: this constant and the index's `latest` were one
+    // decision in two repositories. Silent here -- a rebuild is not the place
+    // to teach someone about the index -- and the source is left unset,
+    // because a recorded or observed binding outranks the default and this
+    // call cannot see which step answered.
+    auto runtime = manifest::runtime_for(dir, json, intent, requested,
+                                         resolve_default_runtime().binding);
     json[std::string(manifest::BLOCK)] = manifest::make_block({
         .runtime   = std::move(runtime),
         .by        = std::format("xlings {}", Info::VERSION),
@@ -406,6 +413,16 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
     return true;
 }
 
+DefaultRuntime resolve_default_runtime() {
+    const std::string pkg{manifest::DEFAULT_RUNTIME_PACKAGE};
+    if (auto version = xim::index_version_of(pkg))
+        return DefaultRuntime{.binding = pkg + "@" + *version, .resolved = true};
+    return DefaultRuntime{
+        .binding = std::string(manifest::DEFAULT_RUNTIME_FALLBACK),
+        .resolved = false,
+    };
+}
+
 int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
                   const std::string& runtime,
@@ -424,8 +441,32 @@ int create(const std::string& name, const fs::path& customDir,
     // Checked before anything is laid down. A malformed runtime that only
     // surfaced at write time would leave a registered subos that cannot
     // satisfy its own invariants.
-    const std::string effectiveRuntime =
-        runtime.empty() ? std::string(manifest::DEFAULT_RUNTIME) : runtime;
+    std::string effectiveRuntime = runtime;
+    std::string runtimeSource{manifest::RUNTIME_SOURCE_EXPLICIT};
+    if (effectiveRuntime.empty()) {
+        const auto def = resolve_default_runtime();
+        effectiveRuntime = def.binding;
+        runtimeSource = std::string(def.resolved ? manifest::RUNTIME_SOURCE_INDEX
+                                                 : manifest::RUNTIME_SOURCE_FALLBACK);
+        if (!def.resolved) {
+            // Said out loud, because the alternative is a subos silently
+            // pinned to whatever this build was compiled with while the index
+            // has moved on -- and the failure that follows names a payload
+            // directory, not a decision anybody remembers making.
+            //
+            // Both remedies, because they answer different situations: the
+            // index has never been synced here, or the caller knew the answer
+            // all along.
+            stream.emit(LogEvent{
+                .level = LogLevel::warn,
+                .message = "index could not answer which "
+                           + std::string(manifest::DEFAULT_RUNTIME_PACKAGE)
+                           + " to bind to; using the built-in " + effectiveRuntime
+                           + ". Run `xlings update` and recreate, or pass "
+                             "`--runtime <package>@<version>`.",
+            });
+        }
+    }
     if (!manifest::is_binding(effectiveRuntime)) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
@@ -483,6 +524,14 @@ int create(const std::string& name, const fs::path& customDir,
             .by        = std::format("xlings {}", Info::VERSION),
             .hostGlibc = platform::host_glibc_version(),
             .intent    = manifest::Intent::Create,
+            // Claimed only here. This is the one path that KNOWS: the value
+            // was decided above, before runtime_for was asked, and step 2
+            // returns it verbatim. The other two Create call sites hand
+            // runtime_for a resolved default but cannot tell whether it was
+            // the step that answered -- a recorded or observed binding
+            // outranks it -- so they leave this empty, which reads as
+            // "unknown" rather than as a fourth value.
+            .runtimeSource = runtimeSource,
         });
         write_config_json_(subosConfig, j);
     } else if (!ensure_subos_info_(dir, manifest::Intent::Create,
@@ -894,7 +943,8 @@ int new_from(const std::string& name, const fs::path& customDir,
         subosCfg["workspace"] = nlohmann::json::object();
     if (!manifest::validate_block(subosCfg).empty()) {
         auto forkRuntime = manifest::runtime_for(
-            dstDir, subosCfg, manifest::Intent::Create, runtime);
+            dstDir, subosCfg, manifest::Intent::Create, runtime,
+            resolve_default_runtime().binding);
         subosCfg[std::string(manifest::BLOCK)] = manifest::make_block({
             .runtime   = std::move(forkRuntime),
             .by        = std::format("xlings {}", Info::VERSION),

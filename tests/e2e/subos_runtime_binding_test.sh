@@ -16,18 +16,27 @@
 #       re-declare every repaired subos against a libc its payloads were
 #       never built for.
 #
-# The expected default IS pinned here ("glibc@2.44"). This is deliberate and
-# is not the "assert only invariants" trap: that lesson is about asserting
-# version PROPAGATION across repos, while this file tests this repo's own
-# contract -- "what runtime does a fresh subos get" is exactly the behavior
-# that changed. A future default bump updates one line here, knowingly.
+# S1's expectation is READ from the source, not written here.
+#
+# It used to be a pinned literal, on the reasoning that "what runtime does a
+# fresh subos get" is this repo's own contract. That was true while the answer
+# was a constant. It no longer is: the version now comes from the index, and
+# the constant below is only what an unanswerable index falls back to. This
+# home is built with an EMPTY index on purpose (see below), so the fallback is
+# the path under test here -- and pinning its value would mean editing this
+# file every time the fallback moves, which is the coupling the change was
+# about removing.
+#
+# S4 covers the other half: an index that CAN answer, answering with something
+# no constant in the tree contains.
 
 set -uo pipefail
 
 # shellcheck source=./project_test_lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
-EXPECTED_DEFAULT="glibc@2.44"
+EXPECTED_DEFAULT="$(sed -n 's/.*DEFAULT_RUNTIME_FALLBACK = "\(.*\)".*/\1/p' \
+    "$ROOT_DIR/src/core/subos/manifest.cppm" | head -1)"
 
 RUNTIME_DIR="$ROOT_DIR/tests/e2e/runtime/subos_runtime_binding"
 HOME_DIR="$RUNTIME_DIR/home"
@@ -82,6 +91,16 @@ RUNTIME="$(read_block "$DEFAULT_DIR" 'blk.get("runtime")')"
   || fail "S1: fresh subos runtime is '$RUNTIME', expected '$EXPECTED_DEFAULT'"
 log "  ✓ S1a: fresh subos records runtime $EXPECTED_DEFAULT"
 
+# The index here is empty, so this binding came from the FALLBACK, and the
+# manifest has to say so. Without this the two paths are byte-identical on
+# disk and nobody -- doctor included -- can tell a subos that was pinned
+# because the index said so from one pinned because the index could not be
+# read.
+SRC1="$(read_block "$DEFAULT_DIR" 'blk.get("runtime_source", "")')"
+[ "$SRC1" = "fallback" ] \
+  || fail "S1: empty index, so runtime_source should be 'fallback', got '$SRC1'"
+log "  ✓ S1c: fallback path recorded as runtime_source=fallback"
+
 HOST_GLIBC_EXPECTED="$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
 HOST_GLIBC_RECORDED="$(read_block "$DEFAULT_DIR" 'blk.get("host_glibc", "")')"
 if [ -n "$HOST_GLIBC_EXPECTED" ]; then
@@ -131,5 +150,76 @@ FIXED_SCHEMA="$(read_block "$DEFAULT_DIR" 'blk.get("schema_version")')"
 FIXED_ENVS="$(read_block "$DEFAULT_DIR" 'type(blk.get("envs")).__name__')"
 [ "$FIXED_ENVS" = "dict" ] || fail "S3: envs not repaired (type=$FIXED_ENVS)"
 log "  ✓ S3b: the rest of the block was repaired (schema=1, envs={})"
+
+# ── S4: an index that CAN answer decides, and no constant can fake it ───
+#
+# The claim S1 cannot make: that the version comes from the index at all. With
+# an empty index, "fallback" and "resolved to the same value" are the same
+# reading -- which is exactly the shape this whole change exists to remove, so
+# it cannot be how the change is verified.
+#
+# The index below says 9.9.9. That string appears in no constant, no test
+# fixture and no payload anywhere in the tree, so a manifest carrying it can
+# only have been resolved. Install fails (there is no such tarball); the
+# binding is written before the install step, which is what S2 already relies
+# on.
+# A COPY of the fixture index, with glibc's `latest` rewritten.
+#
+# Hand-rolling a two-file index does not work: the catalog declines to load it
+# and answers "package index not available", which sends S4 down the FALLBACK
+# path -- so a broken harness and a broken feature would read the same, which
+# is the shape this test exists to rule out. The fixture is a real index that
+# the rest of the suite already loads.
+S4_INDEX="$RUNTIME_DIR/answering-index"
+cp -a "$ROOT_DIR/tests/fixtures/xim-pkgindex" "$S4_INDEX"
+python3 "$ROOT_DIR/tests/e2e/support/rewrite_glibc_latest.py" \
+    "$S4_INDEX/pkgs/g/glibc.lua" 9.9.9 \
+  || fail "S4: could not rewrite the fixture glibc recipe"
+
+# A SEPARATE home. S1-S3 ran against the empty index in $HOME_DIR and the
+# catalog cache on disk remembers that answer; pointing the same home at a new
+# index leaves "package not found" behind, which would read as the feature
+# failing rather than the cache being stale.
+S4_HOME="$RUNTIME_DIR/home-s4"
+mkdir -p "$S4_HOME/data/xim-index-repos"
+printf '{}\n' > "$S4_HOME/data/xim-index-repos/xim-indexrepos.json"
+cat > "$S4_HOME/.xlings.json" <<EOF
+{
+  "mirror": "GLOBAL",
+  "index_repos": [
+    { "name": "xim", "url": "$S4_INDEX" }
+  ]
+}
+EOF
+
+x4() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
+         XLINGS_HOME="$S4_HOME" "$BIN" "$@" ) }
+x4 self init >/dev/null 2>&1 || true
+# `update` is what actually syncs an index repo into a home -- without it the
+# catalog answers "package index not available", which S1's empty-index setup
+# also produces, so the two would be indistinguishable.
+x4 update >/dev/null 2>&1 || true
+
+# The index has to actually answer, or S4's real assertion below is measuring
+# the fallback and calling it a pass.
+INFO4="$(x4 info glibc 2>&1)" || true
+printf '%s\n' "$INFO4" | grep -q '9\.9\.9' \
+  || fail "S4: the test index does not answer for glibc at all:
+$INFO4"
+
+OUT4="$(x4 subos new t94 2>&1)" || true
+[ -f "$S4_HOME/subos/t94/.xlings.json" ] \
+  || { echo "$OUT4" >&2; fail "S4: subos new left no manifest at all"; }
+RUNTIME4="$(read_block "$S4_HOME/subos/t94" 'blk.get("runtime")')"
+[ "$RUNTIME4" = "glibc@9.9.9" ] \
+  || fail "S4: index says 9.9.9 but the subos recorded '$RUNTIME4' -- the
+    default is still coming from a constant, so it will drift from the index
+    again the next time glibc is republished"
+log "  ✓ S4a: the index decided the default (glibc@9.9.9)"
+
+SRC4="$(read_block "$S4_HOME/subos/t94" 'blk.get("runtime_source", "")')"
+[ "$SRC4" = "index" ] \
+  || fail "S4: resolved from the index but runtime_source is '$SRC4'"
+log "  ✓ S4b: recorded as runtime_source=index"
 
 log "E2E subos-runtime-binding: PASS"

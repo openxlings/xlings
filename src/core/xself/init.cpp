@@ -9,6 +9,7 @@ import xlings.platform;
 import xlings.core.xself.compat;
 import xlings.core.xself.profile_resources;
 import xlings.core.subos.manifest;
+import xlings.core.xim.commands;
 
 namespace xlings::xself {
 
@@ -178,12 +179,42 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     if (mf::validate_block(json).empty()) return;
 
     const auto by = std::format("xlings {}", Info::VERSION);
+    // The default runtime comes from the index, not from a constant compiled
+    // into this binary. THIS path matters more than it looks: `self init` is
+    // what lays down `subos/default`, and that is the manifest mcpp reads on a
+    // first build in a fresh home -- the exact block that said `glibc@2.44`
+    // while the only payload on disk was 2.44.2 (xim-pkgindex#692).
+    //
+    // Resolved here rather than through subos::resolve_default_runtime because
+    // this file cannot import xlings.core.subos: subos imports xself, so that
+    // edge would close a cycle. The index query lives one layer down, where
+    // both callers can reach it.
+    struct DefaultRuntime { std::string binding; bool resolved; };
+    const DefaultRuntime def = [] -> DefaultRuntime {
+        const std::string pkg{mf::DEFAULT_RUNTIME_PACKAGE};
+        if (auto v = xlings::xim::index_version_of(pkg))
+            return {pkg + "@" + *v, true};
+        return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
+    }();
+
+    // Provenance is recorded HERE, unlike the two rebuild paths in subos.cpp,
+    // because this call knows the answer: `creating` means the block is being
+    // written from nothing, so step 5 is the step that answers and `def` is
+    // what it answers with. The rebuild paths hand runtime_for a default and
+    // cannot see whether a recorded or observed binding outranked it, so they
+    // record nothing rather than guess.
+    auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Create,
+                                   {}, def.binding);
     json[std::string(mf::BLOCK)] = creating
         ? mf::make_block({
-              .runtime   = mf::runtime_for(subos_dir, json, mf::Intent::Create),
+              .runtime   = runtime,
               .by        = by,
               .hostGlibc = platform::host_glibc_version(),
               .intent    = mf::Intent::Create,
+              .runtimeSource = runtime == def.binding
+                  ? std::string(def.resolved ? mf::RUNTIME_SOURCE_INDEX
+                                             : mf::RUNTIME_SOURCE_FALLBACK)
+                  : std::string{},
           })
         : mf::describe_block(subos_dir, json, by,
                              platform::host_glibc_version());
