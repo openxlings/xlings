@@ -84,6 +84,51 @@ void place_asset(const std::string& source, const fs::path& destination);
 // Take one placed file back out.
 void remove_asset(const fs::path& destination);
 
+// Remove the directories that only existed to hold a declared asset.
+//
+// Stops at three path components below `subosRoot`:
+// `usr/include/xkbcommon` was created to hold one release's links and is
+// litter once they are gone; `usr/include`, `usr/lib` and `etc/ssl` are the
+// sysroot's own shape and are not ours to remove even when empty -- a
+// compiler configured with `--sysroot` cares that `usr/include` exists.
+// `remove` on a non-empty directory fails, so this can never take another
+// package's assets with it.
+//
+// Exported because `self doctor --fix` deletes the same links by a different
+// route and has to leave the same shape behind. A repairer that leaves what
+// the remover cleans is how the two drift.
+void prune_empty_asset_dirs(const fs::path& absolute,
+                            const fs::path& subosRoot);
+
+// Give up a set of declared destinations in one subos.
+//
+// Every path that stops wanting a declared asset ends here: a full uninstall,
+// a detach that only opts this subos out, a re-registration whose new version
+// declares fewer assets, and a `use` that moves to a release with a smaller
+// asset set. They used to disagree -- `use` reported the leftovers and
+// removed nothing, the detach path asked a question that could not match and
+// so did nothing at all, and the uninstall path never asked (#423). The only
+// thing that legitimately differs between them is which active view to
+// reconcile against, so that is the only thing they pass differently.
+//
+// `activeAfter` is the workspace as it will be once the operation lands, not
+// as it was when it started. A destination some *other* active release still
+// declares is re-pointed at that release rather than deleted -- both halves
+// matter: leaving it alone would strand a link into a payload being deleted,
+// and deleting it would take a header away from a package that is still
+// installed and still declares it. On a real installation exactly one path,
+// `usr/include/scsi`, is claimed by two packages, and both mistakes are
+// reachable there.
+//
+// Directories that only existed to hold these assets go too, down to three
+// path components: `usr/include/xkbcommon` is ours, `usr/include` is the
+// sysroot's own shape.
+void reclaim_declared_assets(const fs::path& subosDir,
+                             const fs::path& payloadRoot,
+                             const std::set<std::string>& destinations,
+                             const VersionDB& db,
+                             const Workspace& activeAfter);
+
 // Library-shaped wrappers, kept because the sysroot lib directory is implied
 // rather than declared for libraries.
 void place_library(const std::string& source,

@@ -28,6 +28,9 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
+// prune_empty_asset_dirs: `--fix` deletes the same links the removal path
+// deletes and must leave the same shape behind.
+import xlings.core.xvm.commands;
 import xlings.core.xself.repair;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;
@@ -595,6 +598,44 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
     }
     return out;
 }
+
+// Which payload a dangling sysroot link was pointing at, as `<store>/<ver>`.
+//
+// The grouping key for the report: a release that leaked left its whole
+// footprint behind -- 274 links for one glib, 98 for one musl -- and the user
+// needs to read "these 98 belong to the musl you removed", not 98 paths. A
+// target outside the payload store gets its parent directory instead, which
+// is the most specific thing that is still true about it.
+// String arithmetic rather than `fs::path` iteration, deliberately. libc++
+// gives the path iterators only the comparisons C++20 requires, and a
+// range-for over a path does not compile in this translation unit at all --
+// the same shape as `it != fs::directory_iterator{}`, which is Linux-only for
+// the same reason. Two path components is all this needs, and taking them by
+// separator is portable everywhere.
+std::string dangling_payload_key_(const fs::path& target,
+                                  const fs::path& payloadRoot) {
+    const auto rootStr = payloadRoot.string();
+    const auto targetStr = target.string();
+    if (!rootStr.empty() && targetStr.starts_with(rootStr)) {
+        constexpr std::string_view separators = "/\\";
+        std::string_view rest{targetStr};
+        rest.remove_prefix(rootStr.size());
+        if (const auto begin = rest.find_first_not_of(separators);
+            begin != std::string_view::npos) {
+            rest.remove_prefix(begin);
+            // <package>/<version> identifies the payload; everything below it
+            // is one file of that payload.
+            const auto first = rest.find_first_of(separators);
+            if (first == std::string_view::npos) return std::string(rest);
+            const auto second = rest.find_first_of(separators, first + 1);
+            return std::string(second == std::string_view::npos
+                                   ? rest
+                                   : rest.substr(0, second));
+        }
+    }
+    return target.parent_path().string();
+}
+
 
 // Is the file every shim dispatches through the xlings this home says it runs?
 //
@@ -1756,22 +1797,55 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         }
 #endif
 
+        // The whole subos tree, not four directories one level deep.
+        //
+        // This loop used to iterate `directory_iterator` over `usr/include`,
+        // `usr/lib`, `usr/lib64` and `usr/bin`, and the note above explains
+        // why that was enough: "the header farm is one link per top-level
+        // entry". It was, while `declare_headers` declared whole directories.
+        // `declare_headers_tree` -- introduced for the X11 stack, used by 29
+        // recipes -- declares one link per FILE, two to four levels down, and
+        // nothing here was updated to match. Measured on the reporter's home:
+        // 110 dangling links across four subos, of which this scan reported
+        // zero, because every one of them was below the first level. `etc/`
+        // and `share/` are legal destinations too (see
+        // is_permitted_file_destination) and were never scanned at all.
+        //
+        // Cost, measured on the same home: 14,510 entries across 40 subos.
+        // The 195-second `self doctor` this codebase already fixed once was
+        // ELF reads and subprocesses, not directory walks -- do not add a
+        // cache here for a walk that costs tens of milliseconds.
+        //
+        // Symlinked directories are not descended into: `follow_directory_
+        // symlink` is off, so a `declare_headers` asset pointing at a payload
+        // directory is one entry, not a tour of the package. The depth cap is
+        // a stop for a payload that links a directory back to an ancestor.
         for (const auto& scanRoot : sysrootRoots) {
             const bool isActive = scanRoot.name.empty();
-            for (const auto& sub : {"usr/include", "usr/lib", "usr/lib64",
-                                    "usr/bin"}) {
+            for (const auto& sub : {"usr", "etc", "share"}) {
                 const auto dir = scanRoot.root / sub;
                 std::error_code dec;
                 if (!fs::is_directory(dir, dec)) continue;
-                for (const auto& entry : platform::dir_entries(dir)) {
+                auto walker = fs::recursive_directory_iterator(
+                    dir, fs::directory_options::skip_permission_denied, dec);
+                if (dec) continue;
+                // `std::default_sentinel`, not a default-constructed
+                // iterator: libc++ gives the filesystem iterators only
+                // `operator==(default_sentinel_t)` under C++20, so the
+                // two-iterator spelling does not compile on macOS or Windows.
+                for (; walker != std::default_sentinel;
+                     walker.increment(dec)) {
+                    if (dec) break;
+                    if (walker.depth() >= 10) walker.disable_recursion_pending();
+                    const auto& path = walker->path();
                     std::error_code lec;
                     // Both halves are required. A dangling link IS a symlink
                     // and is NOT `exists()`; testing only existence reads it
                     // as "already gone" -- the mistake that let #423's test
                     // pass while the links were still on disk.
-                    if (!fs::is_symlink(entry.path(), lec)) continue;
-                    if (fs::exists(entry.path(), lec)) continue;
-                    auto target = fs::read_symlink(entry.path(), lec);
+                    if (!fs::is_symlink(path, lec)) continue;
+                    if (fs::exists(path, lec)) continue;
+                    auto target = fs::read_symlink(path, lec);
                     add({
                         .kind    = FindingKind::SysrootDangling,
                         .level   = FindingLevel::Warning,
@@ -1779,20 +1853,29 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                             "{}{} points at {}, which does not exist",
                             isActive ? std::string{}
                                      : std::format("[{}] ", scanRoot.name),
-                            Config::display_path(entry.path()),
+                            Config::display_path(path),
                             lec ? std::string("(unreadable)")
                                 : Config::display_path(target)),
                         .remedy  = isActive
                             ? "xlings self doctor --fix"
                             : std::format("XLINGS_ACTIVE_SUBOS={} xlings "
                                           "self doctor --fix", scanRoot.name),
+                        // One line per (subos, payload) at render time. A
+                        // release that leaked leaked all of it -- 274 links
+                        // for one glib -- and printing each is not a report,
+                        // it is a wall.
+                        .groupKey = std::format(
+                            "{}|{}", scanRoot.name,
+                            lec ? std::string("?")
+                                : dangling_payload_key_(target,
+                                                        p.dataDir / "xpkgs")),
                         // Empty for the active subos -- that is what `--fix`
                         // keys on, so a finding from elsewhere cannot be
                         // repaired by accident.
                         .subos = isActive
                             ? std::vector<std::string>{}
                             : std::vector<std::string>{scanRoot.name},
-                        .shimPath = entry.path(),
+                        .shimPath = path,
                     });
                 }
             }
@@ -2052,6 +2135,12 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             // package payload behind it.
             fs::remove(f.shimPath, ec);
             if (!ec) {
+                // Same shape the removal path leaves behind. Without this a
+                // release that leaked 274 links into `usr/include/glib-2.0/
+                // gio/` would be repaired into an empty directory tree, and
+                // the next reader would have to decide whether that was
+                // deliberate.
+                xvm::prune_empty_asset_dirs(f.shimPath, p.subosDir);
                 note(glyph::mark(glyph::bullet, "dangling link removed"),
                      Config::display_path(f.shimPath));
             } else {
@@ -2807,6 +2896,12 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     std::map<std::string, int> aliasVersionCount;
     std::set<std::string> bakedTargetsShown;
     std::map<std::string, int> bakedVersionCount;
+    // One line per (subos, payload), not per link. A release that leaked left
+    // its whole footprint: 274 links for one glib, 98 for one musl, 110 in
+    // total on the home this was measured against. Same collapse the alias
+    // and baked-path reports use, keyed on the payload instead of the target.
+    std::set<std::string> danglingGroupsShown;
+    std::map<std::string, int> danglingGroupCount;
     for (const auto& f : scan.findings) {
         // Errors only: the "+N other version(s)" suffix is printed on an
         // error line, so counting notices into it would inflate a number the
@@ -2814,6 +2909,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         if (f.kind == FindingKind::AliasUnresolved
             && f.level == FindingLevel::Error) ++aliasVersionCount[f.target];
         else if (f.kind == FindingKind::SubosPathBaked) ++bakedVersionCount[f.target];
+        else if (f.kind == FindingKind::SysrootDangling) ++danglingGroupCount[f.groupKey];
     }
     for (const auto& f : scan.findings) {
         switch (f.kind) {
@@ -2873,8 +2969,16 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                                 : std::string{}));
                 }
                 break;
-            case FindingKind::SysrootDangling:
-                add(glyph::mark(glyph::warn, "dangling sysroot link"), f.detail);
+            case FindingKind::SysrootDangling: {
+                if (!verbose && !danglingGroupsShown.insert(f.groupKey).second) {
+                    break;
+                }
+                const auto siblings = danglingGroupCount.at(f.groupKey) - 1;
+                add(glyph::mark(glyph::warn, "dangling sysroot link"),
+                    verbose || siblings <= 0
+                        ? f.detail
+                        : std::format("{}\n    +{} more link(s) into the same "
+                                      "payload", f.detail, siblings));
                 // A link in ANOTHER subos is reported here and repaired
                 // there, so the generic "run `xlings self doctor --fix`"
                 // footer is wrong for it -- that command, from here, will
@@ -2883,6 +2987,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 }
                 break;
+            }
             case FindingKind::SubosPathBaked:
                 // One line per TARGET. A single gcc install bakes the path
                 // into fourteen registrations (gcc, g++, cc, c++ and the

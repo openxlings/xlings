@@ -230,6 +230,21 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
                 // place that never asked.
                 auto kind = effective_kind_of(db, memberTarget, memberVersion);
                 if (!kind_can_strand(kind)) continue;
+                // Within one package, a declared asset is reclaimed rather
+                // than reported. See the note on `reclaimFiles`: a program
+                // name has an owner and picking one is a guess, while a
+                // declared destination is decided by the declaration and by
+                // nothing else, so leaving it behind is not restraint -- it
+                // is a sysroot holding two releases of one package at once.
+                //
+                // ACROSS packages it stays a report. The distribution being
+                // left is complete and still active, and deciding that its
+                // headers should leave the sysroot is a different question
+                // from "did this switch finish".
+                if (samePackage && kind == "files") {
+                    plan.reclaimFiles.emplace(memberTarget, memberVersion);
+                    continue;
+                }
                 (samePackage ? plan.stranded : plan.retainedByOldPackage)
                     .push_back({memberTarget, memberVersion, std::move(kind)});
             }

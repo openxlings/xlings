@@ -139,9 +139,16 @@ bool is_binding_root(const VersionDB& db,
 // the subos root** and deliberately left unresolved: a payload is shared
 // between subos, so the same asset lands at a different absolute path in
 // each. The caller joins it with the subos it is materializing into.
+//
+// `target` / `version` name the entry the placement came from. Empty when it
+// was resolved for a coordinate the caller already had; filled in by
+// `release_file_placements`, whose whole point is that the caller does NOT
+// know which member each asset belongs to.
 struct FilePlacement {
     std::string source;
     std::string destination;
+    std::string target;
+    std::string version;
 
     [[nodiscard]] bool empty() const;
 };
@@ -157,6 +164,37 @@ bool is_permitted_file_destination(std::string_view destination);
 FilePlacement file_placement(const VersionDB& db,
                              const std::string& target,
                              const std::string& version);
+
+// Every file asset a release places into a subos, resolved through its
+// MEMBERS.
+//
+// This exists because `file_placement` cannot be asked about a package. A
+// declared asset registers as its own target named `<pkg>.files.<n>` -- the
+// `<n>` is a counter in libxpkg's Lua stdlib, assigned in declaration order
+// at install time -- so the name is generated, is not stable across versions,
+// and is never the package's own name. Asking `file_placement(db, "glib",
+// v)` therefore returns empty for every release that has ever declared an
+// asset, which is exactly what the uninstall path did until 2026.8.26.1: it
+// cleaned nothing and said nothing (openxlings/xlings#423).
+//
+// One walker, three callers. `xlings use` had its own copy of this loop and
+// was the only path that got it right; the detach and uninstall paths each
+// asked a weaker question and got a wrong answer that looked like "no
+// assets". A fourth copy is how they drift apart again.
+//
+// When the release does not resolve -- a legacy edge pointing at a version
+// that no longer exists, say -- this falls back to the single named
+// coordinate rather than refusing, the same direction `snapshot_removal_context`
+// takes and for the same reason: taking something out must not depend on
+// understanding what put it in. For a package that fallback yields nothing
+// (a package's own entry is never `kind == "files"`), and that is honest
+// rather than useless: what it does NOT do is invent a second way to
+// enumerate members. Assets left behind by an unresolvable release are the
+// job of doctor's sysroot reconciliation, which asks a different question
+// ("what is on disk that nothing claims") of a different authority.
+std::vector<FilePlacement> release_file_placements(const VersionDB& db,
+                                                   const std::string& target,
+                                                   const std::string& version);
 
 }  // namespace xlings::xvm
 

@@ -210,6 +210,14 @@ void cleanup_removed_xvm_program_artifacts(
         const xvm::WorkspaceInstalled& installed,
         const xvm::RemovalBatchResult& removalResult);
 
+void cleanup_removed_xvm_file_artifacts(
+        const std::filesystem::path& subosDir,
+        const std::filesystem::path& payloadRoot,
+        const xvm::VersionDB& dbBeforeRemoval,
+        const xvm::VersionDB& currentDb,
+        const xvm::Workspace& currentWorkspace,
+        const xvm::RemovalBatchResult& removalResult);
+
 bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
         const ExtractError& error);

@@ -694,6 +694,49 @@ void cleanup_removed_xvm_program_artifacts(
     }
 }
 
+// The third member of the cleanup family, missing since declared assets
+// shipped in 2026.7.27.0 (openxlings/xlings#423).
+//
+// `cleanup_removed_xvm_library_artifacts` handles `kind == "lib"` and
+// `cleanup_removed_xvm_program_artifacts` handles `kind == "program"`. Both
+// iterate `removalResult.removed`, which -- because a declared asset IS a
+// member of the release and `purgeSelection` deletes every member -- lists
+// every leaked asset by name. Both then `continue` past them. So the data
+// needed to clean the sysroot flowed right past the two functions that skip
+// it, and a removal that reclaimed nothing printed exactly what one that
+// reclaimed everything prints.
+//
+// Measured on the reporter's home before the fix: `glib` left 274 header
+// links and 5 pkg-config links behind; `libxkbcommon` left 6, in two
+// different subos, pointing at a payload that no longer existed.
+//
+// What to do with each destination is `reclaim_declared_assets`'s decision,
+// shared with the detach and `use` paths. All this adds is the question of
+// which destinations are being given up.
+void cleanup_removed_xvm_file_artifacts(
+        const std::filesystem::path& subosDir,
+        const std::filesystem::path& payloadRoot,
+        const xvm::VersionDB& dbBeforeRemoval,
+        const xvm::VersionDB& currentDb,
+        const xvm::Workspace& currentWorkspace,
+        const xvm::RemovalBatchResult& removalResult) {
+    std::set<std::string> removedDestinations;
+    for (const auto& removed : removalResult.removed) {
+        auto targetIt = dbBeforeRemoval.find(removed.target);
+        if (targetIt == dbBeforeRemoval.end()) continue;
+        auto versionIt = targetIt->second.versions.find(removed.version);
+        if (versionIt == targetIt->second.versions.end()) continue;
+        const auto& data = versionIt->second;
+        if (xvm::effective_kind(targetIt->second, data) != "files") continue;
+        // Re-checked rather than trusted: a hand-edited record must not be
+        // able to steer a delete outside the subos.
+        if (!xvm::is_permitted_file_destination(data.fileDst)) continue;
+        removedDestinations.insert(data.fileDst);
+    }
+    xvm::reclaim_declared_assets(subosDir, payloadRoot, removedDestinations,
+                                 currentDb, currentWorkspace);
+}
+
 bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
         const ExtractError& error) {
@@ -1266,58 +1309,76 @@ void remove_target_shims_(const std::string& target, const std::string& version)
     }
 }
 
+// Members of the release `target@version` belongs to, plus the coordinate
+// itself.
+//
+// The fallback matters as much as the resolution: a release that no longer
+// resolves -- a legacy edge pointing at a version that is gone -- must still
+// be removable, or the user has no command that gets them out. Same direction
+// `snapshot_removal_context` takes, and for the same reason.
+std::map<std::string, std::string>
+release_members_(const xvm::VersionDB& db,
+                 const std::string& target,
+                 const std::string& version) {
+    std::map<std::string, std::string> members;
+    if (auto selection = xvm::resolve_binding_selection(db, target, version)) {
+        members = std::move(selection->members);
+    }
+    members.emplace(target, version);
+    return members;
+}
+
 void detach_current_subos_(const std::string& target, const std::string& version, bool persist) {
     auto& ws = Config::workspace_mut();
     auto& wsi = Config::workspace_installed_mut();
+    const auto db = Config::versions();
 
-    auto matches = [&](std::string_view stored) {
-        return stored == version;
-    };
+    // The RELEASE, not the name the user typed.
+    //
+    // Every sysroot artifact registers on a member: libraries as their own
+    // soname targets (`libglib-2.0.so.0`), declared assets as generated ones
+    // (`glib.files.274`). The package's own entry carries none of them. So
+    // asking about `target` alone -- which is what this function did until
+    // 2026.8.26.1 -- reclaimed nothing at all on any modern home, and left
+    // the whole release's footprint pointing at a payload this subos had just
+    // opted out of. Not dangling, which is what made it invisible: the links
+    // still worked, so a compiler kept using headers from a package the user
+    // had removed (openxlings/xlings#423).
+    const auto members = release_members_(db, target, version);
 
-    // Step 1 (0.4.19+): always drop `version` from this subos's
+    // Step 1 (0.4.19+): always drop the release from this subos's
     // installed[] set, even when it isn't the currently active version.
     // The set is the per-subos opt-in list; an explicit `xlings remove
     // foo@X` always means "this subos no longer wants X".
+    //
+    // Members included since 2026.8.26.1. Dropping only `target` left the
+    // subos claiming 140 of its 268 workspace entries for a release it had
+    // detached, and the entries were swept later by `self doctor --fix` --
+    // which is another command finishing this one's work, not this one
+    // working.
     bool installedChanged = false;
-    if (auto it = wsi.find(target); it != wsi.end()) {
+    for (const auto& [memberTarget, memberVersion] : members) {
+        auto it = wsi.find(memberTarget);
+        if (it == wsi.end()) continue;
         auto& list = it->second;
-        auto pred = [&](const std::string& v) { return matches(v); };
-        auto erased = std::remove_if(list.begin(), list.end(), pred);
-        if (erased != list.end()) {
-            list.erase(erased, list.end());
-            installedChanged = true;
-            if (list.empty()) wsi.erase(it);
-        }
+        const auto before = list.size();
+        std::erase(list, memberVersion);
+        if (list.size() == before) continue;
+        installedChanged = true;
+        if (list.empty()) wsi.erase(it);
     }
 
     // Step 2: if `version` was the active pointer, do the actual subos
-    // teardown (remove headers / libs / shims) and then either fall
+    // teardown (remove headers / libs / assets / shims) and then either fall
     // back to another installed version or clear the pointer entirely.
     auto wit = ws.find(target);
-    bool wasActive = wit != ws.end() && matches(wit->second);
+    bool wasActive = wit != ws.end() && wit->second == version;
 
     if (wasActive) {
-        auto db = Config::versions();
-        auto sysroot_include = Config::paths().subosDir / "usr" / "include";
-        auto sysroot_lib = Config::paths().libDir;
-        // The whole release's headers, not just whatever single directory
-        // landed in this entry's `includedir`: a release declaring more than
-        // one header directory would otherwise leave all but the last behind
-        // in the sysroot, pointing into a payload that is being deleted.
-        for (const auto& asset :
-                 xvm::group_header_assets(db, target, version)) {
-            xvm::remove_headers(asset, sysroot_include);
-        }
-        if (const auto placement =
-                xvm::library_placement(db, target, version);
-            !placement.empty()) {
-            xvm::remove_library(placement.name, sysroot_lib);
-        }
-        if (const auto file = xvm::file_placement(db, target, version);
-            !file.empty()) {
-            xvm::remove_asset(Config::paths().subosDir / file.destination);
-        }
-        remove_target_shims_(target, version);
+        const auto& p = Config::paths();
+        const auto sysroot_include = p.subosDir / "usr" / "include";
+        const auto sysroot_lib = p.libDir;
+        const auto payloadRoot = p.dataDir / "xpkgs";
 
         // Auto-fallback: when the user removes the active version but
         // still has other versions installed in this subos, switch
@@ -1325,17 +1386,91 @@ void detach_current_subos_(const std::string& target, const std::string& version
         // sorted ascending by subos_workspace_to_json — `back()` is
         // the lexicographically-highest, which approximates "newest"
         // for typical semver-ish version strings).
-        //
-        // The shim for the fallback version already exists from its
-        // earlier install — only the active pointer needs updating;
-        // headers/libs are NOT auto-relinked (lazy: next call to
-        // `xlings use` would do that explicitly). This avoids a
-        // surprise sysroot reshuffle on every remove.
-        if (auto sit = wsi.find(target); sit != wsi.end() && !sit->second.empty()) {
-            wit->second = sit->second.back();
-        } else {
-            ws.erase(wit);
+        std::string fallbackVersion;
+        if (auto sit = wsi.find(target);
+            sit != wsi.end() && !sit->second.empty()) {
+            fallbackVersion = sit->second.back();
         }
+        const auto fallbackMembers = fallbackVersion.empty()
+            ? std::map<std::string, std::string>{}
+            : release_members_(db, target, fallbackVersion);
+
+        // What `active` will say once this lands, computed BEFORE anything is
+        // torn down. Reconciling against the before-view would preserve links
+        // belonging to the very release being taken away.
+        auto activeAfter = ws;
+        for (const auto& [memberTarget, _] : members) {
+            activeAfter.erase(memberTarget);
+        }
+        for (const auto& [memberTarget, memberVersion] : fallbackMembers) {
+            activeAfter[memberTarget] = memberVersion;
+        }
+
+        std::set<std::string> destinations;
+        std::set<std::string> outgoingLibNames;
+        for (const auto& [memberTarget, memberVersion] : members) {
+            for (const auto& asset :
+                     xvm::group_header_assets(db, memberTarget, memberVersion)) {
+                xvm::remove_headers(asset, sysroot_include);
+            }
+            if (const auto placement =
+                    xvm::library_placement(db, memberTarget, memberVersion);
+                !placement.empty()) {
+                outgoingLibNames.insert(placement.name);
+            }
+        }
+        for (const auto& placement :
+                 xvm::release_file_placements(db, target, version)) {
+            if (!xvm::is_permitted_file_destination(placement.destination)) {
+                continue;
+            }
+            destinations.insert(placement.destination);
+        }
+
+        // Same rule the libraries get from the uninstall path, and the same
+        // rule the assets get below: a name an active release still claims is
+        // re-pointed at that release rather than deleted. Without it,
+        // detaching musl's release would take `libc.so.6` away from the glibc
+        // release still active here.
+        std::map<std::string, std::string> activeLibSources;
+        for (const auto& [activeTarget, activeVersion] : activeAfter) {
+            const auto placement =
+                xvm::library_placement(db, activeTarget, activeVersion);
+            if (placement.empty()) continue;
+            if (!outgoingLibNames.contains(placement.name)) continue;
+            activeLibSources.emplace(placement.name, placement.source);
+        }
+        for (const auto& name : outgoingLibNames) {
+            if (const auto it = activeLibSources.find(name);
+                it != activeLibSources.end()) {
+                xvm::place_library(it->second, name, sysroot_lib);
+            } else {
+                xvm::remove_library(name, sysroot_lib);
+            }
+        }
+
+        xvm::reclaim_declared_assets(p.subosDir, payloadRoot, destinations,
+                                     db, activeAfter);
+
+        // The release being fallen back to may declare assets the outgoing
+        // one did not; `reclaim_declared_assets` only ever visits the
+        // outgoing set, so those would be missing. Placing is idempotent, so
+        // this is a stat for everything already correct.
+        if (!fallbackVersion.empty()) {
+            for (const auto& placement :
+                     xvm::release_file_placements(db, target, fallbackVersion)) {
+                xvm::place_asset(placement.source,
+                                 p.subosDir / placement.destination);
+            }
+        }
+
+        remove_target_shims_(target, version);
+
+        // The whole release moves or none of it does. Leaving members
+        // pointing at the outgoing version while `target` moved to the
+        // fallback is the mixed state INV-2 reports and the binding-group
+        // model exists to prevent.
+        ws = std::move(activeAfter);
     }
 
     if (persist && (wasActive || installedChanged)) {
@@ -1669,6 +1804,20 @@ bool process_xvm_operations_(const PlanNode& node,
         sysroot_lib,
         dbBeforeRemoval,
         scopedDb,
+        metadata->removal);
+    // Re-registration replaces the release's declarations wholesale, so a
+    // destination the new version no longer declares is exactly as removed as
+    // one from an uninstalled package -- and was exactly as leaked. This is
+    // also what makes a granularity change converge: when a package that used
+    // to claim a whole directory starts declaring its contents per file, the
+    // old directory link is reclaimed here and `place_asset` unwraps whatever
+    // is left into a real directory, in either install order.
+    cleanup_removed_xvm_file_artifacts(
+        artifactSubosDir,
+        Config::paths().dataDir / "xpkgs",
+        dbBeforeRemoval,
+        scopedDb,
+        scopedWorkspace,
         metadata->removal);
 
     // Removal takes the removed release's headers out of the sysroot. When
@@ -3233,6 +3382,16 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         dbBeforeRemoval,
         Config::versions_mut(),
         Config::workspace_installed(),
+        *removalResult);
+    // Third of three. Before this line a removal reclaimed the release's
+    // programs and libraries and left every declared asset on disk -- see the
+    // note on the function (openxlings/xlings#423).
+    cleanup_removed_xvm_file_artifacts(
+        artifactSubosDir,
+        Config::paths().dataDir / "xpkgs",
+        dbBeforeRemoval,
+        Config::versions_mut(),
+        Config::workspace(),
         *removalResult);
     if (!detachedByBatch && !detachVersion.empty()) {
         detail_::detach_current_subos_(

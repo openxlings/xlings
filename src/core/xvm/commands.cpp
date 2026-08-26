@@ -146,6 +146,126 @@ void remove_headers(const HeaderAsset& asset, const fs::path& sysroot_include) {
     }
 }
 
+// Is this path a symlink we placed, pointing into the payload store?
+bool is_payload_link_(const fs::path& path, const fs::path& payloadRoot) {
+    std::error_code ec;
+    if (!fs::is_symlink(path, ec)) return false;
+    const auto linkTarget = fs::read_symlink(path, ec);
+    if (ec) return false;
+    const auto normalize = [](std::string s) {
+        std::ranges::replace(s, '\\', '/');
+        while (s.size() > 1 && s.back() == '/') s.pop_back();
+        return s;
+    };
+    const auto root = normalize(payloadRoot.string());
+    return !root.empty() && normalize(linkTarget.string()).starts_with(root);
+}
+
+// Make every directory on the way to `destination` a real directory.
+//
+// `create_directories` treats an existing symlink-to-directory as "already
+// there" and returns success, so placing `usr/include/scsi/sg.h` while
+// `usr/include/scsi` is a directory-granularity asset link writes the new
+// entry **inside another package's payload**. Measured, not theorised: the
+// link lands in `data/xpkgs/<pkg>/<ver>/include/scsi/`, where every subos on
+// the machine reads it, and no uninstall will ever take it out again.
+//
+// Nothing in the index produces this shape today (measured: zero directory
+// assets whose destination is an ancestor of another package's asset). It
+// becomes reachable the moment a package that shares a directory declares its
+// contents per-file instead -- which is exactly the fix for `usr/include/scsi`
+// being one package's directory rather than both packages' merge.
+//
+// Converting rather than refusing, and losing nothing while doing it: the
+// link is replaced by a real directory holding one link per entry the payload
+// directory offered. That is the same shape `install_headers` builds and the
+// same shape `declare_headers_tree` produces, so the package whose asset is
+// being unwrapped keeps every header it was providing -- it just provides
+// them individually now. Order-independent by construction: whichever of the
+// two packages is installed first, neither loses anything.
+//
+// A symlink that is NOT a payload link is left alone rather than refused.
+// Only the payload store can be corrupted by writing through a link -- it is
+// shared by every subos on the machine and nothing ever audits it. A symlink
+// anywhere else is somebody's normal filesystem: `/tmp` is a link to
+// `/private/tmp` on macOS, and refusing over it would mean no isolated test
+// home on that platform could place an asset at all.
+//
+// Bounded at the xlings home for the same reason it is bounded at all: no
+// path above it can be a payload link, and walking to `/` for each of a
+// thousand assets buys nothing.
+bool ensure_real_parent_dirs_(const fs::path& destination) {
+    const auto& paths = Config::paths();
+    const auto payloadRoot = paths.dataDir / "xpkgs";
+    const auto homeDir = paths.homeDir;
+
+    std::vector<fs::path> ancestors;
+    for (auto p = destination.parent_path();
+         !p.empty() && p != p.parent_path() && p != homeDir;
+         p = p.parent_path()) {
+        ancestors.push_back(p);
+    }
+
+    std::error_code ec;
+    for (auto& ancestor : ancestors | std::views::reverse) {
+        if (!is_payload_link_(ancestor, payloadRoot)) continue;
+        const auto payloadDir = fs::read_symlink(ancestor, ec);
+        if (ec) {
+            // Refusing here is right -- writing through a link we cannot read
+            // is how a payload gets a file in it -- but refusing in silence
+            // would make it look like the asset was placed.
+            log::warn("[xvm] not writing under {}: it is a link into the "
+                      "payload store that cannot be read ({})",
+                      Config::display_path(ancestor), ec.message());
+            return false;
+        }
+
+        ec.clear();
+        fs::remove(ancestor, ec);
+        fs::create_directories(ancestor, ec);
+        if (ec) {
+            log::warn("[xvm] could not unwrap {}: {}",
+                      Config::display_path(ancestor), ec.message());
+            return false;
+        }
+        // Give back everything the directory asset was providing, one link
+        // per FILE, so unwrapping is not a deletion.
+        //
+        // Recursively, and that is not tidiness. Linking a sub-directory
+        // wholesale would put back exactly the shape being unwrapped, one
+        // level down -- and an undeclared one, which nothing reclaims and
+        // which turns a later removal of a leaf beneath it into a delete
+        // inside the payload. Measured against real packages before this
+        // recursed: `usr/include/scsi/fc` came back as a link, and giving up
+        // the package emptied `include/scsi/fc/` out of its payload.
+        //
+        // Same depth cap the index's own tree walker uses: a payload that
+        // links a directory back at an ancestor would otherwise not
+        // terminate.
+        const auto rebuild = [](auto&& self, const fs::path& from,
+                                const fs::path& into, int depth) -> void {
+            if (depth > 8) return;
+            std::error_code listEc;
+            if (!fs::is_directory(from, listEc)) return;
+            for (const auto& entry : platform::dir_entries(from)) {
+                const auto destination = into / entry.path().filename();
+                std::error_code dirEc;
+                if (fs::is_directory(entry.path(), dirEc)
+                    && !fs::is_symlink(entry.path(), dirEc)) {
+                    fs::create_directories(destination, dirEc);
+                    self(self, entry.path(), destination, depth + 1);
+                } else {
+                    create_link_(entry.path(), destination);
+                }
+            }
+        };
+        rebuild(rebuild, payloadDir, ancestor, 0);
+        log::debug("[xvm] unwrapped directory asset {} into a real directory",
+                   Config::display_path(ancestor));
+    }
+    return true;
+}
+
 void place_asset(const std::string& source, const fs::path& destination) {
     if (source.empty() || destination.empty()) return;
     std::error_code ec;
@@ -155,6 +275,7 @@ void place_asset(const std::string& source, const fs::path& destination) {
                    Config::display_path(source));
         return;
     }
+    if (!ensure_real_parent_dirs_(destination)) return;
     fs::create_directories(destination.parent_path(), ec);
 
     // Already pointing at this exact file: leave it alone. Keeps the repeated
@@ -194,6 +315,155 @@ void remove_asset(const fs::path& destination) {
     std::error_code ec;
     if (fs::is_symlink(destination, ec) || fs::exists(destination, ec)) {
         fs::remove_all(destination, ec);
+    }
+}
+
+// Take one declared asset out, and take the directories that only existed to
+// hold it out too.
+//
+// `fs::remove`, never `remove_all`: on a platform where the asset is a
+// followable entry (a Windows junction, or a link some other tool replaced
+// with a real directory) `remove_all` walks into it and deletes the payload
+// behind it. `self doctor --fix` carries the same note for the same reason.
+//
+// The directory sweep stops at three components -- see prune_empty_asset_dirs.
+//
+// A destination whose ANCESTOR is a payload link is not removed at all. It is
+// the mirror of the trap `ensure_real_parent_dirs_` guards on the way in, and
+// it bites harder: `usr/include/scsi/fc/fc_fs.h` where `usr/include/scsi/fc`
+// links into a payload does not name a file in the subos, it names the
+// PACKAGE'S OWN FILE, shared by every subos on the machine. Measured while
+// testing this very change against real packages: giving up linux-headers in
+// one subos emptied `include/scsi/fc/` out of its payload -- four headers
+// gone from a package that was still installed and still active elsewhere.
+//
+// Refused rather than repaired. The ancestor link points into SOME payload,
+// not necessarily the one being given up, so unlinking it here could take a
+// directory away from a package nobody asked about. What is left is an
+// undeclared link, which doctor reports once its payload goes.
+bool ancestor_is_a_payload_link_(const fs::path& subosDir,
+                                 const fs::path& absolute,
+                                 const fs::path& payloadRoot) {
+    for (auto p = absolute.parent_path();
+         !p.empty() && p != p.parent_path() && p != subosDir;
+         p = p.parent_path()) {
+        if (is_payload_link_(p, payloadRoot)) return true;
+    }
+    return false;
+}
+
+void remove_declared_asset_(const fs::path& subosDir,
+                            const fs::path& payloadRoot,
+                            const std::string& destination) {
+    const auto absolute = subosDir / destination;
+    if (ancestor_is_a_payload_link_(subosDir, absolute, payloadRoot)) {
+        log::warn("[xvm] not removing {}: a directory on the way to it links "
+                  "into a package payload, so this path names that package's "
+                  "own file rather than anything in this subos",
+                  Config::display_path(absolute));
+        return;
+    }
+    std::error_code ec;
+    if (fs::is_symlink(absolute, ec) || fs::exists(absolute, ec)) {
+        ec.clear();
+        if (!fs::remove(absolute, ec) && ec) {
+            log::warn("[xvm] could not remove declared asset {}: {}",
+                      Config::display_path(absolute), ec.message());
+            return;
+        }
+    }
+    prune_empty_asset_dirs(absolute, subosDir);
+}
+
+void prune_empty_asset_dirs(const fs::path& absolute,
+                            const fs::path& subosRoot) {
+    std::error_code ec;
+    const auto relativeToRoot = fs::relative(absolute, subosRoot, ec);
+    if (ec || relativeToRoot.empty()) return;
+    // Outside the subos entirely -- `fs::relative` climbs out with "..", and a
+    // path that has to climb out is not one whose parents we own.
+    const auto relativeString = relativeToRoot.generic_string();
+    if (relativeString == ".." || relativeString.starts_with("../")) return;
+
+    // Component count by walking parents rather than by iterating the path:
+    // libc++ gives the path iterators only what C++20 requires, and both the
+    // range-for and `std::distance` spellings fail to compile there.
+    const auto components = [](fs::path path) {
+        std::size_t count = 0;
+        while (!path.empty() && path != path.parent_path()) {
+            ++count;
+            path = path.parent_path();
+        }
+        return count;
+    };
+
+    auto relative = relativeToRoot.parent_path();
+    while (components(relative) >= 3) {
+        std::error_code rmEc;
+        if (!fs::remove(subosRoot / relative, rmEc)) break;
+        relative = relative.parent_path();
+    }
+}
+
+// Is this destination still ours to delete, as far as the filesystem can say?
+//
+// Only POSIX can say anything. There the asset is a symlink, so one pointing
+// outside the payload store was replaced after we placed it -- that is
+// `xvm-sysroot-drift`, someone else's decision, and giving up a release has
+// no business overruling it. On Windows the same asset is a hard link or a
+// copy (`create_link_`), which carries no origin at all, so the declaration
+// in the database is the only authority there is. Returning true is therefore
+// the correct Windows answer and not a gap: the caller has already
+// established that a record it is dropping claimed this path.
+bool declared_asset_is_ours_(const fs::path& absolute,
+                             const fs::path& payloadRoot) {
+    std::error_code ec;
+    if (!fs::is_symlink(absolute, ec)) return true;
+    return is_payload_link_(absolute, payloadRoot);
+}
+
+void reclaim_declared_assets(const fs::path& subosDir,
+                             const fs::path& payloadRoot,
+                             const std::set<std::string>& destinations,
+                             const VersionDB& db,
+                             const Workspace& activeAfter) {
+    if (destinations.empty()) return;
+
+    // One pass over the database, not one per destination. The library
+    // cleanup rescans everything for each name, which is free for the fifteen
+    // sonames a toolchain ships and is not free for the 274 assets one glib
+    // install declares.
+    std::map<std::string, std::pair<std::string, std::string>> activeClaims;
+    for (const auto& [target, info] : db) {
+        const auto activeIt = activeAfter.find(target);
+        if (activeIt == activeAfter.end()) continue;
+        auto versionIt = info.versions.find(activeIt->second);
+        if (versionIt == info.versions.end()) continue;
+        const auto& data = versionIt->second;
+        if (effective_kind(info, data) != "files") continue;
+        if (data.fileDst.empty()) continue;
+        if (!destinations.contains(data.fileDst)) continue;
+        activeClaims.emplace(data.fileDst,
+                             std::pair{target, activeIt->second});
+    }
+
+    for (const auto& destination : destinations) {
+        if (const auto claim = activeClaims.find(destination);
+            claim != activeClaims.end()) {
+            const auto placement = file_placement(
+                db, claim->second.first, claim->second.second);
+            if (!placement.empty()) {
+                place_asset(placement.source, subosDir / destination);
+                continue;
+            }
+        }
+        if (!declared_asset_is_ours_(subosDir / destination, payloadRoot)) {
+            log::warn("[xvm] {} was replaced after xlings placed it; leaving "
+                      "it alone (run `xlings self doctor` to see it)",
+                      Config::display_path(subosDir / destination));
+            continue;
+        }
+        remove_declared_asset_(subosDir, payloadRoot, destination);
     }
 }
 
@@ -500,6 +770,35 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         }
         log::debug("binding sync: {} -> {}", name, ver);
     }
+
+    // Assets the release being left declared and the incoming one does not.
+    //
+    // Deactivated FIRST, and that order is the whole of it. Reclaiming asks
+    // "does anything still active declare this destination", so a member left
+    // active answers yes about itself and its link is re-pointed straight
+    // back at the release being left -- the switch then changes nothing at
+    // all. The release moved; a member it has no version of did not come
+    // along, and saying so is not a guess about intent.
+    //
+    // `installed[]` is untouched: the payload is still there and `use` can
+    // bring it back. Only `active` moves.
+    std::set<std::string> reclaimDests;
+    auto& activeAfter = Config::workspace_mut();
+    for (const auto& [memberTarget, memberVersion] : plan->reclaimFiles) {
+        const auto placement = file_placement(db, memberTarget, memberVersion);
+        if (!placement.destination.empty()) {
+            reclaimDests.insert(placement.destination);
+        }
+        if (const auto it = activeAfter.find(memberTarget);
+            it != activeAfter.end() && it->second == memberVersion) {
+            activeAfter.erase(it);
+            log::debug("deactivated {}@{}: the release moved and this member "
+                       "did not come along", memberTarget, memberVersion);
+        }
+    }
+    reclaim_declared_assets(p.subosDir, p.dataDir / "xpkgs",
+                            reclaimDests, db, activeAfter);
+
     Config::save_workspace();
 
     // Create/update shims for all switched targets

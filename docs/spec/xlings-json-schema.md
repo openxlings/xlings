@@ -76,9 +76,50 @@
 | `envs` | 该版本激活时注入的环境变量 |
 | `bindingGroup` | 所属发布组：`provider` / `providerVersion` / `rootTarget` 等 |
 | `bindingMembers` | 组根上记录的成员列表 |
+| `fileSrc` / `fileDst` | 仅 `type = "files"`：payload 内的源、subos 根下的目的地，两端都是相对路径 |
 
 `xlings self doctor` 检查的就是这些记录与磁盘是否一致，
 `--fix` 会修复不一致的部分 —— 详见[自我管理与修复](../quick-start/self-management.md)。
+
+### 声明式文件资产(`type = "files"`)的生命周期
+
+recipe 用 `xvm.files{src=, dst=, binding=}` 声明一个既不是程序也不是库的
+条目（头文件、`.pc`、证书）。它**注册成自己的 target**，名字由 libxpkg
+生成（`<pkg>.files.<n>`，`<n>` 是安装时按声明顺序递增的计数器），
+绑定到发布上，**不挂在包自己的条目上**。
+
+这条命名规则是契约的一部分,因为它决定了怎么问问题:
+
+> **要枚举一个发布放了哪些资产,必须遍历它的成员**
+> (`release_file_placements`)。拿包名去查 `file_placement` 永远是空的
+> —— 那不是"没有资产",是问错了对象。2026.7.27.0 到 2026.8.26.1 之间
+> 卸载路径就是这么问的,所以它一个资产都没回收过,也一句都没说
+> (openxlings/xlings#423)。
+
+两端都必须是相对路径:一个 payload 被多个 subos 共享,
+记在它身上的绝对目的地对装它的那个 subos 是对的、对其余每一个都是错的。
+`dst` 的顶层只允许 `usr/` `etc/` `share/`,不允许绝对路径、不允许 `..`、
+不允许 `bin/`(那是 shim 的地方)。
+
+**客户端保证(2026.8.26.1 起)。** 一个发布不再被本 subos 需要时——
+无论是完整卸载(payload 删除)、detach(payload 还被别的 subos 用着)、
+重新注册后不再声明该目的地,还是 `use` 切到一个资产集更小的版本——
+它声明过的目的地都会被回收。回收规则对四条路径是同一份代码:
+
+| 目的地的状态 | 动作 |
+|---|---|
+| 没有任何幸存声明 | 删除，并回收只为它存在的空目录（保留 `usr/include` 这类两段路径） |
+| 有幸存声明，且在**本 subos active** | **重新指向**那个发布的 payload |
+| 有幸存声明，但本 subos 没有 active | 删除 |
+| 链接指向 payload store 之外（有人换掉了它） | 保留并告警——那是 `xvm-sysroot-drift`，不由卸载来裁决（仅 POSIX 可判定，Windows 上资产是硬链接/副本，只能由声明决定） |
+
+因此 recipe **不需要**在 `uninstall()` 里手写 `rm` 来镜像自己的声明。
+
+**判据。** 验证回收不要用 `[ -e ]`——它跟随符号链接，payload 删掉之后
+一个**仍然存在**的悬空链接会读作"不存在"。用 `-xtype l`；
+而要覆盖 detach 那一半（链接不悬空），只能对账：
+subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fileDst`
+集合 = 必须为空。
 
 ### index_repos 格式
 
