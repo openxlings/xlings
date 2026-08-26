@@ -229,14 +229,37 @@ bool ensure_real_parent_dirs_(const fs::path& destination) {
             return false;
         }
         // Give back everything the directory asset was providing, one link
-        // per entry, so unwrapping is not a deletion.
-        std::error_code listEc;
-        if (fs::is_directory(payloadDir, listEc)) {
-            for (const auto& entry : platform::dir_entries(payloadDir)) {
-                create_link_(entry.path(),
-                             ancestor / entry.path().filename());
+        // per FILE, so unwrapping is not a deletion.
+        //
+        // Recursively, and that is not tidiness. Linking a sub-directory
+        // wholesale would put back exactly the shape being unwrapped, one
+        // level down -- and an undeclared one, which nothing reclaims and
+        // which turns a later removal of a leaf beneath it into a delete
+        // inside the payload. Measured against real packages before this
+        // recursed: `usr/include/scsi/fc` came back as a link, and giving up
+        // the package emptied `include/scsi/fc/` out of its payload.
+        //
+        // Same depth cap the index's own tree walker uses: a payload that
+        // links a directory back at an ancestor would otherwise not
+        // terminate.
+        const auto rebuild = [](auto&& self, const fs::path& from,
+                                const fs::path& into, int depth) -> void {
+            if (depth > 8) return;
+            std::error_code listEc;
+            if (!fs::is_directory(from, listEc)) return;
+            for (const auto& entry : platform::dir_entries(from)) {
+                const auto destination = into / entry.path().filename();
+                std::error_code dirEc;
+                if (fs::is_directory(entry.path(), dirEc)
+                    && !fs::is_symlink(entry.path(), dirEc)) {
+                    fs::create_directories(destination, dirEc);
+                    self(self, entry.path(), destination, depth + 1);
+                } else {
+                    create_link_(entry.path(), destination);
+                }
             }
-        }
+        };
+        rebuild(rebuild, payloadDir, ancestor, 0);
         log::debug("[xvm] unwrapped directory asset {} into a real directory",
                    Config::display_path(ancestor));
     }
@@ -304,9 +327,42 @@ void remove_asset(const fs::path& destination) {
 // behind it. `self doctor --fix` carries the same note for the same reason.
 //
 // The directory sweep stops at three components -- see prune_empty_asset_dirs.
+//
+// A destination whose ANCESTOR is a payload link is not removed at all. It is
+// the mirror of the trap `ensure_real_parent_dirs_` guards on the way in, and
+// it bites harder: `usr/include/scsi/fc/fc_fs.h` where `usr/include/scsi/fc`
+// links into a payload does not name a file in the subos, it names the
+// PACKAGE'S OWN FILE, shared by every subos on the machine. Measured while
+// testing this very change against real packages: giving up linux-headers in
+// one subos emptied `include/scsi/fc/` out of its payload -- four headers
+// gone from a package that was still installed and still active elsewhere.
+//
+// Refused rather than repaired. The ancestor link points into SOME payload,
+// not necessarily the one being given up, so unlinking it here could take a
+// directory away from a package nobody asked about. What is left is an
+// undeclared link, which doctor reports once its payload goes.
+bool ancestor_is_a_payload_link_(const fs::path& subosDir,
+                                 const fs::path& absolute,
+                                 const fs::path& payloadRoot) {
+    for (auto p = absolute.parent_path();
+         !p.empty() && p != p.parent_path() && p != subosDir;
+         p = p.parent_path()) {
+        if (is_payload_link_(p, payloadRoot)) return true;
+    }
+    return false;
+}
+
 void remove_declared_asset_(const fs::path& subosDir,
+                            const fs::path& payloadRoot,
                             const std::string& destination) {
     const auto absolute = subosDir / destination;
+    if (ancestor_is_a_payload_link_(subosDir, absolute, payloadRoot)) {
+        log::warn("[xvm] not removing {}: a directory on the way to it links "
+                  "into a package payload, so this path names that package's "
+                  "own file rather than anything in this subos",
+                  Config::display_path(absolute));
+        return;
+    }
     std::error_code ec;
     if (fs::is_symlink(absolute, ec) || fs::exists(absolute, ec)) {
         ec.clear();
@@ -407,7 +463,7 @@ void reclaim_declared_assets(const fs::path& subosDir,
                       Config::display_path(subosDir / destination));
             continue;
         }
-        remove_declared_asset_(subosDir, destination);
+        remove_declared_asset_(subosDir, payloadRoot, destination);
     }
 }
 

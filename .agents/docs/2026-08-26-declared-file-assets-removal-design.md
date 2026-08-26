@@ -1,7 +1,7 @@
 # 声明式文件资产不随卸载回收(#423)——根因与修复方案
 
 > 状态:**已实现**(2026.8.26.1,分支 `fix/423-declared-file-assets-removal`)。
-> 落地结果见 §8,其中**七条原方案的判断被实测推翻**,已在 §8 逐条标注
+> 落地结果见 §8,其中**九条原方案的判断被实测推翻**,已在 §8 逐条标注
 > 而不是悄悄改掉。
 > 所有数字都在用户真实 home(`/home/speak/.xlings`)与真实索引
 > (`~/.xlings/data/xim-pkgindex`)上实测,命令写在每节的「实测」里,可复现。
@@ -721,6 +721,33 @@ files 成员**本身就是 workspace 条目**(实测 `default` 的 268 条里 14
 修法:先把这些成员**取消激活**(`installed[]` 不动,payload 还在,`use` 能切回来),
 再回收。测法:e2e S6 跑真命令看 sysroot ——
 它对**修复前二进制**和**中间那版 no-op** 都失败。
+
+**⑨ 我引入的回收把文件从 payload 里删掉了 —— 拿真实包跑才发现。**
+
+`remove_declared_asset_` 只检查目的地本身是不是我们的链接,**不检查祖先**。
+而 §2.6 的解包会把 payload 目录里的**子目录**整个链过来
+(`usr/include/scsi/fc` → payload 的 `fc/`)。于是回收
+`usr/include/scsi/fc/fc_fs.h` 时,路径**穿过那个链接解析进了 payload**:
+
+```
+detach linux-headers(另一个 subos 还在用它)之后:
+  payload/include/scsi/fc/   →  空的
+  应有:fc_els.h fc_fs.h fc_gs.h fc_ns.h
+```
+
+**四个头文件从一个还装着、还在别的 subos 里 active 的包的 payload 里没了。**
+payload 是所有 subos 共读、没有任何审计的地方。
+
+这是 §2.6 那个陷阱的**镜像**,而且更狠:入口方向写穿只是多一个文件,
+出口方向写穿是**删**。两处都修:
+
+1. `remove_declared_asset_` 在祖先里发现 payload 链接就**拒绝并告警**——
+   那条链接指向的不一定是正在交还的那个 payload,顺手删掉可能拿走别的包的目录。
+2. 解包改成**递归**:目录建成真目录,只有文件才补链接。否则解包等于把它正在
+   消除的形态原样放回下一层,而且是**无声明**的,于是没人回收、还成了地雷。
+
+单测两条都补了。**这个缺陷 fixture 测不出来** —— 只有真实包
+(linux-headers 的 `scsi/fc` 是个子目录)才有这个形状。
 
 ### 8.3 实测(真实 home 切片,`.agents/tools/slice-real-home.sh`)
 

@@ -577,3 +577,81 @@ TEST(CleanupRemovedFileArtifacts, RefusesADestinationTheRulesWouldNotAllow) {
     std::error_code ec;
     fs::remove_all(root, ec);
 }
+
+#if !defined(_WIN32)
+// The mirror of the place_asset trap, and it bites harder.
+//
+// `usr/include/scsi/fc/fc_fs.h` where `usr/include/scsi/fc` links into a
+// payload does not name a file in the subos. It names the PACKAGE'S OWN FILE,
+// in a store every subos on the machine reads and no uninstall audits.
+//
+// Found by running the fix against real packages rather than fixtures:
+// giving up linux-headers in one subos emptied `include/scsi/fc/` out of its
+// payload -- four headers gone from a package that was still installed and
+// still active in another subos.
+TEST(ReclaimDeclaredAssets, NeverRemovesThroughAPayloadDirectoryLink) {
+    const auto root = scratch_("reclaim-through-link");
+    const auto storeRoot = root / "store";
+    const auto payload = storeRoot / "pkg" / "1.0.0" / "include" / "sub";
+    const auto subos = root / "subos";
+    fs::create_directories(payload);
+    std::ofstream(payload / "victim.h") << "the package's own file";
+    fs::create_directories(subos / "usr" / "include");
+    // The shape an unwrap used to leave behind: a directory link nothing
+    // declares, with declared leaves nominally underneath it.
+    fs::create_symlink(payload, subos / "usr" / "include" / "sub");
+
+    xlings::xvm::reclaim_declared_assets(
+        subos, storeRoot, {"usr/include/sub/victim.h"}, VersionDB{},
+        Workspace{});
+
+    EXPECT_TRUE(fs::exists(payload / "victim.h"))
+        << "the removal resolved through the link and deleted a file inside "
+           "the payload";
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+// Unwrapping must not put the shape it is removing back one level down.
+//
+// A sub-directory linked wholesale is a directory asset again -- undeclared
+// this time, so nothing reclaims it, and a later removal of a leaf beneath it
+// deletes inside the payload (see the test above). Every FILE gets its own
+// link; every directory gets a real directory.
+TEST(PlaceAsset, UnwrapsSubdirectoriesRatherThanRelinkingThem) {
+    const auto store = xlings::Config::paths().dataDir / "xpkgs";
+    const auto owner = store / "test-nested-owner" / "1.0.0" / "include" / "sub";
+    const auto newcomer =
+        store / "test-nested-newcomer" / "1.0.0" / "include" / "sub";
+    fs::create_directories(owner / "deep");
+    fs::create_directories(newcomer);
+    std::ofstream(owner / "top.h") << "top";
+    std::ofstream(owner / "deep" / "nested.h") << "nested";
+    std::ofstream(newcomer / "arriving.h") << "arriving";
+
+    const auto root = scratch_("unwrap-nested");
+    const auto subos = root / "subos";
+    fs::create_directories(subos / "usr" / "include");
+    fs::create_symlink(owner, subos / "usr" / "include" / "sub");
+
+    xlings::xvm::place_asset(
+        (newcomer / "arriving.h").string(),
+        subos / "usr" / "include" / "sub" / "arriving.h");
+
+    std::error_code ec;
+    const auto deep = subos / "usr" / "include" / "sub" / "deep";
+    EXPECT_TRUE(fs::is_directory(deep, ec));
+    EXPECT_FALSE(fs::is_symlink(deep, ec))
+        << "a sub-directory was relinked wholesale -- the same shape, one "
+           "level down, and undeclared";
+    EXPECT_TRUE(present_(deep / "nested.h"));
+    EXPECT_TRUE(present_(subos / "usr" / "include" / "sub" / "top.h"));
+    EXPECT_TRUE(present_(subos / "usr" / "include" / "sub" / "arriving.h"));
+    EXPECT_FALSE(fs::exists(owner / "arriving.h"));
+
+    fs::remove_all(root, ec);
+    fs::remove_all(store / "test-nested-owner", ec);
+    fs::remove_all(store / "test-nested-newcomer", ec);
+}
+#endif
