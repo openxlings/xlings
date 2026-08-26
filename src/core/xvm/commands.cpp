@@ -783,21 +783,21 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // `installed[]` is untouched: the payload is still there and `use` can
     // bring it back. Only `active` moves.
     std::set<std::string> reclaimDests;
+    auto& activeAfter = Config::workspace_mut();
     for (const auto& [memberTarget, memberVersion] : plan->reclaimFiles) {
         const auto placement = file_placement(db, memberTarget, memberVersion);
         if (!placement.destination.empty()) {
             reclaimDests.insert(placement.destination);
         }
-        if (const auto it = Config::workspace_mut().find(memberTarget);
-            it != Config::workspace_mut().end()
-            && it->second == memberVersion) {
-            Config::workspace_mut().erase(it);
+        if (const auto it = activeAfter.find(memberTarget);
+            it != activeAfter.end() && it->second == memberVersion) {
+            activeAfter.erase(it);
             log::debug("deactivated {}@{}: the release moved and this member "
                        "did not come along", memberTarget, memberVersion);
         }
     }
     reclaim_declared_assets(p.subosDir, p.dataDir / "xpkgs",
-                            reclaimDests, db, Config::workspace());
+                            reclaimDests, db, activeAfter);
 
     Config::save_workspace();
 
