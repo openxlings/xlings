@@ -99,7 +99,25 @@ struct UseSwitchPlan {
     //
     // Only ever filled for a switch WITHIN one package. Switching packages is
     // not a half-finished switch -- see the note above the stranded loop.
+    //
+    // `kind == "files"` is deliberately NOT here; it is in `reclaimFileDests`
+    // below. The reason the rest of this list is only reported is that a name
+    // has an owner and picking one is a guess -- `clang` could reasonably
+    // belong to either llvm release. A declared asset has no such contest: its
+    // destination is decided by the declaration and by nothing else, so
+    // leaving it behind is not restraint, it is a sysroot holding two
+    // releases at once. Reporting 29 of them and acting on none was also not
+    // usable advice.
     std::vector<StrandedMember> stranded;
+
+    // Destinations the outgoing release declared that the incoming one does
+    // not, to be handed to `reclaim_declared_assets`.
+    //
+    // Same set the `stranded` loop finds, filtered to `kind == "files"`. It
+    // is a set of destinations rather than of members because that is what
+    // reclaiming takes: two members can name one path, and the decision is
+    // per path.
+    std::set<std::string> reclaimFileDests;
 
     // Switching packages: the names the package being left still owns.
     //

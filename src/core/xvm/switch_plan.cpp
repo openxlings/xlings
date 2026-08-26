@@ -230,6 +230,21 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
                 // place that never asked.
                 auto kind = effective_kind_of(db, memberTarget, memberVersion);
                 if (!kind_can_strand(kind)) continue;
+                // A declared asset is reclaimed, not reported. See the note
+                // on `reclaimFileDests`. This holds for a package switch too:
+                // `usr/include/openssl` belongs to whichever release declares
+                // it, and the one being left has just stopped being active,
+                // so the link into its payload is not "retained by the old
+                // package", it is a leftover -- `reclaim_declared_assets`
+                // still re-points it if something active claims the path.
+                if (kind == "files") {
+                    const auto placement =
+                        file_placement(db, memberTarget, memberVersion);
+                    if (!placement.destination.empty()) {
+                        plan.reclaimFileDests.insert(placement.destination);
+                    }
+                    continue;
+                }
                 (samePackage ? plan.stranded : plan.retainedByOldPackage)
                     .push_back({memberTarget, memberVersion, std::move(kind)});
             }

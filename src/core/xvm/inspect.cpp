@@ -13,21 +13,22 @@ namespace xlings::xvm::detail_ {
 // Asked of the release rather than the entry itself because a file asset is
 // registered as its own target (`<pkg>.files.<n>`) bound to the release, not
 // as a field on the package's own entry.
+//
+// Expressed on `release_file_placements` rather than walking the members
+// again: "does it have any" and "which ones does it have" are the same
+// question asked with different precision, and this file used to answer it
+// with its own copy of the loop. Two copies is how the answers drift -- and
+// the drift is not hypothetical here, it is the whole of #423 (the uninstall
+// path answered a THIRD way and got "none" for every release in existence).
+//
+// Slightly stricter than the loop it replaces, deliberately: a files member
+// whose src/dst is unusable now counts as no asset. This finding's question
+// is "will the sysroot files follow a version switch", and an unplaceable
+// declaration does not follow anything.
 bool release_declares_file_assets_(const VersionDB& db,
                                    const std::string& target,
                                    const std::string& version) {
-    auto selection = resolve_binding_selection(db, target, version);
-    if (!selection) return false;
-    for (const auto& [memberTarget, memberVersion] : selection->members) {
-        auto infoIt = db.find(memberTarget);
-        if (infoIt == db.end()) continue;
-        auto dataIt = infoIt->second.versions.find(memberVersion);
-        if (dataIt == infoIt->second.versions.end()) continue;
-        if (effective_kind(infoIt->second, dataIt->second) == "files") {
-            return true;
-        }
-    }
-    return false;
+    return !release_file_placements(db, target, version).empty();
 }
 
 // Is this member's name currently held by a DIFFERENT provider?

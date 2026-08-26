@@ -538,6 +538,27 @@ FilePlacement file_placement(const VersionDB& db,
     };
 }
 
+std::vector<FilePlacement> release_file_placements(const VersionDB& db,
+                                                   const std::string& target,
+                                                   const std::string& version) {
+    std::map<std::string, std::string> members;
+    if (auto selection = resolve_binding_selection(db, target, version)) {
+        members = std::move(selection->members);
+    } else {
+        members.emplace(target, version);
+    }
+
+    std::vector<FilePlacement> placements;
+    for (const auto& [memberTarget, memberVersion] : members) {
+        auto placement = file_placement(db, memberTarget, memberVersion);
+        if (placement.empty()) continue;
+        placement.target = memberTarget;
+        placement.version = memberVersion;
+        placements.push_back(std::move(placement));
+    }
+    return placements;
+}
+
 bool is_binding_root(const VersionDB& db,
                      const std::string& target,
                      const std::string& version) {
