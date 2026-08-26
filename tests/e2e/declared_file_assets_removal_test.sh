@@ -473,4 +473,76 @@ LEAFPAYLOAD="$HOME_DIR/data/xpkgs/xim-x-leafinto/1.0.0/include/merged"
   && fail "S5: reverse order wrote into leafinto's PAYLOAD"
 log "  ✓ reverse order also leaves both payloads untouched"
 
-log "PASS: declared_file_assets_removal (S1-S5)"
+# ══════════════════════════════════════════════════════════════════════
+# S6: `use` to a release with a smaller asset set
+# ══════════════════════════════════════════════════════════════════════
+#
+# The outgoing release's extra assets used to be listed as stranded members
+# and left on disk -- a sysroot serving two releases of one package at once.
+#
+# This scenario exists because the first attempt at fixing it was a NO-OP that
+# a plan-level unit test happily passed. Reclaiming asks "does anything still
+# active declare this destination", and the stranded member was still active,
+# so it answered yes about itself and its link was re-pointed straight back.
+# Only running the command and looking at the sysroot catches that.
+log "S6: use to a release that declares fewer assets"
+
+USEPKG="$LOCAL_INDEX_DIR/pkgs/u/usepkg.lua"
+mkdir -p "$(dirname "$USEPKG")"
+cat > "$USEPKG" <<'LUA'
+package = {
+    spec = "1", name = "usepkg",
+    description = "fixture: 2.0.0 declares one asset more than 1.0.0",
+    authors = {"xlings-ci"}, licenses = {"MIT"}, type = "package",
+    archs = {"x86_64", "arm64"}, status = "stable",
+    categories = {"test-fixture"},
+    xpm = { linux   = { ["1.0.0"] = {}, ["2.0.0"] = {} },
+            macosx  = { ["1.0.0"] = {}, ["2.0.0"] = {} },
+            windows = { ["1.0.0"] = {}, ["2.0.0"] = {} } },
+}
+import("xim.libxpkg.pkginfo")
+import("xim.libxpkg.xvm")
+function install()
+    local d = pkginfo.install_dir(); os.tryrm(d); os.mkdir(d)
+    os.mkdir(path.join(d, "include", "up"))
+    io.writefile(path.join(d, "include", "up", "a.h"), pkginfo.version())
+    if pkginfo.version() == "2.0.0" then
+        io.writefile(path.join(d, "include", "up", "b.h"), "only in 2.0.0")
+    end
+    return true
+end
+function config()
+    local binding = package.name .. "@" .. pkginfo.version()
+    xvm.add("usepkg", { bindir = pkginfo.install_dir() })
+    xvm.files{ src = path.join("include", "up", "a.h"),
+               dst = path.join("usr", "include", "up", "a.h"),
+               binding = binding }
+    if pkginfo.version() == "2.0.0" then
+        xvm.files{ src = path.join("include", "up", "b.h"),
+                   dst = path.join("usr", "include", "up", "b.h"),
+                   binding = binding }
+    end
+    return true
+end
+function uninstall() xvm.remove("usepkg"); return true end
+LUA
+
+RUN subos new switching >/dev/null 2>&1 || fail "S6: subos new failed"
+RUN_IN switching install usepkg@2.0.0 -y >/dev/null 2>&1 || fail "S6: install 2.0.0 failed"
+RUN_IN switching install usepkg@1.0.0 -y >/dev/null 2>&1 || fail "S6: install 1.0.0 failed"
+
+UPDIR="$HOME_DIR/subos/switching/usr/include/up"
+[[ -e "$UPDIR/b.h" ]] || fail "S6: 2.0.0's extra asset was never placed"
+
+RUN_IN switching use usepkg 1.0.0 >/dev/null 2>&1 || fail "S6: use failed"
+
+[[ -e "$UPDIR/a.h" ]] || fail "S6: the asset both releases declare was removed"
+readlink "$UPDIR/a.h" | grep -q "1.0.0" \
+  || fail "S6: the shared asset still points at the release we switched away from"
+if [[ -e "$UPDIR/b.h" || -L "$UPDIR/b.h" ]]; then
+  fail "S6: the asset 1.0.0 does not declare survived the switch -- the sysroot now holds two releases"
+fi
+assert_reconciled switching "S6: switching releases leaked an asset"
+log "  ✓ shared asset moved, the outgoing-only asset reclaimed"
+
+log "PASS: declared_file_assets_removal (S1-S6)"

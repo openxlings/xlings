@@ -1,7 +1,7 @@
 # 声明式文件资产不随卸载回收(#423)——根因与修复方案
 
 > 状态:**已实现**(2026.8.26.1,分支 `fix/423-declared-file-assets-removal`)。
-> 落地结果见 §8,其中**六条原方案的判断被实测推翻**,已在 §8 逐条标注
+> 落地结果见 §8,其中**七条原方案的判断被实测推翻**,已在 §8 逐条标注
 > 而不是悄悄改掉。
 > 所有数字都在用户真实 home(`/home/speak/.xlings`)与真实索引
 > (`~/.xlings/data/xim-pkgindex`)上实测,命令写在每节的「实测」里,可复现。
@@ -646,7 +646,7 @@ libselinux libxml2 openssl ca-certificates zlib glib freetype util-linux
 | — | **回收策略只有一份**:`xvm::reclaim_declared_assets`,四条路径共用 | `xvm/commands.{cppm,cpp}` |
 
 测试:`tests/unit/test_sysroot_assets.cpp`(14 例)、
-`tests/e2e/declared_file_assets_removal_test.sh`(S1-S5,已注册为 E2E-94)。
+`tests/e2e/declared_file_assets_removal_test.sh`(S1-S6,已注册为 E2E-94)。
 S5 是粒度冲突:一个包把整个目录声明成一个资产,另一个包往同一个目录放叶子。
 **对修复前二进制实测:叶子真的落进了对方 payload。**
 规范:`docs/spec/xlings-json-schema.md` 增加「声明式文件资产的生命周期」一节,
@@ -707,6 +707,20 @@ files 成员**本身就是 workspace 条目**(实测 `default` 的 268 条里 14
 定义就是「已声明」。**一个 bug 能满足的判据不是判据。**
 补了一条不依赖元数据的断言:交出一个发布之后,本 subos 不得再有任何链接
 指向那个发布的 payload。旧二进制在这条上失败,新二进制通过。
+
+**⑦ D4 的第一版是个 no-op,而且我自己的单测放过去了。**
+`use demo 1.0.0`(从 2.0.0)之后,2.0.0 多出来的那个头**原封不动还在**。
+原因是回收的判据是「还有没有 active 的声明」,而搁浅的成员**仍然 active**——
+它对自己回答"有",于是链接被**重新指回**刚刚离开的那个 release,
+整个切换什么都没改变。
+
+单测只断言了 plan 里的 `reclaimFileDests`,plan 是对的,效果是零。
+这正是本文档 §5.1 自己写过的那句话的另一个实例:
+**一个 bug 能满足的判据不是判据。**
+
+修法:先把这些成员**取消激活**(`installed[]` 不动,payload 还在,`use` 能切回来),
+再回收。测法:e2e S6 跑真命令看 sysroot ——
+它对**修复前二进制**和**中间那版 no-op** 都失败。
 
 ### 8.3 实测(真实 home 切片,`.agents/tools/slice-real-home.sh`)
 

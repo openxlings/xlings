@@ -486,12 +486,17 @@ TEST(PlanUseSwitch, ReclaimsAssetsTheIncomingReleaseDoesNotDeclare) {
     auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0");
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
-    EXPECT_EQ(plan->reclaimFileDests,
-              (std::set<std::string>{"usr/include/demo/b.h"}))
-        << "the asset 1.0.0 does not declare must be reclaimed";
+    // Members, not destinations. Until these are deactivated they still
+    // declare their paths, and reclaiming would re-point each one back at the
+    // release being left -- which is exactly what happened when this carried
+    // destinations, and what a plan-only assertion could not see. The e2e
+    // (S6) is what proves the file actually goes.
+    ASSERT_EQ(plan->reclaimFiles.size(), 1u);
+    EXPECT_EQ(plan->reclaimFiles.begin()->first, "demo.files.2");
+    EXPECT_EQ(plan->reclaimFiles.begin()->second, "2.0.0");
     // A path both releases declare is a replacement, not a reclaim: unlinking
     // it would open a window with the header simply absent.
-    EXPECT_FALSE(plan->reclaimFileDests.contains("usr/include/demo/a.h"));
+    EXPECT_FALSE(plan->reclaimFiles.contains("demo.files.1"));
 
     for (const auto& member : plan->stranded) {
         EXPECT_NE(member.kind, "files")

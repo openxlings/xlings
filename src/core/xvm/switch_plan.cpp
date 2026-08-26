@@ -230,19 +230,19 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
                 // place that never asked.
                 auto kind = effective_kind_of(db, memberTarget, memberVersion);
                 if (!kind_can_strand(kind)) continue;
-                // A declared asset is reclaimed, not reported. See the note
-                // on `reclaimFileDests`. This holds for a package switch too:
-                // `usr/include/openssl` belongs to whichever release declares
-                // it, and the one being left has just stopped being active,
-                // so the link into its payload is not "retained by the old
-                // package", it is a leftover -- `reclaim_declared_assets`
-                // still re-points it if something active claims the path.
-                if (kind == "files") {
-                    const auto placement =
-                        file_placement(db, memberTarget, memberVersion);
-                    if (!placement.destination.empty()) {
-                        plan.reclaimFileDests.insert(placement.destination);
-                    }
+                // Within one package, a declared asset is reclaimed rather
+                // than reported. See the note on `reclaimFiles`: a program
+                // name has an owner and picking one is a guess, while a
+                // declared destination is decided by the declaration and by
+                // nothing else, so leaving it behind is not restraint -- it
+                // is a sysroot holding two releases of one package at once.
+                //
+                // ACROSS packages it stays a report. The distribution being
+                // left is complete and still active, and deciding that its
+                // headers should leave the sysroot is a different question
+                // from "did this switch finish".
+                if (samePackage && kind == "files") {
+                    plan.reclaimFiles.emplace(memberTarget, memberVersion);
                     continue;
                 }
                 (samePackage ? plan.stranded : plan.retainedByOldPackage)

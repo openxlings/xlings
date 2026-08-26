@@ -709,15 +709,31 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     // Assets the release being left declared and the incoming one does not.
     //
-    // After the workspace is updated, so `activeAfter` is genuinely "after":
-    // a destination some other release still actively declares is re-pointed
-    // at it rather than deleted. Before 2026.8.26.1 these were listed as
-    // stranded members and left on disk, which is a sysroot serving two
-    // releases at once -- the state the binding group exists to make
-    // unrepresentable.
+    // Deactivated FIRST, and that order is the whole of it. Reclaiming asks
+    // "does anything still active declare this destination", so a member left
+    // active answers yes about itself and its link is re-pointed straight
+    // back at the release being left -- the switch then changes nothing at
+    // all. The release moved; a member it has no version of did not come
+    // along, and saying so is not a guess about intent.
+    //
+    // `installed[]` is untouched: the payload is still there and `use` can
+    // bring it back. Only `active` moves.
+    std::set<std::string> reclaimDests;
+    for (const auto& [memberTarget, memberVersion] : plan->reclaimFiles) {
+        const auto placement = file_placement(db, memberTarget, memberVersion);
+        if (!placement.destination.empty()) {
+            reclaimDests.insert(placement.destination);
+        }
+        if (const auto it = Config::workspace_mut().find(memberTarget);
+            it != Config::workspace_mut().end()
+            && it->second == memberVersion) {
+            Config::workspace_mut().erase(it);
+            log::debug("deactivated {}@{}: the release moved and this member "
+                       "did not come along", memberTarget, memberVersion);
+        }
+    }
     reclaim_declared_assets(p.subosDir, p.dataDir / "xpkgs",
-                            plan->reclaimFileDests, db,
-                            Config::workspace());
+                            reclaimDests, db, Config::workspace());
 
     Config::save_workspace();
 

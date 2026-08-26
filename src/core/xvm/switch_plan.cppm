@@ -110,14 +110,23 @@ struct UseSwitchPlan {
     // usable advice.
     std::vector<StrandedMember> stranded;
 
-    // Destinations the outgoing release declared that the incoming one does
-    // not, to be handed to `reclaim_declared_assets`.
+    // File members of the outgoing release the incoming one has no version
+    // of: target -> the version they are still active at.
     //
-    // Same set the `stranded` loop finds, filtered to `kind == "files"`. It
-    // is a set of destinations rather than of members because that is what
-    // reclaiming takes: two members can name one path, and the decision is
-    // per path.
-    std::set<std::string> reclaimFileDests;
+    // Members rather than destinations, and that distinction is the whole
+    // reason this works. Reclaiming a destination asks "does anything ACTIVE
+    // still declare it" -- and until these members are deactivated, they do,
+    // so reclaiming re-pointed each one straight back at the release being
+    // left and the switch changed nothing. Measured before it was noticed:
+    // `use demo 1.0.0` after 2.0.0 left 2.0.0's extra header exactly where it
+    // was, and the plan-level test passed because it only ever looked at the
+    // plan.
+    //
+    // Only ever filled for a switch WITHIN one package, same as `stranded`.
+    // Moving `java` from one JDK to another leaves the other distribution
+    // complete and active, and taking its headers out of the sysroot is not
+    // this command's decision to make.
+    std::map<std::string, std::string> reclaimFiles;
 
     // Switching packages: the names the package being left still owns.
     //
