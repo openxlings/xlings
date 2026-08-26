@@ -20,6 +20,8 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.switch_plan;
+import xlings.core.xvm.removal;
+import xlings.core.xim.installer;
 
 namespace fs = std::filesystem;
 using xlings::xvm::VersionDB;
@@ -495,4 +497,78 @@ TEST(PlanUseSwitch, ReclaimsAssetsTheIncomingReleaseDoesNotDeclare) {
         EXPECT_NE(member.kind, "files")
             << "a declared asset is reclaimed, not reported";
     }
+}
+
+// ============================================================
+// The removal batch's list is the input; the policy above is the decision
+// ============================================================
+
+// `cleanup_removed_xvm_file_artifacts` is the third member of a family whose
+// other two (`..._library_artifacts`, `..._program_artifacts`) have shipped
+// since before declared assets existed. All three read the same list --
+// `removalResult.removed`, resolved against the database as it was BEFORE the
+// removal -- and the first two `continue` past every `kind == "files"` entry
+// in it. That skip is the whole of #423: the data needed to clean the sysroot
+// flowed right past the code that ignored it.
+//
+// Tested directly because the two call sites are one line each and the
+// interesting behaviour is all here.
+TEST(CleanupRemovedFileArtifacts, ReclaimsExactlyTheRemovedFilesEntries) {
+    const auto root = scratch_("cleanup-removed");
+    const auto storeRoot = root / "store";
+    const auto payload = storeRoot / "going" / "1.0.0";
+    const auto subos = root / "subos";
+    fs::create_directories(payload / "include");
+    std::ofstream(payload / "include" / "a.h") << "a";
+    fs::create_directories(subos / "usr" / "include" / "going");
+    fs::create_symlink(payload / "include" / "a.h",
+                       subos / "usr" / "include" / "going" / "a.h");
+
+    VersionDB before;
+    declare_release_(before, "going", "1.0.0", payload.string(),
+                     {{"include/a.h", "usr/include/going/a.h"}});
+    // A program member in the same batch: it must be ignored here exactly as
+    // the file members are ignored by the program cleanup.
+    const VersionDB after;
+
+    xlings::xim::cleanup_removed_xvm_file_artifacts(
+        subos, storeRoot, before, after, Workspace{},
+        xlings::xvm::RemovalBatchResult{
+            .removed = {{"going", "1.0.0"},
+                        {"going.files.1", "1.0.0"}}});
+
+    EXPECT_FALSE(present_(subos / "usr" / "include" / "going" / "a.h"));
+    EXPECT_FALSE(fs::exists(subos / "usr" / "include" / "going"));
+    EXPECT_TRUE(fs::exists(subos / "usr" / "include"));
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+// A record that names a destination outside the permitted roots must not be
+// able to steer a delete. The registration layer already refuses such a
+// destination, so reaching this state means the file was edited by hand --
+// which is exactly when re-checking is worth its cost.
+TEST(CleanupRemovedFileArtifacts, RefusesADestinationTheRulesWouldNotAllow) {
+    const auto root = scratch_("cleanup-escape");
+    const auto subos = root / "subos";
+    const auto outside = root / "outside";
+    fs::create_directories(subos);
+    fs::create_directories(outside);
+    std::ofstream(outside / "victim") << "not yours";
+
+    VersionDB before;
+    declare_release_(before, "going", "1.0.0", "/pkg/going/1.0.0",
+                     {{"x", "usr/include/x"}});
+    before["going.files.1"].versions["1.0.0"].fileDst = "../outside/victim";
+
+    xlings::xim::cleanup_removed_xvm_file_artifacts(
+        subos, root / "store", before, VersionDB{}, Workspace{},
+        xlings::xvm::RemovalBatchResult{
+            .removed = {{"going.files.1", "1.0.0"}}});
+
+    EXPECT_TRUE(fs::exists(outside / "victim"));
+
+    std::error_code ec;
+    fs::remove_all(root, ec);
 }

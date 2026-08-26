@@ -1,7 +1,7 @@
 # 声明式文件资产不随卸载回收(#423)——根因与修复方案
 
 > 状态:**已实现**(2026.8.26.1,分支 `fix/423-declared-file-assets-removal`)。
-> 落地结果见 §8,其中**五条原方案的判断被实测推翻**,已在 §8 逐条标注
+> 落地结果见 §8,其中**六条原方案的判断被实测推翻**,已在 §8 逐条标注
 > 而不是悄悄改掉。
 > 所有数字都在用户真实 home(`/home/speak/.xlings`)与真实索引
 > (`~/.xlings/data/xim-pkgindex`)上实测,命令写在每节的「实测」里,可复现。
@@ -646,7 +646,9 @@ libselinux libxml2 openssl ca-certificates zlib glib freetype util-linux
 | — | **回收策略只有一份**:`xvm::reclaim_declared_assets`,四条路径共用 | `xvm/commands.{cppm,cpp}` |
 
 测试:`tests/unit/test_sysroot_assets.cpp`(14 例)、
-`tests/e2e/declared_file_assets_removal_test.sh`(S1-S4,已注册为 E2E-94)。
+`tests/e2e/declared_file_assets_removal_test.sh`(S1-S5,已注册为 E2E-94)。
+S5 是粒度冲突:一个包把整个目录声明成一个资产,另一个包往同一个目录放叶子。
+**对修复前二进制实测:叶子真的落进了对方 payload。**
 规范:`docs/spec/xlings-json-schema.md` 增加「声明式文件资产的生命周期」一节,
 写明命名规则、四条路径的统一回收表、以及**判据不能用 `-e`**。
 
@@ -665,11 +667,33 @@ files 成员**本身就是 workspace 条目**(实测 `default` 的 268 条里 14
 所以 T5 收敛为只递归悬空扫描 —— 悬空的已经坏了,删除零风险。
 未声明但可用的那一类**本轮不做**,留作独立 issue。
 
-**③ §4.2 的三分支判定是对的,但漏了一处入口。**
+**③ 「安装路径补上 cleanup 就能让粒度迁移收敛」—— 一半对,而且归因错了。**
 `Installer::execute` 的安装路径**早就**调用 lib/program 两个 cleanup
-(`installer.cpp:1935/2151`),同样缺 files 那个。补上之后,一次
-**重新注册**(新版本不再声明某个目的地)也会回收 —— 这正是 §2.6 粒度迁移
-能够收敛的原因,而且与安装顺序无关。原方案没看到这处。
+(`installer.cpp:1935/2151`),同样缺 files 那个,补上是对称性要求。
+但实测下来它在粒度迁移里**根本不触发**:重新注册不会把「新配方不再声明」
+的成员从 DB 里删掉,`metadata->removal.removed` 是空的。
+
+```
+配方从 a.h+b.h 改成只声明 a.h,重装 →  sysroot 仍是 a.h b.h
+                                        DB 仍有 droppkg.files.2
+```
+
+**真正让粒度迁移收敛的是 §2.6 的 `place_asset` 解包护栏**,不是这个 cleanup。
+实测(同一个包 目录粒度 → 叶子粒度,重装):
+
+| | `usr/include/gran` | payload |
+|---|---|---|
+| 修复前二进制 | 仍是**链接**(叶子写入被 `fs::equivalent` 短路,静默不迁移) | 干净 |
+| 修复后二进制 | **真目录**,两个头都在 | 干净 |
+
+安装路径那个调用仍然保留 —— 配方在 `config()` 里显式 `xvm.remove` 时它是对的,
+而且 lib/program 在同一处已经这么做了,唯独漏掉 files 正是 #423 的形状。
+它由单测直接覆盖(`CleanupRemovedFileArtifacts.*`),不靠调用点。
+
+**「重新注册后不再声明的目的地不被回收」是一个仍然存在的缺口**,
+但它是**注册层**的问题(重新注册该不该裁掉不再声明的成员?
+`detachedLegacy` 的存在恰恰是为了**不**裁 —— 跨平台配方在不同平台注册不同的名字),
+不是回收侧能回答的。列入 §8.4。
 
 **④ §2.6 说护栏应当「拒绝写入」。拒绝会把迁移堵死。**
 两个包共享一个目录时,先改的那一方要往对方的目录链接里写叶子,拒绝 =
@@ -705,6 +729,8 @@ verify-untouched            OK: 真实 payload store 未被改动
 - **D5 的索引侧**(`declare_headers` 的 `merge` 选项 + glibc/linux-headers 的
   `scsi`)—— 客户端护栏必须先发布(§6 的 a 先于 c)。客户端这一半已在本次。
 - **未声明但可用的 sysroot 链接**(§8.2 ②,实测 646 条)—— 独立 issue。
+- **重新注册后不再声明的目的地不被回收**(§8.2 ③ 实测)—— 记录与链接都留着。
+  属于注册层,与 `detachedLegacy` 的既有语义有冲突,需要单独设计。
 - **`cleanup_removed_xvm_library_artifacts` 的「有幸存者就跳过」** —— 同样会
   把泄漏换成悬空,但影响的是另一批状态,拆开走(§6 风险)。
 - **`xvm::remove_asset` 仍用 `remove_all`** —— 新代码一律 `fs::remove`;
