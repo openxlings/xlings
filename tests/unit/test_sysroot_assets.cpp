@@ -296,11 +296,24 @@ TEST(ReclaimDeclaredAssets, RePointsADestinationAnotherActiveReleaseDeclares) {
         subos, storeRoot, {"usr/include/scsi.h"}, db, activeAfter);
 
     ASSERT_TRUE(present_(subos / "usr" / "include" / "scsi.h"));
-    std::error_code ec;
-    EXPECT_EQ(fs::read_symlink(subos / "usr" / "include" / "scsi.h", ec),
-              stayingPayload / "include" / "scsi.h")
+    // What the destination now SERVES, not how it is wired. The wiring is
+    // platform-specific -- a symlink on POSIX, a hard link or a copy on
+    // Windows (`create_link_`) -- so `read_symlink` answers on one platform
+    // and fails on the other while the behaviour under test is the same on
+    // both: the path belongs to the surviving declaration now.
+    std::string served;
+    {
+        std::ifstream in(subos / "usr" / "include" / "scsi.h");
+        std::getline(in, served);
+    }
+    EXPECT_EQ(served, "staying")
         << "the surviving declaration must own the path now";
 
+    std::error_code ec;
+#if !defined(_WIN32)
+    EXPECT_EQ(fs::read_symlink(subos / "usr" / "include" / "scsi.h", ec),
+              stayingPayload / "include" / "scsi.h");
+#endif
     fs::remove_all(root, ec);
 }
 
