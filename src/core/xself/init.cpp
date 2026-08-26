@@ -189,35 +189,39 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
     // this file cannot import xlings.core.subos: subos imports xself, so that
     // edge would close a cycle. The index query lives one layer down, where
     // both callers can reach it.
-    struct DefaultRuntime { std::string binding; bool resolved; };
-    const DefaultRuntime def = [] -> DefaultRuntime {
-        const std::string pkg{mf::DEFAULT_RUNTIME_PACKAGE};
-        if (auto v = xlings::xim::index_version_of(pkg))
-            return {pkg + "@" + *v, true};
-        return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
-    }();
+    if (creating) {
+        // Only on the creating side. describe_block never consults a default,
+        // and resolving one anyway would rebuild the catalog on every repair
+        // for an answer that is then discarded.
+        struct DefaultRuntime { std::string binding; bool resolved; };
+        const DefaultRuntime def = [] -> DefaultRuntime {
+            const std::string pkg{mf::DEFAULT_RUNTIME_PACKAGE};
+            if (auto v = xlings::xim::index_version_of(pkg))
+                return {pkg + "@" + *v, true};
+            return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
+        }();
 
-    // Provenance is recorded HERE, unlike the two rebuild paths in subos.cpp,
-    // because this call knows the answer: `creating` means the block is being
-    // written from nothing, so step 5 is the step that answers and `def` is
-    // what it answers with. The rebuild paths hand runtime_for a default and
-    // cannot see whether a recorded or observed binding outranked it, so they
-    // record nothing rather than guess.
-    auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Create,
-                                   {}, def.binding);
-    json[std::string(mf::BLOCK)] = creating
-        ? mf::make_block({
-              .runtime   = runtime,
-              .by        = by,
-              .hostGlibc = platform::host_glibc_version(),
-              .intent    = mf::Intent::Create,
-              .runtimeSource = runtime == def.binding
-                  ? std::string(def.resolved ? mf::RUNTIME_SOURCE_INDEX
-                                             : mf::RUNTIME_SOURCE_FALLBACK)
-                  : std::string{},
-          })
-        : mf::describe_block(subos_dir, json, by,
-                             platform::host_glibc_version());
+        // Provenance is recorded HERE, unlike the rebuild paths in subos.cpp,
+        // because this call can tell: the block is being written from nothing,
+        // so `def` is what step 5 answered with -- and if some earlier step
+        // outranked it, the values differ and nothing is claimed.
+        auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Create,
+                                       {}, def.binding);
+        json[std::string(mf::BLOCK)] = mf::make_block({
+            .runtime   = runtime,
+            .by        = by,
+            .hostGlibc = platform::host_glibc_version(),
+            .intent    = mf::Intent::Create,
+            .runtimeSource = runtime == def.binding
+                ? std::string(def.resolved ? mf::RUNTIME_SOURCE_INDEX
+                                           : mf::RUNTIME_SOURCE_FALLBACK)
+                : std::string{},
+        });
+    } else {
+        json[std::string(mf::BLOCK)] =
+            mf::describe_block(subos_dir, json, by,
+                               platform::host_glibc_version());
+    }
     ensure_parent_dirs_(path);
     platform::write_string_to_file(path.string(), json.dump(2));
 }

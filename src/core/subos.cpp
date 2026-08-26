@@ -389,8 +389,13 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
     // to teach someone about the index -- and the source is left unset,
     // because a recorded or observed binding outranks the default and this
     // call cannot see which step answered.
-    auto runtime = manifest::runtime_for(dir, json, intent, requested,
-                                         resolve_default_runtime().binding);
+    // Resolved only for Create. Under Describe step 5 does not exist, so the
+    // default is never consulted -- and asking would make every repair and
+    // every rebuild rebuild the catalog for an answer it then discards.
+    auto runtime = intent == manifest::Intent::Create
+        ? manifest::runtime_for(dir, json, intent, requested,
+                                resolve_default_runtime().binding)
+        : manifest::runtime_for(dir, json, intent, requested);
     json[std::string(manifest::BLOCK)] = manifest::make_block({
         .runtime   = std::move(runtime),
         .by        = std::format("xlings {}", Info::VERSION),
