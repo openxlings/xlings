@@ -17,8 +17,22 @@ set -eu
 set -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="${XLINGS_BIN:-$ROOT_DIR/target/x86_64-linux-gnu/bin/xlings}"
-[ -x "$BIN" ] || { echo "SKIP: no xlings binary at $BIN"; exit 0; }
+# shellcheck source=./project_test_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
+
+# find_xlings_bin, not a hand-written path.
+#
+# The first version of this file guessed `target/x86_64-linux-gnu/bin/xlings`
+# and skipped when it was absent -- which it always is, because builds land
+# under `target/<triple>/<fingerprint>/bin/`. On CI that skip exited 0 and the
+# runner printed `PASS: E2E-95 (5ms)`. Every assertion below had been written,
+# reviewed and registered, and none of them ran.
+#
+# ⚠️ A skip that reads as a pass is worse than no test: it answers a question
+# nobody asked while looking like the one that was.
+BIN="$(find_xlings_bin)"
+[ -n "$BIN" ] && [ -x "$BIN" ] \
+  || { echo "[project-e2e] FAIL: no xlings binary found under target/" >&2; exit 1; }
 
 RUNTIME_DIR="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_DIR"' EXIT
