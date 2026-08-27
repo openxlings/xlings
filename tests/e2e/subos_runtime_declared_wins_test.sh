@@ -316,4 +316,41 @@ $OUT5" ;;
 esac
 log "  ✓ A5: an unsatisfiable declaration fell through to the index (7.7.8)"
 
+# ── A7: a rebind that cannot install does not rewrite the declaration ────
+#
+# `xlings subos runtime <binding>` is the supported way to move an existing
+# subos onto another runtime. The dangerous half is the failure path: if the
+# payload cannot be installed and the manifest is rewritten anyway, the
+# command produces a subos declaring a runtime nobody installed -- which is
+# the exact state this whole change exists to make impossible, arrived at via
+# the command meant to fix it.
+#
+# The fixture's URLs are unreachable by design, so this harness can only
+# exercise that half. The success path needs a real payload and is covered by
+# the ecosystem verification rather than here; saying so beats implying it is
+# tested.
+BEFORE7="$(read_block "$DEFAULT_DIR" 'blk.get("runtime")')"
+[ "$BEFORE7" = "glibc@7.7.7" ] \
+  || fail "A7: expected the A1 subos to still declare glibc@7.7.7, got '$BEFORE7'"
+
+OUT7="$(x subos runtime glibc@7.7.8 default 2>&1)" || true
+AFTER7="$(read_block "$DEFAULT_DIR" 'blk.get("runtime")')"
+[ "$AFTER7" = "$BEFORE7" ] \
+  || fail "A7: the install failed and the declaration was rewritten anyway --
+    subos now declares '$AFTER7' with no payload behind it. A rebind that
+    cannot complete has to leave the subos declaring what it still has.
+    Output was:
+$OUT7"
+log "  ✓ A7: a failed rebind left the declaration untouched (still $BEFORE7)"
+
+# And it has to SAY so, not fail silently -- otherwise "nothing changed"
+# and "nothing was attempted" read the same.
+case "$OUT7" in
+  *7.7.8*) ;;
+  *) fail "A7: the failed rebind said nothing about the runtime it could not
+    install. Output was:
+$OUT7" ;;
+esac
+log "  ✓ A7b: and named the runtime it could not install"
+
 log "E2E subos-runtime-declared-wins: PASS"

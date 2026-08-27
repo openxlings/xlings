@@ -1004,11 +1004,13 @@ int new_from(const std::string& name, const fs::path& customDir,
         auto forkRuntime = manifest::runtime_for(
             dstDir, subosCfg, manifest::Intent::Create, runtime,
             resolve_default_runtime().binding);
+        auto forkAbi = runtime_abi_for(forkRuntime);
         subosCfg[std::string(manifest::BLOCK)] = manifest::make_block({
-            .runtime   = std::move(forkRuntime),
-            .by        = std::format("xlings {}", Info::VERSION),
-            .hostGlibc = platform::host_glibc_version(),
-            .intent    = manifest::Intent::Create,
+            .runtime    = std::move(forkRuntime),
+            .by         = std::format("xlings {}", Info::VERSION),
+            .hostGlibc  = platform::host_glibc_version(),
+            .intent     = manifest::Intent::Create,
+            .runtimeAbi = std::move(forkAbi),
         });
     }
     // `--runtime` loses to what the fork actually carries, and that is right:
@@ -1967,8 +1969,24 @@ int run(int argc, char* argv[], EventStream& stream) {
             platform::set_env_variable("XLINGS_ACTIVE_SUBOS", target);
             auto prev = Config::set_active_subos_override(target);
             std::vector<std::string> targets{binding};
+            // useAfterInstall TRUE here, unlike create().
+            //
+            // Rebinding is the one operation whose whole purpose is to change
+            // what this subos runs on, so the new payload has to become the
+            // ACTIVE one. Leaving it false installs the payload and leaves the
+            // old version active -- declared and active then disagree, which
+            // is precisely the state this change exists to make impossible,
+            // arrived at by the command meant to fix it.
+            //
+            // create() passes false for a reason that does not apply: there,
+            // activation would run before the registration for a subos being
+            // created has landed. This subos already exists and is registered.
             const int rc = xim::cmd_install(targets, /*yes=*/true,
-                                            /*noDeps=*/false, stream);
+                                            /*noDeps=*/false, stream,
+                                            /*forceGlobal=*/false,
+                                            /*cancel=*/nullptr,
+                                            /*dryRun=*/false,
+                                            /*useAfterInstall=*/true);
             (void)Config::set_active_subos_override(prev);
             platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
             if (rc != 0) {
