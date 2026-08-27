@@ -77,7 +77,7 @@ printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 x() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
         XLINGS_HOME="$HOME_DIR" "$BIN" "$@" ) }
 
-x self init >/dev/null 2>&1 || true
+INIT1_OUT="$(x self init 2>&1)" || true
 
 read_block() {  # <subos-dir> <python-expr over blk>
   python3 - "$1" "$2" <<'PY'
@@ -106,6 +106,23 @@ SRC1="$(read_block "$DEFAULT_DIR" 'blk.get("runtime_source", "")')"
 [ "$SRC1" = "fallback" ] \
   || fail "S1: empty index, so runtime_source should be 'fallback', got '$SRC1'"
 log "  ✓ S1c: fallback path recorded as runtime_source=fallback"
+
+# S1d: and it SAYS so. `runtime_source` lives in a file nobody opens; the
+# failure that eventually follows a stale pin names a payload directory, not a
+# decision. `subos new` has warned on this same fallback for a while -- init
+# was the silent one.
+#
+# The criterion is that the message names the binding it settled for, not that
+# it contains any particular sentence: rewording the prose must not turn this
+# assertion into a no-op. Matched with `case` rather than a pipeline, because
+# `printf | grep -q` under `set -o pipefail` returns 141 on a SUCCESSFUL match.
+case "$INIT1_OUT" in
+  *"$EXPECTED_DEFAULT"*) ;;
+  *) fail "S1d: the index could not answer, so self init pinned
+    '$EXPECTED_DEFAULT' -- and said nothing about it. Output was:
+$INIT1_OUT" ;;
+esac
+log "  ✓ S1d: the fallback was announced, naming $EXPECTED_DEFAULT"
 
 HOST_GLIBC_EXPECTED="$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
 HOST_GLIBC_RECORDED="$(read_block "$DEFAULT_DIR" 'blk.get("host_glibc", "")')"
@@ -200,7 +217,7 @@ EOF
 
 x4() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
          XLINGS_HOME="$S4_HOME" "$BIN" "$@" ) }
-x4 self init >/dev/null 2>&1 || true
+INIT4_OUT="$(x4 self init 2>&1)" || true
 # `update` is what actually syncs an index repo into a home -- without it the
 # catalog answers "package index not available", which S1's empty-index setup
 # also produces, so the two would be indistinguishable.
@@ -333,5 +350,18 @@ SRC6="$(read_block "$S4_DEFAULT" 'blk.get("runtime_source", "")')"
     is the defect this asserts against -- the value may look right and be a
     coincidence."
 log "  ✓ S6b: recorded as runtime_source=index, so it was looked up, not guessed"
+
+# S6c: the reverse control for S1d. A warning that fires on every init tells
+# nobody anything, so the resolving path has to be quiet -- specifically, it
+# must not name the built-in constant, because naming it is exactly what S1d
+# looks for.
+case "$INIT4_OUT" in
+  *"$EXPECTED_DEFAULT"*) fail "S6c: this init RESOLVED the binding
+    (glibc@9.9.9), yet its output mentions the built-in '$EXPECTED_DEFAULT'.
+    S1d passes whenever that string appears, so if it appears here too the
+    warning fires unconditionally and S1d proves nothing. Output was:
+$INIT4_OUT" ;;
+esac
+log "  ✓ S6c: the resolving path stayed quiet, so S1d's assertion has teeth"
 
 log "E2E subos-runtime-binding: PASS"

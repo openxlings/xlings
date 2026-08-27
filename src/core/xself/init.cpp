@@ -230,6 +230,22 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
             return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
         }();
 
+        // Said out loud, matching what `subos new` already does on the same
+        // fallback (subos.cpp). Both spellings of the remedy, because they
+        // answer different situations -- the index has never been synced on
+        // this machine, or the user knew the binding all along. Without this,
+        // the only trace is `runtime_source` in a file nobody opens, and the
+        // failure that eventually follows names a payload DIRECTORY rather
+        // than a decision anyone remembers making.
+        //
+        // `log::` rather than an event: init runs before the stream exists.
+        if (!def.resolved) {
+            log::warn("index could not answer which {} to bind to; using the "
+                      "built-in {}. Run `xlings update`, or create the subos "
+                      "explicitly with `--runtime <package>@<version>`.",
+                      mf::DEFAULT_RUNTIME_PACKAGE, def.binding);
+        }
+
         // Provenance is recorded HERE, unlike the rebuild paths in subos.cpp,
         // because this call can tell: the block is being written from nothing,
         // so `def` is what step 5 answered with -- and if some earlier step
