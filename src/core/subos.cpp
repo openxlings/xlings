@@ -419,8 +419,9 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
 }
 
 DefaultRuntime resolve_default_runtime() {
+    // Queried by coordinate, recorded by name -- see the two constants.
     const std::string pkg{manifest::DEFAULT_RUNTIME_PACKAGE};
-    if (auto version = xim::index_version_of(pkg))
+    if (auto version = xim::index_version_of(manifest::DEFAULT_RUNTIME_QUERY))
         return DefaultRuntime{.binding = pkg + "@" + *version, .resolved = true};
     return DefaultRuntime{
         .binding = std::string(manifest::DEFAULT_RUNTIME_FALLBACK),

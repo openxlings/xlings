@@ -27,7 +27,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
+  # Moved off v2026.8.10.1 because a stale bootstrap is not neutral: the client
+  # that lays down `subos/default` decides the runtime binding, and every
+  # client before 2026.8.27.1 has `glibc@2.44` compiled in. When the index's
+  # `latest` moved past that, this job installed the newer payload and then
+  # refused to use it --
+  #   error: selected RuntimeBinding glibc@2.44 requires payload
+  #          '.../xpkgs/xim-x-glibc/2.44', but it is not installed
+  # -- which is a fact about the pin, not about the commit under test.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.27.1
 
 jobs:
   native-contracts:
@@ -65,6 +73,8 @@ jobs:
 
       - name: Install system deps + qemu-user-static
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                     /etc/apt/sources.list.d/microsoft*.sources
           sudo apt-get update -qq
           sudo apt-get install -y curl git build-essential qemu-user-static
           qemu-aarch64-static --version | head -1

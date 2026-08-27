@@ -40,6 +40,12 @@ jobs:
       # would not fail CI -- it would silently stop running the test.
       - name: Install system deps
         run: |
+          # The runner image ships Microsoft apt sources that answer 403, and
+          # `apt-get update` fails the whole step over a repository nothing
+          # here installs from. Dropped before updating rather than tolerated
+          # with `|| true`, which would also swallow a real failure.
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                     /etc/apt/sources.list.d/microsoft*.sources
           sudo apt-get update -qq
           sudo apt-get install -y curl git build-essential patchelf lua5.4
 

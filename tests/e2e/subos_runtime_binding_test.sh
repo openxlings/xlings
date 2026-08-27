@@ -228,4 +228,72 @@ SRC4="$(read_block "$S4_HOME/subos/t94" 'blk.get("runtime_source", "")')"
   || fail "S4: resolved from the index but runtime_source is '$SRC4'"
 log "  ✓ S4b: recorded as runtime_source=index"
 
+
+# ── S5: a second repo also publishes glibc, and the answer is unchanged ──
+#
+# S4 cannot catch the failure this exists for. Its home has ONE index repo, so
+# a bare-name query is unambiguous there -- and the shipped client queried by
+# bare name, which on any ordinary home is
+#
+#   [error] package 'glibc' is ambiguous, candidates:
+#     1. scode:glibc@...
+#     2. xim:glibc@...
+#
+# because the default sub-indexes include one that also ships glibc. The
+# resolver returns an error, the caller reads it as "the index cannot answer",
+# and falls back. Measured in a sandbox on the released client: the binding
+# came out RIGHT and runtime_source said `fallback`, because the pinned value
+# and the index's answer happened to agree that day. Only the provenance field
+# made it visible.
+#
+# So the criterion needs a home shaped like a real one: two repos, both
+# answering to the name, and the primary one deciding.
+S5_INDEX2="$RUNTIME_DIR/second-index"
+cp -a "$ROOT_DIR/tests/fixtures/xim-pkgindex" "$S5_INDEX2"
+python3 "$ROOT_DIR/tests/e2e/support/rewrite_glibc_latest.py" \
+    "$S5_INDEX2/pkgs/g/glibc.lua" 8.8.8 \
+  || fail "S5: could not rewrite the second index's glibc recipe"
+
+S5_HOME="$RUNTIME_DIR/home-s5"
+mkdir -p "$S5_HOME/data/xim-index-repos"
+printf '{}\n' > "$S5_HOME/data/xim-index-repos/xim-indexrepos.json"
+cat > "$S5_HOME/.xlings.json" <<EOF
+{
+  "mirror": "GLOBAL",
+  "index_repos": [
+    { "name": "xim",   "url": "$S4_INDEX" },
+    { "name": "scode", "url": "$S5_INDEX2" }
+  ]
+}
+EOF
+
+x5() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
+         XLINGS_HOME="$S5_HOME" "$BIN" "$@" ) }
+x5 self init >/dev/null 2>&1 || true
+x5 update >/dev/null 2>&1 || true
+
+# The ambiguity has to be REAL, or S5 is just S4 with extra steps.
+AMBIG="$(x5 info glibc 2>&1)" || true
+printf '%s\n' "$AMBIG" | grep -qiE 'ambiguous|also provided' \
+  || fail "S5: the two repos did not actually collide on the name 'glibc',
+    so this asserts nothing that S4 did not:
+$AMBIG"
+
+OUT5="$(x5 subos new t95 2>&1)" || true
+[ -f "$S5_HOME/subos/t95/.xlings.json" ] \
+  || { echo "$OUT5" >&2; fail "S5: subos new left no manifest at all"; }
+RUNTIME5="$(read_block "$S5_HOME/subos/t95" 'blk.get("runtime")')"
+[ "$RUNTIME5" = "glibc@9.9.9" ] \
+  || fail "S5: two repos publish glibc and the subos recorded '$RUNTIME5'
+    (xim says 9.9.9, scode says 8.8.8). A bare-name query is ambiguous here,
+    and an ambiguous answer read as 'no answer' silently becomes the fallback."
+log "  ✓ S5a: the primary index decided despite a colliding sub-index"
+
+SRC5="$(read_block "$S5_HOME/subos/t95" 'blk.get("runtime_source", "")')"
+[ "$SRC5" = "index" ] \
+  || fail "S5: recorded runtime_source='$SRC5'. If this says 'fallback' the
+    binding above was a coincidence -- the pinned default and the index's
+    answer agreeing -- not a resolution."
+log "  ✓ S5b: recorded as runtime_source=index, so the value was resolved"
+
 log "E2E subos-runtime-binding: PASS"

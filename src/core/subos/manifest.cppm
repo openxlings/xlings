@@ -77,6 +77,38 @@ inline constexpr std::string_view BLOCK          = "subos_info";
 // copy here is what let the two drift; this is the copy that goes.
 inline constexpr std::string_view DEFAULT_RUNTIME_PACKAGE = "glibc";
 
+// The same package, spelled as an INDEX COORDINATE rather than as a binding.
+//
+// Two constants because they are answers to different questions, and using one
+// for both is a bug that hides:
+//
+//   DEFAULT_RUNTIME_PACKAGE  names the RUNTIME. It is what goes in the binding
+//                            (`glibc@2.44.2`) and what the payload directory is
+//                            called, so it cannot carry a namespace.
+//   DEFAULT_RUNTIME_QUERY    asks the INDEX. A bare name there is AMBIGUOUS the
+//                            moment a second repo publishes it -- and one does:
+//                            `scode` ships glibc too, so on any home with the
+//                            default sub-indexes
+//
+//                              [error] package 'glibc' is ambiguous, candidates:
+//                                1. scode:glibc@2.44.2
+//                                2. xim:glibc@2.44.2
+//
+//                            and the resolver returns an error, which the
+//                            caller reads as "the index cannot answer" and
+//                            falls back. Measured in a sandbox on a released
+//                            client: the binding came out RIGHT and
+//                            `runtime_source` said `fallback`, because the
+//                            pinned value and the index's answer happened to
+//                            agree. The provenance field is the only reason
+//                            that was visible at all.
+//
+// `xim` and not "whichever repo answers": the primary index is where the
+// runtime contract lives (glibc.lua states the `latest` policy there), and a
+// sub-index shadowing the libc the whole closure is built against is not a
+// tie to break by priority.
+inline constexpr std::string_view DEFAULT_RUNTIME_QUERY = "xim:glibc";
+
 // Used ONLY when the index cannot answer -- see resolve_default_runtime() in
 // subos.cpp, which is the single place allowed to decide that. It is a real
 // version because a subos must not be created against a binding nobody can

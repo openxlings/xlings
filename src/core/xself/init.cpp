@@ -195,8 +195,10 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
         // for an answer that is then discarded.
         struct DefaultRuntime { std::string binding; bool resolved; };
         const DefaultRuntime def = [] -> DefaultRuntime {
+            // Queried by coordinate, recorded by name -- see the two
+            // constants in manifest.cppm.
             const std::string pkg{mf::DEFAULT_RUNTIME_PACKAGE};
-            if (auto v = xlings::xim::index_version_of(pkg))
+            if (auto v = xlings::xim::index_version_of(mf::DEFAULT_RUNTIME_QUERY))
                 return {pkg + "@" + *v, true};
             return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
         }();
