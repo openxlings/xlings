@@ -51,7 +51,24 @@ PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly);
 // package, no version for this platform). It is NOT a version, and a caller
 // must not turn it into one silently: absent and "the newest" are different
 // facts, and only one of them is a decision.
-std::optional<std::string> index_version_of(std::string_view package);
+//
+// `access` is the difference between "answer from what is on disk" and "make
+// the index usable, then answer".
+//
+//   LocalOnly     the default, and right for anything that runs often. Never
+//                 touches the network: a home that has an index answers, a
+//                 home that has none says nullopt.
+//   InstallReady  for a caller whose answer is about to be WRITTEN DOWN
+//                 somewhere durable. Syncs once if the index has never been
+//                 materialized, then answers -- and still says nullopt if
+//                 that fails, so the caller keeps its degradation path.
+//
+// The distinction exists because "the index cannot answer" means two very
+// different things on a fresh home and on a working one, and only the first
+// is worth a network round trip.
+std::optional<std::string> index_version_of(
+    std::string_view package,
+    CatalogAccess access = CatalogAccess::LocalOnly);
 
 std::string detect_platform();
 

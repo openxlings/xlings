@@ -77,7 +77,7 @@ printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 x() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
         XLINGS_HOME="$HOME_DIR" "$BIN" "$@" ) }
 
-x self init >/dev/null 2>&1 || true
+INIT1_OUT="$(x self init 2>&1)" || true
 
 read_block() {  # <subos-dir> <python-expr over blk>
   python3 - "$1" "$2" <<'PY'
@@ -106,6 +106,23 @@ SRC1="$(read_block "$DEFAULT_DIR" 'blk.get("runtime_source", "")')"
 [ "$SRC1" = "fallback" ] \
   || fail "S1: empty index, so runtime_source should be 'fallback', got '$SRC1'"
 log "  ✓ S1c: fallback path recorded as runtime_source=fallback"
+
+# S1d: and it SAYS so. `runtime_source` lives in a file nobody opens; the
+# failure that eventually follows a stale pin names a payload directory, not a
+# decision. `subos new` has warned on this same fallback for a while -- init
+# was the silent one.
+#
+# The criterion is that the message names the binding it settled for, not that
+# it contains any particular sentence: rewording the prose must not turn this
+# assertion into a no-op. Matched with `case` rather than a pipeline, because
+# `printf | grep -q` under `set -o pipefail` returns 141 on a SUCCESSFUL match.
+case "$INIT1_OUT" in
+  *"$EXPECTED_DEFAULT"*) ;;
+  *) fail "S1d: the index could not answer, so self init pinned
+    '$EXPECTED_DEFAULT' -- and said nothing about it. Output was:
+$INIT1_OUT" ;;
+esac
+log "  ✓ S1d: the fallback was announced, naming $EXPECTED_DEFAULT"
 
 HOST_GLIBC_EXPECTED="$(/usr/bin/getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
 HOST_GLIBC_RECORDED="$(read_block "$DEFAULT_DIR" 'blk.get("host_glibc", "")')"
@@ -200,7 +217,7 @@ EOF
 
 x4() { ( cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin \
          XLINGS_HOME="$S4_HOME" "$BIN" "$@" ) }
-x4 self init >/dev/null 2>&1 || true
+INIT4_OUT="$(x4 self init 2>&1)" || true
 # `update` is what actually syncs an index repo into a home -- without it the
 # catalog answers "package index not available", which S1's empty-index setup
 # also produces, so the two would be indistinguishable.
@@ -227,7 +244,6 @@ SRC4="$(read_block "$S4_HOME/subos/t94" 'blk.get("runtime_source", "")')"
 [ "$SRC4" = "index" ] \
   || fail "S4: resolved from the index but runtime_source is '$SRC4'"
 log "  ✓ S4b: recorded as runtime_source=index"
-
 
 # ── S5: a second repo also publishes glibc, and the answer is unchanged ──
 #
@@ -295,5 +311,57 @@ SRC5="$(read_block "$S5_HOME/subos/t95" 'blk.get("runtime_source", "")')"
     binding above was a coincidence -- the pinned default and the index's
     answer agreeing -- not a resolution."
 log "  ✓ S5b: recorded as runtime_source=index, so the value was resolved"
+
+
+# ── S6: `self init` itself resolves, on a home whose index is not yet synced ─
+#
+# S4 and S5 both assert on a subos created by `subos new`, AFTER `update` has
+# run. That leaves the path every new user actually takes untested: `self init`
+# creates `subos/default` first, on a home where the index has never been
+# materialized.
+#
+# It is not a corner. mcpp lays out its sandbox -- and therefore the binding --
+# before its first `xlings install` fetches the index, so `subos/default` is
+# the block mcpp reads on a first build. Measured before this change, on a
+# fresh MCPP_HOME with xlings 2026.8.27.3: `runtime_source` was `fallback`, and
+# the build worked only because the constant happened to equal what the index
+# offered that day.
+#
+# $S4_HOME is exactly that shape already: its `self init` above ran BEFORE
+# `x4 update`, against an index repo that was configured but never synced. So
+# the assertion needs no new fixture -- only the right subos.
+S4_DEFAULT="$S4_HOME/subos/default"
+[ -f "$S4_DEFAULT/.xlings.json" ] \
+  || fail "S6: self init produced no default subos manifest in $S4_HOME"
+
+RUNTIME6="$(read_block "$S4_DEFAULT" 'blk.get("runtime")')"
+[ "$RUNTIME6" = "glibc@9.9.9" ] \
+  || fail "S6: self init recorded '$RUNTIME6', but the configured index says
+    9.9.9. On a home with no synced index the query has to MAKE the index
+    usable before answering -- otherwise the binding every new user gets comes
+    from a constant, and the next time that package is republished a fresh
+    home installs the new payload and refuses to use it."
+log "  ✓ S6a: self init resolved the binding before writing it (glibc@9.9.9)"
+
+SRC6="$(read_block "$S4_DEFAULT" 'blk.get("runtime_source", "")')"
+[ "$SRC6" = "index" ] \
+  || fail "S6: self init recorded runtime_source='$SRC6'. 'fallback' here means
+    the index was still unusable at the moment the binding was decided, which
+    is the defect this asserts against -- the value may look right and be a
+    coincidence."
+log "  ✓ S6b: recorded as runtime_source=index, so it was looked up, not guessed"
+
+# S6c: the reverse control for S1d. A warning that fires on every init tells
+# nobody anything, so the resolving path has to be quiet -- specifically, it
+# must not name the built-in constant, because naming it is exactly what S1d
+# looks for.
+case "$INIT4_OUT" in
+  *"$EXPECTED_DEFAULT"*) fail "S6c: this init RESOLVED the binding
+    (glibc@9.9.9), yet its output mentions the built-in '$EXPECTED_DEFAULT'.
+    S1d passes whenever that string appears, so if it appears here too the
+    warning fires unconditionally and S1d proves nothing. Output was:
+$INIT4_OUT" ;;
+esac
+log "  ✓ S6c: the resolving path stayed quiet, so S1d's assertion has teeth"
 
 log "E2E subos-runtime-binding: PASS"

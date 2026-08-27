@@ -198,10 +198,53 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
             // Queried by coordinate, recorded by name -- see the two
             // constants in manifest.cppm.
             const std::string pkg{mf::DEFAULT_RUNTIME_PACKAGE};
-            if (auto v = xlings::xim::index_version_of(mf::DEFAULT_RUNTIME_QUERY))
+
+            // InstallReady, not LocalOnly, and this is the whole point of
+            // the change: `self init` is where a subos gets its runtime
+            // binding, and that binding is a CREATION-TIME property nothing
+            // later rewrites. On a fresh home the index has never been
+            // materialized, so a LocalOnly query cannot answer -- and the
+            // fallback constant became, in practice, the value every new user
+            // got. Measured on a first `mcpp build` in a fresh MCPP_HOME with
+            // xlings 2026.8.27.3: `runtime_source` was `fallback`, and it
+            // worked only because the constant happened to equal what the
+            // index offered that day.
+            //
+            // "Answer from disk" is the wrong question when the answer is
+            // about to be written down permanently. InstallReady makes the
+            // index usable first -- and it degrades exactly the way this call
+            // needs: a home that already has an index answers WITHOUT
+            // touching the network, and a sync that cannot happen still ends
+            // in nullopt, so the fallback below is unchanged for anyone
+            // offline.
+            //
+            // Not writing anything is not an alternative. Downstream, an
+            // absent runtime means "no declared runtime to bind to", and the
+            // link falls back to the HOST -- loud, but not hermetic. Create
+            // must produce a value; the choice is only between looking it up
+            // and guessing it.
+            if (auto v = xlings::xim::index_version_of(
+                    mf::DEFAULT_RUNTIME_QUERY,
+                    xlings::xim::CatalogAccess::InstallReady))
                 return {pkg + "@" + *v, true};
             return {std::string(mf::DEFAULT_RUNTIME_FALLBACK), false};
         }();
+
+        // Said out loud, matching what `subos new` already does on the same
+        // fallback (subos.cpp). Both spellings of the remedy, because they
+        // answer different situations -- the index has never been synced on
+        // this machine, or the user knew the binding all along. Without this,
+        // the only trace is `runtime_source` in a file nobody opens, and the
+        // failure that eventually follows names a payload DIRECTORY rather
+        // than a decision anyone remembers making.
+        //
+        // `log::` rather than an event: init runs before the stream exists.
+        if (!def.resolved) {
+            log::warn("index could not answer which {} to bind to; using the "
+                      "built-in {}. Run `xlings update`, or create the subos "
+                      "explicitly with `--runtime <package>@<version>`.",
+                      mf::DEFAULT_RUNTIME_PACKAGE, def.binding);
+        }
 
         // Provenance is recorded HERE, unlike the rebuild paths in subos.cpp,
         // because this call can tell: the block is being written from nothing,

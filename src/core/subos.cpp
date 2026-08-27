@@ -421,6 +421,20 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
 DefaultRuntime resolve_default_runtime() {
     // Queried by coordinate, recorded by name -- see the two constants.
     const std::string pkg{manifest::DEFAULT_RUNTIME_PACKAGE};
+
+    // The missing access argument is a decision, not an omission: every caller
+    // of THIS function (`subos new`, fork, block rebuild) runs on a home that
+    // has already been initialized, so the index is normally on disk and a
+    // LocalOnly read answers without touching the network. Only `self init`
+    // decides a binding on a home that has never had one -- it passes
+    // InstallReady, and it has to resolve the same decision separately because
+    // xself cannot import this module without closing a cycle (see the comment
+    // at that call site).
+    //
+    // So: two copies of one decision, deliberately differing in exactly one
+    // argument. If you unify them, keep the difference -- making every rebuild
+    // and every fork able to sync would put a network round trip behind
+    // frequent, previously offline operations.
     if (auto version = xim::index_version_of(manifest::DEFAULT_RUNTIME_QUERY))
         return DefaultRuntime{.binding = pkg + "@" + *version, .resolved = true};
     return DefaultRuntime{
