@@ -71,13 +71,12 @@ jobs:
       - name: Checkout xlings
         uses: actions/checkout@v4
 
-      - name: Install system deps + qemu-user-static
+      - name: Install system deps
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
                      /etc/apt/sources.list.d/microsoft*.sources
           sudo apt-get update -qq
-          sudo apt-get install -y curl git build-essential qemu-user-static
-          qemu-aarch64-static --version | head -1
+          sudo apt-get install -y curl git build-essential
 
       - name: Install bootstrap xlings
         env:
@@ -88,6 +87,23 @@ jobs:
           echo "XLINGS_HOME=$HOME/.xlings"       >> "$GITHUB_ENV"
           echo "$HOME/.xlings/subos/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.xlings/bin"               >> "$GITHUB_PATH"
+
+      - name: qemu from the ecosystem, not from apt
+        run: |
+          # This job cross-builds a release candidate and then RUNS it, which
+          # needs USER-mode qemu. It used to come from
+          # `apt-get install qemu-user-static`, and on 2026-08-27 that failed
+          # on every run: the runner image ships Microsoft apt sources that
+          # answer 403, so `apt-get update` failed the whole step over a
+          # repository this job installs nothing from. An ecosystem that
+          # supplies its own toolchain should not have a test that cannot run
+          # because a distribution repository is unhappy.
+          #
+          # xim:qemu-user-aarch64 is the same binary from upstream
+          # multiarch/qemu-user-static, statically linked (zero DT_NEEDED), so
+          # it brings no closure of its own.
+          xlings install xim:qemu-user-aarch64 -y
+          qemu-aarch64-static --version | head -1
 
       # NO payload cache here.
       #
