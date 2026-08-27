@@ -27,15 +27,26 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Moved off v2026.8.10.1 because a stale bootstrap is not neutral: the client
-  # that lays down `subos/default` decides the runtime binding, and every
-  # client before 2026.8.27.1 has `glibc@2.44` compiled in. When the index's
-  # `latest` moved past that, this job installed the newer payload and then
-  # refused to use it --
-  #   error: selected RuntimeBinding glibc@2.44 requires payload
-  #          '.../xpkgs/xim-x-glibc/2.44', but it is not installed
-  # -- which is a fact about the pin, not about the commit under test.
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.27.1
+  # A bootstrap pin is not neutral setup: the client that lays down
+  # `subos/default` decides the runtime binding, so this line has to name a
+  # client whose binding the index can satisfy.
+  #
+  # It went v2026.8.10.1 -> v2026.8.27.1 while the index offered glibc 2.44.2,
+  # and back again now that it does not. 2.44.2 was withdrawn
+  # (xim-pkgindex#700: three consumers pin the binding name and none of them
+  # move together), and v2026.8.27.1/.2 fall back to `glibc@2.44.2` -- a
+  # version nothing offers any more:
+  #   error: selected RuntimeBinding glibc@2.44.2 requires payload
+  #          '.../xpkgs/xim-x-glibc/2.44.2', but it is not installed
+  #
+  # v2026.8.10.1 says `glibc@2.44`, which the index does offer and, being
+  # append-only, always will.
+  #
+  # This is still "works because a constant happens to match". The version
+  # that stops being luck is 2026.8.27.3 (this PR): its fallback names a
+  # version the index cannot stop offering, and it resolves from the index
+  # when it can. Move this pin there once .3 is released.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
 
 jobs:
   native-contracts:
