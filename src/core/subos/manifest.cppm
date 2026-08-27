@@ -35,24 +35,59 @@ namespace fs = std::filesystem;
 
 inline constexpr int             SCHEMA_VERSION  = 1;
 inline constexpr std::string_view BLOCK          = "subos_info";
-// The runtime a subos gets when the caller names none. A constant rather than
-// a lookup: slice 1 ships one runtime, and inventing a "pick the newest libc
-// present" rule would make two homes with the same command produce different
-// subos.
+// WHICH RUNTIME A SUBOS GETS WHEN THE CALLER NAMES NONE.
 //
-// 2.44 since 2026.8.9.1 (C1 of the closure contract). The 2.39 floor was a
-// systematic error, not a conservative default: `*-host-link` packages carry
-// host-built libraries into our closure permanently, those need the host
-// glibc's symbol versions, so `our_glibc >= host_glibc` is a standing
-// constraint -- and 2.39 loses it on every distro newer than Ubuntu 24.04
-// (mcpp-community/mcpp#392 is that failure verbatim). Backward compatibility
-// makes the move safe: every 2.39-built payload runs under 2.44.
+// A NAME here, and the version resolved from the index by the caller. The
+// previous shape was a pinned constant, and the reason given for it was:
 //
-// Scope: NEW subos only. The binding is a creation-time property persisted in
-// each subos's own manifest, and rebuild paths preserve a valid recorded
-// binding (see preserved_runtime), so no existing subos changes runtime by
-// this constant moving.
-inline constexpr std::string_view DEFAULT_RUNTIME = "glibc@2.44";
+//     A constant rather than a lookup: ... inventing a "pick the newest libc
+//     PRESENT" rule would make two homes with the same command produce
+//     different subos.
+//
+// That reasoning is sound and it is not what this does. It rejects scanning
+// the MACHINE -- two homes have different things installed, so that answer is
+// per-machine. Reading the index's `latest` is the opposite: two homes on the
+// same index snapshot get the same answer, and it is the answer every
+// `xlings install` already gets. The resolved value is still persisted into
+// the subos's own manifest at creation, so the binding remains a
+// creation-time property; only where the number comes from has moved.
+//
+// WHY IT HAD TO MOVE. The pin and the index's `latest` were one decision
+// written in two repositories, and xim-pkgindex#692 made them disagree:
+//
+//   error: selected RuntimeBinding glibc@2.44 requires payload
+//          '<home>/registry/data/xpkgs/xim-x-glibc/2.44', but it is not
+//          installed; mcpp will not fall back to another directory entry
+//
+// measured on a first `mcpp build` in a fresh home. `latest` resolved to
+// 2.44.2 and installed it; this constant said 2.44; payload directories are
+// named after the version, so nothing on disk answered to the binding. Every
+// NEW subos was affected and no existing one was -- the shape that is easy to
+// miss, because a developer machine full of older subos stays green.
+//
+// It survived until now because 2.39 -> 2.44 is an UPSTREAM version move:
+// rare, visible, and someone is watching. 2.44 -> 2.44.2 is a packaging
+// revision of the same upstream release, which moves whenever an artifact has
+// to be rebuilt. The revision suffix is what first made drift possible.
+//
+// The policy the old comment carried -- `our_glibc >= host_glibc`, because
+// `*-host-link` packages permanently bring host-built libraries into our
+// closure -- now lives in the index, where glibc.lua states that `latest`
+// TRACKS the highest glibc of any distribution we support. Keeping a second
+// copy here is what let the two drift; this is the copy that goes.
+inline constexpr std::string_view DEFAULT_RUNTIME_PACKAGE = "glibc";
+
+// Used ONLY when the index cannot answer -- see resolve_default_runtime() in
+// subos.cpp, which is the single place allowed to decide that. It is a real
+// version because a subos must not be created against a binding nobody can
+// satisfy, and it is deliberately the same value the index's `latest` had
+// when this line was last touched.
+//
+// A subos created from this rather than from the index records
+// `runtime_source: "fallback"`, so a stale pin can never be mistaken for a
+// resolved fact. Nothing else may read it: substituting a constant for an
+// answer under Describe is exactly the defect this file already fixed once.
+inline constexpr std::string_view DEFAULT_RUNTIME_FALLBACK = "glibc@2.44.2";
 
 inline constexpr std::string_view OP_SET     = "set";
 inline constexpr std::string_view OP_PREPEND = "prepend";
@@ -97,6 +132,10 @@ struct Info {
     // unknown: pre-C1 manifests, non-glibc hosts, failed probe. Rule A's
     // right-hand side; a reader must treat unknown as unprovable, not as 0.
     std::string           host_glibc;
+    // See BlockSpec::runtimeSource. Empty = the block predates the field, or
+    // was written by a path that has nothing to say about provenance. A
+    // reader must treat empty as UNKNOWN, never as any of the three values.
+    std::string           runtime_source;
 };
 
 // ── who is asking, and therefore what may be invented ────────────────────
@@ -132,7 +171,22 @@ struct BlockSpec {
     std::string by;         // "xlings <version>"
     std::string hostGlibc;  // empty -> the key is omitted
     Intent      intent = Intent::Create;
+    // Where `runtime` came from. Empty -> the key is omitted, which is what
+    // every pre-existing manifest looks like and is read back as "unknown".
+    //
+    // It exists because the three answers are otherwise INDISTINGUISHABLE on
+    // disk, and they are not equally trustworthy: `index` is what the index
+    // said at creation, `fallback` is a pin used because the index could not
+    // be read, `explicit` is a human. A subos sitting on an old glibc could
+    // be any of the three, and without this nobody -- doctor included -- can
+    // tell a recorded decision from a guess that had nowhere else to go.
+    std::string runtimeSource;  // RUNTIME_SOURCE_* below
 };
+
+// Values for BlockSpec::runtimeSource / Info::runtime_source.
+inline constexpr std::string_view RUNTIME_SOURCE_EXPLICIT = "explicit";
+inline constexpr std::string_view RUNTIME_SOURCE_INDEX    = "index";
+inline constexpr std::string_view RUNTIME_SOURCE_FALLBACK = "fallback";
 
 // The package names that can serve as a subos's C runtime.
 //
@@ -386,10 +440,19 @@ std::string sysroot_runtime(const fs::path& subosDir,
 //      never-recorded side instead of the invalid-block side;
 //   4. the sysroot observation — no record anywhere, but the payload behind
 //      `lib/libc.so.6` is not an opinion;
-//   5. `DEFAULT_RUNTIME`. CREATE ONLY. Under Describe this step does not
-//      exist and the result is EMPTY, which `make_block` writes as an absent
-//      `runtime` key — "we looked and could not tell", which a reader can act
-//      on, rather than a constant it cannot distinguish from a real answer.
+//   5. `defaultRuntime`, the caller's answer to "they didn't say". CREATE
+//      ONLY. Under Describe this step does not exist and the result is EMPTY,
+//      which `make_block` writes as an absent `runtime` key — "we looked and
+//      could not tell", which a reader can act on, rather than a constant it
+//      cannot distinguish from a real answer.
+//
+//      A PARAMETER, not a constant read here, because answering it needs the
+//      index and this module is deliberately free of Config/xvm/catalog
+//      imports (see the header). Callers that can resolve pass the resolved
+//      value; the default keeps the signature usable from a test with no home
+//      on disk. This is the same rule the header already states -- everyone
+//      asks one question, and the ONE thing they legitimately disagree about
+//      becomes a parameter.
 //
 // (3) and (4) are what make the upgrade seamless for every home created
 // before `subos_info` existed. Without them those homes are declared against
@@ -403,7 +466,8 @@ std::string sysroot_runtime(const fs::path& subosDir,
 std::string runtime_for(const fs::path& subosDir,
                         const nlohmann::json& doc,
                         Intent intent,
-                        std::string_view requested = {});
+                        std::string_view requested = {},
+                        std::string_view defaultRuntime = DEFAULT_RUNTIME_FALLBACK);
 
 // ── env declarations ────────────────────────────────────────────────────
 

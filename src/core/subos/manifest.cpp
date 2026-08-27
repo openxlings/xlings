@@ -255,6 +255,7 @@ Info parse(const nlohmann::json& doc) {
     info.described_at   = b.value("described_at", std::string{});
     info.described_by   = b.value("described_by", std::string{});
     info.host_glibc     = b.value("host_glibc", std::string{});
+    info.runtime_source = b.value("runtime_source", std::string{});
 
     if (b.contains("envs") && b["envs"].is_object()) {
         for (auto it = b["envs"].begin(); it != b["envs"].end(); ++it) {
@@ -294,6 +295,13 @@ nlohmann::json make_block(const BlockSpec& spec) {
     // spelling of "no"; an absent key already means that everywhere else in
     // this block.
     if (!spec.runtime.empty()) b["runtime"] = spec.runtime;
+    // Same rule, same reason: absent means "nothing to say", and it is what
+    // every manifest written before this key existed already says. Additive,
+    // so SCHEMA_VERSION does not move -- readers take it with `.value(...)`
+    // and one that has never heard of it is unaffected. Bumping the schema
+    // for a key that changes no existing semantics would make today's readers
+    // announce tomorrow's manifests as newer than they understand.
+    if (!spec.runtimeSource.empty()) b["runtime_source"] = spec.runtimeSource;
     b["envs"] = nlohmann::json::object();
     if (spec.intent == Intent::Create) {
         b["created_at"] = utc_now_iso();
@@ -427,7 +435,8 @@ std::string sysroot_runtime(const fs::path& subosDir, fs::path* fromLink) {
 }
 
 std::string runtime_for(const fs::path& subosDir, const nlohmann::json& doc,
-                        Intent intent, std::string_view requested) {
+                        Intent intent, std::string_view requested,
+                        std::string_view defaultRuntime) {
     // 1 — the subos said what it is.
     if (doc.contains(std::string(BLOCK)) && doc[std::string(BLOCK)].is_object()) {
         const auto r = doc[std::string(BLOCK)].value("runtime", std::string{});
@@ -456,7 +465,7 @@ std::string runtime_for(const fs::path& subosDir, const nlohmann::json& doc,
 
     // 5 — Create only. Under Describe the answer is EMPTY, on purpose: see
     // the header for why a constant here is a fabricated record.
-    return intent == Intent::Create ? std::string(DEFAULT_RUNTIME)
+    return intent == Intent::Create ? std::string(defaultRuntime)
                                     : std::string{};
 }
 

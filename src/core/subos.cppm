@@ -79,13 +79,32 @@ struct UseNameResolution_ {
 // entry at use-time. The sandbox-private dirs are laid down lazily.
 //
 // `runtime` is the subos's declared runtime binding ("glibc@2.39"): what its
-// binaries are built against. Empty means the built-in default. It is a
-// creation-time property because changing it after the fact would invalidate
-// every payload already installed.
+// binaries are built against. Empty means "resolve it" -- see
+// resolve_default_runtime below. It is a creation-time property because
+// changing it after the fact would invalidate every payload already installed.
 export int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
                   const std::string& runtime,
                   EventStream& stream);
+
+// What a subos gets when nobody named a runtime: the index's answer for
+// manifest::DEFAULT_RUNTIME_PACKAGE, or the pinned fallback when the index
+// cannot be read.
+//
+// It lives HERE and not in the manifest module because answering it needs the
+// catalog, and that module is deliberately free of Config/xvm/catalog imports
+// so its invariant checks stay testable without a home on disk. The catalog is
+// read LocalOnly -- index files already on disk, no sync, no network -- which
+// is the same access subos/sandbox.cpp already takes for backend availability.
+//
+// `resolved` distinguishes the two outcomes, and the caller must record it:
+// a fallback binding and a resolved one are byte-identical in the manifest,
+// and only one of them is a decision.
+export struct DefaultRuntime {
+    std::string binding;
+    bool        resolved { false };   // false -> came from the pinned fallback
+};
+export DefaultRuntime resolve_default_runtime();
 
 // Back-compat overloads. Callers that predate the runtime argument get the
 // built-in default, and callers that predate storage get shared as before.

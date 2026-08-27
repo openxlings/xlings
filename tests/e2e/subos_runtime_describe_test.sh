@@ -115,8 +115,21 @@ S1_RUNTIME="$(block_field "$H1/subos/default/.xlings.json" runtime)"
   || note_fail "S1: a subos running 2.39 was declared '$S1_RUNTIME'"
 # Stated separately, because it is the specific wrong answer this exists to
 # stop and it must not be satisfiable by "absent".
-[[ "$S1_RUNTIME" != "glibc@2.44" ]] \
-  || note_fail "S1: the subos was re-declared against the current default"
+#
+# The default is READ from the source rather than written here. This line used
+# to say "glibc@2.44", and the day that constant moved to 2.44.2 the assertion
+# would still have passed -- against a value that is no longer the default, so
+# it would no longer have been testing "doctor invented the default". The
+# sibling test subos_runtime_binding_test.sh pins the literal on purpose: it
+# asserts WHAT the default is. This one asserts the default is not used, so it
+# has to follow the default.
+CURRENT_DEFAULT="$(sed -n 's/.*DEFAULT_RUNTIME_FALLBACK = "\(.*\)".*/\1/p' \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/src/core/subos/manifest.cppm" \
+    | head -1)"
+[[ -n "$CURRENT_DEFAULT" ]] \
+  || note_fail "S1: could not read DEFAULT_RUNTIME_FALLBACK out of manifest.cppm"
+[[ "$S1_RUNTIME" != "$CURRENT_DEFAULT" ]] \
+  || note_fail "S1: the subos was re-declared against the current default ($CURRENT_DEFAULT)"
 
 # ── S2: nothing to observe -> an ABSENT runtime key, and exit 0 ──────────
 H2="$RUNTIME_DIR/s2"

@@ -450,7 +450,7 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
     d["subos_info"] = m::make_block({
-        .runtime = std::string(m::DEFAULT_RUNTIME),
+        .runtime = std::string(m::DEFAULT_RUNTIME_FALLBACK),
         .by      = "xlings test",
         .intent  = m::Intent::Create,
     });
@@ -459,7 +459,7 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
 
     auto info = m::parse(d);
     EXPECT_EQ(info.schema_version, m::SCHEMA_VERSION);
-    EXPECT_EQ(info.runtime, m::DEFAULT_RUNTIME);
+    EXPECT_EQ(info.runtime, m::DEFAULT_RUNTIME_FALLBACK);
     EXPECT_TRUE(info.envs.empty());
     EXPECT_FALSE(info.created_at.empty());
 }
@@ -468,7 +468,7 @@ TEST(SubosManifestBlock, NewBlockSatisfiesItsOwnInvariants) {
 // glibc), but it must always be a well-formed binding — a malformed default
 // would make every fresh subos fail its own validation.
 TEST(SubosManifestBlock, DefaultRuntimeIsAWellFormedBinding) {
-    EXPECT_TRUE(m::is_binding(m::DEFAULT_RUNTIME));
+    EXPECT_TRUE(m::is_binding(m::DEFAULT_RUNTIME_FALLBACK));
 }
 
 // host_glibc: written when known, absent when not. Absent and unknown must
@@ -477,7 +477,7 @@ TEST(SubosManifestBlock, HostGlibcIsRecordedWhenKnown) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
     d["subos_info"] = m::make_block({
-        .runtime   = std::string(m::DEFAULT_RUNTIME),
+        .runtime   = std::string(m::DEFAULT_RUNTIME_FALLBACK),
         .by        = "xlings test",
         .hostGlibc = "2.39",
         .intent    = m::Intent::Create,
@@ -491,7 +491,7 @@ TEST(SubosManifestBlock, HostGlibcIsOmittedWhenUnknown) {
     nlohmann::json d;
     d["workspace"]  = nlohmann::json::object();
     d["subos_info"] = m::make_block({
-        .runtime = std::string(m::DEFAULT_RUNTIME),
+        .runtime = std::string(m::DEFAULT_RUNTIME_FALLBACK),
         .by      = "xlings test",
         .intent  = m::Intent::Create,
     });
@@ -516,7 +516,7 @@ TEST(SubosManifestPreserve, KeepsAValidRuntimeThroughARebuild) {
         {"envs", 42},                    // invalid on purpose
     };
     EXPECT_FALSE(m::validate_block(d).empty());
-    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Create, m::DEFAULT_RUNTIME),
+    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Create, m::DEFAULT_RUNTIME_FALLBACK),
               "glibc@2.39");
     EXPECT_EQ(m::runtime_for({}, d, m::Intent::Describe), "glibc@2.39");
 }
@@ -535,6 +535,69 @@ TEST(SubosManifestPreserve, CreateFallsBackWhenTheRuntimeItselfIsMalformed) {
     nlohmann::json noBlock = nlohmann::json::object();
     EXPECT_EQ(m::runtime_for({}, noBlock, m::Intent::Create, "glibc@2.44"),
               "glibc@2.44");
+}
+
+// ── the default is a PARAMETER, not a constant read inside ───────────
+//
+// The version a fresh subos gets now comes from the index, resolved by the
+// caller (subos::resolve_default_runtime) and handed in here. These pin the
+// half that lives in this module: that step 5 uses what it was given, that it
+// only exists under Create, and that every earlier step still outranks it.
+//
+// Written with a version no constant in the tree contains, so none of them can
+// pass by coincidence.
+TEST(SubosManifestDefault, Step5UsesTheCallersDefaultNotAConstant) {
+    nlohmann::json empty = nlohmann::json::object();
+    EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Create, {}, "glibc@9.9.9"),
+              "glibc@9.9.9");
+    // And the fallback is what an omitted argument means -- the signature has
+    // to stay usable from a caller with no home and no index on disk.
+    EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Create),
+              std::string(m::DEFAULT_RUNTIME_FALLBACK));
+}
+
+TEST(SubosManifestDefault, DescribeNeverReachesStep5) {
+    nlohmann::json empty = nlohmann::json::object();
+    // Not "returns the fallback": returns NOTHING. A constant here would be a
+    // guess recorded as a fact, which is the defect this file already fixed.
+    EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Describe, {}, "glibc@9.9.9"),
+              "");
+}
+
+TEST(SubosManifestDefault, ARecordedBindingStillOutranksTheResolvedDefault) {
+    nlohmann::json d;
+    d["subos_info"] = { {"runtime", "glibc@2.39"} };
+    EXPECT_EQ(m::runtime_for({}, d, m::Intent::Create, {}, "glibc@9.9.9"),
+              "glibc@2.39");
+}
+
+TEST(SubosManifestDefault, ExplicitRequestStillOutranksTheResolvedDefault) {
+    nlohmann::json empty = nlohmann::json::object();
+    EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Create, "glibc@2.39",
+                             "glibc@9.9.9"),
+              "glibc@2.39");
+}
+
+TEST(SubosManifestDefault, RuntimeSourceRoundTripsAndIsOmittedWhenEmpty) {
+    auto withSource = m::make_block({
+        .runtime = "glibc@9.9.9",
+        .by = "xlings test",
+        .runtimeSource = std::string(m::RUNTIME_SOURCE_INDEX),
+    });
+    EXPECT_EQ(withSource.value("runtime_source", std::string{}), "index");
+
+    // Absent, not empty-string: the same spelling of "nothing to say" the
+    // rest of this block uses, and what every manifest written before the
+    // key existed already looks like.
+    auto without = m::make_block({.runtime = "glibc@9.9.9", .by = "xlings test"});
+    EXPECT_FALSE(without.contains("runtime_source"));
+
+    nlohmann::json doc;
+    doc[std::string(m::BLOCK)] = withSource;
+    EXPECT_EQ(m::parse(doc).runtime_source, "index");
+    nlohmann::json bare;
+    bare[std::string(m::BLOCK)] = without;
+    EXPECT_EQ(m::parse(bare).runtime_source, "");
 }
 
 // ── the subos layer's one live version ───────────────────────────────
@@ -825,7 +888,7 @@ TEST(SubosRuntimeFor, DescribeNeverInventsARuntime) {
 TEST(SubosRuntimeFor, CreateStillTakesTheDefault) {
     nlohmann::json empty = nlohmann::json::parse(R"({"workspace": {}})");
     EXPECT_EQ(m::runtime_for({}, empty, m::Intent::Create),
-              m::DEFAULT_RUNTIME);
+              m::DEFAULT_RUNTIME_FALLBACK);
 }
 
 TEST(SubosRuntimeFor, DescribeIgnoresARequestedRuntime) {
