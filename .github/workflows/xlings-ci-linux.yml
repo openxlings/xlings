@@ -14,9 +14,15 @@ env:
   # CI runs on github.com; force GLOBAL mirror so xim doesn't try gitee
   # endpoints (which need auth and aren't reachable in CI).
   XLINGS_RELEASE_MIRROR: GLOBAL
-  # Pinned bootstrap xlings used to install mcpp. Bump together with
-  # XIM_PKGINDEX_REF so CI uses a known-good xlings + package index pair.
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.8.1
+  # Pinned bootstrap xlings used to install mcpp.
+  #
+  # ⚠️ The "known-good xlings + package index pair" this used to claim is only
+  # half real: XIM_PKGINDEX_REF is DECLARED in seven workflows and actually
+  # checked out in three, two of which are the Windows legs. On linux/macos
+  # the index this job resolves against is whatever is current, not the pin --
+  # so treat that variable as documentation, not as a lock, until it is
+  # either honoured everywhere or removed.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
   # Must contain the mcpp version pinned in .xlings.json (2026.8.8.4).
   XIM_PKGINDEX_REF: 3d80079485ded53d161212857027122ee6029419
 
