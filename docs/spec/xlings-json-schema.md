@@ -220,6 +220,7 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 "subos_info": {
   "schema_version": 1,
   "runtime": "glibc@2.44",
+  "runtime_source": "index",
   "host_glibc": "2.39",
   "envs": {
     "compat.mesa@25.0.0": [
@@ -236,6 +237,7 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 |------|------|------|
 | `schema_version` | `integer` | 当前为 `1` |
 | `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.44` 即 Linux/glibc）。**（2026.8.17.1+）可缺席**，见下方「已知未知」 |
+| `runtime_source` | `string` | **（2026.8.27.2+，可选）** 上面那个 binding **是怎么来的**：`explicit` / `index` / `fallback`。缺失 = 写块的那版 xlings 还没有这个字段，不是「来源未知的第四种」。见下方「binding 的出处」 |
 | `host_glibc` | `string` | **（2026.8.9+，可选）** 写入该块时探测到的宿主 glibc 版本（如 `"2.39"`）。缺失 = 未知（旧 manifest、非 glibc 宿主、探测失败），读者必须把未知当"不可证"，不得当 0 比较。供闭环规则 A（`our_glibc >= host_glibc`）判定 |
 | `envs` | `object` | 以**声明包的 binding** 为键。包卸载时 xlings 删除整段；recipe 不写清理代码 |
 | `created_at` / `created_by` | `string` | **创建**时间与创建者版本。只有真正创建这个 SubOS 的那次运行会写 |
@@ -261,6 +263,28 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 
 下游读到缺席时应当**降级并说明原因**，而不是替它选一个默认值。
 
+#### binding 的出处：`runtime_source`（2026.8.27.2+）
+
+`runtime` 只说**绑定是什么**，不说**它是怎么被决定的**。这两件事在盘上长得一样，
+可信度却完全不同：
+
+| 值 | 含义 | 谁写的 |
+|---|---|---|
+| `explicit` | 人指定的（`subos new --runtime ...`） | 用户 |
+| `index` | 创建时**向索引问出来**的 | 解析 |
+| `fallback` | 索引答不出，用了编译期兜底常量 `DEFAULT_RUNTIME_FALLBACK` | 猜 |
+| 键缺失 | 写这个块的 xlings 早于本字段 | —— |
+
+**为什么单独记一个字段。** 兜底常量与索引的答案会有很长一段时间是**同一个值**，
+于是「机制在工作」和「机制已死但常量恰好正确」在 manifest 里逐字节相同。这个字段
+落地至今已经两次成为唯一的判据：一次是绑定值正确而解析从未发生（`fallback`），
+一次是版本写错而错误信息只提到载荷目录名。
+
+> ⭐ 一般规则：**新增一个「两个来源产出同一形状」的字段时，一并记下用了哪一个。**
+
+`fallback` 不是错误 —— 离线机器、无网 CI 冷启动都会合法地落到这一档，且行为与
+本字段存在之前完全一致。它只是在说：这个值没有被核实过。
+
 #### 创建 vs 描述
 
 `created_*` 与 `described_*` 记的是两件不同的事，写哪一对取决于那次运行在做什么：
@@ -279,9 +303,28 @@ SubOS 自己的 manifest 里；修复路径（`self doctor --fix`、块重铸）
 已记录 binding**。**（2026.8.17.1+）** binding 缺失/畸形时不再直接落回默认值，
 而是依次问：SubOS 的 workspace 记录的活跃 runtime → `lib*/libc.so.6` 符号链接
 指向的载荷（唯一一个**观测**而非记录的来源）→ 都答不上来就**不写这个键**。
-内置默认只在**创建**路径上使用。依赖解析侧由
+依赖解析侧由
 pin-to-active 保证：已激活的 glibc 版本在满足约束时压过索引最新，所以已有
 SubOS 不会因默认值或索引 `latest` 的变化被拉上新 runtime。
+
+**创建路径上的默认值来自索引，不是常量（2026.8.27.2+）。** 创建一个 SubOS 时
+先问索引这个运行时包的当前版本，问到就记 `runtime_source: index`；只有问不出来
+才落到编译期常量 `DEFAULT_RUNTIME_FALLBACK` 并记 `fallback`。
+
+**（2026.8.27.4+）`self init` 会先把索引变得可用，再决定。** 它创建的
+`subos/default` 往往诞生在一台索引从未同步过的机器上 —— 那正是每个新用户的第一步。
+若在那一刻只读盘，问必然答不出，于是常量会成为新用户**实际拿到**的值。所以这条
+路径（也只有这条）在决定之前允许一次索引同步：
+
+| 情形 | 行为 |
+|---|---|
+| 本地已有索引（不论新旧） | 直接用，**不联网** |
+| 本地没有索引，可联网 | 同步一次，再解析 |
+| 本地没有索引，且离线/同步失败 | 落到常量，记 `fallback` —— **与此前完全一致** |
+
+其余创建入口（`subos new`、fork、rebuild）只读本地索引：它们跑得频繁，而那时索引
+通常已经在了。**只有「答案即将被永久写下、而且此前没有任何机会取到索引」的那一处
+值得一次网络往返。**
 
 `envs` 的值由包在 `config()` 里通过 `subos.env{}` 写入（见 xim-pkgindex 的
 xpackage-spec V2）。**值必须使用占位符** —— `${pkgdir}` / `${subosdir}` /
