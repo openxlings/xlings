@@ -21,10 +21,18 @@ env:
   # glibc 2.44. The declaration was false from the moment it was written, and
   # mcpp reads it as authoritative (correctly: an exact runtime identity is
   # what stops an INTERP and a RUNPATH coming from two different glibcs).
-  # 2026.8.10.1 is the first release that declares the version actually
-  # active, so the record it writes is true by construction.
   # mcpp-community/mcpp#406 was that lie surfacing two repos away.
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
+  #
+  # v2026.8.10.1 fixed the lie by declaring the version actually active. It
+  # did NOT fix the cause: the binding was still a constant, so it only stayed
+  # true while the index happened to agree with it. 2026.8.27.5 takes the
+  # binding from the index and makes resolution honour it, which is what
+  # finally decouples this pin from whatever the index publishes.
+  #
+  # ⚠️ Below 2026.8.27.2 this pin cannot survive a packaging revision of a
+  # runtime package -- it installs one version while declaring another. That
+  # is what kept glibc 2.44.2 out of the index; see xlings#573.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
   # Must contain the mcpp version pinned in .xlings.json (2026.8.8.4).
   XIM_PKGINDEX_REF: 3d80079485ded53d161212857027122ee6029419
 

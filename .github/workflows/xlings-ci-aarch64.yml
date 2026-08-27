@@ -32,21 +32,27 @@ env:
   # client whose binding the index can satisfy.
   #
   # It went v2026.8.10.1 -> v2026.8.27.1 while the index offered glibc 2.44.2,
-  # and back again now that it does not. 2.44.2 was withdrawn
-  # (xim-pkgindex#700: three consumers pin the binding name and none of them
-  # move together), and v2026.8.27.1/.2 fall back to `glibc@2.44.2` -- a
-  # version nothing offers any more:
-  #   error: selected RuntimeBinding glibc@2.44.2 requires payload
-  #          '.../xpkgs/xim-x-glibc/2.44.2', but it is not installed
+  # and back again when 2.44.2 was withdrawn (xim-pkgindex#700: three
+  # consumers pinned the binding name and none of them moved together).
+  # v2026.8.10.1 said `glibc@2.44` and the index offered it, so it worked --
+  # but it worked because a constant happened to match, not because anything
+  # connected the two.
   #
-  # v2026.8.10.1 says `glibc@2.44`, which the index does offer and, being
-  # append-only, always will.
+  # 2026.8.27.5 is where it stops being luck. Its binding comes from the
+  # index, and resolution honours what the subos DECLARES over what the index
+  # calls newest, so the two cannot drift apart:
   #
-  # This is still "works because a constant happens to match". The version
-  # that stops being luck is 2026.8.27.3 (this PR): its fallback names a
-  # version the index cannot stop offering, and it resolves from the index
-  # when it can. Move this pin there once .3 is released.
-  BOOTSTRAP_XLINGS_VERSION: v2026.8.10.1
+  #   declares glibc@X  ->  installs glibc@X, whatever `latest` moves to
+  #
+  # Measured across four client versions against an index carrying both 2.44
+  # and 2.44.2: every client whose binding is a compiled-in CONSTANT installs
+  # one version while declaring another; every client that reads the index --
+  # 2026.8.27.4 and .5 -- stays consistent. This pin was the last constant.
+  #
+  # ⚠️ Do not move it back below 2026.8.27.2 without re-running that probe:
+  # this is the pin that decides whether a packaging revision can ever be
+  # published for a runtime package again.
+  BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
 
 jobs:
   native-contracts:
