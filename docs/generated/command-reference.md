@@ -92,6 +92,10 @@ Show SubOS details
 
 Stop a SubOS keeper
 
+## `xlings subos runtime <binding> [name]`
+
+Rebind a SubOS to another runtime
+
 ## `xlings self`
 
 Manage xlings itself

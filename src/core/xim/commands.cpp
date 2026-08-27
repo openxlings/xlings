@@ -23,6 +23,11 @@ import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
+// A leaf module -- it imports only std and the json wrapper -- so reading the
+// subos's own declaration here closes no cycle. The alternative was a second
+// manifest reader living in xim, and this repo has paid for "the same decision
+// derived in two places" often enough to not add another.
+import xlings.core.subos.manifest;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.xvm.errors;
@@ -44,6 +49,8 @@ import xlings.core.version_order;
 import xlings.core.xself.repair;
 
 namespace xlings::xim {
+
+namespace subosmf = xlings::subos::manifest;
 
 // A confirmation, and what to do when nobody can answer it.
 //
@@ -120,6 +127,23 @@ std::optional<std::string> index_version_of(std::string_view package,
     auto match = catalog.resolve_target(std::string(package), detect_platform());
     if (!match || match->version.empty()) return std::nullopt;
     return match->version;
+}
+
+std::optional<std::string> index_runtime_abi_of(std::string_view package,
+                                                CatalogAccess access) {
+    auto& catalog = get_catalog(access);
+    if (!catalog.is_loaded()) return std::nullopt;
+    const auto platform = detect_platform();
+    auto match = catalog.resolve_target(std::string(package), platform);
+    if (!match) return std::nullopt;
+    // A second round trip, and cheap: the catalog is a process-wide singleton
+    // that the version query above already built.
+    auto pkg = catalog.load_package(*match);
+    if (!pkg) return std::nullopt;
+    auto it = pkg->xpm.exports.find(platform);
+    if (it == pkg->xpm.exports.end()) return std::nullopt;
+    if (it->second.runtime.abi.empty()) return std::nullopt;
+    return it->second.runtime.abi;
 }
 
 PackageCatalog& get_catalog(CatalogAccess access) {
@@ -366,15 +390,83 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     // applied here only, with a `starts_with` test of its own, which made
     // `@1.1` match an active `1.10` and left every dependency resolving to the
     // index's newest version.
-    auto active_version_of_ = [](const std::string& name) {
-        return xvm::get_active_version(Config::effective_workspace(), name);
+    // ── the precedence: declared > active > index ────────────────────────
+    //
+    // A subos DECLARES which runtime it runs on. That declaration is the
+    // strongest statement in this graph -- everything installed here links
+    // against it -- and until now it took no part in resolution at all.
+    // Measured: `runtime_for`, the function that reads it, appears in four
+    // files and none of them is under src/core/xim/.
+    //
+    // What went wrong without it: on a fresh home nothing is active yet, so
+    // tier 2 has nothing to say, and the first package with a `glibc@>=2.39`
+    // style dependency resolved through select_best -- which takes the MAXIMUM
+    // satisfying version and does not look at `latest`. The subos declared one
+    // libc and ran another. `latest` and "the maximum entry" are two different
+    // questions asked of the same table, and they disagree whenever a
+    // maintainer holds a version back: musl on the index today is
+    // `latest = 1.2.5` with 1.2.6 in the table.
+    //
+    // Read once. Nothing registers while a plan is being computed, so one
+    // snapshot is correct for every node in it.
+    const std::string declaredRuntime_ = [] -> std::string {
+        auto doc = subosmf::read_document(Config::paths().subosDir);
+        if (!doc) return {};
+        auto runtime = subosmf::parse(*doc).runtime;
+        // Absent is legal and means "we looked and could not tell" -- not a
+        // reason to invent one here. Malformed is likewise not this function's
+        // problem to report; doctor owns that.
+        return subosmf::is_binding(runtime) ? runtime : std::string{};
+    }();
+
+    bool declaredConflictReported_ = false;
+
+    // Idempotency: `install` is NOT supposed to be a silent upgrader.
+    // If the package already has a version active in the current sub-OS
+    // that satisfies the user's request — bare name (no @ver) accepts
+    // anything, `name@<prefix>` accepts any active version starting with
+    // the prefix — pin the resolution to that exact version. The existing
+    // "all packages already installed" fast path takes it from there.
+    // For deliberate upgrades, users should run `xlings update <pkg>`.
+    // Top-level targets and expanded dependencies both resolve through it, so
+    // "already satisfied" means the same thing on both paths -- it used to be
+    // applied here only, with a `starts_with` test of its own, which made
+    // `@1.1` match an active `1.10` and left every dependency resolving to the
+    // index's newest version.
+    auto subos_version_of_ = [&](const std::string& name) -> std::string {
+        const auto active =
+            xvm::get_active_version(Config::effective_workspace(), name);
+
+        // Scoped by construction rather than by consulting a list of runtime
+        // package names: the only name this tier answers for is the one this
+        // subos declares, and a subos can only declare a runtime.
+        if (!declaredRuntime_.empty()
+            && subosmf::binding_name(declaredRuntime_) == name) {
+            const std::string declared{subosmf::binding_version(declaredRuntime_)};
+            if (!active.empty() && active != declared
+                && !declaredConflictReported_) {
+                // Said out loud rather than resolved silently. Reaching here
+                // means something already installed a different libc into a
+                // subos that declares this one -- the declaration wins, but
+                // the disagreement is a fact about this machine that no later
+                // error message would mention.
+                declaredConflictReported_ = true;
+                log::warn("subos declares {} but {}@{} is active here; "
+                          "resolving to the declared one. `xlings subos "
+                          "runtime set <binding>` to change what this subos "
+                          "runs on.",
+                          declaredRuntime_, name, active);
+            }
+            return declared;
+        }
+        return active;
     };
-    auto pin_to_active_if_satisfies_ = [&](const std::string& t) -> std::string {
-        return pin_target_to_active(t, active_version_of_);
+    auto pin_to_subos_if_satisfies_ = [&](const std::string& t) -> std::string {
+        return pin_target_to_subos(t, subos_version_of_);
     };
 
     for (auto& target : targetVec) {
-        auto pinned = pin_to_active_if_satisfies_(target);
+        auto pinned = pin_to_subos_if_satisfies_(target);
         auto match = catalog.resolve_target(pinned, platform);
         if (!match && pinned != target) {
             // Active version no longer in the catalog (xpm declaration changed
@@ -527,7 +619,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         // Update target to the canonical "<ns:name>@<version>" form so that
         // the downstream dependency resolver (which calls resolve_target
         // again on each item in targetVec) lands on this exact version.
-        // Without this, pin_to_active_if_satisfies_ above is silently undone
+        // Without this, pin_to_subos_if_satisfies_ above is silently undone
         // when the resolver picks the catalog's highest-declared version for
         // bare-name targets.
         target = match->canonicalName;
@@ -538,7 +630,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     }
 
     // Resolve dependencies
-    auto planResult = resolve(catalog, targetVec, platform, active_version_of_);
+    auto planResult = resolve(catalog, targetVec, platform, subos_version_of_);
     if (!planResult) {
         // #374: structured error on the wire (was a swallowed log::error)
         stream.emit(ErrorEvent{

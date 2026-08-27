@@ -68,6 +68,17 @@ check_runtime_activation(const Info& info,
                          bool payloadExists) {
     if (!is_binding(info.runtime)) return std::nullopt;
 
+    // A hosted runtime is satisfied by construction: there is no payload to
+    // find and no xvm activation to compare against, because the OS supplies
+    // it. Without this the predicate reads `payloadExists == false` off a
+    // perfectly healthy Windows subos and reports its declared `ucrt@...` as
+    // a missing payload -- a defect invented by a checker that assumed every
+    // runtime is a package.
+    //
+    // Handled HERE rather than at the two call sites (xvm/commands and
+    // doctor) so that a third caller cannot be written without it.
+    if (runtime_is_hosted(info.runtime)) return std::nullopt;
+
     const auto declaredVersion = binding_version(info.runtime);
     if (version_is_active(declaredVersion, activeVersion) && payloadExists) {
         return std::nullopt;
@@ -256,6 +267,7 @@ Info parse(const nlohmann::json& doc) {
     info.described_by   = b.value("described_by", std::string{});
     info.host_glibc     = b.value("host_glibc", std::string{});
     info.runtime_source = b.value("runtime_source", std::string{});
+    info.runtime_abi    = b.value("runtime_abi", std::string{});
 
     if (b.contains("envs") && b["envs"].is_object()) {
         for (auto it = b["envs"].begin(); it != b["envs"].end(); ++it) {
@@ -302,6 +314,7 @@ nlohmann::json make_block(const BlockSpec& spec) {
     // for a key that changes no existing semantics would make today's readers
     // announce tomorrow's manifests as newer than they understand.
     if (!spec.runtimeSource.empty()) b["runtime_source"] = spec.runtimeSource;
+    if (!spec.runtimeAbi.empty())    b["runtime_abi"]    = spec.runtimeAbi;
     b["envs"] = nlohmann::json::object();
     if (spec.intent == Intent::Create) {
         b["created_at"] = utc_now_iso();

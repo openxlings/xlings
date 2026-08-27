@@ -43,6 +43,7 @@ const CommandSpec& root() {
                 {"remove", "Remove a SubOS", {"rm"}, {{"name", "SubOS name", true}}, {}, {}},
                 {"info", "Show SubOS details", {"i"}, {{"name", "Optional SubOS", false}}, {}, {}},
                 {"stop", "Stop a SubOS keeper", {}, {{"name", "SubOS name", true}}, {}, {}},
+                {"runtime", "Rebind a SubOS to another runtime", {}, {{"binding", "Runtime binding, e.g. glibc@2.39", true}, {"name", "Optional SubOS; omit for the current one", false}}, {}, {}},
             }},
             {"self", "Manage xlings itself", {}, {}, {}, {
                 {"install", "Install xlings", {}, {}, {}, {}},

@@ -238,6 +238,7 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 | `schema_version` | `integer` | 当前为 `1` |
 | `runtime` | `string` | 运行时 binding `<name>@<version>`，自描述（`glibc@2.44` 即 Linux/glibc）。**（2026.8.17.1+）可缺席**，见下方「已知未知」 |
 | `runtime_source` | `string` | **（2026.8.27.2+，可选）** 上面那个 binding **是怎么来的**：`explicit` / `index` / `fallback`。缺失 = 写块的那版 xlings 还没有这个字段，不是「来源未知的第四种」。见下方「binding 的出处」 |
+| `runtime_abi` | `string` | **（2026.8.27.5+，可选）** 该 runtime 包**自己声明**的 ABI（`linux-x86_64-glibc`），取自配方的 `exports.runtime.abi`。缺失 = 旧块，或该 runtime 没有配方可问（见「vendored 与 hosted」）；读者回落到由名字推导，并且要知道**推导出来的和包说出来的是两个事实** |
 | `host_glibc` | `string` | **（2026.8.9+，可选）** 写入该块时探测到的宿主 glibc 版本（如 `"2.39"`）。缺失 = 未知（旧 manifest、非 glibc 宿主、探测失败），读者必须把未知当"不可证"，不得当 0 比较。供闭环规则 A（`our_glibc >= host_glibc`）判定 |
 | `envs` | `object` | 以**声明包的 binding** 为键。包卸载时 xlings 删除整段；recipe 不写清理代码 |
 | `created_at` / `created_by` | `string` | **创建**时间与创建者版本。只有真正创建这个 SubOS 的那次运行会写 |
@@ -325,6 +326,59 @@ SubOS 不会因默认值或索引 `latest` 的变化被拉上新 runtime。
 其余创建入口（`subos new`、fork、rebuild）只读本地索引：它们跑得频繁，而那时索引
 通常已经在了。**只有「答案即将被永久写下、而且此前没有任何机会取到索引」的那一处
 值得一次网络往返。**
+
+#### 声明压过索引：解析优先级（2026.8.27.5+）
+
+**一个 SubOS 声明恰好一个 runtime；装进这个 SubOS 的一切都链接向它。**
+这条不变量此前只有「写下来」和「被 mcpp 发现违反」两个环节，**没有执行者**。
+
+依赖解析对 runtime 包按三级取版本：
+
+| 级 | 来源 | 说明 |
+|---|---|---|
+| 1 | **SubOS 声明的 `runtime`** | 最强。SubOS 里的一切都链向它 |
+| 2 | 该包在本 SubOS 已激活的版本 | 即原有的 pin-to-active |
+| 3 | 索引解析 | `select_best` |
+
+⭐ **为什么必须有第 1 级。** 全新 home 上还没有任何东西激活，第 2 级无话可说，于是
+第一个写着 `glibc@>=2.39` 的依赖经 `select_best` 解析 —— 它取**最大满足版本、不看
+`latest`**。SubOS 声明了一个 libc 而跑着另一个。
+
+⚠️ **`latest` 与「表里的最大项」是对同一张表问的两个不同问题**，只在没人压住版本时
+看起来一样。索引上此刻就有：`musl` 的 `latest = 1.2.5`，而表里有 `1.2.6`。
+
+降级规则（缺一条都会把老 SubOS 变砖）：
+
+| 情形 | 行为 |
+|---|---|
+| 声明的版本不在索引里（被撤下、离线） | 退到第 2/3 级，**绝不硬失败** |
+| 声明与已激活的版本冲突 | 声明赢，**并出声**——那意味着有人往这里装过别的 libc |
+| hosted runtime | 不参与钉版本，见下 |
+
+#### vendored 与 hosted：两种 runtime，两条不变量
+
+**SubOS 的 runtime 不一定是 glibc，也不一定是包。**
+
+| | 例子 | 载荷 | 不变量 |
+|---|---|---|---|
+| **vendored** | `glibc` `musl` `wasi-libc` | 在 store 里 | 必须装上并钉住 |
+| **hosted** | `ucrt` `macos_sdk` | **没有** | 必须在位且兼容；**绝不安装、绝不钉** |
+
+⚠️ 对 hosted runtime 而言，「声明的 runtime 必须被装上」是个**假命题**——
+不知道这个区别的检查器会把一台健康的 Windows SubOS 报成缺件。
+
+#### 换绑是操作，不是副作用（2026.8.27.5+）
+
+```
+xlings subos runtime <package@version> [name]
+```
+
+**索引更新永远不会改变已有 SubOS 的绑定。** 在 SubOS 底下换掉 libc，正是
+「INTERP 与 RUNPATH 来自两份不同 runtime」这个危险本身。
+
+推论要写明白：**打过补丁的 runtime 只进新 SubOS**，已有的要人明确迁移。
+此前这件事是**沉默地做不到**，现在是**显式地做得到**——而且换绑时会当场说明
+已经构建出来的程序仍指向旧 runtime，要重新构建才会跟上。
 
 `envs` 的值由包在 `config()` 里通过 `subos.env{}` 写入（见 xim-pkgindex 的
 xpackage-spec V2）。**值必须使用占位符** —— `${pkgdir}` / `${subosdir}` /

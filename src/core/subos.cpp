@@ -396,11 +396,25 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
         ? manifest::runtime_for(dir, json, intent, requested,
                                 resolve_default_runtime().binding)
         : manifest::runtime_for(dir, json, intent, requested);
+
+    // Carry the recorded ABI across the rebuild when the binding did not
+    // change. It is a creation-time fact -- what the package DECLARED it
+    // provides -- and a repair has no evidence to re-derive it: asking the
+    // index here is exactly what the comment above rules out. Dropping it
+    // would let `doctor --fix` erase something only the original install
+    // could know, which is the shape that once gave two different subos
+    // byte-identical `created_at` values.
+    const auto prior = manifest::parse(json);
+    std::string carriedAbi;
+    if (!prior.runtime_abi.empty() && prior.runtime == runtime)
+        carriedAbi = prior.runtime_abi;
+
     json[std::string(manifest::BLOCK)] = manifest::make_block({
-        .runtime   = std::move(runtime),
-        .by        = std::format("xlings {}", Info::VERSION),
-        .hostGlibc = platform::host_glibc_version(),
-        .intent    = intent,
+        .runtime    = std::move(runtime),
+        .by         = std::format("xlings {}", Info::VERSION),
+        .hostGlibc  = platform::host_glibc_version(),
+        .intent     = intent,
+        .runtimeAbi = std::move(carriedAbi),
     });
     try {
         write_config_json_(dir / ".xlings.json", json);
@@ -416,6 +430,20 @@ bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
         return false;
     }
     return true;
+}
+
+// What the runtime package says it provides, asked of the index rather than
+// derived from the name.
+//
+// Empty is a legitimate answer and must not be replaced by a guess here: a
+// hosted runtime has no recipe to ask, an older recipe may declare no `abi`,
+// and an offline home cannot look. Readers fall back to family_of() and know
+// that what they got was DERIVED -- which is a different fact from "the
+// package told us", and worth being able to tell apart.
+std::string runtime_abi_for(std::string_view binding) {
+    if (manifest::runtime_is_hosted(binding)) return {};
+    auto abi = xim::index_runtime_abi_of(manifest::runtime_query_for(binding));
+    return abi ? *abi : std::string{};
 }
 
 DefaultRuntime resolve_default_runtime() {
@@ -539,11 +567,12 @@ int create(const std::string& name, const fs::path& customDir,
             j["imageSize"] = imageSize;
         auto newRuntime = manifest::runtime_for(
             dir, j, manifest::Intent::Create, effectiveRuntime);
+        auto newRuntimeAbi = runtime_abi_for(newRuntime);
         j[std::string(manifest::BLOCK)] = manifest::make_block({
-            .runtime   = std::move(newRuntime),
-            .by        = std::format("xlings {}", Info::VERSION),
-            .hostGlibc = platform::host_glibc_version(),
-            .intent    = manifest::Intent::Create,
+            .runtime    = std::move(newRuntime),
+            .by         = std::format("xlings {}", Info::VERSION),
+            .hostGlibc  = platform::host_glibc_version(),
+            .intent     = manifest::Intent::Create,
             // Claimed only here. This is the one path that KNOWS: the value
             // was decided above, before runtime_for was asked, and step 2
             // returns it verbatim. The other two Create call sites hand
@@ -552,6 +581,7 @@ int create(const std::string& name, const fs::path& customDir,
             // outranks it -- so they leave this empty, which reads as
             // "unknown" rather than as a fourth value.
             .runtimeSource = runtimeSource,
+            .runtimeAbi    = std::move(newRuntimeAbi),
         });
         write_config_json_(subosConfig, j);
     } else if (!ensure_subos_info_(dir, manifest::Intent::Create,
@@ -663,18 +693,27 @@ int create(const std::string& name, const fs::path& customDir,
         return 1;
     }
 
-    // A declared runtime is installed, not merely recorded.
+    // An eager install of the declared runtime -- now an OPTIMISATION, not
+    // the thing that makes the declaration true.
     //
-    // `--runtime glibc@2.39` names what this subos runs on. Writing it to the
-    // manifest and stopping there leaves the subos empty, and the first
-    // package to arrive decides the actual glibc — a subos declaring 2.39 ends
-    // up on 2.44 because something's `>=2.38` resolved higher. The flag then
-    // describes an intention the subos does not hold, which is worse than not
-    // having the flag: it reads as a guarantee.
+    // It used to be load-bearing, and only on this branch. The failure it
+    // described was real: "the first package to arrive decides the actual
+    // glibc — a subos declaring 2.39 ends up on 2.44 because something's
+    // `>=2.38` resolved higher." But it only ever guarded the path where
+    // `--runtime` was passed EXPLICITLY, and the paths that take a default --
+    // `subos new` bare, and the `subos/default` that `self init` creates, the
+    // one every new user gets -- were left recording a runtime nobody
+    // installed.
     //
-    // Only when asked. `subos new` without --runtime stays what it was, a
-    // local directory operation that cannot fail on a network — the default
-    // subos that `self install` creates goes through that path.
+    // Correctness now comes from resolution instead: a subos's declared
+    // runtime outranks both what happens to be active and what the index
+    // calls newest (`subos_version_of_` in xim/commands.cpp). That holds on
+    // all three creation paths, so this branch no longer has to.
+    //
+    // Kept, because a user who names a runtime has said what they want and
+    // should get it now rather than on first use. Still only when asked:
+    // `subos new` without --runtime stays a local directory operation that
+    // cannot fail on a network.
     if (!runtime.empty()) {
         // Both, and that is not belt-and-braces. The override is what
         // recomputes Config's cached paths, and XLINGS_ACTIVE_SUBOS is what
@@ -1616,7 +1655,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             .code = ErrorCode::InvalidInput,
             .message = std::string(detail),
             .recoverable = false,
-            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop> [name]",
+            .hint = "usage: xlings subos <new|use|list|ls|remove|rm|info|i|stop|runtime> [name]",
         });
     };
 
@@ -1862,6 +1901,117 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (target.empty()) return rc;
         }
         return keeper::stop_keeper(target);
+    }
+
+    // xlings subos runtime <binding> [name]
+    //
+    // Changing what a subos runs on is a DELIBERATE ACT, and until now it was
+    // one the tool could not perform. `--runtime` was creation-time only, for
+    // a stated reason -- "changing it later would invalidate every payload
+    // already installed" -- and that reason is real. But the consequence was
+    // that a runtime with a fix in it could never reach an existing subos by
+    // any supported route, and nothing said so.
+    //
+    // So the answer is not to make it silent or automatic. An index update
+    // must NEVER move a subos onto a different libc: that is precisely the
+    // hazard of an INTERP and a RUNPATH coming from two different runtimes.
+    // It is to make the deliberate act available, and to be honest at the
+    // moment it happens about what it does not do.
+    if (sub == "runtime") {
+        if (argc < 4) {
+            usageError("missing <binding> for: xlings subos runtime "
+                       "<package@version> [name]");
+            return 1;
+        }
+        const std::string binding = argv[3];
+        if (!manifest::is_binding(binding)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = "invalid runtime '" + binding
+                           + "' (expected <package>@<version>, e.g. glibc@2.39)",
+                .recoverable = false,
+            });
+            return 1;
+        }
+
+        std::string target = argc > 4 ? argv[4] : std::string{};
+        if (target.empty()) {
+            int rc = 0;
+            target = pick_subos_or_fail_("runtime", stream, usageError, &rc);
+            if (target.empty()) return rc;
+        }
+        const auto dir = Config::subos_dir(target);
+        auto doc = manifest::read_document(dir);
+        if (!doc) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = "subos '" + target + "' has no manifest to rebind",
+                .recoverable = false,
+            });
+            return 1;
+        }
+
+        const auto previous = manifest::parse(*doc).runtime;
+        if (previous == binding) {
+            log::info("subos '{}' already declares {}", target, binding);
+            return 0;
+        }
+
+        // Installed into THAT subos, not the active one. Both the override and
+        // the env var, for the reason create() documents: one recomputes the
+        // cached paths and the other is what the activation path re-reads,
+        // and setting only one puts the payload in the right place while
+        // reporting that it is not there.
+        if (!manifest::runtime_is_hosted(binding)) {
+            auto prevEnv = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+            platform::set_env_variable("XLINGS_ACTIVE_SUBOS", target);
+            auto prev = Config::set_active_subos_override(target);
+            std::vector<std::string> targets{binding};
+            const int rc = xim::cmd_install(targets, /*yes=*/true,
+                                            /*noDeps=*/false, stream);
+            (void)Config::set_active_subos_override(prev);
+            platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
+            if (rc != 0) {
+                // Nothing is rewritten. A subos still declaring a runtime it
+                // has is strictly better than one declaring a runtime that
+                // was never installed -- which is the exact state this whole
+                // change exists to make impossible.
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "could not install " + binding
+                               + "; subos '" + target + "' still declares "
+                               + (previous.empty() ? "nothing" : previous),
+                    .recoverable = true,
+                    .hint = "xlings install " + binding,
+                });
+                return rc;
+            }
+        }
+
+        auto runtimeAbi = runtime_abi_for(binding);
+        (*doc)[std::string(manifest::BLOCK)] = manifest::make_block({
+            .runtime   = binding,
+            .by        = std::format("xlings {}", Info::VERSION),
+            .hostGlibc = platform::host_glibc_version(),
+            .intent    = manifest::Intent::Create,
+            // A human asked for this one by name. That is what `explicit`
+            // means, and it is true here in a way it is not on any path that
+            // took a default.
+            .runtimeSource = std::string(manifest::RUNTIME_SOURCE_EXPLICIT),
+            .runtimeAbi    = std::move(runtimeAbi),
+        });
+        write_config_json_(dir / ".xlings.json", *doc);
+
+        log::info("subos '{}' now declares {}{}", target, binding,
+                  previous.empty() ? "" : std::format(" (was {})", previous));
+        // Said at the moment it stops being true, not buried in a document.
+        // Binaries already built in this subos have the OLD loader in their
+        // INTERP and the old payload in their RUNPATH; nothing here rewrites
+        // them, and they will keep running against the runtime they were
+        // linked to until they are rebuilt.
+        log::warn("programs already built in this subos still point at the "
+                  "previous runtime -- rebuild them to pick up {}", binding);
+        return 0;
     }
 
     usageError("unknown subcommand: " + sub);

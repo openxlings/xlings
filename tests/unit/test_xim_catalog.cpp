@@ -761,10 +761,10 @@ TEST(XimCatalogLocalIdentityTest,
 // called it), and it resolved `@<hint>` by using the hint verbatim as the
 // version -- so `xim:python@3` meant a literal version "3" there and a
 // semver range everywhere else. Two answers to one question is what these
-// tests now guard against, from the other end: pin_target_to_active is the
+// tests now guard against, from the other end: pin_target_to_subos is the
 // single place a target meets an already-active version.
 
-using xlings::xim::pin_target_to_active;
+using xlings::xim::pin_target_to_subos;
 
 // A workspace stub: whatever the test says is active.
 static auto active_map(std::map<std::string, std::string> m) {
@@ -775,46 +775,46 @@ static auto active_map(std::map<std::string, std::string> m) {
 }
 
 TEST(XimPinToActive, NoCallbackLeavesTargetAlone) {
-    EXPECT_EQ(pin_target_to_active("xim:mcpp", {}), "xim:mcpp");
+    EXPECT_EQ(pin_target_to_subos("xim:mcpp", {}), "xim:mcpp");
 }
 
 TEST(XimPinToActive, NothingActiveLeavesTargetAlone) {
     auto active = active_map({});
-    EXPECT_EQ(pin_target_to_active("xim:mcpp", active), "xim:mcpp");
+    EXPECT_EQ(pin_target_to_subos("xim:mcpp", active), "xim:mcpp");
 }
 
 TEST(XimPinToActive, UnpinnedDepTakesTheActiveVersion) {
     // The whole point: `deps = {"xim:mcpp"}` must not drag in the newest
     // mcpp when a perfectly good one is already active.
     auto active = active_map({{"mcpp", "2026.7.30.2"}});
-    EXPECT_EQ(pin_target_to_active("xim:mcpp", active),
+    EXPECT_EQ(pin_target_to_subos("xim:mcpp", active),
               "xim:mcpp@2026.7.30.2");
 }
 
 TEST(XimPinToActive, StripsNamespaceWhenLookingUpActive) {
     // The versions DB is keyed by bare program name; the dep is namespaced.
     auto active = active_map({{"python", "3.11.4"}});
-    EXPECT_EQ(pin_target_to_active("xim:python@3", active),
+    EXPECT_EQ(pin_target_to_subos("xim:python@3", active),
               "xim:python@3.11.4");
-    EXPECT_EQ(pin_target_to_active("python@3", active), "python@3.11.4");
+    EXPECT_EQ(pin_target_to_subos("python@3", active), "python@3.11.4");
 }
 
 TEST(XimPinToActive, RangeConstraintUsesSemverNotPrefix) {
     auto active = active_map({{"lib", "1.10.0"}});
     // `@1.1` must not be satisfied by 1.10.0 -- the bug a starts_with test has.
-    EXPECT_EQ(pin_target_to_active("lib@1.1", active), "lib@1.1");
-    EXPECT_EQ(pin_target_to_active("lib@^1.2", active), "lib@1.10.0");
-    EXPECT_EQ(pin_target_to_active("lib@1", active), "lib@1.10.0");
+    EXPECT_EQ(pin_target_to_subos("lib@1.1", active), "lib@1.1");
+    EXPECT_EQ(pin_target_to_subos("lib@^1.2", active), "lib@1.10.0");
+    EXPECT_EQ(pin_target_to_subos("lib@1", active), "lib@1.10.0");
 }
 
 TEST(XimPinToActive, ExactPinIsNeverOverridden) {
     // An exact `@2.39` means 2.39. An active 2.38 does not satisfy it, so the
     // target survives untouched and the install goes ahead.
     auto active = active_map({{"glibc", "2.38"}});
-    EXPECT_EQ(pin_target_to_active("xim:glibc@2.39", active),
+    EXPECT_EQ(pin_target_to_subos("xim:glibc@2.39", active),
               "xim:glibc@2.39");
     auto satisfied = active_map({{"glibc", "2.39"}});
-    EXPECT_EQ(pin_target_to_active("xim:glibc@2.39", satisfied),
+    EXPECT_EQ(pin_target_to_subos("xim:glibc@2.39", satisfied),
               "xim:glibc@2.39");
 }
 
