@@ -166,6 +166,7 @@ TESTS=(
     "E2E-92 |xpkg_snapshot_remove_test.sh||"
     "E2E-93 |windows_quick_install_resource_probe_test.sh||"
     "E2E-94 |declared_file_assets_removal_test.sh||"
+    "E2E-95 |subos_runtime_declared_wins_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

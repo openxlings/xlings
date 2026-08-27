@@ -70,6 +70,25 @@ std::optional<std::string> index_version_of(
     std::string_view package,
     CatalogAccess access = CatalogAccess::LocalOnly);
 
+// The ABI a runtime package says it provides, e.g. "linux-x86_64-glibc".
+//
+// Taken from the recipe's `xpm.<platform>.exports.runtime.abi` rather than
+// derived from the package NAME. The two are not the same thing even when
+// they currently agree: `family_of` in subos/manifest maps glibc -> linux-*-
+// glibc by a table in this repo, while the package states it in the index --
+// two derivations of one fact, neither aware of the other, and a new runtime
+// that updates only one of them silently becomes "unknown".
+//
+// ⭐ This is what lets a runtime that is not glibc need no engine change: a
+// package declares its own ABI and the subos records what it was told.
+//
+// nullopt means the package does not declare one (older recipe, or a runtime
+// with no payload at all). Absent is not "unknown ABI" for the caller to
+// invent -- it is a reason to fall back to family_of and say so.
+std::optional<std::string> index_runtime_abi_of(
+    std::string_view package,
+    CatalogAccess access = CatalogAccess::LocalOnly);
+
 std::string detect_platform();
 
 // Forward declaration for deferred install request processing

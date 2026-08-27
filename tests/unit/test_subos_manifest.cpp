@@ -109,6 +109,93 @@ TEST(SubosRuntime, NamespacedActiveVersionUsesItsVersionTail) {
         info, "xim:2.44", true).has_value());
 }
 
+// ── hosted runtimes: no payload to find, nothing to activate ─────────
+//
+// A subos runtime is not always a package. ucrt and macos_sdk are supplied by
+// the OS -- "there is no ucrt payload to bind to" -- so the two facts every
+// assertion above rests on (a payload exists, a version is active) are simply
+// not available, and a checker that assumes they are reports a healthy
+// Windows subos as broken.
+//
+// These are the arguments that make EVERY vendored case above fail. Passing
+// them proves the predicate branches on the runtime's kind rather than on the
+// name "glibc".
+
+TEST(SubosRuntime, HostedRuntimeWithNoPayloadIsNotAMismatch) {
+    m::Info info{.runtime = "ucrt@10.0.26100.0"};
+    // No payload, nothing active: fatal for a vendored runtime, correct for
+    // this one.
+    EXPECT_FALSE(m::check_runtime_activation(info, "", false).has_value());
+}
+
+TEST(SubosRuntime, HostedMacosSdkWithNoPayloadIsNotAMismatch) {
+    m::Info info{.runtime = "macos_sdk@15.0"};
+    EXPECT_FALSE(m::check_runtime_activation(info, "", false).has_value());
+}
+
+TEST(SubosRuntime, VendoredRuntimeUnderTheSameArgumentsStillFails) {
+    // The control. Without it, "hosted passes" is indistinguishable from "the
+    // predicate stopped checking anything".
+    m::Info info{.runtime = "glibc@2.44"};
+    const auto mismatch = m::check_runtime_activation(info, "", false);
+    ASSERT_TRUE(mismatch.has_value());
+    EXPECT_TRUE(mismatch->payloadMissing);
+}
+
+TEST(SubosRuntime, HostedIsDecidedByNameNotByVersion) {
+    EXPECT_TRUE(m::runtime_is_hosted("ucrt"));
+    EXPECT_TRUE(m::runtime_is_hosted("ucrt@10.0.26100.0"));
+    EXPECT_TRUE(m::runtime_is_hosted("macos_sdk@15.0"));
+    EXPECT_FALSE(m::runtime_is_hosted("glibc@2.44"));
+    EXPECT_FALSE(m::runtime_is_hosted("musl@1.2.5"));
+    EXPECT_FALSE(m::runtime_is_hosted("wasi-libc@0.1"));
+}
+
+// ── the index coordinate is namespaced, never bare ───────────────────
+//
+// A bare name is ambiguous once a sub-index publishes one too; resolve_target
+// errors on the ambiguity, and a caller reading "cannot answer" as "no
+// answer" falls back to a constant. Measured once already -- 2026.8.27.1
+// shipped with the mechanism dead for exactly this reason.
+TEST(SubosRuntime, RuntimeQueryCarriesTheNamespace) {
+    EXPECT_EQ(m::runtime_query_for("glibc@2.44"), "xim:glibc");
+    EXPECT_EQ(m::runtime_query_for("musl@1.2.5"), "xim:musl");
+    // Accepts a bare name too: callers hold both forms.
+    EXPECT_EQ(m::runtime_query_for("glibc"), "xim:glibc");
+}
+
+// ── runtime_abi round-trips, and absent stays absent ─────────────────
+TEST(SubosRuntime, RuntimeAbiIsWrittenAndReadBack) {
+    const auto block = m::make_block({
+        .runtime    = "musl@1.2.5",
+        .by         = "xlings test",
+        .intent     = m::Intent::Create,
+        .runtimeAbi = "linux-x86_64-musl",
+    });
+    EXPECT_EQ(block.value("runtime_abi", std::string{}), "linux-x86_64-musl");
+
+    nlohmann::json doc;
+    doc[std::string(m::BLOCK)] = block;
+    EXPECT_EQ(m::parse(doc).runtime_abi, "linux-x86_64-musl");
+}
+
+TEST(SubosRuntime, AbsentRuntimeAbiOmitsTheKeyRatherThanWritingEmpty) {
+    // Absent and empty are two spellings of one meaning, and having both
+    // makes every reader handle it twice. It also matters for old manifests:
+    // a reader must be able to tell "the package declared none" from "this
+    // block predates the field", and neither is an empty string on disk.
+    const auto block = m::make_block({
+        .runtime = "glibc@2.44",
+        .by      = "xlings test",
+        .intent  = m::Intent::Create,
+    });
+    EXPECT_FALSE(block.contains("runtime_abi"));
+
+    nlohmann::json doc;
+    doc[std::string(m::BLOCK)] = block;
+    EXPECT_TRUE(m::parse(doc).runtime_abi.empty());
+}
+
 // ── invariants ───────────────────────────────────────────────────────
 
 TEST(SubosManifestValidate, AcceptsAWellFormedBlock) {

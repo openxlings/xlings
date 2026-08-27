@@ -252,6 +252,18 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
         // outranked it, the values differ and nothing is claimed.
         auto runtime = mf::runtime_for(subos_dir, json, mf::Intent::Create,
                                        {}, def.binding);
+        // Asked of the index, not derived from the name -- and only when the
+        // index could answer at all. On the fallback path the query already
+        // failed once; asking again would be a second round trip for the same
+        // silence, and an ABI invented from the name is exactly the second
+        // derivation this field exists to remove.
+        std::string runtimeAbi;
+        if (def.resolved && !mf::runtime_is_hosted(runtime)) {
+            if (auto abi = xlings::xim::index_runtime_abi_of(
+                    mf::runtime_query_for(runtime)))
+                runtimeAbi = *abi;
+        }
+
         json[std::string(mf::BLOCK)] = mf::make_block({
             .runtime   = runtime,
             .by        = by,
@@ -261,6 +273,7 @@ void ensure_subos_manifest_(const fs::path& subos_dir) {
                 ? std::string(def.resolved ? mf::RUNTIME_SOURCE_INDEX
                                            : mf::RUNTIME_SOURCE_FALLBACK)
                 : std::string{},
+            .runtimeAbi = std::move(runtimeAbi),
         });
     } else {
         json[std::string(mf::BLOCK)] =

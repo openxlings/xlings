@@ -186,6 +186,10 @@ struct Info {
     // was written by a path that has nothing to say about provenance. A
     // reader must treat empty as UNKNOWN, never as any of the three values.
     std::string           runtime_source;
+    // See BlockSpec::runtimeAbi. Empty = the block predates the field or the
+    // package declared none; readers fall back to family_of(runtime) and must
+    // treat that as DERIVED, not as something this subos was told.
+    std::string           runtime_abi;
 };
 
 // ── who is asking, and therefore what may be invented ────────────────────
@@ -231,6 +235,19 @@ struct BlockSpec {
     // be any of the three, and without this nobody -- doctor included -- can
     // tell a recorded decision from a guess that had nowhere else to go.
     std::string runtimeSource;  // RUNTIME_SOURCE_* below
+    // The ABI the runtime package DECLARED, e.g. "linux-x86_64-glibc", taken
+    // from its recipe's exports.runtime.abi. Empty -> the key is omitted.
+    //
+    // Recorded rather than derived because it is a creation-time fact about
+    // what this subos was told, and because deriving it from the NAME means
+    // maintaining a second table: `family_of` below maps glibc -> linux-*-
+    // glibc in this repo while the package states the same thing in the
+    // index. Two derivations of one fact, and a new runtime that updates only
+    // the package silently becomes "unknown" here.
+    //
+    // ⭐ It is also what makes a non-glibc runtime need no engine change: the
+    // package declares its ABI and the subos writes down what it was told.
+    std::string runtimeAbi;
 };
 
 // Values for BlockSpec::runtimeSource / Info::runtime_source.
@@ -247,6 +264,43 @@ inline constexpr std::string_view RUNTIME_SOURCE_FALLBACK = "fallback";
 inline constexpr std::array<std::string_view, 5> RUNTIME_PACKAGES = {
     "glibc", "musl", "wasi-libc", "macos_sdk", "ucrt",
 };
+
+// ── vendored or hosted: two runtimes, two different invariants ──────────
+//
+// Not every runtime is a package. `ucrt` and `macos_sdk` are OS components --
+// mcpp's runtime_binding.cppm says it plainly, "there is no ucrt payload to
+// bind to" -- so "the declared runtime must be installed" is a FALSE
+// statement about them, and a checker that does not know the difference
+// reports a healthy Windows subos as broken.
+//
+//   vendored  glibc, musl, wasi-libc   a payload in the store
+//             invariant: installed, and everything here pinned to it
+//   hosted    ucrt, macos_sdk          supplied by the OS, no payload
+//             invariant: present and compatible; never installed, never pinned
+//
+// The distinction cannot live in the recipe, because a hosted runtime has no
+// recipe. So it lives here -- but as ONE table beside the names, not as a
+// name check scattered through every caller, which is what it is today.
+// Adding a runtime is a row, not an edit in N places.
+// The index coordinate for a runtime, e.g. "glibc@2.44" -> "xim:glibc".
+//
+// Namespaced, never bare. A bare name is AMBIGUOUS once a sub-index also
+// publishes one, `resolve_target` errors on the ambiguity, and a caller that
+// reads "cannot answer" as "no answer" silently falls back to a constant --
+// measured, and the reason DEFAULT_RUNTIME_QUERY carries the prefix. Built
+// here so that assumption lives in one place rather than at each caller.
+inline std::string runtime_query_for(std::string_view runtimeOrBinding) {
+    const auto at = runtimeOrBinding.find('@');
+    return "xim:" + std::string(runtimeOrBinding.substr(
+        0, at == std::string_view::npos ? runtimeOrBinding.size() : at));
+}
+
+inline constexpr bool runtime_is_hosted(std::string_view runtimeOrBinding) {
+    const auto at = runtimeOrBinding.find('@');
+    const auto name = runtimeOrBinding.substr(
+        0, at == std::string_view::npos ? runtimeOrBinding.size() : at);
+    return name == "ucrt" || name == "macos_sdk";
+}
 
 // ── runtime family ──────────────────────────────────────────────────────
 

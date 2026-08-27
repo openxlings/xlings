@@ -29,20 +29,20 @@ std::string node_key_(const PackageMatch& match) {
     return node_key_(match.canonicalName, match.version);
 }
 
-std::string pin_target_to_active(const std::string& target,
-                                 const ActiveVersionFn& activeOf) {
-    if (!activeOf) return target;
+std::string pin_target_to_subos(const std::string& target,
+                                 const SubosVersionFn& subosVersionOf) {
+    if (!subosVersionOf) return target;
     auto [namePart, versionHint] = parse_target_(target);
     if (namePart.empty()) return target;
     auto bareName = namePart.substr(namePart.rfind(':') + 1);
-    auto active = activeOf(bareName);
+    auto active = subosVersionOf(bareName);
     if (active.empty()) return target;
     if (!semver::satisfies_expr(active, versionHint)) return target;
     return namePart + "@" + active;
 }
 
 std::expected<InstallPlan, std::string>
-resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std::string& platform, const ActiveVersionFn& activeOf, const std::string& hostArch) {
+resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std::string& platform, const SubosVersionFn& subosVersionOf, const std::string& hostArch) {
 
     InstallPlan plan;
 
@@ -61,7 +61,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         // pinned one no longer exists in the catalog -- an active version can
         // outlive its declaration, and that must degrade to "resolve normally"
         // rather than to "package not found".
-        const auto pinned = pin_target_to_active(target, activeOf);
+        const auto pinned = pin_target_to_subos(target, subosVersionOf);
         auto resolved = catalog.resolve_target(pinned, platform);
         if (!resolved && pinned != target) {
             resolved = catalog.resolve_target(target, platform);
@@ -215,7 +215,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         for (auto& dep : it->second.deps) {
             // Pin exactly as expand() did, or this recomputes a key the node
             // map does not have and the edge is silently dropped.
-            const auto pinned = pin_target_to_active(dep, activeOf);
+            const auto pinned = pin_target_to_subos(dep, subosVersionOf);
             auto depMatch = catalog.resolve_target(pinned, platform);
             if (!depMatch && pinned != dep) {
                 depMatch = catalog.resolve_target(dep, platform);
