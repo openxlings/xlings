@@ -110,16 +110,34 @@ inline constexpr std::string_view DEFAULT_RUNTIME_PACKAGE = "glibc";
 inline constexpr std::string_view DEFAULT_RUNTIME_QUERY = "xim:glibc";
 
 // Used ONLY when the index cannot answer -- see resolve_default_runtime() in
-// subos.cpp, which is the single place allowed to decide that. It is a real
-// version because a subos must not be created against a binding nobody can
-// satisfy, and it is deliberately the same value the index's `latest` had
-// when this line was last touched.
+// subos.cpp, which is the single place allowed to decide that.
+//
+// THIS VALUE MUST NAME A VERSION THE INDEX STILL OFFERS, and that is not
+// obvious enough to leave unwritten. It was `glibc@2.44.2` for a few hours,
+// which was the index's `latest` at the time; when 2.44.2 was withdrawn from
+// the index the fallback kept pointing at it, and every path where the index
+// cannot answer produced an unsatisfiable binding:
+//
+//   error: selected RuntimeBinding glibc@2.44.2 requires payload
+//          '<home>/.../xpkgs/xim-x-glibc/2.44.2', but it is not installed
+//
+// measured on a first `mcpp build` in a fresh MCPP_HOME. mcpp lays out its
+// sandbox -- creating the subos, and therefore the binding -- BEFORE it
+// fetches the index, so that path always takes the fallback. It is not a
+// corner: it is the first thing a new user does.
+//
+// So the rule is not "keep this in step with `latest`" -- that is the very
+// coupling the package name above exists to remove, and it would just live
+// here instead. The rule is: point it at a version the index CANNOT stop
+// offering. Entries in glibc.lua are append-only, so any published version
+// qualifies; 2.44 is the oldest one that satisfies the `our_glibc >=
+// host_glibc` constraint on currently supported distributions.
 //
 // A subos created from this rather than from the index records
 // `runtime_source: "fallback"`, so a stale pin can never be mistaken for a
 // resolved fact. Nothing else may read it: substituting a constant for an
-// answer under Describe is exactly the defect this file already fixed once.
-inline constexpr std::string_view DEFAULT_RUNTIME_FALLBACK = "glibc@2.44.2";
+// answer under Describe is exactly the defect this file already fixed.
+inline constexpr std::string_view DEFAULT_RUNTIME_FALLBACK = "glibc@2.44";
 
 inline constexpr std::string_view OP_SET     = "set";
 inline constexpr std::string_view OP_PREPEND = "prepend";
