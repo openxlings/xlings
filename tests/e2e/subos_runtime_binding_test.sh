@@ -229,6 +229,45 @@ SRC4="$(read_block "$S4_HOME/subos/t94" 'blk.get("runtime_source", "")')"
 log "  ✓ S4b: recorded as runtime_source=index"
 
 
+
+# ── S6: `self init` itself resolves, on a home whose index is not yet synced ─
+#
+# S4 and S5 both assert on a subos created by `subos new`, AFTER `update` has
+# run. That leaves the path every new user actually takes untested: `self init`
+# creates `subos/default` first, on a home where the index has never been
+# materialized.
+#
+# It is not a corner. mcpp lays out its sandbox -- and therefore the binding --
+# before its first `xlings install` fetches the index, so `subos/default` is
+# the block mcpp reads on a first build. Measured before this change, on a
+# fresh MCPP_HOME with xlings 2026.8.27.3: `runtime_source` was `fallback`, and
+# the build worked only because the constant happened to equal what the index
+# offered that day.
+#
+# $S4_HOME is exactly that shape already: its `self init` above ran BEFORE
+# `x4 update`, against an index repo that was configured but never synced. So
+# the assertion needs no new fixture -- only the right subos.
+S4_DEFAULT="$S4_HOME/subos/default"
+[ -f "$S4_DEFAULT/.xlings.json" ] \
+  || fail "S6: self init produced no default subos manifest in $S4_HOME"
+
+RUNTIME6="$(read_block "$S4_DEFAULT" 'blk.get("runtime")')"
+[ "$RUNTIME6" = "glibc@9.9.9" ] \
+  || fail "S6: self init recorded '$RUNTIME6', but the configured index says
+    9.9.9. On a home with no synced index the query has to MAKE the index
+    usable before answering -- otherwise the binding every new user gets comes
+    from a constant, and the next time that package is republished a fresh
+    home installs the new payload and refuses to use it."
+log "  ✓ S6a: self init resolved the binding before writing it (glibc@9.9.9)"
+
+SRC6="$(read_block "$S4_DEFAULT" 'blk.get("runtime_source", "")')"
+[ "$SRC6" = "index" ] \
+  || fail "S6: self init recorded runtime_source='$SRC6'. 'fallback' here means
+    the index was still unusable at the moment the binding was decided, which
+    is the defect this asserts against -- the value may look right and be a
+    coincidence."
+log "  ✓ S6b: recorded as runtime_source=index, so it was looked up, not guessed"
+
 # ── S5: a second repo also publishes glibc, and the answer is unchanged ──
 #
 # S4 cannot catch the failure this exists for. Its home has ONE index repo, so
