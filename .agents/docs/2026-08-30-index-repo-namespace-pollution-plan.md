@@ -1,5 +1,10 @@
 # `index_repos` 的特权语义落错了条目 —— 根因与修复方案
 
+> 状态:**已实现**(2026.8.30.1,PR #575,分支 `fix/index-repos-peer-semantics`)。
+> 落地结果与**被实测推翻的判断**见 §7,逐条标注而不是悄悄改掉。
+> 所有数字都在真实 home(`/home/speak/.xlings`)或它的忠实复现上实测,
+> 命令写在每节的「实测」里,可复现。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 `superpowers:subagent-driven-development`
 > (推荐)或 `superpowers:executing-plans` 逐任务实施。步骤是 `- [ ]` checkbox。
 
@@ -1089,3 +1094,86 @@ $ ls data/xpkgs/     # after:LICENSE pkgs README.md template.lua …
 > (`xpkgs` / `runtimedir` / `xim-index-repos` / `xim-pkgindex-local`)。
 > 修法是一个纯函数把配置解析成无冲突布局,在碰文件系统**之前**拒绝。
 > 那是另一个方案。
+
+---
+
+## 7. 落地结果(2026.8.30.1,PR #575)
+
+### 7.1 实际改了什么
+
+| 文件 | 改动 |
+|---|---|
+| `src/core/xim/repo.cpp/.cppm` | 新增 `index_pointer_key` / `url_matches_declared_source` / `declared_sub_index_url` / `artifact_is_declared_for` / `sync_one_repo`;**删除** `main_should_attempt_artifact`、`sub_should_attempt_artifact`、`sync_repo_with_artifact`、`mainIsOfficialRemote` 整块;`main_repo_dir()` 变常量 |
+| `src/core/config.cpp/.cppm` | `DEFAULT_INDEX_REPO_NAME/_DIR` 转 public;新增 `resolve_default_index_repo_` + `declared_index_repo_url`;`xim.index-repo` **首次被读取** |
+| `src/core/xim/index_cmd.cpp/.cppm` | `collect_index_sources` 改用 `artifact_is_declared_for`;`IndexSourceView` 加 `gitManaged`;`cmd_index_use` 物化改 `insert(begin())` |
+| `src/core/xim/indexfetch.cpp` | 日志 label 中性化(不再有 "sub-index 'xim'") |
+| `src/cli.cpp` | `--index-repo` 保持追加,加注释说明为何此处可以 |
+| 测试 | 新增 `tests/unit/test_index_peer_sync.cpp`、`tests/e2e/index_repo_order_test.sh`;删除失去被测对象的两组决策表 |
+| 文档 | `docs/spec/xlings-json-schema.md`(条目平级 + `xim` 段)、`docs/quick-start/custom-index.md` |
+
+### 7.2 实测:用户故障场景
+
+复现 home = 真实 home 的 `.xlings.json` + `data/{xim-pkgindex,scode,xim-index-repos}`。
+
+```
+初始(= 真实 home 的状态)
+  data/scode/pkgs  185 个 .lua        marker 92660f5   ← 92660f5 是 xim 的版本
+  $ 旧二进制 install mcpp-hooks-audioplayer
+  [error] package 'mcpp-hooks-audioplayer' is ambiguous, candidates:
+          1. scode:mcpp-hooks-audioplayer@0.0.1
+          2. xim:mcpp-hooks-audioplayer@0.0.1
+
+新二进制跑一次 xlings update(无需人工干预)
+  data/scode/pkgs   15 个 .lua        marker 2026.8.27.5  ← scode 自己的版本
+  data/xim-pkgindex 185 个 .lua
+  $ search mcpp-hooks-audioplayer
+    ◆ xim:mcpp-hooks-audioplayer          ← 一条
+```
+
+`data/scode` 现在符合取 **scode 自己**制品的条件,`fetch_index_artifact` 原子换整棵树
+—— **无感自愈,不需要用户手工 `rm -rf`。**
+
+抽查此前全部歧义的包:`cmake` 1 条;`perl` 1 条(另一条是描述含 "Perl" 的 `pcre2`);
+`util-linux` 2 条 —— `scode:util-linux` 与 `xim:util-linux` 是**真的两个不同的包**
+(scode 索引里确实有 util-linux),用命名空间区分,这是正确状态。
+
+### 7.3 三处被实测推翻的判断
+
+**① 「统一同步函数」不是纯重构 —— 它改了本地子索引的语义。**
+`sync_one_repo` 一开始对本地源一律走 `ensure_local_repo_link_`(symlink),
+而原来顶层是 symlink、**子索引是 git clone(快照)**。symlink 让索引跟着源实时变,
+于是 C2 按需刷新(#366)永远没东西可刷、也就不再打印那句提示。
+`install_refresh_on_missing_test.sh` 抓到了(旧二进制过、新的挂)。
+已恢复原语义,并用 `linkLocalSource` 参数**显式标注这处既有的不对称**,
+而不是顺手把它改掉 —— 那是另一个决定。
+
+**② `default_global_index_repos_` 不能读单例。**
+它在 Config **自身初始化过程中**被调用,`instance_()` 造成
+`__gnu_cxx::recursive_init_error`,19 个测试二进制同时挂,而报错不指向任何有用的东西。
+改成把 `declaredUrl` 传参进去。
+
+**③ 「默认索引先同步」是必要的,不是洁癖。**
+`artifact_is_declared_for` 要读默认索引的 `xim-indexrepos.lua`。首次运行时若先判定
+其他条目,文件还不在盘上 → 拿不到声明 → 静默退回 git 一整轮。
+`syncRepos` 现在把名为 `xim` 的条目排到最前(其余保持配置顺序)。
+这不是恢复"位置有语义",而是"声明者先于被声明者"。
+
+### 7.4 验证矩阵
+
+| 层 | 内容 | 结果 |
+|---|---|---|
+| 单测 | 49/49 | 通过 |
+| 单测(新增) | `IndexPeerSync.*` —— pointer key / 声明来源匹配 / 制品资格 / 默认索引目录常量性 | 通过 |
+| e2e(新增) | `index_repo_order_test.sh` 两条差分 | 新构建过;**发布版 2026.8.27.4 两条都失败** |
+| e2e(回归) | index_repo_order / install_refresh_on_missing / sub_index_search / sub_index_install / index_cache / install_subindex_first_run / local_query_no_index_sync / legacy_config / project_e2e / mirror_fallback | 10/10 通过 |
+| 真机 | 用户故障场景在忠实复现 home 上消失 + 自愈 | 见 §7.2 |
+
+### 7.5 仍然没有被挡住的
+
+1. **真实制品下载路径的端到端覆盖**。e2e fixture 全是本地路径,
+   `is_local_repo_source` 在看 pointer 之前就短路。"配置的 pointer → 按 name 取 →
+   写进哪个目录"这条链只有纯函数单测 + §7.2 的真机验证,没有自动化 e2e。
+   要补需要 HTTP fixture 服务器 + 假 pointer,独立立项。
+2. **`declared_sub_index_url` 依赖默认索引已在盘上**。§7.3③ 的排序把首次运行的窗口
+   关上了,但如果默认索引本身同步失败,后续条目会退回 git —— 安全方向,无测试。
+3. **§6 的三个目录唯一性缺陷**仍然存在,与本 bug 无因果,单独立项。
