@@ -1166,14 +1166,20 @@ $ ls data/xpkgs/     # after:LICENSE pkgs README.md template.lua …
 | 单测(新增) | `IndexPeerSync.*` —— pointer key / 声明来源匹配 / 制品资格 / 默认索引目录常量性 | 通过 |
 | e2e(新增) | `index_repo_order_test.sh` 两条差分 | 新构建过;**发布版 2026.8.27.4 两条都失败** |
 | e2e(回归) | index_repo_order / install_refresh_on_missing / sub_index_search / sub_index_install / index_cache / install_subindex_first_run / local_query_no_index_sync / legacy_config / project_e2e / mirror_fallback | 10/10 通过 |
+| e2e(制品链) | `index_artifact_update_test.sh`(本地 HTTP server + 假 pointer:`XLINGS_INDEX_SOURCE=artifact` 无回退、sha256 拒绝、stranded git 自愈、不可达时非破坏)、`index_version_contract_test.sh`(版本路由 + `index list` 口径) | 通过(需 `PATH=/usr/bin:$PATH`,见 §7.5) |
 | 真机 | 用户故障场景在忠实复现 home 上消失 + 自愈 | 见 §7.2 |
 
 ### 7.5 仍然没有被挡住的
 
-1. **真实制品下载路径的端到端覆盖**。e2e fixture 全是本地路径,
-   `is_local_repo_source` 在看 pointer 之前就短路。"配置的 pointer → 按 name 取 →
-   写进哪个目录"这条链只有纯函数单测 + §7.2 的真机验证,没有自动化 e2e。
-   要补需要 HTTP fixture 服务器 + 假 pointer,独立立项。
+1. ~~真实制品下载路径没有端到端覆盖~~ —— **这条是我写错的,已自查更正**。
+   `tests/e2e/index_artifact_update_test.sh` 和 `index_version_contract_test.sh`
+   本来就用本地 HTTP server + 假 pointer 覆盖了整条制品链,包括
+   `XLINGS_INDEX_SOURCE=artifact` 无 git 回退、stranded git 主索引自愈、
+   制品不可达时非破坏保留。两者在本改动上**都通过**。
+   我第一次跑时它们失败,原因是这台机器的 `python3` 被两个**与本改动无关**的既有
+   缺陷卡住(glibc 组冲突、python 的 loader/libc 不匹配);
+   `PATH=/usr/bin:$PATH` 用宿主 python3 跑即通过。
+   **教训:一个 e2e 失败先证明它是不是环境问题,再断言覆盖缺口。**
 2. **`declared_sub_index_url` 依赖默认索引已在盘上**。§7.3③ 的排序把首次运行的窗口
    关上了,但如果默认索引本身同步失败,后续条目会退回 git —— 安全方向,无测试。
 3. **§6 的三个目录唯一性缺陷**仍然存在,与本 bug 无因果,单独立项。
