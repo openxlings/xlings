@@ -1183,3 +1183,38 @@ $ ls data/xpkgs/     # after:LICENSE pkgs README.md template.lua …
 2. **`declared_sub_index_url` 依赖默认索引已在盘上**。§7.3③ 的排序把首次运行的窗口
    关上了,但如果默认索引本身同步失败,后续条目会退回 git —— 安全方向,无测试。
 3. **§6 的三个目录唯一性缺陷**仍然存在,与本 bug 无因果,单独立项。
+
+---
+
+## 8. 受影响用户怎么升级(必须写进发布说明)
+
+**`xlings self update` 在损坏的 home 上会被自己卡死。** 实测(污染 home + 2026.8.27.4):
+
+```
+$ xlings install xlings@latest          # self update 内部就是这条
+[error] package 'xlings@latest' is ambiguous, candidates:
+        1. scode:xlings@2026.8.27.5 from global repo 'scode'
+        2. xim:xlings@2026.8.27.5 from global repo 'xim'
+```
+
+因为污染目录装的是**整个官方索引**,里面当然也有 `xlings` 这个包。
+所以受影响的用户**无法用正常路径升到修复版** —— 这不是理论风险,是必然。
+
+两条逃生口,都已实测可用:
+
+```bash
+# 1) 显式命名空间绕过歧义(推荐,不用知道哪个目录坏了)
+xlings install xim:xlings@latest -y
+xlings use xlings <version>
+
+# 2) 或者删掉被污染的目录,再走正常路径
+#    哪个目录:xlings index 里 "on disk" 的版本不在自己快照列表中的那个
+rm -rf ~/.xlings/data/<name>
+xlings self update
+```
+
+升级之后**一次 `xlings update` 自愈**,不需要再做别的(§7.2)。
+
+> 这条是自审阶段才发现的。写方案时我只想到"升级后自愈",没想到**升级本身
+> 被同一个 bug 挡住**。任何"修复 X 的版本要靠 X 才能装上"的变更,
+> 都要单独验证升级路径。
