@@ -146,6 +146,59 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 | `artifact` | `string \| object` | artifact 来源 base:GitHub/GitCode 仓库 URL、静态 HTTP 目录、本地目录/`file://`;或区域对象 `{"GLOBAL":..,"CN":..}` |
 | `source` | `string` | `auto`(默认,artifact 优先、git 回退)\| `artifact`(只走 artifact)\| `git`(强制 git) |
 
+#### 条目是平级的,`name` 决定三件事
+
+数组里的条目**没有主次**,顺序不携带任何语义。每一项的 `name` 同时决定:
+
+1. **目录** —— `data/<name>`(名为 `xim` 的默认索引例外,固定在 `data/xim-pkgindex`);
+2. **命名空间** —— 包以 `<name>:<pkg>` 被引用;
+3. **下载哪个索引** —— 制品 pointer 里以 `<name>` 为键的那一条。
+
+第 3 条是 2026.8.30.1 修复的:此前**默认索引由数组下标 0 决定**,而它下载的内容
+是写死的官方索引。两者不同源,于是排在首位的子索引会收到**官方索引的内容**,
+它命名空间下凭空多出整个官方索引(#576)。现在 `data/<name>` 只可能收到
+`<name>` 自己的索引。
+
+#### 一个条目什么时候走 artifact
+
+由**配置**决定,不由 URL 形状决定:
+
+- 它自己写了 `artifact`(那就是它声明的来源);**或者**
+- 它的 `url` 等于该 `name` 的**声明来源**:
+  - `xim` → 配置里的 `xim.index-repo`(见下方 `xim` 段);
+  - 子索引 → 默认索引 `xim-indexrepos.lua` 里为该名字声明的 URL。
+
+对不上就没有 artifact,走 git。本地路径 / `file://` 永远不走 artifact。
+`source: "git"` 可以对任意条目关闭 artifact —— 自建同名索引用这个兜底。
+
+### xim 格式
+
+`xlings self install` 写入,描述**默认索引本身**从哪来:
+
+```json
+"xim": {
+  "index-repo": "https://github.com/openxlings/xim-pkgindex.git",
+  "index-base": "https://github.com/xlings-res/xim-index",
+  "mirrors": {
+    "index-repo": {
+      "GLOBAL": "https://github.com/openxlings/xim-pkgindex.git",
+      "CN":     "https://gitee.com/sunrisepeak/xim-pkgindex.git"
+    },
+    "res-server": { "GLOBAL": "...", "CN": "..." }
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `index-repo` | 默认索引(`name: "xim"`)的 git 地址。**2026.8.30.1 起真正生效**:此前只被写入、从不被读取,默认地址是编译进 xlings 的常量 |
+| `mirrors.index-repo` | 按区域的同一字段。优先于扁平的 `index-repo` 读取,所以安装后改 `mirror` 会跟着走 |
+| `index-base` | 制品 pointer + release 资产的 base(自建服务器用)。env `XLINGS_INDEX_BASE_URL` 优先 |
+
+`index-repo` 同时是默认索引的**声明来源**:`index_repos` 里名为 `xim` 的条目,
+只有 `url` 与它相等才会被送上官方制品。改成自己的 fork,官方制品就不会再落到
+你的目录里。
+
 ### XLINGS_RES 格式
 
 支持三种写法：

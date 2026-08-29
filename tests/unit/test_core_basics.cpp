@@ -403,33 +403,16 @@ TEST(XimRepoTest, SyncPreservesArtifactManagedIndexNotDestroyed) {
     fs::remove_all(root);
 }
 
-// Pure decision-table for the main-index artifact gate (P0-1 symmetry fix).
-TEST(XimRepoTest, GateMainOfficialRemoteAlwaysAttemptsArtifactInAuto) {
-    using xlings::xim::main_should_attempt_artifact;
-    // auto: official remote always converges to artifact — even a stranded git
-    // checkout (hasMarker=false, hasPkgs=true) self-heals.
-    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     false, true));
-    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     true,  true));
-    EXPECT_TRUE (main_should_attempt_artifact(true,  "auto",     false, false));
-    // non-official / local / fork mains never artifact-fetch.
-    EXPECT_FALSE(main_should_attempt_artifact(false, "auto",     false, true));
-    // explicit overrides.
-    EXPECT_TRUE (main_should_attempt_artifact(true,  "artifact", false, true));
-    EXPECT_FALSE(main_should_attempt_artifact(true,  "git",      true,  false));
-    EXPECT_FALSE(main_should_attempt_artifact(false, "artifact", false, false));
-}
-
-TEST(XimRepoTest, GateSubDefaultMigratesOnceMainArtifactManaged) {
-    using xlings::xim::sub_should_attempt_artifact;
-    // auto: a stranded git sub (managed=false, pkgs=true) only migrates once the
-    // MAIN index is artifact-managed (the C1 gate).
-    EXPECT_FALSE(sub_should_attempt_artifact(true,  "auto", false, true,  false));
-    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", false, true,  true));
-    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", false, false, false)); // fresh
-    EXPECT_TRUE (sub_should_attempt_artifact(true,  "auto", true,  true,  false)); // already managed
-    EXPECT_FALSE(sub_should_attempt_artifact(false, "auto", false, false, true));  // non-default
-    EXPECT_FALSE(sub_should_attempt_artifact(true,  "git",  false, false, true));
-}
+// The two artifact gates (main_should_attempt_artifact,
+// sub_should_attempt_artifact) and their decision tables are gone. They existed
+// because the sync had a "main index" and an "others" branch, and the main one
+// was chosen by array position -- which is how a sub-index listed first came to
+// be fetched the OFFICIAL index into its own directory.
+//
+// Every entry now goes through xim::sync_one_repo under its own name, and the
+// question the tables answered is asked once, of configuration:
+// xim::artifact_is_declared_for. Its tests are in
+// tests/unit/test_index_peer_sync.cpp.
 
 // ============================================================
 // cmdline tests

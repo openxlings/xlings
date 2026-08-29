@@ -197,13 +197,22 @@ int cmd_index_use(const std::string& name, const std::string& version,
             // The source exists in the effective config but not in the file --
             // it is a built-in default. Materialise the entry so the pin has
             // somewhere to live.
+            //
+            // insert(begin), not push_back: Config materialises a missing
+            // default at the FRONT of the effective list (config.cpp), so
+            // appending here made the two writers of "where does the default
+            // entry go" disagree. `xlings index use xim <ver>` therefore moved
+            // the default index out of position 0 -- and position used to
+            // decide which entry was the default index at all. Position no
+            // longer carries meaning, but two writers with opposite answers is
+            // a defect either way, and it still reorders `xlings index`.
             for (const auto& repo : Config::global_index_repos()) {
                 if (repo.name != name) continue;
                 nlohmann::json entry;
                 entry["name"] = repo.name;
                 entry["url"]  = repo.url;
                 if (!clearing) entry["version"] = version;
-                json["index_repos"].push_back(entry);
+                json["index_repos"].insert(json["index_repos"].begin(), entry);
                 return true;
             }
             return false;
