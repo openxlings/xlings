@@ -7,6 +7,7 @@ import xlings.core.home_config;
 import xlings.core.log;
 import xlings.core.version_order;
 import xlings.core.xim.indexfetch;
+import xlings.core.xim.repo;
 import xlings.platform;
 import xlings.runtime;
 
@@ -30,12 +31,26 @@ std::vector<IndexSourceView> collect_index_sources() {
         IndexSourceView view;
         view.name = repo.name;
         view.pin  = repo.version;
-        view.installed = installed_index_version(Config::repo_dir_for(repo, false));
+        const auto repoDir = Config::repo_dir_for(repo, false);
+        view.installed = installed_index_version(repoDir);
+
+        // Ask the pointer only about repos a pointer answers for -- the same
+        // question, and the same answerer, the sync uses. Asking anyway said
+        // "no pointer entry for 'dsh'" about a perfectly healthy git repo, and
+        // for a name that IS in the combined pointer because it is also a
+        // declared sub-index, it printed a permanent "run `xlings update` to
+        // move to <version>" that the git path can never satisfy.
+        if (!artifact_is_declared_for(repo, false)) {
+            view.gitManaged = true;
+            view.installed  = get_repo_revision_label(repoDir);
+            views.push_back(std::move(view));
+            continue;
+        }
 
         auto source = artifact_source_for(repo);
         const auto& pointers = load_index_pointers(Config::mirror(),
                                                    source ? &*source : nullptr);
-        const auto key = source ? source->key : repo.name;
+        const auto key = index_pointer_key(repo);
         const auto* manifest = select_manifest(pointers, key, source.has_value());
         if (!manifest) {
             view.error = pointers.empty()
@@ -68,6 +83,7 @@ nlohmann::json index_sources_json(const std::vector<IndexSourceView>& views) {
         // picked: between a pointer moving and the next `update`, the two differ
         // and only this one describes the tree the client is actually reading.
         entry["installed"] = view.installed;
+        entry["git_managed"] = view.gitManaged;
         entry["truncated"] = view.truncated;
         if (!view.error.empty()) entry["error"] = view.error;
         entry["snapshots"] = nlohmann::json::array();
@@ -110,6 +126,13 @@ int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream) 
         log::println("");
         log::println("  ◆ {}{}", view.name,
                      view.pin.empty() ? "" : std::format("  (pinned: {})", view.pin));
+        if (view.gitManaged) {
+            log::println("    git-managed — no published snapshots{}",
+                         view.installed.empty()
+                             ? std::string(" (not synced yet)")
+                             : std::format(" (on disk: {})", view.installed));
+            continue;
+        }
         if (!view.error.empty()) {
             log::println("    {}", view.error);
             continue;

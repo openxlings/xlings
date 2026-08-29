@@ -26,6 +26,11 @@ struct IndexSourceView {
     std::string current;                // index_version this client would pick NOW
     std::string installed;              // index_version actually on disk
     bool        truncated = false;
+    // No pointer describes this repo -- it is git/local-managed, which is a
+    // normal state and not a failure. `installed` then holds the git revision
+    // instead of an index_version. Distinct from `error`, which means "there
+    // should have been a pointer and I could not read it".
+    bool        gitManaged = false;
 };
 
 // What the local index tree says it is, from the marker written at swap time.
