@@ -509,11 +509,11 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     std::string key = custom ? custom->key
                              : (subName.empty() ? std::string("xim") : std::string(subName));
 
-    std::string label = subName.empty()
-        ? std::string("package index")
-        : std::format("sub-index '{}'", subName);
-    log::info("[index] fetching {} (mirror={})...",
-              label, mirrorKey.empty() ? "GLOBAL" : mirrorKey);
+    // Every repo is fetched under its own name now, so there is no "the index"
+    // versus "a sub-index" to distinguish -- there is only which one. Saying
+    // "sub-index 'xim'" would be worse than saying nothing.
+    log::info("[index] fetching index '{}' (mirror={})...",
+              key, mirrorKey.empty() ? "GLOBAL" : mirrorKey);
 
     auto& pointers = load_index_pointers(mirrorKey, custom);
     const IndexManifest* pm = select_manifest(pointers, key, custom != nullptr);

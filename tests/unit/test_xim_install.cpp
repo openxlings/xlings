@@ -745,30 +745,17 @@ TEST(XimSubReposTest, MergeSubReposJsonOnlyPreserved) {
     EXPECT_EQ(merged[0].name, "fromsource");
 }
 
-// ── sub_should_attempt_artifact: the C1 migration gate ──
-TEST(XimSubReposTest, SubArtifactAutoFreshDefault) {
-    // auto + default + fresh (no pkgs) → artifact
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        /*isDefaultOfficial=*/true, "auto",
-        /*subManaged=*/false, /*subHasPkgs=*/false, /*mainArtifactManaged=*/false));
-}
-
-TEST(XimSubReposTest, SubArtifactAutoExistingGitNoMainMigration) {
-    // auto + default + existing git checkout (has pkgs, not managed) +
-    // main NOT artifact-managed → stay git (no migration)
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        true, "auto", /*subManaged=*/false, /*subHasPkgs=*/true,
-        /*mainArtifactManaged=*/false));
-}
-
-TEST(XimSubReposTest, SubArtifactAutoMigratesWhenMainArtifactManaged) {
-    // auto + default + existing git checkout + MAIN is artifact-managed
-    // → migrate the sub to artifact too (the whole index is one unit). [C1]
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        true, "auto", /*subManaged=*/false, /*subHasPkgs=*/true,
-        /*mainArtifactManaged=*/true));
-}
-
+// The sub_should_attempt_artifact decision table used to live here. It is gone
+// with the function: sub-indexes are no longer a special case of the sync, so
+// there is no separate gate to tabulate. The behaviours it encoded -- git mode
+// disables artifacts, a declared artifact source always attempts, an
+// undeclared name never does -- are asserted against the predicate that
+// replaced it, in tests/unit/test_index_peer_sync.cpp.
+//
+// The C1 "migrate the sub once the main is artifact-managed" rows have no
+// successor because the state they gated on is gone: every repo converges to
+// its own artifact independently, so there is no main/sub split to keep in
+// step.
 TEST(XimSubReposTest, SubReposJsonObjectFormatRoundTrip) {
     namespace fs = std::filesystem;
     auto dir = fs::temp_directory_path() / "xlings-test-subrepos-json";
@@ -796,51 +783,6 @@ TEST(XimSubReposTest, SubReposJsonObjectFormatRoundTrip) {
     EXPECT_TRUE(j["plain"].is_string());
     EXPECT_TRUE(j["custom"].is_object());
     fs::remove_all(dir);
-}
-
-// ── #377: custom repos with a declared artifact source ──
-TEST(XimSubReposTest, SubArtifactCustomAutoAlwaysAttempts) {
-    // custom + artifact declared: attempts even for an existing git checkout
-    // with main not artifact-managed (no C1 gate — atomic swap migrates safely)
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        false, "auto", false, true, false, true));
-}
-
-TEST(XimSubReposTest, SubArtifactCustomForcedArtifact) {
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        false, "artifact", false, true, false, true));
-}
-
-TEST(XimSubReposTest, SubArtifactCustomGitForced) {
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        false, "git", false, true, false, true));
-}
-
-TEST(XimSubReposTest, SubArtifactNoSourceStaysGit) {
-    // default param: prior behavior for repos without artifact declarations
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        false, "auto", false, false, true));
-}
-
-TEST(XimSubReposTest, SubArtifactAutoAlreadyManaged) {
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        true, "auto", /*subManaged=*/true, /*subHasPkgs=*/true, false));
-}
-
-TEST(XimSubReposTest, SubArtifactNonDefaultNeverArtifact) {
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        /*isDefaultOfficial=*/false, "auto", false, false, true));
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        /*isDefaultOfficial=*/false, "artifact", false, false, true));
-}
-
-TEST(XimSubReposTest, SubArtifactSourceOverrides) {
-    // git mode disables artifact even for a fresh default
-    EXPECT_FALSE(xlings::xim::sub_should_attempt_artifact(
-        true, "git", false, false, true));
-    // artifact mode forces it for a default regardless of fs state
-    EXPECT_TRUE(xlings::xim::sub_should_attempt_artifact(
-        true, "artifact", false, true, false));
 }
 
 // ============================================================

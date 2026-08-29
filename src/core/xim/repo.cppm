@@ -23,6 +23,10 @@ std::vector<IndexRepo> discover_sub_repos_(const std::filesystem::path& repoDir,
 
 std::string sync_repo_url_(const std::string& url, const std::string& mirror [[maybe_unused]]);
 
+// Strip a trailing `.git` and trailing slashes. Scheme and host are left
+// alone on purpose — a mirror is a different source.
+std::string normalize_repo_url_(std::string_view url);
+
 }  // namespace detail_
 
 // Exported wrapper for discover_sub_repos (used by catalog)
@@ -47,45 +51,72 @@ std::string sync_repo_url(const std::string& url, const std::string& mirror);
 std::vector<IndexRepo> merge_sub_repos(const std::vector<IndexRepo>& luaDefaults,
                                        const std::vector<IndexRepo>& jsonRepos);
 
-// Decide whether the MAIN index should be fetched as a versioned artifact (vs
-// git clone/pull). The OFFICIAL remote index always converges to artifact in
-// auto mode — git is only ever a fallback, never a terminal state:
-//   - indexSource "artifact": force artifact (only for the official remote).
-//   - indexSource "git":      always git.
-//   - indexSource "auto":     artifact whenever the configured main index is the
-//     official index from a remote source. This is the symmetric counterpart of
-//     the sub-index C1 migration gate: a stranded git main (pkgs/ present, marker
-//     lost — e.g. after an interrupted swap or a destructive git fallback) heals
-//     itself on the next update instead of being frozen on git forever. Local
-//     (file://)/fork/custom-URL mains are excluded by isOfficialRemote, so git
-//     fixtures and private indexes are unaffected.
-// `hasMarker`/`hasPkgs` are kept in the signature for symmetry/diagnostics and
-// future ETag-style gating; auto no longer needs them because an official remote
-// always attempts artifact (a redundant attempt on an already-current index is a
-// cheap pointer fetch + sha match).
-bool main_should_attempt_artifact(bool isOfficialRemote,
-                                  const std::string& indexSource,
-                                  bool /*hasMarker*/, bool /*hasPkgs*/);
+// ── index_repos entries are PEERS ────────────────────────────────────
+//
+// There used to be two gates here — main_should_attempt_artifact and
+// sub_should_attempt_artifact — because the sync split its work into "the main
+// index" and "the others". The main one was index_repos[0], and it was fetched
+// with a HARDCODED pointer key into a directory derived from that entry's name,
+// so the destination and the content were chosen independently. A sub-index
+// listed first therefore received the official index: data/scode held 185
+// packages of xim and served every one of them under the `scode` namespace.
+//
+// Both gates are gone. Every entry — top-level or discovered sub-index — goes
+// through sync_one_repo under its OWN name, and whether it may be served an
+// artifact is a configuration question (artifact_is_declared_for), not a URL
+// pattern compiled into xlings.
 
-// Decide whether a sub-index should be fetched as a versioned artifact (vs git
-// clone/pull). Mirrors the main index's gating:
-//   - indexSource "artifact": force artifact for default-official subs and
-//     (#377) repos with a declared artifact source.
-//   - indexSource "git":      always git.
-//   - indexSource "auto":     artifact for a default-official sub that is fresh
-//     (no pkgs), already artifact-managed, OR — once the MAIN index is
-//     artifact-managed — to MIGRATE an existing git checkout (the whole index
-//     is one unit; this is the C1 migration gate so existing installs don't
-//     stay split: main on artifact, subs on git). #377: a repo that DECLARES
-//     an artifact source always attempts (converges like the main index; the
-//     atomic swap migrates an existing git checkout safely, so no C1 gate).
-// Repos with neither a default-official identity nor a declared artifact
-// source are never artifact-fetched.
-bool sub_should_attempt_artifact(bool isDefaultOfficial,
-                                 const std::string& indexSource,
-                                 bool subManaged, bool subHasPkgs,
-                                 bool mainArtifactManaged,
-                                 bool hasArtifactSource = false);
+// Which entry of a published pointer describes this repo's tree. It is the
+// repo's own name (or, for a repo that declares its own artifact base, that
+// source's key — which is also derived from the repo). One origin, one answer.
+std::string index_pointer_key(const IndexRepo& repo);
+
+// Do these two URLs name the same repository? Compared after stripping a
+// trailing `.git` and trailing slashes: a config that omits `.git` means the
+// same repo, and reading it as a different one would silently drop the entry to
+// git with no message.
+bool url_matches_declared_source(std::string_view repoUrl,
+                                 std::string_view declaredUrl);
+
+// The URL the default index declares for a sub-index name, via its
+// xim-indexrepos.lua. Empty when the name is not declared (a user-added
+// sub-index, or the default index is not on disk yet).
+std::string declared_sub_index_url(std::string_view name);
+
+// May this repo be served the artifact published under its name?
+//
+// Configuration decides, and only configuration:
+//   - it declares its own artifact base (#377) — that IS its declared source;
+//   - or its url equals the source declared for its name: xim.index-repo for
+//     the default index, the default index's xim-indexrepos.lua for a
+//     sub-index.
+// A local (file://) source is never artifact-fetched, and a name nothing
+// declares — a private index, a fork — simply has no artifact and uses git.
+//
+// This replaces `url.find("openxlings/xim-pkgindex") != npos`, which matched
+// every official SUB-index URL too, because they all carry it as a prefix.
+bool artifact_is_declared_for(const IndexRepo& repo, bool projectScope);
+
+// Sync ONE index repo into `repoDir`: artifact when one is declared for it and
+// a pointer describes it, else git/local. This is the whole peer model — the
+// directory, the namespace and the pointer key all come from `repo.name`, so a
+// repo can only ever receive its OWN index.
+//
+// `linkLocalSource` picks how a local (file:// / path) source is materialised,
+// and the two callers differ — an asymmetry that predates this function:
+//   - top-level index_repos: SYMLINK to the source (ensure_local_repo_link_).
+//   - sub-indexes:           git clone, i.e. a SNAPSHOT.
+// The difference is user-visible, not cosmetic: a symlinked index tracks its
+// source live, so the on-demand refresh (C2, #366) has nothing to refresh and
+// never announces itself. Unifying it is a separate decision from this one, so
+// each caller keeps what it had.
+bool sync_one_repo(const IndexRepo& repo,
+                   const std::filesystem::path& repoDir,
+                   const std::string& globalIndexSource,
+                   const std::string& mirror,
+                   bool projectScope,
+                   bool force,
+                   bool linkLocalSource);
 
 // A local repo source (file:// URL or a filesystem path) has no network host,
 // so the TCP reachability probe below always reports it "unreachable" and would
@@ -99,15 +130,6 @@ bool is_local_repo_url(std::string_view u);
 bool sync_repo(const std::filesystem::path& localDir,
                const std::string& url,
                bool force = false);
-
-// #377: sync one CUSTOM repo that declares its own artifact source: artifact
-// first (per the repo's effective source mode), then the repo's pre-existing
-// git/local path via syncFallback. source:"artifact" hard-fails (no fallback),
-// mirroring the main index's XLINGS_INDEX_SOURCE=artifact semantics.
-bool sync_repo_with_artifact(const IndexRepo& repo,
-                             const std::filesystem::path& repoDir,
-                             const std::string& globalIndexSource,
-                             const std::function<bool()>& syncFallback);
 
 // Extract repo directory name from URL (matches Lua _to_repodir behavior)
 // e.g. "https://github.com/d2learn/xim-pkgindex-d2x.git" -> "xim-pkgindex-d2x"
@@ -142,7 +164,21 @@ std::vector<IndexRepo> discovered_project_sub_repos();
 // (scode/awesome/d2x) never resolve until the user runs `xlings update`.
 bool sub_indexes_initialized();
 
-// Get the main index repo directory path (always global)
+// Where the DEFAULT index lives (always global).
+//
+// Not a lookup — a constant. The default index is the entry named
+// Config::DEFAULT_INDEX_REPO_NAME (Config guarantees one exists), and
+// repo_dir_for maps that name onto DEFAULT_INDEX_REPO_DIR unconditionally, so
+// no config a user can write moves it.
+//
+// It used to be repo_dir_for(index_repos[0]) — position, not identity. That is
+// how `xlings index use xim <ver>`, which materialises the default entry at the
+// END of the array, silently handed the default index's identity (its
+// directory, its pin, and the xim-indexrepos.lua every sub-index is discovered
+// from) to whatever happened to be first.
+//
+// Only sub-index discovery still asks: xim-indexrepos.lua ships in the default
+// index and nowhere else.
 std::filesystem::path main_repo_dir();
 
 // Sync all configured repos.

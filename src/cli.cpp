@@ -914,6 +914,10 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
                     return;
                 }
             }
+            // Appending is right HERE: this is a repo the USER is adding, not a
+            // built-in default being materialised, so no other writer has an
+            // opinion about where it goes. (index_cmd.cpp's materialise path is
+            // the one that has to match Config, and now does.)
             nlohmann::json entry;
             entry["name"] = name;
             entry["url"] = url;

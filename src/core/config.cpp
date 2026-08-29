@@ -77,12 +77,43 @@ std::optional<std::filesystem::path>& Config::home_override_() {
     return v;
 }
 
-std::vector<IndexRepo> Config::default_global_index_repos_(const std::string& mirror) {
+std::vector<IndexRepo> Config::default_global_index_repos_(const std::string& mirror,
+                                                           const std::string& declaredUrl) {
+    // The default index's URL is CONFIGURATION. `xlings self install` has been
+    // writing xim.index-repo (and xim.mirrors.index-repo) since it shipped, and
+    // nothing read it: three writes, zero reads. Meanwhile this function kept a
+    // second copy of the URL, so "which repo is the official index" was
+    // answered by a literal compiled into xlings rather than by the home it was
+    // running against.
+    //
+    // `declaredUrl` is passed IN rather than read off the singleton: this runs
+    // DURING Config's own initialisation, and reaching for instance_() from
+    // here is a recursive init of the function-local static (it aborts with
+    // __gnu_cxx::recursive_init_error, which names nothing useful).
+    //
+    // The literals below are the last-resort default for a home whose config
+    // predates the key -- not the source of truth.
+    if (!declaredUrl.empty()) {
+        return { IndexRepo{std::string(DEFAULT_INDEX_REPO_NAME), declaredUrl} };
+    }
     std::string url = "https://github.com/openxlings/xim-pkgindex.git";
     if (mirror == "CN") {
         url = "https://gitee.com/sunrisepeak/xim-pkgindex.git";
     }
     return { IndexRepo{std::string(DEFAULT_INDEX_REPO_NAME), url} };
+}
+
+[[nodiscard]] std::string Config::declared_index_repo_url(std::string_view name) {
+    if (name != DEFAULT_INDEX_REPO_NAME) return {};
+    // Safe to reach the singleton here: every caller asks at sync time, long
+    // after initialisation. (default_global_index_repos_ above cannot.)
+    auto& self = instance_();
+    if (!self.defaultIndexRepoUrl_.empty()) return self.defaultIndexRepoUrl_;
+    // No key in the config: fall back to the same built-in the default entry
+    // itself would have used, so an entry that matches the built-in default is
+    // still recognised as the declared source.
+    auto defaults = default_global_index_repos_(self.mirror_, {});
+    return defaults.empty() ? std::string{} : defaults.front().url;
 }
 
 MirrorServerMap Config::default_resource_servers_() {
@@ -103,6 +134,32 @@ std::string Config::resolve_index_base_(const nlohmann::json& json, const std::s
         if (ib.contains(key) && ib[key].is_string()) return ib[key].get<std::string>();
         if (ib.contains("GLOBAL") && ib["GLOBAL"].is_string()) return ib["GLOBAL"].get<std::string>();
     }
+    return {};
+}
+
+std::string Config::resolve_default_index_repo_(const nlohmann::json& json,
+                                                const std::string& mirror) {
+    // `xim.mirrors.index-repo` is the region map and `xim.index-repo` is the
+    // already-resolved value for the region the home was installed for. Read
+    // the region map FIRST so a home whose mirror changed since install follows
+    // the change, and fall back to the flat key -- which is what a hand-edited
+    // config is most likely to carry.
+    if (!json.contains("xim") || !json["xim"].is_object()) return {};
+    auto& xim = json["xim"];
+
+    if (xim.contains("mirrors") && xim["mirrors"].is_object()) {
+        auto& mirrors = xim["mirrors"];
+        if (mirrors.contains("index-repo") && mirrors["index-repo"].is_object()) {
+            auto& byRegion = mirrors["index-repo"];
+            std::string key = mirror.empty() ? "GLOBAL" : mirror;
+            if (byRegion.contains(key) && byRegion[key].is_string())
+                return byRegion[key].get<std::string>();
+            if (byRegion.contains("GLOBAL") && byRegion["GLOBAL"].is_string())
+                return byRegion["GLOBAL"].get<std::string>();
+        }
+    }
+    if (xim.contains("index-repo") && xim["index-repo"].is_string())
+        return xim["index-repo"].get<std::string>();
     return {};
 }
 
@@ -491,6 +548,11 @@ Config::Config() {
                 load_ui_prefs_from_json_(json);
                 // Load global versions
                 load_global_versions_from_json_(json);
+                // BEFORE parse_index_repos_json / default_global_index_repos_:
+                // both of those ask what the default index's URL is, and this
+                // is where the answer comes from. `mirror_` is already read
+                // above, which the region lookup needs.
+                defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
                 globalIndexRepos_ = parse_index_repos_json(json, mirror_);
                 load_resource_servers_from_json_(json, globalResourceServers_);
                 if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;
@@ -498,13 +560,13 @@ Config::Config() {
         } catch (...) {}
     }
     if (globalIndexRepos_.empty()) {
-        globalIndexRepos_ = default_global_index_repos_(mirror_);
+        globalIndexRepos_ = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
     } else {
         // Ensure the default index repo is always present when user
         // defines custom index_repos (e.g. adding "ros2").  Without
         // this, user-defined repos replace the default and packages
         // in the primary index (like "python") become unfindable.
-        auto defaults = default_global_index_repos_(mirror_);
+        auto defaults = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
         for (auto& def : defaults) {
             bool found = false;
             for (auto& repo : globalIndexRepos_) {

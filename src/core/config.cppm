@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.8.27.5";
+    static constexpr std::string_view VERSION = "2026.8.30.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -98,12 +98,35 @@ public:
     // Has no effect once the singleton is constructed.
     static void override_home(const std::filesystem::path& home);
 
+    // Public because they ARE the public contract of repo_dir_for(): the
+    // default index is the entry named DEFAULT_INDEX_REPO_NAME, and it lives in
+    // DEFAULT_INDEX_REPO_DIR rather than in a directory named after itself.
+    // Anyone asking "which of these entries is the default index" compares
+    // against this name; a second copy of the literal elsewhere is how two
+    // answers to one question drift apart.
+    static constexpr std::string_view DEFAULT_INDEX_REPO_NAME = "xim";
+    static constexpr std::string_view DEFAULT_INDEX_REPO_DIR  = "xim-pkgindex";
+
+    // The URL declared for an index name, or empty when nothing declares one.
+    //
+    // This is what "may this entry be served the artifact published under its
+    // name" is decided against -- see xim::artifact_is_declared_for. Only the
+    // default index is declared here (from xim.index-repo); a sub-index is
+    // declared by the default index's xim-indexrepos.lua, which lives in
+    // xim::declared_sub_index_url because reading it needs the repo layer.
+    [[nodiscard]] static std::string declared_index_repo_url(std::string_view name);
+
 private:
     static std::optional<std::filesystem::path>& home_override_();
 
     PathInfo paths_;
     std::string mirror_;
     std::string indexBase_;   // xim.index-base override (region-resolved); empty = default xlings-res
+    // xim.index-repo (region-resolved via xim.mirrors.index-repo). Written by
+    // `xlings self install` since it shipped and, until now, read by nothing --
+    // default_global_index_repos_ carried its own copy of the URL. Empty means
+    // the config predates the key, and the built-in default applies.
+    std::string defaultIndexRepoUrl_;
     std::string lang_;
     // Frontend preferences. Flat keys next to `mirror`/`lang` because they
     // answer the same class of question ("which source / language / frontend /
@@ -138,10 +161,8 @@ private:
     mutable std::mutex resourceServerMutex_;
     mutable std::unordered_map<std::string, std::string> selectedResourceServerCache_;
 
-    static constexpr std::string_view DEFAULT_INDEX_REPO_NAME = "xim";
-    static constexpr std::string_view DEFAULT_INDEX_REPO_DIR = "xim-pkgindex";
-
-    static std::vector<IndexRepo> default_global_index_repos_(const std::string& mirror);
+    static std::vector<IndexRepo> default_global_index_repos_(const std::string& mirror,
+                                                              const std::string& declaredUrl);
 
     static MirrorServerMap default_resource_servers_();
 
@@ -149,6 +170,11 @@ private:
     // region object {"GLOBAL":"...","CN":"..."}. Lets a deployment point the
     // index pointer+artifact at a self-hosted server without code changes.
     static std::string resolve_index_base_(const nlohmann::json& json, const std::string& mirror);
+
+    // xim.mirrors.index-repo[<region>], else xim.index-repo. Empty when the
+    // config carries neither.
+    static std::string resolve_default_index_repo_(const nlohmann::json& json,
+                                                   const std::string& mirror);
 
     static std::vector<std::string> parse_server_list_(const nlohmann::json& value);
 
