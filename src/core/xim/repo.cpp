@@ -437,6 +437,12 @@ std::filesystem::path main_repo_dir() {
 }
 
 std::string declared_sub_index_url(std::string_view name) {
+    // Reads the GLOBAL default index's declaration, in project scope too. A
+    // project sub-index declared only by a PROJECT index repo therefore finds
+    // no declaration and stays on git -- the safe direction, and what it did
+    // before this change. Widening it means scanning every project index
+    // repo's lua, which is a separate decision; the failure mode of NOT doing
+    // it is "no artifact acceleration", never wrong content.
     auto mirror = Config::mirror();
     for (auto& r : detail_::discover_sub_repos_(main_repo_dir(),
                                                 mirror.empty() ? "GLOBAL" : mirror)) {
