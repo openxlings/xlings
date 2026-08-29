@@ -1229,3 +1229,63 @@ xlings self update
 > 这条是自审阶段才发现的。写方案时我只想到"升级后自愈",没想到**升级本身
 > 被同一个 bug 挡住**。任何"修复 X 的版本要靠 X 才能装上"的变更,
 > 都要单独验证升级路径。
+
+---
+
+## 9. 发布与真机验证(2026.8.30.1)
+
+PR #575 squash 合并为 `335c4c6`;release run `33272749471` 全作业成功;
+`xim-pkgindex#727`(bump xlings → 2026.8.30.1)已合并。
+
+### 9.1 发布后四项校验
+
+| 检查 | 方法 | 结果 |
+|---|---|---|
+| GitHub release | `gh api repos/openxlings/xlings/releases/latest` | `v2026.8.30.1` |
+| xlings-res 镜像 | `gh api repos/xlings-res/xlings/releases/latest` | `2026.8.30.1` |
+| GitCode 大资产 | `curl -sL -w '%{http_code}'`(**GET,HEAD 会 401**) | `200` |
+| 索引 latest | `pkgs/x/xlings.lua` 的 `["latest"] = { ref = … }` | `2026.8.30.1` |
+
+`tools/mirror-latest.sh xlings` 本地跑通,8 个资产在 GitHub 与 GitCode 两侧
+逐个 verify OK(GitHub runner 跨境传不了 >8MiB,这一步必须本地做)。
+
+### 9.2 sandbox 真机验证(发布版二进制)
+
+真实 home 升到 2026.8.30.1 后,`xlings subos use default --sandbox --cmd …`:
+
+```
+xlings --version                          → 2026.8.30.1     (确认沙箱里跑的是发布版)
+xlings search mcpp-hooks-audioplayer      → ◆ xim:mcpp-hooks-audioplayer   (唯一一条)
+xlings index                              → dsh: git-managed — no published snapshots
+xlings update                             → index updated   (幂等)
+xlings install mcpp-hooks-audioplayer -y  → ✓ 1 package(s) installed
+```
+
+**用户最初那条失败的命令,端到端装上了。**
+
+歧义抽查:`cmake` 1 条;`util-linux` 2 条(scode 与 xim **各有一个真包**,
+用命名空间区分,正确);`vim` 2 条(`vim` + `nvim`);`xlings` 4 条(描述子串匹配)。
+
+### 9.3 升级路径实测:比 §8 写的还要绕一层
+
+`self update` 内部是 `platform::exec("xlings install xlings@latest -y")` ——
+它跑的是 **PATH 上的 shim,也就是老的 entry binary**。所以即使拿新二进制执行
+`self update`,真正解析包名的仍是旧客户端,照样歧义。实测:
+
+```
+$ <新二进制> self update
+        use one of:
+        xlings install scode:xlings@2026.8.27.5
+        xlings install xim:xlings@2026.8.27.5
+[error] could not install xlings@latest — you are still on the current version
+```
+
+**所以 §8 的逃生口不是"可选优化",是唯一出路**:必须用显式命名空间
+(`xlings install xim:xlings@latest -y`)或先删掉被污染的目录。
+
+另外撞上一次已知的 [[reference-index-publish-lag]]:release 的 `publish-index`
+早于 `xim-pkgindex#727` 合并,所以第一次 `update` 后索引里 `latest` 仍是
+`2026.8.27.5`,`xim:xlings@2026.8.30.1` 报 not found。等 pkgindex 合并触发的
+`Publish Index Artifact` 完成(pointer 从 `2026.8.30.1` 走到 `de36f29`)后再
+`update` 才拿到。**发布当天验证 `self update` 必须等这一步,否则会把发布 lag
+误判成 recipe 缺陷。**
