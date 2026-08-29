@@ -1158,6 +1158,17 @@ $ ls data/xpkgs/     # after:LICENSE pkgs README.md template.lua …
 `syncRepos` 现在把名为 `xim` 的条目排到最前(其余保持配置顺序)。
 这不是恢复"位置有语义",而是"声明者先于被声明者"。
 
+**④ 重构把一条用户可见的提示弄丢了 —— CI 抓到,本地没有。**
+`sync_one_repo` 第一版在 `select_manifest` 返回 nullptr 时**静默**跳到 git,
+于是一个 `artifact` base 写错的仓库会无声地退回 git。原来的
+`sync_repo_with_artifact` 会打 `falling back`。
+`custom_index_artifact_test.sh` 场景 C 正是守这条的,CI 报 `101 passed, 1 failed`。
+
+我本地只挑了"索引相关"的 e2e 子集跑,**恰好没包含它**。
+教训:**挑子集跑等于没跑全**。改了同步路径就要跑完 `tests/e2e/` 里所有
+`index|repo|install|update|config` 命中的项(其中 4 项标了 `|T|`、需要 release
+tarball,本地跑不了,靠 CI)。
+
 ### 7.4 验证矩阵
 
 | 层 | 内容 | 结果 |

@@ -473,26 +473,40 @@ bool sync_one_repo(const IndexRepo& repo,
     auto custom = artifact_source_for(repo);
 
     if (mode != "git" && artifact_is_declared_for(repo, projectScope)) {
-        // Does a published pointer describe an index under this name? The
-        // pointer is CONFIGURED (xim.index-base), so this is the home
-        // answering, not a pattern compiled into xlings. A name no pointer
-        // carries -- `dsh`, a private index -- has no artifact and uses git.
+        // This repo HAS a declared artifact source, so every way of not getting
+        // one from here is worth saying out loud. An earlier draft returned
+        // silently when no manifest described it -- so a repo pointed at a
+        // wrong `artifact` base fell through to git with no message at all,
+        // which is the never-happened/succeeded shape this code base keeps
+        // paying for. custom_index_artifact_test.sh scenario C caught it.
+        //
+        // The pointer is CONFIGURED (xim.index-base, or the repo's own base),
+        // so "is there a manifest for this name" is the home answering, not a
+        // pattern compiled into xlings.
         const auto key = index_pointer_key(repo);
         auto& pointers = load_index_pointers(mirror, custom ? &*custom : nullptr);
+
+        bool ok = false;
+        std::string ferr;
         if (select_manifest(pointers, key, custom.has_value())) {
-            std::string ferr;
-            if (fetch_index_artifact(repoDir, ferr, key,
-                                     custom ? &*custom : nullptr, repo.version)) {
-                return true;
-            }
-            if (mode == "artifact") {
-                log::error("[index] '{}' artifact fetch failed and git fallback is "
-                           "disabled (source=artifact): {}", repo.name, ferr);
-                return false;
-            }
-            log::warn("[index] '{}' artifact fetch failed ({}); falling back to git",
-                      repo.name, ferr);
+            ok = fetch_index_artifact(repoDir, ferr, key,
+                                      custom ? &*custom : nullptr, repo.version);
+        } else {
+            ferr = pointers.empty()
+                ? std::string("no pointer available at the declared source "
+                              "(offline, or the base is wrong)")
+                : std::format("no pointer entry for '{}' ({} entries)",
+                              key, pointers.size());
         }
+        if (ok) return true;
+
+        if (mode == "artifact") {
+            log::error("[index] '{}' artifact fetch failed and the git/local "
+                       "fallback is disabled (source=artifact): {}", repo.name, ferr);
+            return false;
+        }
+        log::warn("[index] '{}' artifact fetch failed ({}); falling back to its "
+                  "git/local source", repo.name, ferr);
     }
 
     if (mode == "artifact") {
