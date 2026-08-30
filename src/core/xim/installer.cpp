@@ -26,6 +26,7 @@ import xlings.core.common;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
@@ -2616,32 +2617,79 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         }
         // Default: check xvm version database when no installed hook.
         //
-        // Trust-but-verify: a DB entry alone isn't enough. If the
-        // payload directory the entry points to is missing or empty
-        // (broken-payload state — payload manually rm'd, partial
-        // uninstall, FS corruption), fall through and let the install
-        // hook re-create the payload.  Without this fall-through,
-        // `xlings install <pkg>@<ver>` reports success without
-        // actually doing anything — the user can never recover from
-        // a broken payload via the obvious command.
+        // Trust-but-verify, in two directions, because this lookup crosses a
+        // namespace boundary that the rest of the file does not.
+        //
+        // THE DB IS KEYED BY xvm TARGET -- A PROGRAM NAME. Everything else
+        // that answers "is this installed" is keyed by PACKAGE identity:
+        // `match.installed` (catalog.cpp) stats
+        // `<store>/<ns>-x-<name>/<version>`, and `installation_state` below
+        // takes a namespace argument. This lookup takes `node.name` alone, and
+        // a short name is not an identity -- `xim:libdrm` and `compat:libdrm`
+        // are two packages, and a store holding Mesa always has the first.
+        //
+        // What that cost, measured (mcpp#533): a source-build `compat:libdrm`
+        // at the same upstream version as the `xim:libdrm` Mesa pulls in was
+        // reported already-installed on the strength of Mesa's payload, its
+        // `install()` never ran, and the tree it was supposed to build did not
+        // exist. The consumer's build then failed four layers away, in a
+        // linker command line, naming nothing that had anything to do with
+        // package identity. The rule it silently imposed on index authors was
+        // that no package may share a `<short name>@<version>` with any
+        // package in any other namespace -- which is not knowable when the
+        // descriptor is written, and which the ecosystem already violates 20
+        // short names wide.
+        //
+        // ⭐ THE PAYLOAD PATH IS THE ANSWER, and `coordinate_from_payload_path`
+        // is the code that already knows it: the installer WROTE that path, so
+        // `<...>/xpkgs/<ns>-x-<package>/<version>` is not evidence about the
+        // package, it is the package identity recorded at install time. Asking
+        // it here costs one parse of a string we already have in hand.
+        //
+        // Compatibility is why this rejects rather than requires. A record
+        // whose path does not parse as a store coordinate -- a self-managed
+        // tool, a relocated payload, anything installed outside `xpkgs/` --
+        // yields no coordinate and is accepted exactly as before. The
+        // behaviour changes only where a DIFFERENT package's ownership can be
+        // proven, which is the case that was wrong.
+        //
+        // The second direction is the older one: a DB entry alone isn't
+        // enough. If the payload directory the entry points to is missing or
+        // empty (payload manually rm'd, partial uninstall, FS corruption),
+        // fall through and let the install hook re-create the payload.
+        // Without this fall-through, `xlings install <pkg>@<ver>` reports
+        // success without actually doing anything — the user can never recover
+        // from a broken payload via the obvious command.
         else if (!payloadInstalled) {
             auto db = Config::versions();
             auto resolved = xvm::match_version(db, node.name, node.version);
             if (!resolved.empty()) {
                 bool payload_ok = true;
+                bool payload_is_ours = true;
                 if (auto* vdata = xvm::get_vdata(db, node.name, resolved);
                     vdata && !vdata->path.empty()) {
                     auto expanded = xvm::expand_path(
                         vdata->path, Config::paths().homeDir.string());
+                    if (xvm::payload_path_names_another_package(
+                            expanded, node.namespaceName, node.name)) {
+                        payload_is_ours = false;
+                        auto owner =
+                            xvm::coordinate_from_payload_path(expanded);
+                        log::debug("{}: xvm entry {}@{} belongs to {} — "
+                                   "not this package; running install hook",
+                                   node.canonicalName, node.name, resolved,
+                                   owner ? owner->canonical()
+                                         : std::string("another package"));
+                    }
                     std::error_code ec;
                     payload_ok = std::filesystem::is_directory(expanded, ec)
                               && payload_has_content(expanded);
                 }
-                if (payload_ok) {
+                if (payload_is_ours && payload_ok) {
                     log::debug("{} already installed in xvm (version {})",
                               node.name, resolved);
                     payloadInstalled = true;
-                } else {
+                } else if (payload_is_ours) {
                     log::debug("{} registered as {} in xvm but payload "
                               "missing — re-running install hook",
                               node.name, resolved);

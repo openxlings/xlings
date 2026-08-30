@@ -84,4 +84,28 @@ owner_candidates(const VersionDB& db,
                  const std::string& target,
                  const std::string& version);
 
+// Does this payload path demonstrably belong to a DIFFERENT package?
+//
+// The versions DB is keyed by xvm TARGET -- a program name -- while every
+// other answer to "is this installed" is keyed by package identity. A caller
+// holding a DB entry and a package therefore has to ask whether the two are
+// even about the same thing, and `coordinate_from_payload_path` is what can
+// tell it: the installer wrote that path, so it carries the identity.
+//
+// POLARITY IS DELIBERATE, and the name says which way. This answers
+// "can I PROVE this is someone else's", not "is this mine". A path that does
+// not parse as a store coordinate -- a self-managed tool, a relocated payload,
+// anything outside `xpkgs/` -- proves nothing and returns false, so a caller
+// written against this predicate keeps its old behaviour everywhere except
+// where ownership is actually contradicted. A `is_mine`-shaped predicate would
+// have had to return false there too, and would have silently reclassified
+// every unparseable path as a mismatch.
+//
+// Refs: mcpp#533, where a `compat:libdrm` install was skipped because
+// `xim:libdrm` at the same upstream version was in the store.
+[[nodiscard]] bool
+payload_path_names_another_package(std::string_view payloadPath,
+                                   std::string_view ns,
+                                   std::string_view package);
+
 }  // namespace xlings::xvm
