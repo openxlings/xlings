@@ -92,7 +92,7 @@ owner_candidates(const VersionDB& db,
 // even about the same thing, and `coordinate_from_payload_path` is what can
 // tell it: the installer wrote that path, so it carries the identity.
 //
-// ⚠️ POLARITY IS DELIBERATE, and the name says which way. This answers
+// POLARITY IS DELIBERATE, and the name says which way. This answers
 // "can I PROVE this is someone else's", not "is this mine". A path that does
 // not parse as a store coordinate -- a self-managed tool, a relocated payload,
 // anything outside `xpkgs/` -- proves nothing and returns false, so a caller

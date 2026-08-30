@@ -2620,7 +2620,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // Trust-but-verify, in two directions, because this lookup crosses a
         // namespace boundary that the rest of the file does not.
         //
-        // ⚠️ THE DB IS KEYED BY xvm TARGET -- A PROGRAM NAME. Everything else
+        // THE DB IS KEYED BY xvm TARGET -- A PROGRAM NAME. Everything else
         // that answers "is this installed" is keyed by PACKAGE identity:
         // `match.installed` (catalog.cpp) stats
         // `<store>/<ns>-x-<name>/<version>`, and `installation_state` below
