@@ -159,4 +159,17 @@ namespace xlings::xvm {
     return std::format("xlings install {}", canonical());
 }
 
+[[nodiscard]] bool
+payload_path_names_another_package(std::string_view payloadPath,
+                                   std::string_view ns,
+                                   std::string_view package) {
+    // The version is deliberately NOT compared. The caller has already
+    // resolved a version through the DB, and a payload path under a different
+    // version of the SAME package is that package's business -- the question
+    // here is only whether the identity matches.
+    auto coord = coordinate_from_payload_path(payloadPath);
+    if (!coord) return false;          // unparseable proves nothing; see header
+    return coord->ns != ns || coord->package != package;
+}
+
 } // namespace xlings::xvm
