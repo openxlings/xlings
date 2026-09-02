@@ -522,7 +522,8 @@ TEST(XvmUserError, EveryRegistrationKindHasACodeAndHint) {
     expect_every_kind_described_<K>(
         {K::InvalidBatchIdentity, K::InvalidNodeIdentity, K::InvalidNodePayload,
          K::InvalidBindingIdentity, K::DuplicateNode, K::RootNotInBatch,
-         K::SelfBinding, K::GroupConflict, K::TargetVersionConflict,
+         K::SelfBinding, K::GroupConflict, K::VersionKeySpellingConflict,
+         K::TargetVersionConflict,
          K::OwnershipConflict, K::LegacyPayloadMismatch,
          K::IncompleteLegacyComponent, K::IncompleteOwnedGroup,
          K::InvalidHeader, K::HeaderGroupNotFound, K::HeaderAmbiguous,

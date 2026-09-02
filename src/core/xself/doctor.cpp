@@ -1485,6 +1485,43 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
+        // One version registered twice, under two spellings of its key.
+        //
+        // A record's key spelling is decided when it is written and never
+        // re-derived (xvm::registered_namespace_for). Homes from before that
+        // rule can hold both spellings of one version, each naming the same
+        // payload: an owner-less record from before providers were recorded,
+        // and the owned one a later install wrote beside it. Readers collapse
+        // the pair now, but `use` used to land on the owner-less half and
+        // quietly leave the release's binding group behind. Measured on a
+        // real home: 240 pairs, every one of them exactly that shape.
+        //
+        // Same predicate the repair uses (xvm::plan_twin_merges), so what is
+        // reported is what `--fix` merges -- no more, no fewer. Grouped by
+        // the owning release: one elfutils install registers thirteen
+        // targets, and thirteen identical lines bury everything else.
+        for (const auto& merge : xvm::plan_twin_merges(st.db)) {
+            std::string release = merge.target;
+            if (const auto* winner =
+                    xvm::get_vdata(st.db, merge.target, merge.winner);
+                winner && winner->bindingGroup) {
+                release = winner->bindingGroup->provider + "@"
+                    + winner->bindingGroup->providerVersion;
+            }
+            add({
+                .kind     = FindingKind::DuplicateVersionKey,
+                .level    = FindingLevel::Error,
+                .target   = merge.target,
+                .version  = merge.loser,
+                .detail   = std::format(
+                    "{} is also registered as {}; both name the same payload",
+                    xvm::display_coordinate(merge.target, merge.loser),
+                    xvm::display_coordinate(merge.target, merge.winner)),
+                .remedy   = "xlings self doctor --fix",
+                .groupKey = std::move(release),
+            });
+        }
+
         // Payloads whose files and whose records disagree.
         //
         // Walks the STORE, not the version database -- which is the whole
@@ -2196,6 +2233,64 @@ void repair_state_(RepairReport& out) {
         }
     }
 
+    // Twin records: one version registered under two spellings of its key.
+    //
+    // The record carrying the binding group stays, the other goes, and every
+    // subos that named the loser is pointed at the winner. EVERY subos, not
+    // just this one: the version database is shared by all of them, so a
+    // reference left behind in another subos would dangle the moment the
+    // record is gone -- and the rename changes nothing about what that subos
+    // runs, since both keys name the same payload.
+    db = Config::versions();
+    if (auto merges = xvm::plan_twin_merges(db); !merges.empty()) {
+        auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+        if (!lock) {
+            note(glyph::mark(glyph::failed, "duplicate version key"), std::format(
+                "cannot merge duplicate version keys: {}", lock.error()));
+        } else {
+            Config::reload_state();
+            auto& mutableDb = Config::versions_mut();
+            const auto replanned = xvm::plan_twin_merges(mutableDb);
+            for (const auto& merge : replanned) {
+                xvm::apply_twin_merge_to_workspace(
+                    Config::workspace_mut(),
+                    Config::workspace_installed_mut(), merge);
+                xvm::apply_twin_merge_to_db(mutableDb, merge);
+                note(glyph::mark(glyph::bullet, "merged"), std::format(
+                    "{} folded into {}",
+                    xvm::display_coordinate(merge.target, merge.loser),
+                    xvm::display_coordinate(merge.target, merge.winner)));
+            }
+            if (!replanned.empty()) {
+                Config::save_versions();
+                Config::save_workspace();
+                // The other subos, through their own files. The current one
+                // was just written, so re-reading it changes nothing.
+                for (const auto& snapshot :
+                         profile::load_subos_snapshots(Config::paths().homeDir)) {
+                    auto workspace = snapshot.workspace;
+                    std::size_t changed = 0;
+                    for (const auto& merge : replanned) {
+                        changed += xvm::apply_twin_merge_to_workspace(
+                            workspace.active, workspace.installed, merge);
+                    }
+                    if (changed == 0) continue;
+                    if (!profile::save_subos_workspace(snapshot.dir, workspace)) {
+                        note(glyph::mark(glyph::failed, "duplicate version key"),
+                             std::format(
+                                 "could not rewrite the state file of subos "
+                                 "'{}'; it still names a merged record",
+                                 snapshot.name));
+                        continue;
+                    }
+                    note(glyph::mark(glyph::bullet, "merged"), std::format(
+                        "{}: {} reference(s) moved to the surviving record",
+                        snapshot.name, changed));
+                }
+            }
+        }
+    }
+
     // Baked subos paths. Rewritten to `<home>/subos/current`, NOT to the
     // subos this run happens to resolve to.
     //
@@ -2352,24 +2447,40 @@ void repair_other_subos_(const DoctorState& st, RepairReport& out) {
         if (freshIt == fresh.end()) continue;
 
         auto workspace = freshIt->workspace;
+        // Re-PLAN against the re-read file too, not just re-apply the plan
+        // made from the scan's snapshot. A repair above may have changed
+        // what this file names -- the twin merge moves an `active` from a
+        // record it deletes to the record that survives -- and the stale
+        // plan, made when the deleted record still existed, would then
+        // deactivate a version that is registered. Measured: the merge moved
+        // `other` to the surviving record, and this dropped it.
+        const auto replanned = xvm::plan_subos_metadata_repair(
+            Config::versions(),
+            {xvm::SubosRef{
+                .subos     = freshIt->name,
+                .active    = workspace.active,
+                .installed = workspace.installed,
+            }});
+        if (replanned.empty()) continue;
+        const auto& live = replanned.entries.front();
         const auto dropped =
-            xvm::apply_subos_metadata_repair(workspace, entry);
+            xvm::apply_subos_metadata_repair(workspace, live);
         if (dropped == 0) continue;
         if (!profile::save_subos_workspace(snapshotIt->dir, workspace)) {
             out.notes.emplace_back(glyph::mark(glyph::failed, "other subos"), std::format(
-                "could not write the state file of subos '{}'", entry.subos));
+                "could not write the state file of subos '{}'", live.subos));
             continue;
         }
-        for (const auto& target : entry.deactivate) {
+        for (const auto& target : live.deactivate) {
             out.notes.emplace_back(glyph::mark(glyph::bullet, "other subos repaired"), std::format(
                 "{}: deactivated '{}' — it named a version that is not "
                 "registered; run `xlings subos use {}` then `xlings use {} "
-                "<version>` to choose one", entry.subos, target,
-                entry.subos, target));
+                "<version>` to choose one", live.subos, target,
+                live.subos, target));
         }
-        for (const auto& [target, version] : entry.dropInstalled) {
+        for (const auto& [target, version] : live.dropInstalled) {
             out.notes.emplace_back(glyph::mark(glyph::bullet, "other subos repaired"), std::format(
-                "{}: dropped stale installed entry {}", entry.subos,
+                "{}: dropped stale installed entry {}", live.subos,
                 xvm::display_coordinate(target, version)));
         }
     }
@@ -2706,6 +2817,7 @@ Counts count_(const Scan& scan) {
     Counts c;
     std::set<std::string> aliasTargets;
     std::set<std::string> bakedTargets;
+    std::set<std::string> duplicateReleases;
     for (const auto& f : scan.findings) {
         switch (f.kind) {
             case FindingKind::MissingShim:     ++c.missing; break;
@@ -2815,6 +2927,12 @@ Counts count_(const Scan& scan) {
                 // a user may have chosen on purpose. It must be visible, not
                 // fatal.
                 break;
+            case FindingKind::DuplicateVersionKey:
+                // Per RELEASE (groupKey), matching how they are printed; and
+                // counted, so that `--fix` merging them reports as healed
+                // rather than as "healed 0" with a list of things it did.
+                if (duplicateReleases.insert(f.groupKey).second) ++c.binding;
+                break;
         }
     }
     return c;
@@ -2902,6 +3020,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // and baked-path reports use, keyed on the payload instead of the target.
     std::set<std::string> danglingGroupsShown;
     std::map<std::string, int> danglingGroupCount;
+    // One line per RELEASE for duplicate keys: an elfutils install registers
+    // thirteen targets, and every one of them carries the same pair.
+    std::set<std::string> duplicateReleasesShown;
+    std::map<std::string, int> duplicateReleaseCount;
     for (const auto& f : scan.findings) {
         // Errors only: the "+N other version(s)" suffix is printed on an
         // error line, so counting notices into it would inflate a number the
@@ -2910,6 +3032,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             && f.level == FindingLevel::Error) ++aliasVersionCount[f.target];
         else if (f.kind == FindingKind::SubosPathBaked) ++bakedVersionCount[f.target];
         else if (f.kind == FindingKind::SysrootDangling) ++danglingGroupCount[f.groupKey];
+        else if (f.kind == FindingKind::DuplicateVersionKey) ++duplicateReleaseCount[f.groupKey];
     }
     for (const auto& f : scan.findings) {
         switch (f.kind) {
@@ -3117,6 +3240,20 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
+            case FindingKind::DuplicateVersionKey: {
+                if (!verbose
+                    && !duplicateReleasesShown.insert(f.groupKey).second) {
+                    break;
+                }
+                const auto siblings = duplicateReleaseCount.at(f.groupKey) - 1;
+                add(glyph::mark(glyph::failed, "duplicate version key"),
+                    verbose || siblings <= 0
+                        ? f.detail
+                        : std::format("{}\n    +{} more record(s) of the "
+                                      "same release", f.detail, siblings));
+                add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            }
             default: break;
         }
     }

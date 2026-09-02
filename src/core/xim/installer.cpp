@@ -844,13 +844,26 @@ std::string pkgindex_root_for_(const std::filesystem::path& pkgFile, bool* outHa
 bool executing_provider_owns_no_version(
         const xvm::VersionDB& db,
         std::string_view target,
-        std::string_view executingProvider) {
+        std::string_view executingProvider,
+        const std::filesystem::path& payloadDir) {
     if (executingProvider.empty()) return false;
     auto it = db.find(std::string(target));
     if (it == db.end()) return true;
+    const auto root = xvm::normalized_payload_path(payloadDir.string());
     for (const auto& [_, data] : it->second.versions) {
-        if (!data.bindingGroup || data.bindingGroup->provider.empty()) continue;
-        if (data.bindingGroup->provider == executingProvider) return false;
+        if (data.bindingGroup) {
+            if (data.bindingGroup->provider == executingProvider) return false;
+            continue;
+        }
+        // An owner-less record whose payload is this package's own directory
+        // IS this package's registration -- one written before providers
+        // were recorded. "No record names me" and "an older record of mine
+        // exists" used to be the same answer here, and the wrong one sent a
+        // fully registered claude down the "registers no xvm version" path.
+        if (xvm::payload_path_covers(
+                root, xvm::normalized_payload_path(data.path))) {
+            return false;
+        }
     }
     return true;
 }
@@ -868,11 +881,54 @@ std::string effective_store_name_(const PackageMatch& match) {
 }
 
 std::string version_namespace_(std::string_view namespaceName) {
-    const auto& globalRepos = Config::global_index_repos();
-    const bool isPrimary = !globalRepos.empty()
-        && namespaceName == globalRepos.front().name;
-    if (isPrimary || namespaceName.empty()) return {};
+    // The default index is the entry NAMED `xim`, never the entry in
+    // position 0. #575 made the sync side say so; this was the last place
+    // that still read `index_repos.front()`, and it decided something far
+    // more permanent than a download directory: the spelling of every
+    // version key this package will ever write. One `index use` or
+    // `config --index-repo` moved the default entry down the array, and from
+    // then on the same package keyed its versions two ways on one machine.
+    if (namespaceName.empty()
+        || namespaceName == Config::DEFAULT_INDEX_REPO_NAME) {
+        return {};
+    }
     return std::string(namespaceName);
+}
+
+std::string effective_version_namespace_(
+        const xvm::VersionDB& db,
+        std::string_view namespaceName,
+        std::string_view name,
+        std::string_view canonicalName,
+        std::string_view version,
+        const std::filesystem::path& payloadDir) {
+    // What is already on disk wins. A release this provider registered
+    // before keeps the spelling of those records, whatever today's verdict
+    // says, so a reinstall lands on the same keys instead of minting a second
+    // set beside them -- and a removal asks for the keys that exist. Only a
+    // release nobody has registered takes the verdict.
+    const auto provider = canonicalName.empty()
+        ? canonical_package_name(namespaceName, name)
+        : std::string(canonicalName);
+    if (const auto recorded = xvm::registered_namespace_for(
+            db, provider, std::string(version), std::string(name),
+            payloadDir.string())) {
+        return *recorded;
+    }
+    return version_namespace_(namespaceName);
+}
+
+std::string effective_version_namespace_(
+        const xvm::VersionDB& db,
+        const PlanNode& node,
+        const std::filesystem::path& dataDir) {
+    const auto payloadDir =
+        (node.storeRoot.empty() ? dataDir / "xpkgs" : node.storeRoot)
+        / package_store_name(node.namespaceName, node.name)
+        / node.version;
+    return effective_version_namespace_(
+        db, node.namespaceName, node.name, node.canonicalName, node.version,
+        payloadDir);
 }
 
 std::string plan_key_(const PlanNode& node) {
@@ -1235,12 +1291,15 @@ bool is_version_referenced_anywhere_(PackageScope scope, const std::string& targ
         // some other subos's installed[] (but not its active) must still
         // pin its xpkgs/ directory against GC.
         //
-        // Stored values are namespaced (`ns:1.0` for non-primary repos,
-        // bare for primary). New removal callers pass the exact stored key;
-        // retain bare matching here for legacy workspace files.
+        // Stored values are namespaced (`ns:1.0` for non-default repos,
+        // bare for the default one), and which spelling a record got was
+        // decided when it was written. Ask the one place that knows which
+        // spellings name the same record. This used to strip only the
+        // STORED side, so a namespaced query never matched a bare record --
+        // and a payload three subos were using was reported as referenced by
+        // none of them.
         auto matches = [&](std::string_view stored) {
-            return stored == version
-                || xvm::strip_namespace(std::string(stored)) == version;
+            return xvm::version_key_matches(version, stored);
         };
         auto sws = load_workspace_file_(configPath);
         if (auto it = sws.active.find(target);
@@ -1718,9 +1777,12 @@ bool process_xvm_operations_(const PlanNode& node,
     if (!std::filesystem::exists(xlings_bin))
         xlings_bin = paths.homeDir / "xlings";
 
-    // Primary repo versions retain their historical bare keys. Other repos
-    // retain their namespace so install and exact removal resolve identically.
-    const auto versionNamespace = version_namespace_(node.namespaceName);
+    // Default-index versions keep their historical bare keys, other repos
+    // their namespace -- and a release already on disk keeps whichever it
+    // was written with (effective_version_namespace_), so install and exact
+    // removal resolve the same keys.
+    const auto versionNamespace =
+        effective_version_namespace_(scopedDb, node, dataDir);
 
     auto registration = normalize_xpkg_registration_plan(
         node, xvm_ops, versionNamespace, dataDir, useAfterInstall);
@@ -2989,7 +3051,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             if (!script::default_config(
                     node,
                     dataDir,
-                    detail_::version_namespace_(node.namespaceName))) {
+                    detail_::effective_version_namespace_(
+                        Config::versions_mut(), node, dataDir))) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                "default script config failed" });
@@ -3000,7 +3063,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             if (!subos::default_config(
                     node,
                     dataDir,
-                    detail_::version_namespace_(node.namespaceName))) {
+                    detail_::effective_version_namespace_(
+                        Config::versions_mut(), node, dataDir))) {
                 if (onStatus) {
                     onStatus({ node.name, InstallPhase::Failed, 0.0f,
                                "default subos config failed" });
@@ -3184,12 +3248,6 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     }
 
     auto detachTarget = resolvedMatch ? resolvedMatch->name : targetName;
-    auto detachVersion = resolvedMatch ? resolvedMatch->version : requestedVersion;
-    if (resolvedMatch) {
-        detachVersion = xvm::make_ns_version(
-            detail_::version_namespace_(resolvedMatch->namespaceName),
-            resolvedMatch->version);
-    }
     auto executingProvider = resolvedMatch
         ? (resolvedMatch->canonicalName.empty()
             ? canonical_package_name(
@@ -3197,6 +3255,23 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                 resolvedMatch->name)
             : resolvedMatch->canonicalName)
         : targetName;
+    auto detachVersion = resolvedMatch ? resolvedMatch->version : requestedVersion;
+    if (resolvedMatch) {
+        // The spelling the records were WRITTEN with, not the one today's
+        // verdict would mint: a package installed while the default index
+        // sat in position 0 has bare keys, and asking for `xim:2.1.222`
+        // when the store holds `2.1.222` is how `remove claude` refused on
+        // a home where three subos were using it.
+        detachVersion = xvm::make_ns_version(
+            detail_::effective_version_namespace_(
+                Config::versions_mut(),
+                resolvedMatch->namespaceName,
+                resolvedMatch->name,
+                resolvedMatch->canonicalName,
+                resolvedMatch->version,
+                installDir),
+            resolvedMatch->version);
+    }
     auto executingProviderVersion = resolvedMatch
         ? resolvedMatch->version
         : xvm::strip_namespace(detachVersion);
@@ -3234,7 +3309,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                    == xvm::RemovalErrorKind::VersionNotFound
                && detail_::executing_provider_owns_no_version(
                       Config::versions_mut(), detachTarget,
-                      executingProvider)) {
+                      executingProvider, installDir)) {
         log::info("{}: registers no xvm version; running its uninstall hook "
                   "and removing the payload",
                   executingProvider);

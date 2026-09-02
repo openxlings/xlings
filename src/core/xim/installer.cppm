@@ -291,13 +291,16 @@ std::string pkgindex_root_for_(const std::filesystem::path& pkgFile,
 // linux-sysroot-create.lua, configure-project-installer.lua (script).
 //
 // A version owned by another provider is not evidence that this provider
-// registered one. Only a readable canonical owner can answer the question;
-// legacy/unreadable entries remain outside this provider's ownership and are
-// protected by the empty removal selection.
+// registered one. Two things answer it: a record whose binding group names
+// this provider, and -- for records from before providers were recorded -- a
+// record whose payload lies inside this package's own directory
+// (`payloadDir`). Other providers' entries stay outside this provider's
+// ownership and are protected by the empty removal selection.
 bool executing_provider_owns_no_version(
         const xvm::VersionDB& db,
         std::string_view target,
-        std::string_view executingProvider);
+        std::string_view executingProvider,
+        const std::filesystem::path& payloadDir);
 
 std::string effective_store_name_(std::string_view namespaceName, std::string_view name);
 
@@ -305,7 +308,24 @@ std::string effective_store_name_(const PlanNode& node);
 
 std::string effective_store_name_(const PackageMatch& match);
 
+// Today's verdict for a namespace: empty for the default index (the entry
+// NAMED `xim`), the repo name otherwise. Never a function of array position.
 std::string version_namespace_(std::string_view namespaceName);
+
+// The namespace this package's registrations are actually written under:
+// whatever spelling its records already carry, else today's verdict.
+std::string effective_version_namespace_(
+        const xvm::VersionDB& db,
+        std::string_view namespaceName,
+        std::string_view name,
+        std::string_view canonicalName,
+        std::string_view version,
+        const std::filesystem::path& payloadDir);
+
+std::string effective_version_namespace_(
+        const xvm::VersionDB& db,
+        const PlanNode& node,
+        const std::filesystem::path& dataDir);
 
 std::string plan_key_(const PlanNode& node);
 

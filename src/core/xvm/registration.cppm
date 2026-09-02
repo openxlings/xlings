@@ -85,6 +85,9 @@ enum class RegistrationErrorKind {
     RootNotInBatch,
     SelfBinding,
     GroupConflict,
+    // Same target, same bare version, different spelling of the version key
+    // (bare vs. namespaced). One release registered twice, not two roots.
+    VersionKeySpellingConflict,
     TargetVersionConflict,
     OwnershipConflict,
     // Unreachable since the owner-less adoption change: an entry nobody owns

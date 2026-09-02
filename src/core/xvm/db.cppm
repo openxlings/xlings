@@ -71,6 +71,12 @@ struct RemovalError {
     std::string message;
 };
 
+// Resolve a version as the user or a recipe wrote it to the key it is stored
+// under. An exact key wins. Otherwise a bare query stands for that version
+// under any namespace, and a namespaced query stands for the BARE spelling of
+// the same version as well -- see version_key_matches. Keys that are twins
+// (below) collapse to one answer; anything else that matches more than one
+// stored key is ambiguous and says so.
 std::expected<std::string, RemovalError>
 resolve_exact_version_key(const VersionDB& db,
                           const std::string& target,
@@ -80,6 +86,93 @@ std::expected<std::string, RemovalError>
 remove_version(VersionDB& db,
                const std::string& target,
                const std::string& version);
+
+// ── Version-key identity ─────────────────────────────────────────────
+//
+// A version key is "ns:ver" for a package from a non-default index and bare
+// "ver" for one from the default index. That spelling is decided ONCE, when
+// the record is first written, and the helpers below exist so that nothing
+// re-derives it later:
+//
+//   - a reader handed one spelling must still find the record stored under
+//     the other (version_key_matches, resolve_exact_version_key,
+//     match_version);
+//   - a writer registering a release this provider already registered must
+//     reuse the spelling on disk (registered_namespace_for);
+//   - two records that differ only in spelling and name the same payload are
+//     one registration written twice, and every reader treats them as one
+//     (twin_version_keys, representative_version_key); `self doctor` reports
+//     and merges them (plan_twin_merges).
+//
+// Why this exists, measured on a real home on 2026-09-02: the default index's
+// entry had been moved out of `index_repos[0]`, the spelling verdict followed
+// it, and the same package keyed its versions two ways on one machine. 767
+// targets could no longer be removed, 10 could no longer be installed and 240
+// versions were registered twice. The verdict no longer reads array position
+// (xim/installer.cpp version_namespace_), and the helpers here make the
+// records that were written meanwhile reachable and repairable.
+// .agents/docs/2026-09-02-version-key-namespace-flip-plan.md
+
+// May a key written as `query` refer to the record stored as `stored`?
+// Equal keys, of course. Otherwise the bare versions must agree and at least
+// one side must be the bare spelling: the default index's records are bare,
+// while a version under some OTHER namespace is another index's payload.
+bool version_key_matches(std::string_view query, std::string_view stored);
+
+// Separators and a trailing slash normalised, nothing else. Two writers of
+// the same payload record the same string; this only forgives the spellings
+// known to differ between platforms.
+std::string normalized_payload_path(std::string_view path);
+
+// Is `candidate` the payload at `root`, or something inside it?
+bool payload_path_covers(std::string_view root, std::string_view candidate);
+
+// Every key under `target` that records the same registration as `key`: the
+// key itself, plus any other key with the same bare version whose payload
+// path is the same. Empty when `target` or `key` is unknown.
+std::vector<std::string> twin_version_keys(const VersionDB& db,
+                                           const std::string& target,
+                                           const std::string& key);
+
+// The member of `key`'s twin set that carries the registration -- the one
+// with a binding group -- or `key` itself when none does.
+std::string representative_version_key(const VersionDB& db,
+                                       const std::string& target,
+                                       const std::string& key);
+
+// The namespace (possibly empty) this provider's release is already
+// registered under, if it is registered at all: an owned record of
+// (provider, providerVersion) anywhere in the database, else an owner-less
+// record of `primaryTarget` at that bare version whose payload lies under
+// `payloadPath`. nullopt when nothing on disk answers, and the caller minds
+// today's verdict.
+std::optional<std::string> registered_namespace_for(
+        const VersionDB& db,
+        const std::string& provider,
+        const std::string& providerVersion,
+        const std::string& primaryTarget,
+        const std::string& payloadPath);
+
+// One twin pair to collapse: `loser` is dropped and every workspace reference
+// to it is rewritten to `winner`.
+struct TwinMerge {
+    std::string target;
+    std::string winner;
+    std::string loser;
+};
+
+// Every twin pair in the database. This is the predicate the doctor reports
+// with AND the predicate `--fix` repairs with, so the two cannot drift.
+std::vector<TwinMerge> plan_twin_merges(const VersionDB& db);
+
+// Rewrite one workspace's references from the loser to the winner. Returns
+// how many entries changed.
+std::size_t apply_twin_merge_to_workspace(Workspace& active,
+                                          WorkspaceInstalled& installed,
+                                          const TwinMerge& merge);
+
+// Drop the loser record and every legacy binding edge that names it.
+void apply_twin_merge_to_db(VersionDB& db, const TwinMerge& merge);
 
 // Pick the highest semver key from a version map (descending by dotted numeric components,
 // then by component count). Namespace prefix is stripped before comparison, but the

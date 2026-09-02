@@ -3,6 +3,7 @@ module xlings.core.xvm.registration;
 import std;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
+import xlings.core.xvm.db;
 
 namespace xlings::xvm::detail_ {
 
@@ -464,6 +465,32 @@ apply_registration_batch(
                 == persistedIt->second.members.end()) {
                 continue;
             }
+            // Same target, same bare version, different spelling of the
+            // key: that is not a recipe with two roots, it is one release
+            // whose key spelling was re-derived between two registrations.
+            // The writer avoids it now (registered_namespace_for); this
+            // branch stays so that a writer which does not is told the
+            // truth instead of being told to fix a recipe that is fine.
+            // Measured on a real home: ten packages refused with the
+            // recipe hint, and the recipes had not changed.
+            const auto& persistedRoot = persistedIt->second.root;
+            const bool sameRelease =
+                persistedRoot.first == group.root.first
+                && strip_namespace(persistedRoot.second)
+                    == strip_namespace(group.root.second);
+            if (sameRelease) {
+                return std::unexpected(detail_::registration_error_(
+                    RegistrationErrorKind::VersionKeySpellingConflict,
+                    group.identityPath,
+                    group.identityNode.first,
+                    group.identityNode.second,
+                    std::format(
+                        "registration group '{}' is already persisted under "
+                        "the version key '{}'; this batch spells it '{}'",
+                        label,
+                        persistedRoot.second,
+                        group.root.second)));
+            }
             return std::unexpected(detail_::registration_error_(
                 RegistrationErrorKind::GroupConflict,
                 group.identityPath,
@@ -472,8 +499,8 @@ apply_registration_batch(
                 std::format(
                     "registration group '{}' conflicts with persisted root '{}@{}'",
                     label,
-                    persistedIt->second.root.first,
-                    persistedIt->second.root.second)));
+                    persistedRoot.first,
+                    persistedRoot.second)));
         }
         if (missingMemberIt
             == persistedIt->second.members.end()) {
