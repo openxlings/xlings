@@ -42,6 +42,11 @@ CodeAndHint describe_kind(RegistrationErrorKind kind) {
         return {"xvm-group-conflict",
                 "the recipe puts one release under two different roots; "
                 "give the members a single common binding target"};
+    case RegistrationErrorKind::VersionKeySpellingConflict:
+        return {"xvm-version-key-spelling",
+                "this release is already registered under another spelling "
+                "of its version key; run `xlings self doctor --fix` to merge "
+                "the two records, then install again"};
     case RegistrationErrorKind::TargetVersionConflict:
         return {"xvm-group-version-conflict",
                 "one release selects two versions of the same program; "

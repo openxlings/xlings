@@ -295,9 +295,10 @@ std::vector<std::string> find_subos_pinning_version(
         const fs::path& xlingsHome,
         const std::string& target,
         const std::string& version) {
+    // Both spellings of a key name the same record; see
+    // xvm::version_key_matches for which spellings those are.
     auto matches = [&](std::string_view stored) {
-        return stored == version
-            || xvm::strip_namespace(std::string(stored)) == version;
+        return xvm::version_key_matches(version, stored);
     };
 
     std::vector<std::string> result;

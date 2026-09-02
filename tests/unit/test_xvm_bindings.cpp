@@ -7976,3 +7976,344 @@ int main(int argc, char** argv) {
     return RUN_ALL_TESTS();
 }
 #endif
+
+// ── Version-key identity ─────────────────────────────────────────────
+//
+// The spelling of a version key is decided once, by identity, and every
+// reader/writer honours the spelling on disk. Lives in this TU for the reason
+// at the top of the file: the fixtures below build a VersionDB from
+// namespace-scope helpers, which is exactly the shape that ICEs GCC 16 in a
+// TU of its own (measured 2026-09-02: "failed to load pendings for
+// 'std::map'", blaming xvm.commands).
+//
+// Measured on a real home on 2026-09-02: the default index's entry had been
+// moved out of `index_repos[0]`, the spelling verdict followed it, and the
+// same package keyed its versions two ways on one machine. 767 targets could
+// no longer be removed, 10 could no longer be installed, 240 versions were
+// registered twice and `use` landed on the wrong record.
+// .agents/docs/2026-09-02-version-key-namespace-flip-plan.md
+
+namespace {
+
+namespace fx = xlings::xvm;
+
+constexpr std::string_view kFlipPerlPayload =
+    "/home/u/.xlings/data/xpkgs/xim-x-perl/5.44.0";
+constexpr std::string_view kFlipClaudePayload =
+    "/home/u/.xlings/data/xpkgs/xim-x-claude/2.1.222";
+
+// The measured shape: an owner-less record from before providers were
+// recorded, and the owned one a later install wrote beside it, both naming
+// the same payload directory.
+fx::VersionDB flip_twin_home() {
+    fx::VersionDB db;
+    auto& perl = db["perl"];
+    perl.type = "program";
+    perl.filename = "perl";
+    fx::VData legacy;
+    legacy.path = std::string(kFlipPerlPayload) + "/bin";
+    perl.versions["5.44.0"] = legacy;
+    fx::VData owned = legacy;
+    owned.kind = "program";
+    owned.sourceName = "perl";
+    owned.destinationName = "perl";
+    owned.bindingGroup = fx::BindingGroupRef{
+        .provider = "xim:perl",
+        .providerVersion = "5.44.0",
+        .group = "perl",
+        .rootTarget = "perl",
+        .rootVersion = "xim:5.44.0",
+    };
+    owned.bindingMembers = {{"perl", "xim:5.44.0"}};
+    owned.bindingMembersDeclared = true;
+    perl.versions["xim:5.44.0"] = owned;
+    // A legacy edge that names the owner-less key on both ends.
+    perl.bindings["perldoc"]["5.44.0"] = "5.44.0";
+    db["perldoc"].bindings["perl"]["5.44.0"] = "5.44.0";
+    db["perldoc"].versions["5.44.0"].path = legacy.path;
+    return db;
+}
+
+// A package installed while the default index sat in position 0: bare keys,
+// no provider stamp, several versions.
+fx::VersionDB flip_legacy_claude() {
+    fx::VersionDB db;
+    auto& claude = db["claude"];
+    claude.type = "program";
+    claude.filename = "claude";
+    for (const auto* v : {"2.1.218", "2.1.222"}) {
+        fx::VData data;
+        data.path = "/home/u/.xlings/data/xpkgs/xim-x-claude/" + std::string(v);
+        claude.versions[v] = data;
+    }
+    return db;
+}
+
+fx::RegistrationNode flip_node(std::string target, std::string version,
+                      std::string path, std::string kind = "program") {
+    fx::RegistrationNode n;
+    n.target = target;
+    n.version = version;
+    n.path = std::move(path);
+    n.kind = std::move(kind);
+    if (n.kind != "group") {
+        n.sourceName = target;
+        n.destinationName = target;
+    }
+    return n;
+}
+
+}  // namespace
+
+// ── D1: the verdict is a function of the name, never of array position ──
+
+TEST(VersionKeyIdentity, TheDefaultIndexIsNamedNotPositioned) {
+    using xlings::xim::detail_::version_namespace_;
+    EXPECT_EQ(std::string(xlings::Config::DEFAULT_INDEX_REPO_NAME), "xim");
+    EXPECT_EQ(version_namespace_("xim"), "");
+    EXPECT_EQ(version_namespace_(""), "");
+    EXPECT_EQ(version_namespace_("scode"), "scode");
+    EXPECT_EQ(version_namespace_("local"), "local");
+}
+
+// ── D2: both spellings reach the record, and only the right ones ──
+
+TEST(VersionKeyIdentity, AQueryMayStandForTheBareSpellingOfItsVersion) {
+    EXPECT_TRUE(fx::version_key_matches("2.1.222", "2.1.222"));
+    EXPECT_TRUE(fx::version_key_matches("xim:2.1.222", "2.1.222"));
+    EXPECT_TRUE(fx::version_key_matches("2.1.222", "xim:2.1.222"));
+    EXPECT_TRUE(fx::version_key_matches("2.1.222", "scode:2.1.222"));
+    EXPECT_TRUE(fx::version_key_matches("xim:2.1.222", "xim:2.1.222"));
+    // Another namespace is another index's payload.
+    EXPECT_FALSE(fx::version_key_matches("xim:2.1.222", "scode:2.1.222"));
+    EXPECT_FALSE(fx::version_key_matches("xim:2.1.222", "2.1.223"));
+}
+
+TEST(VersionKeyIdentity, ANamespacedQueryResolvesTheBareRecord) {
+    const auto db = flip_legacy_claude();
+    auto resolved = fx::resolve_exact_version_key(db, "claude", "xim:2.1.222");
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().message;
+    EXPECT_EQ(*resolved, "2.1.222");
+    // And the bare query keeps working exactly as it did.
+    resolved = fx::resolve_exact_version_key(db, "claude", "2.1.222");
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(*resolved, "2.1.222");
+}
+
+TEST(VersionKeyIdentity, ANamespacedQueryDoesNotReachAnotherNamespace) {
+    fx::VersionDB db;
+    db["foo"].versions["scode:1.0"].path = "/p/scode";
+    const auto resolved = fx::resolve_exact_version_key(db, "foo", "xim:1.0");
+    ASSERT_FALSE(resolved.has_value());
+    EXPECT_EQ(resolved.error().kind, fx::RemovalErrorKind::VersionNotFound);
+}
+
+TEST(VersionKeyIdentity, ABareQueryStaysAmbiguousAcrossDifferentPayloads) {
+    fx::VersionDB db;
+    db["foo"].versions["xim:1.0"].path = "/p/xim";
+    db["foo"].versions["scode:1.0"].path = "/p/scode";
+    const auto resolved = fx::resolve_exact_version_key(db, "foo", "1.0");
+    ASSERT_FALSE(resolved.has_value());
+    EXPECT_EQ(resolved.error().kind, fx::RemovalErrorKind::AmbiguousVersion);
+}
+
+// ── twins: one registration written twice is one record ──
+
+TEST(VersionKeyIdentity, TwinsCollapseToTheOwnedRecord) {
+    const auto db = flip_twin_home();
+    const auto twins = fx::twin_version_keys(db, "perl", "5.44.0");
+    ASSERT_EQ(twins.size(), 2u);
+    EXPECT_EQ(twins[0], "5.44.0");
+    EXPECT_EQ(twins[1], "xim:5.44.0");
+    EXPECT_EQ(fx::representative_version_key(db, "perl", "5.44.0"), "xim:5.44.0");
+    EXPECT_EQ(fx::representative_version_key(db, "perl", "xim:5.44.0"),
+              "xim:5.44.0");
+
+    for (const auto* query : {"5.44.0", "xim:5.44.0"}) {
+        const auto resolved = fx::resolve_exact_version_key(db, "perl", query);
+        ASSERT_TRUE(resolved.has_value()) << query;
+        EXPECT_EQ(*resolved, "xim:5.44.0") << query;
+    }
+    // `use perl@5.44.0` and `use perl@5.44` both land on the owned record.
+    EXPECT_EQ(fx::match_version(db, "perl", "5.44.0"), "xim:5.44.0");
+    EXPECT_EQ(fx::match_version(db, "perl", "5.44"), "xim:5.44.0");
+    EXPECT_EQ(fx::match_version(db, "perl", "xim:5.44.0"), "xim:5.44.0");
+}
+
+TEST(VersionKeyIdentity, OwnerlessTwinsStillCollapseToOneAnswer) {
+    fx::VersionDB db;
+    db["foo"].versions["1.0"].path = "/p/same";
+    db["foo"].versions["xim:1.0"].path = "/p/same";
+    // Neither carries a binding group: whichever twin is asked about, the
+    // answer is the same one (the bare spelling, first in map order).
+    EXPECT_EQ(fx::representative_version_key(db, "foo", "1.0"), "1.0");
+    EXPECT_EQ(fx::representative_version_key(db, "foo", "xim:1.0"), "1.0");
+    for (const auto* query : {"1.0", "xim:1.0"}) {
+        const auto resolved = fx::resolve_exact_version_key(db, "foo", query);
+        ASSERT_TRUE(resolved.has_value()) << query;
+        EXPECT_EQ(*resolved, "1.0") << query;
+    }
+    const auto merges = fx::plan_twin_merges(db);
+    ASSERT_EQ(merges.size(), 1u);
+    EXPECT_EQ(merges[0].winner, "1.0");
+    EXPECT_EQ(merges[0].loser, "xim:1.0");
+}
+
+TEST(VersionKeyIdentity, TheSamePayloadIsTheEvidenceForATwin) {
+    fx::VersionDB db;
+    db["foo"].versions["1.0"].path = "/p/a";
+    db["foo"].versions["xim:1.0"].path = "/p/b";
+    db["foo"].versions["xim:1.0"].bindingGroup = fx::BindingGroupRef{
+        .provider = "xim:foo", .providerVersion = "1.0",
+        .group = "foo", .rootTarget = "foo", .rootVersion = "xim:1.0"};
+    // Different payloads: not twins, so neither spelling collapses into the
+    // other -- an exact key stays exactly what it names.
+    EXPECT_EQ(fx::twin_version_keys(db, "foo", "1.0").size(), 1u);
+    EXPECT_EQ(fx::representative_version_key(db, "foo", "1.0"), "1.0");
+    auto resolved = fx::resolve_exact_version_key(db, "foo", "1.0");
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(*resolved, "1.0");
+    resolved = fx::resolve_exact_version_key(db, "foo", "xim:1.0");
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(*resolved, "xim:1.0");
+    // And `use foo@1.0` keeps the bare record too: nothing to collapse into.
+    EXPECT_EQ(fx::match_version(db, "foo", "1.0"), "1.0");
+}
+
+TEST(VersionKeyIdentity, RemovingOneTwinRemovesBoth) {
+    auto db = flip_twin_home();
+    fx::Workspace workspace{{"perl", "5.44.0"}};
+    fx::WorkspaceInstalled installed{{"perl", {"5.44.0", "xim:5.44.0"}}};
+
+    auto context = fx::snapshot_removal_context(db, "perl", "xim:5.44.0");
+    ASSERT_TRUE(context.has_value()) << context.error().message;
+    const std::vector<fx::RemovalOperation> ops{{"remove", "perl", ""}};
+    auto result = fx::apply_removal_batch(
+        db, workspace, installed, ops, *context, {.purgeSelection = true});
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+
+    std::set<std::string> removed;
+    for (const auto& r : result->removed) removed.insert(r.version);
+    EXPECT_TRUE(removed.contains("5.44.0"));
+    EXPECT_TRUE(removed.contains("xim:5.44.0"));
+    EXPECT_FALSE(db["perl"].versions.contains("5.44.0"));
+    EXPECT_FALSE(db["perl"].versions.contains("xim:5.44.0"));
+    EXPECT_FALSE(workspace.contains("perl"));
+    EXPECT_FALSE(installed.contains("perl"));
+}
+
+// ── D3: a writer reuses the spelling already on disk ──
+
+TEST(VersionKeyIdentity, RegisteredNamespaceFollowsTheRecordsOnDisk) {
+    const auto twins = flip_twin_home();
+    // Owned record wins, whatever spelling the owner-less twin has.
+    auto ns = fx::registered_namespace_for(
+        twins, "xim:perl", "5.44.0", "perl", std::string(kFlipPerlPayload));
+    ASSERT_TRUE(ns.has_value());
+    EXPECT_EQ(*ns, "xim");
+
+    // An owner-less record whose payload is ours is ours.
+    const auto claude = flip_legacy_claude();
+    ns = fx::registered_namespace_for(
+        claude, "xim:claude", "2.1.222", "claude", std::string(kFlipClaudePayload));
+    ASSERT_TRUE(ns.has_value());
+    EXPECT_EQ(*ns, "");
+
+    // An owner-less record whose payload is NOT ours says nothing.
+    ns = fx::registered_namespace_for(
+        claude, "xim:claude", "2.1.222", "claude", "/somewhere/else");
+    EXPECT_FALSE(ns.has_value());
+
+    // Nothing registered: the caller minds today's verdict.
+    ns = fx::registered_namespace_for(
+        claude, "xim:claude", "2.1.230", "claude", std::string(kFlipClaudePayload));
+    EXPECT_FALSE(ns.has_value());
+}
+
+TEST(VersionKeyIdentity, TheEffectiveNamespaceReusesTheBareSpelling) {
+    const auto claude = flip_legacy_claude();
+    // Today's verdict for `xim` is bare too, so this is the quiet case...
+    EXPECT_EQ(xlings::xim::detail_::effective_version_namespace_(
+                  claude, "xim", "claude", "xim:claude", "2.1.222",
+                  std::filesystem::path(kFlipClaudePayload)),
+              "");
+    // ...and this is the one that matters: a record written bare is reused
+    // bare even by a namespace whose verdict would say otherwise.
+    fx::VersionDB other;
+    other["tool"].versions["1.0"].path = "/p/myrepo-x-tool/1.0";
+    EXPECT_EQ(xlings::xim::detail_::effective_version_namespace_(
+                  other, "myrepo", "tool", "myrepo:tool", "1.0",
+                  std::filesystem::path("/p/myrepo-x-tool/1.0")),
+              "");
+    // Nothing on disk: the verdict.
+    EXPECT_EQ(xlings::xim::detail_::effective_version_namespace_(
+                  other, "myrepo", "tool", "myrepo:tool", "2.0",
+                  std::filesystem::path("/p/myrepo-x-tool/2.0")),
+              "myrepo");
+}
+
+// ── D5: the same release under two spellings is not a recipe with two roots ──
+
+TEST(VersionKeyIdentity, ARespelledReleaseIsNamedAsSuchNotAsARecipeFault) {
+    fx::VersionDB db;
+    fx::Workspace workspace;
+    fx::WorkspaceInstalled installed;
+
+    fx::RegistrationBatch first;
+    first.provider = "xim:libxcb";
+    first.providerVersion = "1.17.0";
+    first.primaryTarget = "libxcb";
+    auto root = flip_node("libxcb", "1.17.0", "/p/libxcb/1.17.0", "group");
+    auto lib = flip_node("libxcb-composite.so", "1.17.0", "/p/libxcb/1.17.0/lib",
+                    "lib");
+    lib.binding = fx::RegistrationBinding{
+        .rootTarget = "libxcb", .rootVersion = "1.17.0", .group = "libxcb"};
+    first.nodes = {root, lib};
+    auto ok = fx::apply_registration_batch(db, workspace, installed, first, nullptr);
+    ASSERT_TRUE(ok.has_value()) << ok.error().message;
+
+    fx::RegistrationBatch respelled = first;
+    respelled.nodes[0].version = "xim:1.17.0";
+    respelled.nodes[1].version = "xim:1.17.0";
+    respelled.nodes[1].binding->rootVersion = "xim:1.17.0";
+    auto refused =
+        fx::apply_registration_batch(db, workspace, installed, respelled, nullptr);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kind,
+              fx::RegistrationErrorKind::VersionKeySpellingConflict);
+    EXPECT_NE(refused.error().message.find("1.17.0"), std::string::npos);
+    const auto described = fx::describe_kind(refused.error().kind);
+    EXPECT_EQ(described.code, "xvm-version-key-spelling");
+    EXPECT_NE(described.hint.find("self doctor --fix"), std::string::npos);
+}
+
+// ── D6: report and repair share one predicate ──
+
+TEST(VersionKeyIdentity, TwinMergePlanNamesTheLoserAndTheRepairConverges) {
+    auto db = flip_twin_home();
+    const auto merges = fx::plan_twin_merges(db);
+    ASSERT_EQ(merges.size(), 1u);
+    EXPECT_EQ(merges[0].target, "perl");
+    EXPECT_EQ(merges[0].winner, "xim:5.44.0");
+    EXPECT_EQ(merges[0].loser, "5.44.0");
+
+    fx::Workspace active{{"perl", "5.44.0"}};
+    fx::WorkspaceInstalled installed{{"perl", {"5.44.0", "xim:5.44.0"}}};
+    EXPECT_EQ(fx::apply_twin_merge_to_workspace(active, installed, merges[0]), 2u);
+    EXPECT_EQ(active.at("perl"), "xim:5.44.0");
+    EXPECT_EQ(installed.at("perl"),
+              (std::vector<std::string>{"xim:5.44.0"}));
+    // A workspace that never named the loser is left alone.
+    fx::Workspace untouched{{"perl", "xim:5.44.0"}};
+    fx::WorkspaceInstalled untouchedInstalled{{"perl", {"xim:5.44.0"}}};
+    EXPECT_EQ(fx::apply_twin_merge_to_workspace(
+                  untouched, untouchedInstalled, merges[0]), 0u);
+
+    fx::apply_twin_merge_to_db(db, merges[0]);
+    EXPECT_FALSE(db["perl"].versions.contains("5.44.0"));
+    EXPECT_TRUE(db["perl"].versions.contains("xim:5.44.0"));
+    EXPECT_TRUE(db["perl"].bindings.empty());
+    EXPECT_TRUE(db["perldoc"].bindings.empty());
+    // Converges: a second plan finds nothing.
+    EXPECT_TRUE(fx::plan_twin_merges(db).empty());
+}

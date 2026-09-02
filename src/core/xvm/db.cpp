@@ -78,20 +78,24 @@ resolve_exact_version_key(const VersionDB& db,
         });
     }
 
-    if (version.find(':') != std::string::npos) {
-        if (it->second.versions.contains(version)) return version;
-        return std::unexpected(RemovalError{
-            .kind = RemovalErrorKind::VersionNotFound,
-            .target = target,
-            .version = version,
-            .message = "exact removal version is not registered",
-        });
+    const auto& versions = it->second.versions;
+    if (versions.contains(version)) {
+        // An exact hit may still be the owner-less half of a twin pair; the
+        // record that carries the registration is the answer either way.
+        return representative_version_key(db, target, version);
     }
 
+    // Collect the stored keys this spelling may stand for, collapsed to one
+    // per twin set. A namespaced query reaches only the bare spelling, so it
+    // can never be ambiguous; a bare query keeps its historical reach.
+    const bool namespaced = version.find(':') != std::string::npos;
     std::vector<std::string> matches;
-    for (const auto& [storedVersion, _] : it->second.versions) {
-        if (strip_namespace(storedVersion) == version) {
-            matches.push_back(storedVersion);
+    for (const auto& [storedVersion, _] : versions) {
+        if (!version_key_matches(version, storedVersion)) continue;
+        const auto representative =
+            representative_version_key(db, target, storedVersion);
+        if (std::ranges::find(matches, representative) == matches.end()) {
+            matches.push_back(representative);
         }
     }
     if (matches.size() == 1) return matches.front();
@@ -100,7 +104,9 @@ resolve_exact_version_key(const VersionDB& db,
             .kind = RemovalErrorKind::VersionNotFound,
             .target = target,
             .version = version,
-            .message = "removal version is not registered",
+            .message = namespaced
+                ? "exact removal version is not registered"
+                : "removal version is not registered",
         });
     }
     return std::unexpected(RemovalError{
@@ -111,6 +117,174 @@ resolve_exact_version_key(const VersionDB& db,
             "bare removal version '{}' matches {} stored versions",
             version, matches.size()),
     });
+}
+
+bool version_key_matches(std::string_view query, std::string_view stored) {
+    if (query == stored) return true;
+    const auto [queryNs, queryBare] = parse_ns_version(std::string(query));
+    const auto [storedNs, storedBare] = parse_ns_version(std::string(stored));
+    if (queryBare != storedBare) return false;
+    return queryNs.empty() || storedNs.empty();
+}
+
+std::string normalized_payload_path(std::string_view path) {
+    std::string out{path};
+    std::ranges::replace(out, '\\', '/');
+    while (out.size() > 1 && out.back() == '/') out.pop_back();
+    return out;
+}
+
+bool payload_path_covers(std::string_view root, std::string_view candidate) {
+    if (root.empty() || candidate.empty()) return false;
+    if (candidate == root) return true;
+    return candidate.size() > root.size()
+        && candidate.starts_with(root)
+        && candidate[root.size()] == '/';
+}
+
+std::vector<std::string> twin_version_keys(const VersionDB& db,
+                                           const std::string& target,
+                                           const std::string& key) {
+    std::vector<std::string> twins;
+    const auto it = db.find(target);
+    if (it == db.end()) return twins;
+    const auto keyIt = it->second.versions.find(key);
+    if (keyIt == it->second.versions.end()) return twins;
+    const auto bare = strip_namespace(key);
+    const auto path = normalized_payload_path(keyIt->second.path);
+    for (const auto& [stored, data] : it->second.versions) {
+        if (stored == key) {
+            twins.push_back(stored);
+            continue;
+        }
+        if (strip_namespace(stored) != bare) continue;
+        // Same payload is the evidence; an empty path is no evidence at all.
+        if (path.empty()
+            || normalized_payload_path(data.path) != path) {
+            continue;
+        }
+        twins.push_back(stored);
+    }
+    return twins;
+}
+
+std::string representative_version_key(const VersionDB& db,
+                                       const std::string& target,
+                                       const std::string& key) {
+    const auto twins = twin_version_keys(db, target, key);
+    if (twins.size() <= 1) return key;
+    const auto& versions = db.at(target).versions;
+    for (const auto& twin : twins) {
+        if (versions.at(twin).bindingGroup) return twin;
+    }
+    // No owner on either side: the same answer whichever twin was asked
+    // about, or two readers of one pair would disagree. Map order puts the
+    // bare spelling first, which is the default index's canonical one.
+    return twins.front();
+}
+
+std::optional<std::string> registered_namespace_for(
+        const VersionDB& db,
+        const std::string& provider,
+        const std::string& providerVersion,
+        const std::string& primaryTarget,
+        const std::string& payloadPath) {
+    if (provider.empty() || providerVersion.empty()) return std::nullopt;
+    for (const auto& [_, info] : db) {
+        for (const auto& [key, data] : info.versions) {
+            if (!data.bindingGroup) continue;
+            if (data.bindingGroup->provider != provider
+                || data.bindingGroup->providerVersion != providerVersion) {
+                continue;
+            }
+            return get_namespace(key);
+        }
+    }
+    const auto it = db.find(primaryTarget);
+    if (it == db.end()) return std::nullopt;
+    const auto root = normalized_payload_path(payloadPath);
+    for (const auto& [key, data] : it->second.versions) {
+        if (data.bindingGroup) continue;
+        if (strip_namespace(key) != providerVersion) continue;
+        if (!payload_path_covers(root, normalized_payload_path(data.path))) {
+            continue;
+        }
+        return get_namespace(key);
+    }
+    return std::nullopt;
+}
+
+std::vector<TwinMerge> plan_twin_merges(const VersionDB& db) {
+    std::vector<TwinMerge> merges;
+    for (const auto& [target, info] : db) {
+        std::set<std::string> visited;
+        for (const auto& [key, _] : info.versions) {
+            if (visited.contains(key)) continue;
+            const auto twins = twin_version_keys(db, target, key);
+            for (const auto& twin : twins) visited.insert(twin);
+            if (twins.size() <= 1) continue;
+            const auto winner = representative_version_key(db, target, key);
+            for (const auto& twin : twins) {
+                if (twin == winner) continue;
+                merges.push_back({
+                    .target = target,
+                    .winner = winner,
+                    .loser = twin,
+                });
+            }
+        }
+    }
+    return merges;
+}
+
+std::size_t apply_twin_merge_to_workspace(Workspace& active,
+                                          WorkspaceInstalled& installed,
+                                          const TwinMerge& merge) {
+    std::size_t changed = 0;
+    if (auto it = active.find(merge.target);
+        it != active.end() && it->second == merge.loser) {
+        it->second = merge.winner;
+        ++changed;
+    }
+    if (auto it = installed.find(merge.target); it != installed.end()) {
+        auto& versions = it->second;
+        if (std::ranges::find(versions, merge.loser) != versions.end()) {
+            std::erase(versions, merge.loser);
+            if (std::ranges::find(versions, merge.winner) == versions.end()) {
+                versions.push_back(merge.winner);
+            }
+            ++changed;
+        }
+    }
+    return changed;
+}
+
+void apply_twin_merge_to_db(VersionDB& db, const TwinMerge& merge) {
+    auto it = db.find(merge.target);
+    if (it == db.end()) return;
+    it->second.versions.erase(merge.loser);
+    // Legacy edges are keyed by exact version on both ends; an edge that
+    // names the loser on either end would dangle.
+    for (auto& [sourceTarget, info] : db) {
+        for (auto bindingIt = info.bindings.begin();
+             bindingIt != info.bindings.end();) {
+            const auto& peerTarget = bindingIt->first;
+            std::erase_if(
+                bindingIt->second,
+                [&](const auto& edge) {
+                    const auto& [sourceVersion, peerVersion] = edge;
+                    return (sourceTarget == merge.target
+                            && sourceVersion == merge.loser)
+                        || (peerTarget == merge.target
+                            && peerVersion == merge.loser);
+                });
+            if (bindingIt->second.empty()) {
+                bindingIt = info.bindings.erase(bindingIt);
+            } else {
+                ++bindingIt;
+            }
+        }
+    }
 }
 
 std::expected<std::string, RemovalError>
@@ -242,8 +416,13 @@ std::string match_version(const VersionDB& db,
 
     auto& versions = it->second.versions;
 
-    // Exact match first
-    if (versions.contains(prefix)) return prefix;
+    // Exact match first -- resolved to the record that carries the
+    // registration, in case the exact key is the owner-less half of a twin
+    // pair. `use perl@5.44.0` used to land on that half and quietly leave the
+    // release's binding group behind.
+    if (versions.contains(prefix)) {
+        return representative_version_key(db, target, prefix);
+    }
 
     auto [input_ns, input_ver] = parse_ns_version(prefix);
 
@@ -282,17 +461,23 @@ std::string match_version(const VersionDB& db,
         return true;
     };
 
-    // If namespace specified, only match within that namespace
+    // If namespace specified, match within that namespace first. The bare
+    // spelling is the fallback: it is how the default index's records were
+    // written, and a query that names the namespace explicitly is still
+    // asking for that version (version_key_matches).
     if (!input_ns.empty()) {
         std::vector<std::string> candidates;
+        std::vector<std::string> bareFallback;
         for (auto& [ver, _] : versions) {
             auto [ver_ns, bare_ver] = parse_ns_version(ver);
-            if (ver_ns == input_ns && prefix_matches(bare_ver))
-                candidates.push_back(ver);
+            if (!prefix_matches(bare_ver)) continue;
+            if (ver_ns == input_ns) candidates.push_back(ver);
+            else if (ver_ns.empty()) bareFallback.push_back(ver);
         }
+        if (candidates.empty()) candidates = std::move(bareFallback);
         if (candidates.empty()) return {};
         sort_desc(candidates);
-        return candidates[0];
+        return representative_version_key(db, target, candidates[0]);
     }
 
     // No namespace: prefer bare (unqualified) versions first
@@ -310,11 +495,11 @@ std::string match_version(const VersionDB& db,
 
     if (!bare_candidates.empty()) {
         sort_desc(bare_candidates);
-        return bare_candidates[0];
+        return representative_version_key(db, target, bare_candidates[0]);
     }
     if (!ns_candidates.empty()) {
         sort_desc(ns_candidates);
-        return ns_candidates[0];
+        return representative_version_key(db, target, ns_candidates[0]);
     }
     return {};
 }

@@ -292,6 +292,25 @@ apply_removal_batch(VersionDB& db, Workspace& workspace, WorkspaceInstalled& ins
         }
     }
 
+    // A version written twice -- once per spelling of its key -- is ONE
+    // registration, and removing it means removing both records. Otherwise
+    // the survivor keeps a workspace pointing at a payload that is gone, and
+    // the next `remove` reports the package as still installed.
+    {
+        const auto planned = removals;
+        for (const auto& removal : planned) {
+            for (const auto& twin :
+                 twin_version_keys(db, removal.target, removal.version)) {
+                if (seen.emplace(removal.target, twin).second) {
+                    removals.push_back({
+                        .target = removal.target,
+                        .version = twin,
+                    });
+                }
+            }
+        }
+    }
+
     auto candidateDb = db;
     auto candidateWorkspace = workspace;
     auto candidateInstalled = installed;

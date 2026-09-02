@@ -245,6 +245,13 @@ enum class FindingKind {
     // why `self update` used to refuse), so "the package version" is itself
     // ambiguous and a check built on it would inherit the ambiguity.
     EntryBinaryDrift,
+    // One version registered twice, under two spellings of its key -- bare
+    // and namespaced -- both naming the same payload. The owner-less half is
+    // a record from before providers were recorded; the owned half was
+    // written beside it by a later install whose spelling verdict had
+    // changed. Readers collapse the pair now; `--fix` merges it. Measured on
+    // a real home: 240 such pairs, and `use` was landing on the wrong half.
+    DuplicateVersionKey,
 };
 
 enum class FindingLevel {
