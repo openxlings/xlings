@@ -17,6 +17,7 @@ import xlings.platform;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.errors;
+import xlings.core.xvm.owner;
 import xlings.core.version_order;
 // For `project_contributions()` -- the one answer to "which project
 // declares this command". Implementation-unit import only; the xvm
@@ -644,13 +645,27 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             }
 
             const auto origin = Config::version_origin(program_name);
+            // The package to offer, when a record proves one. Dispatch has no
+            // index loaded and must not guess a package name from a program
+            // name; see xvm::recorded_owner.
+            auto elsewhere = get_all_versions(db, program_name);
+            std::string installCoordinate;
+            if (!elsewhere.empty()) {
+                auto newest = elsewhere;
+                version_order::sort_desc(newest);
+                if (auto owner = recorded_owner(db, program_name,
+                                                newest.front())) {
+                    installCoordinate = owner->canonical();
+                }
+            }
             diag::emit(not_in_subos({
                 .target             = program_name,
                 .subos              = Config::subos_scope().name,
-                .versionsElsewhere  = get_all_versions(db, program_name),
+                .versionsElsewhere  = std::move(elsewhere),
                 .providedByProjects = std::move(providers),
                 .source             = origin.source,
                 .fromProject        = origin.fromProjectManifest,
+                .installCoordinate  = std::move(installCoordinate),
             }));
         } else {
             // Genuinely different state: opted into this subos, but nothing is
@@ -726,8 +741,30 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             // declared dependency.
             d.actions.push_back({ "set this project up", "xlings install" });
         } else {
-            d.actions.push_back({ "install the pinned one",
-                std::format("xlings install {}@{}", program_name, version) });
+            // `program_name` is a PROGRAM. When some version of it is
+            // recorded here, the record names the package that provides it,
+            // and the pinned version of THAT package is the install. With no
+            // record at all there is nothing to prove the package's name, so
+            // the search goes first -- it always runs -- and the plain
+            // install is offered for the common case where the two coincide.
+            std::string owned;
+            for (const auto& v : all) {
+                if (auto owner = recorded_owner(db, program_name, v)) {
+                    owned = std::format("{}{}@{}",
+                        owner->ns.empty() ? std::string{} : owner->ns + ":",
+                        owner->package, version);
+                    break;
+                }
+            }
+            if (!owned.empty()) {
+                d.actions.push_back({ "install the pinned one",
+                    std::format("xlings install {}", owned) });
+            } else {
+                d.actions.push_back({ "find the package that provides it",
+                    std::format("xlings search {}", program_name) });
+                d.actions.push_back({ "if the package shares the name",
+                    std::format("xlings install {}@{}", program_name, version) });
+            }
             if (!d.source.empty()) {
                 // Deliberately does NOT repeat the source string: it is
                 // already on the `from` row two lines up, and an action row

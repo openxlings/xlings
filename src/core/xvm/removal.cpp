@@ -258,6 +258,16 @@ apply_removal_batch(VersionDB& db, Workspace& workspace, WorkspaceInstalled& ins
                 .message =
                     "versionless removal has no unique validated selection",
             });
+        } else if (targetIt != db.end()
+                   && targetIt->second.versions.size() == 1) {
+            // Exactly one stored version and no selection to disagree with
+            // it: that version IS the answer. This branch was missing, so a
+            // versionless `xvm.remove("fd")` -- the ordinary idiom in every
+            // uninstall hook -- fell through to the initial "has no exact
+            // version" error whenever the package had a single record and no
+            // workspace selection (#578). Two versions are refused above as
+            // ambiguous; zero is still not found.
+            exactVersion = targetIt->second.versions.begin()->first;
         }
         if (!exactVersion) {
             return std::unexpected(std::move(exactVersion.error()));

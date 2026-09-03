@@ -174,6 +174,7 @@ TESTS=(
     # the project. Verified differential against 2026.9.2.1, where it fails at
     # the first assertion.
     "E2E-96 |shim_table_routing_test.sh||"
+    "E2E-97 |install_guard_loader_order_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

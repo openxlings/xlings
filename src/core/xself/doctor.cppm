@@ -194,6 +194,17 @@ enum class FindingKind {
     // message naming neither package nor version. Installs cannot produce it
     // any more; this finds the ones already on disk.
     LoaderLibcSplit,
+    // Executables registered in this subos that START on a runtime other than
+    // the one the subos declares: their PT_INTERP points into another glibc
+    // payload, and they run because their own RUNPATH lists that glibc ahead
+    // of the subos farm. Not a split (they are consistent with themselves --
+    // see LoaderLibcSplit) and not an error: they work. A Notice, because what
+    // they work on is a payload this subos does not hold, so the day it leaves
+    // the store they fail with an ENOENT that names the binary. Measured on a
+    // real home: 151 executables in 18 packages started on 2.39 in a subos
+    // declaring 2.44 -- and the old same-source rule reported every one of
+    // them as a split, which they were not.
+    InterpRuntimeDrift,
     // One package bound at two versions in the same subos. The store holds
     // many versions by design; the subos in between is the layer that is
     // supposed to hold exactly one, and until now nothing enforced it. Both
@@ -283,6 +294,11 @@ struct Finding {
     // when no command would help -- which is a fact worth printing, not a
     // reason to print a plausible one. See owning_coordinate().
     std::string  remedy;
+    // Prose that goes WITH the remedy -- what it adopts, what the alternative
+    // is -- rendered on its own line. It used to be appended to `remedy` in
+    // parentheses, which made the printed command fail when pasted: a remedy
+    // is copied and run, so the command field holds nothing but the command.
+    std::string  remedyNote;
     // Why `--fix` must not run the remedy itself.
     //
     // Non-empty means the repair is known IN ADVANCE to be one another repair

@@ -525,4 +525,21 @@ printf '%s\n' "$out" | grep -qE "xlings install [^ ]+ --force"   && fail "S13: a
 # Anything matching the former in an install/remove command never resolves.
 printf '%s\n' "$out" | grep -qE "xlings (install|remove) [A-Za-z0-9_.]+-x-[A-Za-z0-9_.-]+@"   && fail "S13: a remedy named a store directory instead of a package coordinate; got:\n$out"
 
+# The word after `xlings` has to be a command the CLI has. A placeholder or a
+# parenthetical in the command position fails as surely as a wrong flag does,
+# and three remedies used to carry one (`use X@<one of: ...>`, `... --fix
+# (adopt ...)`, `install glibc (then ...)`). Prose now goes on its own `note`
+# line; the `run` line is the command and nothing else.
+known_cmds=" install remove update search list info why use config subos self index agent profile "
+while read -r cmd; do
+  [ -z "$cmd" ] && continue
+  case "$known_cmds" in
+    *" $cmd "*) ;;
+    *) fail "S13: a remedy starts with \`xlings $cmd\`, which is not a command; got:\n$out" ;;
+  esac
+done < <(printf '%s\n' "$out" | grep -oE "→ run[[:space:]]+xlings [a-z-]+" | awk '{print $NF}')
+
+printf '%s\n' "$out" | grep -E "→ run .*(<one of|\(adopt |\(then |<version>)" \
+  && fail "S13: a remedy carries a placeholder or prose in the command position; got:\n$out"
+
 log "PASS: self doctor scenarios 1-13 (alias repair reported honestly, long report not clamped, remedies runnable)"

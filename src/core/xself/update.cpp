@@ -15,7 +15,17 @@ bool update_landed_on_index_build(std::string_view activeVersion) {
     // diagnosed. Same rule `version_of` follows -- no observation is not a
     // verdict.
     if (activeVersion.empty()) return true;
-    return activeVersion.find(':') == std::string_view::npos;
+    // The question is the PROVIDER: did `latest` land on a build an index
+    // handed us, or stay on a `local:` one? Until 2026.9.2.1 an index install
+    // always recorded a bare key, so "has a namespace" and "is not an index
+    // build" were the same test. They are not any more: version keys are now
+    // spelled by identity, and `xim:2026.9.2.1` is exactly what a default-index
+    // install may write. Asking "has a colon" of that key reported a
+    // successful upgrade as "nothing was upgraded" (#579). The only provider
+    // that is not an index is `local`.
+    const auto colon = activeVersion.find(':');
+    if (colon == std::string_view::npos) return true;
+    return activeVersion.substr(0, colon) != "local";
 }
 
 int cmd_update() {
@@ -89,6 +99,11 @@ int cmd_update() {
     // this command means by "updated" is "running the build the index just
     // handed us", and a namespaced active version (`local:0.4.51`) is exactly
     // the statement that it is not -- an index install records a bare version.
+    // Re-read the state the `use` above just wrote. Config loaded the
+    // workspace at process start; judging the switch against that snapshot
+    // reported "still active at <the old version>" one line after printing
+    // the switch to the new one (#579).
+    Config::reload_state();
     if (const auto active =
             xvm::get_active_version(Config::effective_workspace(), "xlings");
         !update_landed_on_index_build(active)) {

@@ -84,19 +84,28 @@ bool replace_with(const fs::path& payloadBinary, const fs::path& entry,
                   entry.string(), payloadBinary.string());
         return false;
     }
-    if (before.empty() || before == toVersion) {
-        log::debug("entry binary -> {} ({})", toVersion, coordinate);
+    // `toVersion` arrives as the WORKSPACE KEY, which since 2026.9.2.1 may be
+    // spelled `xim:2026.9.2.1`. The comparator wants a bare version -- given a
+    // key whose first character is not a digit it ranks the key below every
+    // bare version, so an upgrade was reported as DOWNGRADED (#579). The
+    // binary's own report (`before`) is always bare; make the other side match.
+    const auto bare = [](std::string_view v) {
+        const auto colon = v.find(':');
+        return std::string(colon == std::string_view::npos ? v
+                                                            : v.substr(colon + 1));
+    }(toVersion);
+    if (before.empty() || before == bare) {
+        log::debug("entry binary -> {} ({})", bare, coordinate);
         return true;
     }
-    if (version_order::compare(toVersion, before) < 0) {
+    if (version_order::compare(bare, before) < 0) {
         log::warn("entry binary DOWNGRADED {} -> {} ({})",
-                  before, toVersion, coordinate);
+                  before, bare, coordinate);
         log::warn("  every shim in this home dispatches through it; an older "
                   "client may not understand records a newer index wrote");
         return true;
     }
-    log::info("entry binary {} -> {} ({})", before, toVersion,
-              coordinate);
+    log::info("entry binary {} -> {} ({})", before, bare, coordinate);
     return true;
 }
 

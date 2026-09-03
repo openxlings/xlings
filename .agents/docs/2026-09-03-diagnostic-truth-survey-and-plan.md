@@ -3,8 +3,8 @@
 > 起点:用户贴出的 `self doctor` / `install` 真实输出,三个问题:
 > ① remedy 写成 `xlings install xim-x-xxx@version`;② `--force` 不存在;③ 为什么报错。
 > 分支 `fix/musl-loader-family-misread`,基线 `ba51901`(发布版 2026.9.3.1)。
-> 状态:**调研 + 方案,待 review**。§6 的 P0 已在分支上完成并通过 51 套单测与 3 个受影响 e2e;
-> P1 起未动手。
+> 状态:**已实现 P0–P7**(2026.9.3.2),实施记录见 `2026-09-03-diagnostic-truth-impl-plan.md`,
+> 真机数字见 `2026-09-03-release-2026.9.3.2-notes.md`。§8b 记实施中新增/推翻的判断。
 
 ## 0. 一句话
 
@@ -264,6 +264,19 @@ upgraded」在 `use` 之后**重读状态**再判。已在 issue 里列了三条
 - 「GitCode 索引指针 404,CN 客户端靠跨区回退」 → 今天两端都 200 且一致;撤回。
 - 「`--force` 让 install 以 exit 2 退出」 → rc=1,`Error: unknown option: --force`;注释已改。
 - 「152 条 split 里总有真的」 → 逐二进制运行 + 逐 soname 首命中重算:0。
+
+## 8b. 实施阶段新增的判断与推翻(P1–P7,实施计划见 `2026-09-03-diagnostic-truth-impl-plan.md`)
+
+- **#531 的平台维度早已处理**:`catalog.cpp::resolve_target` 对「存在但无本平台构建」已单独报
+  `has no build for <platform> (available on: …)`;§5 把它列为 open 是我没读到这段。arch 维度由
+  安装期 `check_target_compatibility` 报,`info` 路径未验证 —— 留在 issue 里,不进本 PR。
+- **#578 的第 2 点撞上一条钉死的单测**:`RawEmptyOperationNeverMeansAllVersions`(2026-07-27)断言
+  「单一存储版本 + 空版本操作 → VersionNotFound」。这条规则的名字说的是「空不等于全部」,对 ≥2 个
+  版本仍成立(Ambiguous);对恰好 1 个版本不存在「全部」可指,而 `xvm.remove("fd")` 是每个 uninstall
+  hook 的常规写法。按 #578 的预期改了这半条测试,理由写在测试里。
+- **P3 不做 e2e**:`recorded_owner` 三条单测 + S13 的可运行门;不_in_subos 的 install 动作在夹具索引里
+  没有「程序名≠包名」的现成包,造一个的成本高于收益。记为缺口。
+- **P4 只比声明 runtime 的同名包**:musl 解释的工具在 glibc subos 里是另一个 runtime,不是漂移。
 
 ## 9. 附:本次的度量方法(可复跑)
 

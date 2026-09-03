@@ -5064,23 +5064,21 @@ TEST(XvmRemovalBatchTest, RawEmptyOperationNeverMeansAllVersions) {
     EXPECT_EQ(workspace, workspaceBefore);
     EXPECT_EQ(installed, installedBefore);
 
+    // With exactly ONE record there is no "all versions" for the empty
+    // operation to mean, and refusing it made the ordinary uninstall idiom
+    // (`xvm.remove("fd")`) fail on the very state it exists for (#578). The
+    // sole record is the answer; two records above are still ambiguous.
     db["sibling"].versions.erase("repo-b:1.0.0");
     workspace = {{"sibling", "repo-a:1.0.0"}};
     installed = {{"sibling", {"repo-a:1.0.0"}}};
-    const auto oneVersionBefore = xlings::xvm::versions_to_json(db);
 
     result = xlings::xvm::apply_removal_batch(
         db, workspace, installed, operations, {});
 
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(
-        result.error().kind,
-        xlings::xvm::RemovalErrorKind::VersionNotFound);
-    EXPECT_EQ(xlings::xvm::versions_to_json(db), oneVersionBefore);
-    EXPECT_EQ(workspace.at("sibling"), "repo-a:1.0.0");
-    EXPECT_EQ(
-        installed.at("sibling"),
-        (std::vector<std::string>{"repo-a:1.0.0"}));
+    ASSERT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_FALSE(db.contains("sibling")
+                 && db["sibling"].versions.contains("repo-a:1.0.0"))
+        << "the sole record is what a versionless removal removes";
 }
 
 TEST(XvmRemovalBatchTest,
@@ -8316,4 +8314,47 @@ TEST(VersionKeyIdentity, TwinMergePlanNamesTheLoserAndTheRepairConverges) {
     EXPECT_TRUE(db["perldoc"].bindings.empty());
     // Converges: a second plan finds nothing.
     EXPECT_TRUE(fx::plan_twin_merges(db).empty());
+}
+
+// #578: a versionless removal with exactly one stored version and no workspace
+// selection resolved to nothing -- the branch that should have picked the sole
+// record did not exist, so `xvm.remove("fd")` from an uninstall hook failed
+// with "removal operation has no exact version" on the very state it is
+// written for. One record is not ambiguous; it is the answer.
+TEST(XvmExactRemovalTest, VersionlessRemovalWithASingleRecordResolvesToIt) {
+    xlings::xvm::VersionDB db;
+    db["fd"].versions["10.4.2"].path = "/pkg/fd/10.4.2";
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        { .op = "remove", .name = "fd", .version = "" },
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_TRUE(result.has_value())
+        << result.error().message << " (" << result.error().target << ")";
+    EXPECT_FALSE(db.contains("fd") && db["fd"].versions.contains("10.4.2"))
+        << "the sole record must be the one removed";
+}
+
+// ...and two records are still refused as ambiguous, not silently picked.
+TEST(XvmExactRemovalTest, VersionlessRemovalWithTwoRecordsIsStillAmbiguous) {
+    xlings::xvm::VersionDB db;
+    db["fd"].versions["10.4.2"].path = "/pkg/fd/10.4.2";
+    db["fd"].versions["10.5.0"].path = "/pkg/fd/10.5.0";
+    xlings::xvm::Workspace workspace;
+    xlings::xvm::WorkspaceInstalled installed;
+    const std::vector<xlings::xvm::RemovalOperation> operations{
+        { .op = "remove", .name = "fd", .version = "" },
+    };
+
+    auto result = xlings::xvm::apply_removal_batch(
+        db, workspace, installed, operations, {});
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind,
+              xlings::xvm::RemovalErrorKind::AmbiguousVersion);
+    EXPECT_EQ(db["fd"].versions.size(), 2u);
 }

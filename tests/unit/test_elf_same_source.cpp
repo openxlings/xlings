@@ -173,21 +173,96 @@ TEST(SameSource, FirstCoreRuntimeEntryDeterminesResult) {
                           rpath).violated);
 }
 
-TEST(SameSource, AnyDifferentCoreRuntimeEntryViolates) {
+// The loader stops at the first directory that has a soname. A complete glibc
+// lib dir ahead on the path therefore answers EVERY core soname, and a
+// different payload's copy behind it is never opened -- so it is not a split.
+//
+// This test used to assert the opposite ("any different core-runtime entry
+// violates"). Measured on a real home, that rule produced 152 errors, all on
+// binaries whose own glibc lib dir preceded a subos farm that had since moved
+// to another glibc. Every one of them ran; re-evaluated by the loader's rule,
+// 0 of 151 were splits. The same predicate refused installs.
+TEST(SameSource, ACompleteFirstDirectoryAnswersEveryCoreSoname) {
     TempTree tree;
     const auto loaderDir = tree.payload("2.44") / "lib64";
     const auto laterDir = tree.payload("2.39") / "lib64";
     TempTree::touch(loaderDir / "ld-linux-x86-64.so.2");
     TempTree::touch(loaderDir / "libc.so.6");
+    TempTree::touch(laterDir / "ld-linux-x86-64.so.2");
     TempTree::touch(laterDir / "libc.so.6");
 
     std::vector<std::string> rpath{
         loaderDir.string(),
         laterDir.string(),
     };
-    EXPECT_TRUE(ec::check((tree.payload("2.44") / "bin" / "gcc").string(),
-                          (loaderDir / "ld-linux-x86-64.so.2").string(),
-                          rpath).violated);
+    const auto f = ec::check((tree.payload("2.44") / "bin" / "gcc").string(),
+                             (loaderDir / "ld-linux-x86-64.so.2").string(),
+                             rpath);
+    EXPECT_FALSE(f.violated)
+        << "the later 2.39 copies are behind a complete 2.44 dir and are never "
+           "opened: " << ec::describe(f);
+}
+
+// ...and the half of the old rule that was TRUE stays: when the first
+// directory is incomplete, the soname it lacks IS taken from the next directory
+// that has it, and that one has to come from the interpreter's payload.
+TEST(SameSource, AnIncompleteFirstDirectoryLeavesLaterEntriesInPlay) {
+    TempTree tree;
+    const auto loaderDir = tree.payload("2.44") / "lib64";
+    const auto laterDir = tree.payload("2.39") / "lib64";
+    TempTree::touch(loaderDir / "ld-linux-x86-64.so.2");   // no libc.so.6 here
+    TempTree::touch(laterDir / "libc.so.6");                // so THIS one is loaded
+
+    std::vector<std::string> rpath{
+        loaderDir.string(),
+        laterDir.string(),
+    };
+    const auto f = ec::check((tree.payload("2.44") / "bin" / "gcc").string(),
+                             (loaderDir / "ld-linux-x86-64.so.2").string(),
+                             rpath);
+    EXPECT_TRUE(f.violated);
+    EXPECT_EQ(f.reason, ec::Finding::Reason::PayloadMismatch);
+    EXPECT_NE(f.corePath.find("libc.so.6"), std::string::npos)
+        << "the finding must name the soname actually taken from 2.39";
+}
+
+// The exact shape measured on the real home: interp 2.39, RUNPATH lists the
+// binary's own 2.39 lib dir, then the subos farm -- a symlink farm that now
+// points at 2.44. The farm is a real directory of real symlinks, because a
+// directory of touched files is not the shape this check runs against.
+TEST(SameSource, OwnGlibcAheadOfADriftedFarmIsNotASplit) {
+    namespace fs = std::filesystem;
+    TempTree tree;
+    const auto own = tree.payload("2.39") / "lib64";
+    const auto drifted = tree.payload("2.44") / "lib";
+    const auto farm = tree.root / "subos" / "default" / "lib";
+    TempTree::touch(own / "ld-linux-x86-64.so.2");
+    TempTree::touch(own / "libc.so.6");
+    TempTree::touch(drifted / "ld-linux-x86-64.so.2");
+    TempTree::touch(drifted / "libc.so.6");
+    std::error_code ec2;
+    fs::create_directories(farm, ec2);
+    ASSERT_FALSE(ec2) << ec2.message();
+    fs::create_symlink(drifted / "ld-linux-x86-64.so.2",
+                       farm / "ld-linux-x86-64.so.2", ec2);
+    ASSERT_FALSE(ec2) << ec2.message();
+    fs::create_symlink(drifted / "libc.so.6", farm / "libc.so.6", ec2);
+    ASSERT_FALSE(ec2) << ec2.message();
+
+    std::vector<std::string> rpath{
+        (tree.payload("2.39") / "bin").string(),   // no core files: skipped
+        own.string(),
+        farm.string(),
+    };
+    const auto f = ec::check((tree.payload("2.39") / "bin" / "gcc").string(),
+                             (own / "ld-linux-x86-64.so.2").string(), rpath);
+    EXPECT_FALSE(f.violated) << ec::describe(f);
+
+    // Reversed, the farm answers libc.so.6 first and the split is real.
+    std::vector<std::string> reversed{farm.string(), own.string()};
+    EXPECT_TRUE(ec::check((tree.payload("2.39") / "bin" / "gcc").string(),
+                          (own / "ld-linux-x86-64.so.2").string(),
+                          reversed).violated);
 }
 
 TEST(SameSource, RelativeAndNonStoreEntriesAreIgnored) {

@@ -157,8 +157,9 @@ inline CoreFamily core_family_of_path_(const fs::path& path) {
 // The resolved path is still what identifies the payload and what the error
 // message must name; only the family question is answered by the entry.
 struct CoreSource {
-    fs::path   source;   // resolved -- the payload identity, and what we print
-    CoreFamily family;   // from the entry name, which is what declares it
+    fs::path    source;  // resolved -- the payload identity, and what we print
+    CoreFamily  family;  // from the entry name, which is what declares it
+    std::string name;    // the entry name -- the SONAME the loader asks for
 };
 
 // Every core runtime file in a directory, resolved through symlinks.
@@ -188,7 +189,7 @@ inline std::vector<CoreSource> core_runtime_sources_(const fs::path& dir) {
         if (family == CoreFamily::Unknown) {
             family = core_family_of_path_(source);
         }
-        out.push_back({ std::move(source), family });
+        out.push_back({ std::move(source), family, entryName });
     }
     std::ranges::sort(out, {}, [](const CoreSource& e) {
         return e.source.string();
@@ -233,11 +234,28 @@ inline fs::path resolve_rpath_entry_(std::string_view binary,
 
 // The invariant, over the two fields as read from one ELF.
 //
-// PASSES when: there is no interpreter (a shared library or a static binary —
+// PASSES when: there is no interpreter (a shared library or a static binary --
 // neither chooses a loader), or no RUNPATH directory is proven to contain a
-// core runtime. Every proven core-runtime entry must agree: a later directory
-// may supply the loader or another core component even when libc.so.6 was
-// found earlier, so one same-source entry cannot wash out another mismatch.
+// core runtime, or every core file the loader WOULD TAKE comes from the
+// interpreter's payload.
+//
+// "Would take" is the loader's rule, not ours: for each SONAME it walks the
+// search path in order and stops at the first directory that has the file.
+// So a core file in a LATER directory is only consulted when no earlier
+// directory supplied that soname -- the first complete glibc lib dir on the
+// path answers every core soname, and whatever sits behind it is never
+// opened.
+//
+// This used to demand that EVERY directory with a core file agree ("a later
+// directory may supply another core component even when libc.so.6 was found
+// earlier"). That is true only when the earlier directory is INCOMPLETE, and
+// it is kept for that case: a soname the first directory lacks is still
+// answered by the next directory that has it. What it is no longer is a
+// verdict on directories the loader never reaches. Measured on a real home,
+// the old rule produced 152 errors, all on binaries whose own glibc lib dir
+// preceded a subos farm that had since moved to another glibc; every one of
+// them ran, and re-evaluated by the loader's rule 0 of 151 were splits. The
+// same predicate is the install-time refusal, so those were refusals too.
 inline Finding check(std::string_view binary,
                      std::string_view interp,
                      std::span<const std::string> rpathEntries,
@@ -266,13 +284,23 @@ inline Finding check(std::string_view binary,
     f.provider = provider_of(f.interpPayload);
     const auto interpIdentity = payload_identity_(f.interpPayload);
 
+    // Core sonames an earlier directory has already answered. The loader
+    // stops at the first hit, so a later directory's copy of the same soname
+    // is never opened and must not be judged.
+    std::set<std::string> answered;
+    // A synthetic directory (injected probe, no real files) declares no
+    // sonames; it stands for "a complete core runtime" and answers all of them.
+    constexpr std::string_view kWholeRuntime = "*";
+
     for (const auto& e : rpathEntries) {
         const auto dir = resolve_rpath_entry_(binary, e);
         if (!coreDirProbe(dir)) continue;
+        if (answered.contains(std::string(kWholeRuntime))) break;
 
         // A SubOS libdir commonly contains several symlinks into shared
-        // payloads. Preserve every resolved source so a loader from A cannot
-        // hide a libc from B merely by being enumerated first.
+        // payloads. Preserve every resolved source: within ONE directory a
+        // loader from A must not hide a libc from B merely by being
+        // enumerated first -- that directory can itself be split.
         auto sources = core_runtime_sources_(dir);
         if (sources.empty()) {
             // Injectable probes let unit tests exercise synthetic store paths
@@ -283,12 +311,18 @@ inline Finding check(std::string_view binary,
             // a synthetic directory declares nothing. Unknown keeps the
             // fail-loud comparison the guard was written with.
             if (!payload.empty()) {
-                sources.push_back({ dir, CoreFamily::Unknown });
+                sources.push_back({ dir, CoreFamily::Unknown,
+                                    std::string(kWholeRuntime) });
             }
         }
 
         const auto interpFamily = core_family_of_path_(fs::path(interp));
         for (const auto& entry : sources) {
+            // First directory to carry a soname is the one the loader takes
+            // it from. Claimed BEFORE the family guard: a same-named file is
+            // the same family by construction, so nothing is lost, and a
+            // later copy must stay unjudged either way.
+            if (!answered.insert(entry.name).second) continue;
             const auto& source = entry.source;
             // Only compare within one runtime family. An unknown family on
             // either side still compares, so a payload this does not recognise
@@ -488,9 +522,23 @@ inline bool is_nested_store_root_(const std::filesystem::path& dir) {
 //
 // Shared with doctor deliberately. Report and repair have drifted three times
 // in this repo; the shape it takes is a finding that fixing does not clear.
-inline std::vector<Finding>
-scan_payload(const std::filesystem::path& dir) {
-    std::vector<Finding> out;
+// Everything one payload scan learned, not only the violations.
+//
+// `interpPayloads` counts, per store payload, the executables whose PT_INTERP
+// points into it. The same-source scan reads that field on every ELF and used
+// to keep it only for the ones it rejected. Doctor uses the rest to say which
+// runtime a package actually STARTS on -- a different question from whether
+// that runtime is the one its subos declares (InterpRuntimeDrift), and the one
+// the 152 false splits on a measured home were standing in for.
+struct PayloadReport {
+    std::vector<Finding> findings;
+    // resolved store payload dir (.../xpkgs/xim-x-glibc/2.39) -> executables
+    std::map<std::string, std::size_t> interpPayloads;
+};
+
+inline PayloadReport
+scan_payload_report(const std::filesystem::path& dir) {
+    PayloadReport out;
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return out;
 
@@ -515,11 +563,27 @@ scan_payload(const std::filesystem::path& dir) {
         if (!info) continue;                    // not an ELF we can read
         if (info->interpreter.empty()) continue; // library or static: nothing to pair
 
+        // Which payload this executable starts on. Resolved through the subos
+        // view when PT_INTERP points there, exactly as check() does.
+        auto interpPayload = payload_of(info->interpreter);
+        if (interpPayload.empty()) {
+            std::error_code rec;
+            const auto resolved = std::filesystem::weakly_canonical(
+                std::filesystem::path(info->interpreter), rec);
+            if (!rec) interpPayload = payload_of(resolved.string());
+        }
+        if (!interpPayload.empty()) ++out.interpPayloads[interpPayload];
+
         auto finding = check(it->path().string(), info->interpreter,
                              info->searchPaths);
-        if (finding.violated) out.push_back(std::move(finding));
+        if (finding.violated) out.findings.push_back(std::move(finding));
     }
     return out;
+}
+
+inline std::vector<Finding>
+scan_payload(const std::filesystem::path& dir) {
+    return scan_payload_report(dir).findings;
 }
 
 // One command's worth of scan results, keyed on whether the payload changed.
@@ -570,18 +634,21 @@ public:
         : stampName_(std::move(stampName)) {}
 
     std::vector<Finding> scan(const std::filesystem::path& dir) {
+        return report(dir).findings;
+    }
+    PayloadReport report(const std::filesystem::path& dir) {
         const auto key = key_of_(dir);
         const auto path = dir.string();
         if (auto it = entries_.find(path); it != entries_.end()) {
             if (it->second.key == key) {
                 ++hits_;
-                return it->second.findings;
+                return it->second.report;
             }
         }
         ++misses_;
-        auto findings = scan_payload(dir);
-        entries_.insert_or_assign(path, Entry{key, findings});
-        return findings;
+        auto report = scan_payload_report(dir);
+        entries_.insert_or_assign(path, Entry{key, report});
+        return report;
     }
 
     [[nodiscard]] std::size_t hits() const { return hits_; }
@@ -597,7 +664,7 @@ private:
 
     struct Entry {
         Key key;
-        std::vector<Finding> findings;
+        PayloadReport report;
     };
 
     static std::int64_t write_time_(const std::filesystem::path& p) {

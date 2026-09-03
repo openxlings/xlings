@@ -21,6 +21,7 @@
 
 import std;
 import xlings.core.xvm.owner;
+import xlings.core.xvm.types;
 
 namespace xvm = xlings::xvm;
 
@@ -141,4 +142,45 @@ TEST(PayloadOwnership, BindirPathsStillIdentifyTheOwner) {
         xvm::payload_path_names_another_package(bindir, "compat", "libdrm"));
     EXPECT_FALSE(
         xvm::payload_path_names_another_package(bindir, "xim", "libdrm"));
+}
+
+// ── recorded_owner: only what a record proves ────────────────────────────
+//
+// `owner_candidates` ends with guesses that its caller confirms against the
+// catalog. Dispatch and `use` print on the error path with no catalog loaded,
+// and 218 of 338 program names on a measured home are not package names -- so
+// what they print has to come from a record or not be printed at all.
+
+TEST(RecordedOwner, ThePayloadPathNamesThePackageNotTheProgram) {
+    xlings::xvm::VersionDB db;
+    db["g++"].versions["11.5.0"].path =
+        "/home/u/.xlings/data/xpkgs/xim-x-gcc/11.5.0/bin";
+    const auto owner = xlings::xvm::recorded_owner(db, "g++", "11.5.0");
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(owner->canonical(), "xim:gcc@11.5.0")
+        << "`xlings install g++@11.5.0` cannot run; the path says who can";
+}
+
+TEST(RecordedOwner, TheRecordedProviderWinsOverThePath) {
+    xlings::xvm::VersionDB db;
+    auto& data = db["slang"].versions["0.1.3"];
+    data.path = "/home/u/.xlings/data/xpkgs/xim-x-d2x/0.1.3/bin";
+    data.bindingGroup = xlings::xvm::BindingGroupRef{
+        .provider = "xim:d2x", .providerVersion = "0.1.3",
+        .group = "d2x", .rootTarget = "d2x", .rootVersion = "0.1.3",
+    };
+    const auto owner = xlings::xvm::recorded_owner(db, "slang", "0.1.3");
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(owner->canonical(), "xim:d2x@0.1.3");
+}
+
+TEST(RecordedOwner, NoRecordIsNoAnswerNotAGuess) {
+    xlings::xvm::VersionDB db;
+    // A self-managed tool: registered, but its path is not a store path.
+    db["tool"].versions["1.0"].path = "/opt/self-managed/tool";
+    EXPECT_FALSE(xlings::xvm::recorded_owner(db, "tool", "1.0").has_value())
+        << "the target's own name is the guess owner_candidates offers; "
+           "recorded_owner must not";
+    EXPECT_FALSE(xlings::xvm::recorded_owner(db, "absent", "1.0").has_value());
+    EXPECT_FALSE(xlings::xvm::recorded_owner(db, "tool", "9.9").has_value());
 }
