@@ -47,6 +47,27 @@ namespace xlings::xself {
 
 #endif
 
+// First `limit` names, comma-joined, with a count for the rest.
+//
+// A drift finding can carry dozens of names on a home that has not been
+// repaired in a while; the reader is going to run `--fix`, not shop the list,
+// and a long row pushes the action off the screen.
+std::string join_names_(const std::vector<std::string>& names,
+                        std::size_t limit) {
+    std::string out;
+    std::size_t shown = 0;
+    for (const auto& n : names) {
+        if (shown == limit) break;
+        if (!out.empty()) out += ", ";
+        out += n;
+        ++shown;
+    }
+    if (names.size() > shown) {
+        out += std::format(", +{} more", names.size() - shown);
+    }
+    return out;
+}
+
 std::string shim_filename_(const std::string& name) {
     std::string fn = name;
     if (!shim_ext_.empty() && !fn.ends_with(shim_ext_)) fn += shim_ext_;
@@ -798,84 +819,129 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     const std::string hostPath =
         std::getenv("PATH") ? std::getenv("PATH") : std::string{};
 
-    // Check 1: every workspace program has its shim.
-    for (const auto& [name, version] : st.ws) {
-        if (version.empty()) continue;
-        const auto* vi = xvm::get_vinfo(st.db, name);
-        if (!vi || xvm::effective_kind_of(st.db, name, version) != "program")
-            continue;
-
-        auto shimPath = p.binDir / shim_filename_(name);
-        if (fs::exists(shimPath) || fs::is_symlink(shimPath)) continue;
-        add({
-            .kind    = FindingKind::MissingShim,
-            .level   = FindingLevel::Error,
-            .target  = name,
-            .version = version,
-            .detail  = std::format("workspace[{}]={} but {} missing",
-                                   name, version,
-                                   Config::display_path(shimPath)),
-            .shimPath = shimPath,
-        });
-    }
-
-    // Does this name exist only to anchor releases? Check 3 asks the same
-    // question per (name, version) and answers it with a `release anchor`
-    // notice; Check 2 has no version to ask about -- nothing is active, that
-    // is the finding -- so it asks about every registered version instead.
+    // Checks 1 and 2 were here: "does every active program have a shim" and
+    // "does every shim have an active program". They were opposite halves of
+    // one question and they disagreed about what a file in a bin directory
+    // means -- one read it as state, the other filtered on a DB that a
+    // project-scope install never writes to, so the files that most needed
+    // reporting were the ones neither could see.
     //
-    // All of them, not any: a name with one real program version and one
-    // anchor version is a program whose shim genuinely has no active version.
-    const auto anchor_only_target_ = [&](const std::string& name,
-                                         const xvm::VInfo& vi) {
-        if (vi.versions.empty()) return false;
-        return std::ranges::all_of(
-            vi.versions, [&](const auto& entry) {
-                return xvm::is_binding_root(st.db, name, entry.first);
-            });
-    };
+    // Both are now one comparison against the table the workspace implies.
+    // See Check 1' below.
 
-    // Check 2: orphan shims (program shim file present, workspace doesn't know
-    // about it). Only names registered as type "program" count -- random files
-    // under binDir aren't ours.
-    if (fs::exists(p.binDir)) {
-        for (auto& entry : platform::dir_entries(p.binDir)) {
-            std::error_code ec;
-            if (!entry.is_regular_file(ec) && !entry.is_symlink(ec)) continue;
-            auto fname = entry.path().filename().string();
-            std::string base = fname;
+    // Check 1': does the routing table match what the workspace implies?
+    //
+    // One comparison, not two audits. The desired set is "every name dispatch
+    // would find something to exec for" -- active, kind program, and the
+    // payload actually holds the executable -- plus what the known projects
+    // contribute, because their own bin is never on PATH.
+    //
+    // The scan only claims files that ARE links to the entry binary, so a real
+    // binary someone dropped in the bin directory is reported separately and
+    // never removed.
+    {
+        auto projects = project_contributions();
+        auto diff = plan_shim_table(p.subosDir, st.ws, st.db, projects);
+        log::debug("[shim-table] scan {}: {} project(s), +{} -{} foreign {}",
+                   p.activeSubos, projects.size(), diff.toAdd.size(),
+                   diff.toRemove.size(), diff.foreign.size());
+
+        // Stale is not one thing, and flattening it loses a distinction the
+        // product already made.
+        //
+        //   orphan  the name IS registered here as a program and has no
+        //           active version. Something took the selection away and
+        //           left the file: broken state, and an error.
+        //   anchor  the name only ever anchors releases -- nobody execs it.
+        //           Installs before 2026.7.29.2 wrote these, so they are on
+        //           existing homes through no act of the user's (#452).
+        //   unknown the name is not in this scope's DB at all. That is the
+        //           project-mirror residue this design removes: 23 measured
+        //           on a real home, and equally not the user's doing.
+        //
+        // Only `orphan` reaches the exit code. The other two are cleaned by
+        // `--fix` and reported, but must not make every upgraded home say
+        // "broken" until someone runs it.
+        const auto anchor_only_target_ = [&](const std::string& name,
+                                             const xvm::VInfo& vi) {
+            if (vi.versions.empty()) return false;
+            return std::ranges::all_of(
+                vi.versions, [&](const auto& entry) {
+                    return xvm::is_binding_root(st.db, name, entry.first);
+                });
+        };
+
+        std::vector<std::string> staleOrphan, staleAnchor, staleUnknown;
+        for (const auto& fname : diff.toRemove) {
+            auto base = fname;
             if (!shim_ext_.empty() && base.ends_with(shim_ext_)) {
                 base = base.substr(0, base.size() - shim_ext_.size());
             }
-            // Only a shim file name is in hand here, so the question is
-            // widened to "any version of this name is a program".
             const auto* vi = xvm::get_vinfo(st.db, base);
-            if (!vi || !xvm::has_program_kind(st.db, base)) continue;
+            if (vi == nullptr || !xvm::has_program_kind(st.db, base)) {
+                staleUnknown.push_back(fname);
+            } else if (anchor_only_target_(base, *vi)) {
+                staleAnchor.push_back(fname);
+            } else {
+                staleOrphan.push_back(fname);
+            }
+        }
 
-            auto wit = st.ws.find(base);
-            if (wit != st.ws.end() && !wit->second.empty()) continue;
-
-            // A binding root is not a program anyone runs -- it names the
-            // release its members belong to. Installs before 2026.7.29.2
-            // wrote a shim for one whenever registration withheld activation
-            // from the release (installer.cppm, the ProgramShim effect), so
-            // this file is on existing homes through no act of the user's.
-            // `--fix` still removes it; it is no longer an error that it is
-            // there.
-            const bool anchor = anchor_only_target_(base, *vi);
+        if (!diff.empty()) {
+            std::string detail;
+            if (!diff.toAdd.empty()) {
+                detail += std::format(
+                    "{} missing ({})", diff.toAdd.size(),
+                    join_names_(diff.toAdd, 6));
+            }
+            if (!staleOrphan.empty()) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::format(
+                    "{} orphan shim ({}) — registered here, no active version",
+                    staleOrphan.size(), join_names_(staleOrphan, 6));
+            }
+            if (!staleAnchor.empty()) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::format(
+                    "{} anchor shim ({}) — anchors a release, nothing runs it",
+                    staleAnchor.size(), join_names_(staleAnchor, 6));
+            }
+            if (!staleUnknown.empty()) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::format(
+                    "{} stale ({}) — not registered in this subos",
+                    staleUnknown.size(), join_names_(staleUnknown, 6));
+            }
+            // Level by DIRECTION, not by "the table differs".
+            //
+            // A missing entry is a real breakage: a program is active and the
+            // user cannot run it. A stale entry is a file that resolves to
+            // nothing both before and after -- and on an existing home it is
+            // there through no act of the user's (an install before
+            // 2026.7.29.2 wrote one for every inactive binding root). Failing
+            // the exit code on that would make every upgraded home report
+            // broken until someone ran `--fix`, which is the judgement
+            // `self_doctor_anchor_shim_test.sh` already pinned for the
+            // finding this one replaced.
             add({
-                .kind   = FindingKind::OrphanShim,
-                .level  = anchor ? FindingLevel::Notice : FindingLevel::Error,
-                .target = base,
-                .detail = anchor
-                    ? std::format(
-                        "{} anchors a release and has no active version; "
-                        "nothing dispatches through it",
-                        Config::display_path(entry.path()))
-                    : std::format(
-                        "{} exists but workspace has no active version for {}",
-                        Config::display_path(entry.path()), base),
-                .shimPath = entry.path(),
+                .kind   = FindingKind::ShimTableDrift,
+                .level  = (diff.toAdd.empty() && staleOrphan.empty())
+                              ? FindingLevel::Notice
+                              : FindingLevel::Error,
+                .target = p.activeSubos,
+                .detail = std::move(detail),
+                .shimPath = p.binDir,
+            });
+        }
+
+        for (const auto& name : diff.foreign) {
+            add({
+                .kind   = FindingKind::ForeignBinEntry,
+                .level  = FindingLevel::Notice,
+                .target = name,
+                .detail = std::format(
+                    "{} is not an xlings shim — left alone",
+                    Config::display_path(p.binDir / name)),
             });
         }
     }
@@ -2149,16 +2215,49 @@ void repair_local_(const DoctorState& st, const Scan& scan,
     }
 
     for (const auto& f : scan.findings) {
-        if (f.kind == FindingKind::MissingShim) {
+        if (f.kind == FindingKind::ShimTableDrift) {
+            // Rebuild by applying the diff, not by wiping and recreating.
+            //
+            // A wipe (what proto's `regen` and pyenv-win's `Rehash` do) leaves
+            // a window where PATH resolves nothing, and on Windows one file
+            // held open fails the whole pass. A diff touches only what changed
+            // and is idempotent, so a partial failure converges next run.
+            //
+            // Removals are not asked about. A stale entry resolves to nothing
+            // in this subos both before and after -- there is no choice to
+            // offer -- but they ARE listed, because "nothing happened" and
+            // "it worked" must never print the same.
             if (!fs::exists(st.xlingsBin)) continue;
-            std::error_code ec;
-            fs::create_directories(p.binDir, ec);
-            if (create_shim(st.xlingsBin, f.shimPath) != LinkResult::Failed) {
-                note(glyph::mark(glyph::bullet, "shim recreated"), Config::display_path(f.shimPath));
-            } else {
-                note(glyph::mark(glyph::failed, "shim repair failed"), std::format(
-                    "could not recreate {}",
-                    Config::display_path(f.shimPath)));
+
+            // Under the home's state lock, and re-planned inside it.
+            //
+            // The table is DERIVED from the workspace, so a concurrent
+            // install writing the workspace between the scan and this repair
+            // would have us delete a shim it had just added. The scan's diff
+            // is a report; the repair needs its own, computed against state
+            // nobody else can be moving. Same shape as `repair_state_`.
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                note(glyph::mark(glyph::failed, "shim table"),
+                     std::format("cannot rebuild: {}", lock.error()));
+                continue;
+            }
+            Config::reload_state();
+            auto projects = project_contributions();
+            auto diff = plan_shim_table(p.subosDir, Config::workspace(),
+                                        Config::versions(), projects);
+            auto report = apply_shim_table(p.subosDir, diff);
+            if (!report.added.empty()) {
+                note(glyph::mark(glyph::bullet, "shims created"),
+                     join_names_(report.added, 8));
+            }
+            if (!report.removed.empty()) {
+                note(glyph::mark(glyph::bullet, "stale shims removed"),
+                     join_names_(report.removed, 8));
+            }
+            for (const auto& [name, why] : report.failed) {
+                note(glyph::mark(glyph::failed, "shim repair failed"),
+                     std::format("{}: {}", name, why));
             }
         } else if (f.kind == FindingKind::SysrootDangling) {
             // Another subos's link is reported, not removed. A second shell
@@ -2185,8 +2284,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                      std::format("could not remove {}",
                                  Config::display_path(f.shimPath)));
             }
-        } else if (f.kind == FindingKind::OrphanShim
-                || f.kind == FindingKind::LegacyAliasShim) {
+        } else if (f.kind == FindingKind::LegacyAliasShim) {
             std::error_code ec;
             fs::remove(f.shimPath, ec);
             if (!ec) {
@@ -2820,13 +2918,17 @@ Counts count_(const Scan& scan) {
     std::set<std::string> duplicateReleases;
     for (const auto& f : scan.findings) {
         switch (f.kind) {
-            case FindingKind::MissingShim:     ++c.missing; break;
-            case FindingKind::OrphanShim:
-                // An anchor shim is Notice-level: the file is useless but
-                // its presence is not the user's doing, and it must not set
-                // the exit code. --fix still removes it.
-                if (f.level != FindingLevel::Notice) ++c.orphans;
+            // One drifted table is one problem, however many names it
+            // covers -- the remedy is the same single command either way.
+            // Notice level (stale entries only) must not reach the exit code;
+            // see the level choice at the finding site.
+            case FindingKind::ShimTableDrift:
+                if (f.level != FindingLevel::Notice) ++c.missing;
                 break;
+            // Never counted: it sets no exit code and asks for nothing. A
+            // file that is not ours being left alone is the correct outcome,
+            // not a defect.
+            case FindingKind::ForeignBinEntry: break;
             case FindingKind::LegacyAliasShim: ++c.orphans; break;
             case FindingKind::BrokenPayload:   ++c.broken;  break;
             case FindingKind::ForeignPayload:  ++c.foreignPayloads; break;
@@ -3036,14 +3138,15 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     }
     for (const auto& f : scan.findings) {
         switch (f.kind) {
-            case FindingKind::MissingShim:
-                add(glyph::mark(glyph::failed, "missing shim"), f.detail); break;
-            case FindingKind::OrphanShim:
+            case FindingKind::ShimTableDrift:
                 if (f.level == FindingLevel::Notice) {
-                    if (verbose) add(glyph::mark(glyph::note, "anchor shim"), f.detail);
+                    if (verbose) add(glyph::mark(glyph::note, "shim table"), f.detail);
                 } else {
-                    add(glyph::mark(glyph::failed, "orphan shim"), f.detail);
+                    add(glyph::mark(glyph::failed, "shim table"), f.detail);
                 }
+                break;
+            case FindingKind::ForeignBinEntry:
+                if (verbose) add(glyph::mark(glyph::note, "not ours"), f.detail);
                 break;
             case FindingKind::LegacyAliasShim:
                 add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
@@ -3262,7 +3365,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // Thirty `release anchor` lines saying "nothing is wrong here" is how the
     // four lines that matter got lost.
     if (!verbose) {
-        int anchors = 0, anchorShims = 0, bindingNotices = 0, subosNotices = 0;
+        int anchors = 0, foreignEntries = 0, staleShims = 0;
+        int bindingNotices = 0, subosNotices = 0;
         int unverified = 0;
         // Per TARGET, like the warning line it replaced: one package's alias
         // is one fact however many versions of it are registered.
@@ -3270,8 +3374,9 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         for (const auto& f : scan.findings) {
             if (f.kind == FindingKind::UnverifiedPayload) ++unverified;
             else if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
-            else if (f.kind == FindingKind::OrphanShim
-                     && f.level == FindingLevel::Notice) ++anchorShims;
+            else if (f.kind == FindingKind::ForeignBinEntry) ++foreignEntries;
+            else if (f.kind == FindingKind::ShimTableDrift
+                     && f.level == FindingLevel::Notice) ++staleShims;
             else if (f.kind == FindingKind::BindingState
                      && f.level == FindingLevel::Notice) ++bindingNotices;
             else if (f.kind == FindingKind::OtherSubos
@@ -3291,7 +3396,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         };
         part(anchors, "release anchor");
         part(static_cast<int>(hostAliasTargets.size()), "host alias");
-        part(anchorShims, "anchor shim");
+        part(foreignEntries, "file not ours");
+        part(staleShims, "stale shim table");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         part(unverified, "unverified install");

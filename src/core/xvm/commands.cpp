@@ -1,7 +1,6 @@
 module xlings.core.xvm.commands;
 
 import std;
-import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.core.diag;
@@ -801,7 +800,20 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
 
     Config::save_workspace();
 
-    // Create/update shims for all switched targets
+    // The routing table follows the workspace that was just written.
+    //
+    // This used to be a loop that created one shim per switched target and
+    // then mirrored each into the global bin. Two things were wrong with it.
+    //
+    // The mirror wrote a PROJECT-scope decision into the GLOBAL bin, where
+    // nothing recorded why the file was there and nothing could take it back
+    // (measured: 23 such files on a real home, none reachable, none reported).
+    //
+    // And it named the file `vinfo->filename` when that was set, while the
+    // installer named the same file after the TARGET -- so one package could
+    // get two spellings depending on which path created it, and only one of
+    // them dispatches: `shim_dispatch` looks the name up in the workspace,
+    // which is keyed by target. `sync_shim_tables` has one spelling.
 #ifdef _WIN32
     auto xlings_bin = p.homeDir / "bin" / "xlings.exe";
     constexpr std::string_view shim_ext = ".exe";
@@ -813,20 +825,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         xlings_bin = p.homeDir / "xlings";
     }
 
-    if (fs::exists(xlings_bin)) {
-        fs::create_directories(p.binDir);
-        for (auto& [name, ver] : to_switch) {
-            auto vinfo = get_vinfo(db, name);
-            // effective_kind_of, not vinfo->type: the per-version kind is the
-            // authority and the target-level type is only its fallback.
-            if (!vinfo || effective_kind_of(db, name, ver) != "program") continue;
-            std::string shim_name = (!vinfo->filename.empty()) ? vinfo->filename : name;
-            if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
-                shim_name += shim_ext;
-            xself::create_shim(xlings_bin, p.binDir / shim_name);
-            common::mirror_shim_to_global_bin(xlings_bin, shim_name);
-        }
-    }
+    xself::sync_shim_tables();
 
     // Self-replace: when the user switches to a different version of xlings
     // (or its multicall aliases xim/xvm), physically replace the bootstrap

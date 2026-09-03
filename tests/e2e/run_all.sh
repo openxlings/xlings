@@ -169,6 +169,11 @@ TESTS=(
     "E2E-93 |windows_quick_install_resource_probe_test.sh||"
     "E2E-94 |declared_file_assets_removal_test.sh||"
     "E2E-95 |subos_runtime_declared_wins_test.sh||"
+    # The routing table: a project's names reach the bin directory that IS on
+    # PATH, are recorded so they can be taken back, and change nothing outside
+    # the project. Verified differential against 2026.9.2.1, where it fails at
+    # the first assertion.
+    "E2E-96 |shim_table_routing_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

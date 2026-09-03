@@ -186,13 +186,14 @@ void dispatch_data_event(const DataEvent& e) {
             pinnedBy);
     }
     else if (e.kind == "subos_candidates") {
-        std::vector<std::tuple<std::string, std::string, int, bool>> entries;
+        std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
         if (json.contains("candidates") && json["candidates"].is_array()) {
             for (auto& candidate : json["candidates"]) {
                 entries.emplace_back(
                     candidate.value("name", ""),
                     candidate.value("dir", ""),
-                    candidate.value("pkgCount", 0),
+                    candidate.value("commands", candidate.value("pkgCount", 0)),
+                    candidate.value("packages", -1),
                     candidate.value("active", false));
             }
         }
@@ -206,13 +207,14 @@ void dispatch_data_event(const DataEvent& e) {
         }
     }
     else if (e.kind == "subos_list") {
-        std::vector<std::tuple<std::string, std::string, int, bool>> entries;
+        std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
         if (json.contains("entries") && json["entries"].is_array()) {
             for (auto& e : json["entries"]) {
                 entries.emplace_back(
                     e.value("name", ""),
                     e.value("dir", ""),
-                    e.value("pkgCount", 0),
+                    e.value("commands", e.value("pkgCount", 0)),
+                    e.value("packages", -1),
                     e.value("active", false)
                 );
             }

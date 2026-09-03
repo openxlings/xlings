@@ -103,9 +103,12 @@ void print_styled_list(std::string_view title,
 // Saves cursor position before package lines so download progress can replace them.
 void print_install_plan(std::span<const std::pair<std::string, std::string>> packages);
 
-// Print subos list
+// Print subos list. The two counts answer different questions: `commands` is
+// how many names this subos routes, `packages` how many releases back them --
+// one llvm is one package and about forty commands. A negative package count
+// means "not computed" and is omitted.
 void print_subos_list(
-    std::span<const std::tuple<std::string, std::string, int, bool>> entries);
+    std::span<const std::tuple<std::string, std::string, int, int, bool>> entries);
 
 void print_subos_resolved(std::string_view query, std::string_view selected);
 

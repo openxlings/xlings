@@ -94,8 +94,21 @@ namespace fs = std::filesystem;
 // ── the finding model ────────────────────────────────────────────────
 
 enum class FindingKind {
-    MissingShim,
-    OrphanShim,
+    // One finding for the routing table, replacing MissingShim + OrphanShim.
+    //
+    // Those two asked opposite halves of one question -- "does every active
+    // program have a file" and "does every file have an active program" -- and
+    // disagreed about what a file in a bin directory means. A shim carries no
+    // version and no owner, so it can only mean routing; the table is
+    // therefore rebuilt from the workspace rather than audited against it, and
+    // there is one finding for "the table does not match what it should be".
+    //
+    // `detail` names what would be added and removed. Repair applies the diff.
+    ShimTableDrift,
+    // A file in a bin directory that is NOT one of our shims -- a real binary
+    // someone put there. Notice-only and never touched: reporting it is the
+    // whole action.
+    ForeignBinEntry,
     LegacyAliasShim,
     ShimAnchor,
     BrokenPayload,

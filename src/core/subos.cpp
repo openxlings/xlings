@@ -43,6 +43,8 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
+import xlings.core.xvm.types;
+import xlings.core.xvm.db;
 import xlings.core.xim.commands;
 import xlings.core.subos.keeper;
 import xlings.core.subos.gpu;
@@ -67,19 +69,63 @@ void write_config_json_(const fs::path& path, const nlohmann::json& json) {
     platform::write_string_to_file(path.string(), json.dump(2));
 }
 
-SubosInfo candidate_info_(const std::string& name, bool includeToolCount) {
-    auto& p = Config::paths();
-    auto dir = Config::subos_dir(name);
-    int toolCount = 0;
+// How many command names this subos routes, and how many packages back them.
+//
+// Two numbers because they answer two questions and one of them was silently
+// standing in for the other. The command count is the size of the routing
+// table; the package count is per RELEASE, from the workspace, which is the
+// only place that knows a release exists. One llvm is one package and about
+// forty commands.
+struct SubosCounts {
+    int commands { 0 };
+    int packages { -1 };
+};
+
+SubosCounts count_subos_(const fs::path& dir, bool withPackages) {
+    SubosCounts counts;
+
     auto binDir = dir / "bin";
-    if (includeToolCount && fs::exists(binDir)) {
+    if (fs::exists(binDir)) {
         for (auto& e : platform::dir_entries(binDir)) {
             auto stem = e.path().stem().string();
             if (!xself::is_builtin_shim(stem) && stem != "xvm-alias")
-                ++toolCount;
+                ++counts.commands;
         }
     }
-    return {name, dir, p.activeSubos == name, toolCount};
+    if (!withPackages) return counts;
+
+    // Per release, not per name. A release is identified by its binding group
+    // root; a target with no group is its own release.
+    auto json = read_config_json_(dir / ".xlings.json");
+    auto wsIt = json.find("workspace");
+    if (wsIt == json.end() || !wsIt->is_object()) {
+        counts.packages = 0;
+        return counts;
+    }
+    auto active = xvm::subos_workspace_from_json(*wsIt).active;
+    auto db = Config::versions();
+
+    std::set<std::string> releases;
+    for (const auto& [target, version] : active) {
+        if (version.empty()) continue;
+        const auto* vd = xvm::get_vdata(db, target, version);
+        if (vd != nullptr && vd->bindingGroup.has_value()
+            && !vd->bindingGroup->rootTarget.empty()) {
+            releases.insert(vd->bindingGroup->rootTarget + "@"
+                            + vd->bindingGroup->rootVersion);
+        } else {
+            releases.insert(target + "@" + version);
+        }
+    }
+    counts.packages = static_cast<int>(releases.size());
+    return counts;
+}
+
+SubosInfo candidate_info_(const std::string& name, bool includeToolCount) {
+    auto& p = Config::paths();
+    auto dir = Config::subos_dir(name);
+    auto counts = includeToolCount ? count_subos_(dir, true) : SubosCounts{};
+    return {name, dir, p.activeSubos == name, counts.commands, counts.packages};
 }
 
 SubosCandidateView candidate_view(bool includeToolCount) {
@@ -226,7 +272,8 @@ void emit_candidates_(EventStream& stream,
             {"name", candidate.name},
             {"active", candidate.isActive},
             {"dir", candidate.dir.string()},
-            {"pkgCount", candidate.toolCount},
+            {"commands", candidate.commandCount},
+            {"packages", candidate.packageCount},
         });
     }
     nlohmann::json payload;
@@ -1450,27 +1497,24 @@ std::optional<SubosInfo> info(const std::string& name) {
     auto dir = Config::subos_dir(name);
     if (!fs::exists(dir)) return std::nullopt;
 
-    int toolCount = 0;
-    auto binDir = dir / "bin";
-    if (fs::exists(binDir)) {
-        for (auto& e : platform::dir_entries(binDir)) {
-            auto stem = e.path().stem().string();
-            if (!xself::is_builtin_shim(stem) && stem != "xvm-alias")
-                ++toolCount;
-        }
-    }
-    return SubosInfo{name, dir, p.activeSubos == name, toolCount};
+    auto counts = count_subos_(dir, true);
+    return SubosInfo{name, dir, p.activeSubos == name,
+                     counts.commands, counts.packages};
 }
 
 int run_list_(EventStream& stream) {
     auto all = candidate_view().candidates;
-    std::vector<std::tuple<std::string, std::string, int, bool>> entries;
+    std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
     for (auto& s : all) {
-        entries.emplace_back(s.name, s.dir.string(), s.toolCount, s.isActive);
+        entries.emplace_back(s.name, s.dir.string(), s.commandCount,
+                             s.packageCount, s.isActive);
     }
     nlohmann::json entriesJson = nlohmann::json::array();
-    for (auto& [n, d, tc, active] : entries) {
-        entriesJson.push_back({{"name", n}, {"dir", d}, {"pkgCount", tc}, {"active", active}});
+    for (auto& [n, d, commands, packages, active] : entries) {
+        entriesJson.push_back({{"name", n}, {"dir", d},
+                               {"commands", commands},
+                               {"packages", packages},
+                               {"active", active}});
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);
@@ -1581,7 +1625,10 @@ int run_info_(const std::string& name, EventStream& stream) {
     nlohmann::json fieldsJson = nlohmann::json::array();
     fieldsJson.push_back({{"label", "active"}, {"value", si->isActive ? "yes" : "no"}, {"highlight", si->isActive}});
     fieldsJson.push_back({{"label", "dir"}, {"value", si->dir.string()}, {"highlight", false}});
-    fieldsJson.push_back({{"label", "tools"}, {"value", std::to_string(si->toolCount)}, {"highlight", false}});
+    fieldsJson.push_back({{"label", "commands"}, {"value", std::to_string(si->commandCount)}, {"highlight", false}});
+    if (si->packageCount >= 0) {
+        fieldsJson.push_back({{"label", "packages"}, {"value", std::to_string(si->packageCount)}, {"highlight", false}});
+    }
     nlohmann::json payload;
     payload["title"] = si->name;
     payload["fields"] = std::move(fieldsJson);

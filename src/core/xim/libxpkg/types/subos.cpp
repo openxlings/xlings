@@ -3,7 +3,6 @@ module xlings.core.xim.libxpkg.types.subos;
 import std;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
-import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.core.xvm.db;

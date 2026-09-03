@@ -80,6 +80,16 @@ struct NotInSubos {
     // The version to offer installing here. Empty picks the newest of
     // `versionsElsewhere`.
     std::string suggestedVersion;
+    // Projects whose own state declares this command, when the caller looked.
+    //
+    // A name can be in this subos's bin purely because a project asked for it
+    // -- a project's own bin is never on PATH, so its command names have to
+    // live in the directory that is. Without this the diagnostic told the user
+    // to `xlings install <name>` for a package they never asked for and which
+    // may not even be a valid package name (the measured case was `slang`,
+    // which comes from a release group). Naming the project turns that into
+    // "you are not in it".
+    std::vector<std::string> providedByProjects;
     // Where the request for this target came from, when a config layer set
     // it. Without this, a project pinning `"demo": "9.9.9"` produced "demo is
     // not installed in this subos" and the user was never told which file

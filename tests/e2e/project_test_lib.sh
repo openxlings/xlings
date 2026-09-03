@@ -122,9 +122,21 @@ restore_scenario() {
   fi
 }
 
+# An isolated home defaults to the GLOBAL mirror, and from inside China every
+# index sync then sits on an unreachable host until it times out — which does
+# not look like a network problem, it looks like the command under test
+# hanging. Measured on this suite: subos_events 817s, subos_profile_upgrade
+# 650s, cli_short_alias_removal 406s, all of it waiting on GLOBAL endpoints.
+#
+# So the default stays GLOBAL (CI runs on github.com and cannot reach the CN
+# endpoints, which need auth), and the knob is an env var:
+#
+#     XLINGS_TEST_MIRROR=CN bash tests/e2e/run_all.sh <tarball>
+#
+# Set it for every local run. A caller passing $2 explicitly still wins.
 write_home_config() {
   local home_dir="$1"
-  local mirror="${2:-GLOBAL}"
+  local mirror="${2:-${XLINGS_TEST_MIRROR:-GLOBAL}}"
   local index_dir="${3:-$FIXTURE_INDEX_DIR}"
   local index_name="${4:-xim}"
   mkdir -p "$home_dir"

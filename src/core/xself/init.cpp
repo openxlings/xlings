@@ -10,6 +10,10 @@ import xlings.core.xself.compat;
 import xlings.core.xself.profile_resources;
 import xlings.core.subos.manifest;
 import xlings.core.xim.commands;
+import xlings.core.xvm.types;
+import xlings.core.xvm.db;
+import xlings.core.xvm.shim;
+import xlings.core.xvm.shim_table;
 
 namespace xlings::xself {
 
@@ -34,11 +38,24 @@ bool is_bootstrap_home_root(const fs::path& root) {
 
 fs::path xlings_binary_in_home(const fs::path& home_dir) {
 #ifdef _WIN32
-    auto bin = home_dir / "bin" / "xlings.exe";
+    constexpr std::string_view name = "xlings.exe";
 #else
-    auto bin = home_dir / "bin" / "xlings";
+    constexpr std::string_view name = "xlings";
 #endif
+    auto bin = home_dir / "bin" / std::string(name);
     if (fs::exists(bin)) return bin;
+
+    // Bootstrap layout. Before `self init` runs, the binary sits directly at
+    // `<home>/xlings`; a package can be installed into such a home, and its
+    // shims have to point at something. All three of the shim-writing call
+    // sites this replaced carried this fallback inline
+    // (xvm/commands.cpp, xim/installer.cpp, libxpkg/types/script.cpp) --
+    // dropping it left an installed package with an active version and no
+    // file at all, which `self_doctor_anchor_shim_test.sh` caught on its very
+    // first assertion.
+    auto bootstrap = home_dir / std::string(name);
+    if (fs::exists(bootstrap)) return bootstrap;
+
     return {};
 }
 
@@ -454,6 +471,151 @@ int cmd_init() {
     if (!ensure_home_layout(p.homeDir)) return 1;
     log::info("init ok");
     return 0;
+}
+
+// ─── The routing table's single writer ──────────────────────────────
+
+namespace {
+
+std::vector<std::string> reserved_shim_names_() {
+    std::vector<std::string> names;
+    for (auto n : SHIM_NAMES_BASE) names.emplace_back(n);
+    for (auto n : SHIM_NAMES_OPTIONAL) names.emplace_back(n);
+    return names;
+}
+
+} // namespace
+
+std::vector<xvm::ProjectContribution> project_contributions() {
+    std::vector<xvm::ProjectContribution> out;
+
+    for (const auto& root : Config::known_projects()) {
+        xvm::ProjectContribution contribution{ .root = root };
+
+        auto statePath = root / ".xlings" / ".xlings.json";
+        std::error_code ec;
+        if (!fs::is_regular_file(statePath, ec)) {
+            contribution.readable = false;
+            out.push_back(std::move(contribution));
+            continue;
+        }
+
+        nlohmann::json state;
+        try {
+            auto content = platform::read_file_to_string(statePath.string());
+            state = nlohmann::json::parse(content, nullptr, false);
+        } catch (...) { state = nlohmann::json{}; }
+
+        if (state.is_discarded() || !state.is_object()) {
+            contribution.readable = false;
+            out.push_back(std::move(contribution));
+            continue;
+        }
+
+        xvm::VersionDB db;
+        if (auto it = state.find("versions");
+            it != state.end() && it->is_object()) {
+            db = xvm::versions_from_json(*it);
+        }
+        xvm::Workspace active;
+        if (auto it = state.find("workspace");
+            it != state.end() && it->is_object()) {
+            active = xvm::subos_workspace_from_json(*it).active;
+        }
+
+        // Same rule as a subos's own names, applied to the project's own
+        // state -- one predicate, two callers, so a project cannot contribute
+        // a name a subos would have rejected.
+        auto names = xvm::compute_desired(db, active, {});
+
+        // A project never contributes the entry binary's own names. They are
+        // this home's, placed by `ensure_subos_shims` and protected from
+        // removal by the plan; a project that happens to have `xlings`
+        // installed must not push that name into every subos's table --
+        // including a project subos, whose bin nothing dispatches through.
+        contribution.commands.reserve(names.size());
+        for (const auto& n : names) {
+            if (is_builtin_shim(fs::path(n).stem().string())) continue;
+            contribution.commands.push_back(n);
+        }
+        log::debug("[shim-table] project {}: db={} active={} -> {} command(s)",
+                   root.string(), db.size(), active.size(), names.size());
+
+        out.push_back(std::move(contribution));
+    }
+    return out;
+}
+
+xvm::TableDiff plan_shim_table(
+        const fs::path& subos_dir,
+        const xvm::Workspace& active,
+        const xvm::VersionDB& db,
+        const std::vector<xvm::ProjectContribution>& projects) {
+    auto home = Config::paths().homeDir;
+    auto entry = xlings_binary_in_home(home);
+
+    auto desired = xvm::compute_desired(db, active, projects);
+    auto actual = xvm::scan_actual(subos_dir / "bin", entry);
+    return xvm::plan_table(desired, actual, reserved_shim_names_());
+}
+
+xvm::TableReport apply_shim_table(const fs::path& subos_dir,
+                                  const xvm::TableDiff& diff) {
+    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    return xvm::apply_table(diff, subos_dir / "bin", entry);
+}
+
+void sync_shim_tables() {
+    auto entry = xlings_binary_in_home(Config::paths().homeDir);
+    std::error_code ec;
+    if (entry.empty() || !fs::exists(entry, ec)) {
+        // Pre-`self init` bootstrap: there is nothing to link to yet, and
+        // ensure_home_layout will build the table when it lands.
+        log::debug("[shim-table] no entry binary yet; skipping sync");
+        return;
+    }
+
+    // Register the project BEFORE gathering contributions, so the very first
+    // install into a project already reaches the global table. Done here
+    // rather than at the install call sites because this is the one function
+    // every workspace change goes through -- a registration hung off one of
+    // the three call sites would be missed by the other two, which is how the
+    // thing it replaces went wrong in the first place.
+    if (Config::has_project_config() && !Config::project_dir().empty()) {
+        Config::register_known_project(Config::project_dir());
+    }
+
+    auto projects = project_contributions();
+    auto db = Config::versions();
+
+    const auto sync_one = [&](const fs::path& subosDir,
+                              const xvm::Workspace& active,
+                              std::string_view label) {
+        if (subosDir.empty()) return;
+        auto diff = plan_shim_table(subosDir, active, db, projects);
+        if (diff.empty()) return;
+        auto report = apply_shim_table(subosDir, diff);
+        log::debug("[shim-table] {}: +{} -{} (failed {})", label,
+                   report.added.size(), report.removed.size(),
+                   report.failed.size());
+        for (const auto& [name, why] : report.failed) {
+            log::warn("could not update shim '{}' in {}: {}", name,
+                      Config::display_path(subosDir / "bin"), why);
+        }
+    };
+
+    // The scope that was just written.
+    sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope");
+
+    // In project scope, the global active subos too: the project's bin is
+    // never on PATH, so its command names must also exist in the directory
+    // that is. `project_contributions()` is what carries them there.
+    if (Config::has_project_config()) {
+        auto globalDir = Config::global_subos_dir();
+        if (globalDir != Config::xvm_artifact_subos_dir()) {
+            sync_one(globalDir, Config::global_workspace(), "global");
+        }
+    }
 }
 
 }

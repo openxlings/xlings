@@ -22,7 +22,6 @@ import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
 import xlings.core.closure_check;
 import xlings.libs.json;
-import xlings.core.common;
 import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -1996,20 +1995,14 @@ bool process_xvm_operations_(const PlanNode& node,
                     resolved->target, effect.version, resolved->target);
                 continue;
             }
-            if (std::filesystem::exists(xlings_bin)) {
-                std::string shimName = resolved->target;
-                if (!shim_ext.empty() && !shimName.ends_with(shim_ext)) {
-                    shimName += shim_ext;
-                }
-                std::filesystem::create_directories(artifactBinDir);
-                xself::create_shim(
-                    xlings_bin, artifactBinDir / shimName);
-                if (artifactBinDir
-                    != Config::global_subos_bin_dir()) {
-                    common::mirror_shim_to_global_bin(
-                        xlings_bin, shimName);
-                }
-            }
+            // The file itself is not written here any more.
+            //
+            // `xself::sync_shim_tables()` below derives the whole routing
+            // table from the workspace once the install has finished, which
+            // is what removed the second half of this block: a project-scope
+            // mirror into the global bin that nothing recorded and nothing
+            // could reclaim. Reaching this point still means "this name is
+            // active here", which is exactly what the table will conclude.
 
             if (resolved->active
                 && xvm::is_xlings_binary(resolved->target)
@@ -2130,6 +2123,12 @@ bool process_xvm_operations_(const PlanNode& node,
         || !metadata->registered.empty()) {
         Config::save_versions();
         Config::save_workspace();
+        // The routing table is derived from the workspace, so it is written
+        // in the same breath. In project scope this also carries the
+        // project's command names into the global subos's table -- the job
+        // `mirror_shim_to_global_bin` used to do, now with an owner
+        // (`knownProjects`) and a reclamation path.
+        xself::sync_shim_tables();
     }
     return true;
 }
@@ -3523,6 +3522,10 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
 
     Config::save_versions();
     Config::save_workspace();
+    // Same reason as the install path: a removal that took a name out of the
+    // workspace must take it out of the table too, or the file stays behind
+    // as exactly the kind of unreachable entry this design removes.
+    xself::sync_shim_tables();
 
     if (catalog_) {
         catalog_->mark_installed(*resolvedMatch, false);

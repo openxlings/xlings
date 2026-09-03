@@ -108,6 +108,25 @@ Use `project_test_lib.sh` helpers. Key functions:
 - `run_xlings "$HOME_DIR" "$ROOT_DIR" <args>` — isolated execution
 - `require_fixture_index` — ensures pkgindex fixture present
 
+**Running the suite locally: set `XLINGS_TEST_MIRROR=CN`.**
+
+```
+XLINGS_TEST_MIRROR=CN bash tests/e2e/run_all.sh build/release.tar.gz
+```
+
+An isolated home defaults to the GLOBAL mirror, because CI runs on github.com
+and cannot reach the CN endpoints. From inside China that default makes every
+index sync wait on an unreachable host until it times out — and that does not
+present as a network problem, it presents as the command under test hanging.
+Measured on one local run of this suite: `subos_events` 817s,
+`subos_profile_upgrade` 650s, `cli_short_alias_removal` 406s, essentially all
+of it spent waiting. The same three take seconds with the knob set.
+
+Corollary when a local e2e looks stuck: check the mirror before reading it as a
+regression. `xlings self init` on a fresh home measured 17s on one binary and
+2m13s on another purely from mirror reachability, which is easy to mistake for
+a performance change in the code under test.
+
 ### Diagnosing a shim that behaves strangely
 
 **First command: `$XLINGS_HOME/bin/xlings --version`.**
@@ -132,6 +151,23 @@ authority on what is actually running.
 
 Corollary for any verification that goes through a shim: **swapping the
 binary under test without swapping the dispatcher is not a control.**
+
+**Second thing to know: a shim file asserts ROUTING, not STATE.** Its
+presence means "this name is dispatched through xlings" and nothing more —
+it carries no version and no owner. Which version runs is the workspace's
+answer, resolved at exec time. So `bin/` holding a name whose workspace has
+no active version is not, by itself, a defect: a project's command names
+live in the global subos's `bin/` because a project's own bin is never on
+PATH, and outside that project the shim hands the name back to PATH and runs
+the host's copy.
+
+The directory is a derived table with one writer (`xself::sync_shim_tables`,
+called by install / use / remove) and is rebuilt from the workspace plus
+`knownProjects` rather than audited against it. `xlings self doctor` reports
+the difference as `shim table`; `--fix` applies it and names what it removed.
+Reading a shim's existence as an activation claim is what produced the class
+of bug that design removed — see
+`.agents/docs/2026-09-03-project-shim-routing-vs-state-design.md`.
 
 ### Upstream dependency
 
