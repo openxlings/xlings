@@ -842,6 +842,9 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     {
         auto projects = project_contributions();
         auto diff = plan_shim_table(p.subosDir, st.ws, st.db, projects);
+        log::debug("[shim-table] scan {}: {} project(s), +{} -{} foreign {}",
+                   p.activeSubos, projects.size(), diff.toAdd.size(),
+                   diff.toRemove.size(), diff.foreign.size());
 
         if (!diff.empty()) {
             std::string detail;
@@ -856,9 +859,21 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     "{} stale ({}) — no active version here",
                     diff.toRemove.size(), join_names_(diff.toRemove, 6));
             }
+            // Level by DIRECTION, not by "the table differs".
+            //
+            // A missing entry is a real breakage: a program is active and the
+            // user cannot run it. A stale entry is a file that resolves to
+            // nothing both before and after -- and on an existing home it is
+            // there through no act of the user's (an install before
+            // 2026.7.29.2 wrote one for every inactive binding root). Failing
+            // the exit code on that would make every upgraded home report
+            // broken until someone ran `--fix`, which is the judgement
+            // `self_doctor_anchor_shim_test.sh` already pinned for the
+            // finding this one replaced.
             add({
                 .kind   = FindingKind::ShimTableDrift,
-                .level  = FindingLevel::Error,
+                .level  = diff.toAdd.empty() ? FindingLevel::Notice
+                                             : FindingLevel::Error,
                 .target = p.activeSubos,
                 .detail = std::move(detail),
                 .shimPath = p.binDir,
@@ -2835,7 +2850,11 @@ Counts count_(const Scan& scan) {
         switch (f.kind) {
             // One drifted table is one problem, however many names it
             // covers -- the remedy is the same single command either way.
-            case FindingKind::ShimTableDrift:  ++c.missing; break;
+            // Notice level (stale entries only) must not reach the exit code;
+            // see the level choice at the finding site.
+            case FindingKind::ShimTableDrift:
+                if (f.level != FindingLevel::Notice) ++c.missing;
+                break;
             // Never counted: it sets no exit code and asks for nothing. A
             // file that is not ours being left alone is the correct outcome,
             // not a defect.
@@ -3050,7 +3069,12 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     for (const auto& f : scan.findings) {
         switch (f.kind) {
             case FindingKind::ShimTableDrift:
-                add(glyph::mark(glyph::failed, "shim table"), f.detail); break;
+                if (f.level == FindingLevel::Notice) {
+                    if (verbose) add(glyph::mark(glyph::note, "shim table"), f.detail);
+                } else {
+                    add(glyph::mark(glyph::failed, "shim table"), f.detail);
+                }
+                break;
             case FindingKind::ForeignBinEntry:
                 if (verbose) add(glyph::mark(glyph::note, "not ours"), f.detail);
                 break;
@@ -3271,7 +3295,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // Thirty `release anchor` lines saying "nothing is wrong here" is how the
     // four lines that matter got lost.
     if (!verbose) {
-        int anchors = 0, foreignEntries = 0, bindingNotices = 0, subosNotices = 0;
+        int anchors = 0, foreignEntries = 0, staleShims = 0;
+        int bindingNotices = 0, subosNotices = 0;
         int unverified = 0;
         // Per TARGET, like the warning line it replaced: one package's alias
         // is one fact however many versions of it are registered.
@@ -3280,6 +3305,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             if (f.kind == FindingKind::UnverifiedPayload) ++unverified;
             else if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
             else if (f.kind == FindingKind::ForeignBinEntry) ++foreignEntries;
+            else if (f.kind == FindingKind::ShimTableDrift
+                     && f.level == FindingLevel::Notice) ++staleShims;
             else if (f.kind == FindingKind::BindingState
                      && f.level == FindingLevel::Notice) ++bindingNotices;
             else if (f.kind == FindingKind::OtherSubos
@@ -3300,6 +3327,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         part(anchors, "release anchor");
         part(static_cast<int>(hostAliasTargets.size()), "host alias");
         part(foreignEntries, "file not ours");
+        part(staleShims, "stale shim table");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         part(unverified, "unverified install");

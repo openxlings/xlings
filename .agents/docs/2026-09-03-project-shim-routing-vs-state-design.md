@@ -1,8 +1,8 @@
 # 项目安装的 shim 泄漏进全局 —— 根因、约束推导与设计方案
 
-> 状态:**设计中,未实现**。基线 HEAD `7c35579`(发布版 2026.9.2.1)。
+> 状态:**已实现**(2026.9.3.1,分支 `fix/shim-routing-vs-state`)。基线 HEAD `7c35579`
+> (发布版 2026.9.2.1)。实施中被实测推翻/修正的判断见 §3(推翻 6-9),逐条标注而不是悄悄改掉。
 > 所有数字都在真实 home(`/home/speak/.xlings`)上**只读**实测,命令写在各节的「实测」里。
-> 过程中被实测推翻的自己的判断见 §3,逐条标注而不是悄悄改掉。
 
 **Goal:** 让「一个名字归 xlings 路由」和「某个 scope 激活了这个名字的某个版本」成为两件
 分开表达的事,从而消灭项目安装在全局 bin 里留下的、不可见也不可回收的悬空名字。
@@ -169,6 +169,30 @@ PATH 条目可以是相对路径,那样 PATH 静态不变而解析随 cwd 走。
 active version(今天敲它们只能得到错误),只有 `rustup` 在 `gfxbuild` 里 active。确认框的
 前提是「用户有真实的选择」,而删掉它们前后能做的事完全一样(都是报错)。改为**删,并打印
 清单,不问**(§6.4)。
+
+**推翻 6:「desired 集合要探针 payload,只放 dispatch 能服务的名字」——错,已撤回。**
+被 `test_xvm_bindings` 的 production-path 子进程抓到。载荷坏掉、或布局不在
+`resolve_executable` 的探测范围内的包会**静默离开表**,用户拿到的是 shell 的
+`command not found`——或者更糟,透传到宿主机的同名程序——而不是 dispatch 那条带路径和
+重装命令的 `executable 'X' not found`。载荷损坏是运行时事实,dispatch 报得很好,
+`self doctor` 也已经在查。#452 的虚拟根由 registration 的 `anyRealUncontested` 在
+**激活**这一层挡掉,轮不到表来问;而且实测那 23 个泄漏名字**全部**被 `active` 一条排除,
+探针从来就不是抓住它们的东西。
+
+**推翻 7:探针本身还错了两处**(同一个测试抓到)。它按 `VInfo::filename` 查可执行文件,
+而 dispatch 用的是 **target 名**(`shim.cpp:682`);它还要求 **alias 包**在载荷里有二进制,
+而 alias 包根本没有——dispatch 走 alias 命令,完全不经过 `resolve_executable`。
+
+**推翻 8:「reserved 名字(`xlings`)双向保护」——只该保护删,不该挡加。**
+两个方向的理由不同:`ensure_subos_shims` 会在一个从没装过该包的 home subos 里放
+`xlings`,workspace 里没有任何东西为它背书,所以不挡删就会把「所有 shim 都指向的那个
+文件」判成陈旧删掉;但 `xlings` 也是个真包,装进某个 subos 就该给它 shim。项目 subos
+两者都不给——它的 workspace 里没有 `xlings`,它的 bin 也不在 PATH 上。
+
+**推翻 9:`xlings_binary_in_home` 少了 bootstrap 回退。**
+`self init` 之前二进制直接在 `<home>/xlings`,被删掉的三个写者站点都带这个回退,我漏了 ——
+结果是「装了、active、一个文件都没有」。`self_doctor_anchor_shim_test.sh` 第一条断言就炸。
+补进 `xlings_binary_in_home` 而不是另造一个局部答案。
 
 ---
 
@@ -470,6 +494,10 @@ $ xlings self doctor --fix
 
 ### 6.6 其余四项
 
+0. **drift 按方向分级**(实施中补上):`toAdd` 非空 = **Error**(有程序 active 却跑不了,
+   真故障);只有 `toRemove` = **Notice**(陈旧条目删前删后都解析到空,而且在老 home 上
+   不是用户造成的)。这正是 `self_doctor_anchor_shim_test.sh` 早就钉住的判断——只是它
+   原来钉在 per-name 的 `anchor shim` 上,现在钉在 per-subos 的 `shim table` 上。
 1. **删 `mirror_shim_to_global_bin`**:`src/core/common.cpp` + `common.cppm` 整个文件消失。
    三个调用点(`xim/installer.cpp:2009`、`xvm/commands.cpp:827`、
    `xim/libxpkg/types/script.cpp:74`)改为走统一的表维护。另需清理

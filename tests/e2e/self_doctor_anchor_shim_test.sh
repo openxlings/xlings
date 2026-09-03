@@ -222,13 +222,20 @@ log "S3: pre-existing anchor shim → notice, not an error"
 ln -sf "$HOME_DIR/xlings" "$ROOT_SHIM"
 [[ -e "$ROOT_SHIM" ]] || fail "S3 setup: could not plant the shim"
 
-out=$(RUN self doctor 2>&1) || fail "S3: an anchor shim must not fail the run; got:\n$out"
+# 2026.9.3.1: the per-name `orphan shim` / `anchor shim` findings became one
+# per-subos `shim table` finding compared against the table the workspace
+# implies. The JUDGEMENT this scenario pins is unchanged and is the reason the
+# new finding is levelled by direction: a stale entry is a file that resolved
+# to nothing before and after, and on an existing home it is there through no
+# act of the user's, so it must not reach the exit code. Only a MISSING entry
+# -- a program that is active and unreachable -- is an error.
+out=$(RUN self doctor 2>&1) || fail "S3: a stale shim must not fail the run; got:\n$out"
 echo "$out" | grep -q "orphan shim" \
-  && fail "S3: an anchor shim was reported as an orphan error; got:\n$out"
+  && fail "S3: a stale shim was reported as an orphan error; got:\n$out"
 
 out=$(RUN self doctor --all 2>&1) || fail "S3: doctor --all should exit 0; got:\n$out"
-echo "$out" | grep -q "anchor shim" \
-  || fail "S3: --all should name the anchor shim; got:\n$out"
+echo "$out" | grep -q "shim table" \
+  || fail "S3: --all should name the stale table entry; got:\n$out"
 
 # A real orphan — a program nothing anchors — must still be an error.
 # anchor-flavor's shim is already there; dropping its workspace entry is
@@ -243,10 +250,14 @@ ws.pop("anchor-flavor", None)
 data["workspace"] = ws
 p.write_text(json.dumps(data))
 PY
-out=$(RUN self doctor 2>&1) || rc=$?; rc=${rc:-0}
-[[ $rc -ne 0 ]] || fail "S3: a genuine orphan shim must still exit non-zero"
-echo "$out" | grep -q "orphan shim" \
-  || fail "S3: a genuine orphan shim must still be reported; got:\n$out"
+# A shim for a name this subos has no active version of is now the same
+# finding as any other stale entry, and carries the same judgement: `--fix`
+# removes it, and it does not fail the run on its own. What DOES fail the run
+# is the other direction -- an active program with no file -- which S1/S2
+# already cover. So this half now asserts the report, not the exit code.
+out=$(RUN self doctor --all 2>&1) || true
+echo "$out" | grep -q "shim table" \
+  || fail "S3: a stale shim must still be reported; got:\n$out"
 
 # ── S4: --fix removes the anchor shim ──────────────────────────────
 log "S4: doctor --fix removes both"
@@ -263,7 +274,7 @@ RUN install anchor-flavor@1.0.0 -y >/dev/null 2>&1 \
 [[ ! -e "$ROOT_SHIM" ]] \
   || fail "S5: the re-install recreated the anchor shim — the loop is still open"
 out=$(RUN self doctor 2>&1) || fail "S5: doctor should be clean after re-install; got:\n$out"
-echo "$out" | grep -q "orphan shim" \
-  && fail "S5: doctor reported an orphan after re-install; got:\n$out"
+echo "$out" | grep -qE "orphan shim|shim table" \
+  && fail "S5: doctor reported table drift after re-install; got:\n$out"
 
 log "PASS: an inactive binding root gets no shim, and the repair converges"

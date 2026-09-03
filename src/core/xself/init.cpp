@@ -38,11 +38,24 @@ bool is_bootstrap_home_root(const fs::path& root) {
 
 fs::path xlings_binary_in_home(const fs::path& home_dir) {
 #ifdef _WIN32
-    auto bin = home_dir / "bin" / "xlings.exe";
+    constexpr std::string_view name = "xlings.exe";
 #else
-    auto bin = home_dir / "bin" / "xlings";
+    constexpr std::string_view name = "xlings";
 #endif
+    auto bin = home_dir / "bin" / std::string(name);
     if (fs::exists(bin)) return bin;
+
+    // Bootstrap layout. Before `self init` runs, the binary sits directly at
+    // `<home>/xlings`; a package can be installed into such a home, and its
+    // shims have to point at something. All three of the shim-writing call
+    // sites this replaced carried this fallback inline
+    // (xvm/commands.cpp, xim/installer.cpp, libxpkg/types/script.cpp) --
+    // dropping it left an installed package with an active version and no
+    // file at all, which `self_doctor_anchor_shim_test.sh` caught on its very
+    // first assertion.
+    auto bootstrap = home_dir / std::string(name);
+    if (fs::exists(bootstrap)) return bootstrap;
+
     return {};
 }
 
@@ -517,6 +530,8 @@ std::vector<xvm::ProjectContribution> project_contributions() {
 
         contribution.commands.reserve(names.size());
         for (const auto& n : names) contribution.commands.push_back(n);
+        log::debug("[shim-table] project {}: db={} active={} -> {} command(s)",
+                   root.string(), db.size(), active.size(), names.size());
 
         out.push_back(std::move(contribution));
     }
