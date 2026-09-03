@@ -1769,6 +1769,30 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             const auto scanned = audit.payloadCache
                 ? audit.payloadCache->scan(root.path)
                 : elfcheck::scan_payload(root.path);
+            // The remedy, spelled so it can actually be run.
+            //
+            // It could not be, in two independent ways. `root.target` is the
+            // STORE DIRECTORY name for a whole-store scan (`xim-x-bun`), and
+            // `xlings install xim-x-bun@1.3.11` fails with "not found in the
+            // synced index" -- no package is called that. And `--force` is not
+            // an option `install` has at all (`remove` has one, meaning
+            // something else); the parser rejects it with "unknown option".
+            //
+            // Both answers were already in the repo. `coordinate_from_payload_path`
+            // exists precisely to turn a store path back into the coordinate
+            // that installs it, and `install` on an already-installed package
+            // prints "already installed" and does nothing -- so a reinstall is
+            // remove-then-install, not a flag.
+            //
+            // When the path does not parse as a store coordinate the remedy
+            // stays EMPTY. See Finding::remedy: a command that cannot succeed
+            // is worse than none, because users run them.
+            std::string remedy;
+            if (auto coord = xvm::coordinate_from_payload_path(
+                    root.path.string())) {
+                remedy = std::format("xlings remove {} -y && xlings install {} -y",
+                                     coord->canonical(), coord->canonical());
+            }
             for (const auto& f : scanned) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
@@ -1776,9 +1800,7 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     .target = root.target,
                     .version = root.version,
                     .detail = elfcheck::describe(f),
-                    .remedy = std::format(
-                        "xlings install {}@{} --force",
-                        root.target, root.version),
+                    .remedy = remedy,
                 });
             }
         }

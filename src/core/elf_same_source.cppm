@@ -140,29 +140,63 @@ inline CoreFamily core_family_of_path_(const fs::path& path) {
     return core_family_of_(path.filename().string());
 }
 
+// A core runtime file, and which family it belongs to.
+//
+// The family comes from the DIRECTORY ENTRY's name, not the resolved target's.
+// On musl the loader and the libc are ONE FILE: a real payload ships
+// `ld-musl-x86_64.so.1` as a symlink to `libc.so`. Resolve it and the name that
+// declared the family is gone -- `libc.so` matches neither the glibc nor the
+// musl pattern, so it classifies as Unknown, and the family guard's deliberate
+// "an unknown family still compares" rule then fires on exactly the case the
+// guard exists to exclude.
+//
+// Measured on a real home: every glibc binary whose RUNPATH reached a subos lib
+// farm containing musl was reported as a loader/libc split, and the
+// install-time guard REFUSED the install.
+//
+// The resolved path is still what identifies the payload and what the error
+// message must name; only the family question is answered by the entry.
+struct CoreSource {
+    fs::path   source;   // resolved -- the payload identity, and what we print
+    CoreFamily family;   // from the entry name, which is what declares it
+};
+
 // Every core runtime file in a directory, resolved through symlinks.
 // Inspecting all of them is essential: a SubOS libdir can itself be split,
 // with its loader link pointing into payload A and libc.so.6 into payload B.
 // directory_iterator order is unspecified, so choosing one entry makes the
 // verdict depend on filesystem history.
-inline std::vector<fs::path> core_runtime_sources_(const fs::path& dir) {
-    std::vector<fs::path> out;
+inline std::vector<CoreSource> core_runtime_sources_(const fs::path& dir) {
+    std::vector<CoreSource> out;
     std::error_code ec;
     if (!fs::is_directory(dir, ec) || ec) return out;
     for (auto it = fs::directory_iterator(
              dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        if (!is_core_runtime_filename_(it->path().filename().string())) {
-            continue;
-        }
+        const auto entryName = it->path().filename().string();
+        if (!is_core_runtime_filename_(entryName)) continue;
+
         std::error_code rec;
         auto resolved = fs::weakly_canonical(it->path(), rec);
-        out.push_back(rec ? it->path().lexically_normal() : std::move(resolved));
+        auto source = rec ? it->path().lexically_normal() : std::move(resolved);
+
+        // Entry name first. Fall back to the resolved name only when the entry
+        // itself says nothing -- which `is_core_runtime_filename_` makes
+        // impossible today, but the fallback keeps the two functions from
+        // having to agree by accident.
+        auto family = core_family_of_(entryName);
+        if (family == CoreFamily::Unknown) {
+            family = core_family_of_path_(source);
+        }
+        out.push_back({ std::move(source), family });
     }
-    std::ranges::sort(out, {}, [](const fs::path& path) {
-        return path.string();
+    std::ranges::sort(out, {}, [](const CoreSource& e) {
+        return e.source.string();
     });
-    out.erase(std::ranges::unique(out).begin(), out.end());
+    out.erase(std::ranges::unique(out, {}, [](const CoreSource& e) {
+                  return e.source.string();
+              }).begin(),
+              out.end());
     return out;
 }
 
@@ -245,15 +279,21 @@ inline Finding check(std::string_view binary,
             // without building real runtimes. The directory is the identity
             // only in that path; production probes always produce sources.
             const auto payload = payload_of(dir.string());
-            if (!payload.empty()) sources.push_back(dir);
+            // Unknown family on purpose: this is the injected-probe path, and
+            // a synthetic directory declares nothing. Unknown keeps the
+            // fail-loud comparison the guard was written with.
+            if (!payload.empty()) {
+                sources.push_back({ dir, CoreFamily::Unknown });
+            }
         }
 
         const auto interpFamily = core_family_of_path_(fs::path(interp));
-        for (const auto& source : sources) {
+        for (const auto& entry : sources) {
+            const auto& source = entry.source;
             // Only compare within one runtime family. An unknown family on
             // either side still compares, so a payload this does not recognise
             // is never silently excused.
-            const auto sourceFamily = core_family_of_path_(source);
+            const auto sourceFamily = entry.family;
             if (interpFamily != CoreFamily::Unknown
                 && sourceFamily != CoreFamily::Unknown
                 && interpFamily != sourceFamily) {

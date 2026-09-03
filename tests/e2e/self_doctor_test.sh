@@ -491,4 +491,38 @@ lines=$(printf '%s\n' "$out" | wc -l)
 printf '%s\n' "$out" | grep -q "broken payloads" \
   || fail "S12: the summary line must survive a long report; got $lines lines:\n$out"
 
-log "PASS: self doctor scenarios 1-12 (alias repair reported honestly, long report not clamped)"
+# ── S13: every printed remedy has to be runnable ───────────────────
+#
+# Two ways one was not, both found by a user reading real output:
+#
+#   `xlings install xim-x-bun@1.3.11 --force`
+#
+# `xim-x-bun` is the STORE DIRECTORY name, not a package -- install answers
+# "not found in the synced index". And `--force` is not an option install has
+# at all (remove has one, meaning something else) -- the parser rejects it with
+# "unknown option". A remedy is copied and run; one that cannot succeed is worse than
+# none, which is why Finding::remedy is allowed to be empty.
+#
+# Asserted over whatever this home produces rather than by staging a specific
+# finding: the defect is a CLASS, and staging one instance would only pin the
+# instance. `--deep` so the payload-audit remedies are in the output too.
+log "S13: printed remedies are runnable commands"
+out=$(RUN self doctor --deep --all 2>&1 || true)
+
+# This home may produce no remedies at all, and then the two greps below pass
+# without having looked at anything. "Never exercised" and "passed" must not
+# read the same, so say which one happened.
+remedies=$(printf '%s\n' "$out" | grep -cE "→ run" || true)
+if [[ "$remedies" -eq 0 ]]; then
+  log "  S13: NOT EXERCISED — this home printed no remedies (guard still armed)"
+else
+  log "  S13: inspecting $remedies printed remed(y|ies)"
+fi
+
+printf '%s\n' "$out" | grep -qE "xlings install [^ ]+ --force"   && fail "S13: a remedy passed --force, which \`install\` does not accept; got:\n$out"
+
+# A store directory name is `<ns>-x-<package>`; a coordinate is `[ns:]pkg@ver`.
+# Anything matching the former in an install/remove command never resolves.
+printf '%s\n' "$out" | grep -qE "xlings (install|remove) [A-Za-z0-9_.]+-x-[A-Za-z0-9_.-]+@"   && fail "S13: a remedy named a store directory instead of a package coordinate; got:\n$out"
+
+log "PASS: self doctor scenarios 1-13 (alias repair reported honestly, long report not clamped, remedies runnable)"

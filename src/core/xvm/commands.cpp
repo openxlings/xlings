@@ -518,7 +518,10 @@ bool runtime_activation_refused_(const VersionDB& db,
         log::error("[xlings:use] runtime activation refused: {} has no "
                    "payload", mismatch->declared);
         log::error("  nothing was changed");
-        log::error("  hint: reinstall it with `xlings install {} --force`",
+        // `install` has no `--force`; the parser rejects it. A registered
+        // version whose payload is gone is exactly the state the installer
+        // re-runs the install hook for, so the plain install IS the reinstall.
+        log::error("  hint: put the payload back with `xlings install {}`",
                    mismatch->declared);
         return true;
     }

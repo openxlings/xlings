@@ -439,6 +439,40 @@ TEST(SameSource, AMuslLoaderIsNotAGlibcBinarysLibc) {
     EXPECT_FALSE(f.violated) << ec::describe(f);
 }
 
+// The shape a real musl payload actually has, which the two tests above do not
+// model: `ld-musl-x86_64.so.1` is a SYMLINK to `libc.so` -- on musl the loader
+// and the libc are one file. Resolving the entry therefore yields a name that
+// carries no family marker at all, and classifying the RESOLVED name reads it
+// as Unknown, which the family guard treats as "compare anyway".
+//
+// Measured on a real home: every glibc binary whose RUNPATH included a subos
+// lib farm containing musl was reported as a loader/libc split, and the
+// install-time guard REFUSED the install -- `xlings install xim:bun@1.3.11`
+// failed on node@24.20.0 with "core file -> .../xim-x-musl/1.2.5/lib/libc.so".
+//
+// `touch`ing a plain file instead of the symlink is what hid this: the fixture
+// was not shaped like the thing it stands for.
+TEST(SameSource, AMuslLoaderSymlinkedToLibcIsStillMusl) {
+    namespace fs = std::filesystem;
+    TempTree tree;
+    const auto glibcLib = tree.payload("2.44") / "lib64";
+    const auto muslLib = tree.root / "data" / "xpkgs" / "xim-x-musl" / "1.2.5" / "lib";
+    TempTree::touch(glibcLib / "ld-linux-x86-64.so.2");
+    TempTree::touch(glibcLib / "libc.so.6");
+
+    // The real layout: the loader IS libc.so, reached through a named link.
+    TempTree::touch(muslLib / "libc.so");
+    std::error_code ec2;
+    fs::create_symlink("libc.so", muslLib / "ld-musl-x86_64.so.1", ec2);
+    ASSERT_FALSE(ec2) << ec2.message();
+
+    std::vector<std::string> rpath{muslLib.string(), glibcLib.string()};
+    const auto f = ec::check((tree.root / "bin" / "node").string(),
+                             (glibcLib / "ld-linux-x86-64.so.2").string(),
+                             rpath);
+    EXPECT_FALSE(f.violated) << ec::describe(f);
+}
+
 // ...and the same across the other direction, so this is a family rule rather
 // than a musl exemption.
 TEST(SameSource, AGlibcLoaderIsNotAMuslBinarysLibc) {
