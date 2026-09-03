@@ -122,11 +122,14 @@ if [[ -e "$GLOBAL_BIN/sc-probe" ]]; then
 fi
 
 # ── S3: without -g the project subos is the target, symmetrically ────
-# The authoritative half is the project subos. A copy also appears in the
-# home's bin ON PURPOSE -- `common::mirror_shim_to_global_bin`: a project
-# subos's bin is not on PATH and the home's is, so the mirror is what makes
-# the tool reachable at all. Asserting its absence would be asserting against
-# a designed behaviour, so what is asserted is the authoritative location.
+# The authoritative half is the project subos. An entry also appears in the
+# home's bin ON PURPOSE: a project subos's bin is never on PATH and the home's
+# is, so that entry is what makes the tool reachable at all. Since 2026.9.3.1
+# it is a derived ROUTING entry rather than a copy nobody recorded -- the home
+# config's `knownProjects` names the project, and a rebuild takes the entry
+# back when the project stops declaring the command. Asserting its absence
+# would be asserting against a designed behaviour, so what is asserted is the
+# authoritative location.
 log "S3: without -g both halves act on the project subos"
 RUN_PROJ install sc-probe -y >/dev/null 2>&1 || fail "S3: project install failed"
 [[ -x "$PROJ_BIN/sc-probe" ]] \
