@@ -192,7 +192,7 @@ void dispatch_data_event(const DataEvent& e) {
                 entries.emplace_back(
                     candidate.value("name", ""),
                     candidate.value("dir", ""),
-                    candidate.value("pkgCount", 0),
+                    candidate.value("commands", candidate.value("pkgCount", 0)),
                     candidate.value("active", false));
             }
         }
@@ -212,7 +212,7 @@ void dispatch_data_event(const DataEvent& e) {
                 entries.emplace_back(
                     e.value("name", ""),
                     e.value("dir", ""),
-                    e.value("pkgCount", 0),
+                    e.value("commands", e.value("pkgCount", 0)),
                     e.value("active", false)
                 );
             }

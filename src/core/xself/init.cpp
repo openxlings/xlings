@@ -464,17 +464,6 @@ int cmd_init() {
 
 namespace {
 
-// The one payload probe both the desired-set rule and shim dispatch use.
-// `resolve_executable` is what dispatch calls at `shim.cpp:646`, so a name in
-// the table and a name that runs cannot mean different things.
-bool payload_has_executable_(const std::string& exec_name,
-                             const std::string& payload_path,
-                             const std::string& xlings_home) {
-    if (payload_path.empty()) return false;
-    return !xvm::resolve_executable(exec_name, payload_path, xlings_home)
-                .empty();
-}
-
 std::vector<std::string> reserved_shim_names_() {
     std::vector<std::string> names;
     for (auto n : SHIM_NAMES_BASE) names.emplace_back(n);
@@ -486,7 +475,6 @@ std::vector<std::string> reserved_shim_names_() {
 
 std::vector<xvm::ProjectContribution> project_contributions() {
     std::vector<xvm::ProjectContribution> out;
-    auto home = Config::paths().homeDir.string();
 
     for (const auto& root : Config::known_projects()) {
         xvm::ProjectContribution contribution{ .root = root };
@@ -525,11 +513,7 @@ std::vector<xvm::ProjectContribution> project_contributions() {
         // Same rule as a subos's own names, applied to the project's own
         // state -- one predicate, two callers, so a project cannot contribute
         // a name a subos would have rejected.
-        auto names = xvm::compute_desired(
-            db, active, {}, {},
-            [&](const std::string& execName, const std::string& payloadPath) {
-                return payload_has_executable_(execName, payloadPath, home);
-            });
+        auto names = xvm::compute_desired(db, active, {});
 
         contribution.commands.reserve(names.size());
         for (const auto& n : names) contribution.commands.push_back(n);
@@ -546,16 +530,10 @@ xvm::TableDiff plan_shim_table(
         const std::vector<xvm::ProjectContribution>& projects) {
     auto home = Config::paths().homeDir;
     auto entry = xlings_binary_in_home(home);
-    auto homeStr = home.string();
 
-    auto desired = xvm::compute_desired(
-        db, active, projects, reserved_shim_names_(),
-        [&](const std::string& execName, const std::string& payloadPath) {
-            return payload_has_executable_(execName, payloadPath, homeStr);
-        });
-
+    auto desired = xvm::compute_desired(db, active, projects);
     auto actual = xvm::scan_actual(subos_dir / "bin", entry);
-    return xvm::plan_table(desired, actual);
+    return xvm::plan_table(desired, actual, reserved_shim_names_());
 }
 
 xvm::TableReport apply_shim_table(const fs::path& subos_dir,

@@ -60,36 +60,15 @@ std::string shim_filename(std::string_view name) {
 std::set<std::string> compute_desired(
     const VersionDB& db,
     const Workspace& active,
-    const std::vector<ProjectContribution>& projects,
-    const std::vector<std::string>& reserved,
-    const std::function<bool(const std::string&, const std::string&)>&
-        payloadHasExecutable)
+    const std::vector<ProjectContribution>& projects)
 {
     std::set<std::string> desired;
-
-    for (const auto& name : reserved) desired.insert(shim_filename(name));
 
     for (const auto& [target, version] : active) {
         if (version.empty()) continue;
         if (effective_kind_of(db, target, version) != "program") continue;
 
-        const auto* vd = get_vdata(db, target, version);
-        if (vd == nullptr || vd->path.empty()) continue;
-
-        // What file would dispatch actually exec? `VInfo::filename` overrides
-        // the target name when a package registers a command under a
-        // different name than its xvm target.
-        const auto* vi = get_vinfo(db, target);
-        std::string execName = (vi != nullptr && !vi->filename.empty())
-            ? vi->filename : target;
-
-        // The payload check. This is what separates a real program from a
-        // virtual root registered only so a release has something to bind to:
-        // kind, path and is_binding_root all read the same for both (#452),
-        // and asking the payload is the same question dispatch asks at run
-        // time, so the table and the runtime cannot drift apart.
-        if (!payloadHasExecutable(execName, vd->path)) continue;
-
+        if (get_vdata(db, target, version) == nullptr) continue;
         desired.insert(shim_filename(target));
     }
 
@@ -125,12 +104,24 @@ ActualScan scan_actual(const std::filesystem::path& binDir,
 }
 
 TableDiff plan_table(const std::set<std::string>& desired,
-                     const ActualScan& actual) {
+                     const ActualScan& actual,
+                     const std::vector<std::string>& reserved) {
+    std::set<std::string> protectedNames;
+    for (const auto& name : reserved) {
+        protectedNames.insert(shim_filename(name));
+    }
+
     TableDiff diff;
+    // Protection is one-directional: never REMOVE a reserved name, but do add
+    // it when the workspace actually has it active. `xlings` is a real package
+    // -- installing it into a subos should give that subos its shim -- while
+    // the file `ensure_subos_shims` places in a subos that never installed it
+    // must survive a rebuild that has no workspace entry to justify it.
     for (const auto& want : desired) {
         if (!actual.ours.contains(want)) diff.toAdd.push_back(want);
     }
     for (const auto& have : actual.ours) {
+        if (protectedNames.contains(have)) continue;
         if (!desired.contains(have)) diff.toRemove.push_back(have);
     }
     // A foreign file whose name we also want is NOT ours to replace: the user

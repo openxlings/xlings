@@ -29,8 +29,27 @@ namespace v0_4_8 {
 bool is_legacy_alias_symlink_to_bootstrap(const fs::path& path,
                                           const fs::path& canonical_bootstrap)
 {
+    // NOT `fs::is_symlink` first.
+    //
+    // `create_shim` only makes a symlink on POSIX; on Windows a shim is a
+    // hard link (or a copy), so a symlink test is false there for every shim
+    // xlings has ever written -- which means this predicate answered "no" to
+    // everything on Windows, and all four callers of
+    // `cleanup_legacy_alias_shims` (`self init`, `install xlings --use`,
+    // `use xlings <ver>`, `doctor --fix`) have been quietly doing nothing
+    // there since 0.4.8. The pre-0.4.8 `xim.exe` / `xvm.exe` aliases are
+    // still sitting in Windows homes, and `report_deprecated_alias_if_match`
+    // makes them exit 2.
+    //
+    // `equivalent` answers on both platforms at once: it follows symlinks and
+    // compares file identity for hard links.
     std::error_code ec;
-    if (!fs::is_symlink(path, ec)) return false;
+    if (fs::equivalent(path, canonical_bootstrap, ec) && !ec) return true;
+
+    // A symlink whose target is gone still names the bootstrap -- `equivalent`
+    // cannot answer for a broken link, so resolve it by hand.
+    ec.clear();
+    if (!fs::is_symlink(path, ec) || ec) return false;
     ec.clear();
     auto target = fs::weakly_canonical(path, ec);
     if (ec) return false;

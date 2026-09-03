@@ -385,6 +385,117 @@ void report_vanishing_reference_(const std::string& program_name,
                std::string(Info::VERSION));
 }
 
+// ─── Host passthrough ───────────────────────────────────────────────
+//
+// A shim exists in a bin directory because some scope needs the NAME on PATH.
+// When the scope actually being resolved makes no claim on that name, the file
+// must not change anything: it hands the name back to PATH.
+//
+// Every comparable tool does this and every one of them excludes its own
+// directories while doing it -- proto skips its shims/bin dirs and any
+// directory holding a `registry.json`, aqua skips anything resolving to
+// `aqua-proxy`, pyenv strips its shims dir from PATH first. rustup does not,
+// and pays for it by re-exec'ing itself about twenty times before a counter
+// stops it.
+
+// Would this candidate just send us back into xlings?
+bool is_own_shim_(const std::filesystem::path& candidate,
+                  const std::filesystem::path& entryBinary,
+                  const std::filesystem::path& home) {
+    std::error_code ec;
+    if (std::filesystem::equivalent(candidate, entryBinary, ec) && !ec) {
+        return true;
+    }
+    // Path containment as well as file identity. A shim in ANOTHER home is a
+    // different file, so `equivalent` says no -- but exec'ing it would land
+    // us in that home's dispatch, one hop from the same question. The depth
+    // guard would eventually stop it; not starting is better.
+    ec.clear();
+    auto canonCandidate = std::filesystem::weakly_canonical(candidate, ec);
+    if (ec) return false;
+    std::error_code hec;
+    auto canonHome = std::filesystem::weakly_canonical(home, hec);
+    if (hec || canonHome.empty()) return false;
+    auto c = canonCandidate.string();
+    auto h = canonHome.string();
+    return c.starts_with(h + "/") || c.starts_with(h + "\\");
+}
+
+// The first executable on PATH with this name that is not one of ours.
+std::filesystem::path find_host_passthrough_(const std::string& program_name,
+                                             const std::string& xlings_home) {
+    const char* rawPath = std::getenv("PATH");
+    if (rawPath == nullptr || *rawPath == '\0') return {};
+
+    std::filesystem::path home(xlings_home);
+    auto entry = home / "bin" / (platform::OS_NAME == "windows"
+                                     ? "xlings.exe" : "xlings");
+
+#if defined(_WIN32)
+    constexpr std::string_view exts[] = {"", ".exe", ".bat", ".cmd"};
+#else
+    constexpr std::string_view exts[] = {""};
+#endif
+
+    std::string_view search(rawPath);
+    std::size_t start = 0;
+    while (start <= search.size()) {
+        auto end = search.find(platform::PATH_SEPARATOR, start);
+        auto part = search.substr(
+            start, end == std::string_view::npos ? std::string_view::npos
+                                                 : end - start);
+        if (!part.empty()) {
+            std::filesystem::path dir{std::string(part)};
+            for (auto ext : exts) {
+                auto candidate = dir / (program_name + std::string(ext));
+                std::error_code ec;
+                if (!std::filesystem::exists(candidate, ec) || ec) continue;
+                if (std::filesystem::is_directory(candidate, ec)) continue;
+                if (is_own_shim_(candidate, entry, home)) continue;
+                return candidate;
+            }
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
+
+// Say so -- but only where a person is watching.
+//
+// Interactively this is the difference between "my project setup is fine" and
+// "I am in the wrong directory". In a pipeline, a Makefile or CI it is noise
+// on the one path that is supposed to look exactly like plain PATH resolution,
+// so it stays quiet there.
+void report_passthrough_(const std::string& program_name,
+                         const std::filesystem::path& host) {
+    if (!platform::stderr_is_terminal()) return;
+    log::warn("{}: no version in subos '{}'; running {}",
+              program_name, Config::subos_scope().name, host.string());
+}
+
+int exec_host_program_(const std::filesystem::path& host,
+                       int argc, char* argv[]) {
+    auto hostStr = host.string();
+    std::vector<const char*> newArgv;
+    newArgv.push_back(hostStr.c_str());
+    for (int i = 1; i < argc; ++i) newArgv.push_back(argv[i]);
+    newArgv.push_back(nullptr);
+
+#if defined(__linux__) || defined(__APPLE__)
+    execvp(hostStr.c_str(), const_cast<char* const*>(newArgv.data()));
+    log::error("xlings: failed to exec '{}'", hostStr);
+    return 127;
+#else
+    std::string cmd = platform::shell_quote(hostStr);
+    for (int i = 1; i < argc; ++i) {
+        cmd += " ";
+        cmd += platform::shell_quote(argv[i]);
+    }
+    return platform::exec(cmd);
+#endif
+}
+
 int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // Recursion guard: detect infinite shim re-invocation
     constexpr int MAX_SHIM_DEPTH = 8;
@@ -432,6 +543,31 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         }
 
         if (here.empty()) {
+            // Nothing in this scope claims this name -- not active, not even
+            // opted into `installed[]`. So the file on PATH is here for some
+            // OTHER scope's sake: a project declared it, and a project's own
+            // bin is never on PATH, so its command names have to live in the
+            // directory that is.
+            //
+            // That file must not change what happens outside the project.
+            // Hand the name back to PATH: run whatever would have run if
+            // xlings had never put a file there.
+            //
+            // ONLY in this branch. The other two -- `installed[]` has the
+            // name but nothing is active, or a version is pinned and not
+            // installed -- are CLAIMS this scope makes and cannot satisfy,
+            // and running the host's copy instead would be the silent
+            // substitution pyenv still ships (a pinned-but-missing version
+            // whose command exists on the system runs the system one and
+            // prints nothing). A claim we cannot meet is an error.
+            if (auto host = find_host_passthrough_(program_name, xlings_home);
+                !host.empty()) {
+                report_passthrough_(program_name, host);
+                platform::set_env_variable("XLINGS_SHIM_DEPTH",
+                                           std::to_string(depth + 1));
+                return exec_host_program_(host, argc, argv);
+            }
+
             // Same state, same wording, same code as `xlings use` reports --
             // the shim used to say "xlings: '{}' is not installed in current
             // subos" while `use` said "in this subos ({})", so the two halves

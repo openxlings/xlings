@@ -293,7 +293,7 @@ void print_subos_list(
     constexpr int kGap = 2;
 
     auto detail_of = [](const std::string& dir, int tools) {
-        return "(" + dir + "  tools: " + std::to_string(tools) + ")";
+        return "(" + dir + "  commands: " + std::to_string(tools) + ")";
     };
 
     int nameMax = 0, detailMax = 0;

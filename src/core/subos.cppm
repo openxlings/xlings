@@ -51,7 +51,17 @@ export struct SubosInfo {
     std::string   name;
     fs::path      dir;
     bool          isActive;
-    int           toolCount;
+    // How many COMMAND NAMES this subos routes -- the size of its routing
+    // table. Was called `toolCount` and printed as `tools`, which read as a
+    // package count and is not one: one release can register dozens of names
+    // (llvm registers about forty), and before the routing table existed the
+    // number also included entries no version backed at all (measured: the
+    // default subos on a real home reported 121 with 99 active programs).
+    int           commandCount;
+    // How many PACKAGES are active here, counted per RELEASE -- the answer to
+    // "what have I installed", which the command count cannot give.
+    // -1 means "not computed" (the caller asked for the cheap view).
+    int           packageCount { -1 };
 };
 
 export struct SubosCandidateView {

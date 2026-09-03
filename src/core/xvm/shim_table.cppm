@@ -97,29 +97,32 @@ struct TableReport {
 
 // The desired table for one subos.
 //
-// A name belongs in the table when dispatch would find something to exec for
-// it — the same question `shim_dispatch` asks at run time, so "there is a
-// shim" and "running it works" cannot drift apart:
+// A name belongs in the table when this subos has an active version of it and
+// that version's effective kind is "program". Lib and files packages are
+// registered in xvm for version management by design; nothing execs them.
 //
-//   1. the subos has an active version for it, and
-//   2. that version's effective kind is "program" (lib/files packages are
-//      registered in xvm for version management by design, but nothing execs
-//      them), and
-//   3. the payload actually contains the executable.
+// Deliberately NOT gated on the payload being intact.
 //
-// (3) is what separates a real program from a virtual root registered only so
-// a release has something to bind to. Neither `kind` nor `path` nor
-// `is_binding_root` can tell those apart — only the payload can (#452).
+// An earlier draft probed `resolve_executable` here, reasoning that the table
+// should only carry names dispatch can serve. That is the wrong place to ask.
+// A package whose payload is broken, or whose layout the probe does not cover,
+// would silently leave the table -- and the user would get the shell's
+// "command not found", or worse a passthrough to the host's copy of the same
+// name, instead of dispatch's `executable 'X' not found` with the path and the
+// reinstall command. A broken payload is a runtime fact that dispatch reports
+// well and `self doctor` already finds; dropping the name is strictly less
+// information.
 //
-// `payloadHasExecutable` is injected so this stays testable without a store:
-// callers pass a probe backed by `xvm::resolve_executable`.
+// The virtual-root case (#452) that motivated the probe is handled where it
+// belongs: registration withholds activation from an anchor-only release
+// (registration.cpp, `anyRealUncontested`), so an anchor never reaches here
+// with an active version. And measured on a real home, every one of the 23
+// leaked names is excluded by the `active` clause alone -- the probe was
+// never what caught them.
 std::set<std::string> compute_desired(
     const VersionDB& db,
     const Workspace& active,
-    const std::vector<ProjectContribution>& projects,
-    const std::vector<std::string>& reserved,
-    const std::function<bool(const std::string& execName,
-                            const std::string& payloadPath)>& payloadHasExecutable);
+    const std::vector<ProjectContribution>& projects);
 
 // Read a bin directory, classifying each file by whether it is one of our
 // shims. `std::filesystem::equivalent` is the predicate on BOTH platforms:
@@ -130,8 +133,22 @@ std::set<std::string> compute_desired(
 ActualScan scan_actual(const fs::path& binDir, const fs::path& entryBinary);
 
 // Pure. The whole rebuild decision, reachable from a unit test.
+//
+// `reserved` names the entry binary's own shims (`xlings`, plus whatever
+// `self init` places). Protection is ONE-DIRECTIONAL: they are never removed,
+// but they are added when the workspace has them active.
+//
+// Both directions matter. `ensure_subos_shims` places `xlings` in a home subos
+// that never installed the package, and nothing in the workspace justifies
+// that file -- without the removal guard the diff reads the entry binary's own
+// link as stale and deletes it, which is how a home loses the one file every
+// other shim points at. But `xlings` is also a real package: installing it
+// into a subos must give that subos its shim, so the add side stays open. A
+// project subos gets neither, because its workspace has no `xlings` and its
+// bin is not on PATH for anything to dispatch through.
 TableDiff plan_table(const std::set<std::string>& desired,
-                     const ActualScan& actual);
+                     const ActualScan& actual,
+                     const std::vector<std::string>& reserved);
 
 // Apply the diff. Adds and removals only — never a wipe-and-recreate.
 //

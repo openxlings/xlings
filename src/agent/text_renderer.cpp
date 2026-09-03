@@ -156,9 +156,18 @@ void render_data_event(const DataEvent& e) {
             for (auto& s : json["entries"]) {
                 auto name = s.value("name", "");
                 auto active = s.value("active", false);
-                auto pkgs = s.value("pkgCount", 0);
-                std::println("  {}{} ({} packages)",
-                    name, active ? " (active)" : "", pkgs);
+                // Was `pkgCount` printed as "packages" while counting FILES
+                // in the bin directory -- a routing-table size wearing a
+                // package count's label. Both numbers are carried now.
+                auto commands = s.value("commands", s.value("pkgCount", 0));
+                auto packages = s.value("packages", -1);
+                if (packages >= 0) {
+                    std::println("  {}{} ({} commands, {} packages)",
+                        name, active ? " (active)" : "", commands, packages);
+                } else {
+                    std::println("  {}{} ({} commands)",
+                        name, active ? " (active)" : "", commands);
+                }
             }
         }
     }

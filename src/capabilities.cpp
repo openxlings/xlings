@@ -300,7 +300,8 @@ auto ListSubos::execute(Params, EventStream& stream) -> Result {
         entries.push_back({
             {"name",     s.name},
             {"dir",      s.dir.string()},
-            {"pkgCount", s.toolCount},
+            {"commands", s.commandCount},
+            {"packages", s.packageCount},
             {"active",   s.isActive},
         });
     }
