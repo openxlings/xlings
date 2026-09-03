@@ -528,8 +528,16 @@ std::vector<xvm::ProjectContribution> project_contributions() {
         // a name a subos would have rejected.
         auto names = xvm::compute_desired(db, active, {});
 
+        // A project never contributes the entry binary's own names. They are
+        // this home's, placed by `ensure_subos_shims` and protected from
+        // removal by the plan; a project that happens to have `xlings`
+        // installed must not push that name into every subos's table --
+        // including a project subos, whose bin nothing dispatches through.
         contribution.commands.reserve(names.size());
-        for (const auto& n : names) contribution.commands.push_back(n);
+        for (const auto& n : names) {
+            if (is_builtin_shim(fs::path(n).stem().string())) continue;
+            contribution.commands.push_back(n);
+        }
         log::debug("[shim-table] project {}: db={} active={} -> {} command(s)",
                    root.string(), db.size(), active.size(), names.size());
 

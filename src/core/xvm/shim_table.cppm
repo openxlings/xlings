@@ -58,7 +58,13 @@ std::string shim_filename(std::string_view name);
 // bug class this module exists to remove.
 struct ProjectContribution {
     fs::path                  root;      // the project directory
-    std::vector<std::string>  commands;  // bare names, no platform suffix
+    // Already carrying the platform suffix, because they come back from
+    // `compute_desired` applied to the project's own state -- one predicate,
+    // two callers, so a project cannot contribute a name a subos would have
+    // rejected. Re-suffixing is harmless (`shim_filename` is idempotent), but
+    // the values ARE suffixed and code that assumed otherwise would be wrong
+    // on Windows only.
+    std::vector<std::string>  commands;
     bool                      readable { true };
 };
 

@@ -470,6 +470,11 @@ std::filesystem::path find_host_passthrough_(const std::string& program_name,
 void report_passthrough_(const std::string& program_name,
                          const std::filesystem::path& host) {
     if (!platform::stderr_is_terminal()) return;
+    // `warn`, and NOT `info`, for a reason that has nothing to do with
+    // severity: `log::info` writes to STDOUT (log.cppm), so it would land in
+    // the piped output of the command being passed through --
+    // `node --version | grep` would read this line as node's answer. `warn`
+    // writes to stderr, which is the stream the guard above tests.
     log::warn("{}: no version in subos '{}'; running {}",
               program_name, Config::subos_scope().name, host.string());
 }
