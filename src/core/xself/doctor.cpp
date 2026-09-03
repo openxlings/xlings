@@ -467,7 +467,9 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                     vs.emplace_back(mf::binding_version(b));
                 }
                 version_order::sort_desc(vs);
-                return std::format("xlings use {} {}", dup.name,
+                // `name@version`, the spelling every other doctor remedy
+                // uses for `use`, and the one E2E-64 reads as "a decision".
+                return std::format("xlings use {}@{}", dup.name,
                                    vs.empty() ? std::string{} : vs.front());
             }(),
             .remedyNote = [&] {

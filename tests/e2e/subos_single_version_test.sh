@@ -214,10 +214,12 @@ echo "$OUT" | strip_ansi | grep -q "double binding" \
   || fail "doctor did not report a package bound at two versions with no active
 version, which is the state that exports every variable twice:
 $OUT"
-echo "$OUT" | strip_ansi | grep -q "xlings use lostws@" \
+# Either spelling `use` accepts -- `lostws@2.0.0` or `lostws 2.0.0` -- is a
+# decision; asserting one of them pinned a spelling, not the property.
+echo "$OUT" | strip_ansi | grep -qE "xlings use lostws(@| )[0-9]" \
   || fail "the remedy does not tell the user how to decide. Nothing here CAN
 decide -- that is why it is reported rather than repaired -- so the remedy has
-to name the choice:
+to name the package AND a version:
 $OUT"
 log "  ✓ contested binding reported, with a remedy that is a decision"
 

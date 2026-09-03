@@ -141,7 +141,10 @@ A1 失败,在 2026.9.3.2 上 PASS):
 - [x] `mcpp.toml` → `2026.9.3.2`
 - [x] 调研文档状态改「已实现(P0–P7)」,§8b 追加实施中被推翻的判断
 - [x] release notes `.agents/docs/2026-09-03-release-2026.9.3.2-notes.md`
-- [ ] 单 PR(**#581**);CI 全绿;自我 review 一次(已做:一处 note 行花括号、一处前缀提升)
+- [ ] 单 PR(**#581**);CI 全绿;自我 review 一次(已做:一处 note 行花括号、一处前缀提升;
+      CI 首轮 E2E-64 失败:它 grep 的是 `xlings use lostws@`,而新 remedy 拼成 `use lostws 2.0.0`。
+      两种拼法 CLI 都接受(实测同一路径、同一报错),所以是**测试钉住了拼法而不是性质**;
+      测试放宽为 `use lostws(@| )<version>`,remedy 用 `@` 形式与 doctor 其它 remedy 一致)
 - [ ] release;资源一出即本地 `tools/mirror-latest.sh` 补 GitCode
 - [ ] xim-pkgindex `pkgs/x/xlings.lua` bump(bump-index 只开 PR 不合并)
 - [ ] 沙箱真机验证(先 `xlings config --mirror CN`):`self update`;`self doctor --deep --all` 计数;
