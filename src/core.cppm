@@ -9,7 +9,6 @@ export import xlings.core.version_order;
 export import xlings.core.utils;
 export import xlings.i18n;
 export import xlings.core.config;
-export import xlings.core.common;
 export import xlings.core.compact;
 export import xlings.core.profile;
 export import xlings.core.subos;

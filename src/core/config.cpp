@@ -990,6 +990,8 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] const xvm::VersionDB& Config::global_versions() { return instance_().globalVersions_; }
 
+[[nodiscard]] const xvm::Workspace& Config::global_workspace() { return instance_().globalWorkspace_; }
+
 [[nodiscard]] const xvm::VersionDB& Config::project_versions() { return instance_().projectVersions_; }
 
 [[nodiscard]] std::filesystem::path Config::global_data_dir() {
@@ -1321,6 +1323,66 @@ void Config::mark_hint_seen(std::string_view id) {
         if (e.is_string() && e.get<std::string>() == id) return;
     }
     seen.push_back(std::string(id));
+    platform::write_string_to_file(configPath.string(), json.dump(2));
+}
+
+[[nodiscard]] std::vector<std::filesystem::path> Config::known_projects() {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> out;
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    if (!fs::exists(configPath)) return out;
+    try {
+        auto content = platform::read_file_to_string(configPath.string());
+        auto json = nlohmann::json::parse(content, nullptr, false);
+        if (json.is_discarded() || !json.is_object()) return out;
+        auto it = json.find("knownProjects");
+        if (it == json.end() || !it->is_object()) return out;
+        for (auto e = it->begin(); e != it->end(); ++e) {
+            if (!e.key().empty()) out.emplace_back(e.key());
+        }
+    } catch (...) { return out; }
+    std::ranges::sort(out);
+    return out;
+}
+
+void Config::register_known_project(const std::filesystem::path& dir) {
+    namespace fs = std::filesystem;
+    if (dir.empty()) return;
+
+    // Absolute and normalised, because this key is what the rebuild reads a
+    // state file from. A relative key recorded from one cwd names a different
+    // directory read from another.
+    std::error_code ec;
+    auto key = fs::weakly_canonical(dir, ec);
+    if (ec || key.empty()) key = fs::absolute(dir, ec);
+    if (ec || key.empty()) return;
+
+    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    nlohmann::json json = nlohmann::json::object();
+    if (fs::exists(configPath)) {
+        try {
+            auto content = platform::read_file_to_string(configPath.string());
+            json = nlohmann::json::parse(content, nullptr, false);
+            // Same refusal as record_client_version / mark_hint_seen: never
+            // replace a document we could not parse. Trading an unregistered
+            // project for a lost versions DB is not a trade.
+            if (json.is_discarded() || !json.is_object()) return;
+        } catch (...) { return; }
+    }
+
+    auto& projects = json["knownProjects"];
+    if (!projects.is_object()) projects = nlohmann::json::object();
+
+    std::string stamp;
+    {
+        auto now = std::chrono::system_clock::now();
+        stamp = std::format("{:%FT%TZ}",
+                            std::chrono::floor<std::chrono::seconds>(
+                                std::chrono::time_point_cast<
+                                    std::chrono::seconds>(now)));
+    }
+    projects[key.string()] = nlohmann::json{{"lastSeen", stamp}};
+
     platform::write_string_to_file(configPath.string(), json.dump(2));
 }
 

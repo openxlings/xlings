@@ -379,6 +379,28 @@ public:
     [[nodiscard]] static bool hint_seen(std::string_view id);
 
     static void mark_hint_seen(std::string_view id);
+
+    // Projects this home has ever installed into, by absolute path.
+    //
+    // A project's tools are only reachable from PATH because the routing
+    // table in each subos's bin carries their command names — a project's own
+    // bin is never on PATH and cmd.exe has no cd hook that could put it
+    // there. So the table needs to know which projects exist.
+    //
+    // ONLY the path is stored. Which COMMAND names a project contributes is
+    // recomputed from the project's own state file whenever the table is
+    // rebuilt: a project manifest records PACKAGE names, and which commands a
+    // package registers is known only after it is installed — so a cached
+    // command list would have to be written at install time and would go
+    // stale the moment the project changed its dependencies. The rebuild
+    // would then faithfully recreate names that no longer exist, which is the
+    // bug class the routing table exists to remove.
+    [[nodiscard]] static std::vector<std::filesystem::path> known_projects();
+
+    // Record (or refresh) a project. Called after a project-scope install
+    // succeeds. Idempotent.
+    static void register_known_project(const std::filesystem::path& dir);
+
     [[nodiscard]] static std::vector<std::string> resource_servers(std::string_view mirror = {});
     // Same list, extended with the other regions' servers as a last resort.
     // Use this for download fallbacks; `resource_servers()` remains the
@@ -403,6 +425,13 @@ public:
     [[nodiscard]] static xvm::VersionDB versions();
     [[nodiscard]] static xvm::VersionDB& versions_mut();
     [[nodiscard]] static const xvm::VersionDB& global_versions();
+
+    // The workspace of the GLOBALLY active subos, regardless of whether a
+    // project is in scope. `workspace()` answers for the current scope --
+    // which is the project's when one is loaded -- so it cannot answer "what
+    // does the subos on PATH have active", and that is exactly the question
+    // the routing table asks when a project install has to reach it.
+    [[nodiscard]] static const xvm::Workspace& global_workspace();
     [[nodiscard]] static const xvm::VersionDB& project_versions();
 
     // Effective data dir: project-local if project config exists, otherwise global

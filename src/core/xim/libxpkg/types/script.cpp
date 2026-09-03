@@ -3,7 +3,6 @@ module xlings.core.xim.libxpkg.types.script;
 import std;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
-import xlings.core.common;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.core.xself;
@@ -51,31 +50,12 @@ bool default_config(const PlanNode& node,
     auto ver_key = xvm::make_ns_version(versionNamespace, node.version);
     Config::workspace_mut()[node.name] = ver_key;
 
-    auto paths = Config::paths();
-#ifdef _WIN32
-    auto xlings_bin = paths.homeDir / "bin" / "xlings.exe";
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    auto xlings_bin = paths.homeDir / "bin" / "xlings";
-    constexpr std::string_view shim_ext = "";
-#endif
-    // Bootstrap-layout fallback: pre-`self init` the binary may live
-    // directly at <homeDir>/xlings before being moved under bin/.
-    // Matches the resolution used in xvm/commands.cppm and xself/doctor.cppm.
-    if (!std::filesystem::exists(xlings_bin))
-        xlings_bin = paths.homeDir / ("xlings" + std::string(shim_ext));
-
-    if (std::filesystem::exists(xlings_bin)) {
-        std::string shim_name = node.name;
-        if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
-            shim_name += std::string(shim_ext);
-        std::filesystem::create_directories(paths.binDir);
-        xself::create_shim(xlings_bin, paths.binDir / shim_name);
-        common::mirror_shim_to_global_bin(xlings_bin, shim_name);
-    }
-
     Config::save_versions();
     Config::save_workspace();
+    // The routing table follows the workspace this hook just wrote. It
+    // replaces a hand-rolled create + mirror-to-global pair: the mirror was
+    // a project-scope write into the global bin that nothing recorded.
+    xself::sync_shim_tables();
     return true;
 }
 
