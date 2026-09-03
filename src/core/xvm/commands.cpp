@@ -20,6 +20,7 @@ import xlings.core.xvm.lock;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.inspect;
 import xlings.core.xvm.errors;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
 import xlings.i18n;
@@ -518,7 +519,10 @@ bool runtime_activation_refused_(const VersionDB& db,
         log::error("[xlings:use] runtime activation refused: {} has no "
                    "payload", mismatch->declared);
         log::error("  nothing was changed");
-        log::error("  hint: reinstall it with `xlings install {} --force`",
+        // `install` has no `--force`; the parser rejects it. A registered
+        // version whose payload is gone is exactly the state the installer
+        // re-runs the install hook for, so the plain install IS the reinstall.
+        log::error("  hint: put the payload back with `xlings install {}`",
                    mismatch->declared);
         return true;
     }
@@ -643,13 +647,23 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // `install`, which resolves dependencies and materialises them.
     if (filter_to_subos_installed_(target, {resolved}).empty()) {
         const auto origin = Config::version_origin(target);
+        // The package that records `target@resolved`, if a record proves one;
+        // `target` itself is a program name and may not be installable.
+        std::string installCoordinate;
+        {
+            const auto dbNow = Config::versions();
+            if (auto owner = recorded_owner(dbNow, target, resolved)) {
+                installCoordinate = owner->canonical();
+            }
+        }
         diag::emit(not_in_subos({
-            .target           = target,
-            .subos            = Config::subos_scope().name,
-            .suggestedVersion = resolved,
-            .source           = origin.source,
-            .fromProject      = origin.fromProjectManifest,
-            .nothingChanged   = true,
+            .target            = target,
+            .subos             = Config::subos_scope().name,
+            .suggestedVersion  = resolved,
+            .source            = origin.source,
+            .fromProject       = origin.fromProjectManifest,
+            .nothingChanged    = true,
+            .installCoordinate = std::move(installCoordinate),
         }));
         return 1;
     }
@@ -997,12 +1011,21 @@ collect_version_candidates_(const std::string& target, bool all) {
         // were not errors at all. One block, one marker, and the actions lead
         // with the thing the user almost certainly wants.
         const auto origin = Config::version_origin(target);
+        std::string installCoordinate;
+        if (!global_all.empty()) {
+            auto newest = global_all;
+            version_order::sort_desc(newest);
+            if (auto owner = recorded_owner(db, target, newest.front())) {
+                installCoordinate = owner->canonical();
+            }
+        }
         auto d = not_in_subos({
             .target            = target,
             .subos             = Config::subos_scope().name,
             .versionsElsewhere = global_all,
             .source            = origin.source,
             .fromProject       = origin.fromProjectManifest,
+            .installCoordinate = std::move(installCoordinate),
         });
         if (!global_all.empty()) {
             d.actions.push_back({ "see every subos",

@@ -361,9 +361,17 @@ TEST(SelfUpdateLanding, ABareVersionIsTheIndexBuild) {
     EXPECT_TRUE(xlings::xself::update_landed_on_index_build("0.4.51"));
 }
 
-TEST(SelfUpdateLanding, ANamespacedVersionIsNot) {
+TEST(SelfUpdateLanding, ALocalBuildIsNot) {
     EXPECT_FALSE(xlings::xself::update_landed_on_index_build("local:0.4.51"));
-    EXPECT_FALSE(xlings::xself::update_landed_on_index_build("scode:1.0"));
+}
+
+// Since 2026.9.2.1 version keys are spelled by identity, so an install from
+// the default index may record `xim:2026.9.2.1` -- and a sub-index records its
+// own namespace. Both ARE index builds. Judging them by "has a colon" reported
+// a successful upgrade as "nothing was upgraded" on a real home (#579).
+TEST(SelfUpdateLanding, ANamespacedIndexBuildStillIs) {
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build("xim:2026.9.2.1"));
+    EXPECT_TRUE(xlings::xself::update_landed_on_index_build("scode:1.0"));
 }
 
 // The false positive that the obvious implementation ships with: an

@@ -106,6 +106,13 @@ struct NotInSubos {
     bool fromProject { false };
     // True when the caller has verified nothing was written.
     bool nothingChanged { false };
+    // The package coordinate a RECORD proves provides `target`
+    // (xvm::recorded_owner), when the caller found one -- `xim:gcc@11.5.0`
+    // for target `g++`. Empty means no record proves an owner, and the
+    // install action becomes `xlings search <target>`. Never `xlings install
+    // <target>`: a target is a PROGRAM name, and on a measured home 218 of 338
+    // program names are not package names, so that command cannot run.
+    std::string installCoordinate;
 };
 
 diag::Diagnostic not_in_subos(const NotInSubos& what);

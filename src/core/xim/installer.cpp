@@ -3021,9 +3021,28 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 }
                 log::error("  this is a resolution defect, not a bad "
                            "payload -- report it with the two paths above");
-                return std::unexpected(std::format(
+                const auto failure = std::format(
                     "{}@{}: loader/libc payload mismatch in {} binary(ies)",
-                    node.name, node.version, bad.size()));
+                    node.name, node.version, bad.size());
+                // One node's refusal, reported as one node's failure.
+                //
+                // This used to `return std::unexpected(...)`, the shape the
+                // caller documents as "cancel or a plan-level error". One
+                // refused dependency therefore took the whole plan down
+                // (`install bun` died on node), the caller emitted a
+                // non-recoverable Internal error, no install_summary was
+                // sent, and -- unlike every other hook failure -- no marker
+                // was written: the payload sat on disk with nothing saying
+                // why. Same marker, same status event and same `continue` as
+                // the install and config hooks; the exit code follows from
+                // failedCount as it does for them.
+                write_payload_failure_marker(ctx.install_dir, node.version,
+                                             failure);
+                if (onStatus) {
+                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                               failure });
+                }
+                continue;
             }
         }
 

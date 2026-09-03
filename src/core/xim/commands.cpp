@@ -2023,8 +2023,10 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     stream.emit(DataEvent{"update_plan", planPayload.dump()});
 
     if (currentActive.empty()) {
+        // The PACKAGE name, which the catalog just resolved; `bareName` is
+        // whatever the user typed, and a printed command has to run as printed.
         log::warn("{} is not installed — run: xlings install {}",
-                  match->canonicalName, bareName);
+                  match->canonicalName, match->canonicalName);
         return 0;
     }
 

@@ -327,20 +327,31 @@ diag::Diagnostic not_in_subos(const NotInSubos& what) {
         d.facts.push_back({ "declared by project", std::move(list) });
         d.actions.push_back({ "use it there",
             std::format("cd {}", what.providedByProjects.front()) });
-        d.actions.push_back({ "or install here",
-            std::format("xlings install -g {}", what.target) });
+        if (!what.installCoordinate.empty()) {
+            d.actions.push_back({ "or install here",
+                std::format("xlings install -g {}", what.installCoordinate) });
+        } else {
+            d.actions.push_back({ "or find the package",
+                std::format("xlings search {}", what.target) });
+        }
         return d;
     }
 
-    auto pick = what.suggestedVersion;
-    if (pick.empty() && !what.versionsElsewhere.empty()) {
-        auto sorted = what.versionsElsewhere;
-        version_order::sort_desc(sorted);
-        pick = sorted.front();
+    // The install action names a PACKAGE, or is a search.
+    //
+    // `xlings install <target>` used to be printed here, with the newest known
+    // version appended. A target is a program name; that command runs only
+    // when a package happens to share it, and on a measured home 218 of 338
+    // did not (`g++`, `ar`, `as`, `slang`, ...). The caller passes the owner a
+    // record proves when there is one; when there is none, a search is the
+    // command that always runs and always answers the question being asked.
+    if (!what.installCoordinate.empty()) {
+        d.actions.push_back({ "install it here",
+            std::format("xlings install {}", what.installCoordinate) });
+    } else {
+        d.actions.push_back({ "find the package that provides it",
+            std::format("xlings search {}", what.target) });
     }
-    d.actions.push_back({ "install it here",
-        pick.empty() ? std::format("xlings install {}", what.target)
-                     : std::format("xlings install {}@{}", what.target, pick) });
     return d;
 }
 

@@ -457,16 +457,29 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 "'{}' is bound {} times in subos '{}' ({}) and has no active "
                 "version, so every one of them contributes",
                 dup.name, dup.bindings.size(), subosName, names),
-            // Naming the versions in the remedy: the user is otherwise left
+            // The command names ONE version -- the highest -- so it runs as
+            // printed; the placeholder `<one of: ...>` it used to carry could
+            // not. The alternatives go in the note: the user is otherwise left
             // choosing between two strings with nothing to tell them apart.
-            .remedy  = std::format("xlings use {}@<one of: {}>", dup.name, [&] {
+            .remedy  = [&] {
+                std::vector<std::string> vs;
+                for (const auto& b : dup.bindings) {
+                    vs.emplace_back(mf::binding_version(b));
+                }
+                version_order::sort_desc(vs);
+                // `name@version`, the spelling every other doctor remedy
+                // uses for `use`, and the one E2E-64 reads as "a decision".
+                return std::format("xlings use {}@{}", dup.name,
+                                   vs.empty() ? std::string{} : vs.front());
+            }(),
+            .remedyNote = [&] {
                 std::string vs;
                 for (const auto& b : dup.bindings) {
                     if (!vs.empty()) vs += ", ";
                     vs += std::string(mf::binding_version(b));
                 }
-                return vs;
-            }()),
+                return "bound versions: " + vs;
+            }(),
         });
     }
 
@@ -546,13 +559,16 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
             .version = mismatch->declared,
             .detail  = std::move(detail),
             .remedy  = differentActive
+                ? std::string("xlings self doctor --fix")
+                : std::format("xlings install {}", mismatch->declared),
+            .remedyNote = differentActive
                 ? std::format(
-                    "xlings self doctor --fix   (adopt {}; or migrate with "
-                    "`xlings install {}` then `xlings use {} {}`)",
+                    "adopts {}; to migrate instead: `xlings install {}` then "
+                    "`xlings use {} {}`",
                     mismatch->active, mismatch->declared,
                     mf::binding_name(mismatch->declared),
                     mf::binding_version(mismatch->declared))
-                : std::format("xlings install {}", mismatch->declared),
+                : std::string{},
         });
     }
 
@@ -590,11 +606,12 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 "binary built here links against {}, not against {}",
                 subosName, info.runtime, shown.string(), served, served,
                 info.runtime),
-            .remedy  = std::format(
-                "xlings use {} {}   (adopt what is serving), or `xlings "
-                "install {}` to make the declaration true",
-                mf::binding_name(served), mf::binding_version(served),
-                info.runtime),
+            .remedy  = std::format("xlings use {} {}",
+                                   mf::binding_name(served),
+                                   mf::binding_version(served)),
+            .remedyNote = std::format(
+                "adopts what is serving; or `xlings install {}` to make the "
+                "declaration true", info.runtime),
         });
     }
 
@@ -614,7 +631,8 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 "subos '{}' does not record a runtime -- nothing here "
                 "declares, activates or serves one, so tools that need to "
                 "know which libc this is will fall back", subosName),
-            .remedy  = "xlings install glibc   (then it will be recorded)",
+            .remedy  = "xlings install glibc",
+            .remedyNote = "then the runtime will be recorded",
         });
     }
     return out;
@@ -1763,12 +1781,78 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         };
         const auto cacheHitsBefore =
             audit.payloadCache ? audit.payloadCache->hits() : 0;
+
+        // Which runtime payload the executables registered in THIS subos start
+        // on (PT_INTERP), per payload. The scan already reads the field for
+        // every ELF; this keeps it. See InterpRuntimeDrift.
+        struct InterpUse {
+            std::size_t executables { 0 };
+            std::set<std::string> packages;
+        };
+        std::map<std::string, InterpUse> interpUse;
+        std::vector<std::string> registeredHere;
+        for (const auto& [target, versions] : Config::workspace_installed()) {
+            for (const auto& v : versions) {
+                const auto* data = xvm::get_vdata(st.db, target, v);
+                if (!data || data->path.empty()) continue;
+                registeredHere.push_back(
+                    fs::path(xvm::expand_path(
+                        data->path, Config::paths().homeDir.string()))
+                        .lexically_normal().string());
+            }
+        }
+        const auto registeredInThisSubos = [&](const fs::path& payloadRoot) {
+            const auto root = payloadRoot.lexically_normal().string();
+            const auto prefix = root + "/";
+            return std::ranges::any_of(registeredHere,
+                [&](const std::string& p) {
+                    return p == root || p.starts_with(prefix);
+                });
+        };
+
         for (const auto& root : payloadAuditRoots) {
             auditTick(root);
             ++auditDone;
-            const auto scanned = audit.payloadCache
-                ? audit.payloadCache->scan(root.path)
-                : elfcheck::scan_payload(root.path);
+            const auto report = audit.payloadCache
+                ? audit.payloadCache->report(root.path)
+                : elfcheck::scan_payload_report(root.path);
+            const auto& scanned = report.findings;
+            if (registeredInThisSubos(root.path)) {
+                const auto coord =
+                    xvm::coordinate_from_payload_path(root.path.string());
+                const auto name = coord
+                    ? coord->canonical()
+                    : std::format("{}@{}", root.storeName, root.version);
+                for (const auto& [payload, count] : report.interpPayloads) {
+                    auto& use = interpUse[payload];
+                    use.executables += count;
+                    use.packages.insert(name);
+                }
+            }
+            // The remedy, spelled so it can actually be run.
+            //
+            // It could not be, in two independent ways. `root.target` is the
+            // STORE DIRECTORY name for a whole-store scan (`xim-x-bun`), and
+            // `xlings install xim-x-bun@1.3.11` fails with "not found in the
+            // synced index" -- no package is called that. And `--force` is not
+            // an option `install` has at all (`remove` has one, meaning
+            // something else); the parser rejects it with "unknown option".
+            //
+            // Both answers were already in the repo. `coordinate_from_payload_path`
+            // exists precisely to turn a store path back into the coordinate
+            // that installs it, and `install` on an already-installed package
+            // prints "already installed" and does nothing -- so a reinstall is
+            // remove-then-install, not a flag.
+            //
+            // When the path does not parse as a store coordinate the remedy
+            // stays EMPTY. See Finding::remedy: a command that cannot succeed
+            // is worse than none, because users run them.
+            std::string remedy;
+            if (auto coord = xvm::coordinate_from_payload_path(
+                    root.path.string())) {
+                remedy = std::format("xlings remove {} -y && xlings install {} -y",
+                                     coord->canonical(), coord->canonical());
+            }
             for (const auto& f : scanned) {
                 add({
                     .kind   = FindingKind::LoaderLibcSplit,
@@ -1776,12 +1860,69 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     .target = root.target,
                     .version = root.version,
                     .detail = elfcheck::describe(f),
-                    .remedy = std::format(
-                        "xlings install {}@{} --force",
-                        root.target, root.version),
+                    .remedy = remedy,
                 });
             }
         }
+        // What this subos's executables START on, against what it declares.
+        //
+        // The same-source rule used to report these as splits, 152 of them on
+        // a measured home, none real. The real fact underneath was this one,
+        // and nothing said it: the subos declared 2.44, and 151 executables in
+        // 18 packages carried PT_INTERP into 2.39 and ran on it. Only the
+        // declared runtime's own package is compared -- a musl-interpreted
+        // tool in a glibc subos is a different runtime, not a drifted one.
+        if (audit.deep && !interpUse.empty()) {
+            namespace mf = xlings::subos::manifest;
+            const auto scope = Config::subos_scope();
+            if (const auto doc = mf::read_document(scope.root)) {
+                const auto info = mf::parse(*doc);
+                if (mf::is_binding(info.runtime)) {
+                    const std::string runtimeName(
+                        mf::binding_name(info.runtime));
+                    const std::string declared(
+                        mf::binding_version(info.runtime));
+                    for (const auto& [payload, use] : interpUse) {
+                        const auto coord =
+                            xvm::coordinate_from_payload_path(payload);
+                        if (!coord || coord->package != runtimeName) continue;
+                        if (coord->version == declared) continue;
+                        constexpr std::size_t kNamed = 8;
+                        std::string list;
+                        std::size_t named = 0;
+                        for (const auto& pkg : use.packages) {
+                            if (named++ == kNamed) break;
+                            if (!list.empty()) list += ", ";
+                            list += pkg;
+                        }
+                        if (use.packages.size() > kNamed) {
+                            list += std::format(", +{} more",
+                                                use.packages.size() - kNamed);
+                        }
+                        add({
+                            .kind    = FindingKind::InterpRuntimeDrift,
+                            .level   = FindingLevel::Notice,
+                            .target  = scope.name,
+                            .version = info.runtime,
+                            .detail  = std::format(
+                                "subos '{}' declares {}, but {} executable(s) "
+                                "in {} package(s) start on {}@{}: their "
+                                "PT_INTERP points there and their own RUNPATH "
+                                "lists it ahead of this subos, so they run -- "
+                                "on a runtime this subos does not hold. If "
+                                "{}@{} leaves the store they will fail to "
+                                "start, with an error that names the binary",
+                                scope.name, info.runtime, use.executables,
+                                use.packages.size(), coord->package,
+                                coord->version, coord->package,
+                                coord->version),
+                            .remedyNote = "packages: " + list,
+                        });
+                    }
+                }
+            }
+        }
+
         // Gated on `deep`, not merely on having found roots.
         //
         // A quick run has an empty root list, so without this it reported
@@ -2956,6 +3097,9 @@ Counts count_(const Scan& scan) {
                 if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
             case FindingKind::OtherSubos:      ++c.otherSubos; break;
+            case FindingKind::InterpRuntimeDrift:
+                // A Notice. The binaries work; this changes no exit code.
+                break;
             case FindingKind::LoaderLibcSplit:
                 // Counted as broken, so it reaches the exit code. A finding
                 // that prints and then exits 0 is how a check gets ignored by
@@ -3100,6 +3244,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         add(label, std::move(detail));
         if (!head->remedy.empty()) {
             add("  " + glyph::mark(glyph::remedy, "run"), head->remedy);
+            if (!head->remedyNote.empty())
+                add("  " + glyph::mark(glyph::note, "note"), head->remedyNote);
         } else {
             // No command would help. Saying that is the useful output; a
             // plausible-looking `xlings install <target>` is not.
@@ -3161,6 +3307,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                                     "them", f.conflict));
                 }
                 add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::ShimAnchor:
                 add(glyph::mark(glyph::warn, "shim anchor"), f.detail); break;
@@ -3211,6 +3359,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 // leave it exactly where it is. Name the one that works.
                 if (!f.subos.empty() && !f.remedy.empty()) {
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                    if (!f.remedyNote.empty())
+                        add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 }
                 break;
             }
@@ -3251,8 +3401,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "subos manifest"), f.detail);
                 // The remedy for an unreadable file is not `--fix`, so it has
                 // to be printed rather than left to the generic footer.
-                if (!f.remedy.empty() && f.remedy != "xlings self doctor --fix")
+                if (!f.remedy.empty() && f.remedy != "xlings self doctor --fix") {
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                    if (!f.remedyNote.empty())
+                        add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                }
                 break;
             case FindingKind::SubosEnvOrphan:
                 add(glyph::mark(glyph::failed, "subos env orphan"), f.detail);
@@ -3263,11 +3416,15 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "subos double binding"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::SubosEnvUnresolved:
                 add(glyph::mark(glyph::failed, "subos env unresolved"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::SubosEnvConflict:
                 // Never collapsed into a count, unlike the notice categories:
@@ -3282,11 +3439,15 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::SubosRuntimeDrift:
                 add(glyph::mark(glyph::warn, "subos runtime drift"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::SubosRuntimeUnknown:
                 // Always printed, though it counts as nothing.
@@ -3300,6 +3461,16 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::note, "subos runtime"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::InterpRuntimeDrift:
+                // No command. The binaries work, and the only thing that
+                // would change what they start on is a reinstall the user has
+                // to choose. What the reader needs is the list: the note.
+                add(glyph::mark(glyph::note, "runtime drift"), f.detail);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::LoaderLibcSplit:
                 // Not collapsed into a count, and never abbreviated: the two
@@ -3309,6 +3480,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "loader/libc split"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::NssResolution:
                 add(f.level == FindingLevel::Error
@@ -3320,6 +3493,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::failed, "incomplete install"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::UnverifiedPayload:
                 // Summarised into one counted line when not verbose -- see
@@ -3331,6 +3506,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                         f.detail);
                     if (!f.remedy.empty())
                         add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                    if (!f.remedyNote.empty())
+                        add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 }
                 break;
             case FindingKind::EntryBinaryDrift:
@@ -3342,6 +3519,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 add(glyph::mark(glyph::note, "entry binary"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::DuplicateVersionKey: {
                 if (!verbose
@@ -3355,6 +3534,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                         : std::format("{}\n    +{} more record(s) of the "
                                       "same release", f.detail, siblings));
                 add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             }
             default: break;

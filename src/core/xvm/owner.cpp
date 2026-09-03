@@ -141,6 +141,38 @@ owner_candidates(const VersionDB& db,
     return candidates;
 }
 
+std::optional<InstallCoordinate>
+recorded_owner(const VersionDB& db,
+               const std::string& target,
+               const std::string& version) {
+    const auto infoIt = db.find(target);
+    if (infoIt == db.end()) return std::nullopt;
+    const auto dataIt = infoIt->second.versions.find(version);
+    if (dataIt == infoIt->second.versions.end()) return std::nullopt;
+    const VData& data = dataIt->second;
+
+    // 1. the recorded provider -- written by every current client.
+    if (data.bindingGroup) {
+        const auto& group = *data.bindingGroup;
+        const auto colon = group.provider.find(':');
+        InstallCoordinate coord;
+        if (colon == std::string::npos) {
+            coord.package = group.provider;
+        } else {
+            coord.ns      = group.provider.substr(0, colon);
+            coord.package = group.provider.substr(colon + 1);
+        }
+        coord.version = strip_namespace(group.providerVersion);
+        if (!coord.empty() && !coord.version.empty()) return coord;
+    }
+    // 2. the payload path the installer recorded; it carries the identity.
+    if (auto fromPath = coordinate_from_payload_path(data.path);
+        fromPath && !fromPath->empty() && !fromPath->version.empty()) {
+        return fromPath;
+    }
+    return std::nullopt;
+}
+
 }
 
 

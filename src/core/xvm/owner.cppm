@@ -84,6 +84,22 @@ owner_candidates(const VersionDB& db,
                  const std::string& target,
                  const std::string& version);
 
+// The owner a RECORD proves, or nothing.
+//
+// `owner_candidates` ends with guesses -- the target's own name, a binding
+// root -- because its caller confirms each one against the catalog before
+// printing it. A caller that cannot (dispatch, `use`: the error path, no index
+// loaded) must not print a guess as a command. Measured on a real home, 218 of
+// 338 program names are not package names, and `xlings install g++` is what
+// the guess produces for every one of them. This returns only what the
+// installer WROTE -- the recorded provider, or the payload path it recorded --
+// and nullopt otherwise, so the caller can offer `xlings search <name>`, which
+// always runs, instead of a command that cannot.
+std::optional<InstallCoordinate>
+recorded_owner(const VersionDB& db,
+               const std::string& target,
+               const std::string& version);
+
 // Does this payload path demonstrably belong to a DIFFERENT package?
 //
 // The versions DB is keyed by xvm TARGET -- a program name -- while every
