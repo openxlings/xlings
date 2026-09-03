@@ -93,6 +93,19 @@ ActualScan scan_actual(const std::filesystem::path& binDir,
         std::error_code fec;
         if (!entry.is_regular_file(fec) && !entry.is_symlink(fec)) continue;
         auto fname = entry.path().filename().string();
+
+        // Displacement debris, not a routing entry.
+        //
+        // When a shim cannot be unlinked because it is running,
+        // `displace_locked_file` renames it to `<name>.xlings.old[N]` on
+        // Windows and schedules the OS to drop it at reboot. That leftover is
+        // still a link to the entry binary, so without this it would scan as
+        // ours, fail to match any desired name, be queued for removal, and be
+        // renamed aside AGAIN -- `slang.exe.xlings.old.xlings.old`, growing a
+        // suffix per rebuild. The platform layer owns these files; the table
+        // does not see them.
+        if (fname.find(".xlings.old") != std::string::npos) continue;
+
         if (is_our_shim_(entry.path(), entryBinary)) {
             scan.ours.insert(std::move(fname));
         } else {

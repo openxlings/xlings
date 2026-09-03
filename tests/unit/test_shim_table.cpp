@@ -241,6 +241,38 @@ TEST(ShimTableScan, ClassifiesLinksToTheEntryBinaryAsOurs) {
     fs::remove_all(root, ec);
 }
 
+// Windows-only in origin, asserted everywhere because the filter is.
+//
+// A shim that cannot be unlinked because it is running gets renamed to
+// `<name>.xlings.old` and scheduled for deletion at reboot. That leftover is
+// still a link to the entry binary, so an unfiltered scan would claim it,
+// find no desired name matching, queue it for removal, and rename it aside
+// again — one suffix per rebuild, forever.
+TEST(ShimTableScan, DisplacementDebrisIsNotAnEntry) {
+    auto root = make_temp_dir("debris");
+    auto entry = root / "xlings-entry";
+    auto bin = root / "bin";
+    fs::create_directories(bin);
+    { std::ofstream out(entry); out << "entry"; }
+
+    std::error_code ec;
+    for (const auto* name : {"slang.xlings.old", "slang.xlings.old1"}) {
+        ec.clear();
+        fs::create_symlink(entry, bin / name, ec);
+        if (ec) { ec.clear(); fs::create_hard_link(entry, bin / name, ec); }
+        ASSERT_FALSE(ec) << ec.message();
+    }
+
+    auto scan = xvm::scan_actual(bin, entry);
+
+    EXPECT_TRUE(scan.ours.empty())
+        << "displacement debris was claimed as a routing entry";
+    EXPECT_TRUE(scan.foreign.empty())
+        << "displacement debris was reported as somebody's file";
+
+    fs::remove_all(root, ec);
+}
+
 TEST(ShimTableScan, MissingBinDirectoryIsEmptyNotAnError) {
     auto scan = xvm::scan_actual("/nonexistent/xlings/bin", "/nonexistent/x");
     EXPECT_TRUE(scan.ours.empty());
