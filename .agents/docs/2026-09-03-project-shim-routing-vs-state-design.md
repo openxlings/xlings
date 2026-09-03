@@ -194,6 +194,23 @@ active version(今天敲它们只能得到错误),只有 `rustup` 在 `gfxbuild`
 结果是「装了、active、一个文件都没有」。`self_doctor_anchor_shim_test.sh` 第一条断言就炸。
 补进 `xlings_binary_in_home` 而不是另造一个局部答案。
 
+**推翻 10:「透传的条件是『当前 scope 对这个名字毫无主张』」——粒度太粗,CI 三个平台同时抓到。**
+`shim_project_context_test` 按**绝对路径**调用 `<project>/.xlings/subos/_/bin/node`,
+断言必须失败;我的透传把它换成了 runner 自己的 node。区别在于**怎么到达这个 shim**:
+PATH 按裸名字找到的是**路由条目**(用户敲了个名字,xlings 没意见,交还 PATH 是对的);
+按路径点名的不是 —— 项目的 bin 从来不在 PATH 上,所以那个文件只可能是被**指名**的,
+换成别的程序正是本设计到处拒绝的那种替换。判据加在 `invoked_as_routing_entry_`。
+
+**推翻 11:该判据的第一版比较的是**文件**,而 shim 本身就是指向 entry binary 的 symlink** ——
+`weakly_canonical` 会把 `<project>/.../bin/node` 解析成 `<home>/bin/xlings`,于是机器上
+每个 shim 都"住在 home 里"。必须只规范化**父目录**。由新增的 E2E 断言 E 抓到。
+
+**推翻 12:「陈旧条目一律 Notice」——丢掉了产品本来就有的区分。**
+`self_doctor_test` S5 要求 orphan shim 让退出码非零,而 `self_doctor_anchor_shim_test` S3
+要求 anchor shim 不要。陈旧其实是三件事,只有第一件进退出码:`orphan`(本 scope 注册过的
+真程序、无 active —— 坏状态)、`anchor`(只锚定 release,#452,老 home 上非用户所为)、
+`unknown`(本 scope DB 里根本没有 —— 就是本设计要清的项目 mirror 残渣,真机 23 个)。
+
 ---
 
 ## 4. 约束推导

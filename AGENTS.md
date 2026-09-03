@@ -108,6 +108,25 @@ Use `project_test_lib.sh` helpers. Key functions:
 - `run_xlings "$HOME_DIR" "$ROOT_DIR" <args>` — isolated execution
 - `require_fixture_index` — ensures pkgindex fixture present
 
+**Running the suite locally: set `XLINGS_TEST_MIRROR=CN`.**
+
+```
+XLINGS_TEST_MIRROR=CN bash tests/e2e/run_all.sh build/release.tar.gz
+```
+
+An isolated home defaults to the GLOBAL mirror, because CI runs on github.com
+and cannot reach the CN endpoints. From inside China that default makes every
+index sync wait on an unreachable host until it times out — and that does not
+present as a network problem, it presents as the command under test hanging.
+Measured on one local run of this suite: `subos_events` 817s,
+`subos_profile_upgrade` 650s, `cli_short_alias_removal` 406s, essentially all
+of it spent waiting. The same three take seconds with the knob set.
+
+Corollary when a local e2e looks stuck: check the mirror before reading it as a
+regression. `xlings self init` on a fresh home measured 17s on one binary and
+2m13s on another purely from mirror reachability, which is easy to mistake for
+a performance change in the code under test.
+
 ### Diagnosing a shim that behaves strangely
 
 **First command: `$XLINGS_HOME/bin/xlings --version`.**
