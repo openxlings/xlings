@@ -2174,8 +2174,24 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             // offer -- but they ARE listed, because "nothing happened" and
             // "it worked" must never print the same.
             if (!fs::exists(st.xlingsBin)) continue;
+
+            // Under the home's state lock, and re-planned inside it.
+            //
+            // The table is DERIVED from the workspace, so a concurrent
+            // install writing the workspace between the scan and this repair
+            // would have us delete a shim it had just added. The scan's diff
+            // is a report; the repair needs its own, computed against state
+            // nobody else can be moving. Same shape as `repair_state_`.
+            auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
+            if (!lock) {
+                note(glyph::mark(glyph::failed, "shim table"),
+                     std::format("cannot rebuild: {}", lock.error()));
+                continue;
+            }
+            Config::reload_state();
             auto projects = project_contributions();
-            auto diff = plan_shim_table(p.subosDir, st.ws, st.db, projects);
+            auto diff = plan_shim_table(p.subosDir, Config::workspace(),
+                                        Config::versions(), projects);
             auto report = apply_shim_table(p.subosDir, diff);
             if (!report.added.empty()) {
                 note(glyph::mark(glyph::bullet, "shims created"),

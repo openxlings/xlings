@@ -133,6 +133,23 @@ authority on what is actually running.
 Corollary for any verification that goes through a shim: **swapping the
 binary under test without swapping the dispatcher is not a control.**
 
+**Second thing to know: a shim file asserts ROUTING, not STATE.** Its
+presence means "this name is dispatched through xlings" and nothing more —
+it carries no version and no owner. Which version runs is the workspace's
+answer, resolved at exec time. So `bin/` holding a name whose workspace has
+no active version is not, by itself, a defect: a project's command names
+live in the global subos's `bin/` because a project's own bin is never on
+PATH, and outside that project the shim hands the name back to PATH and runs
+the host's copy.
+
+The directory is a derived table with one writer (`xself::sync_shim_tables`,
+called by install / use / remove) and is rebuilt from the workspace plus
+`knownProjects` rather than audited against it. `xlings self doctor` reports
+the difference as `shim table`; `--fix` applies it and names what it removed.
+Reading a shim's existence as an activation claim is what produced the class
+of bug that design removed — see
+`.agents/docs/2026-09-03-project-shim-routing-vs-state-design.md`.
+
 ### Upstream dependency
 
 `mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via `mcpp.toml`:
