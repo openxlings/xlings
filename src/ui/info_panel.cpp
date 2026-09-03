@@ -286,20 +286,22 @@ void print_install_plan(std::span<const std::pair<std::string, std::string>> pac
 }
 
 void print_subos_list(
-    std::span<const std::tuple<std::string, std::string, int, bool>> entries) {
+    std::span<const std::tuple<std::string, std::string, int, int, bool>> entries) {
     using namespace ftxui;
 
     constexpr int kMarkerW = 4;
     constexpr int kGap = 2;
 
-    auto detail_of = [](const std::string& dir, int tools) {
-        return "(" + dir + "  commands: " + std::to_string(tools) + ")";
+    auto detail_of = [](const std::string& dir, int commands, int packages) {
+        auto out = "(" + dir + "  commands: " + std::to_string(commands);
+        if (packages >= 0) out += "  packages: " + std::to_string(packages);
+        return out + ")";
     };
 
     int nameMax = 0, detailMax = 0;
-    for (auto& [name, dir, tools, active] : entries) {
+    for (auto& [name, dir, commands, packages, active] : entries) {
         nameMax = std::max(nameMax, layout::display_width(name));
-        detailMax = std::max(detailMax, layout::display_width(detail_of(dir, tools)));
+        detailMax = std::max(detailMax, layout::display_width(detail_of(dir, commands, packages)));
     }
     auto P = layout::plan_two_column(kMarkerW, kGap, nameMax, detailMax);
 
@@ -307,7 +309,7 @@ void print_subos_list(
     rows.push_back(text("  " + std::string(i18n::tr("Sub-OS environments:"))) | bold | color(theme::text()));
     rows.push_back(text(""));
 
-    for (auto& [name, dir, tools, active] : entries) {
+    for (auto& [name, dir, commands, packages, active] : entries) {
         auto marker = active
             ? (text("  " + std::string(theme::icon::active) + " ") | color(theme::accent()))
             : text("    ");
@@ -319,7 +321,7 @@ void print_subos_list(
         if (P.descW > 0) {
             cells.push_back(text(std::string(kGap, ' ')));
             cells.push_back(
-                text(layout::truncate_to_width(detail_of(dir, tools), P.descW))
+                text(layout::truncate_to_width(detail_of(dir, commands, packages), P.descW))
                 | color(theme::muted()));
         }
         rows.push_back(hbox(std::move(cells)));

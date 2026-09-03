@@ -1504,13 +1504,17 @@ std::optional<SubosInfo> info(const std::string& name) {
 
 int run_list_(EventStream& stream) {
     auto all = candidate_view().candidates;
-    std::vector<std::tuple<std::string, std::string, int, bool>> entries;
+    std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
     for (auto& s : all) {
-        entries.emplace_back(s.name, s.dir.string(), s.commandCount, s.isActive);
+        entries.emplace_back(s.name, s.dir.string(), s.commandCount,
+                             s.packageCount, s.isActive);
     }
     nlohmann::json entriesJson = nlohmann::json::array();
-    for (auto& [n, d, tc, active] : entries) {
-        entriesJson.push_back({{"name", n}, {"dir", d}, {"commands", tc}, {"active", active}});
+    for (auto& [n, d, commands, packages, active] : entries) {
+        entriesJson.push_back({{"name", n}, {"dir", d},
+                               {"commands", commands},
+                               {"packages", packages},
+                               {"active", active}});
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);
