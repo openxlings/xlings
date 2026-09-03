@@ -846,6 +846,47 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                    p.activeSubos, projects.size(), diff.toAdd.size(),
                    diff.toRemove.size(), diff.foreign.size());
 
+        // Stale is not one thing, and flattening it loses a distinction the
+        // product already made.
+        //
+        //   orphan  the name IS registered here as a program and has no
+        //           active version. Something took the selection away and
+        //           left the file: broken state, and an error.
+        //   anchor  the name only ever anchors releases -- nobody execs it.
+        //           Installs before 2026.7.29.2 wrote these, so they are on
+        //           existing homes through no act of the user's (#452).
+        //   unknown the name is not in this scope's DB at all. That is the
+        //           project-mirror residue this design removes: 23 measured
+        //           on a real home, and equally not the user's doing.
+        //
+        // Only `orphan` reaches the exit code. The other two are cleaned by
+        // `--fix` and reported, but must not make every upgraded home say
+        // "broken" until someone runs it.
+        const auto anchor_only_target_ = [&](const std::string& name,
+                                             const xvm::VInfo& vi) {
+            if (vi.versions.empty()) return false;
+            return std::ranges::all_of(
+                vi.versions, [&](const auto& entry) {
+                    return xvm::is_binding_root(st.db, name, entry.first);
+                });
+        };
+
+        std::vector<std::string> staleOrphan, staleAnchor, staleUnknown;
+        for (const auto& fname : diff.toRemove) {
+            auto base = fname;
+            if (!shim_ext_.empty() && base.ends_with(shim_ext_)) {
+                base = base.substr(0, base.size() - shim_ext_.size());
+            }
+            const auto* vi = xvm::get_vinfo(st.db, base);
+            if (vi == nullptr || !xvm::has_program_kind(st.db, base)) {
+                staleUnknown.push_back(fname);
+            } else if (anchor_only_target_(base, *vi)) {
+                staleAnchor.push_back(fname);
+            } else {
+                staleOrphan.push_back(fname);
+            }
+        }
+
         if (!diff.empty()) {
             std::string detail;
             if (!diff.toAdd.empty()) {
@@ -853,11 +894,23 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     "{} missing ({})", diff.toAdd.size(),
                     join_names_(diff.toAdd, 6));
             }
-            if (!diff.toRemove.empty()) {
+            if (!staleOrphan.empty()) {
                 if (!detail.empty()) detail += "; ";
                 detail += std::format(
-                    "{} stale ({}) — no active version here",
-                    diff.toRemove.size(), join_names_(diff.toRemove, 6));
+                    "{} orphan shim ({}) — registered here, no active version",
+                    staleOrphan.size(), join_names_(staleOrphan, 6));
+            }
+            if (!staleAnchor.empty()) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::format(
+                    "{} anchor shim ({}) — anchors a release, nothing runs it",
+                    staleAnchor.size(), join_names_(staleAnchor, 6));
+            }
+            if (!staleUnknown.empty()) {
+                if (!detail.empty()) detail += "; ";
+                detail += std::format(
+                    "{} stale ({}) — not registered in this subos",
+                    staleUnknown.size(), join_names_(staleUnknown, 6));
             }
             // Level by DIRECTION, not by "the table differs".
             //
@@ -872,8 +925,9 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             // finding this one replaced.
             add({
                 .kind   = FindingKind::ShimTableDrift,
-                .level  = diff.toAdd.empty() ? FindingLevel::Notice
-                                             : FindingLevel::Error,
+                .level  = (diff.toAdd.empty() && staleOrphan.empty())
+                              ? FindingLevel::Notice
+                              : FindingLevel::Error,
                 .target = p.activeSubos,
                 .detail = std::move(detail),
                 .shimPath = p.binDir,

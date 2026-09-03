@@ -35,10 +35,15 @@ hostbin="$root/hostbin"
 mkdir -p "$home/bin" "$home/subos/default/bin" "$proj" "$hostbin"
 cp "$BIN_SRC" "$home/bin/xlings"
 
+# Mirror: GLOBAL by default so CI (which cannot reach the CN endpoints) is
+# unchanged; set XLINGS_TEST_MIRROR=CN when running locally from China, or a
+# command that touches the index sits on an unreachable host long enough to
+# look like a hang. Nothing here downloads, but `self doctor` syncs.
+MIRROR="${XLINGS_TEST_MIRROR:-GLOBAL}"
 cat > "$home/.xlings.json" <<EOF
 {
   "version": "0.4.0",
-  "mirror": "GLOBAL",
+  "mirror": "$MIRROR",
   "activeSubos": "default",
   "subos": { "default": { "dir": "" } }
 }
@@ -150,6 +155,30 @@ set -e
 [[ "$cout" != *"HOST-CLAIMED-TOOL"* ]] \
   || fail "D: passed through to the host despite this scope claiming the name"
 log "D ok: an unmet claim is an error, not a substitution"
+
+# ── E. a shim NAMED BY PATH must not pass through ───────────────────
+#
+# The granularity that separates C from a silent substitution. In C the user
+# typed a bare name and PATH happened to hit xlings's file, so handing the name
+# back to PATH is exactly right. Here the caller points at ONE installation --
+# a project's own bin, which is never on PATH and so was never reached by
+# accident -- and running a different program instead would be substituting for
+# the thing they named.
+projbin="$proj/.xlings/subos/_/bin"
+mkdir -p "$projbin"
+ln -sf "$home/bin/xlings" "$projbin/demo-tool"
+
+set +e
+eout="$(cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$home" \
+         PATH="$hostbin:/usr/bin:/bin" \
+         "$projbin/demo-tool" 2>&1)"
+erc=$?
+set -e
+[[ $erc -ne 0 ]] \
+  || fail "E: a shim named by path must not fall through to the host (got: $eout)"
+[[ "$eout" != *"HOST-DEMO-TOOL"* ]] \
+  || fail "E: passed through despite being named by an explicit path"
+log "E ok: naming a shim by path is not a routing lookup"
 
 # ── B. deleting the project reclaims its names ──────────────────────
 rm -rf "$proj"

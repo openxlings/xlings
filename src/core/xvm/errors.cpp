@@ -309,6 +309,29 @@ diag::Diagnostic not_in_subos(const NotInSubos& what) {
             std::format("xlings use {} --all", what.target)));
     }
 
+    // A name this subos carries only because a project declared it.
+    //
+    // The old wording sent the user to `xlings install <name>` -- a command
+    // for a package they never asked for, that this scope has no reason to
+    // want, and which need not even be a valid package name: the measured
+    // case was `slang`, which is registered by a release group and cannot be
+    // installed under that name at all. What they actually need to know is
+    // which project it belongs to, because the usual cause is standing in the
+    // wrong directory.
+    if (!what.providedByProjects.empty()) {
+        std::string list;
+        for (const auto& p : what.providedByProjects) {
+            if (!list.empty()) list += ", ";
+            list += p;
+        }
+        d.facts.push_back({ "declared by project", std::move(list) });
+        d.actions.push_back({ "use it there",
+            std::format("cd {}", what.providedByProjects.front()) });
+        d.actions.push_back({ "or install here",
+            std::format("xlings install -g {}", what.target) });
+        return d;
+    }
+
     auto pick = what.suggestedVersion;
     if (pick.empty() && !what.versionsElsewhere.empty()) {
         auto sorted = what.versionsElsewhere;

@@ -18,6 +18,11 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.errors;
 import xlings.core.version_order;
+// For `project_contributions()` -- the one answer to "which project
+// declares this command". Implementation-unit import only; the xvm
+// interface stays free of xself.
+import xlings.core.xself.init;
+import xlings.core.xvm.shim_table;
 
 namespace xlings::xvm {
 
@@ -421,6 +426,46 @@ bool is_own_shim_(const std::filesystem::path& candidate,
     return c.starts_with(h + "/") || c.starts_with(h + "\\");
 }
 
+// Was this shim reached by PATH, or named directly?
+//
+// The distinction decides whether passing through is honest. A shim found by
+// PATH under its bare name is a ROUTING entry: the user typed a name, PATH
+// happened to hit xlings's file, and if this scope has no opinion the right
+// answer is whatever would have run without that file. A shim invoked by an
+// explicit PATH -- `<project>/.xlings/subos/_/bin/node` -- is not that. The
+// caller pointed at one installation; running a different program instead
+// would be substituting for the exact thing they named.
+//
+// argv[0] without a path component came from a PATH search and is not a
+// location (the same reading `resolve_owner_home` uses), so it is routing.
+// With a path, it is routing only if the file lives in this home -- a project
+// subos bin is never on PATH, so a shim there was always named deliberately.
+bool invoked_as_routing_entry_(const char* argv0,
+                               const std::filesystem::path& home) {
+    if (argv0 == nullptr || *argv0 == '\0') return true;
+    std::filesystem::path invoked(argv0);
+    if (!invoked.has_parent_path() || invoked.parent_path().empty()) {
+        return true;                      // bare name: came from PATH
+    }
+    // The DIRECTORY, never the file.
+    //
+    // A shim IS a symlink to the entry binary, and `weakly_canonical` follows
+    // it -- so canonicalising the invoked path turns
+    // `<project>/.xlings/subos/_/bin/node` into `<home>/bin/xlings` and every
+    // shim on the machine looks like it lives in the home. Resolving the
+    // parent directory is both correct and what the question actually is:
+    // which bin directory was this reached through.
+    std::error_code ec;
+    auto canonDir = std::filesystem::weakly_canonical(invoked.parent_path(), ec);
+    if (ec) return false;                 // cannot tell: do not substitute
+    std::error_code hec;
+    auto canonHome = std::filesystem::weakly_canonical(home, hec);
+    if (hec || canonHome.empty()) return false;
+    auto i = canonDir.string();
+    auto h = canonHome.string();
+    return i.starts_with(h + "/") || i.starts_with(h + "\\");
+}
+
 // The first executable on PATH with this name that is not one of ours.
 std::filesystem::path find_host_passthrough_(const std::string& program_name,
                                              const std::string& xlings_home) {
@@ -565,25 +610,47 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             // substitution pyenv still ships (a pinned-but-missing version
             // whose command exists on the system runs the system one and
             // prints nothing). A claim we cannot meet is an error.
-            if (auto host = find_host_passthrough_(program_name, xlings_home);
-                !host.empty()) {
+            //
+            // And only for a shim PATH found, not one the caller named by
+            // path -- see invoked_as_routing_entry_.
+            if (invoked_as_routing_entry_(argc > 0 ? argv[0] : nullptr,
+                                          cfg.homeDir)) {
+              if (auto host = find_host_passthrough_(program_name, xlings_home);
+                  !host.empty()) {
                 report_passthrough_(program_name, host);
                 platform::set_env_variable("XLINGS_SHIM_DEPTH",
                                            std::to_string(depth + 1));
                 return exec_host_program_(host, argc, argv);
+              }
             }
 
             // Same state, same wording, same code as `xlings use` reports --
             // the shim used to say "xlings: '{}' is not installed in current
             // subos" while `use` said "in this subos ({})", so the two halves
             // of one product described one condition differently.
+            // Which project, if any, is the reason this name is on PATH at
+            // all. Without it the remedy was `xlings install <name>` for a
+            // package the user never asked for -- and one that need not even
+            // be a valid package name.
+            std::vector<std::string> providers;
+            for (const auto& contribution : xself::project_contributions()) {
+                if (!contribution.readable) continue;
+                if (std::ranges::find(contribution.commands,
+                                      xvm::shim_filename(program_name))
+                    == contribution.commands.end()) {
+                    continue;
+                }
+                providers.push_back(contribution.root.string());
+            }
+
             const auto origin = Config::version_origin(program_name);
             diag::emit(not_in_subos({
-                .target            = program_name,
-                .subos             = Config::subos_scope().name,
-                .versionsElsewhere = get_all_versions(db, program_name),
-                .source            = origin.source,
-                .fromProject       = origin.fromProjectManifest,
+                .target             = program_name,
+                .subos              = Config::subos_scope().name,
+                .versionsElsewhere  = get_all_versions(db, program_name),
+                .providedByProjects = std::move(providers),
+                .source             = origin.source,
+                .fromProject        = origin.fromProjectManifest,
             }));
         } else {
             // Genuinely different state: opted into this subos, but nothing is
