@@ -1844,8 +1844,20 @@ int run(int argc, char* argv[]) {
     } catch (const std::filesystem::filesystem_error& e) {
         log::error("filesystem error: {}", e.what());
         if (!e.path1().empty()) log::error("  path: {}", e.path1().string());
-        log::error("  hint: this is likely a bug; please report at "
-                   "https://github.com/openxlings/xlings/issues");
+        // "Report this" is wrong advice for a permission error, and this
+        // handler now sees them: widening its reach to `subos`/`self`/
+        // `profile` brought in the read-only home, where the right next step
+        // is a writable location, not a bug report. Telling a user their
+        // read-only mount is our defect wastes their time and ours.
+        if (e.code() == std::errc::permission_denied
+            || e.code() == std::errc::read_only_file_system) {
+            log::error("  hint: this path is not writable — check the "
+                       "permissions on it, or point XLINGS_HOME at a "
+                       "location this user can write");
+        } else {
+            log::error("  hint: this is likely a bug; please report at "
+                       "https://github.com/openxlings/xlings/issues");
+        }
         return 1;
     } catch (const std::exception& e) {
         log::error("internal error: {}", e.what());

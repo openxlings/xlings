@@ -231,4 +231,42 @@ grep -q 'home stamp' <<<"$S6_OUT" \
        fail "S6: a healthy home exited $S6_RC because a stamp could not be written"; }
 log "S6 ok"
 
+# ── S7 · the top-level handler actually covers the subtrees ─────────────────
+#
+# S1 no longer proves this: the stamp got its own catch, so S1 would pass even
+# with the handler still opening below the dispatch. `subos` is one of the
+# three subtrees that were outside it and has nothing to do with the stamp --
+# on 2026.9.3.2 this exits 134.
+log "S7: an exception from the subos subtree reaches the top-level handler"
+S7="$RUNTIME_DIR/s7"
+mkdir -p "$S7/bin" "$S7/subos/default/bin" "$S7/subos/default/lib" \
+         "$S7/subos/default/usr" "$S7/data/xpkgs"
+python3 - "$S7" <<'PY3'
+import json, os, sys
+home = sys.argv[1]
+json.dump({"activeSubos": "default", "version": "0.0.0", "mirror": "CN",
+           "versions": {}},
+          open(os.path.join(home, ".xlings.json"), "w"), indent=2)
+json.dump({"subos_info": {"schema_version": 1,
+                          "created_at": "2026-09-06T00:00:00Z",
+                          "created_by": "e2e", "envs": {}},
+           "workspace": {}},
+          open(os.path.join(home, "subos/default/.xlings.json"), "w"), indent=2)
+PY3
+chmod -R a-w "$S7"
+set +e
+S7_OUT="$(RUN "$S7" subos new probe 2>&1)"; S7_RC=$?
+set -e
+chmod -R u+w "$S7"
+grep -q 'terminate called' <<<"$S7_OUT" \
+  && { printf '%s\n' "$S7_OUT" >&2
+       fail "S7: the subos subtree is still outside the top-level handler"; }
+[[ "$S7_RC" -ne 134 ]] \
+  || { printf '%s\n' "$S7_OUT" >&2; fail "S7: exited 134 (SIGABRT)"; }
+# And the advice has to fit the cause: a read-only path is not a bug report.
+grep -q 'not writable' <<<"$S7_OUT" \
+  || { printf '%s\n' "$S7_OUT" >&2
+       fail "S7: a permission error still asks the user to file a bug"; }
+log "S7 ok (exit $S7_RC)"
+
 log "PASS: doctor_honest_verdict"
