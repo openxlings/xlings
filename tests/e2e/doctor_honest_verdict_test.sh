@@ -187,4 +187,48 @@ else
   log "S5 skipped: this fixture produced no subos finding to classify"
 fi
 
+# ── S6 · a failed stamp is reported, not swallowed ──────────────────────────
+#
+# The other half of S1. Not aborting is necessary and not sufficient: an empty
+# catch would also stop the crash, and would leave "stamped" and "could not
+# stamp" looking identical -- which is the failure mode the rest of this file
+# is about. So the message has its own gate.
+log "S6: a stamp that could not be written says so"
+S6="$RUNTIME_DIR/s6"
+mkdir -p "$S6/bin" "$S6/subos/default/bin" "$S6/subos/default/lib" \
+         "$S6/subos/default/usr" "$S6/data/xpkgs/xim-x-ok/1.0.0/bin"
+cp "$XLINGS_BIN" "$S6/bin/xlings"
+printf '#!/bin/sh\necho ok\n' > "$S6/data/xpkgs/xim-x-ok/1.0.0/bin/ok"
+chmod +x "$S6/data/xpkgs/xim-x-ok/1.0.0/bin/ok"
+python3 - "$S6" <<'PY2'
+import json, os, sys
+home = sys.argv[1]
+json.dump({"activeSubos": "default", "version": "0.0.0", "mirror": "CN",
+           "versions": {"ok": {"filename": "ok", "type": "program",
+               "versions": {"1.0.0": {"path": os.path.join(
+                   home, "data/xpkgs/xim-x-ok/1.0.0")}}}}},
+          open(os.path.join(home, ".xlings.json"), "w"), indent=2)
+json.dump({"subos_info": {"schema_version": 1,
+                          "created_at": "2026-09-06T00:00:00Z",
+                          "created_by": "e2e", "envs": {}},
+           "workspace": {"ok": {"active": "1.0.0", "installed": ["1.0.0"]}}},
+          open(os.path.join(home, "subos/default/.xlings.json"), "w"), indent=2)
+PY2
+# Converge it first: the stamp is only attempted when the run has nothing
+# outstanding, so a home that still has work to do never reaches it.
+RUN "$S6" self doctor --fix >/dev/null 2>&1 || true
+chmod -R a-w "$S6"
+set +e
+S6_OUT="$(RUN "$S6" self doctor --fix 2>&1)"; S6_RC=$?
+set -e
+chmod -R u+w "$S6"
+grep -q 'home stamp' <<<"$S6_OUT" \
+  || { printf '%s\n' "$S6_OUT" >&2
+       fail "S6: the stamp failed silently -- a crash traded for a silence"; }
+# Bookkeeping is not health: failing to stamp must not fail the run.
+[[ "$S6_RC" -eq 0 ]] \
+  || { printf '%s\n' "$S6_OUT" >&2
+       fail "S6: a healthy home exited $S6_RC because a stamp could not be written"; }
+log "S6 ok"
+
 log "PASS: doctor_honest_verdict"

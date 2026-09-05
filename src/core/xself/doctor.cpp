@@ -2259,6 +2259,12 @@ std::string sysroot_link_source_(const DoctorState& st,
                                  const std::filesystem::path& link) {
     const auto wanted = link.filename().string();
     if (wanted.empty()) return {};
+    // All matches, not the first: one destination name reachable from two
+    // active entries is a question with two answers, and picking either would
+    // be a confident wrong repair -- the shape everything else in this change
+    // exists to remove. Measured on a real home: 95 active library entries,
+    // zero contested names, so refusing costs nothing that happens.
+    std::vector<std::string> sources;
     for (const auto& [target, info] : st.db) {
         const auto wit = st.ws.find(target);
         if (wit == st.ws.end()) continue;          // nothing active here
@@ -2268,11 +2274,12 @@ std::string sysroot_link_source_(const DoctorState& st,
         if (xvm::effective_kind(info, vit->second) != "lib") continue;
         const auto placement = xvm::library_placement(st.db, target, active);
         if (placement.empty() || placement.name != wanted) continue;
-        std::error_code ec;
-        if (!std::filesystem::exists(placement.source, ec)) return {};
-        return placement.source;
+        sources.push_back(placement.source);
     }
-    return {};
+    if (sources.size() != 1) return {};
+    std::error_code ec;
+    if (!std::filesystem::exists(sources.front(), ec)) return {};
+    return sources.front();
 }
 
 void repair_local_(const DoctorState& st, const Scan& scan,
@@ -4170,8 +4177,6 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         if (stillFound.contains(entry)) ++outstanding;
     }
 
-    render_(scan, repair, fix, dryRun, verbose, stream);
-
     // Stamp the home with the client that just checked it.
     //
     // `.xlings.json:version` records which xlings set the home up. Only `self
@@ -4185,24 +4190,30 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // shim anchoring, another subos's broken payload -- and requiring zero of
     // those would mean the marker never lands and the hint nags forever about
     // a migration that already happened.
+    //
+    // A read-only home is a legitimate environment (a sandbox, a read-only
+    // mount), and this used to be the one writer in the run that could not
+    // survive one: it threw, reached no handler -- `self` is dispatched
+    // before cli.cpp's top-level try -- and aborted the process with SIGABRT
+    // *after* the whole report had been printed (issue #583). The
+    // subos-manifest writer has caught and reported the identical failure
+    // since it was written; the two now share one fate, which includes being
+    // stamped BEFORE the report, so a failure to stamp is a line IN it rather
+    // than a stray one underneath.
     if (outstanding == 0 && after.foreignPayloads == 0) {
-        // A read-only home is a legitimate environment (a sandbox, a
-        // read-only mount), and this used to be the one writer in the run
-        // that could not survive one: it threw, reached no handler -- `self`
-        // is dispatched before cli.cpp's top-level try -- and aborted the
-        // process with SIGABRT *after* the whole report had been printed
-        // (issue #583). The subos-manifest writer two hundred lines up has
-        // caught and reported the identical failure since it was written;
-        // this is the same shape, so the two writers now share one fate.
         if (auto stamped = Config::record_client_version(
                 std::string(Info::VERSION));
             !stamped) {
-            stream.emit(LogEvent{LogLevel::warn, std::format(
-                "could not record the client version in {}: {}",
-                Config::display_path(Config::paths().homeDir / ".xlings.json"),
-                stamped.error())});
+            repair.notes.emplace_back(
+                glyph::mark(glyph::failed, "home stamp"),
+                std::format("could not record the client version in {}: {}",
+                            Config::display_path(
+                                Config::paths().homeDir / ".xlings.json"),
+                            stamped.error()));
         }
     }
+
+    render_(scan, repair, fix, dryRun, verbose, stream);
 
     return (after.issues() == 0 && outstanding == 0 && !repair.regressed)
         ? 0 : 1;
