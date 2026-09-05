@@ -96,10 +96,16 @@ if [[ ${#cmds[@]} -eq 0 ]]; then
 else
     a10_fail=0
     for c in "${cmds[@]}"; do
-        # shellcheck disable=SC2086
-        args=(${c#xlings })
+        # Through a shell, not execv. A remedy is printed for a HUMAN to paste,
+        # so some are compound (`xlings subos use X && xlings self doctor
+        # --fix`) -- and word-splitting one of those handed `&&` to the binary
+        # as an argument, which exits 2 every time. Two perfectly good remedies
+        # were reported as failing by the harness, not by the product: a check
+        # that cannot run what it grades produces noise that looks exactly like
+        # the defect it exists to find.
         env -i HOME="$HOME" PATH=/usr/bin:/bin XLINGS_HOME="$SLICE" \
-            "$XL" "${args[@]}" >/dev/null 2>&1
+            XLINGS_BIN="$XL" sh -c "${c//xlings /\"\$XLINGS_BIN\" }" \
+            >/dev/null 2>&1
         rc=$?
         [[ $rc -eq 0 ]] || { a10_fail=$((a10_fail+1)); echo "  FAIL rc=$rc : $c"; }
     done
@@ -131,8 +137,8 @@ printf '    links re-pointed by --fix           : %s\n' \
     "$(strip "$OUT/fix.txt" | grep -c 'link repointed' || true)"
 printf '    links deleted by --fix              : %s\n' \
     "$(strip "$OUT/fix.txt" | grep -c 'dangling link removed' || true)"
-printf '    registrations pruned                : %s\n' \
-    "$(strip "$OUT/fix.txt" | sed -n -r 's/^ *. pruned +([0-9]+).*/\1/p' | head -1)"
+pruned_n="$(strip "$OUT/fix.txt" | sed -n -r 's/^ *. pruned +([0-9]+).*/\1/p' | head -1)"
+printf '    registrations pruned                : %s\n' "${pruned_n:-0}"
 # A pruned run that still calls itself OK is the #583 verdict bug.
 if strip "$OUT/fix.txt" | grep -q 'pruned' \
    && strip "$OUT/fix.txt" | grep -q 'OK — workspace, shims, and payloads'; then
