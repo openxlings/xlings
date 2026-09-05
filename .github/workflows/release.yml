@@ -646,10 +646,13 @@ jobs:
           # Same failure mode as the POSIX bootstrap, same three fixes: `irm |
           # iex` reports whether iex ran, not whether irm fetched anything,
           # so a reset connection installs nothing and the step goes green.
-          $ErrorActionPreference = 'Stop'
+          # `-ErrorAction Stop` on the call, NOT $ErrorActionPreference: the
+          # preference would stay set for `& $script` below and turn any
+          # non-terminating error the installer writes into an abort -- a
+          # behaviour change well outside what this fixes.
           $script = "$env:TEMP\xlings-quick-install.ps1"
           for ($i = 1; $i -le 3; $i++) {
-            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 `
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop `
                     -Uri https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 `
                     -OutFile $script; break }
             catch { Write-Host "bootstrap download failed (attempt $i/3); retrying"; Start-Sleep 10 }
