@@ -407,6 +407,17 @@ struct RepairReport {
     // multi-subos e2e: the run exited 0 having taken a package out and left it
     // out.
     std::vector<std::pair<std::string, std::string>> failedEntries;
+    // (target, version) pairs the last rung dropped.
+    //
+    // Kept alongside the `pruned` count because the two are in different
+    // UNITS and only one of them can be subtracted from `healed`. `healed` is
+    // measured in findings; `pruned` counts registrations; and one dropped
+    // registration can take two findings with it -- a broken payload and the
+    // inactive-version entry beside it. Subtracting the registration count
+    // therefore under-subtracts, and the remainder shows up as healing that
+    // did not happen. A finding that vanished because its registration was
+    // dropped was not healed: nothing about it was made to work.
+    std::vector<std::pair<std::string, std::string>> prunedEntries;
     // Commands `--dry-run` would have run.
     std::vector<std::string> planned;
     // `--fix` ended with more issues than it started with. Sets the exit code
@@ -421,6 +432,18 @@ struct Counts {
     int missing { 0 };
     int orphans { 0 };
     int broken  { 0 };
+    // Subos-level defects: a manifest that cannot be read as one, an env
+    // section naming a package that is not installed, a declared runtime with
+    // nothing serving it.
+    //
+    // These used to be added to `broken`, which is PRINTED as "broken
+    // payloads" -- so a home whose only problem was a manifest schema said
+    // "broken payloads 1" and listed no payload. The comment on
+    // AliasUnresolved already named that shape ("a count that does not match
+    // the list ... sends people looking for a line that is not there"); this
+    // is the same shape one field over. Counted separately, summed into
+    // issues() exactly as before, so the exit code does not move.
+    int subos   { 0 };
     int binding { 0 };
     int inactive { 0 };
     int aliasBroken { 0 };
@@ -429,7 +452,8 @@ struct Counts {
     int otherSubos { 0 };
 
     [[nodiscard]] int issues() const {
-        return missing + orphans + broken + binding + inactive + aliasBroken;
+        return missing + orphans + broken + binding + inactive + aliasBroken
+             + subos;
     }
 };
 

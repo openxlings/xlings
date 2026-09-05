@@ -1283,7 +1283,8 @@ void Config::save_versions() {
     } catch (...) { return {}; }
 }
 
-void Config::record_client_version(const std::string& version) {
+std::expected<void, std::string>
+Config::record_client_version(const std::string& version) {
     namespace fs = std::filesystem;
     auto configPath = instance_().paths_.homeDir / ".xlings.json";
     nlohmann::json json = nlohmann::json::object();
@@ -1294,13 +1295,20 @@ void Config::record_client_version(const std::string& version) {
             if (json.is_discarded() || !json.is_object()) {
                 // Refuse to replace a file we could not parse. Overwriting
                 // it here would trade a stale version field for a lost
-                // versions DB.
-                return;
+                // versions DB. Not an error to report: the refusal is the
+                // correct outcome, and the unreadable file has its own
+                // finding.
+                return {};
             }
-        } catch (...) { return; }
+        } catch (...) { return {}; }
     }
     json["version"] = version;
-    platform::write_string_to_file(configPath.string(), json.dump(2));
+    try {
+        platform::write_string_to_file(configPath.string(), json.dump(2));
+    } catch (const std::exception& e) {
+        return std::unexpected(e.what());
+    }
+    return {};
 }
 
 void Config::mark_hint_seen(std::string_view id) {

@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.9.3.2";
+    static constexpr std::string_view VERSION = "2026.9.4.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -581,7 +581,17 @@ public:
     // Read-modify-write of the single field, deliberately: the file also
     // holds the xvm versions DB and the user's config, and this is called
     // from a command that has not necessarily loaded either.
-    static void record_client_version(const std::string& version);
+    //
+    // Returns the write failure rather than throwing it. The home can sit on
+    // a read-only mount or in a sandbox, and the atomic writer signals that
+    // by throwing -- which, from `self doctor --fix`, used to reach no
+    // handler at all and abort the process with SIGABRT after the report had
+    // already been printed (issue #583). Stamping is bookkeeping: failing it
+    // is worth a line, never the run. The caller prints that line, so
+    // "stamped" and "could not stamp" stay distinguishable -- an empty catch
+    // here would trade a crash for a silence.
+    [[nodiscard]] static std::expected<void, std::string>
+    record_client_version(const std::string& version);
 
     // Save current subos workspace (project-local if project config exists)
     static void save_workspace();

@@ -1133,7 +1133,7 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     return out;
 }
 
-int run(int argc, char* argv[]) {
+int dispatch_(int argc, char* argv[]) {
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
         std::println("{}", spec::reference_json().dump());
@@ -1801,15 +1801,7 @@ int run(int argc, char* argv[]) {
                 return interface::run(args, stream, tui_listener, registry);
             }));
 
-    // Top-level catch: any uncaught std::exception (most commonly
-    // std::filesystem::filesystem_error from a missing error_code
-    // overload, but also out-of-memory, invalid_argument from JSON parsing,
-    // etc.) would otherwise propagate out of main() and trigger
-    // std::terminate(). On Windows, terminate() does not flush stdio
-    // buffers, so any log::error already queued is lost — CI sees a
-    // silent non-zero exit. Convert to a logged error + non-zero return
-    // so the user always sees what went wrong.
-    try {
+    {
         // app.run returns its own status (1 for parse errors, 0 on
         // successful dispatch). On successful dispatch, the action
         // lambda's intended exit code lives in `action_rc` (cmdline lib
@@ -1824,11 +1816,48 @@ int run(int argc, char* argv[]) {
         auto app_rc = app.run(static_cast<int>(rw.size()), rw.data());
         if (app_rc != 0) return app_rc;
         return action_rc;
+    }
+}
+
+// Top-level catch: any uncaught std::exception (most commonly
+// std::filesystem::filesystem_error from a missing error_code overload, but
+// also out-of-memory, invalid_argument from JSON parsing, etc.) would
+// otherwise propagate out of main() and trigger std::terminate(). On Windows,
+// terminate() does not flush stdio buffers, so any log::error already queued
+// is lost — CI sees a silent non-zero exit. Convert to a logged error + a
+// non-zero return so the user always sees what went wrong.
+//
+// It wraps the WHOLE dispatch, and that is the point of the split.
+//
+// This used to be a `try` opened two thirds of the way down `run()`, after
+// the command had already been read -- and `subos`, `self` and `profile` are
+// dispatched BEFORE that point, from the hand-rolled branch that reads argv
+// directly. Three entire subtrees were therefore outside the handler whose
+// comment claimed to cover everything, and the gap was not theoretical:
+// `self doctor --fix` on a read-only home threw from the home-config writer,
+// found no handler, and aborted with SIGABRT after printing a full report
+// (issue #583). A handler that lives in the caller cannot be outrun by a
+// dispatch decision made in the callee.
+int run(int argc, char* argv[]) {
+    try {
+        return dispatch_(argc, argv);
     } catch (const std::filesystem::filesystem_error& e) {
         log::error("filesystem error: {}", e.what());
         if (!e.path1().empty()) log::error("  path: {}", e.path1().string());
-        log::error("  hint: this is likely a bug; please report at "
-                   "https://github.com/openxlings/xlings/issues");
+        // "Report this" is wrong advice for a permission error, and this
+        // handler now sees them: widening its reach to `subos`/`self`/
+        // `profile` brought in the read-only home, where the right next step
+        // is a writable location, not a bug report. Telling a user their
+        // read-only mount is our defect wastes their time and ours.
+        if (e.code() == std::errc::permission_denied
+            || e.code() == std::errc::read_only_file_system) {
+            log::error("  hint: this path is not writable — check the "
+                       "permissions on it, or point XLINGS_HOME at a "
+                       "location this user can write");
+        } else {
+            log::error("  hint: this is likely a bug; please report at "
+                       "https://github.com/openxlings/xlings/issues");
+        }
         return 1;
     } catch (const std::exception& e) {
         log::error("internal error: {}", e.what());
