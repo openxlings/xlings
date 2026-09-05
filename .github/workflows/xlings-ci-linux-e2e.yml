@@ -54,7 +54,29 @@ jobs:
           XLINGS_NON_INTERACTIVE: 1
           XLINGS_VERSION: ${{ env.BOOTSTRAP_XLINGS_VERSION }}
         run: |
-          curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
+          # Retried, piped through a file, and asserted -- three fixes for one
+          # failure mode. `curl … | bash` reports the exit status of BASH, and
+          # bash fed an empty stdin exits 0, so a network reset installs
+          # nothing and the step goes GREEN. Measured on the 2026.9.4.1
+          # release: `curl: (35) Recv failure: Connection reset by peer` here,
+          # step reported success, and the run died two steps later with
+          # `xlings: command not found` (exit 127) pointing at the wrong
+          # thing entirely.
+          for attempt in 1 2 3; do
+            curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 \
+              https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh \
+              -o /tmp/xlings-quick-install.sh && break
+            echo "bootstrap download failed (attempt $attempt/3); retrying"
+            sleep 10
+          done
+          test -s /tmp/xlings-quick-install.sh \
+            || { echo "::error::could not download quick_install.sh"; exit 1; }
+          bash /tmp/xlings-quick-install.sh
+          # The assertion that makes a silent no-op impossible: whatever the
+          # installer thought it did, the binary either exists here or it does
+          # not.
+          test -x "$HOME/.xlings/bin/xlings" \
+            || { echo "::error::bootstrap reported success but installed no xlings"; exit 1; }
           echo "XLINGS_HOME=$HOME/.xlings"           >> "$GITHUB_ENV"
           echo "$HOME/.xlings/subos/current/bin"     >> "$GITHUB_PATH"
           echo "$HOME/.xlings/bin"                   >> "$GITHUB_PATH"
