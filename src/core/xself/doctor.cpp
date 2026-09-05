@@ -3991,8 +3991,9 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // Needed because `healed` is measured in FINDINGS and `pruned` counts
     // REGISTRATIONS, and one dropped registration can take two findings with
     // it -- a broken payload and the inactive-version entry beside it. The
-    // subtraction that used `pruned` therefore under-subtracted, and the
-    // difference surfaced as healing that never happened. Only entry-keyed
+    // subtraction that used `pruned` under-subtracts by exactly that
+    // difference, and whatever it leaves behind is reported as healing. Only
+    // entry-keyed
     // findings are attributed; the shim table is one problem for the whole
     // table however many names it covers, and a table that is correct
     // afterwards was genuinely repaired.

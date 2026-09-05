@@ -409,12 +409,14 @@ struct RepairReport {
     std::vector<std::pair<std::string, std::string>> failedEntries;
     // (target, version) pairs the last rung dropped.
     //
-    // Kept alongside the `pruned` count because the two answer different
-    // questions: the count is what to print, these are what to EXCLUDE from
-    // `healed`. A finding that vanished because its registration was dropped
-    // was not healed -- nothing about it was made to work -- and counting it
-    // as healing is how one measured run reported `healed 2` for a shim it
-    // created and then deleted in the same pass (issue #583).
+    // Kept alongside the `pruned` count because the two are in different
+    // UNITS and only one of them can be subtracted from `healed`. `healed` is
+    // measured in findings; `pruned` counts registrations; and one dropped
+    // registration can take two findings with it -- a broken payload and the
+    // inactive-version entry beside it. Subtracting the registration count
+    // therefore under-subtracts, and the remainder shows up as healing that
+    // did not happen. A finding that vanished because its registration was
+    // dropped was not healed: nothing about it was made to work.
     std::vector<std::pair<std::string, std::string>> prunedEntries;
     // Commands `--dry-run` would have run.
     std::vector<std::string> planned;
