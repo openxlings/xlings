@@ -106,4 +106,39 @@ else
     echo "  ${#cmds[@]} command(s), $a10_fail failing   (want 0)"
 fi
 echo
+# A16: does the report agree with the disk about the library farm, and does a
+# prune announce itself?
+#
+# Three numbers, no verdict. The first pair is the one that mattered: until
+# 2026.9.4.1 the scan skipped <subos>/lib entirely, so "reported" was 0 on a
+# home that had real dangling links and nothing said otherwise.
+echo "---------------- A16: sysroot links + prune honesty ----------------"
+actual_dangling() {
+    local n=0 d
+    for d in "$SLICE"/subos/*/lib "$SLICE"/subos/*/lib64; do
+        [[ -d "$d" ]] || continue
+        while IFS= read -r l; do
+            [[ -e "$l" ]] || n=$((n+1))
+        done < <(find "$d" -maxdepth 1 -type l 2>/dev/null)
+    done
+    printf '%s' "$n"
+}
+printf '    dangling links reported (before)    : %s\n' \
+    "$(strip "$OUT/before.txt" | grep -c 'dangling sysroot link' || true)"
+printf '    dangling links on disk (after fix)  : %s   (want 0)\n' \
+    "$(actual_dangling)"
+printf '    links re-pointed by --fix           : %s\n' \
+    "$(strip "$OUT/fix.txt" | grep -c 'link repointed' || true)"
+printf '    links deleted by --fix              : %s\n' \
+    "$(strip "$OUT/fix.txt" | grep -c 'dangling link removed' || true)"
+printf '    registrations pruned                : %s\n' \
+    "$(strip "$OUT/fix.txt" | sed -n -r 's/^ *. pruned +([0-9]+).*/\1/p' | head -1)"
+# A pruned run that still calls itself OK is the #583 verdict bug.
+if strip "$OUT/fix.txt" | grep -q 'pruned' \
+   && strip "$OUT/fix.txt" | grep -q 'OK — workspace, shims, and payloads'; then
+    printf '    verdict after a prune               : FAIL (said OK)\n'
+else
+    printf '    verdict after a prune               : ok\n'
+fi
+echo
 echo "logs in $OUT/{before,fix,after,fix2}.txt"

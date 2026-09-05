@@ -1133,7 +1133,7 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
     return out;
 }
 
-int run(int argc, char* argv[]) {
+int dispatch_(int argc, char* argv[]) {
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
         std::println("{}", spec::reference_json().dump());
@@ -1801,15 +1801,7 @@ int run(int argc, char* argv[]) {
                 return interface::run(args, stream, tui_listener, registry);
             }));
 
-    // Top-level catch: any uncaught std::exception (most commonly
-    // std::filesystem::filesystem_error from a missing error_code
-    // overload, but also out-of-memory, invalid_argument from JSON parsing,
-    // etc.) would otherwise propagate out of main() and trigger
-    // std::terminate(). On Windows, terminate() does not flush stdio
-    // buffers, so any log::error already queued is lost — CI sees a
-    // silent non-zero exit. Convert to a logged error + non-zero return
-    // so the user always sees what went wrong.
-    try {
+    {
         // app.run returns its own status (1 for parse errors, 0 on
         // successful dispatch). On successful dispatch, the action
         // lambda's intended exit code lives in `action_rc` (cmdline lib
@@ -1824,6 +1816,31 @@ int run(int argc, char* argv[]) {
         auto app_rc = app.run(static_cast<int>(rw.size()), rw.data());
         if (app_rc != 0) return app_rc;
         return action_rc;
+    }
+}
+
+// Top-level catch: any uncaught std::exception (most commonly
+// std::filesystem::filesystem_error from a missing error_code overload, but
+// also out-of-memory, invalid_argument from JSON parsing, etc.) would
+// otherwise propagate out of main() and trigger std::terminate(). On Windows,
+// terminate() does not flush stdio buffers, so any log::error already queued
+// is lost — CI sees a silent non-zero exit. Convert to a logged error + a
+// non-zero return so the user always sees what went wrong.
+//
+// It wraps the WHOLE dispatch, and that is the point of the split.
+//
+// This used to be a `try` opened two thirds of the way down `run()`, after
+// the command had already been read -- and `subos`, `self` and `profile` are
+// dispatched BEFORE that point, from the hand-rolled branch that reads argv
+// directly. Three entire subtrees were therefore outside the handler whose
+// comment claimed to cover everything, and the gap was not theoretical:
+// `self doctor --fix` on a read-only home threw from the home-config writer,
+// found no handler, and aborted with SIGABRT after printing a full report
+// (issue #583). A handler that lives in the caller cannot be outrun by a
+// dispatch decision made in the callee.
+int run(int argc, char* argv[]) {
+    try {
+        return dispatch_(argc, argv);
     } catch (const std::filesystem::filesystem_error& e) {
         log::error("filesystem error: {}", e.what());
         if (!e.path1().empty()) log::error("  path: {}", e.path1().string());

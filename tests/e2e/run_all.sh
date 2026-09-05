@@ -175,6 +175,10 @@ TESTS=(
     # the first assertion.
     "E2E-96 |shim_table_routing_test.sh||"
     "E2E-97 |install_guard_loader_order_test.sh||"
+    # doctor says what it did and can see the library farm. Differential
+    # against 2026.9.3.2, where S1 exits 134 (SIGABRT) and S2 reports a
+    # pruned home as "OK".
+    "E2E-98 |doctor_honest_verdict_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -2066,7 +2066,18 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         // a stop for a payload that links a directory back to an ancestor.
         for (const auto& scanRoot : sysrootRoots) {
             const bool isActive = scanRoot.name.empty();
-            for (const auto& sub : {"usr", "etc", "share"}) {
+            // `lib` and `lib64` were missing here until 2026.9.4.1, and
+            // that was not a narrow gap: the LIBRARY farm lives in
+            // `<subos>/lib` (installer.cpp's `sysroot_lib`,
+            // `Config::libDir`), so every library link a package places was
+            // outside detection entirely. Measured on a home that had never
+            // been moved: 3042 links under `subos/*/lib*`, six of them
+            // dangling, and `self doctor` reported zero. One of the six is
+            // instructive -- freetype's link named a `lib/x86_64-linux-musl/`
+            // directory the payload does not have, while the versions DB
+            // recorded the correct source all along, so the link was not
+            // stale garbage but a repairable pointer nobody was looking at.
+            for (const auto& sub : {"usr", "etc", "share", "lib", "lib64"}) {
                 const auto dir = scanRoot.root / sub;
                 std::error_code dec;
                 if (!fs::is_directory(dir, dec)) continue;
@@ -2231,6 +2242,39 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
 
 // Everything below the payload layer: shims and pure state-file edits. All of
 // it is local, none of it can fail halfway in a way the user has to unpick.
+// What the versions DB says this sysroot link should point at, or empty.
+//
+// Asked of the DB, never derived from the link's current target. On the
+// measured freetype case the link named a directory the payload does not have
+// while the record was correct all along -- reading the broken pointer to
+// decide where to re-point it would have preserved the break and called it a
+// repair. The DB is the only party that knows what a placement was supposed
+// to be.
+//
+// Matching is by DESTINATION name, which is what a placed link is named
+// (`library_placement().name`), and only among versions this subos has
+// active: an inactive version's library is deliberately not in the sysroot,
+// so re-pointing at one would install a library `use` never asked for.
+std::string sysroot_link_source_(const DoctorState& st,
+                                 const std::filesystem::path& link) {
+    const auto wanted = link.filename().string();
+    if (wanted.empty()) return {};
+    for (const auto& [target, info] : st.db) {
+        const auto wit = st.ws.find(target);
+        if (wit == st.ws.end()) continue;          // nothing active here
+        const auto& active = wit->second;
+        const auto vit = info.versions.find(active);
+        if (vit == info.versions.end()) continue;
+        if (xvm::effective_kind(info, vit->second) != "lib") continue;
+        const auto placement = xvm::library_placement(st.db, target, active);
+        if (placement.empty() || placement.name != wanted) continue;
+        std::error_code ec;
+        if (!std::filesystem::exists(placement.source, ec)) return {};
+        return placement.source;
+    }
+    return {};
+}
+
 void repair_local_(const DoctorState& st, const Scan& scan,
                    RepairReport& out) {
     auto& p = Config::paths();
@@ -2407,9 +2451,42 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             // everywhere else. The finding carries the exact command.
             if (!f.subos.empty()) continue;
             std::error_code ec;
+
+            // Re-point before deleting.
+            //
+            // "The target does not exist" is not the same fact as "the target
+            // cannot be recovered", and this branch used to treat them as
+            // one: every dangling link was deleted. On the measured freetype
+            // case that would have thrown away three working placements --
+            // the DB knew the correct source the whole time, only the link
+            // was stale. Deletion is what you do when nothing can say where
+            // the link belongs, not when you have not asked.
+            if (auto source = sysroot_link_source_(st, f.shimPath);
+                !source.empty()) {
+                xvm::place_asset(source, f.shimPath);
+                // Verified, not assumed. place_asset is best-effort by
+                // design (it logs and returns on a source that vanished
+                // mid-run), so trusting it here would let "re-pointed but
+                // still dangling" print as a repair -- the exact shape this
+                // whole change exists to remove.
+                ec.clear();
+                if (fs::exists(f.shimPath, ec)) {
+                    note(glyph::mark(glyph::bullet, "link repointed"),
+                         std::format("{} → {}",
+                                     Config::display_path(f.shimPath),
+                                     Config::display_path(source)));
+                    continue;
+                }
+                note(glyph::mark(glyph::failed, "sysroot repair failed"),
+                     std::format("could not repoint {}",
+                                 Config::display_path(f.shimPath)));
+                continue;
+            }
+
             // remove(), not remove_all(): the link is being deleted, and if
             // it were somehow followable, remove_all would delete the
             // package payload behind it.
+            ec.clear();
             fs::remove(f.shimPath, ec);
             if (!ec) {
                 // Same shape the removal path leaves behind. Without this a
@@ -3015,6 +3092,7 @@ void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
         out.notes.emplace_back(glyph::mark(glyph::bullet, "dropped"), std::format(
             "{} — its payload is gone and nothing can restore it",
             xvm::display_coordinate(target, version)));
+        out.prunedEntries.emplace_back(target, version);
 
         if (const auto wit = ws.find(target);
             wit != ws.end() && wit->second == version) {
@@ -3135,13 +3213,13 @@ Counts count_(const Scan& scan) {
             case FindingKind::SubosManifest:
             case FindingKind::SubosEnvOrphan:
             case FindingKind::SubosEnvUnresolved:
-                ++c.broken;
+                ++c.subos;
                 break;
             case FindingKind::SubosEnvConflict:
                 ++c.warnings;
                 break;
             case FindingKind::SubosRuntimeMissing:
-                if (f.level == FindingLevel::Error) ++c.broken;
+                if (f.level == FindingLevel::Error) ++c.subos;
                 else ++c.warnings;
                 break;
             case FindingKind::SubosRuntimeDrift:
@@ -3597,8 +3675,32 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
 
     if (counts.issues() == 0 && counts.warnings == 0
         && counts.foreignPayloads == 0 && counts.otherSubos == 0) {
-        add("status", "OK — workspace, shims, and payloads are all consistent",
-            true);
+        // Three verdicts, not two: clean, lossy, and broken.
+        //
+        // A prune DROPS registrations -- the record that a package was ever
+        // installed here -- and it is the last rung of the ladder, so by the
+        // time it runs there is nothing left to restore. That is a legitimate
+        // outcome and it stays legitimate; what was not legitimate is saying
+        // "workspace, shims, and payloads are all consistent" about a home
+        // that was made consistent by deleting the inconsistent parts.
+        // Measured on a home whose payload was genuinely gone: `pruned 1`
+        // printed directly above `OK — ... all consistent` (issue #583).
+        //
+        // The exit code deliberately does NOT move. It answers "does this
+        // home still need attention", and after a legitimate prune it does
+        // not. Making it non-zero would merge "something was lost" into
+        // "something is broken" -- the very conflation this block exists to
+        // undo, just pointed the other way.
+        if (repair.pruned > 0) {
+            add("status", std::format(
+                "{} registration(s) dropped — their payloads were gone and "
+                "nothing could restore them; the rest of the home is "
+                "consistent", repair.pruned), true);
+        } else {
+            add("status",
+                "OK — workspace, shims, and payloads are all consistent",
+                true);
+        }
     } else {
         if (counts.missing > 0)
             add("missing shims", std::to_string(counts.missing));
@@ -3606,6 +3708,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             add("orphan shims", std::to_string(counts.orphans));
         if (counts.broken > 0)
             add("broken payloads", std::to_string(counts.broken));
+        if (counts.subos > 0)
+            add("subos issues", std::to_string(counts.subos));
         if (counts.binding > 0)
             add("binding state", std::to_string(counts.binding));
         if (counts.inactive > 0)
@@ -3881,6 +3985,32 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
 
     const int before = count_(scan).issues();
 
+    // What each entry contributed to `before`, snapshotted while the initial
+    // scan still exists (`refresh()` overwrites `scan` below).
+    //
+    // Needed because `healed` is measured in FINDINGS and `pruned` counts
+    // REGISTRATIONS, and one dropped registration can take two findings with
+    // it -- a broken payload and the inactive-version entry beside it. The
+    // subtraction that used `pruned` therefore under-subtracted, and the
+    // difference surfaced as healing that never happened. Only entry-keyed
+    // findings are attributed; the shim table is one problem for the whole
+    // table however many names it covers, and a table that is correct
+    // afterwards was genuinely repaired.
+    std::map<std::pair<std::string, std::string>, int> initialEntryIssues;
+    for (const auto& f : scan.findings) {
+        if (f.target.empty() || f.version.empty()) continue;
+        const bool countsAsIssue =
+            f.kind == FindingKind::BrokenPayload
+            || f.kind == FindingKind::LegacyAliasShim
+            || f.kind == FindingKind::InactiveInstalled
+            || (f.kind == FindingKind::BindingState
+                && f.level != FindingLevel::Notice)
+            || (f.kind == FindingKind::AliasUnresolved
+                && f.level == FindingLevel::Error);
+        if (!countsAsIssue) continue;
+        ++initialEntryIssues[{f.target, f.version}];
+    }
+
     const CommandRunner run = [](const std::string& cmd) {
         return platform::exec(cmd);
     };
@@ -3984,7 +4114,17 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     }
 
     const auto after = count_(scan);
-    repair.healed = std::max(0, before - after.issues() - repair.pruned);
+    // Findings that disappeared because their registration was dropped are
+    // not healed -- nothing about them was made to work. See
+    // `initialEntryIssues` above for why this is not simply `repair.pruned`.
+    int prunedIssues = 0;
+    for (const auto& victim : repair.prunedEntries) {
+        if (const auto it = initialEntryIssues.find(victim);
+            it != initialEntryIssues.end()) {
+            prunedIssues += it->second;
+        }
+    }
+    repair.healed = std::max(0, before - after.issues() - prunedIssues);
 
     // Did `--fix` actually leave the home better than it found it?
     //
@@ -4045,7 +4185,22 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // those would mean the marker never lands and the hint nags forever about
     // a migration that already happened.
     if (outstanding == 0 && after.foreignPayloads == 0) {
-        Config::record_client_version(std::string(Info::VERSION));
+        // A read-only home is a legitimate environment (a sandbox, a
+        // read-only mount), and this used to be the one writer in the run
+        // that could not survive one: it threw, reached no handler -- `self`
+        // is dispatched before cli.cpp's top-level try -- and aborted the
+        // process with SIGABRT *after* the whole report had been printed
+        // (issue #583). The subos-manifest writer two hundred lines up has
+        // caught and reported the identical failure since it was written;
+        // this is the same shape, so the two writers now share one fate.
+        if (auto stamped = Config::record_client_version(
+                std::string(Info::VERSION));
+            !stamped) {
+            stream.emit(LogEvent{LogLevel::warn, std::format(
+                "could not record the client version in {}: {}",
+                Config::display_path(Config::paths().homeDir / ".xlings.json"),
+                stamped.error())});
+        }
     }
 
     return (after.issues() == 0 && outstanding == 0 && !repair.regressed)
