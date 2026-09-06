@@ -158,6 +158,15 @@ grep -q 'PT_INTERP' <<<"$R1_OUT" \
 grep -q 'broken payload' <<<"$R1_OUT" \
   && { printf '%s\n' "$R1_OUT" >&2
        fail "R1: a present payload is still reported as broken"; }
+# ... and neither are the dangling links it will re-point. One finding stands
+# for all of them, and it says how many. Measured on a real moved home before
+# this: 411 broken payloads, 1173 dangling-link warnings, 304 binding findings.
+grep -q 'dangling sysroot link' <<<"$R1_OUT" \
+  && { printf '%s\n' "$R1_OUT" >&2
+       fail "R1: the symptoms are listed beside the finding that explains them"; }
+grep -q 'sysroot link(s) point into the old path' <<<"$R1_OUT" \
+  || { printf '%s\n' "$R1_OUT" >&2
+       fail "R1: symptoms were suppressed without being counted"; }
 
 R2_OUT="$(RUN "$NEW" self doctor --fix 2>&1 || true)"
 grep -q 'dangling link removed' <<<"$R2_OUT" \

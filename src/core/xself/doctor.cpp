@@ -1586,6 +1586,11 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     // states that make `xlings use` refuse.
     auto bindingFindings = xvm::inspect_binding_state(st.db, st.ws);
 
+    // Links this run will re-point rather than report. Counted so the one
+    // finding that explains them can say how many there are -- suppressing
+    // them silently would be the same defect one level up.
+    std::size_t relocatedLinks = 0;
+
     // Sysroot ownership. Reported only for destinations a package declares,
     // not for the whole tree: the subos carries the host image, so listing
     // every unmanaged entry would bury the two or three that matter.
@@ -2231,6 +2236,16 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     if (!fs::is_symlink(path, lec)) continue;
                     if (fs::exists(path, lec)) continue;
                     auto target = fs::read_symlink(path, lec);
+                    // A symptom of the move, not a finding of its own. It
+                    // dangles because the home's address changed, its target
+                    // is present here, and `--fix` re-points it -- so listing
+                    // it would bury the one line that explains all of them.
+                    // Measured on a moved real home: 1173 of these.
+                    if (!lec
+                        && !recoverable_here_(st, target.string()).empty()) {
+                        ++relocatedLinks;
+                        continue;
+                    }
                     add({
                         .kind    = FindingKind::SysrootDangling,
                         .level   = FindingLevel::Warning,
@@ -2266,15 +2281,25 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
-        // Both sides resolved. See SysrootEntry::linkTarget.
-        std::error_code rootEc;
-        auto payloadRoot = fs::weakly_canonical(p.dataDir / "xpkgs", rootEc);
-        auto ownership = xvm::inspect_sysroot_ownership(
-            st.db, st.ws, entries,
-            (rootEc ? (p.dataDir / "xpkgs") : payloadRoot).string());
-        bindingFindings.insert(bindingFindings.end(),
-                               std::make_move_iterator(ownership.begin()),
-                               std::make_move_iterator(ownership.end()));
+        // Not asked at all while the home's address has changed.
+        //
+        // The question is "is this link one xlings placed", answered by a
+        // prefix test against this home's payload root. Every link in a moved
+        // home fails it for one reason, and the answer would be 302 findings
+        // (601 after a `--fix` that reinstalled some) telling the user to run
+        // `xlings use` on packages that are perfectly fine. The relocation
+        // repair re-points them; after that this check is meaningful again.
+        if (!st.relocation) {
+            // Both sides resolved. See SysrootEntry::linkTarget.
+            std::error_code rootEc;
+            auto payloadRoot = fs::weakly_canonical(p.dataDir / "xpkgs", rootEc);
+            auto ownership = xvm::inspect_sysroot_ownership(
+                st.db, st.ws, entries,
+                (rootEc ? (p.dataDir / "xpkgs") : payloadRoot).string());
+            bindingFindings.insert(bindingFindings.end(),
+                                   std::make_move_iterator(ownership.begin()),
+                                   std::make_move_iterator(ownership.end()));
+        }
     }
 
     // One line per (code, entry), not per field.
@@ -2369,6 +2394,21 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             .version = f.version,
             .detail  = std::format("{} — {} — {}", f.summary, f.code, f.hint),
         });
+    }
+
+    // The one finding says how many symptoms it stands for.
+    //
+    // Patched here rather than formatted at the top, because the link count is
+    // only known after the sysroot walk -- and a count that arrives too late
+    // to be printed is how "suppressed" turns into "hidden".
+    if (st.relocation && relocatedLinks > 0) {
+        for (auto& f : scan.findings) {
+            if (f.kind != FindingKind::HomeRelocated) continue;
+            f.detail += std::format(
+                "; {} sysroot link(s) point into the old path and will be "
+                "re-pointed", relocatedLinks);
+            break;
+        }
     }
 
     return scan;
