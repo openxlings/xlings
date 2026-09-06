@@ -512,15 +512,36 @@ LibraryPlacement library_placement(const VersionDB& db,
 
 bool is_permitted_file_destination(std::string_view destination) {
     if (destination.empty()) return false;
-    const std::filesystem::path p{destination};
-    if (p.is_absolute()) return false;
-    std::string first;
-    for (const auto& part : p) {
-        if (part == "..") return false;
-        if (first.empty()) first = part.string();
-    }
-    // Windows drive-relative forms ("C:foo") are absolute in spirit.
+
+    // String arithmetic rather than `fs::path` iteration, deliberately -- the
+    // same call `doctor.cpp`'s dangling_payload_key_ documents. libc++ gives
+    // the path iterators only the comparisons C++20 requires, and a range-for
+    // over a path does not compile in this translation unit at all: it built
+    // here only until this file imported one more module, and then failed on
+    // macOS with `invalid operands to binary expression ('iterator' and
+    // 'iterator')` -- a portability landmine that fires on an unrelated edit.
+    constexpr std::string_view kSeparators = "/\\";
+    const auto isSep = [](char c) { return c == '/' || c == '\\'; };
+
+    // A leading separator is absolute on POSIX; on Windows `fs::path` calls it
+    // root-relative, and its first component is then the root rather than a
+    // name -- refused either way, which is what the old iteration did too.
+    if (isSep(destination.front())) return false;
+    // Windows drive forms ("C:\\foo" absolute, "C:foo" drive-relative).
     if (destination.size() > 1 && destination[1] == ':') return false;
+
+    std::string_view first;
+    std::size_t start = 0;
+    while (start <= destination.size()) {
+        const auto end = destination.find_first_of(kSeparators, start);
+        const auto part = end == std::string_view::npos
+            ? destination.substr(start)
+            : destination.substr(start, end - start);
+        if (part == "..") return false;
+        if (first.empty() && !part.empty()) first = part;
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
     return first == "usr" || first == "etc" || first == "share";
 }
 

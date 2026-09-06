@@ -270,4 +270,14 @@ fi
 ln -sfn default "$DST/subos/current"
 
 echo "==> done: $DST"
+# The reminder exists because the warning above was not enough. A `--fix` with
+# network REINSTALLS packages, and an install hook that rewrites a file in
+# place writes through the hardlink into the real home: one such run poisoned
+# three files in ~/.xlings (a gcc `specs` -rpath, a binutils ld wrapper, a
+# libGLX RPATH) with paths inside the slice. `verify-untouched` caught all
+# three -- afterwards. Either pass `--real` for every store the run may
+# reinstall, or run verify-untouched and be ready to repair.
+echo "    reminder: run \`slice-real-home.sh verify-untouched --marker <file>\`"
+echo "    after any run that could REINSTALL (a --fix with network rewrites"
+echo "    payload files in place, and a hardlink farm passes that through)."
 du -sh "$DST" 2>/dev/null || true

@@ -2451,6 +2451,14 @@ void repair_local_(const DoctorState& st, const Scan& scan,
     const auto plan = [&](std::string what) {
         out.planned.push_back(std::move(what));
     };
+    // An action note describes something that happened. Under `--dry-run` the
+    // manifest block still walks its rules to decide whether it WOULD write,
+    // and printing its notes there would report actions nobody took -- the
+    // same defect as the past-tense prune wording, one branch over.
+    const auto actionNote = [&](std::string label, std::string text) {
+        if (dryRun) return;
+        out.notes.emplace_back(std::move(label), std::move(text));
+    };
 
     // Subos manifest repairs. Driven by the findings detection produced, not
     // by a second reading of the rules -- so what `--fix` touches is exactly
@@ -2518,7 +2526,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                         std::format("xlings {}", Info::VERSION),
                         platform::host_glibc_version());
                     changed = true;
-                    note(glyph::mark(glyph::bullet, "subos manifest"),
+                    actionNote(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",
                                      p.activeSubos,
                                      keptRuntime.empty()
@@ -2538,7 +2546,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     } else if (observed != adoptRuntime) {
                         document[std::string(mf::BLOCK)]["runtime"] = observed;
                         changed = true;
-                        note(glyph::mark(glyph::bullet, "subos runtime"),
+                        actionNote(glyph::mark(glyph::bullet, "subos runtime"),
                              std::format("subos '{}' now declares {} "
                                          "(was {}, never activated here)",
                                          p.activeSubos, observed,
@@ -2548,7 +2556,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 for (const auto& binding : orphans) {
                     if (!mf::remove_provider(document, binding)) continue;
                     changed = true;
-                    note(glyph::mark(glyph::bullet, "subos env dropped"),
+                    actionNote(glyph::mark(glyph::bullet, "subos env dropped"),
                          std::format("{} is not installed here", binding));
                 }
 
@@ -3288,21 +3296,26 @@ bool rebase_root_(std::string& s, const xvm::HomeRelocation& reloc) {
     const auto& from = reloc.oldRoot;
     const auto& to   = reloc.newRoot;
     bool changed = false;
-    for (std::size_t at = s.find(from); at != std::string::npos;
-         at = s.find(from, at + to.size())) {
+    std::size_t at = 0;
+    while ((at = s.find(from, at)) != std::string::npos) {
         const std::size_t after = at + from.size();
+        bool continuesTheName = false;
         if (after < s.size()) {
             const char c = s[after];
-            const bool continuesTheName =
+            continuesTheName =
                 (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
                 || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
-            if (continuesTheName) {
-                at = after;
-                continue;
-            }
+        }
+        if (continuesTheName) {
+            // Resume one character in, not past the replacement that did not
+            // happen: advancing by the NEW root's length here would skip a
+            // real occurrence whenever the new root is the longer of the two.
+            at += 1;
+            continue;
         }
         s.replace(at, from.size(), to);
         changed = true;
+        at += to.size();
     }
     return changed;
 }
@@ -3430,12 +3443,18 @@ void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
         std::error_code dec;
         const auto dataDir = p.dataDir;
         std::vector<fs::path> candidates;
+        // `std::default_sentinel`, not a default-constructed iterator: libc++
+        // gives the filesystem iterators only `operator==(default_sentinel_t)`
+        // under C++20, so the two-iterator spelling does not compile on macOS
+        // or Windows. Same call the sysroot scan above documents.
         auto collect = [&](const fs::path& dir) {
             std::error_code ec;
-            for (fs::directory_iterator it(dir, ec), end; it != end;
-                 it.increment(ec)) {
+            auto it = fs::directory_iterator(dir, ec);
+            if (ec) return;
+            for (; it != std::default_sentinel; it.increment(ec)) {
                 if (ec) break;
-                if (it->is_regular_file(ec)
+                std::error_code fec;
+                if (it->is_regular_file(fec)
                     && it->path().extension() == ".json") {
                     candidates.push_back(it->path());
                 }
@@ -3444,12 +3463,15 @@ void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
         if (fs::is_directory(dataDir, dec)) {
             collect(dataDir);
             std::error_code ec;
-            for (fs::directory_iterator it(dataDir, ec), end; it != end;
-                 it.increment(ec)) {
-                if (ec) break;
-                if (!it->is_directory(ec)) continue;
-                if (it->path().filename() == "xpkgs") continue;
-                collect(it->path());
+            auto it = fs::directory_iterator(dataDir, ec);
+            if (!ec) {
+                for (; it != std::default_sentinel; it.increment(ec)) {
+                    if (ec) break;
+                    std::error_code fec;
+                    if (!it->is_directory(fec)) continue;
+                    if (it->path().filename() == "xpkgs") continue;
+                    collect(it->path());
+                }
             }
         }
         for (const auto& file : candidates) {
