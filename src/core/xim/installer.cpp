@@ -1472,14 +1472,15 @@ void detach_current_subos_(const std::string& target, const std::string& version
                      xvm::group_header_assets(db, memberTarget, memberVersion)) {
                 xvm::remove_headers(asset, sysroot_include);
             }
-            if (const auto placement =
-                    xvm::library_placement(db, memberTarget, memberVersion);
+            if (const auto placement = xvm::library_placement(
+                    db, memberTarget, memberVersion,
+                    Config::paths().homeDir.string());
                 !placement.empty()) {
                 outgoingLibNames.insert(placement.name);
             }
         }
-        for (const auto& placement :
-                 xvm::release_file_placements(db, target, version)) {
+        for (const auto& placement : xvm::release_file_placements(
+                 db, target, version, Config::paths().homeDir.string())) {
             if (!xvm::is_permitted_file_destination(placement.destination)) {
                 continue;
             }
@@ -1493,8 +1494,9 @@ void detach_current_subos_(const std::string& target, const std::string& version
         // release still active here.
         std::map<std::string, std::string> activeLibSources;
         for (const auto& [activeTarget, activeVersion] : activeAfter) {
-            const auto placement =
-                xvm::library_placement(db, activeTarget, activeVersion);
+            const auto placement = xvm::library_placement(
+                db, activeTarget, activeVersion,
+                Config::paths().homeDir.string());
             if (placement.empty()) continue;
             if (!outgoingLibNames.contains(placement.name)) continue;
             activeLibSources.emplace(placement.name, placement.source);
@@ -1516,8 +1518,9 @@ void detach_current_subos_(const std::string& target, const std::string& version
         // outgoing set, so those would be missing. Placing is idempotent, so
         // this is a stat for everything already correct.
         if (!fallbackVersion.empty()) {
-            for (const auto& placement :
-                     xvm::release_file_placements(db, target, fallbackVersion)) {
+            for (const auto& placement : xvm::release_file_placements(
+                     db, target, fallbackVersion,
+                     Config::paths().homeDir.string())) {
                 xvm::place_asset(placement.source,
                                  p.subosDir / placement.destination);
             }
@@ -1901,12 +1904,13 @@ bool process_xvm_operations_(const PlanNode& node,
                  xvm::group_header_assets(scopedDb, target, version)) {
             xvm::install_headers(asset, sysroot_include);
         }
-        if (const auto placement =
-                xvm::library_placement(scopedDb, target, version);
+        if (const auto placement = xvm::library_placement(
+                scopedDb, target, version, Config::paths().homeDir.string());
             !placement.empty()) {
             xvm::place_library(placement.source, placement.name, sysroot_lib);
         }
-        if (const auto file = xvm::file_placement(scopedDb, target, version);
+        if (const auto file = xvm::file_placement(
+                scopedDb, target, version, Config::paths().homeDir.string());
             !file.empty()) {
             xvm::place_asset(file.source,
                              Config::paths().subosDir / file.destination);
@@ -2040,7 +2044,8 @@ bool process_xvm_operations_(const PlanNode& node,
                 continue;
             }
             if (const auto file = xvm::file_placement(
-                    scopedDb, resolved->target, resolved->version);
+                    scopedDb, resolved->target, resolved->version,
+                    Config::paths().homeDir.string());
                 !file.empty()) {
                 xvm::place_asset(file.source,
                                  artifactSubosDir / file.destination);

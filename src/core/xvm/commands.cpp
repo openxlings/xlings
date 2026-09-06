@@ -451,7 +451,8 @@ void reclaim_declared_assets(const fs::path& subosDir,
         if (const auto claim = activeClaims.find(destination);
             claim != activeClaims.end()) {
             const auto placement = file_placement(
-                db, claim->second.first, claim->second.second);
+                db, claim->second.first, claim->second.second,
+                Config::paths().homeDir.string());
             if (!placement.empty()) {
                 place_asset(placement.source, subosDir / destination);
                 continue;
@@ -683,7 +684,8 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // Running it first means a bad group costs the user an error message
     // instead of a half-switched toolchain.
     auto workspace = Config::effective_workspace();
-    auto plan = plan_use_switch(db, workspace, target, resolved);
+    auto plan = plan_use_switch(db, workspace, target, resolved,
+                                Config::paths().homeDir.string());
     if (!plan) {
         log::error("{}", render(plan.error(), true));
         return 1;
@@ -798,7 +800,8 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     std::set<std::string> reclaimDests;
     auto& activeAfter = Config::workspace_mut();
     for (const auto& [memberTarget, memberVersion] : plan->reclaimFiles) {
-        const auto placement = file_placement(db, memberTarget, memberVersion);
+        const auto placement = file_placement(db, memberTarget, memberVersion,
+                                              Config::paths().homeDir.string());
         if (!placement.destination.empty()) {
             reclaimDests.insert(placement.destination);
         }

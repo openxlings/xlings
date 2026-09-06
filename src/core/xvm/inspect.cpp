@@ -28,7 +28,11 @@ namespace xlings::xvm::detail_ {
 bool release_declares_file_assets_(const VersionDB& db,
                                    const std::string& target,
                                    const std::string& version) {
-    return !release_file_placements(db, target, version).empty();
+    // No home, deliberately: this reads only whether the list is EMPTY, and
+    // expanding `${XLINGS_HOME}` in a source path cannot make a declaration
+    // appear or disappear. Passing a home here would suggest the answer
+    // depends on one.
+    return !release_file_placements(db, target, version, {}).empty();
 }
 
 // Is this member's name currently held by a DIFFERENT provider?
@@ -408,6 +412,10 @@ std::vector<BindingFinding> inspect_sysroot_ownership(
     }
 
     for (const auto& entry : entries) {
+        // Both sides canonical, or neither. `linkTarget` is resolved by the
+        // caller (see SysrootEntry) and `payloadRoot` is resolved by it too;
+        // comparing a resolved path against an unresolved root would just
+        // move the same defect one argument over.
         const bool ours = !entry.linkTarget.empty()
             && std::string_view{entry.linkTarget}.starts_with(payloadRoot);
         if (ours) continue;

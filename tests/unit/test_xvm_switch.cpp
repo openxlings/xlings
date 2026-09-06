@@ -55,6 +55,12 @@ import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
 import mcpplibs.cmdline;
 
+
+// These fixtures store absolute payload paths, so there is no `${XLINGS_HOME}`
+// to expand and the home is genuinely irrelevant here. Named rather than
+// written as `{}` at 50 call sites so that "no home" reads as a decision.
+constexpr std::string_view kNoHome{};
+
 namespace {
 
 struct ScopedEnvVar {
@@ -299,7 +305,7 @@ TEST(XvmSwitchPlan, PlansEveryMemberNotJustTheEntryPoint) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->members.size(), 3u);
@@ -315,7 +321,7 @@ TEST(XvmSwitchPlan, SwapsHeadersAndLibsForEveryMovingMember) {
     const xlings::xvm::Workspace ws{
         {"gcc", "16.1.0"}, {"g++", "16.1.0"}, {"libstdc++.so.6", "16.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     ASSERT_EQ(plan->switches.size(), 3u);
@@ -361,7 +367,7 @@ TEST(XvmSwitchPlan, AnAlreadyActiveMemberIsRematerializedButNotUnwound) {
     switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
     const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
@@ -392,7 +398,7 @@ TEST(XvmSwitchPlan, AMemberWithNoMaterializedAssetsEmitsNothing) {
     switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0", /*withDirs=*/false);
     const xlings::xvm::Workspace ws{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     // Re-materializing is only worth emitting when there is something to
@@ -465,7 +471,7 @@ TEST(XvmGroupHeaders, EveryDeclaredDirectoryIsSwitchedNotJustTheLast) {
                          "/pkg/gcc/16.1.0/include-fixed"});
     const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     auto sources = [](const std::vector<xlings::xvm::HeaderAsset>& assets) {
@@ -487,7 +493,7 @@ TEST(XvmGroupHeaders, TheSameAssetIsPlannedOncePerReleaseNotOncePerMember) {
     xlings::xvm::VersionDB db;
     multi_header_group_(db, "15.1.0", {"/pkg/gcc/15.1.0/include"});
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     // gcc and g++ both resolve to the group's one declaration.
@@ -509,7 +515,7 @@ TEST(XvmGroupHeaders, AnAssetBothReleasesShareIsNeverRemoved) {
                         {"/pkg/gcc/16.1.0/include", "/shared/include"});
     const xlings::xvm::Workspace ws{{"gcc", "16.1.0"}, {"g++", "16.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "15.1.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     for (const auto& asset : plan->removeHeaders) {
@@ -580,7 +586,7 @@ TEST(XvmSwitchPlan, ReportsProgramsTheIncomingReleaseDoesNotHave) {
     const xlings::xvm::Workspace ws{
         {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     ASSERT_EQ(plan->stranded.size(), 1u);
@@ -598,7 +604,7 @@ TEST(XvmSwitchPlan, AReleaseWithTheSameMembersStrandsNothing) {
     const xlings::xvm::Workspace ws{
         {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_TRUE(plan->stranded.empty());
@@ -614,7 +620,7 @@ TEST(XvmSwitchPlan, AProgramTheUserAlreadyMovedIsNotReported) {
     const xlings::xvm::Workspace ws{
         {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "14.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_TRUE(plan->stranded.empty());
@@ -627,7 +633,7 @@ TEST(XvmSwitchPlan, NothingIsStrandedWhenNoReleaseIsBeingLeft) {
     // A first switch, with an empty workspace: there is no outgoing release
     // to compare against, and inventing one would report every program the
     // user has never installed.
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_TRUE(plan->stranded.empty());
@@ -644,7 +650,7 @@ TEST(XvmSwitchPlan, AnUnresolvableOutgoingReleaseDoesNotFailTheSwitch) {
     const xlings::xvm::Workspace ws{
         {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"gcc-ar", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->members.size(), 2u);
@@ -672,7 +678,7 @@ TEST(XvmSwitchPlan, SwitchingBetweenTwoPackagesStrandsNothing) {
         {"java", "25.0.4+7-temurin"}, {"javac", "25.0.4+7-temurin"},
         {"jdk-temurin", "25.0.4+7"}, {"jdk-zulu", "25.0.4"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_TRUE(plan->stranded.empty())
@@ -699,7 +705,7 @@ TEST(XvmSwitchPlan, NamesTheOtherPackageKeepsAreListedApartFromStranded) {
         {"jwebserver", "25.0.4+7-temurin"},
         {"jdk-temurin", "25.0.4+7"}, {"jdk-zulu", "25.0.4"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "java", "25.0.4-zulu", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_TRUE(plan->stranded.empty()) << "--strict must stay switchable";
@@ -722,7 +728,7 @@ TEST(XvmSwitchPlan, AGroupRootIsNeverStrandedEvenWithinOnePackage) {
     const xlings::xvm::Workspace ws{
         {"demo", "1.0.0"}, {"demo-root-old", "1.0.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->fromProvider, plan->toProvider) << "same package fixture";
@@ -739,7 +745,7 @@ TEST(XvmSwitchPlan, ALibraryLeftBehindWithinOnePackageIsStrandedAndSaysSo) {
     const xlings::xvm::Workspace ws{
         {"gcc", "15.1.0"}, {"g++", "15.1.0"}, {"libstdc++.so.6", "15.1.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "gcc", "16.1.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     ASSERT_EQ(plan->stranded.size(), 1u);
@@ -751,10 +757,10 @@ TEST(XvmSwitchPlan, EveryEntryPointYieldsTheSamePlan) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++", "libstdc++"}, "15.1.0");
 
-    const auto fromRoot = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
-    const auto fromMember = xlings::xvm::plan_use_switch(db, {}, "g++", "15.1.0");
+    const auto fromRoot = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
+    const auto fromMember = xlings::xvm::plan_use_switch(db, {}, "g++", "15.1.0", kNoHome);
     const auto fromLib =
-        xlings::xvm::plan_use_switch(db, {}, "libstdc++", "15.1.0");
+        xlings::xvm::plan_use_switch(db, {}, "libstdc++", "15.1.0", kNoHome);
 
     ASSERT_TRUE(fromRoot.has_value());
     ASSERT_TRUE(fromMember.has_value());
@@ -771,7 +777,7 @@ TEST(XvmSwitchPlan, AMissingMemberIsAnErrorNotAPartialSwitch) {
     // then walked into the gap.
     db.at("libstdc++").versions.erase("15.1.0");
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
 
     ASSERT_FALSE(plan.has_value());
     EXPECT_FALSE(plan.error().code.empty());
@@ -784,7 +790,7 @@ TEST(XvmSwitchPlan, AnUnresolvableGroupIsRefusedBeforeAnyChange) {
     switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
     db.at("g++").versions.at("15.1.0").bindingGroup->providerVersion = "bogus";
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
 
     ASSERT_FALSE(plan.has_value());
     EXPECT_FALSE(plan.error().hint.empty());
@@ -797,7 +803,7 @@ TEST(XvmSwitchPlan, AnUngroupedTargetSwitchesOnItsOwn) {
     data.path = "/pkg/editor";
     data.kind = "program";
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "editor", "1.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "editor", "1.0.0", kNoHome);
 
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     EXPECT_EQ(plan->members.size(), 1u);
@@ -867,7 +873,7 @@ TEST(XvmLibrarySwitch, ALibraryMemberIsPlannedForTheIncomingRelease) {
     const xlings::xvm::Workspace ws{{"openssl", "3.2.0"},
                                     {"libssl.so.3", "3.2.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     const auto lib = std::ranges::find_if(
@@ -896,9 +902,9 @@ TEST(XvmLibrarySwitch, EnteringFromTheLibraryYieldsTheSamePlacement) {
                                     {"libssl.so.3", "3.2.0"}};
 
     const auto fromProgram =
-        xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5");
+        xlings::xvm::plan_use_switch(db, ws, "openssl", "3.1.5", kNoHome);
     const auto fromLibrary =
-        xlings::xvm::plan_use_switch(db, ws, "libssl.so.3", "3.1.5");
+        xlings::xvm::plan_use_switch(db, ws, "libssl.so.3", "3.1.5", kNoHome);
     ASSERT_TRUE(fromProgram.has_value());
     ASSERT_TRUE(fromLibrary.has_value());
     EXPECT_EQ(fromProgram->members, fromLibrary->members);
@@ -913,7 +919,7 @@ TEST(XvmLibrarySwitch, TheDeadLibdirFieldIsIgnored) {
     library_release_(db, "3.1.5");
     db["libssl.so.3"].versions["3.1.5"].libdir = "/pkg/openssl/WRONG/lib64";
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "openssl", "3.1.5");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "openssl", "3.1.5", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     for (const auto& change : plan->switches) {
@@ -933,7 +939,7 @@ TEST(XvmLibrarySwitch, LegacyStateWithoutKindStillResolvesAsALibrary) {
     ASSERT_EQ(db.at("libssl.so.3").type, "lib");
 
     const auto placement =
-        xlings::xvm::library_placement(db, "libssl.so.3", "3.1.5");
+        xlings::xvm::library_placement(db, "libssl.so.3", "3.1.5", kNoHome);
     ASSERT_FALSE(placement.empty())
         << "legacy entry lost its library identity on upgrade";
     EXPECT_EQ(placement.name, "libssl.so.3");
@@ -948,7 +954,7 @@ TEST(XvmLibrarySwitch, ADifferentSonameIsUnlinkedRatherThanReplaced) {
     const xlings::xvm::Workspace ws{{"openssl", "1.1.1"},
                                     {"libssl.so.1.1", "1.1.1"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "openssl", "3.0.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     const auto lib = std::ranges::find_if(
@@ -1007,11 +1013,11 @@ TEST(XvmLibrarySwitch, AProgramMemberHasNoLibraryPlacement) {
     xlings::xvm::VersionDB db;
     library_release_(db, "3.1.5");
     EXPECT_TRUE(
-        xlings::xvm::library_placement(db, "openssl", "3.1.5").empty());
+        xlings::xvm::library_placement(db, "openssl", "3.1.5", kNoHome).empty());
     EXPECT_TRUE(
-        xlings::xvm::library_placement(db, "nosuch", "3.1.5").empty());
+        xlings::xvm::library_placement(db, "nosuch", "3.1.5", kNoHome).empty());
     EXPECT_TRUE(
-        xlings::xvm::library_placement(db, "libssl.so.3", "9.9.9").empty());
+        xlings::xvm::library_placement(db, "libssl.so.3", "9.9.9", kNoHome).empty());
 }
 
 // ============================================================
@@ -1069,7 +1075,7 @@ TEST(XvmFileAsset, ResolvesToAPayloadSourceAndRelativeDestination) {
     files_release_(db, "1.0.0");
 
     const auto placement =
-        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0");
+        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0", kNoHome);
     ASSERT_FALSE(placement.empty());
     EXPECT_EQ(placement.source,
               (std::filesystem::path("/pkg/demo/1.0.0") / "include/demo")
@@ -1086,7 +1092,7 @@ TEST(XvmFileAsset, AFileMemberIsPlannedForTheIncomingRelease) {
     const xlings::xvm::Workspace ws{{"demo", "2.0.0"},
                                     {"demo.files.1", "2.0.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     const auto entry = std::ranges::find_if(
@@ -1108,7 +1114,7 @@ TEST(XvmFileAsset, AMovedDestinationIsUnlinked) {
     const xlings::xvm::Workspace ws{{"demo", "1.0.0"},
                                     {"demo.files.1", "1.0.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "2.0.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     const auto entry = std::ranges::find_if(
@@ -1145,15 +1151,15 @@ TEST(XvmFileAsset, ARejectedDestinationYieldsNoPlacement) {
     db["demo.files.1"].versions["1.0.0"].fileDst = "bin/evil";
 
     EXPECT_TRUE(
-        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0").empty())
+        xlings::xvm::file_placement(db, "demo.files.1", "1.0.0", kNoHome).empty())
         << "a destination outside the permitted roots must place nothing";
 }
 
 TEST(XvmFileAsset, NonFileEntriesResolveToNoPlacement) {
     xlings::xvm::VersionDB db;
     files_release_(db, "1.0.0");
-    EXPECT_TRUE(xlings::xvm::file_placement(db, "demo", "1.0.0").empty());
-    EXPECT_TRUE(xlings::xvm::file_placement(db, "nope", "1.0.0").empty());
+    EXPECT_TRUE(xlings::xvm::file_placement(db, "demo", "1.0.0", kNoHome).empty());
+    EXPECT_TRUE(xlings::xvm::file_placement(db, "nope", "1.0.0", kNoHome).empty());
 }
 
 // The release identity is a date now. `self update` resolves `latest` and
@@ -1308,14 +1314,14 @@ TEST(XvmMetadataReset, TheUseRefusalIsReproducedAndThenLifted) {
         xlings::xvm::vdata_from_json(corrupt_group_json_());
 
     // The symptom the user actually reports.
-    auto before = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0");
+    auto before = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0", kNoHome);
     ASSERT_FALSE(before.has_value())
         << "the dead end under test no longer reproduces";
 
     const auto plan = xlings::xvm::plan_metadata_reset(db);
     ASSERT_EQ(xlings::xvm::apply_metadata_reset(db, plan), 1u);
 
-    auto after = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0");
+    auto after = xlings::xvm::plan_use_switch(db, {}, "demo", "1.0.0", kNoHome);
     EXPECT_TRUE(after.has_value())
         << "reset did not restore switching: "
         << (after.has_value() ? std::string{} : after.error().what);

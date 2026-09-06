@@ -23,6 +23,12 @@ import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.removal;
 import xlings.core.xim.installer;
 
+
+// These fixtures store absolute payload paths, so there is no `${XLINGS_HOME}`
+// to expand and the home is genuinely irrelevant here. Named rather than
+// written as `{}` at 50 call sites so that "no home" reads as a decision.
+constexpr std::string_view kNoHome{};
+
 namespace fs = std::filesystem;
 using xlings::xvm::VersionDB;
 using xlings::xvm::Workspace;
@@ -102,9 +108,9 @@ TEST(ReleaseFilePlacements, AnUnregisteredCoordinateAnswersNothing) {
     VersionDB db;
     db["demo"].type = "program";
     EXPECT_TRUE(
-        xlings::xvm::release_file_placements(db, "demo", "1.0.0").empty());
+        xlings::xvm::release_file_placements(db, "demo", "1.0.0", kNoHome).empty());
     EXPECT_TRUE(
-        xlings::xvm::release_file_placements(db, "absent", "1.0.0").empty());
+        xlings::xvm::release_file_placements(db, "absent", "1.0.0", kNoHome).empty());
 }
 
 namespace {
@@ -168,11 +174,11 @@ TEST(ReleaseFilePlacements, WalksMembersRatherThanThePackageName) {
                      {{"include/a.h", "usr/include/demo/a.h"},
                       {"include/b.h", "usr/include/demo/b.h"}});
 
-    EXPECT_TRUE(xlings::xvm::file_placement(db, "demo", "1.0.0").empty())
+    EXPECT_TRUE(xlings::xvm::file_placement(db, "demo", "1.0.0", kNoHome).empty())
         << "the package's own entry is never kind=files -- that is the trap";
 
     const auto placements =
-        xlings::xvm::release_file_placements(db, "demo", "1.0.0");
+        xlings::xvm::release_file_placements(db, "demo", "1.0.0", kNoHome);
     ASSERT_EQ(placements.size(), 2u);
 
     std::set<std::string> destinations;
@@ -196,7 +202,7 @@ TEST(ReleaseFilePlacements, AskingAboutAMemberFindsTheWholeRelease) {
 
     // `remove` resolves to whichever coordinate the user typed, which can be
     // a member. The answer must not depend on which one.
-    EXPECT_EQ(xlings::xvm::release_file_placements(db, "demo.files.2", "1.0.0")
+    EXPECT_EQ(xlings::xvm::release_file_placements(db, "demo.files.2", "1.0.0", kNoHome)
                   .size(), 2u);
 }
 
@@ -207,7 +213,7 @@ TEST(ReleaseFilePlacements, ARejectedDestinationYieldsNoPlacement) {
                       {"evil", "../../etc/passwd"}});
 
     const auto placements =
-        xlings::xvm::release_file_placements(db, "demo", "1.0.0");
+        xlings::xvm::release_file_placements(db, "demo", "1.0.0", kNoHome);
     ASSERT_EQ(placements.size(), 1u);
     EXPECT_EQ(placements.front().destination, "usr/include/demo/a.h");
 }
@@ -224,7 +230,7 @@ TEST(ReleaseFilePlacements, FallsBackToTheNamedEntryWhenTheReleaseIsBroken) {
 
     // No crash, no refusal: the named coordinate still answers for itself.
     const auto member =
-        xlings::xvm::release_file_placements(db, "demo.files.1", "1.0.0");
+        xlings::xvm::release_file_placements(db, "demo.files.1", "1.0.0", kNoHome);
     ASSERT_EQ(member.size(), 1u);
     EXPECT_EQ(member.front().destination, "usr/include/demo/a.h");
 }
@@ -496,7 +502,7 @@ TEST(PlanUseSwitch, ReclaimsAssetsTheIncomingReleaseDoesNotDeclare) {
                        {"demo.files.1", "2.0.0"},
                        {"demo.files.2", "2.0.0"}};
 
-    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0");
+    auto plan = xlings::xvm::plan_use_switch(db, ws, "demo", "1.0.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
 
     // Members, not destinations. Until these are deactivated they still

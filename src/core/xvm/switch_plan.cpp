@@ -33,7 +33,8 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         const VersionDB& db,
         const Workspace& workspace,
         const std::string& target,
-        const std::string& resolvedVersion) {
+        const std::string& resolvedVersion,
+        std::string_view xlingsHome) {
     auto selection = resolve_binding_selection(db, target, resolvedVersion);
     if (!selection) {
         return std::unexpected(describe(selection.error()));
@@ -79,10 +80,12 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         incoming.insert(incoming.end(),
                         currentHeaders.begin(), currentHeaders.end());
 
-        auto placement = library_placement(db, memberTarget, memberVersion);
+        auto placement = library_placement(db, memberTarget, memberVersion,
+                                           xlingsHome);
         auto installSource = std::move(placement.source);
         auto installName = std::move(placement.name);
-        auto file = file_placement(db, memberTarget, memberVersion);
+        auto file = file_placement(db, memberTarget, memberVersion,
+                                   xlingsHome);
 
         if (previous == memberVersion) {
             // Already the active version, but the sysroot may not reflect it:
@@ -118,7 +121,7 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             outgoing.insert(outgoing.end(),
                             previousHeaders.begin(), previousHeaders.end());
             auto previousPlacement =
-                library_placement(db, memberTarget, previous);
+                library_placement(db, memberTarget, previous, xlingsHome);
             // Only worth recording when the outgoing version occupied a
             // *different* name. The common case -- same soname across two
             // versions -- is a replacement, and unlinking first would open a
@@ -130,7 +133,7 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
             // Same reasoning for a file asset: only unlink when the outgoing
             // version occupied a path the incoming one does not reuse.
             auto previousFile =
-                file_placement(db, memberTarget, previous);
+                file_placement(db, memberTarget, previous, xlingsHome);
             if (!previousFile.destination.empty()
                 && previousFile.destination != change.installFileDest) {
                 change.removeFileDest = std::move(previousFile.destination);

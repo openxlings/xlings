@@ -28,6 +28,7 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
+import xlings.core.xvm.relocation;
 // prune_empty_asset_dirs: `--fix` deletes the same links the removal path
 // deletes and must leave the same shape behind.
 import xlings.core.xvm.commands;
@@ -109,7 +110,41 @@ DoctorState load_state_() {
     st.xlingsBin = p.homeDir / "bin" / "xlings";
 #endif
     if (!fs::exists(st.xlingsBin)) st.xlingsBin = p.homeDir / "xlings";
+
+    // Was this database written for another root?
+    //
+    // Asked ONCE, here, and carried on the state every consumer already
+    // receives. The two destructive repairs -- the prune and the dangling-link
+    // deletion -- each used to answer "is the payload gone" for themselves, in
+    // terms of the recorded path alone, and a moved home makes that answer yes
+    // for everything while every payload is present under the new root.
+    st.relocation = xvm::detect_relocation(
+        st.db, st.homeStr,
+        [](const std::string& path) {
+            std::error_code ec;
+            return fs::exists(path, ec);
+        },
+        [](const std::string& a, const std::string& b) {
+            // `equivalent` compares what the two paths RESOLVE to, which is
+            // the question here: a compensating symlink at the old path is
+            // this home, a project's own `.xlings` is not.
+            std::error_code ec;
+            const bool same = fs::equivalent(a, b, ec);
+            return !ec && same;
+        });
     return st;
+}
+
+// The payload this record names, as it exists HERE.
+//
+// Empty unless the home was moved AND the counterpart is really on disk, so a
+// caller can treat non-empty as "recoverable, do not destroy".
+std::string recoverable_here_(const DoctorState& st, std::string_view recorded) {
+    if (!st.relocation) return {};
+    auto here = xvm::relocated_path(*st.relocation, recorded);
+    if (here.empty()) return {};
+    std::error_code ec;
+    return fs::exists(here, ec) ? here : std::string{};
 }
 
 // Does this payload ship ANY executable?
@@ -223,7 +258,8 @@ owning_coordinate_(const xvm::VersionDB& db,
 std::string activation_conflict_(const DoctorState& st,
                                  const std::string& rootTarget,
                                  const std::string& rootVersion) {
-    auto plan = xvm::plan_use_switch(st.db, st.ws, rootTarget, rootVersion);
+    auto plan = xvm::plan_use_switch(st.db, st.ws, rootTarget, rootVersion,
+                                     st.homeStr);
     if (!plan) {
         // Unresolvable release: `use` would fail too. Refusing here means the
         // user gets the finding and the command, rather than `--fix` running
@@ -815,6 +851,36 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     Scan scan;
     const auto add = [&](Finding f) { scan.findings.push_back(std::move(f)); };
 
+    // FIRST, because it explains the rest.
+    //
+    // A moved home produces hundreds of findings that all say the same thing
+    // in the wrong words -- "path missing", "points at ... which does not
+    // exist" -- and every one of them names the old path without ever saying
+    // that the home is no longer there. Measured on a real home before this
+    // existed: 411 broken payloads, 1173 dangling links, and the words "moved"
+    // and "relocated" appearing zero times in the report.
+    if (st.relocation) {
+        const auto& r = *st.relocation;
+        add({
+            .kind    = FindingKind::HomeRelocated,
+            .level   = FindingLevel::Error,
+            .detail  = std::format(
+                "this home is at {}, but its records were written for {} — "
+                "{} registration(s) still name the old path and {} of them "
+                "have their payload present here",
+                r.newRoot, r.oldRoot, r.entries, r.recoverable),
+            .remedy  = "xlings self doctor --fix",
+            // A remedy that would leave a false impression is worse than no
+            // remedy. `--fix` re-points what xlings owns; it cannot repair a
+            // PT_INTERP, and a user whose compilers then fail deserves to
+            // have been told so by the same line that offered the fix.
+            .remedyNote =
+                "re-points the versions database and the sysroot links; "
+                "binaries that baked the old path into PT_INTERP/RPATH are "
+                "NOT repaired — re-provision the home if the toolchain fails",
+        });
+    }
+
     // The subos this run is actually in. Other subos are not inspected from
     // here for the same reason their payloads are not repaired: a second
     // shell may be inside one right now.
@@ -1332,6 +1398,13 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
 
             // L4: payload directory must exist.
             if (!fs::is_directory(expanded, ec)) {
+                // ...unless the home was moved and it exists under the
+                // current root. Then the payload is not broken, the RECORD
+                // is, and saying "broken payload" here is what set the whole
+                // destructive chain going: the ladder reinstalls what is
+                // already on disk, and whatever the ladder cannot reinstall
+                // gets pruned. One HomeRelocated finding covers all of them.
+                if (!recoverable_here_(st, expanded).empty()) continue;
                 reportBrokenPayload(name, version, expanded, std::format(
                     "{} path {} missing",
                     xvm::display_coordinate(name, version),
@@ -1513,25 +1586,87 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     // states that make `xlings use` refuse.
     auto bindingFindings = xvm::inspect_binding_state(st.db, st.ws);
 
+    // Links this run will re-point rather than report. Counted so the one
+    // finding that explains them can say how many there are -- suppressing
+    // them silently would be the same defect one level up.
+    std::size_t relocatedLinks = 0;
+
     // Sysroot ownership. Reported only for destinations a package declares,
     // not for the whole tree: the subos carries the host image, so listing
     // every unmanaged entry would bury the two or three that matter.
     {
+        // A destination the active selection declares and that is NOT there.
+        //
+        // The mirror image of SysrootDangling, and the half nothing asked
+        // until 2026.9.5.1: this loop used to `continue` on a missing
+        // destination, so every link `--fix` deleted became invisible to
+        // every later run. 1173 of them on a measured home, and the only way
+        // back was to reinstall each package by hand. Quiet where nothing is
+        // wrong -- 405 declared destinations on that home, 0 missing.
+        const auto reportMissing = [&](const std::string& target,
+                                       const std::string& version,
+                                       const fs::path& destination,
+                                       const std::string& source) {
+            std::error_code sec;
+            if (source.empty() || !fs::exists(source, sec)) return;
+            add({
+                .kind    = FindingKind::SysrootMissing,
+                .level   = FindingLevel::Warning,
+                .target  = target,
+                .version = version,
+                .detail  = std::format(
+                    "{} declares {}, which is not there — its source {} is",
+                    xvm::display_coordinate(target, version),
+                    Config::display_path(destination),
+                    Config::display_path(source)),
+                .remedy  = "xlings self doctor --fix",
+                .groupKey = std::format("missing|{}", target),
+                .shimPath = destination,
+            });
+        };
+
         std::vector<xvm::SysrootEntry> entries;
         for (const auto& [target, version] : st.ws) {
             auto infoIt = st.db.find(target);
             if (infoIt == st.db.end()) continue;
             auto dataIt = infoIt->second.versions.find(version);
             if (dataIt == infoIt->second.versions.end()) continue;
+
+            // Libraries live in the farm, not under a declared fileDst, and
+            // are the half the measured deletion actually took.
+            if (const auto lib = xvm::library_placement(st.db, target, version,
+                                                        st.homeStr);
+                !lib.empty()) {
+                const auto libDst = p.subosDir / "lib" / lib.name;
+                std::error_code lec;
+                if (!fs::exists(libDst, lec) && !fs::is_symlink(libDst, lec)) {
+                    reportMissing(target, version, libDst, lib.source);
+                }
+            }
+
             const auto& dst = dataIt->second.fileDst;
             if (dst.empty()) continue;
             const auto abs = p.subosDir / dst;
             std::error_code ec;
-            if (!fs::exists(abs, ec) && !fs::is_symlink(abs, ec)) continue;
+            if (!fs::exists(abs, ec) && !fs::is_symlink(abs, ec)) {
+                const auto file = xvm::file_placement(st.db, target, version,
+                                                      st.homeStr);
+                reportMissing(target, version, abs, file.source);
+                continue;
+            }
             xvm::SysrootEntry entry{.path = dst};
             if (fs::is_symlink(abs, ec)) {
-                entry.linkTarget = fs::read_symlink(abs, ec).string();
-                if (ec) entry.linkTarget.clear();
+                // Resolved, not raw: ownership is decided by a prefix test
+                // against this home's payload root, and the raw text of a
+                // link written before the home moved names a root that is
+                // still this home's store by any measure that follows it.
+                auto raw = fs::read_symlink(abs, ec);
+                if (!ec) {
+                    std::error_code cec;
+                    auto resolved = fs::weakly_canonical(raw, cec);
+                    entry.linkTarget =
+                        (cec ? raw : resolved).string();
+                } 
             }
             entries.push_back(std::move(entry));
         }
@@ -2101,6 +2236,16 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                     if (!fs::is_symlink(path, lec)) continue;
                     if (fs::exists(path, lec)) continue;
                     auto target = fs::read_symlink(path, lec);
+                    // A symptom of the move, not a finding of its own. It
+                    // dangles because the home's address changed, its target
+                    // is present here, and `--fix` re-points it -- so listing
+                    // it would bury the one line that explains all of them.
+                    // Measured on a moved real home: 1173 of these.
+                    if (!lec
+                        && !recoverable_here_(st, target.string()).empty()) {
+                        ++relocatedLinks;
+                        continue;
+                    }
                     add({
                         .kind    = FindingKind::SysrootDangling,
                         .level   = FindingLevel::Warning,
@@ -2136,11 +2281,25 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
-        auto ownership = xvm::inspect_sysroot_ownership(
-            st.db, st.ws, entries, (p.dataDir / "xpkgs").string());
-        bindingFindings.insert(bindingFindings.end(),
-                               std::make_move_iterator(ownership.begin()),
-                               std::make_move_iterator(ownership.end()));
+        // Not asked at all while the home's address has changed.
+        //
+        // The question is "is this link one xlings placed", answered by a
+        // prefix test against this home's payload root. Every link in a moved
+        // home fails it for one reason, and the answer would be 302 findings
+        // (601 after a `--fix` that reinstalled some) telling the user to run
+        // `xlings use` on packages that are perfectly fine. The relocation
+        // repair re-points them; after that this check is meaningful again.
+        if (!st.relocation) {
+            // Both sides resolved. See SysrootEntry::linkTarget.
+            std::error_code rootEc;
+            auto payloadRoot = fs::weakly_canonical(p.dataDir / "xpkgs", rootEc);
+            auto ownership = xvm::inspect_sysroot_ownership(
+                st.db, st.ws, entries,
+                (rootEc ? (p.dataDir / "xpkgs") : payloadRoot).string());
+            bindingFindings.insert(bindingFindings.end(),
+                                   std::make_move_iterator(ownership.begin()),
+                                   std::make_move_iterator(ownership.end()));
+        }
     }
 
     // One line per (code, entry), not per field.
@@ -2237,6 +2396,21 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         });
     }
 
+    // The one finding says how many symptoms it stands for.
+    //
+    // Patched here rather than formatted at the top, because the link count is
+    // only known after the sysroot walk -- and a count that arrives too late
+    // to be printed is how "suppressed" turns into "hidden".
+    if (st.relocation && relocatedLinks > 0) {
+        for (auto& f : scan.findings) {
+            if (f.kind != FindingKind::HomeRelocated) continue;
+            f.detail += std::format(
+                "; {} sysroot link(s) point into the old path and will be "
+                "re-pointed", relocatedLinks);
+            break;
+        }
+    }
+
     return scan;
 }
 
@@ -2272,20 +2446,66 @@ std::string sysroot_link_source_(const DoctorState& st,
         const auto vit = info.versions.find(active);
         if (vit == info.versions.end()) continue;
         if (xvm::effective_kind(info, vit->second) != "lib") continue;
-        const auto placement = xvm::library_placement(st.db, target, active);
+        const auto placement =
+            xvm::library_placement(st.db, target, active, st.homeStr);
         if (placement.empty() || placement.name != wanted) continue;
         sources.push_back(placement.source);
     }
-    if (sources.size() != 1) return {};
     std::error_code ec;
-    if (!std::filesystem::exists(sources.front(), ec)) return {};
-    return sources.front();
+    if (sources.size() == 1) {
+        if (std::filesystem::exists(sources.front(), ec)) return sources.front();
+        // The DB knows the source and names the root this home used to be at.
+        // Asking only the recorded path is what turned a moved home's whole
+        // library farm into "nothing can say where this belongs" and deleted
+        // it -- 1173 links on the measured home, every target present under
+        // the new root.
+        if (auto here = recoverable_here_(st, sources.front()); !here.empty()) {
+            return here;
+        }
+    }
+
+    // Nothing in the DB claims this destination -- `files` assets are keyed by
+    // fileDst rather than by library name, so a header link never matches the
+    // loop above. The link itself still carries an answer: where it points,
+    // translated to the current root.
+    if (st.relocation) {
+        ec.clear();
+        auto target = std::filesystem::read_symlink(link, ec);
+        if (!ec) {
+            if (auto here = recoverable_here_(st, target.string());
+                !here.empty()) {
+                return here;
+            }
+        }
+    }
+    return {};
 }
 
+// `dryRun` is a MODE of this function, not a second function that predicts
+// it.
+//
+// `--fix --dry-run` used to skip repair_local_ entirely, so it planned the
+// payload ladder and said nothing about the local repairs -- on a moved home
+// it announced `411 action(s) planned` and the real run then deleted 1173
+// sysroot links on top of them. A preview that omits the destructive half is
+// worse than no preview: it is read as reassurance. Threading the mode through
+// the same branches is what keeps the plan and the act from drifting, which is
+// this file's oldest bug shape.
 void repair_local_(const DoctorState& st, const Scan& scan,
-                   RepairReport& out) {
+                   RepairReport& out, bool dryRun = false) {
     auto& p = Config::paths();
     const auto note = [&](std::string label, std::string text) {
+        out.notes.emplace_back(std::move(label), std::move(text));
+    };
+    const auto plan = [&](std::string what) {
+        out.planned.push_back(std::move(what));
+    };
+    // An action note describes something that happened. Under `--dry-run` the
+    // manifest block still walks its rules to decide whether it WOULD write,
+    // and printing its notes there would report actions nobody took -- the
+    // same defect as the past-tense prune wording, one branch over.
+    const auto actionNote = [&](std::string label, std::string text) {
+        if (dryRun) return;
         out.notes.emplace_back(std::move(label), std::move(text));
     };
 
@@ -2355,7 +2575,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                         std::format("xlings {}", Info::VERSION),
                         platform::host_glibc_version());
                     changed = true;
-                    note(glyph::mark(glyph::bullet, "subos manifest"),
+                    actionNote(glyph::mark(glyph::bullet, "subos manifest"),
                          std::format("described subos '{}' (runtime {})",
                                      p.activeSubos,
                                      keptRuntime.empty()
@@ -2375,7 +2595,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                     } else if (observed != adoptRuntime) {
                         document[std::string(mf::BLOCK)]["runtime"] = observed;
                         changed = true;
-                        note(glyph::mark(glyph::bullet, "subos runtime"),
+                        actionNote(glyph::mark(glyph::bullet, "subos runtime"),
                              std::format("subos '{}' now declares {} "
                                          "(was {}, never activated here)",
                                          p.activeSubos, observed,
@@ -2385,11 +2605,15 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 for (const auto& binding : orphans) {
                     if (!mf::remove_provider(document, binding)) continue;
                     changed = true;
-                    note(glyph::mark(glyph::bullet, "subos env dropped"),
+                    actionNote(glyph::mark(glyph::bullet, "subos env dropped"),
                          std::format("{} is not installed here", binding));
                 }
 
-                if (changed) {
+                if (changed && dryRun) {
+                    plan(std::format("update {}",
+                                     Config::display_path(
+                                         mf::config_path(p.subosDir))));
+                } else if (changed) {
                     try {
                         platform::write_string_to_file(
                             mf::config_path(p.subosDir).string(),
@@ -2420,6 +2644,14 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             // offer -- but they ARE listed, because "nothing happened" and
             // "it worked" must never print the same.
             if (!fs::exists(st.xlingsBin)) continue;
+
+            if (dryRun) {
+                auto projects = project_contributions();
+                auto diff = plan_shim_table(p.subosDir, st.ws, st.db, projects);
+                plan(std::format("rebuild the shim table (+{}, -{})",
+                                 diff.toAdd.size(), diff.toRemove.size()));
+                continue;
+            }
 
             // Under the home's state lock, and re-planned inside it.
             //
@@ -2470,6 +2702,12 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             // the link belongs, not when you have not asked.
             if (auto source = sysroot_link_source_(st, f.shimPath);
                 !source.empty()) {
+                if (dryRun) {
+                    plan(std::format("re-point {} → {}",
+                                     Config::display_path(f.shimPath),
+                                     Config::display_path(source)));
+                    continue;
+                }
                 xvm::place_asset(source, f.shimPath);
                 // Verified, not assumed. place_asset is best-effort by
                 // design (it logs and returns on a source that vanished
@@ -2490,6 +2728,30 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 continue;
             }
 
+            // Last guard before a deletion.
+            //
+            // sysroot_link_source_ above already re-points anything a moved
+            // home can recover, so this should be unreachable on a relocated
+            // home -- which is exactly why it is here. The two branches used
+            // to be one predicate apart and drifted; a deletion that the
+            // reporter half of this pair would not have asked for must fail
+            // closed, not silently take a file with it.
+            ec.clear();
+            if (auto target = fs::read_symlink(f.shimPath, ec);
+                !ec && !recoverable_here_(st, target.string()).empty()) {
+                note(glyph::mark(glyph::failed, "kept"), std::format(
+                    "{} points into the path this home was moved from, and "
+                    "its target is present here — not deleted",
+                    Config::display_path(f.shimPath)));
+                continue;
+            }
+
+            if (dryRun) {
+                plan(std::format("delete dangling link {}",
+                                 Config::display_path(f.shimPath)));
+                continue;
+            }
+
             // remove(), not remove_all(): the link is being deleted, and if
             // it were somehow followable, remove_all would delete the
             // package payload behind it.
@@ -2502,6 +2764,7 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 // the next reader would have to decide whether that was
                 // deliberate.
                 xvm::prune_empty_asset_dirs(f.shimPath, p.subosDir);
+                ++out.removedAssets;
                 note(glyph::mark(glyph::bullet, "dangling link removed"),
                      Config::display_path(f.shimPath));
             } else {
@@ -2509,7 +2772,47 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                      std::format("could not remove {}",
                                  Config::display_path(f.shimPath)));
             }
+        } else if (f.kind == FindingKind::SysrootMissing) {
+            // Place what the active selection says belongs there.
+            //
+            // The source is re-derived here rather than carried on the
+            // finding: between detection and repair the relocation pass may
+            // have re-pointed the record, and a repair that used the detected
+            // source would place a link into the path this home was moved
+            // from. Same reason the shim table re-plans inside its lock.
+            const auto lib =
+                xvm::library_placement(st.db, f.target, f.version, st.homeStr);
+            const auto file =
+                xvm::file_placement(st.db, f.target, f.version, st.homeStr);
+            const bool isLib =
+                !lib.empty() && f.shimPath.filename().string() == lib.name;
+            const auto source = isLib ? lib.source : file.source;
+            if (source.empty()) continue;
+            std::error_code sec;
+            if (!fs::exists(source, sec)) continue;
+            if (dryRun) {
+                plan(std::format("place {} → {}",
+                                 Config::display_path(f.shimPath),
+                                 Config::display_path(source)));
+                continue;
+            }
+            xvm::place_asset(source, f.shimPath);
+            std::error_code pec;
+            if (fs::exists(f.shimPath, pec)) {
+                note(glyph::mark(glyph::bullet, "link placed"),
+                     std::format("{} → {}", Config::display_path(f.shimPath),
+                                 Config::display_path(source)));
+            } else {
+                note(glyph::mark(glyph::failed, "sysroot repair failed"),
+                     std::format("could not place {}",
+                                 Config::display_path(f.shimPath)));
+            }
         } else if (f.kind == FindingKind::LegacyAliasShim) {
+            if (dryRun) {
+                plan(std::format("remove legacy shim {}",
+                                 Config::display_path(f.shimPath)));
+                continue;
+            }
             std::error_code ec;
             fs::remove(f.shimPath, ec);
             if (!ec) {
@@ -3025,6 +3328,315 @@ void repair_incomplete_(const Scan& scan, const CommandRunner& run,
     }
 }
 
+// Rebase every occurrence of the old root in one string. True when it changed.
+//
+// Occurrences, not a prefix: `path` is a bare path, but an alias is a command
+// line (`gcc --sysroot=<root>/subos/default`) and an env value can hold a
+// list, so the root sits in the middle of the string as often as at the start.
+//
+// A match only counts when what follows it is not part of a longer NAME. That
+// is what keeps `<root>-backup/...` and `<root>.bak` -- directories a user
+// makes precisely when they are moving a home around -- from being rewritten
+// into a path that was never theirs.
+bool rebase_root_(std::string& s, const xvm::HomeRelocation& reloc) {
+    if (s.empty() || reloc.oldRoot.empty()) return false;
+    const auto& from = reloc.oldRoot;
+    const auto& to   = reloc.newRoot;
+    bool changed = false;
+    std::size_t at = 0;
+    while ((at = s.find(from, at)) != std::string::npos) {
+        const std::size_t after = at + from.size();
+        bool continuesTheName = false;
+        if (after < s.size()) {
+            const char c = s[after];
+            continuesTheName =
+                (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        }
+        if (continuesTheName) {
+            // Resume one character in, not past the replacement that did not
+            // happen: advancing by the NEW root's length here would skip a
+            // real occurrence whenever the new root is the longer of the two.
+            at += 1;
+            continue;
+        }
+        s.replace(at, from.size(), to);
+        changed = true;
+        at += to.size();
+    }
+    return changed;
+}
+
+// The same, over every string in a JSON document.
+bool rebase_json_(nlohmann::json& j, const xvm::HomeRelocation& reloc) {
+    bool changed = false;
+    if (j.is_string()) {
+        auto s = j.get<std::string>();
+        if (rebase_root_(s, reloc)) { j = std::move(s); changed = true; }
+    } else if (j.is_object() || j.is_array()) {
+        for (auto& child : j) changed |= rebase_json_(child, reloc);
+    }
+    return changed;
+}
+
+// Put a symlink back on the current root, atomically.
+//
+// NOT xvm::place_asset, and the difference is the whole reason this exists:
+// place_asset short-circuits on `fs::equivalent(destination, source)`, and a
+// home reached through a compensating symlink at the old path makes the stale
+// link equivalent to the correct one. Measured on such a home: 866 links still
+// naming the old path after a full `--fix`, every one of them "already
+// correct" by that test. What is wrong here is the link's TEXT, which
+// equivalence cannot see.
+bool repoint_link_(const fs::path& link, const fs::path& target) {
+    std::error_code ec;
+    const auto staging =
+        link.parent_path() / (link.filename().string() + ".xlings-new");
+    fs::remove(staging, ec);
+    ec.clear();
+    fs::create_symlink(target, staging, ec);
+    if (ec) return false;
+    ec.clear();
+    fs::rename(staging, link, ec);
+    if (ec) {
+        fs::remove(staging, ec);
+        return false;
+    }
+    return true;
+}
+
+// A home that was moved: put what xlings owns back on the current root.
+//
+// Runs in phase 1, BEFORE the payload ladder, and that ordering is the point.
+// Left to the ladder, a moved home is either a mass re-download (411 broken
+// payloads, every one of them present on disk) or a mass deregistration (409
+// of those 411 had no reinstall coordinate and went straight to the prune).
+// Neither is a repair; both are the consequence of asking about the recorded
+// path instead of the payload.
+//
+// TWO HALVES, and both are needed. Rewriting the records alone leaves 1173
+// links pointing at a path that is gone. Re-pointing the links alone leaves
+// every record naming it, so the next run diagnoses the same move again.
+//
+// WHAT IT DOES NOT TOUCH: anything inside a payload. `PT_INTERP` is read
+// literally by the kernel, linker scripts name absolute paths, and
+// `.xlings-resolution.json` records the directories a build resolved against.
+// Those are not xlings's bookkeeping, they are the payload's content, and a
+// repair that made the home look clean while the toolchain stayed broken
+// would be worse than one that says so. The finding's remedyNote says so.
+void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
+    if (!st.relocation) return;
+    const auto& reloc = *st.relocation;
+    auto& p = Config::paths();
+
+    if (dryRun) {
+        out.planned.push_back(std::format(
+            "re-point {} registration(s) and every sysroot link from {} to {}",
+            reloc.entries, reloc.oldRoot, reloc.newRoot));
+        return;
+    }
+
+    // 1. The records.
+    {
+        auto lock = xvm::acquire_state_lock(p.homeDir);
+        if (!lock) {
+            out.notes.emplace_back(glyph::mark(glyph::failed, "relocation"),
+                std::format("cannot re-point the versions database: {}",
+                            lock.error()));
+            return;
+        }
+        Config::reload_state();
+        auto& db = Config::versions_mut();
+        std::size_t records = 0;
+        for (auto& [target, info] : db) {
+            for (auto& [version, data] : info.versions) {
+                bool touched = false;
+                const auto fix = [&](std::string& s) {
+                    touched |= rebase_root_(s, reloc);
+                };
+                fix(data.path);
+                fix(data.includedir);
+                fix(data.libdir);
+                for (auto& alias : data.alias) fix(alias);
+                for (auto& [key, value] : data.envs) fix(value);
+                if (touched) ++records;
+            }
+        }
+        if (records > 0) {
+            Config::save_versions();
+            out.notes.emplace_back(
+                glyph::mark(glyph::bullet, "records re-pointed"),
+                std::format("{} registration(s): {} → {}", records,
+                            reloc.oldRoot, reloc.newRoot));
+        }
+    }
+
+    // 2. The index caches.
+    //
+    // Derived data that stores ABSOLUTE recipe paths, so a moved home cannot
+    // resolve a single package from its own index -- and that is not a
+    // cosmetic staleness: the repair ladder asks the catalog whether a broken
+    // entry is reinstallable, gets "no package provides this" for everything,
+    // and the prune below is what happens next. Measured with the records
+    // fixed but the caches left alone: 45 registrations dropped that the same
+    // home, unmoved, repaired by reinstalling 40 of them.
+    //
+    // `data/xpkgs` is excluded by construction (depth 2, and the payload
+    // store is skipped): a payload's own JSON records the paths it was
+    // installed with, and those belong to the payload, not to us.
+    {
+        std::size_t caches = 0;
+        std::error_code dec;
+        const auto dataDir = p.dataDir;
+        std::vector<fs::path> candidates;
+        // `std::default_sentinel`, not a default-constructed iterator: libc++
+        // gives the filesystem iterators only `operator==(default_sentinel_t)`
+        // under C++20, so the two-iterator spelling does not compile on macOS
+        // or Windows. Same call the sysroot scan above documents.
+        auto collect = [&](const fs::path& dir) {
+            std::error_code ec;
+            auto it = fs::directory_iterator(dir, ec);
+            if (ec) return;
+            for (; it != std::default_sentinel; it.increment(ec)) {
+                if (ec) break;
+                std::error_code fec;
+                if (it->is_regular_file(fec)
+                    && it->path().extension() == ".json") {
+                    candidates.push_back(it->path());
+                }
+            }
+        };
+        if (fs::is_directory(dataDir, dec)) {
+            collect(dataDir);
+            std::error_code ec;
+            auto it = fs::directory_iterator(dataDir, ec);
+            if (!ec) {
+                for (; it != std::default_sentinel; it.increment(ec)) {
+                    if (ec) break;
+                    std::error_code fec;
+                    if (!it->is_directory(fec)) continue;
+                    if (it->path().filename() == "xpkgs") continue;
+                    collect(it->path());
+                }
+            }
+        }
+        for (const auto& file : candidates) {
+            std::string text;
+            try {
+                text = platform::read_file_to_string(file.string());
+            } catch (const std::exception&) { continue; }
+            if (text.find(reloc.oldRoot) == std::string::npos) continue;
+            auto doc = nlohmann::json::parse(text, nullptr, false);
+            if (doc.is_discarded()) continue;
+            if (!rebase_json_(doc, reloc)) continue;
+            try {
+                platform::write_string_to_file(file.string(), doc.dump());
+                ++caches;
+            } catch (const std::exception& e) {
+                out.notes.emplace_back(glyph::mark(glyph::failed, "index cache"),
+                    std::format("could not re-point {}: {}",
+                                Config::display_path(file), e.what()));
+            }
+        }
+        if (caches > 0) {
+            out.notes.emplace_back(
+                glyph::mark(glyph::bullet, "index re-pointed"),
+                std::format("{} index cache(s) named the old path", caches));
+        }
+    }
+
+    // 3. The subos manifests, and 4. the links -- one walk over every subos.
+    //
+    // Manifests are rare and real: 1 of 97 subos on the measured home carries
+    // an absolute payload path in a `subos_info.envs` value. Rebased through
+    // the JSON parser rather than as text, so a Windows document's escaped
+    // separators are rewritten as the characters they stand for. An
+    // unreadable manifest is left alone -- detection already reports it, and
+    // this file's rule is never to rewrite a document it could not read.
+    //
+    // EVERY subos, not just the active one. Repair elsewhere in this file
+    // stays inside the active subos because a second shell may be live in
+    // another one, and changing which version is active there would be a
+    // decision taken behind someone's back. Re-pointing a link at the same
+    // file's new address is not that decision: nothing switches, nothing is
+    // chosen -- and the alternative is telling a user with 97 subos to visit
+    // each one.
+    std::size_t manifests = 0, repointed = 0, failed = 0;
+    std::vector<fs::path> subosRoots{p.subosDir};
+    {
+        std::error_code sec;
+        const auto activeRoot = fs::weakly_canonical(p.subosDir, sec);
+        for (const auto& name : Config::list_subos_names()) {
+            auto root = p.homeDir / "subos" / name;
+            std::error_code rec;
+            if (fs::weakly_canonical(root, rec) == activeRoot) continue;
+            subosRoots.push_back(std::move(root));
+        }
+    }
+
+    for (const auto& root : subosRoots) {
+        if (auto doc = subos::manifest::read_document(root)) {
+            if (rebase_json_(*doc, reloc)) {
+                try {
+                    platform::write_string_to_file(
+                        subos::manifest::config_path(root).string(),
+                        doc->dump(2));
+                    ++manifests;
+                } catch (const std::exception& e) {
+                    out.notes.emplace_back(
+                        glyph::mark(glyph::failed, "subos manifest"),
+                        std::format("could not re-point {}: {}",
+                                    Config::display_path(
+                                        subos::manifest::config_path(root)),
+                                    e.what()));
+                }
+            }
+        }
+
+        for (const auto* sub : {"usr", "etc", "share", "lib", "lib64"}) {
+            const auto dir = root / sub;
+            std::error_code dec;
+            if (!fs::is_directory(dir, dec)) continue;
+            auto walker = fs::recursive_directory_iterator(
+                dir, fs::directory_options::skip_permission_denied, dec);
+            if (dec) continue;
+            for (; walker != std::default_sentinel; walker.increment(dec)) {
+                if (dec) break;
+                if (walker.depth() >= 10) walker.disable_recursion_pending();
+                const auto& link = walker->path();
+                std::error_code lec;
+                // Windows places assets as hard links or copies, so there is
+                // no link text to rebase there -- and a hard link survives a
+                // move of the tree it lives in, so there is nothing to repair
+                // either.
+                if (!fs::is_symlink(link, lec)) continue;
+                auto target = fs::read_symlink(link, lec);
+                if (lec) continue;
+                auto rebased = target.string();
+                if (!rebase_root_(rebased, reloc)) continue;
+                std::error_code tec;
+                if (!fs::exists(rebased, tec)) continue;
+                if (repoint_link_(link, rebased)) ++repointed;
+                else ++failed;
+            }
+        }
+    }
+
+    if (manifests > 0) {
+        out.notes.emplace_back(glyph::mark(glyph::bullet, "subos re-pointed"),
+            std::format("{} subos manifest(s) named the old path", manifests));
+    }
+    if (repointed > 0) {
+        out.notes.emplace_back(glyph::mark(glyph::bullet, "links re-pointed"),
+            std::format("{} sysroot link(s) across {} subos", repointed,
+                        subosRoots.size()));
+    }
+    if (failed > 0) {
+        out.notes.emplace_back(glyph::mark(glyph::failed, "links"),
+            std::format("{} sysroot link(s) could not be re-pointed", failed));
+    }
+}
+
 // The last rung: drop a registration that is provably dead.
 //
 // Runs after the ladder and after a reload, on findings that SURVIVED it. That
@@ -3059,6 +3671,28 @@ void prune_dead_registrations_(const DoctorState& st, const Scan& remaining,
         // nothing over there -- trading a repairable state for a worse one, in
         // a subos the user is not even in. Caught by the multi-subos e2e,
         // which pruned a version `other` was still using and then exited 0.
+        // Not if the payload is present under this home's CURRENT root.
+        //
+        // "The recorded path does not exist" and "the payload is gone" are
+        // two different facts, and this rung used to treat them as one. On a
+        // home that had been moved that cost 367 registrations in 42 seconds
+        // -- every payload directory still on disk -- and the line it printed
+        // about each of them, `its payload is gone and nothing can restore
+        // it`, was false in both halves: `xlings install <pkg>@<ver>`
+        // restores one in about a second without downloading anything.
+        if (const auto* vd = xvm::get_vdata(st.db, f.target, f.version);
+            vd && !vd->path.empty()) {
+            const auto expanded = xvm::expand_path(vd->path, st.homeStr);
+            if (auto here = recoverable_here_(st, expanded); !here.empty()) {
+                out.notes.emplace_back(glyph::mark(glyph::failed, "kept"), std::format(
+                    "{} — its payload is present at {}; this home was moved "
+                    "from {}",
+                    xvm::display_coordinate(f.target, f.version),
+                    Config::display_path(here), st.relocation->oldRoot));
+                continue;
+            }
+        }
+
         const auto owner = xvm::subos_ownership(
             st.ws, st.wsInstalled, st.otherSubos, f.target, f.version);
         if (!owner.otherSubos.empty()) {
@@ -3178,6 +3812,15 @@ Counts count_(const Scan& scan) {
                 if (bakedTargets.insert(f.target).second) ++c.warnings;
                 break;
             case FindingKind::SysrootDangling: ++c.warnings; break;
+            // A declared destination that is not there. Counted as a warning,
+            // beside its mirror image: the user's next move is the same
+            // command, and one of the two shapes existing without the other
+            // is what let 1173 deletions become unobservable.
+            case FindingKind::SysrootMissing:  ++c.warnings; break;
+            // One fact, one issue. Reaching the exit code matters here more
+            // than usual: the symptoms it stands in for are deliberately not
+            // reported, so without this a moved home would exit 0.
+            case FindingKind::HomeRelocated:   ++c.relocated; break;
             case FindingKind::BindingState:
                 if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
@@ -3334,7 +3977,10 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         } else {
             // No command would help. Saying that is the useful output; a
             // plausible-looking `xlings install <target>` is not.
-            add("  " + glyph::mark(glyph::note, "no remedy"), fix
+            // Past tense only when it happened. `--dry-run` sets `fix`
+            // too, and this line used to tell a run that changed nothing
+            // that the registration "was dropped".
+            add("  " + glyph::mark(glyph::note, "no remedy"), fix && !dryRun
                 ? std::string("no package provides this entry — the "
                               "registration was dropped")
                 : std::string("no package in any index provides this entry; "
@@ -3449,6 +4095,18 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 }
                 break;
             }
+            case FindingKind::SysrootMissing:
+                add(glyph::mark(glyph::warn, "missing sysroot link"), f.detail);
+                break;
+            case FindingKind::HomeRelocated:
+                add(glyph::mark(glyph::failed, "home relocated"), f.detail);
+                if (!f.remedy.empty()) {
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                }
+                if (!f.remedyNote.empty()) {
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                }
+                break;
             case FindingKind::SubosPathBaked:
                 // One line per TARGET. A single gcc install bakes the path
                 // into fourteen registrations (gcc, g++, cc, c++ and the
@@ -3672,7 +4330,21 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         }
     }
 
-    for (const auto& [label, text] : repair.notes) add(label, text);
+    // Deduplicated, order preserved.
+    //
+    // The repair driver calls repair_state_ and repair_local_ three times by
+    // design (a re-registration creates state the earlier pass could not have
+    // seen), so a condition that persists across passes -- an unwritable
+    // manifest on a read-only home -- produced the same line three times and
+    // the same "home stamp" line twice. Three identical lines are not three
+    // facts.
+    {
+        std::set<std::pair<std::string, std::string>> shown;
+        for (const auto& [label, text] : repair.notes) {
+            if (!shown.emplace(label, text).second) continue;
+            add(label, text);
+        }
+    }
     for (const auto& planned : repair.planned) add(glyph::mark(glyph::remedy, "would run"), planned);
     if (dryRun) {
         add("dry run", std::format(
@@ -3698,11 +4370,26 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         // not. Making it non-zero would merge "something was lost" into
         // "something is broken" -- the very conflation this block exists to
         // undo, just pointed the other way.
-        if (repair.pruned > 0) {
+        if (repair.pruned > 0 || repair.removedAssets > 0) {
+            // BOTH losses, not just the one that was noticed first.
+            //
+            // This block was added for the prune and asked only about it, so
+            // a run that deleted 1173 sysroot links -- files, out of the
+            // sysroot the compiler reads -- still printed "all consistent"
+            // and exited 0. Deleting a file is not a smaller loss than
+            // dropping a record of one.
+            std::string what;
+            if (repair.pruned > 0) {
+                what = std::format("{} registration(s) dropped", repair.pruned);
+            }
+            if (repair.removedAssets > 0) {
+                if (!what.empty()) what += " and ";
+                what += std::format("{} sysroot link(s) removed",
+                                    repair.removedAssets);
+            }
             add("status", std::format(
-                "{} registration(s) dropped — their payloads were gone and "
-                "nothing could restore them; the rest of the home is "
-                "consistent", repair.pruned), true);
+                "{} — nothing here could restore them; the rest of the home "
+                "is consistent", what), true);
         } else {
             add("status",
                 "OK — workspace, shims, and payloads are all consistent",
@@ -4024,6 +4711,8 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     };
 
     if (dryRun) {
+        repair_relocation_(state, /*dryRun=*/true, repair);
+        repair_local_(state, scan, repair, /*dryRun=*/true);
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
         repair_incomplete_(scan, run, /*dryRun=*/true, repair);
         repair_inactive_(scan, client, run, /*dryRun=*/true, repair);
@@ -4053,6 +4742,28 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // R2 failing for a reason the ladder cannot see and R3 then reacting to by
     // removing a working package. Clearing them first is what lets the install
     // that follows actually succeed.
+    // Phase 0: a home that moved.
+    //
+    // Before everything, because every later phase reads the paths this one
+    // corrects. Left until after the ladder, the ladder would have spent the
+    // run reinstalling payloads that are already on disk and pruning the ones
+    // it could not reinstall.
+    if (state.relocation) {
+        repair_relocation_(state, /*dryRun=*/false, repair);
+        // The catalog was built before this, from an index cache whose recipe
+        // paths named the old root -- so every "is this reinstallable" answer
+        // in it, and every memoised answer beside it, is a `no` about a
+        // package the index does provide. Left stale, the ladder below cannot
+        // reinstall anything and the prune takes what it could not.
+        // Measured: 45 registrations dropped where the same home, unmoved,
+        // repaired 40 of them by reinstalling.
+        if (localCatalog) {
+            probed.clear();
+            if (!localCatalog->rebuild(true)) localCatalog.reset();
+        }
+        refresh();
+    }
+
     repair_state_(repair);
     repair_other_subos_(state, repair);
     repair_local_(state, scan, repair);

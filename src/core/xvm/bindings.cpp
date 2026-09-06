@@ -2,6 +2,10 @@ module xlings.core.xvm.bindings;
 
 import std;
 import xlings.core.xvm.types;
+// expand_path only. A record may store `${XLINGS_HOME}` instead of an
+// absolute path, and a placement that returns the placeholder verbatim writes
+// a link to a directory called `${XLINGS_HOME}`.
+import xlings.core.xvm.db;
 
 namespace xlings::xvm::detail_ {
 
@@ -481,7 +485,8 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
 
 LibraryPlacement library_placement(const VersionDB& db,
                                    const std::string& target,
-                                   const std::string& version) {
+                                   const std::string& version,
+                                   std::string_view xlingsHome) {
     auto targetIt = db.find(target);
     if (targetIt == db.end()) return {};
     auto versionIt = targetIt->second.versions.find(version);
@@ -498,28 +503,52 @@ LibraryPlacement library_placement(const VersionDB& db,
     if (sourceName.empty() || destinationName.empty()) return {};
 
     return {
-        .source = (std::filesystem::path(data.path) / sourceName).string(),
+        .source = (std::filesystem::path(
+                       expand_path(data.path, std::string(xlingsHome)))
+                   / sourceName).string(),
         .name = destinationName,
     };
 }
 
 bool is_permitted_file_destination(std::string_view destination) {
     if (destination.empty()) return false;
-    const std::filesystem::path p{destination};
-    if (p.is_absolute()) return false;
-    std::string first;
-    for (const auto& part : p) {
-        if (part == "..") return false;
-        if (first.empty()) first = part.string();
-    }
-    // Windows drive-relative forms ("C:foo") are absolute in spirit.
+
+    // String arithmetic rather than `fs::path` iteration, deliberately -- the
+    // same call `doctor.cpp`'s dangling_payload_key_ documents. libc++ gives
+    // the path iterators only the comparisons C++20 requires, and a range-for
+    // over a path does not compile in this translation unit at all: it built
+    // here only until this file imported one more module, and then failed on
+    // macOS with `invalid operands to binary expression ('iterator' and
+    // 'iterator')` -- a portability landmine that fires on an unrelated edit.
+    constexpr std::string_view kSeparators = "/\\";
+    const auto isSep = [](char c) { return c == '/' || c == '\\'; };
+
+    // A leading separator is absolute on POSIX; on Windows `fs::path` calls it
+    // root-relative, and its first component is then the root rather than a
+    // name -- refused either way, which is what the old iteration did too.
+    if (isSep(destination.front())) return false;
+    // Windows drive forms ("C:\\foo" absolute, "C:foo" drive-relative).
     if (destination.size() > 1 && destination[1] == ':') return false;
+
+    std::string_view first;
+    std::size_t start = 0;
+    while (start <= destination.size()) {
+        const auto end = destination.find_first_of(kSeparators, start);
+        const auto part = end == std::string_view::npos
+            ? destination.substr(start)
+            : destination.substr(start, end - start);
+        if (part == "..") return false;
+        if (first.empty() && !part.empty()) first = part;
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
     return first == "usr" || first == "etc" || first == "share";
 }
 
 FilePlacement file_placement(const VersionDB& db,
                              const std::string& target,
-                             const std::string& version) {
+                             const std::string& version,
+                             std::string_view xlingsHome) {
     auto targetIt = db.find(target);
     if (targetIt == db.end()) return {};
     auto versionIt = targetIt->second.versions.find(version);
@@ -533,14 +562,17 @@ FilePlacement file_placement(const VersionDB& db,
     if (!is_permitted_file_destination(data.fileDst)) return {};
 
     return {
-        .source = (std::filesystem::path(data.path) / data.fileSrc).string(),
+        .source = (std::filesystem::path(
+                       expand_path(data.path, std::string(xlingsHome)))
+                   / data.fileSrc).string(),
         .destination = data.fileDst,
     };
 }
 
 std::vector<FilePlacement> release_file_placements(const VersionDB& db,
                                                    const std::string& target,
-                                                   const std::string& version) {
+                                                   const std::string& version,
+                                                   std::string_view xlingsHome) {
     std::map<std::string, std::string> members;
     if (auto selection = resolve_binding_selection(db, target, version)) {
         members = std::move(selection->members);
@@ -550,7 +582,8 @@ std::vector<FilePlacement> release_file_placements(const VersionDB& db,
 
     std::vector<FilePlacement> placements;
     for (const auto& [memberTarget, memberVersion] : members) {
-        auto placement = file_placement(db, memberTarget, memberVersion);
+        auto placement = file_placement(db, memberTarget, memberVersion,
+                                        xlingsHome);
         if (placement.empty()) continue;
         placement.target = memberTarget;
         placement.version = memberVersion;
