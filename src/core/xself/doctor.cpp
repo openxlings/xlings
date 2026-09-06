@@ -3555,12 +3555,12 @@ void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
     // this file's rule is never to rewrite a document it could not read.
     //
     // EVERY subos, not just the active one. Repair elsewhere in this file
-    // stays inside the active subos because a
-    // second shell may be live in another one and changing which version is
-    // active there would be a decision taken behind someone's back. Re-pointing
-    // a link at the same file's new address is not that decision: nothing
-    // switches, nothing is chosen, and the alternative -- telling a user with
-    // 97 subos to visit each one -- is not an alternative.
+    // stays inside the active subos because a second shell may be live in
+    // another one, and changing which version is active there would be a
+    // decision taken behind someone's back. Re-pointing a link at the same
+    // file's new address is not that decision: nothing switches, nothing is
+    // chosen -- and the alternative is telling a user with 97 subos to visit
+    // each one.
     std::size_t manifests = 0, repointed = 0, failed = 0;
     std::vector<fs::path> subosRoots{p.subosDir};
     {
