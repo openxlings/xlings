@@ -2,6 +2,10 @@ module xlings.core.xvm.bindings;
 
 import std;
 import xlings.core.xvm.types;
+// expand_path only. A record may store `${XLINGS_HOME}` instead of an
+// absolute path, and a placement that returns the placeholder verbatim writes
+// a link to a directory called `${XLINGS_HOME}`.
+import xlings.core.xvm.db;
 
 namespace xlings::xvm::detail_ {
 
@@ -481,7 +485,8 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
 
 LibraryPlacement library_placement(const VersionDB& db,
                                    const std::string& target,
-                                   const std::string& version) {
+                                   const std::string& version,
+                                   std::string_view xlingsHome) {
     auto targetIt = db.find(target);
     if (targetIt == db.end()) return {};
     auto versionIt = targetIt->second.versions.find(version);
@@ -498,7 +503,9 @@ LibraryPlacement library_placement(const VersionDB& db,
     if (sourceName.empty() || destinationName.empty()) return {};
 
     return {
-        .source = (std::filesystem::path(data.path) / sourceName).string(),
+        .source = (std::filesystem::path(
+                       expand_path(data.path, std::string(xlingsHome)))
+                   / sourceName).string(),
         .name = destinationName,
     };
 }
@@ -519,7 +526,8 @@ bool is_permitted_file_destination(std::string_view destination) {
 
 FilePlacement file_placement(const VersionDB& db,
                              const std::string& target,
-                             const std::string& version) {
+                             const std::string& version,
+                             std::string_view xlingsHome) {
     auto targetIt = db.find(target);
     if (targetIt == db.end()) return {};
     auto versionIt = targetIt->second.versions.find(version);
@@ -533,14 +541,17 @@ FilePlacement file_placement(const VersionDB& db,
     if (!is_permitted_file_destination(data.fileDst)) return {};
 
     return {
-        .source = (std::filesystem::path(data.path) / data.fileSrc).string(),
+        .source = (std::filesystem::path(
+                       expand_path(data.path, std::string(xlingsHome)))
+                   / data.fileSrc).string(),
         .destination = data.fileDst,
     };
 }
 
 std::vector<FilePlacement> release_file_placements(const VersionDB& db,
                                                    const std::string& target,
-                                                   const std::string& version) {
+                                                   const std::string& version,
+                                                   std::string_view xlingsHome) {
     std::map<std::string, std::string> members;
     if (auto selection = resolve_binding_selection(db, target, version)) {
         members = std::move(selection->members);
@@ -550,7 +561,8 @@ std::vector<FilePlacement> release_file_placements(const VersionDB& db,
 
     std::vector<FilePlacement> placements;
     for (const auto& [memberTarget, memberVersion] : members) {
-        auto placement = file_placement(db, memberTarget, memberVersion);
+        auto placement = file_placement(db, memberTarget, memberVersion,
+                                        xlingsHome);
         if (placement.empty()) continue;
         placement.target = memberTarget;
         placement.version = memberVersion;

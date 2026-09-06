@@ -123,8 +123,15 @@ std::vector<BindingFinding> inspect_subos_references(
 struct SysrootEntry {
     // Relative to the subos root, e.g. "usr/include/openssl".
     std::string path;
-    // Where the symlink points, absolute. Empty when the entry is a real
-    // file or directory rather than a link.
+    // Where the symlink points, absolute and CANONICAL. Empty when the entry
+    // is a real file or directory rather than a link.
+    //
+    // Canonical because ownership below is decided by a prefix test, and a
+    // prefix test on un-resolved text answers a different question than the
+    // one it is asked. Measured: a home reached at a path other than the one
+    // its links were written for produced 302 `xvm-sysroot-drift` findings --
+    // and 601 after `--fix` -- for links that resolved to exactly the right
+    // file inside its own store. The caller resolves; this module compares.
     std::string linkTarget;
 };
 

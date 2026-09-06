@@ -178,6 +178,7 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
         const VersionDB& db,
         const Workspace& workspace,
         const std::string& target,
-        const std::string& resolvedVersion);
+        const std::string& resolvedVersion,
+        std::string_view xlingsHome);
 
 }  // namespace xlings::xvm

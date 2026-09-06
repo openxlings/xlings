@@ -62,6 +62,8 @@ xlings self doctor --fix
 - 把指向未注册版本的活跃项取消激活 —— 包括**其他 SubOS** 的
 - 对 payload 坏掉的包重新注册；不行就卸载重装
 - 把断掉的 sysroot 链接**重新指回去**（下面单独说），指不回去的才删除
+- 把**应该在、却不在**的 sysroot 链接放回去（被更早的客户端删掉的那些）
+- 如果这个 home 被整体挪过位置，把记录和链接**重新指到当前根**（下面单独说）
 - 上面都救不回来、且任何索引都提供不了的记录，直接清除
 
 修复结束后会**重新体检一遍**，你看到的报告是**修复之后**的状态，不是修复之前的。
@@ -89,6 +91,8 @@ xlings self doctor --fix --dry-run
 
 **这一步会丢信息**（"这个包曾经装过"这条事实没有了），所以它不会被算作"修好了"：
 一次清除过记录的运行，结尾不会说 `OK`，而是明说清除了几条。
+**删除 sysroot 链接同样算丢信息**，同样不会说 `OK` —— 从 sysroot 里删掉一个文件，
+不比丢掉一条记录轻。
 
 退出码仍然是 0。退出码回答的是"这个 home 还需不需要人来处理"，
 合法清除之后它不需要 —— 把它变成非 0 等于把"丢了东西"和"坏了"混成一个信号。
@@ -103,6 +107,36 @@ SubOS 的 `lib/`、`usr/include/` 这些目录里是指向 payload 的链接。
 只有在没有任何记录能说明它该指向哪里时，才删除它。
 
 "目标不存在"和"目标救不回来"不是同一件事 —— 前者只是链接过期了。
+
+### 如果你把整个 home 挪过位置
+
+用 `mv` 搬 home **不是受支持的操作**，以后也不会是：payload 里的可执行文件把旧路径
+写死在 `PT_INTERP`/`RPATH` 里（内核按字面读它，`$ORIGIN` 在那里不展开），linker script
+里也是绝对路径。这些东西不是 xlings 的簿记，是 payload 的内容，谁都改不回来。
+
+但**"不修"不等于"可以毁"**。挪过之后 `self doctor` 会先说出这件事：
+
+```
+✗ home relocated   this home is at <新路径>, but its records were written for <旧路径>
+                   2901 registration(s) still name the old path and 2901 of them
+                   have their payload present here
+  → run            xlings self doctor --fix
+  • note           re-points the versions database and the sysroot links;
+                   binaries that baked the old path into PT_INTERP/RPATH are
+                   NOT repaired — re-provision the home if the toolchain fails
+```
+
+`--fix` 会把 xlings 自己的簿记指回当前根：版本数据库、索引缓存、SubOS 清单里的
+绝对路径，以及**所有 SubOS** 的 sysroot 链接。它**不会**因为记录里的路径不存在
+就删链接、清记录 —— 判据是"payload 在不在当前根下"，不是"记录里的路径存在不存在"。
+
+它也不会因此宣布这个 home 好了。上面那条 `note` 是认真的：用旧路径编译出来的东西
+仍然可能起不来。真正的答案还是重新 provision（`$MCPP_HOME` 下的 registry 是可重建
+缓存，删掉重来就是）。
+
+被更早的客户端删掉过链接的 home 也能救回来：`--fix` 会把当前选择声明、却不在位的
+链接重新放回去。单个包也可以自己来 —— `xlings install <包>@<版本>`，payload 还在
+的话它不下载、只重新注册并重新放置链接。
 
 ### 命令给的建议一定能跑
 

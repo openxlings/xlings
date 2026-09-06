@@ -113,9 +113,18 @@ struct LibraryPlacement {
 // used. The switch planner used to look at `VData::libdir` instead, a field
 // with no writer anywhere in the tree, so it emitted no library work and
 // `xlings use` silently did nothing for libraries.
+// `xlingsHome` expands a `${XLINGS_HOME}` stored in the record.
+//
+// Required, not optional. doctor's L4 check expanded the same field and this
+// did not, so one reader could resolve a home-relative record and the reader
+// that PLACES the link could not -- and a placement is what a wrong answer
+// here writes to disk. Nothing in the index stores the placeholder today (0 of
+// 2908 records on the measured home), which is exactly why the divergence sat
+// there unnoticed; a default parameter would have preserved it.
 LibraryPlacement library_placement(const VersionDB& db,
                                    const std::string& target,
-                                   const std::string& version);
+                                   const std::string& version,
+                                   std::string_view xlingsHome);
 
 // True when some other entry names this one as the root of its release.
 //
@@ -163,7 +172,8 @@ bool is_permitted_file_destination(std::string_view destination);
 
 FilePlacement file_placement(const VersionDB& db,
                              const std::string& target,
-                             const std::string& version);
+                             const std::string& version,
+                             std::string_view xlingsHome);
 
 // Every file asset a release places into a subos, resolved through its
 // MEMBERS.
@@ -194,7 +204,8 @@ FilePlacement file_placement(const VersionDB& db,
 // ("what is on disk that nothing claims") of a different authority.
 std::vector<FilePlacement> release_file_placements(const VersionDB& db,
                                                    const std::string& target,
-                                                   const std::string& version);
+                                                   const std::string& version,
+                                                   std::string_view xlingsHome);
 
 }  // namespace xlings::xvm
 
@@ -316,13 +327,15 @@ std::vector<HeaderAsset> group_header_assets(const VersionDB& db,
 
 LibraryPlacement library_placement(const VersionDB& db,
                                    const std::string& target,
-                                   const std::string& version);
+                                   const std::string& version,
+                                   std::string_view xlingsHome);
 
 bool is_permitted_file_destination(std::string_view destination);
 
 FilePlacement file_placement(const VersionDB& db,
                              const std::string& target,
-                             const std::string& version);
+                             const std::string& version,
+                             std::string_view xlingsHome);
 
 bool is_binding_root(const VersionDB& db,
                      const std::string& target,

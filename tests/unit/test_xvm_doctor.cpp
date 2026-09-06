@@ -56,6 +56,12 @@ import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
 import mcpplibs.cmdline;
 
+
+// These fixtures store absolute payload paths, so there is no `${XLINGS_HOME}`
+// to expand and the home is genuinely irrelevant here. Named rather than
+// written as `{}` at 50 call sites so that "no home" reads as a decision.
+constexpr std::string_view kNoHome{};
+
 namespace {
 
 struct ScopedEnvVar {
@@ -163,7 +169,7 @@ xlings::xvm::VersionDB dangling_edge_db_() {
 TEST(XvmDanglingEdge, TheRefusalIsReproducedBeforeAnythingIsFixed) {
     const auto db = dangling_edge_db_();
     // This is the user-visible symptom: a version that resolved on 0.4.68.
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
     ASSERT_FALSE(plan.has_value())
         << "the failing state under test no longer reproduces";
     EXPECT_EQ(plan.error().code, "xvm-binding-version-missing");
@@ -205,7 +211,7 @@ TEST(XvmDanglingEdge, AfterPruningTheSwitchWorksAgain) {
     xlings::xvm::apply_dangling_edge_pruning(
         db, xlings::xvm::plan_dangling_edge_pruning(db));
 
-    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0");
+    auto plan = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
     ASSERT_TRUE(plan.has_value()) << plan.error().what;
     // gcc@15.1.0 stands alone once the edge to the missing anchor is gone --
     // which is what 0.4.68 did, and what the user expects.
@@ -213,7 +219,7 @@ TEST(XvmDanglingEdge, AfterPruningTheSwitchWorksAgain) {
     EXPECT_EQ(plan->members.at("gcc"), "15.1.0");
     // 16.1.0 still resolves as a release, so pruning did not flatten
     // everything into standalone entries.
-    auto still = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0");
+    auto still = xlings::xvm::plan_use_switch(db, {}, "gcc", "16.1.0", kNoHome);
     ASSERT_TRUE(still.has_value()) << still.error().what;
     EXPECT_EQ(still->members.size(), 2u);
 }

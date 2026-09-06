@@ -27,6 +27,7 @@ import xlings.core.xvm.inspect;
 import xlings.core.xvm.switch_plan;   // plan_use_switch — the --fix preflight
 import xlings.core.xvm.lock;
 import xlings.core.xvm.owner;
+import xlings.core.xvm.relocation;
 import xlings.core.xself.repair;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;   // classify_payload_platform
@@ -150,6 +151,22 @@ enum class FindingKind {
     // compiler that follows it reports a missing header from a directory the
     // user can see in the error message.
     SysrootDangling,
+    // A sysroot destination the active selection declares, whose link is not
+    // there at all. The mirror image of SysrootDangling, and the half nothing
+    // asked until now: a scan that only looks at links that EXIST cannot see a
+    // link that was deleted. 2026.9.4.1's `--fix` deleted 1173 of them on a
+    // measured home that had been moved, and no later run could report it.
+    //
+    // Quiet by construction on a healthy home: 405 declared destinations on
+    // the measured home, 0 missing.
+    SysrootMissing,
+    // The records were written for another root -- the home was moved.
+    //
+    // Reported as ONE finding rather than as the 411 broken payloads and 1173
+    // dangling links it produces, because those are symptoms of a single fact
+    // and each of them invites a repair that is wrong: reinstalling a payload
+    // that is present, or deleting a link that can be re-pointed.
+    HomeRelocated,
     BindingState,
     OtherSubos,
     // The subos does not describe itself: no `subos_info` block, or one that
@@ -332,6 +349,11 @@ struct DoctorState {
     std::vector<profile::SubosSnapshot> otherSnapshots;
     fs::path                 xlingsBin;
     std::string              homeStr;
+    // Computed once per state load, consumed by detection AND by both
+    // destructive repairs. One producer: a second place deciding "was this
+    // home moved" is how the reporter/repairer pairs in this file drifted
+    // apart before (see doctor.cpp's prune and sysroot branches).
+    std::optional<xvm::HomeRelocation> relocation;
 };
 
 #ifdef _WIN32
@@ -394,6 +416,19 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
 struct RepairReport {
     int healed  { 0 };   // findings a repair cleared
     int pruned  { 0 };   // dead registrations dropped
+    // Sysroot links this run DELETED.
+    //
+    // Counted for exactly the reason `pruned` is: deleting a file out of the
+    // sysroot is a loss, and until 2026.9.5.1 the three-verdict block asked
+    // only about `pruned`, so a run that removed 1173 links printed `OK --
+    // workspace, shims, and payloads are all consistent` and exited 0.
+    int removedAssets { 0 };
+    // A relocated home, repaired: records re-pointed at the current root,
+    // links re-pointed with them, and declared links that were missing and
+    // have been placed again.
+    int relocatedRecords { 0 };
+    int repointedLinks   { 0 };
+    int placedLinks      { 0 };
     // Lines the repair pass wants shown regardless of what re-detection finds:
     // what it did, and what it could not do.
     std::vector<std::pair<std::string, std::string>> notes;
@@ -450,10 +485,15 @@ struct Counts {
     int warnings { 0 };
     int foreignPayloads { 0 };
     int otherSubos { 0 };
+    // The home was moved. One finding, counted as one issue -- the symptoms it
+    // explains (broken payloads, dangling links) are deliberately NOT reported
+    // alongside it, so without this the exit code would say a moved home is
+    // fine.
+    int relocated { 0 };
 
     [[nodiscard]] int issues() const {
         return missing + orphans + broken + binding + inactive + aliasBroken
-             + subos;
+             + subos + relocated;
     }
 };
 

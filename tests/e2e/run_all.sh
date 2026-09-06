@@ -179,6 +179,10 @@ TESTS=(
     # against 2026.9.3.2, where S1 exits 134 (SIGABRT) and S2 reports a
     # pruned home as "OK".
     "E2E-98 |doctor_honest_verdict_test.sh||"
+    # A moved home is diagnosed and re-pointed, never destroyed. Differential
+    # against 2026.9.4.1, where one --fix deleted 1173 sysroot links and
+    # dropped 367 registrations with every payload present on disk.
+    "E2E-99 |doctor_relocated_home_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
