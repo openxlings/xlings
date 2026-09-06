@@ -423,12 +423,11 @@ struct RepairReport {
     // only about `pruned`, so a run that removed 1173 links printed `OK --
     // workspace, shims, and payloads are all consistent` and exited 0.
     int removedAssets { 0 };
-    // A relocated home, repaired: records re-pointed at the current root,
-    // links re-pointed with them, and declared links that were missing and
-    // have been placed again.
-    int relocatedRecords { 0 };
-    int repointedLinks   { 0 };
-    int placedLinks      { 0 };
+    // Deliberately no counters for the relocation repairs.
+    //
+    // What they did is reported as notes, one line each ("records re-pointed",
+    // "links re-pointed", "link placed"), and a second copy of the same fact in
+    // a field nobody reads is how a summary and a list start disagreeing.
     // Lines the repair pass wants shown regardless of what re-detection finds:
     // what it did, and what it could not do.
     std::vector<std::pair<std::string, std::string>> notes;

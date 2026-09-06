@@ -2716,7 +2716,6 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                 // whole change exists to remove.
                 ec.clear();
                 if (fs::exists(f.shimPath, ec)) {
-                    ++out.repointedLinks;
                     note(glyph::mark(glyph::bullet, "link repointed"),
                          std::format("{} → {}",
                                      Config::display_path(f.shimPath),
@@ -2800,7 +2799,6 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             xvm::place_asset(source, f.shimPath);
             std::error_code pec;
             if (fs::exists(f.shimPath, pec)) {
-                ++out.placedLinks;
                 note(glyph::mark(glyph::bullet, "link placed"),
                      std::format("{} → {}", Config::display_path(f.shimPath),
                                  Config::display_path(source)));
@@ -3466,7 +3464,6 @@ void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
         }
         if (records > 0) {
             Config::save_versions();
-            out.relocatedRecords = static_cast<int>(records);
             out.notes.emplace_back(
                 glyph::mark(glyph::bullet, "records re-pointed"),
                 std::format("{} registration(s): {} → {}", records,
@@ -3625,7 +3622,6 @@ void repair_relocation_(const DoctorState& st, bool dryRun, RepairReport& out) {
         }
     }
 
-    out.repointedLinks += static_cast<int>(repointed);
     if (manifests > 0) {
         out.notes.emplace_back(glyph::mark(glyph::bullet, "subos re-pointed"),
             std::format("{} subos manifest(s) named the old path", manifests));
