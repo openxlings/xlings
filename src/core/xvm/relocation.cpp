@@ -84,8 +84,9 @@ std::string relocated_path(const HomeRelocation& reloc,
 
 std::optional<HomeRelocation> detect_relocation(const VersionDB& db,
                                                 std::string_view homeDir,
-                                                const PathProbe& exists) {
-    if (homeDir.empty() || !exists) return std::nullopt;
+                                                const PathProbe& exists,
+                                                const SamePlaceProbe& samePlace) {
+    if (homeDir.empty() || !exists || !samePlace) return std::nullopt;
 
     // Ordered, so a tie between two foreign roots resolves the same way on
     // every run and on every platform. A doctor that reports a different root
@@ -104,6 +105,17 @@ std::optional<HomeRelocation> detect_relocation(const VersionDB& db,
 
     const auto best = std::ranges::max_element(
         roots, [](const auto& a, const auto& b) { return a.second < b.second; });
+
+    // A root that is still a live home of its own is not a move. Without this
+    // clause, a project scope -- whose records name `<checkout>/.xlings` while
+    // `homeDir` is the global home, and which `Config::versions()` merges into
+    // one view -- would be diagnosed as relocated and its payload paths
+    // re-pointed into the global store the moment the same package exists in
+    // both. The one exception is the workaround: a symlink at the old path
+    // that resolves to this home.
+    if (exists(best->first) && !samePlace(best->first, std::string(homeDir))) {
+        return std::nullopt;
+    }
 
     HomeRelocation reloc{
         .oldRoot = best->first,

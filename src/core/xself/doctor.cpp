@@ -119,9 +119,18 @@ DoctorState load_state_() {
     // terms of the recorded path alone, and a moved home makes that answer yes
     // for everything while every payload is present under the new root.
     st.relocation = xvm::detect_relocation(
-        st.db, st.homeStr, [](const std::string& path) {
+        st.db, st.homeStr,
+        [](const std::string& path) {
             std::error_code ec;
             return fs::exists(path, ec);
+        },
+        [](const std::string& a, const std::string& b) {
+            // `equivalent` compares what the two paths RESOLVE to, which is
+            // the question here: a compensating symlink at the old path is
+            // this home, a project's own `.xlings` is not.
+            std::error_code ec;
+            const bool same = fs::equivalent(a, b, ec);
+            return !ec && same;
         });
     return st;
 }

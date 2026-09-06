@@ -51,6 +51,16 @@ xvm::VersionDB db_with(std::vector<std::pair<std::string, std::string>> entries)
 const xvm::PathProbe kAllPresent = [](const std::string&) { return true; };
 // Nothing exists.
 const xvm::PathProbe kNonePresent = [](const std::string&) { return false; };
+// The payloads exist here; the OLD ROOT does not -- an ordinary move.
+const xvm::PathProbe kOldRootGone = [](const std::string& p) {
+    return p.find("/data/xpkgs/") != std::string::npos;
+};
+// Two paths never resolve to the same place.
+const xvm::SamePlaceProbe kNeverSame =
+    [](const std::string&, const std::string&) { return false; };
+// The old path resolves to this home -- the compensating-symlink workaround.
+const xvm::SamePlaceProbe kAlwaysSame =
+    [](const std::string&, const std::string&) { return true; };
 
 }  // namespace
 
@@ -99,7 +109,7 @@ TEST(Relocation, SamePathTextIgnoresSeparatorSpelling) {
 TEST(Relocation, DetectsAMovedHome) {
     auto db = db_with({{"a", "/old/home/data/xpkgs/xim-x-a/1.0"},
                        {"b", "/old/home/data/xpkgs/xim-x-b/2.0"}});
-    auto reloc = xvm::detect_relocation(db, "/new/home", kAllPresent);
+    auto reloc = xvm::detect_relocation(db, "/new/home", kOldRootGone, kNeverSame);
     ASSERT_TRUE(reloc.has_value());
     EXPECT_EQ(reloc->oldRoot, "/old/home");
     EXPECT_EQ(reloc->newRoot, "/new/home");
@@ -113,13 +123,13 @@ TEST(Relocation, RefusesWhenNothingIsRecoverable) {
     // and the dead registrations would be kept forever.
     auto db = db_with({{"a", "/old/home/data/xpkgs/xim-x-a/1.0"}});
     EXPECT_FALSE(
-        xvm::detect_relocation(db, "/new/home", kNonePresent).has_value());
+        xvm::detect_relocation(db, "/new/home", kNonePresent, kNeverSame).has_value());
 }
 
 TEST(Relocation, HomeThatDidNotMoveIsNotRelocated) {
     auto db = db_with({{"a", "/new/home/data/xpkgs/xim-x-a/1.0"}});
     EXPECT_FALSE(
-        xvm::detect_relocation(db, "/new/home", kAllPresent).has_value());
+        xvm::detect_relocation(db, "/new/home", kOldRootGone, kNeverSame).has_value());
 }
 
 TEST(Relocation, SelfManagedToolsDoNotDecideTheRoot) {
@@ -129,7 +139,7 @@ TEST(Relocation, SelfManagedToolsDoNotDecideTheRoot) {
                        {"b",  "/old/home/data/xpkgs/xim-x-b/2.0"},
                        {"rg", "/usr/bin"},
                        {"cg", "/home/u/.cargo/bin"}});
-    auto reloc = xvm::detect_relocation(db, "/new/home", kAllPresent);
+    auto reloc = xvm::detect_relocation(db, "/new/home", kOldRootGone, kNeverSame);
     ASSERT_TRUE(reloc.has_value());
     EXPECT_EQ(reloc->oldRoot, "/old/home");
     // And they are not translated: a tool outside the store keeps its path.
@@ -141,7 +151,7 @@ TEST(Relocation, PicksTheDominantRootDeterministically) {
     auto db = db_with({{"a", "/oldA/data/xpkgs/xim-x-a/1.0"},
                        {"b", "/oldB/data/xpkgs/xim-x-b/2.0"},
                        {"c", "/oldB/data/xpkgs/xim-x-c/3.0"}});
-    auto reloc = xvm::detect_relocation(db, "/new/home", kAllPresent);
+    auto reloc = xvm::detect_relocation(db, "/new/home", kOldRootGone, kNeverSame);
     ASSERT_TRUE(reloc.has_value());
     EXPECT_EQ(reloc->oldRoot, "/oldB");
 }
@@ -167,4 +177,33 @@ TEST(Relocation, TailIsCopiedVerbatim) {
     xvm::HomeRelocation reloc{.oldRoot = "/old/home", .newRoot = "/new/home"};
     EXPECT_EQ(xvm::relocated_path(reloc, R"(/old/home\data\xpkgs\a)"),
               R"(/new/home\data\xpkgs\a)");
+}
+
+TEST(Relocation, ALiveSecondHomeIsNotAMove) {
+    // The project scope. `Config::versions()` merges the global and project
+    // databases into one view, so a project's records -- naming
+    // `<checkout>/.xlings` while the home is `~/.xlings` -- look exactly like
+    // a moved home's, and the same package usually exists in both stores. Left
+    // ungated, the repair would re-point the project's payloads into the
+    // global store.
+    auto db = db_with({{"a", "/home/u/proj/.xlings/data/xpkgs/xim-x-a/1.0"},
+                       {"b", "/home/u/proj/.xlings/data/xpkgs/xim-x-b/2.0"}});
+    const xvm::PathProbe everythingExists =
+        [](const std::string&) { return true; };
+    EXPECT_FALSE(xvm::detect_relocation(db, "/home/u/.xlings",
+                                        everythingExists, kNeverSame)
+                     .has_value());
+}
+
+TEST(Relocation, TheCompensatingSymlinkIsStillAMove) {
+    // The old path exists, but it resolves to this home: the workaround users
+    // reach for. Repairing it is what stops the home depending on that symlink
+    // forever.
+    auto db = db_with({{"a", "/old/home/data/xpkgs/xim-x-a/1.0"}});
+    const xvm::PathProbe everythingExists =
+        [](const std::string&) { return true; };
+    auto reloc = xvm::detect_relocation(db, "/new/home", everythingExists,
+                                        kAlwaysSame);
+    ASSERT_TRUE(reloc.has_value());
+    EXPECT_EQ(reloc->oldRoot, "/old/home");
 }

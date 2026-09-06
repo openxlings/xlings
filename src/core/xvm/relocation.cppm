@@ -73,6 +73,22 @@ std::string relocated_path(const HomeRelocation& reloc,
 // Existence, injected.
 using PathProbe = std::function<bool(const std::string&)>;
 
+// Do these two paths name the same directory on disk, symlinks resolved?
+//
+// Separate from `same_path_text` and not a substitute for it. The text
+// comparison is what NOTICES that the records name another root; this one is
+// what tells the two reasons apart:
+//
+//   * a compensating symlink at the old path -- the workaround users reach for
+//     -- resolves to this very home, and re-pointing away from it is a repair;
+//   * a root that is a DIFFERENT live home (a project-scope `.xlings` under a
+//     checkout, a second home on the same machine) is not this home's business.
+//     Its records legitimately name it, and `Config::versions()` merges the two
+//     scopes, so without this the project's payloads would be re-pointed into
+//     the global store the moment the same package exists in both.
+using SamePlaceProbe =
+    std::function<bool(const std::string& a, const std::string& b)>;
+
 // Was this home's database written for another root?
 //
 // Answers only when it can point at a payload: the modal foreign store prefix
@@ -84,8 +100,13 @@ using PathProbe = std::function<bool(const std::string&)>;
 // The MODE, not the longest common prefix. Records outside the store
 // (`/usr/bin`, `~/.cargo/bin` -- 7 of 2908 on the measured home) would drag a
 // common prefix down to `/` and make every path "under" it.
+//
+// And the old root must be GONE, or be this same home under another name. A
+// root that still exists as a home of its own is not a move -- see
+// SamePlaceProbe.
 std::optional<HomeRelocation> detect_relocation(const VersionDB& db,
                                                 std::string_view homeDir,
-                                                const PathProbe& exists);
+                                                const PathProbe& exists,
+                                                const SamePlaceProbe& samePlace);
 
 }  // namespace xlings::xvm
