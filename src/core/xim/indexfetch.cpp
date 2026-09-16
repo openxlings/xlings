@@ -399,11 +399,15 @@ std::optional<ArtifactSource> artifact_source_from_base(const std::string& rawBa
 }
 
 std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
-    if (repo.artifactBases.empty()) return std::nullopt;
-    auto src = artifact_source_from_base(repo.artifactBases.front().url, repo.name);
-    if (!src) return std::nullopt;
-    for (std::size_t i = 1; i < repo.artifactBases.size(); ++i)
-        src->altBases.push_back(repo.artifactBases[i].url);
+    // The first base that DERIVES becomes the source; the rest follow it. A
+    // base with no last path segment ("https://example.com/") derives to
+    // nothing, and letting that one entry cancel the whole declaration would
+    // reintroduce, at a different level, exactly the bug this change removes.
+    std::optional<ArtifactSource> src;
+    for (const auto& ab : repo.artifactBases) {
+        if (!src) { src = artifact_source_from_base(ab.url, repo.name); continue; }
+        if (artifact_source_from_base(ab.url, repo.name)) src->altBases.push_back(ab.url);
+    }
     return src;
 }
 

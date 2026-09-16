@@ -137,6 +137,20 @@ TEST(ArtifactSourceFor, ChainKeepsPreferredIdentityAndAlternates) {
     EXPECT_EQ(s->altBases[0], "https://github.com/xlings-res/mcpp-index");
 }
 
+// A base with no last path segment derives to nothing. Config-level parsing
+// makes one hard to reach (empty values are dropped, trailing slashes trimmed),
+// so this is a guard rather than a reported bug -- but "the first entry decides
+// for the whole declaration" is the exact shape #598 was, and it should not
+// come back one level down.
+TEST(ArtifactSourceFor, FirstUnderivableBaseDoesNotCancelTheChain) {
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("m", {
+        {"CN",     "/"},
+        {"GLOBAL", "https://github.com/o/myindex"}}));
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(s->base, "https://github.com/o/myindex");
+    EXPECT_TRUE(s->altBases.empty());
+}
+
 TEST(IndexPointerUrls, CustomChainTriesEveryRegionInOrder) {
     auto s = xlings::xim::artifact_source_for(mkrepo_chain("mcpplibs", {
         {"CN",     "https://gitcode.com/xlings-res/mcpp-index"},

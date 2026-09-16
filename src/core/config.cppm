@@ -157,7 +157,7 @@ private:
     PathInfo paths_;
     std::string mirror_;
     // xim.index-base override, as a preference chain (#598); empty = default
-    // xlings-res. The first entry is what `index_base()` reports.
+    // xlings-res.
     std::vector<ArtifactBase> indexBases_;
     // xim.index-repo (region-resolved via xim.mirrors.index-repo). Written by
     // `xlings self install` since it shipped and, until now, read by nothing --
@@ -452,10 +452,10 @@ public:
     // xim.index-base override (env XLINGS_INDEX_BASE_URL takes precedence in the
     // caller). Empty => default xlings-res raw-pointer + release-artifact path.
     //
-    // #598: a region object here is a chain too -- the preferred region first,
-    // the others after it. `index_base()` is the preferred one (unchanged
-    // meaning); `index_bases()` is what the fetch path consumes.
-    [[nodiscard]] static std::string index_base();
+    // #598: a region object here is a chain -- the preferred region first, the
+    // others after it -- and the fetch path consumes the whole chain. There is
+    // deliberately no "the index base" accessor: that question is what made a
+    // declared fallback unreachable in the first place.
     [[nodiscard]] static std::vector<ArtifactBase> index_bases();
 
     // Returns BY VALUE -- global and project state are merged into a fresh

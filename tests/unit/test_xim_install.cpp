@@ -792,6 +792,44 @@ TEST(XimSubReposTest, DiscoverSubReposReadsArtifactDeclaration) {
     fs::remove_all(testDir);
 }
 
+// An artifact table written on ONE line closes on that line. Entering the
+// sub-block state there would consume the enclosing block's `}` and drop the
+// whole repo entry -- silently, which is the failure mode this code base keeps
+// paying for.
+TEST(XimSubReposTest, DiscoverSubReposReadsInlineArtifactTable) {
+    namespace fs = std::filesystem;
+    auto testDir = fs::temp_directory_path() / "xlings_subrepo_inline_artifact";
+    fs::remove_all(testDir);
+    fs::create_directories(testDir);
+
+    std::string lua = R"(xim_indexrepos = {
+    ["one"] = {
+        ["GLOBAL"] = "https://github.com/o/one.git",
+        ["artifact"] = { ["GLOBAL"] = "https://github.com/x/one-index", ["CN"] = "https://gitcode.com/x/one-index" },
+    },
+    ["two"] = {
+        ["GLOBAL"] = "https://github.com/o/two.git",
+    }
+}
+)";
+    xlings::platform::write_string_to_file(
+        (testDir / "xim-indexrepos.lua").string(), lua);
+
+    auto repos = xlings::xim::discover_sub_repos(testDir, "CN");
+    ASSERT_EQ(repos.size(), 2u);            // "two" must still be there
+    for (auto& r : repos) {
+        if (r.name == "one") {
+            ASSERT_EQ(r.artifactBases.size(), 2u);
+            EXPECT_EQ(r.artifactBases[0].url, "https://gitcode.com/x/one-index");
+            EXPECT_EQ(r.artifactBases[1].url, "https://github.com/x/one-index");
+        } else if (r.name == "two") {
+            EXPECT_EQ(r.url, "https://github.com/o/two.git");
+            EXPECT_TRUE(r.artifactBases.empty());
+        }
+    }
+    fs::remove_all(testDir);
+}
+
 TEST(XimSubReposTest, DiscoverSubReposNoFile) {
     namespace fs = std::filesystem;
     auto testDir = fs::temp_directory_path() / "xlings_subrepo_empty";

@@ -988,11 +988,6 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     return instance_().selected_resource_server_for_(mirror);
 }
 
-[[nodiscard]] std::string Config::index_base() {
-    auto& chain = instance_().indexBases_;
-    return chain.empty() ? std::string{} : chain.front().url;
-}
-
 [[nodiscard]] std::vector<ArtifactBase> Config::index_bases() { return instance_().indexBases_; }
 
 [[nodiscard]] xvm::VersionDB Config::versions() {

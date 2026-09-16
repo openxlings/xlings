@@ -170,7 +170,23 @@ std::vector<IndexRepo> discover_sub_repos_(const std::filesystem::path& repoDir,
                 inBlock = false;
             } else if (trimmed.starts_with("[\"artifact\"]") && trimmed.find("= {") != std::string::npos) {
                 artifactDecl = nlohmann::json::object();
-                inArtifactBlock = true;
+                auto open = trimmed.find("= {") + 3;
+                // Written on one line? Then it also CLOSES on this line, and
+                // entering the sub-block state would eat the enclosing block's
+                // `}` -- dropping the whole repo entry, silently.
+                auto close = trimmed.find('}', open);
+                if (close == std::string::npos) {
+                    inArtifactBlock = true;
+                } else {
+                    auto inner = trimmed.substr(open, close - open);
+                    std::string key, value;
+                    std::size_t at = 0;
+                    while ((at = inner.find("[\"", at)) != std::string::npos) {
+                        if (!key_value(inner.substr(at), key, value)) break;
+                        artifactDecl[key] = value;
+                        at += 2;
+                    }
+                }
             } else {
                 std::string key, value;
                 if (key_value(trimmed, key, value)) {
