@@ -132,7 +132,7 @@ int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream) 
                      view.pin.empty() ? "" : std::format("  (pinned: {})", view.pin));
         for (std::size_t i = 0; i < view.artifactBases.size(); ++i) {
             const auto& ab = view.artifactBases[i];
-            log::println("    {} {}{}", i == 0 ? "artifact:" : "     then:",
+            log::println("    {} {}{}", i == 0 ? "artifact:" : "    then:",
                          ab.url, ab.region.empty() ? "" : "  [" + ab.region + "]");
         }
         if (view.gitManaged) {
