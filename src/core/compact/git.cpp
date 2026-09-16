@@ -26,6 +26,7 @@ bool available() {
 
 bool ensure_available(EnsureMode mode) {
     detail_::ensure_ca_env_();
+    detail_::ensure_network_bounds_();   // #599
     detail_::prepend_current_bin_dir_();
     if (available()) return true;
 

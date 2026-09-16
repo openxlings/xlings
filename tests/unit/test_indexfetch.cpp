@@ -14,7 +14,18 @@ static xlings::IndexRepo mkrepo(std::string name, std::string base) {
     xlings::IndexRepo r;
     r.name = std::move(name);
     r.url = "https://x/y.git";
-    r.artifactBase = std::move(base);
+    if (!base.empty()) r.artifactBases = {{"", std::move(base)}};
+    return r;
+}
+
+// #598: a repo declaring several region bases. Preferred first, exactly as
+// parse_region_chain hands them over.
+static xlings::IndexRepo mkrepo_chain(std::string name,
+                                      std::vector<std::pair<std::string, std::string>> bases) {
+    xlings::IndexRepo r;
+    r.name = std::move(name);
+    r.url = "https://x/y.git";
+    for (auto& [region, url] : bases) r.artifactBases.push_back({region, url});
     return r;
 }
 
@@ -109,6 +120,66 @@ TEST(IndexPointerUrls, CustomForgeRawUrl) {
     auto urls = xlings::xim::index_pointer_urls("mcpp-index-pointers.json", "GLOBAL", &*s);
     ASSERT_EQ(urls.size(), 1u);
     EXPECT_EQ(urls[0], "https://raw.githubusercontent.com/xlings-res/mcpp-index/main/mcpp-index-pointers.json");
+}
+
+// ── #598: a region chain is tried in order, not collapsed ────────
+TEST(ArtifactSourceFor, ChainKeepsPreferredIdentityAndAlternates) {
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("mcpplibs", {
+        {"CN",     "https://gitcode.com/xlings-res/mcpp-index"},
+        {"GLOBAL", "https://github.com/xlings-res/mcpp-index"}}));
+    ASSERT_TRUE(s.has_value());
+    // Identity is the PREFERRED base's: the pointer filename and the per-base
+    // pointer cache key must not flip when a fallback is added.
+    EXPECT_EQ(s->base, "https://gitcode.com/xlings-res/mcpp-index");
+    EXPECT_EQ(s->repoName, "mcpp-index");
+    EXPECT_EQ(s->key, "mcpplibs");
+    ASSERT_EQ(s->altBases.size(), 1u);
+    EXPECT_EQ(s->altBases[0], "https://github.com/xlings-res/mcpp-index");
+}
+
+TEST(IndexPointerUrls, CustomChainTriesEveryRegionInOrder) {
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("mcpplibs", {
+        {"CN",     "https://gitcode.com/xlings-res/mcpp-index"},
+        {"GLOBAL", "https://github.com/xlings-res/mcpp-index"}}));
+    auto urls = xlings::xim::index_pointer_urls("mcpp-index-pointers.json", "CN", &*s);
+    // The whole point of #598: a 403 from the first must be able to fall
+    // through to the second instead of ending in a git clone.
+    ASSERT_EQ(urls.size(), 2u);
+    EXPECT_EQ(urls[0], "https://raw.gitcode.com/xlings-res/mcpp-index/raw/main/mcpp-index-pointers.json");
+    EXPECT_EQ(urls[1], "https://raw.githubusercontent.com/xlings-res/mcpp-index/main/mcpp-index-pointers.json");
+}
+
+TEST(IndexAssetUrls, CustomChainIsGroupedPerBaseVersionedTagFirst) {
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("m", {
+        {"CN",     "https://gitcode.com/xlings-res/mcpp-index"},
+        {"GLOBAL", "https://github.com/xlings-res/mcpp-index"}}));
+    auto urls = index_asset_urls("mcpp-index-2e23e20.tar.gz", "CN", "2e23e20", &*s);
+    ASSERT_EQ(urls.size(), 4u);
+    EXPECT_EQ(urls[0], "https://gitcode.com/xlings-res/mcpp-index/releases/download/v2e23e20/mcpp-index-2e23e20.tar.gz");
+    EXPECT_EQ(urls[1], "https://gitcode.com/xlings-res/mcpp-index/releases/download/latest/mcpp-index-2e23e20.tar.gz");
+    EXPECT_EQ(urls[2], "https://github.com/xlings-res/mcpp-index/releases/download/v2e23e20/mcpp-index-2e23e20.tar.gz");
+    EXPECT_EQ(urls[3], "https://github.com/xlings-res/mcpp-index/releases/download/latest/mcpp-index-2e23e20.tar.gz");
+}
+
+TEST(IndexPointerUrls, CustomChainMixesForgeAndFlatBases) {
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("m", {
+        {"CN",     "https://mirror.example.cn/idx/myindex"},
+        {"GLOBAL", "https://github.com/o/myindex"}}));
+    auto urls = xlings::xim::index_pointer_urls("myindex-pointers.json", "CN", &*s);
+    ASSERT_EQ(urls.size(), 2u);
+    EXPECT_EQ(urls[0], "https://mirror.example.cn/idx/myindex/myindex-pointers.json");
+    EXPECT_EQ(urls[1], "https://raw.githubusercontent.com/o/myindex/main/myindex-pointers.json");
+}
+
+TEST(IndexPointerUrls, CustomChainSkipsLocalBasesInUrls) {
+    // A local base is served by obtain_file's forced override, not by a URL.
+    // It must not silently drop the remote base that follows it.
+    auto s = xlings::xim::artifact_source_for(mkrepo_chain("m", {
+        {"CN",     "/srv/mirror/myindex"},
+        {"GLOBAL", "https://github.com/o/myindex"}}));
+    auto urls = xlings::xim::index_pointer_urls("myindex-pointers.json", "CN", &*s);
+    ASSERT_EQ(urls.size(), 1u);
+    EXPECT_EQ(urls[0], "https://raw.githubusercontent.com/o/myindex/main/myindex-pointers.json");
 }
 
 TEST(IndexManifest, ParsesValid) {

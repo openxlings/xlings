@@ -250,6 +250,10 @@ TESTS=(
     # through the reinstall ladder forced straight to remove-then-
     # install (RepairKind::SweptPayload skips R2 in repair.cpp).
     "E2E-112|doctor_swept_payload_test.sh||"
+    # `xlings update` bounds its network work: git gets a transfer bound and no
+    # credential prompt, and one refresh has a wall-clock budget past which the
+    # remaining sources are skipped and SAID rather than waited on (#599).
+    "E2E-113|index_network_bounds_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.9.14.1";
+    static constexpr std::string_view VERSION = "2026.9.16.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -40,22 +40,57 @@ export void capture_ambient_home_env();
 
 export const std::optional<std::string>& ambient_home_env();
 
+// #598: one declared artifact base together with the region it was declared
+// for. `region` is empty for a flat (region-less) declaration, and is what
+// lets a region object survive a load -> save round trip.
+export struct ArtifactBase {
+    std::string region;
+    std::string url;
+};
+
 export struct IndexRepo {
     std::string name;
     std::string url;
-    std::string artifactBase;  // #377: resolved artifact base URL ("" = git-only)
+    // #377 / #598: every declared artifact base, in the order they should be
+    // TRIED -- the configured mirror's region first, then GLOBAL, then the
+    // rest as declared. Empty = git-only.
+    //
+    // This used to be one resolved `artifactBase` string. A region object is a
+    // preference order, not a selection: reading it as a selection is what made
+    // a 403 from one region fall back to git instead of to the other region.
+    std::vector<ArtifactBase> artifactBases;
     std::string source;        // #377: per-repo override: "" | "auto" | "artifact" | "git"
     // #476: pin this repo to one published index snapshot. Empty (or "latest")
     // means automatic routing -- the newest snapshot whose declared client
     // contract this xlings satisfies. A pin is an override for reproducing a
     // state, so it bypasses the contract check but never the sha256 check.
     std::string version;
+
+    // The preferred base -- what every "does this repo declare an artifact"
+    // check and every identity derivation asks for. Empty when git-only.
+    [[nodiscard]] const std::string& artifact_base() const {
+        static const std::string kNone;
+        return artifactBases.empty() ? kNone : artifactBases.front().url;
+    }
 };
 
+// #598: read a region-keyed value as an ordered preference chain.
+//
+// A flat string yields one entry with an empty region. An object
+// {"GLOBAL":..,"CN":..,..} yields the configured mirror's region first, then
+// GLOBAL, then every other declared region in declaration order. Values are
+// trimmed of whitespace and trailing slashes; empty values and duplicate URLs
+// are dropped.
+//
+// One answerer for a shape the config layer used to decode in three places,
+// each of which kept only the first hit.
+export std::vector<ArtifactBase> parse_region_chain(const nlohmann::json& value,
+                                                    const std::string& mirror);
+
 // #377: parse index_repos entries. `artifact` is a flat string or a region
-// object {"GLOBAL":..,"CN":..} (same shape as xim.index-base), resolved
-// against `mirror` with GLOBAL fallback. `source` optionally overrides the
-// global index source for this repo only.
+// object {"GLOBAL":..,"CN":..} (same shape as xim.index-base), read as a
+// preference chain (#598). `source` optionally overrides the global index
+// source for this repo only.
 export std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
                                                      const std::string& mirror);
 
@@ -121,7 +156,9 @@ private:
 
     PathInfo paths_;
     std::string mirror_;
-    std::string indexBase_;   // xim.index-base override (region-resolved); empty = default xlings-res
+    // xim.index-base override, as a preference chain (#598); empty = default
+    // xlings-res. The first entry is what `index_base()` reports.
+    std::vector<ArtifactBase> indexBases_;
     // xim.index-repo (region-resolved via xim.mirrors.index-repo). Written by
     // `xlings self install` since it shipped and, until now, read by nothing --
     // default_global_index_repos_ carried its own copy of the URL. Empty means
@@ -169,7 +206,9 @@ private:
     // Resolve xim.index-base from a config json. Accepts a flat string or a
     // region object {"GLOBAL":"...","CN":"..."}. Lets a deployment point the
     // index pointer+artifact at a self-hosted server without code changes.
-    static std::string resolve_index_base_(const nlohmann::json& json, const std::string& mirror);
+    // #598: returns the whole chain, preferred region first.
+    static std::vector<ArtifactBase> resolve_index_base_(const nlohmann::json& json,
+                                                         const std::string& mirror);
 
     // xim.mirrors.index-repo[<region>], else xim.index-repo. Empty when the
     // config carries neither.
@@ -412,7 +451,12 @@ public:
     [[nodiscard]] static std::string resource_server(std::string_view mirror = {});
     // xim.index-base override (env XLINGS_INDEX_BASE_URL takes precedence in the
     // caller). Empty => default xlings-res raw-pointer + release-artifact path.
+    //
+    // #598: a region object here is a chain too -- the preferred region first,
+    // the others after it. `index_base()` is the preferred one (unchanged
+    // meaning); `index_bases()` is what the fetch path consumes.
     [[nodiscard]] static std::string index_base();
+    [[nodiscard]] static std::vector<ArtifactBase> index_bases();
 
     // Returns BY VALUE -- global and project state are merged into a fresh
     // map, so there is no long-lived object to hand out a reference to.

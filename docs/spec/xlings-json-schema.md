@@ -159,7 +159,7 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 |------|------|------|
 | `name` | `string` | 索引命名空间(必填) |
 | `url` | `string` | Git 远程地址或本地路径(必填;artifact 模式下作为回退) |
-| `artifact` | `string \| object` | artifact 来源 base:GitHub/GitCode 仓库 URL、静态 HTTP 目录、本地目录/`file://`;或区域对象 `{"GLOBAL":..,"CN":..}` |
+| `artifact` | `string \| object` | artifact 来源 base:GitHub/GitCode 仓库 URL、静态 HTTP 目录、本地目录/`file://`;或区域对象 `{"GLOBAL":..,"CN":..}` —— **区域对象是有序候选链**,当前 mirror 的区域在前、GLOBAL 次之、其余按声明顺序,逐个尝试后才回落 git(#598) |
 | `source` | `string` | `auto`(默认,artifact 优先、git 回退)\| `artifact`(只走 artifact)\| `git`(强制 git) |
 
 #### 条目是平级的,`name` 决定三件事
@@ -187,6 +187,10 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 对不上就没有 artifact,走 git。本地路径 / `file://` 永远不走 artifact。
 `source: "git"` 可以对任意条目关闭 artifact —— 自建同名索引用这个兜底。
 
+**artifact 是默认机制,git 是回落。** `auto` 的含义因此是「artifact 优先」,不是
+「二选一」:一个条目声明了多个区域 base,它们会被**逐个**尝试,git 只在整条链
+用尽之后才轮到。`xlings index list` 列出该顺序。
+
 ### xim 格式
 
 `xlings self install` 写入,描述**默认索引本身**从哪来:
@@ -209,11 +213,26 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 |------|------|
 | `index-repo` | 默认索引(`name: "xim"`)的 git 地址。**2026.8.30.1 起真正生效**:此前只被写入、从不被读取,默认地址是编译进 xlings 的常量 |
 | `mirrors.index-repo` | 按区域的同一字段。优先于扁平的 `index-repo` 读取,所以安装后改 `mirror` 会跟着走 |
-| `index-base` | 制品 pointer + release 资产的 base(自建服务器用)。env `XLINGS_INDEX_BASE_URL` 优先 |
+| `index-base` | 制品 pointer + release 资产的 base(自建服务器用)。env `XLINGS_INDEX_BASE_URL` 优先。字符串或区域对象;**区域对象是有序候选链**(#598),逐个尝试,用尽后不会回到官方服务器 —— override 就是 override |
+| `mirrors.index-repo` 的区域对象 | **只取首个**。它命名的是 git remote,一个本地 clone 只有一个 origin;链式意味着改写 origin,是另一件事,不是遗漏 |
 
 `index-repo` 同时是默认索引的**声明来源**:`index_repos` 里名为 `xim` 的条目,
 只有 `url` 与它相等才会被送上官方制品。改成自己的 fork,官方制品就不会再落到
 你的目录里。
+
+### 索引刷新的网络界限(环境变量,2026.9.16.1+)
+
+一次 `xlings update` 里每个网络动作都有界,总时长也有预算:
+
+| 变量 | 默认 | 作用 |
+|------|------|------|
+| `XLINGS_UPDATE_TIMEOUT` | `300`(秒) | 一次刷新的总预算。超出后剩余来源被**跳过并报告**(保留本地副本),不是继续等。`off` 关闭 |
+| `XLINGS_INDEX_HTTP_TIMEOUT` | `10:120` | 索引 HTTP 的 `<连接秒>:<单次尝试秒>`。索引很小且总有下一个候选,故比包体下载更紧。`off` 用下载默认 |
+| `XLINGS_GIT_NETWORK_TIMEOUT` | `60`(秒) | 写入 `GIT_HTTP_LOW_SPEED_TIME`(配合 `GIT_HTTP_LOW_SPEED_LIMIT=1000`)。**已由操作员设置的同名变量不会被覆盖**。`off` 不设 |
+| `XLINGS_DOWNLOAD_LOW_SPEED` | `10240:15` | 下载停滞看门狗 `<字节>:<秒>`;`off` 关闭 |
+
+`GIT_TERMINAL_PROMPT=0` 也会被设上(同样只在未设时):索引同步从不需要凭据,
+把一次无限期的终端等待变成一个错误。
 
 ### XLINGS_RES 格式
 

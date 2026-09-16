@@ -31,6 +31,7 @@ std::vector<IndexSourceView> collect_index_sources() {
         IndexSourceView view;
         view.name = repo.name;
         view.pin  = repo.version;
+        view.artifactBases = repo.artifactBases;
         const auto repoDir = Config::repo_dir_for(repo, false);
         view.installed = installed_index_version(repoDir);
 
@@ -84,6 +85,9 @@ nlohmann::json index_sources_json(const std::vector<IndexSourceView>& views) {
         // and only this one describes the tree the client is actually reading.
         entry["installed"] = view.installed;
         entry["git_managed"] = view.gitManaged;
+        entry["artifact_bases"] = nlohmann::json::array();
+        for (const auto& ab : view.artifactBases)
+            entry["artifact_bases"].push_back({ {"region", ab.region}, {"url", ab.url} });
         entry["truncated"] = view.truncated;
         if (!view.error.empty()) entry["error"] = view.error;
         entry["snapshots"] = nlohmann::json::array();
@@ -126,6 +130,11 @@ int cmd_index_list(const std::string& filter, bool asJson, EventStream& stream) 
         log::println("");
         log::println("  ◆ {}{}", view.name,
                      view.pin.empty() ? "" : std::format("  (pinned: {})", view.pin));
+        for (std::size_t i = 0; i < view.artifactBases.size(); ++i) {
+            const auto& ab = view.artifactBases[i];
+            log::println("    {} {}{}", i == 0 ? "artifact:" : "     then:",
+                         ab.url, ab.region.empty() ? "" : "  [" + ab.region + "]");
+        }
         if (view.gitManaged) {
             log::println("    git-managed — no published snapshots{}",
                          view.installed.empty()

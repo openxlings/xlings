@@ -75,9 +75,17 @@ HTTP 下载健壮性（延迟重排 + 卡顿看门狗），git 自动降级为�
 ```
 
 - `artifact` — artifact 来源 base。字符串,或区域对象
-  `{"GLOBAL": "...", "CN": "..."}`(按当前 mirror 解析、GLOBAL 兜底)。支持三类:
-  GitHub/GitCode 仓库 URL(raw 指针 + release 资产)、任意静态 HTTP 目录、
-  本地目录 / `file://`(目录内直接放指针与 tarball)。
+  `{"GLOBAL": "...", "CN": "..."}`。支持三类:GitHub/GitCode 仓库 URL(raw 指针 +
+  release 资产)、任意静态 HTTP 目录、本地目录 / `file://`(目录内直接放指针与
+  tarball)。
+
+  **区域对象是一条候选链,不是单选(2026.9.16.1 起)**:当前 mirror 的区域排在最前,
+  其后是 GLOBAL,再其后是其余区域(按声明顺序)。首选 base 取不到指针(限流 403、
+  429、离线……)时会继续试下一个区域,**整条链都失败才回落 git**。此前它解析成
+  一个 base,于是 CN 下 gitcode 的一次 403 直接变成一次 GitHub 的 git clone ——
+  正是设 CN 镜像想避开的那条连接(#598)。
+
+  两个区域应当发布**同名**的仓库(指针文件名由 base 末段推导,各 base 分别推导)。
 - `source` — 该仓的传输模式(可省略,默认 `auto`):
   - `auto` — artifact 优先,失败回落 git;
   - `artifact` — 只走 artifact,失败即报错;
@@ -93,6 +101,39 @@ HTTP 下载健壮性（延迟重排 + 卡顿看门狗），git 自动降级为�
 
 指针里的 key 优先按条目 `name` 精确匹配;指针只有一个条目时直接采用
 (发布方 key 与消费端命名空间不必一致)。
+
+**看一眼会按什么顺序试**:
+
+```console
+$ xlings index list
+  ◆ mcpplibs
+    artifact: https://gitcode.com/xlings-res/mcpp-index  [CN]
+         then: https://github.com/xlings-res/mcpp-index  [GLOBAL]
+```
+
+`xlings index list --json` 里对应 `artifact_bases`(`{region, url}` 数组,同序)。
+
+## 子索引也能声明 artifact(2026.9.16.1+)
+
+默认索引的 `xim-indexrepos.lua` 此前只能给子索引写 git URL。现在同一个块里可以
+声明它自己的 artifact 来源(字符串或区域对象)与传输模式:
+
+```lua
+xim_indexrepos = {
+    ["awesome"] = {
+        ["GLOBAL"] = "https://github.com/openxlings/xim-pkgindex-awesome.git",
+        ["CN"]     = "https://gitee.com/d2learn/xim-pkgindex-awesome.git",
+        ["artifact"] = {
+            ["GLOBAL"] = "https://github.com/xlings-res/awesome-index",
+            ["CN"]     = "https://gitcode.com/xlings-res/awesome-index",
+        },
+        ["source"] = "auto",
+    }
+}
+```
+
+不写 `artifact` 的块行为不变:它仍由官方合并指针覆盖(名字+URL 对得上即走
+artifact),对不上才走 git。
 
 ## 资源服务器（二进制镜像）
 

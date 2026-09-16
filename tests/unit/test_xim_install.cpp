@@ -738,6 +738,60 @@ TEST(XimSubReposTest, DiscoverSubReposFromLuaFile) {
     fs::remove_all(testDir);
 }
 
+// #598/#600: a sub-index can name its own artifact source -- flat, or
+// region-keyed like the git URLs above it. Before this, the lua parser read
+// string values only, so the artifact path (the default mechanism) was
+// reachable for top-level index_repos entries and for nothing else.
+TEST(XimSubReposTest, DiscoverSubReposReadsArtifactDeclaration) {
+    namespace fs = std::filesystem;
+    auto testDir = fs::temp_directory_path() / "xlings_subrepo_artifact_test";
+    fs::remove_all(testDir);
+    fs::create_directories(testDir);
+
+    std::string lua = R"(xim_indexrepos = {
+    ["awesome"] = {
+        ["GLOBAL"] = "https://github.com/openxlings/xim-pkgindex-awesome.git",
+        ["CN"] = "https://gitee.com/d2learn/xim-pkgindex-awesome.git",
+        ["artifact"] = {
+            ["GLOBAL"] = "https://github.com/xlings-res/awesome-index",
+            ["CN"] = "https://gitcode.com/xlings-res/awesome-index",
+        },
+        ["source"] = "auto",
+    },
+    ["flat"] = {
+        ["GLOBAL"] = "https://github.com/o/flat.git",
+        ["artifact"] = "https://example.com/idx/flat",
+    },
+    ["plain"] = {
+        ["GLOBAL"] = "https://github.com/o/plain.git",
+    }
+}
+)";
+    xlings::platform::write_string_to_file(
+        (testDir / "xim-indexrepos.lua").string(), lua);
+
+    auto repos = xlings::xim::discover_sub_repos(testDir, "CN");
+    ASSERT_EQ(repos.size(), 3u);
+    for (auto& r : repos) {
+        if (r.name == "awesome") {
+            EXPECT_EQ(r.url, "https://gitee.com/d2learn/xim-pkgindex-awesome.git");
+            ASSERT_EQ(r.artifactBases.size(), 2u);
+            EXPECT_EQ(r.artifactBases[0].url, "https://gitcode.com/xlings-res/awesome-index");
+            EXPECT_EQ(r.artifactBases[1].url, "https://github.com/xlings-res/awesome-index");
+            EXPECT_EQ(r.source, "auto");
+        } else if (r.name == "flat") {
+            ASSERT_EQ(r.artifactBases.size(), 1u);
+            EXPECT_EQ(r.artifact_base(), "https://example.com/idx/flat");
+        } else if (r.name == "plain") {
+            // A block that declares none stays exactly as it was: git-managed,
+            // and NOT reported as a broken artifact source.
+            EXPECT_TRUE(r.artifactBases.empty());
+            EXPECT_TRUE(r.source.empty());
+        }
+    }
+    fs::remove_all(testDir);
+}
+
 TEST(XimSubReposTest, DiscoverSubReposNoFile) {
     namespace fs = std::filesystem;
     auto testDir = fs::temp_directory_path() / "xlings_subrepo_empty";
@@ -810,25 +864,53 @@ TEST(XimSubReposTest, SubReposJsonObjectFormatRoundTrip) {
     auto file = dir / "xim-indexrepos.json";
 
     std::vector<xlings::IndexRepo> repos;
-    repos.push_back({"plain", "https://x/plain.git", "", ""});
+    repos.push_back({"plain", "https://x/plain.git", {}, ""});
     repos.push_back({"custom", "https://x/custom.git",
-                     "https://github.com/o/custom-index", "auto"});
+                     {{"", "https://github.com/o/custom-index"}}, "auto"});
     xlings::xim::save_sub_repos_json(file, repos);
 
     auto loaded = xlings::xim::load_sub_repos_json(file);
     ASSERT_EQ(loaded.size(), 2u);
     EXPECT_EQ(loaded[0].name, "custom");   // nlohmann object keys sort alphabetically
     EXPECT_EQ(loaded[0].url, "https://x/custom.git");
-    EXPECT_EQ(loaded[0].artifactBase, "https://github.com/o/custom-index");
+    EXPECT_EQ(loaded[0].artifact_base(), "https://github.com/o/custom-index");
     EXPECT_EQ(loaded[0].source, "auto");
     EXPECT_EQ(loaded[1].name, "plain");
-    EXPECT_TRUE(loaded[1].artifactBase.empty());
+    EXPECT_TRUE(loaded[1].artifactBases.empty());
 
     // plain entries must persist as plain strings (old-xlings tolerant)
     auto text = xlings::platform::read_file_to_string(file.string());
     auto j = nlohmann::json::parse(text);
     EXPECT_TRUE(j["plain"].is_string());
     EXPECT_TRUE(j["custom"].is_object());
+    fs::remove_all(dir);
+}
+
+// #598: a region object must survive a save -> load round trip. Writing back
+// the base this run happened to prefer collapsed a two-region declaration to
+// one, permanently, one sync at a time.
+TEST(SubReposJsonTest, RegionArtifactSurvivesRoundTrip) {
+    namespace fs = std::filesystem;
+    auto dir = fs::temp_directory_path() / "xlings_subrepos_region_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    auto file = dir / "xim-indexrepos.json";
+
+    std::vector<xlings::IndexRepo> repos;
+    repos.push_back({"custom", "https://x/custom.git",
+                     {{"CN", "https://gitcode.com/o/i"}, {"GLOBAL", "https://github.com/o/i"}},
+                     "auto"});
+    xlings::xim::save_sub_repos_json(file, repos);
+
+    auto text = xlings::platform::read_file_to_string(file.string());
+    auto j = nlohmann::json::parse(text);
+    ASSERT_TRUE(j["custom"]["artifact"].is_object());
+    EXPECT_EQ(j["custom"]["artifact"]["CN"], "https://gitcode.com/o/i");
+    EXPECT_EQ(j["custom"]["artifact"]["GLOBAL"], "https://github.com/o/i");
+
+    auto loaded = xlings::xim::load_sub_repos_json(file);
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0].artifactBases.size(), 2u);   // both regions still there
     fs::remove_all(dir);
 }
 

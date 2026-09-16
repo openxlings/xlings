@@ -401,13 +401,18 @@ auto ListRepos::spec() const -> CapabilitySpec {
 
 auto ListRepos::execute(Params, EventStream& stream) -> Result {
     nlohmann::json repos = nlohmann::json::array();
-    for (auto& r : Config::global_index_repos()) {
-        repos.push_back({{"name", r.name}, {"url", r.url}, {"scope", "global"}});
-    }
+    // #598: the artifact chain is part of what a repo IS -- reporting only the
+    // git url describes the fallback and hides the path actually taken.
+    auto describe = [](const IndexRepo& r, const char* scope) {
+        nlohmann::json bases = nlohmann::json::array();
+        for (auto& ab : r.artifactBases)
+            bases.push_back({{"region", ab.region}, {"url", ab.url}});
+        return nlohmann::json{{"name", r.name}, {"url", r.url}, {"scope", scope},
+                              {"artifact_bases", std::move(bases)}};
+    };
+    for (auto& r : Config::global_index_repos()) repos.push_back(describe(r, "global"));
     if (Config::has_project_config()) {
-        for (auto& r : Config::project_index_repos()) {
-            repos.push_back({{"name", r.name}, {"url", r.url}, {"scope", "project"}});
-        }
+        for (auto& r : Config::project_index_repos()) repos.push_back(describe(r, "project"));
     }
     nlohmann::json payload;
     payload["repos"] = std::move(repos);

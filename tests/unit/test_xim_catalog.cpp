@@ -343,7 +343,7 @@ TEST(ConfigIndexReposTest, PlainEntryHasNoArtifact) {
     ASSERT_EQ(repos.size(), 1u);
     EXPECT_EQ(repos[0].name, "a");
     EXPECT_EQ(repos[0].url, "https://x/a.git");
-    EXPECT_TRUE(repos[0].artifactBase.empty());
+    EXPECT_TRUE(repos[0].artifactBases.empty());
     EXPECT_TRUE(repos[0].source.empty());
 }
 
@@ -353,20 +353,70 @@ TEST(ConfigIndexReposTest, ArtifactStringTrimsTrailingSlash) {
          "artifact":"https://github.com/xlings-res/mcpp-index/","source":"auto"}]})");
     auto repos = xlings::parse_index_repos_json(j, "");
     ASSERT_EQ(repos.size(), 1u);
-    EXPECT_EQ(repos[0].artifactBase, "https://github.com/xlings-res/mcpp-index");
+    ASSERT_EQ(repos[0].artifactBases.size(), 1u);
+    EXPECT_EQ(repos[0].artifact_base(), "https://github.com/xlings-res/mcpp-index");
+    EXPECT_TRUE(repos[0].artifactBases[0].region.empty());   // flat: no region
     EXPECT_EQ(repos[0].source, "auto");
 }
 
-TEST(ConfigIndexReposTest, ArtifactRegionObjectResolvesMirror) {
+// #598: the mirror decides the ORDER of the declared bases, never the set.
+// This test used to assert the opposite -- that a region object resolves to
+// one base -- which is exactly the behaviour that sent a 403 from one region
+// to git instead of to the other region.
+TEST(ConfigIndexReposTest, ArtifactRegionObjectOrdersByMirrorKeepingAll) {
     auto j = nlohmann::json::parse(R"({"index_repos":[
         {"name":"m","url":"https://x/m.git",
          "artifact":{"GLOBAL":"https://github.com/o/r","CN":"https://gitcode.com/o/r"}}]})");
-    EXPECT_EQ(xlings::parse_index_repos_json(j, "CN")[0].artifactBase,
-              "https://gitcode.com/o/r");
-    EXPECT_EQ(xlings::parse_index_repos_json(j, "")[0].artifactBase,
-              "https://github.com/o/r");
-    EXPECT_EQ(xlings::parse_index_repos_json(j, "XX")[0].artifactBase,
-              "https://github.com/o/r");  // unknown mirror -> GLOBAL fallback
+
+    auto cn = xlings::parse_index_repos_json(j, "CN")[0].artifactBases;
+    ASSERT_EQ(cn.size(), 2u);
+    EXPECT_EQ(cn[0].url, "https://gitcode.com/o/r");
+    EXPECT_EQ(cn[0].region, "CN");
+    EXPECT_EQ(cn[1].url, "https://github.com/o/r");
+    EXPECT_EQ(cn[1].region, "GLOBAL");
+
+    auto global = xlings::parse_index_repos_json(j, "")[0].artifactBases;
+    ASSERT_EQ(global.size(), 2u);
+    EXPECT_EQ(global[0].url, "https://github.com/o/r");
+    EXPECT_EQ(global[1].url, "https://gitcode.com/o/r");
+
+    // Unknown mirror: GLOBAL leads, and the rest still follow.
+    auto unknown = xlings::parse_index_repos_json(j, "XX")[0].artifactBases;
+    ASSERT_EQ(unknown.size(), 2u);
+    EXPECT_EQ(unknown[0].url, "https://github.com/o/r");
+    EXPECT_EQ(unknown[1].url, "https://gitcode.com/o/r");
+}
+
+TEST(ConfigRegionChainTest, FlatStringIsOneRegionlessEntry) {
+    auto chain = xlings::parse_region_chain(nlohmann::json("https://example.com/idx/"), "CN");
+    ASSERT_EQ(chain.size(), 1u);
+    EXPECT_EQ(chain[0].url, "https://example.com/idx");   // trailing slash trimmed
+    EXPECT_TRUE(chain[0].region.empty());
+}
+
+TEST(ConfigRegionChainTest, DuplicateUrlsAppearOnce) {
+    auto j = nlohmann::json::parse(
+        R"({"GLOBAL":"https://github.com/o/r","CN":"https://github.com/o/r"})");
+    auto chain = xlings::parse_region_chain(j, "CN");
+    ASSERT_EQ(chain.size(), 1u);
+    EXPECT_EQ(chain[0].region, "CN");   // the preferred spelling of the one location
+}
+
+TEST(ConfigRegionChainTest, ExtraRegionsFollowGlobalInDeclarationOrder) {
+    auto j = nlohmann::json::parse(
+        R"({"CN":"https://cn/r","GLOBAL":"https://g/r","EU":"https://eu/r"})");
+    auto chain = xlings::parse_region_chain(j, "CN");
+    ASSERT_EQ(chain.size(), 3u);
+    EXPECT_EQ(chain[0].url, "https://cn/r");
+    EXPECT_EQ(chain[1].url, "https://g/r");      // GLOBAL is the canonical fallback
+    EXPECT_EQ(chain[2].url, "https://eu/r");
+}
+
+TEST(ConfigRegionChainTest, NonStringAndEmptyValuesDropped) {
+    auto j = nlohmann::json::parse(R"({"GLOBAL":"","CN":"https://cn/r","X":42})");
+    auto chain = xlings::parse_region_chain(j, "CN");
+    ASSERT_EQ(chain.size(), 1u);
+    EXPECT_EQ(chain[0].url, "https://cn/r");
 }
 
 TEST(ConfigIndexReposTest, MalformedEntriesSkipped) {

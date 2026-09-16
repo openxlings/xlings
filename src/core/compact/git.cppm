@@ -112,6 +112,46 @@ inline void ensure_ca_env_() {
 #endif
 }
 
+// #599: bound git's network operations.
+//
+// Everything else in this code base that talks to the network carries a
+// connect timeout, a read timeout and a stall watchdog; git carried none.
+// One stalled connection to github.com blocked `xlings update` for 11 min 27 s
+// on 2026-09-16 -- the socket was ESTABLISHED with 85 bytes unacknowledged in
+// the send queue, so nothing at the TCP layer ever failed and git waited for
+// the peer to give up.
+//
+// git's own transport bound is the curl low-speed pair, which covers exactly
+// this shape: an attempt whose average rate stays under `limit` bytes/s for
+// `time` seconds is aborted. A transfer that never receives a byte averages
+// zero, so it is aborted after `time` seconds rather than never.
+//
+// Set as env rather than `-c`: it reaches submodules and any git subprocess,
+// and an operator who has already set either variable keeps their value.
+// XLINGS_GIT_NETWORK_TIMEOUT=<seconds> overrides the window; `off`/`0`
+// disables the bound entirely.
+inline void ensure_network_bounds_() {
+    // A prompt for credentials on a non-interactive fetch is the OTHER
+    // unbounded wait: git blocks on the terminal forever. Index sync is never
+    // authenticated, so refusing the prompt turns a hang into an error.
+    if (env_or_empty_("GIT_TERMINAL_PROMPT").empty())
+        platform::set_env_variable("GIT_TERMINAL_PROMPT", "0");
+
+    auto knob = utils::trim_string(env_or_empty_("XLINGS_GIT_NETWORK_TIMEOUT"));
+    if (knob == "off" || knob == "0") return;
+    int seconds = 60;
+    if (!knob.empty()) {
+        try {
+            auto v = std::stoi(knob);
+            if (v > 0) seconds = v;
+        } catch (...) { /* unparsable: keep the default rather than fail a sync */ }
+    }
+    if (env_or_empty_("GIT_HTTP_LOW_SPEED_LIMIT").empty())
+        platform::set_env_variable("GIT_HTTP_LOW_SPEED_LIMIT", "1000");
+    if (env_or_empty_("GIT_HTTP_LOW_SPEED_TIME").empty())
+        platform::set_env_variable("GIT_HTTP_LOW_SPEED_TIME", std::to_string(seconds));
+}
+
 inline bool target_is_git_bootstrap_() {
     auto target = utils::trim_string(env_or_empty_("XLINGS_COMPACT_INSTALL_TARGET"));
     return target == "xim:git" || target == "git";

@@ -114,7 +114,7 @@ std::expected<SnapshotChoice, std::string> choose_snapshot(
 // Parse a manifest JSON. Returns nullopt if required fields are missing/invalid.
 std::optional<IndexManifest> parse_index_manifest(std::string_view jsonText);
 
-// #377: a per-repo artifact source derived from IndexRepo.artifactBase.
+// #377: a per-repo artifact source derived from IndexRepo's preferred base.
 // Forge bases (github/gitcode host) use raw-file pointer + releases/download
 // assets; any other base (plain http(s), file://, local path) is a flat
 // directory serving <base>/<filename>. The pointer file is
@@ -126,9 +126,23 @@ struct ArtifactSource {
     std::string key;       // manifest lookup key (config repo name)
     std::optional<std::filesystem::path> localDir;  // set when base is local
     bool forge() const;
+
+    // #598: the OTHER declared bases for the same index, in the order they
+    // should be tried after this one. This source's identity (base, key,
+    // repoName, and therefore the pointer filename and the per-base pointer
+    // cache key) stays the preferred base's — the alternates are equivalent
+    // mirrors of it, not separate indexes.
+    std::vector<std::string> altBases;
 };
 
-// Build an ArtifactSource for a repo, or nullopt when it declares none.
+// Derive a source from ONE base (no alternates). Returns nullopt for an empty
+// base or one with no last path segment.
+std::optional<ArtifactSource> artifact_source_from_base(const std::string& base,
+                                                        const std::string& key);
+
+// Build an ArtifactSource for a repo, or nullopt when it declares none. The
+// preferred base becomes the source; every other declared base becomes an
+// alternate (#598).
 std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo);
 
 // Select the manifest for `key`: exact match; else, for CUSTOM sources only
@@ -190,11 +204,29 @@ namespace xlings::xim {
 namespace detail_ {
 
 // Index source base override (env now; config key folded in by the caller via
-// Config). When set to a local dir / file:// it's copied; a remote base means
-// "<base>/<filename>". Empty => use the passed remoteUrls (xlings-res default).
+// Config). Each entry is a local dir (copied) or a remote base (serving
+// "<base>/<filename>"); they are tried IN ORDER. Empty entries => use the
+// passed remoteUrls (xlings-res default).
+//
+// #598: this used to hold one base. A region object resolves to a chain now,
+// so the override carries the whole chain and a failure at the preferred
+// region continues to the next one instead of ending the attempt.
 struct BaseOverride {
-    std::string base;                      // remote base, or empty
-    std::optional<std::filesystem::path> local;  // local dir, if base is local
+    struct Entry {
+        std::string base;                            // as declared
+        std::optional<std::filesystem::path> local;  // set when base is local
+        // Per-entry filename, for the one file whose NAME is derived from the
+        // base rather than from the manifest: the pointer,
+        // `<last path segment>-pointers.json`. Empty = use the caller's
+        // filename (every asset, whose name the manifest fixes).
+        std::string filename;
+    };
+    std::vector<Entry> entries;
+    // After every entry has failed, also try the caller's remoteUrls. False
+    // for an explicit index-base override (an override is an override: it must
+    // not quietly fall back to the official servers); true for a custom
+    // source, whose remote bases ARE the caller's URL list.
+    bool allowRemoteUrls { false };
 };
 
 } // namespace detail_
@@ -214,6 +246,9 @@ namespace detail_ {
 
 std::expected<SnapshotChoice, std::string> choose_snapshot(
     const IndexManifest& manifest, std::string_view selfVersion, std::string_view pin);
+
+std::optional<ArtifactSource> artifact_source_from_base(const std::string& base,
+                                                        const std::string& key);
 
 std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo);
 
