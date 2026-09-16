@@ -31,6 +31,11 @@ struct IndexSourceView {
     // instead of an index_version. Distinct from `error`, which means "there
     // should have been a pointer and I could not read it".
     bool        gitManaged = false;
+    // #598: the artifact bases this source will try, in order. Reported so a
+    // user can see WHICH locations a fetch will walk before it gives up and
+    // falls back to git -- the thing that was invisible when a region object
+    // silently collapsed to one base.
+    std::vector<ArtifactBase> artifactBases;
 };
 
 // What the local index tree says it is, from the marker written at swap time.

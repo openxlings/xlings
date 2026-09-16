@@ -5,6 +5,8 @@
 #   C. auto + broken artifact          -> falls back to the local-link path
 #   D. existing git checkout + artifact-> migrates (.git gone, marker present)
 #   E. source=git + artifact declared  -> artifact never fetched
+#   F. region artifact, preferred base broken -> next REGION, not git (#598)
+#   G. region artifact over https, both dead -> BOTH attempted, then git (#598)
 # Hermetic: the official main index is served from a local XLINGS_INDEX_BASE_URL
 # dir; the custom repo uses its own local flat base (which also proves the
 # global base override does NOT leak into custom sources).
@@ -81,6 +83,17 @@ EOF
 }
 export XLINGS_INDEX_BASE_URL="$MAIN_SERVE"   # official main only; custom has its own base
 
+# ── helpers for the region-chain scenarios (#598) ────────────────
+cat > "$WORK/prefer_cn.py" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+j = json.load(open(p))
+j["mirror"] = "CN"     # prefer the base the scenario broke, on purpose
+json.dump(j, open(p, "w"))
+PYEOF
+prefer_cn() { python3 "$WORK/prefer_cn.py" "$1"; }
+
+
 # ── A. artifact-only custom repo, dead git URL, exact key ────────
 make_pointer custom1
 fresh_home a "{\"name\":\"custom1\",\"url\":\"https://127.0.0.1:1/dead.git\",\"artifact\":\"$CUSTOM_BASE\",\"source\":\"artifact\"}"
@@ -122,5 +135,42 @@ fresh_home e "{\"name\":\"custom1\",\"url\":\"$LOCAL_SRC\",\"artifact\":\"$CUSTO
 [[ -e "$XLINGS_HOME/data/custom1/pkgs/z/zpkg.lua" ]] || { cat "$WORK/e.log" >&2; fail "E: git/local path not used"; }
 [[ ! -f "$XLINGS_HOME/data/custom1/.xlings-index-version" ]] || fail "E: artifact fetched despite source=git"
 pass "E: source=git forces the git/local path"
+
+# ── F. region-object artifact: preferred base broken -> next region ──
+# #598. The whole point: a failure at the preferred region must reach the
+# OTHER region's base, not fall through to git. Before the fix the region
+# object resolved to one base and F landed on the git/local source instead.
+make_pointer custom1
+fresh_home f "{\"name\":\"custom1\",\"url\":\"$LOCAL_SRC\",\"artifact\":{\"CN\":\"$WORK/no-such-base\",\"GLOBAL\":\"$CUSTOM_BASE\"},\"source\":\"auto\"}"
+prefer_cn "$XLINGS_HOME/.xlings.json"
+"$XLINGS_BIN" update >"$WORK/f.log" 2>&1 || { cat "$WORK/f.log" >&2; fail "F: update failed"; }
+D="$XLINGS_HOME/data/custom1"
+[[ -f "$D/pkgs/h/hellopkg.lua" ]]   || { cat "$WORK/f.log" >&2; fail "F: did not reach the second region's artifact base"; }
+[[ -f "$D/.xlings-index-version" ]] || { cat "$WORK/f.log" >&2; fail "F: no artifact marker (went to the git/local path)"; }
+[[ ! -e "$D/pkgs/z/zpkg.lua" ]]     || { cat "$WORK/f.log" >&2; fail "F: fell back to the git/local source"; }
+pass "F: a broken preferred region falls to the next region, not to git"
+
+# ── G. remote region chain: every declared base is attempted ──────
+# F covers the local-base chain. G covers the URL chain, which is the shape
+# the real report hit (raw.gitcode.com 403 -> github raw). The downloader
+# speaks HTTPS only, so there is no hermetic local server to fall through TO;
+# what G pins instead is that BOTH declared bases are attempted before git --
+# the thing that did not happen, and the only thing that separates #598 from
+# its fix. Before it, a chain of two produced exactly one attempt.
+make_pointer custom1
+fresh_home g "{\"name\":\"custom1\",\"url\":\"$LOCAL_SRC\",\"artifact\":{\"CN\":\"https://127.0.0.1:1/cnidx\",\"GLOBAL\":\"https://127.0.0.1:1/glidx\"},\"source\":\"auto\"}"
+prefer_cn "$XLINGS_HOME/.xlings.json"
+"$XLINGS_BIN" update --verbose >"$WORK/g.log" 2>&1 || { cat "$WORK/g.log" >&2; fail "G: update failed"; }
+grep -q "2 sources tried" "$WORK/g.log" \
+  || { cat "$WORK/g.log" >&2; fail "G: the second region's base was never attempted"; }
+grep -q "127.0.0.1:1/cnidx/cnidx-pointers.json" "$WORK/g.log" \
+  || { cat "$WORK/g.log" >&2; fail "G: preferred region URL not attempted"; }
+grep -q "127.0.0.1:1/glidx/glidx-pointers.json" "$WORK/g.log" \
+  || { cat "$WORK/g.log" >&2; fail "G: fallback region URL not attempted"; }
+# Both unreachable -> git/local, as before. The chain changes WHEN git is
+# reached, never WHETHER it still is.
+[[ -e "$XLINGS_HOME/data/custom1/pkgs/z/zpkg.lua" ]] \
+  || { cat "$WORK/g.log" >&2; fail "G: git/local fallback did not run after the whole chain failed"; }
+pass "G: every declared region base is attempted before the git fallback"
 
 echo "[test] all custom index artifact scenarios passed"

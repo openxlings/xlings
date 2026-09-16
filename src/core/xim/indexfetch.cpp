@@ -46,6 +46,27 @@ std::string download_candidates_(std::vector<std::string> urls,
     // without one (the manifest pointer), keep the authoritative server first.
     urls = mirror::adaptive::reorder(std::move(urls), !wantSha256.empty());
 
+    // #599: the index is small and there is always another candidate, so it
+    // gets tighter bounds than a package payload. The shipped defaults (30 s
+    // connect / 600 s per attempt) meant one host that completed a handshake
+    // and then went silent could hold a candidate for ten minutes -- and the
+    // list below is walked one host at a time.
+    // XLINGS_INDEX_HTTP_TIMEOUT=<connectSec>:<maxSec>, or `off` for the
+    // download defaults.
+    int connectSec = 10, maxSec = 120;
+    if (auto* e = std::getenv("XLINGS_INDEX_HTTP_TIMEOUT"); e && *e) {
+        std::string v = e;
+        if (v == "off") { connectSec = 0; maxSec = 0; }
+        else if (auto colon = v.find(':'); colon != std::string::npos) {
+            try {
+                auto c = std::stoi(v.substr(0, colon));
+                auto m = std::stoi(v.substr(colon + 1));
+                if (c > 0) connectSec = c;
+                if (m > 0) maxSec = m;
+            } catch (...) { /* unparsable: keep the index defaults */ }
+        }
+    }
+
     std::string want = wantSha256.empty() ? std::string{} : lower_hex_(std::string(wantSha256));
     std::string lastErr;
     for (const auto& u : urls) {
@@ -53,6 +74,8 @@ std::string download_candidates_(std::vector<std::string> urls,
         opts.destFile = destFile;
         opts.urls = { u };          // one URL per call: we own the fallthrough
         opts.retryCount = 1;        // breadth over depth; don't hammer a 404
+        if (connectSec > 0) opts.connectTimeoutSec = connectSec;
+        if (maxSec > 0)     opts.maxTimeSec        = maxSec;
         opts.onUrlAttemptFailed = [](const std::string& url, const std::string& e) {
             // Demote a host that stalled / served bad bytes / timed out / gave no
             // response so later fetches this session skip it. Do NOT penalize on
@@ -77,16 +100,34 @@ std::string download_candidates_(std::vector<std::string> urls,
     return lastErr.empty() ? "all candidates failed" : lastErr;
 }
 
+// The pointer file a base serves. Derived from the base's own last path
+// segment, which is why it is NOT constant across a region chain: two mirrors
+// of one index may be published under different repo names, and asking the
+// second for the first's filename finds nothing (caught by
+// custom_index_artifact_test.sh scenario F while it was exactly that).
+std::string pointer_file_of_(const ArtifactSource& src) {
+    return src.repoName + "-pointers.json";
+}
+
+BaseOverride::Entry base_entry_(std::string v) {
+    while (!v.empty() && v.back() == '/') v.pop_back();
+    BaseOverride::Entry e;
+    e.base = v;
+    if (v.starts_with("file://")) e.local = std::filesystem::path(v.substr(7));
+    else if (v.find("://") == std::string::npos) e.local = std::filesystem::path(v);
+    return e;
+}
+
 BaseOverride resolve_base_() {
     BaseOverride b;
-    std::string v;
-    if (auto* e = std::getenv("XLINGS_INDEX_BASE_URL"); e && *e) v = e;
-    else v = Config::index_base();   // .xlings.json xim.index-base (region-aware), else ""
-    if (v.empty()) return b;
-    while (!v.empty() && v.back() == '/') v.pop_back();
-    b.base = v;
-    if (v.starts_with("file://")) b.local = std::filesystem::path(v.substr(7));
-    else if (v.find("://") == std::string::npos) b.local = std::filesystem::path(v);
+    // The env override is a single base by construction (one variable, one
+    // value); the config key is a region chain (#598).
+    if (auto* e = std::getenv("XLINGS_INDEX_BASE_URL"); e && *e) {
+        b.entries.push_back(base_entry_(e));
+        return b;
+    }
+    for (auto& ab : Config::index_bases())   // xim.index-base, preferred first
+        b.entries.push_back(base_entry_(ab.url));
     return b;
 }
 
@@ -100,9 +141,10 @@ std::string obtain_file(const std::string& filename, std::vector<std::string> re
                         const BaseOverride* forced = nullptr) {
     namespace fs = std::filesystem;
     auto b = forced ? *forced : resolve_base_();
-    if (b.local) {
+
+    auto copy_local_ = [&](const fs::path& dir, const std::string& name) -> std::string {
         std::error_code ec;
-        auto src = *b.local / filename;
+        auto src = dir / name;
         if (!fs::exists(src, ec)) return std::format("local file not found: {}", src.string());
         fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
         if (ec) return std::format("copy {} failed: {}", src.string(), ec.message());
@@ -114,19 +156,49 @@ std::string obtain_file(const std::string& filename, std::vector<std::string> re
                                    src.string(), digest ? *digest : "<unreadable>", want);
         }
         return {};
+    };
+
+    // #598: entries are a declared preference order, so they are tried in that
+    // order and one failing continues to the next. No adaptive reorder across
+    // them: the user said which comes first.
+    std::string lastErr;
+    for (const auto& e : b.entries) {
+        const std::string& name = e.filename.empty() ? filename : e.filename;
+        auto err = e.local ? copy_local_(*e.local, name)
+                           : download_candidates_({ e.base + "/" + name }, dest, wantSha);
+        if (err.empty()) return {};
+        lastErr = err;
     }
-    auto urls = b.base.empty() ? std::move(remoteUrls)
-                               : std::vector<std::string>{ b.base + "/" + filename };
-    return download_candidates_(std::move(urls), dest, wantSha);
+    if (!b.entries.empty() && !b.allowRemoteUrls) return lastErr;
+    if (remoteUrls.empty())
+        return lastErr.empty() ? std::string("no candidate URLs") : lastErr;
+    auto err = download_candidates_(std::move(remoteUrls), dest, wantSha);
+    if (err.empty()) return {};
+    return lastErr.empty() ? err : lastErr + "; " + err;
 }
 
-// #377: forced base for a custom source: local-dir copy, flat-remote base, or
-// (for forge bases) an EMPTY override meaning "use the passed URL list, but do
-// NOT apply the global index-base override".
-BaseOverride base_override_for_(const ArtifactSource& src) {
+// #377/#598: forced override for a custom source. Only LOCAL bases go in here
+// — every remote base (forge or flat) is expressed as a URL by
+// index_pointer_urls / index_asset_urls, so the whole chain is tried. An
+// override with no entries still matters: it means "use the passed URL list,
+// but do NOT apply the global index-base override".
+//
+// Caveat, stated rather than hidden: when a chain mixes local and remote
+// bases, the local ones are tried first regardless of the declared region
+// order. A local path is not a region-specific location, so a region object
+// containing one is not a configuration this trades anything real for.
+BaseOverride base_override_for_(const ArtifactSource& src, bool pointerNames = false) {
     BaseOverride b;
-    if (src.localDir) { b.local = src.localDir; b.base = src.base; }
-    else if (!src.forge()) b.base = src.base;
+    b.allowRemoteUrls = true;
+    auto add = [&](const ArtifactSource& s) {
+        auto e = base_entry_(s.base);
+        if (!e.local) return;
+        if (pointerNames) e.filename = pointer_file_of_(s);
+        b.entries.push_back(std::move(e));
+    };
+    add(src);
+    for (const auto& alt : src.altBases)
+        if (auto s = artifact_source_from_base(alt, src.key)) add(*s);
     return b;
 }
 
@@ -291,14 +363,15 @@ std::expected<SnapshotChoice, std::string> choose_snapshot(
         detail_::describe_requirement_(snapshots.front()), available()));
 }
 
-std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
-    std::string base = repo.artifactBase;
+std::optional<ArtifactSource> artifact_source_from_base(const std::string& rawBase,
+                                                       const std::string& key) {
+    std::string base = rawBase;
     if (base.empty()) return std::nullopt;
     while (base.size() > 1 && base.ends_with('/')) base.pop_back();
 
     ArtifactSource src;
     src.base = base;
-    src.key  = repo.name;
+    src.key  = key;
 
     std::string pathPart = base;
     if (base.starts_with("file://")) {
@@ -325,6 +398,19 @@ std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
     return src;
 }
 
+std::optional<ArtifactSource> artifact_source_for(const IndexRepo& repo) {
+    // The first base that DERIVES becomes the source; the rest follow it. A
+    // base with no last path segment ("https://example.com/") derives to
+    // nothing, and letting that one entry cancel the whole declaration would
+    // reintroduce, at a different level, exactly the bug this change removes.
+    std::optional<ArtifactSource> src;
+    for (const auto& ab : repo.artifactBases) {
+        if (!src) { src = artifact_source_from_base(ab.url, repo.name); continue; }
+        if (artifact_source_from_base(ab.url, repo.name)) src->altBases.push_back(ab.url);
+    }
+    return src;
+}
+
 const IndexManifest* select_manifest(const std::map<std::string, IndexManifest>& pointers,
                                      std::string_view key, bool soleEntryFallback) {
     if (auto it = pointers.find(std::string(key)); it != pointers.end()) return &it->second;
@@ -337,19 +423,29 @@ std::vector<std::string> index_asset_urls(std::string_view filename,
                                           std::string_view version,
                                           const ArtifactSource* custom) {
     // #377: a per-repo source replaces the official server set entirely.
+    // #598: every declared base of that source, in preference order.
     if (custom) {
-        if (custom->forge()) {
-            std::vector<std::string> tags;
-            if (!version.empty()) tags.push_back("v" + std::string(version));
-            tags.push_back("latest");   // GitHub rolling fallback; a 404 falls through
-            std::vector<std::string> urls;
-            for (auto& tag : tags)
-                urls.push_back(std::format("{}/{}/releases/download/{}/{}",
-                                           custom->server, custom->repoName, tag, filename));
-            return urls;
-        }
-        if (!custom->localDir) return { custom->base + "/" + std::string(filename) };
-        return {};  // local dir: obtain_file consumes a forced BaseOverride instead
+        std::vector<std::string> tags;
+        if (!version.empty()) tags.push_back("v" + std::string(version));
+        tags.push_back("latest");   // GitHub rolling fallback; a 404 falls through
+        std::vector<std::string> urls;
+        auto addBase = [&](const ArtifactSource& s) {
+            if (s.forge()) {
+                for (auto& tag : tags) {
+                    auto u = std::format("{}/{}/releases/download/{}/{}",
+                                         s.server, s.repoName, tag, filename);
+                    if (std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
+                }
+                return;
+            }
+            if (s.localDir) return;  // local: obtain_file consumes a forced BaseOverride
+            auto u = s.base + "/" + std::string(filename);
+            if (std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
+        };
+        addBase(*custom);
+        for (const auto& alt : custom->altBases)
+            if (auto s = artifact_source_from_base(alt, custom->key)) addBase(*s);
+        return urls;
     }
 
     std::vector<std::string> urls;
@@ -398,7 +494,8 @@ std::vector<std::string> index_asset_urls(std::string_view filename,
 std::vector<std::string> index_pointer_urls(std::string_view filename,
                                             std::string_view mirror,
                                             const ArtifactSource* custom) {
-    auto rawFor = [&](const std::string& server, const std::string& repo) -> std::string {
+    auto rawFor = [](const std::string& server, const std::string& repo,
+                     const std::string& file) -> std::string {
         auto pos = server.find("://");
         std::string rest = pos == std::string::npos ? server : server.substr(pos + 3);
         auto slash = rest.find('/');
@@ -407,23 +504,35 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
         std::string org  = rest.substr(slash + 1);
         while (!org.empty() && org.back() == '/') org.pop_back();
         if (host.find("github.com") != std::string::npos)
-            return std::format("https://raw.githubusercontent.com/{}/{}/main/{}", org, repo, filename);
+            return std::format("https://raw.githubusercontent.com/{}/{}/main/{}", org, repo, file);
         if (host.find("gitcode.com") != std::string::npos)
             // Correct raw form is .../<o>/<r>/raw/main/<f> — it serves the RAW
             // bytes (incl .json). The .../main/<f> form (no /raw/) returns the
             // HTML web page. (403s seen while probing were request rate-limiting.)
-            return std::format("https://raw.gitcode.com/{}/{}/raw/main/{}", org, repo, filename);
+            return std::format("https://raw.gitcode.com/{}/{}/raw/main/{}", org, repo, file);
         return {};
     };
 
-    // #377: per-repo source — one authoritative location, no official mirrors.
+    // #377: a per-repo source replaces the official mirrors entirely.
+    // #598: but it is not one location — it is every base the repo declared,
+    // in preference order. Both the org/repo path AND the pointer filename are
+    // derived per base: two mirrors need not be published under the same repo
+    // name, and asking the second for the first's filename finds nothing.
     if (custom) {
-        if (custom->forge()) {
-            if (auto u = rawFor(custom->server, custom->repoName); !u.empty()) return {u};
-            return {};
-        }
-        if (!custom->localDir) return { custom->base + "/" + std::string(filename) };
-        return {};  // local dir: obtain_file consumes a forced BaseOverride instead
+        std::vector<std::string> urls;
+        auto addBase = [&](const ArtifactSource& s, const std::string& name) {
+            std::string u;
+            if (s.forge()) u = rawFor(s.server, s.repoName, name);
+            else if (!s.localDir) u = s.base + "/" + name;
+            if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
+        };
+        // The caller's filename names the PREFERRED base's pointer; each
+        // alternate answers to its own (see detail_::pointer_file_of_).
+        addBase(*custom, std::string(filename));
+        for (const auto& alt : custom->altBases)
+            if (auto s = artifact_source_from_base(alt, custom->key))
+                addBase(*s, detail_::pointer_file_of_(*s));
+        return urls;
     }
 
     auto repo = detail_::index_repo_name_();
@@ -432,9 +541,10 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
         if (!u.empty() && std::ranges::find(urls, u) == urls.end()) urls.push_back(u);
     };
     auto selected = Config::resource_server(mirror);
-    if (!selected.empty()) add(rawFor(selected, repo));
-    for (auto& s : Config::resource_servers(mirror))   add(rawFor(s, repo));
-    for (auto& s : Config::resource_servers("GLOBAL")) add(rawFor(s, repo));
+    const std::string file{filename};
+    if (!selected.empty()) add(rawFor(selected, repo, file));
+    for (auto& s : Config::resource_servers(mirror))   add(rawFor(s, repo, file));
+    for (auto& s : Config::resource_servers("GLOBAL")) add(rawFor(s, repo, file));
     return urls;
 }
 
@@ -465,7 +575,7 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
     if (fetched.contains(cacheKey)) return cache;
     fetched.insert(cacheKey);
 
-    std::string filename = custom ? custom->repoName + "-pointers.json"
+    std::string filename = custom ? detail_::pointer_file_of_(*custom)
                                   : std::string("xim-index-pointers.json");
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() /
@@ -473,10 +583,21 @@ const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view
     std::error_code ec; fs::remove(tmp, ec);
     detail_::BaseOverride forcedStorage;
     const detail_::BaseOverride* forced = nullptr;
-    if (custom) { forcedStorage = detail_::base_override_for_(*custom); forced = &forcedStorage; }
-    auto err = detail_::obtain_file(filename, index_pointer_urls(filename, mirror, custom),
-                                    tmp, {}, forced);
-    if (!err.empty()) { log::warn("[index] pointer fetch failed: {}", err); return cache; }
+    if (custom) {
+        forcedStorage = detail_::base_override_for_(*custom, /*pointerNames=*/true);
+        forced = &forcedStorage;
+    }
+    auto urls = index_pointer_urls(filename, mirror, custom);
+    // Count what was actually reachable-as-an-attempt, so the warning below
+    // distinguishes "the one place it could look was down" from "every
+    // declared base was down" (#598).
+    const std::size_t attempts = urls.size() + (forced ? forced->entries.size() : 0);
+    auto err = detail_::obtain_file(filename, std::move(urls), tmp, {}, forced);
+    if (!err.empty()) {
+        log::warn("[index] pointer fetch failed ({} source{} tried): {}",
+                  attempts, attempts == 1 ? "" : "s", err);
+        return cache;
+    }
     std::string text;
     { std::ifstream in(tmp, std::ios::binary); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
     fs::remove(tmp, ec);

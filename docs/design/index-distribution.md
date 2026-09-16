@@ -129,6 +129,60 @@ GitCode 平台约束(均实测):release 资产**只能新建**(gtc 不能覆盖�
 
 ---
 
+## 4bis. 区域声明是「偏好顺序」,不是「单选」(#598,2026.9.16.1)
+
+配置里每一处区域对象 `{"GLOBAL": ..., "CN": ...}` 现在都读成一条**有序候选链**:
+**mirror 决定顺序,不决定集合。**
+
+```
+mirror=CN  →  CN → GLOBAL → 其余(按声明顺序)
+mirror=""  →  GLOBAL → 其余
+未知 mirror →  GLOBAL → 其余
+```
+
+适用范围与不适用范围:
+
+| 键 | 读法 | 说明 |
+|----|------|------|
+| `index_repos[].artifact` | **整条链** | 首选 base 的 pointer 取失败(403/429/离线)后继续试下一个区域,全部失败才回落 git |
+| `xim.index-base` | **整条链** | 自建/离线部署的 base 同样获得区域回落;override 之间用尽后**不会**偷偷回到官方服务器 |
+| `xim-indexrepos.lua` 的 `["artifact"]` | **整条链** | 子索引现在也能声明自己的 artifact 来源(0.4.x 之前只能声明 git URL) |
+| `xim.mirrors.index-repo` / `xim-indexrepos.lua` 的 git URL | **只取首个** | 这些命名的是 **git remote**,一个本地 clone 只有一个 origin;链式意味着改写 origin,是另一件事,不是遗漏 |
+
+实现要点:
+
+- 候选链在**两层**生效——`index_pointer_urls` / `index_asset_urls` 为链上每个远端 base
+  产出候选 URL(下载层已有的 404/403 穿透逻辑直接复用);本地 base 走
+  `obtain_file` 的有序 override 条目。
+- **pointer 文件名按 base 各自推导**(`<base 末段>-pointers.json`):互为镜像的两个仓库
+  若名字不同,拿首选的名字去问次选会一无所获。
+- 区域对象**往返不丢**:`xim-indexrepos.json` 写回区域对象而不是本次选中的那一个
+  (写回首选正是区域声明被一次次塌成单区域的原因)。
+- 可见性:`xlings index list`(及 `--json` 的 `artifact_bases`、interface `list_repos`)
+  列出会按什么顺序试。
+
+> 一句话记法:**artifact 是默认机制,git 是回落**。区域链决定的是「什么时候才轮到 git」,
+> 从不决定「是否还有 git」。
+
+---
+
+## 4ter. 网络有界(#599,2026.9.16.1)
+
+一次索引刷新里的每个网络动作都有界,且总时长有预算:
+
+| 环节 | 界 | 覆写 |
+|------|----|------|
+| HTTP 连接 / 单次尝试 | 10s 连接、120s 单尝试(索引文件很小,且总有下一个候选) | `XLINGS_INDEX_HTTP_TIMEOUT=<connect>:<max>`,`off` 回到下载默认 |
+| HTTP 停滞 | 窗口均速 <10KB/s 持续 15s 即换候选 | `XLINGS_DOWNLOAD_LOW_SPEED=off\|<bytes>:<secs>` |
+| git 传输 | `GIT_HTTP_LOW_SPEED_LIMIT=1000` + `GIT_HTTP_LOW_SPEED_TIME=60`;`GIT_TERMINAL_PROMPT=0` | `XLINGS_GIT_NETWORK_TIMEOUT=<秒>\|off`;**操作员已设的值不会被覆盖** |
+| 一次 `xlings update` 总时长 | 300s,超出后**跳过**剩余来源并说出来(它们保留本地副本) | `XLINGS_UPDATE_TIMEOUT=<秒>\|off` |
+
+为什么 git 这一条是必要的:`sync_repo` 早就有 3s TCP 可达性预探,但实测的那次阻塞
+(2026-09-16,11 分 27 秒)是**握手已完成、随后沉默**的连接——预探通过,git 一直等对端放弃。
+curl 低速对(git 的原生机制)正好覆盖这个形状:零字节的传输平均速率为零,`TIME` 秒后中止。
+
+---
+
 ## 5. 发布流程(每个版本,顺序很重要)
 
 > 教训:同一版本的索引工件若被发布两次(内容不同、文件名相同),GitCode 无法覆盖(`gtc` 无 clobber、

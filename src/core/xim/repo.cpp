@@ -9,6 +9,7 @@ import xlings.core.log;
 import xlings.core.compact;
 import xlings.platform;
 import xlings.core.config;
+import xlings.core.utils;
 import xlings.core.mirror;
 import xlings.core.xim.indexfetch;
 import xlings.libs.tinyhttps;
@@ -87,18 +88,50 @@ std::vector<IndexRepo> discover_sub_repos_(const std::filesystem::path& repoDir,
 
     std::vector<IndexRepo> repos;
     // Simple line-based parser to avoid std::regex in modules
-    // State machine: look for ["name"] = { blocks, then ["KEY"] = "url" inside
+    // State machine: look for ["name"] = { blocks, then ["KEY"] = "url" inside.
+    //
+    // #598/#600: a block may also declare its own artifact source, flat or
+    // region-keyed, and a `source` mode:
+    //   ["awesome"] = {
+    //       ["GLOBAL"] = "https://github.com/o/xim-pkgindex-awesome.git",
+    //       ["CN"]     = "https://gitee.com/o/xim-pkgindex-awesome.git",
+    //       ["artifact"] = { ["GLOBAL"] = "...", ["CN"] = "..." },
+    //       ["source"]   = "auto",
+    //   }
+    // Until this parsed, a sub-index had NO way to name an artifact base of
+    // its own -- the artifact path, which is the default mechanism and the one
+    // that follows the mirror, was reachable for top-level index_repos entries
+    // only. That is the gap, not the mirror selection: git is the fallback.
     std::istringstream iss(content);
     std::string line;
     std::string currentName;
-    std::string globalUrl, mirrorUrl;
+    std::string globalUrl, mirrorUrl, sourceMode;
+    nlohmann::json artifactDecl;          // string or region object, as declared
     bool inBlock = false;
+    bool inArtifactBlock = false;
 
     while (std::getline(iss, line)) {
         // Trim leading whitespace
         auto pos = line.find_first_not_of(" \t");
         if (pos == std::string::npos) continue;
         auto trimmed = line.substr(pos);
+
+        // ["key"] = "value" on one line; returns false when the line is not
+        // that shape (a nested table opener, a comment, a closing brace).
+        auto key_value = [](const std::string& text,
+                            std::string& key, std::string& value) -> bool {
+            if (!text.starts_with("[\"")) return false;
+            auto endQuote = text.find("\"]", 2);
+            if (endQuote == std::string::npos) return false;
+            key = text.substr(2, endQuote - 2);
+            auto eqPos = text.find("= \"", endQuote);
+            if (eqPos == std::string::npos) return false;
+            auto valStart = eqPos + 3;
+            auto valEnd = text.find('"', valStart);
+            if (valEnd == std::string::npos) return false;
+            value = text.substr(valStart, valEnd - valStart);
+            return true;
+        };
 
         if (!inBlock) {
             // Look for ["name"] = {
@@ -107,10 +140,17 @@ std::vector<IndexRepo> discover_sub_repos_(const std::filesystem::path& repoDir,
                 if (endQuote != std::string::npos && trimmed.find("= {") != std::string::npos) {
                     currentName = trimmed.substr(2, endQuote - 2);
                     inBlock = true;
+                    inArtifactBlock = false;
                     globalUrl.clear();
                     mirrorUrl.clear();
+                    sourceMode.clear();
+                    artifactDecl = nullptr;
                 }
             }
+        } else if (inArtifactBlock) {
+            if (trimmed.starts_with("}")) { inArtifactBlock = false; continue; }
+            std::string key, value;
+            if (key_value(trimmed, key, value)) artifactDecl[key] = value;
         } else {
             // Inside a block - look for closing } or ["KEY"] = "url"
             if (trimmed.starts_with("}")) {
@@ -119,24 +159,41 @@ std::vector<IndexRepo> discover_sub_repos_(const std::filesystem::path& repoDir,
                 // prefer URL of current mirror key (e.g. CN), fallback to GLOBAL.
                 auto url = mirrorUrl.empty() ? globalUrl : mirrorUrl;
                 if (!url.empty()) {
-                    repos.push_back({currentName, url});
+                    IndexRepo repo;
+                    repo.name = currentName;
+                    repo.url  = url;
+                    repo.source = sourceMode;
+                    if (!artifactDecl.is_null())
+                        repo.artifactBases = parse_region_chain(artifactDecl, mirror);
+                    repos.push_back(std::move(repo));
                 }
                 inBlock = false;
-            } else if (trimmed.starts_with("[\"")) {
-                auto endQuote = trimmed.find("\"]", 2);
-                if (endQuote != std::string::npos) {
-                    auto key = trimmed.substr(2, endQuote - 2);
-                    // Find the URL value: = "url"
-                    auto eqPos = trimmed.find("= \"", endQuote);
-                    if (eqPos != std::string::npos) {
-                        auto urlStart = eqPos + 3;
-                        auto urlEnd = trimmed.find('"', urlStart);
-                        if (urlEnd != std::string::npos) {
-                            auto val = trimmed.substr(urlStart, urlEnd - urlStart);
-                            if (key == "GLOBAL") globalUrl = val;
-                            if (key == mirror) mirrorUrl = val;
-                        }
+            } else if (trimmed.starts_with("[\"artifact\"]") && trimmed.find("= {") != std::string::npos) {
+                artifactDecl = nlohmann::json::object();
+                auto open = trimmed.find("= {") + 3;
+                // Written on one line? Then it also CLOSES on this line, and
+                // entering the sub-block state would eat the enclosing block's
+                // `}` -- dropping the whole repo entry, silently.
+                auto close = trimmed.find('}', open);
+                if (close == std::string::npos) {
+                    inArtifactBlock = true;
+                } else {
+                    auto inner = trimmed.substr(open, close - open);
+                    std::string key, value;
+                    std::size_t at = 0;
+                    while ((at = inner.find("[\"", at)) != std::string::npos) {
+                        if (!key_value(inner.substr(at), key, value)) break;
+                        artifactDecl[key] = value;
+                        at += 2;
                     }
+                }
+            } else {
+                std::string key, value;
+                if (key_value(trimmed, key, value)) {
+                    if (key == "GLOBAL")   globalUrl  = value;
+                    if (key == mirror)     mirrorUrl  = value;
+                    if (key == "artifact") artifactDecl = value;   // flat form
+                    if (key == "source")   sourceMode = value;
                 }
             }
         }
@@ -365,8 +422,11 @@ std::vector<IndexRepo> load_sub_repos_json(const std::filesystem::path& jsonFile
                 auto& v = it.value();
                 if (v.contains("url") && v["url"].is_string())
                     repo.url = v["url"].get<std::string>();
-                if (v.contains("artifact") && v["artifact"].is_string())
-                    repo.artifactBase = v["artifact"].get<std::string>();
+                // #598: the artifact declaration may be a region object, and
+                // a load -> save round trip must not collapse it to whichever
+                // region this run happens to prefer.
+                if (v.contains("artifact"))
+                    repo.artifactBases = parse_region_chain(v["artifact"], Config::mirror());
                 if (v.contains("source") && v["source"].is_string())
                     repo.source = v["source"].get<std::string>();
             }
@@ -382,13 +442,23 @@ void save_sub_repos_json(const std::filesystem::path& jsonFile,
                          const std::vector<IndexRepo>& repos) {
     nlohmann::json json = nlohmann::json::object();
     for (auto& repo : repos) {
-        if (repo.artifactBase.empty() && repo.source.empty()) {
+        if (repo.artifactBases.empty() && repo.source.empty()) {
             json[repo.name] = repo.url;       // legacy string form
         } else {
             // #377: object form; old xlings skips non-string values gracefully.
             nlohmann::json v;
             v["url"] = repo.url;
-            if (!repo.artifactBase.empty()) v["artifact"] = repo.artifactBase;
+            if (repo.artifactBases.size() == 1 && repo.artifactBases.front().region.empty()) {
+                v["artifact"] = repo.artifactBases.front().url;
+            } else if (!repo.artifactBases.empty()) {
+                // #598: write the regions back, not the resolved preference.
+                // Writing the head here is how a region object became a single
+                // base permanently, one sync at a time.
+                nlohmann::json byRegion = nlohmann::json::object();
+                for (const auto& ab : repo.artifactBases)
+                    byRegion[ab.region.empty() ? "GLOBAL" : ab.region] = ab.url;
+                v["artifact"] = std::move(byRegion);
+            }
             if (!repo.source.empty())       v["source"]   = repo.source;
             json[repo.name] = v;
         }
@@ -453,7 +523,7 @@ std::string declared_sub_index_url(std::string_view name) {
 
 bool artifact_is_declared_for(const IndexRepo& repo, bool projectScope) {
     // #377: a repo that names its own artifact base has declared its source.
-    if (!repo.artifactBase.empty()) return true;
+    if (!repo.artifactBases.empty()) return true;
     // A local tree is served by the filesystem, not by a pointer.
     if (Config::is_local_repo_source(repo, projectScope)) return false;
 
@@ -492,9 +562,17 @@ bool sync_one_repo(const IndexRepo& repo,
             ok = fetch_index_artifact(repoDir, ferr, key,
                                       custom ? &*custom : nullptr, repo.version);
         } else {
+            // Say how many bases were declared only when there IS a chain.
+            // A repo entitled through the official pointer declares none of
+            // its own, and calling that "1 declared artifact base" would name
+            // the wrong thing (that path has several servers).
             ferr = pointers.empty()
-                ? std::string("no pointer available at the declared source "
-                              "(offline, or the base is wrong)")
+                ? (repo.artifactBases.size() > 1
+                     ? std::format("no pointer available at any of its {} declared "
+                                   "artifact bases (offline, or they are wrong)",
+                                   repo.artifactBases.size())
+                     : std::string("no pointer available at the declared source "
+                                   "(offline, or the base is wrong)"))
                 : std::format("no pointer entry for '{}' ({} entries)",
                               key, pointers.size());
         }
@@ -538,6 +616,44 @@ bool sync_all_repos(bool force) {
     auto mirror = Config::mirror();
 
     auto mainDir = main_repo_dir();
+
+    // ── #599: one refresh has a wall-clock bound ────────────────────
+    // Every individual network operation under here is bounded now (HTTP:
+    // connect + read timeout + stall watchdog; git: GIT_HTTP_LOW_SPEED_*), so
+    // a bound CHECKED BETWEEN SOURCES is a real bound on the whole command and
+    // not a hopeful one. What it stops is the aggregate shape: N sources whose
+    // route is unusable, each paying its own timeout in turn.
+    //
+    // A source skipped this way keeps the index it already has -- which is the
+    // outcome a caller wants ("continuing with the local copy"), and which is
+    // reported rather than left to look like success.
+    const auto refreshStart = std::chrono::steady_clock::now();
+    int  refreshBudgetSec = 300;
+    bool refreshBounded   = true;
+    if (auto* e = std::getenv("XLINGS_UPDATE_TIMEOUT"); e && *e) {
+        auto v = utils::trim_string(e);
+        if (v == "off" || v == "0") refreshBounded = false;
+        else {
+            try { if (auto n = std::stoi(v); n > 0) refreshBudgetSec = n; }
+            catch (...) { /* unparsable: keep the default rather than fail */ }
+        }
+    }
+    int skippedForDeadline = 0;
+    auto pastDeadline = [&]() -> bool {
+        if (!refreshBounded) return false;
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - refreshStart).count();
+        return elapsed >= refreshBudgetSec;
+    };
+    struct DeadlineReport {
+        const int& skipped; const int& budget; const bool& bounded;
+        ~DeadlineReport() {
+            if (!bounded || skipped <= 0) return;
+            log::warn("[index] {}s refresh budget reached: {} source(s) were not "
+                      "refreshed and keep their local copy", budget, skipped);
+            log::warn("[index]   set XLINGS_UPDATE_TIMEOUT=<seconds|off> to wait longer");
+        }
+    } deadlineReport{skippedForDeadline, refreshBudgetSec, refreshBounded};
 
     // Heal leftovers from any crashed/killed run BEFORE deciding git-vs-artifact:
     // restores an index dir orphaned by an interrupted swap and reclaims leaked
@@ -590,6 +706,7 @@ bool sync_all_repos(bool force) {
         int total = 0, ok = 0;
         for (auto* repo : ordered) {
             ++total;
+            if (pastDeadline()) { ++skippedForDeadline; continue; }
             if (sync_one_repo(*repo, Config::repo_dir_for(*repo, projectScope),
                               indexSource, mirror, projectScope, force,
                               /*linkLocalSource=*/true)) ++ok;
@@ -620,6 +737,14 @@ bool sync_all_repos(bool force) {
     fs::create_directories(subReposRoot);
 
     for (auto& repo : allSubRepos) {
+        if (pastDeadline()) {
+            ++skippedForDeadline;
+            // Keep it in the saved set: it was not refreshed, it was not
+            // withdrawn. Dropping it here would deregister a healthy
+            // sub-index because the clock ran out.
+            syncedSubRepos.push_back(repo);
+            continue;
+        }
         if (sync_one_repo(repo, sub_repo_dir_for(repo), indexSource, mirror, false, force,
                           /*linkLocalSource=*/false))
             syncedSubRepos.push_back(repo);
@@ -649,6 +774,11 @@ bool sync_all_repos(bool force) {
         auto projSubRoot = sub_repos_dir(true);
         fs::create_directories(projSubRoot);
         for (auto& [name, repo] : projMerged) {
+            if (pastDeadline()) {
+                ++skippedForDeadline;
+                projSyncedSubs.push_back(repo);
+                continue;
+            }
             if (sync_one_repo(repo, sub_repo_dir_for(repo, true),
                               indexSource, mirror, true, force,
                               /*linkLocalSource=*/false)) {

@@ -27,6 +27,34 @@ const std::optional<std::string>& ambient_home_env() {
     return detail_::ambientHome_;
 }
 
+std::vector<ArtifactBase> parse_region_chain(const nlohmann::json& value,
+                                             const std::string& mirror) {
+    std::vector<ArtifactBase> chain;
+    auto push = [&](std::string region, std::string url) {
+        url = utils::trim_string(std::move(url));
+        while (url.size() > 1 && url.ends_with('/')) url.pop_back();
+        if (url.empty()) return;
+        // Two regions naming the same URL is one location, not two attempts.
+        for (auto& e : chain) if (e.url == url) return;
+        chain.push_back(ArtifactBase{std::move(region), std::move(url)});
+    };
+
+    if (value.is_string()) { push({}, value.get<std::string>()); return chain; }
+    if (!value.is_object()) return chain;
+
+    // Preferred region, then GLOBAL, then everything else as declared. The
+    // mirror decides the ORDER; it never decides the set.
+    const std::string key = mirror.empty() ? "GLOBAL" : mirror;
+    if (auto it = value.find(key); it != value.end() && it->is_string())
+        push(key, it->get<std::string>());
+    if (key != "GLOBAL")
+        if (auto it = value.find("GLOBAL"); it != value.end() && it->is_string())
+            push("GLOBAL", it->get<std::string>());
+    for (auto it = value.begin(); it != value.end(); ++it)
+        if (it->is_string()) push(it.key(), it->get<std::string>());
+    return chain;
+}
+
 std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
                                                      const std::string& mirror) {
     std::vector<IndexRepo> out;
@@ -37,20 +65,8 @@ std::vector<IndexRepo> parse_index_repos_json(const nlohmann::json& json,
         repo.name = (*it)["name"].get<std::string>();
         repo.url  = (*it)["url"].get<std::string>();
         if (repo.name.empty() || repo.url.empty()) continue;
-        if (it->contains("artifact")) {
-            auto& a = (*it)["artifact"];
-            std::string base;
-            if (a.is_string()) base = a.get<std::string>();
-            else if (a.is_object()) {
-                std::string key = mirror.empty() ? "GLOBAL" : mirror;
-                if (a.contains(key) && a[key].is_string()) base = a[key].get<std::string>();
-                else if (a.contains("GLOBAL") && a["GLOBAL"].is_string())
-                    base = a["GLOBAL"].get<std::string>();
-            }
-            base = utils::trim_string(base);
-            while (base.size() > 1 && base.ends_with('/')) base.pop_back();
-            repo.artifactBase = base;
-        }
+        if (it->contains("artifact"))
+            repo.artifactBases = parse_region_chain((*it)["artifact"], mirror);
         if (it->contains("source") && (*it)["source"].is_string())
             repo.source = (*it)["source"].get<std::string>();
         // Not validated: the version namespace belongs to the index publisher,
@@ -124,18 +140,12 @@ MirrorServerMap Config::default_resource_servers_() {
     };
 }
 
-std::string Config::resolve_index_base_(const nlohmann::json& json, const std::string& mirror) {
+std::vector<ArtifactBase> Config::resolve_index_base_(const nlohmann::json& json,
+                                                     const std::string& mirror) {
     if (!json.contains("xim") || !json["xim"].is_object()) return {};
     auto& xim = json["xim"];
     if (!xim.contains("index-base")) return {};
-    auto& ib = xim["index-base"];
-    if (ib.is_string()) return ib.get<std::string>();
-    if (ib.is_object()) {
-        std::string key = mirror.empty() ? "GLOBAL" : mirror;
-        if (ib.contains(key) && ib[key].is_string()) return ib[key].get<std::string>();
-        if (ib.contains("GLOBAL") && ib["GLOBAL"].is_string()) return ib["GLOBAL"].get<std::string>();
-    }
-    return {};
+    return parse_region_chain(xim["index-base"], mirror);
 }
 
 std::string Config::resolve_default_index_repo_(const nlohmann::json& json,
@@ -151,12 +161,13 @@ std::string Config::resolve_default_index_repo_(const nlohmann::json& json,
     if (xim.contains("mirrors") && xim["mirrors"].is_object()) {
         auto& mirrors = xim["mirrors"];
         if (mirrors.contains("index-repo") && mirrors["index-repo"].is_object()) {
-            auto& byRegion = mirrors["index-repo"];
-            std::string key = mirror.empty() ? "GLOBAL" : mirror;
-            if (byRegion.contains(key) && byRegion[key].is_string())
-                return byRegion[key].get<std::string>();
-            if (byRegion.contains("GLOBAL") && byRegion["GLOBAL"].is_string())
-                return byRegion["GLOBAL"].get<std::string>();
+            // #598: read through the same chain parser as every other
+            // region-keyed key, but keep only the head -- this one names a git
+            // REMOTE, and a local clone has exactly one origin. Chaining here
+            // would mean rewriting a checkout's origin, which is a different
+            // decision; it is not an omission.
+            auto chain = parse_region_chain(mirrors["index-repo"], mirror);
+            if (!chain.empty()) return chain.front().url;
         }
     }
     if (xim.contains("index-repo") && xim["index-repo"].is_string())
@@ -556,7 +567,7 @@ Config::Config() {
                 defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
                 globalIndexRepos_ = parse_index_repos_json(json, mirror_);
                 load_resource_servers_from_json_(json, globalResourceServers_);
-                if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;
+                if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBases_ = std::move(v);
             }
         } catch (...) {}
     }
@@ -663,7 +674,8 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
             }
             projectIndexRepos_ = parse_index_repos_json(json, mirror_);
             load_resource_servers_from_json_(json, projectResourceServers_);
-            if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBase_ = v;  // project overrides global
+            if (auto v = resolve_index_base_(json, mirror_); !v.empty())
+                indexBases_ = std::move(v);   // project overrides global
             projectSubosName_ = load_project_subos_name_(json);
 
             auto projectStatePath = project_state_path_();
@@ -976,7 +988,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     return instance_().selected_resource_server_for_(mirror);
 }
 
-[[nodiscard]] std::string Config::index_base() { return instance_().indexBase_; }
+[[nodiscard]] std::vector<ArtifactBase> Config::index_bases() { return instance_().indexBases_; }
 
 [[nodiscard]] xvm::VersionDB Config::versions() {
     auto& self = instance_();

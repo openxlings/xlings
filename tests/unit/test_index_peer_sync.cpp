@@ -53,7 +53,7 @@ TEST(IndexPeerSync, PointerKeyIsTheRepoName) {
 // is still one origin.
 TEST(IndexPeerSync, DeclaredArtifactSourceKeepsItsOwnKey) {
     auto r = repo_("mine", "https://example.com/o/mine.git");
-    r.artifactBase = "https://example.com/o/mine-index";
+    r.artifactBases = {{"", "https://example.com/o/mine-index"}};
     EXPECT_EQ(xim::index_pointer_key(r), "mine");
 }
 
@@ -105,7 +105,7 @@ TEST(IndexPeerSync, DeclaredSourceMatchIgnoresOnlyCosmeticSpelling) {
 // permission; a local tree is served by the filesystem and never by a pointer.
 TEST(IndexPeerSync, ArtifactEntitlementFollowsTheDeclaration) {
     auto declared = repo_("mine", "https://example.com/o/mine.git");
-    declared.artifactBase = "https://example.com/o/mine-index";
+    declared.artifactBases = {{"", "https://example.com/o/mine-index"}};
     EXPECT_TRUE(xim::artifact_is_declared_for(declared, /*projectScope=*/false));
 
     // A name nothing declares, from a remote URL: git only.
