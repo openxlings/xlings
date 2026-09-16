@@ -515,9 +515,9 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
 
     // #377: a per-repo source replaces the official mirrors entirely.
     // #598: but it is not one location — it is every base the repo declared,
-    // in preference order. The pointer FILENAME stays the preferred base's
-    // (alternates are mirrors of the same index, published under the same
-    // name); only the org/repo path varies per base.
+    // in preference order. Both the org/repo path AND the pointer filename are
+    // derived per base: two mirrors need not be published under the same repo
+    // name, and asking the second for the first's filename finds nothing.
     if (custom) {
         std::vector<std::string> urls;
         auto addBase = [&](const ArtifactSource& s, const std::string& name) {

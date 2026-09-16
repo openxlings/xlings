@@ -562,10 +562,17 @@ bool sync_one_repo(const IndexRepo& repo,
             ok = fetch_index_artifact(repoDir, ferr, key,
                                       custom ? &*custom : nullptr, repo.version);
         } else {
+            // Say how many bases were declared only when there IS a chain.
+            // A repo entitled through the official pointer declares none of
+            // its own, and calling that "1 declared artifact base" would name
+            // the wrong thing (that path has several servers).
             ferr = pointers.empty()
-                ? std::format("no pointer available at {} declared artifact base(s) "
-                              "(offline, or they are wrong)",
-                              std::max<std::size_t>(repo.artifactBases.size(), 1))
+                ? (repo.artifactBases.size() > 1
+                     ? std::format("no pointer available at any of its {} declared "
+                                   "artifact bases (offline, or they are wrong)",
+                                   repo.artifactBases.size())
+                     : std::string("no pointer available at the declared source "
+                                   "(offline, or the base is wrong)"))
                 : std::format("no pointer entry for '{}' ({} entries)",
                               key, pointers.size());
         }
