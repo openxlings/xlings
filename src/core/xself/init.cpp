@@ -461,6 +461,25 @@ bool ensure_home_layout(const fs::path& home_dir) {
                        failures, (default_subos / "bin").string());
             return false;
         }
+
+        // Rebuild the routing table here too, not only on install / use / remove.
+        //
+        // `ensure_subos_shims` places the entry binary's OWN names. Everything
+        // else in the table is derived from the workspace, and a home that lost
+        // entries to the scope defect (#582) has no way back without running
+        // `self doctor --fix` by hand -- 172 names on a measured home, every one
+        // of them an active program the user cannot invoke.
+        //
+        // `self init` runs on install AND on update, so the upgrade that fixes
+        // the cause also repairs what it did. On a healthy home the diff is
+        // empty and this costs one directory scan.
+        //
+        // Not fatal on failure: the table is derived and converges on the next
+        // install / use, and a home whose shims are laid out IS laid out.
+        if (auto sync = sync_shim_tables(); sync.changed()) {
+            log::info("routing table: +{} -{} shim(s)",
+                      sync.added, sync.removed);
+        }
     }
 
     return true;
@@ -565,14 +584,15 @@ xvm::TableReport apply_shim_table(const fs::path& subos_dir,
     return xvm::apply_table(diff, subos_dir / "bin", entry);
 }
 
-void sync_shim_tables() {
+ShimSyncSummary sync_shim_tables() {
+    ShimSyncSummary summary;
     auto entry = xlings_binary_in_home(Config::paths().homeDir);
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {
         // Pre-`self init` bootstrap: there is nothing to link to yet, and
         // ensure_home_layout will build the table when it lands.
         log::debug("[shim-table] no entry binary yet; skipping sync");
-        return;
+        return summary;
     }
 
     // Register the project BEFORE gathering contributions, so the very first
@@ -590,11 +610,36 @@ void sync_shim_tables() {
 
     const auto sync_one = [&](const fs::path& subosDir,
                               const xvm::Workspace& active,
-                              std::string_view label) {
+                              std::string_view label,
+                              bool observed) {
         if (subosDir.empty()) return;
+        // An unobserved workspace is not an empty one.
+        //
+        // This table is DERIVED: it is rebuilt from the workspace rather than
+        // audited against it, which is right -- and which means an input of
+        // "nothing" derives "remove everything". A workspace we could not read
+        // is exactly that input, and acting on it deleted 172 routing entries
+        // on a real home (#582), then reported them missing (#604).
+        //
+        // Binary, not a threshold. "Did we observe it" is a fact the loader
+        // already knows; "did we remove suspiciously many" would be a new
+        // heuristic, and a second answerer to the same question.
+        //
+        // `compute_desired` already applies this rule to its OTHER input
+        // (ProjectContribution::readable, xvm/shim_table.cpp:76). This brings
+        // the subos input in line.
+        if (!observed) {
+            log::warn("shim table for {} not rebuilt: its workspace could not "
+                      "be read ({})", label,
+                      Config::display_path(subosDir / ".xlings.json"));
+            ++summary.refused;
+            return;
+        }
         auto diff = plan_shim_table(subosDir, active, db, projects);
         if (diff.empty()) return;
         auto report = apply_shim_table(subosDir, diff);
+        summary.added   += report.added.size();
+        summary.removed += report.removed.size();
         log::debug("[shim-table] {}: +{} -{} (failed {})", label,
                    report.added.size(), report.removed.size(),
                    report.failed.size());
@@ -605,17 +650,39 @@ void sync_shim_tables() {
     };
 
     // The scope that was just written.
-    sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope");
+    //
+    // Observed, with one exception that has to be stated rather than assumed:
+    // when the effective scope IS the global subos (no project, or `-g`),
+    // `Config::workspace()` returns the very map `load_global_workspace_`
+    // filled, so its observation status is that map's. Passing a flat `true`
+    // here would have left the whole non-project path -- the common one --
+    // rebuilding from an unreadable workspace, which is the defect this guard
+    // exists for wearing the other scope's clothes.
+    //
+    // In project scope the value is the project's own workspace, which this
+    // command mutated in memory and `save_workspace` has just written; there
+    // is no read to have failed.
+    const bool scopeObserved =
+        (Config::xvm_artifact_subos_dir() == Config::global_subos_dir())
+            ? Config::global_workspace_observed()
+            : true;
+    sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope",
+             scopeObserved);
 
     // In project scope, the global active subos too: the project's bin is
     // never on PATH, so its command names must also exist in the directory
     // that is. `project_contributions()` is what carries them there.
+    //
+    // And this is the one that must not be trusted blindly -- it is a
+    // DIFFERENT scope than the one this command wrote, read separately.
     if (Config::has_project_config()) {
         auto globalDir = Config::global_subos_dir();
         if (globalDir != Config::xvm_artifact_subos_dir()) {
-            sync_one(globalDir, Config::global_workspace(), "global");
+            sync_one(globalDir, Config::global_workspace(), "global",
+                     Config::global_workspace_observed());
         }
     }
+    return summary;
 }
 
 }

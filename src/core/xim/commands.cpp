@@ -681,9 +681,56 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
             match.installed && !match.payloadForeign;
     }
 
+    // ── What this run actually did, per node. One record, many readers. ──
+    //
+    // "Did this package get installed" used to have six answerers here: the
+    // plan-level `expected<>`, two counters, the Failed events, the
+    // already-installed table, a post-hoc `xvm::has_version` probe -- and, in
+    // the branch that printed "installed, but ...", nothing at all. That last
+    // one is why a download failure still told the user the package was
+    // installed and handed them a `xlings use` that could not work (#606).
+    //
+    // So the installer's per-node result is recorded once, here, and every
+    // statement this function makes afterwards reads it: the activation
+    // notice, the structured error, the summary and the exit code.
+    // Re-deriving any of them from state would just be a seventh answerer.
+    enum class NodeStatus { Installed, AlreadyPresent, Failed };
+    struct NodeOutcome {
+        NodeStatus  status { NodeStatus::Installed };
+        std::string message;
+        std::string errorCode;   // wire spelling; empty -> E_INTERNAL
+        std::string hint;
+    };
+    std::unordered_map<std::string, NodeOutcome> outcomes;
+    for (auto& [key, already] : requestedAlreadyInstalled) {
+        if (already) outcomes[key] = { NodeStatus::AlreadyPresent, {}, {}, {} };
+    }
+
+    // The requested match succeeded, as far as THIS run is concerned.
+    //
+    // A key with no entry is a node the installer never reported on -- a
+    // dependency that was already present, or a plan that stopped before
+    // reaching it. Absence is not failure, and it is not success either: the
+    // notice below asks for a positive record, so an unreported node stays
+    // silent rather than being narrated either way.
+    const auto succeeded = [&](const PackageMatch& match) {
+        auto it = outcomes.find(plan_key(match));
+        return it != outcomes.end() && it->second.status != NodeStatus::Failed;
+    };
+    const auto count_status = [&](NodeStatus want) {
+        return std::ranges::count_if(outcomes, [&](const auto& kv) {
+            return kv.second.status == want;
+        });
+    };
+    const auto failed_count = [&] { return count_status(NodeStatus::Failed); };
+
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
         for (auto& match : requestedMatches) {
+            // Nothing to say about a request that did not happen. The error
+            // for it has already been emitted from the same record.
+            if (!succeeded(match)) continue;
+
             auto active = xvm::get_active_version(Config::effective_workspace(), match.name);
             // Only switch when nothing is active yet for this program OR the
             // user passed --use to force activation. Otherwise preserve the
@@ -787,9 +834,6 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         return static_cast<int>(state.size()) + 2;
     };
 
-    int successCount = 0;
-    int failedCount = 0;
-
     auto result = installer.execute(plan, dlConfig,
         [&, cancel](const InstallStatus& status) {
             switch (status.phase) {
@@ -803,18 +847,34 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                     break;
                 case InstallPhase::Done:
                     log::debug("[{}] done", status.name);
-                    ++successCount;
+                    if (!status.planKey.empty()) {
+                        outcomes[status.planKey] =
+                            { NodeStatus::Installed, {}, {}, {} };
+                    }
                     break;
                 case InstallPhase::Failed:
                     // #374: structured per-package failure on the wire so
                     // interface consumers see WHICH package failed (was a
-                    // swallowed log::error). failedCount still drives exitCode.
+                    // swallowed log::error).
+                    //
+                    // #376: the CODE is whatever the failure site knew, not a
+                    // blanket E_INTERNAL. An extraction failure carries
+                    // E_INVALID_INPUT or E_DISK_FULL plus a hint, so a client
+                    // can tell "retry" from "free some space".
                     stream.emit(ErrorEvent{
-                        .code = ErrorCode::Internal,
+                        .code = error_code_from_wire(status.errorCode),
                         .message = "[" + status.name + "] failed: " + status.message,
                         .recoverable = true,
+                        .hint = status.hint,
                     });
-                    ++failedCount;
+                    // The record, not a counter: the exit code, the summary and
+                    // the activation notice all read this one entry.
+                    if (!status.planKey.empty()) {
+                        outcomes[status.planKey] = { NodeStatus::Failed,
+                                                     status.message,
+                                                     status.errorCode,
+                                                     status.hint };
+                    }
                     break;
                 default:
                     break;
@@ -855,8 +915,16 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     activate_requested_targets();
     if (!allAlreadyInstalled) {
         nlohmann::json summaryPayload;
-        summaryPayload["success"] = successCount;
-        summaryPayload["failed"] = failedCount;
+        // `Installed` only -- deliberately NOT `outcomes.size() - failed`.
+        //
+        // The record also holds the requested matches that were ALREADY
+        // present, and counting those as installed would quietly change a wire
+        // value mcpp renders: `xlings install A B` with A present would report
+        // two installs where the previous counter reported one. "N package(s)
+        // installed" has to keep meaning what it said.
+        summaryPayload["success"] =
+            static_cast<int>(count_status(NodeStatus::Installed));
+        summaryPayload["failed"] = static_cast<int>(failed_count());
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
 
         // If this install ran via `sudo`, the downloaded payloads, version DB
@@ -867,13 +935,13 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         platform::chown_to_invoker(Config::paths().homeDir);
     }
     // Per-package failures (download / extract / hook) are surfaced via
-    // InstallPhase::Failed callbacks and accumulate in `failedCount`;
+    // InstallPhase::Failed callbacks and recorded in `outcomes`;
     // installer.execute itself only returns unexpected on cancel or
-    // plan-level errors. Without checking failedCount here, `xlings
+    // plan-level errors. Without consulting the record here, `xlings
     // install` and `interface install_packages` would report exitCode=0
     // even when individual packages failed to install — see
     // .agents/docs/2026-05-22-cmd-install-silent-failure-analysis.md
-    return failedCount > 0 ? 1 : 0;
+    return failed_count() > 0 ? 1 : 0;
 }
 
 std::expected<bool, std::string>
@@ -1694,15 +1762,19 @@ ScopedSubosOverride::ScopedSubosOverride(std::string name)
     prevEnv_ = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
     platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
     prevOverride_ = Config::set_active_subos_override(std::move(name));
-    // set_active_subos_override's own reload reads the OLD paths_.activeSubos
-    // (it updates the workspace before it recomputes which subos that even
-    // means), so the workspace it just loaded is still the PREVIOUS subos's,
-    // not the new one's. subos.cpp's own uses of this override never notice,
-    // because they hand off to cmd_install, which reloads again on its own --
-    // by which point paths_.activeSubos has already caught up and that second
-    // reload gets it right. This guard does not call into another command
-    // that reloads for it, so it asks for that second reload itself.
-    Config::reload_state();
+    // No second reload here any more.
+    //
+    // This used to ask for one because `set_active_subos_override`'s own reload
+    // read the OLD `paths_.activeSubos` -- it loaded the workspace before
+    // recomputing which subos that even meant. That was the same defect as
+    // #582/#604 wearing a different face, and the compensation was a second
+    // answerer to "is the workspace fresh": it made two independent answers
+    // more likely to agree instead of removing one of them.
+    //
+    // `load_global_workspace_` now resolves through `global_subos_name_()`,
+    // which puts `activeSubosOverride_` first, so the reload inside
+    // `set_active_subos_override` already reads the subos this guard just
+    // selected.
 }
 
 ScopedSubosOverride::~ScopedSubosOverride() {
@@ -1721,10 +1793,15 @@ ScopedSubosOverride::~ScopedSubosOverride() {
     // caller is already handling (or propagating) some other failure, and
     // losing the whole process over "couldn't restore which subos is
     // active" would replace a recoverable state with an unrecoverable one.
+    //
+    // No explicit reload here either: `set_active_subos_override` reloads
+    // internally whenever the override actually changes, and when it does not
+    // change the restored env var cannot alter the answer -- both
+    // `global_subos_name_()` and `resolve_subos_scope_()` consult the override
+    // FIRST. The explicit call was a duplicate of the inner one.
     try {
         platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv_);
         (void)Config::set_active_subos_override(prevOverride_);
-        Config::reload_state();
     } catch (const std::exception& e) {
         log::debug("ScopedSubosOverride: restore failed: {}", std::string(e.what()));
     } catch (...) {

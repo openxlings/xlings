@@ -79,6 +79,43 @@ SubOS-A 与 SubOS-B 可以各自激活不同版本，互不干扰。shim 分发�
 
 未安装的版本对当前 SubOS 不可见——即使全局 VersionDB 已注册。用户需显式 `xlings install` 将版本纳入当前 SubOS 视图。
 
+### 两个不同的问题:「作用在哪」与「哪个是全局的」
+
+项目作用域下,这两个问题的答案**不同**,必须由两个不同的函数回答:
+
+| 问题 | 回答者 | 项目作用域下的值 |
+|---|---|---|
+| 这条命令**作用在**哪个 SubOS | `Config::resolve_subos_scope_()` → `paths_.activeSubos` | 项目的 SubOS(`_` 或其声明名) |
+| 哪个 SubOS **是全局的** | `Config::global_subos_name_()` | 覆盖 > `XLINGS_ACTIVE_SUBOS` > home 的 `activeSubos`;**永远不是项目的 SubOS** |
+
+两者曾被写成同一个表达式。`load_global_workspace_()` 用前者去回答后者,于是在项目作用域里
+读 `<home>/subos/_/.xlings.json`(不存在)或 `<home>/subos/<项目 subos 名>/.xlings.json`
+(另一个 SubOS 的状态)。全局 workspace 静默变空,派生的 shim 路由表随即把所有全局条目算作
+过期并删除——真机上一次 172 条(openxlings/xlings#582、#604)。
+
+自 2026.9.20.1 起,**「哪个 SubOS 是全局的」只有一个回答者**;
+`global_subos_dir_()`、`load_global_workspace_()`、`Config::workspace_config_path()` 都走它。
+
+### 「读不到」不是「是空的」
+
+shim 路由表是**派生表**:它由 workspace 重建,而不是与之比对。这个设计是对的,
+但它有一个锐利的边:**输入为「什么都没有」时,推导出的结论是「全部删除」**。
+
+因此读取 workspace 的函数必须区分三种情况,而不能都塌成空表:
+
+- **没观测到**(目录/文件不存在、解析失败)→ 消费者中**会删除状态的那些必须拒绝执行**;
+- **观测到且为空** → 合法状态(刚创建的 SubOS 什么都没激活);
+- 观测到且非空 → 正常。
+
+`Config::read_workspace_file_()` 返回 `std::optional`,`Config::global_workspace_observed()`
+把这个事实传给消费者;`xself::sync_shim_tables()` 在未观测时**不重建表**并打印原因。
+判据是二元的(观测到 / 没观测到),不是阈值——「删得太多就不删」会是一条新的启发式,
+也就是同一个问题的第二个回答者。
+
+同一条规则在 `xvm::ProjectContribution::readable` 上早已存在(它管的是 `compute_desired`
+的另一个输入),在 `installer.cpp` 的 `load_workspace_file_checked_` 上也独立存在过一次。
+一条规则被独立重新发现三次,说明它缺的是规范而不是代码。
+
 ## 引用计数与存储共享
 
 ```

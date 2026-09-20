@@ -738,6 +738,36 @@ void cleanup_removed_xvm_file_artifacts(
                                  currentDb, currentWorkspace);
 }
 
+// What an extraction failure means on the wire.
+//
+// `ExtractError::kind` used to stop here: every extraction failure reached the
+// client as E_INTERNAL with no hint, so "the archive is corrupt, retry and it
+// re-downloads" and "your disk is full" were the same event (#376). The kind
+// was already computed; it was simply dropped.
+//
+// No new ErrorCode is minted. The three existing ones cover the practical
+// cases, and adding a wire code is a compatibility event for every consumer.
+struct ExtractWireError {
+    std::string code;
+    std::string hint;
+};
+
+ExtractWireError extract_wire_error_(const ExtractError& error) {
+    switch (error.kind) {
+        case ExtractErrorKind::InvalidInputArchive:
+            // The hint states what `evict_invalid_archive_cache_` just did, so
+            // "retry" is actionable rather than hopeful.
+            return { "E_INVALID_INPUT",
+                     "the archive is corrupt or contains unsupported entries; "
+                     "its cache entry was dropped, so a retry re-downloads it" };
+        case ExtractErrorKind::LocalWriteFailure:
+            return { "E_DISK_FULL",
+                     "check free space and permissions on the cache directory" };
+        default:
+            return { "E_INTERNAL", "" };
+    }
+}
+
 bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
         const ExtractError& error) {
@@ -1218,42 +1248,19 @@ bool normalize_file_install_(const std::filesystem::path& installPath) {
     return !ec;
 }
 
-std::filesystem::path current_workspace_config_path_() {
-    if (Config::has_project_config()) {
-        if (Config::project_subos_mode() == ProjectSubosMode::Named) {
-            return Config::project_dir() / ".xlings" / "subos" / Config::project_subos_name() / ".xlings.json";
-        }
-        if (Config::project_subos_mode() == ProjectSubosMode::Anonymous) {
-            return Config::project_state_path();
-        }
-        return Config::project_state_path();
-    }
-    return Config::paths().homeDir / "subos" / Config::paths().activeSubos / ".xlings.json";
-}
-
-xvm::SubosWorkspace load_workspace_file_(const std::filesystem::path& path) {
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec)) return {};
-    try {
-        auto content = platform::read_file_to_string(path.string());
-        auto json = nlohmann::json::parse(content, nullptr, false);
-        if (json.is_discarded() || !json.is_object()) return {};
-        if (!json.contains("workspace") || !json["workspace"].is_object()) return {};
-        return xvm::subos_workspace_from_json(json["workspace"]);
-    } catch (...) {
-        return {};
-    }
-}
-
-// Same read as `load_workspace_file_`, but distinguishes "read fine, and
-// the workspace is genuinely empty" from "could not be read" -- a
-// difference `load_workspace_file_`'s callers so far never needed to see
-// (a missing state file for a subos nobody has referenced yet is a normal
-// empty workspace to them, not a fault). A caller that already has other
-// evidence this file OUGHT to contain something (its own separate scan
-// found this exact subos pinning a version) needs the distinction: nullopt
-// says "do not trust the empty result you would otherwise get", where the
-// plain function above cannot tell its caller that.
+// Distinguishes "read fine, and the workspace is genuinely empty" from
+// "could not be read". A caller that has other evidence this file OUGHT to
+// contain something (its own scan found this exact subos pinning a version)
+// needs that distinction: nullopt says "do not trust the empty result you
+// would otherwise get".
+//
+// The same rule now applies to the two other places that read a workspace --
+// `Config::read_workspace_file_` and `xvm::ProjectContribution::readable`.
+// Three independent rediscoveries of one rule is what a missing rule looks
+// like; see .agents/docs/2026-09-20-scope-truth-ldd-analysis-and-plan.md §3.2.
+//
+// The lossy sibling that used to live here (`load_workspace_file_`, returning
+// an empty workspace for an unreadable file) had no callers left and is gone.
 std::optional<xvm::SubosWorkspace>
 load_workspace_file_checked_(const std::filesystem::path& path) {
     std::error_code ec;
@@ -2376,6 +2383,28 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
     return true;
 }
 
+// A registered program that is a shell script must be a shell script that
+// PARSES. Checked at install time, which is where a bad artifact is still
+// cheap to reject (R4: assert on the artifact, not on the intent).
+//
+// This exists because a shipped payload proved it can be needed. The
+// `xim-x-glibc` 2.39 fromsource build carries a `bin/ldd` whose `RTLDLIST="`
+// assignment was eaten by a hand-rolled path rewrite; the dangling quote
+// swallows the next nine lines and bash dies on line 38. The install reported
+// success, the package registered `ldd`, and the first sign of trouble was
+// Steam claiming a 32-bit libc was missing (#522, #608).
+//
+// It is NOT a second copy of `elfpatch.relocate_build_paths`'s assertion, which
+// already syntax-checks what it rewrites. That one protects the recipes that
+// CALL it; 2.39 is the proof that a recipe can simply not call it. This is the
+// acceptance gate: it protects the user from the recipe. Different scope, so
+// one does not stand in for the other.
+//
+// Scope is deliberately narrow -- only files this package registered as
+// programs, only when they start with a shell shebang -- so the cost does not
+// grow with payload size. It cannot see a build-host path that happens to be
+// syntactically valid; only the marker assertion inside the rewrite can, and
+// re-deriving that here would be the second answerer this avoids.
 std::vector<std::string> unfulfilled_program_promises_(const InstallPlan& plan) {
     std::vector<std::string> broken;
     // By value, per Config::versions()'s contract -- it merges global and
@@ -2478,6 +2507,23 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             std::format("plan has errors: {}", plan.errors[0]));
     }
 
+    // Every status this function forwards carries the plan key of the node it
+    // is about -- filled here, once, instead of at the eighteen emission sites
+    // spread across this file and its helpers. A caller that has to match a
+    // status back to what it requested by bare NAME gets it wrong as soon as
+    // one plan carries two versions of a package, and "forgot to set it at one
+    // of eighteen sites" is the same defect with a narrower blast radius.
+    std::string currentPlanKey;
+    if (onStatus) {
+        onStatus = [inner = std::move(onStatus), &currentPlanKey]
+                   (const InstallStatus& raw) {
+            if (!raw.planKey.empty() || currentPlanKey.empty()) { inner(raw); return; }
+            auto filled = raw;
+            filled.planKey = currentPlanKey;
+            inner(filled);
+        };
+    }
+
     auto dataDir = Config::paths().dataDir;
     auto platform = detect_platform_();
 
@@ -2492,6 +2538,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     // mean refused.
     std::unordered_set<std::string> refusedNodes;
     for (auto& node : plan.nodes) {
+        currentPlanKey = detail_::plan_key_(node);
         if (node.alreadyInstalled) continue;
 
         const std::string hostArch =
@@ -2647,10 +2694,11 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
     // Phase 2: Install each package in topological order
     for (auto& node : plan.nodes) {
+        currentPlanKey = detail_::plan_key_(node);
         // Refused by a gate in phase 1. Skipping here rather than there
         // is what keeps the refusal per-package: the rest of the plan
         // installs normally.
-        if (refusedNodes.contains(detail_::plan_key_(node))) continue;
+        if (refusedNodes.contains(currentPlanKey)) continue;
         if (cancel && cancel->is_cancelled()) {
             return std::unexpected(std::string("cancelled"));
         }
@@ -2861,9 +2909,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                     log::error("extract failed for {}: {}",
                                node.name, error.message);
                     if (onStatus) {
+                        auto wire = extract_wire_error_(error);
                         onStatus({
-                            node.name, InstallPhase::Failed, 0.0f,
-                            error.message});
+                            .name = node.name,
+                            .phase = InstallPhase::Failed,
+                            .progress = 0.0f,
+                            .message = error.message,
+                            .errorCode = std::move(wire.code),
+                            .hint = std::move(wire.hint)});
                     }
                     continue;
                 }
@@ -3162,8 +3215,13 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 log::error("extract failed for {}: {}",
                            node.name, error.message);
                 if (onStatus) {
-                    onStatus({ node.name, InstallPhase::Failed, 0.0f,
-                               error.message });
+                    auto wire = extract_wire_error_(error);
+                    onStatus({ .name = node.name,
+                               .phase = InstallPhase::Failed,
+                               .progress = 0.0f,
+                               .message = error.message,
+                               .errorCode = std::move(wire.code),
+                               .hint = std::move(wire.hint) });
                 }
                 continue;
             }
@@ -3485,8 +3543,10 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         !broken.empty()) {
         for (const auto& name : broken) {
             if (onStatus) {
-                onStatus({ name, InstallPhase::Failed, 0.0f,
-                           "declared programs were not registered" });
+                onStatus({ .name = name,
+                           .phase = InstallPhase::Failed,
+                           .progress = 0.0f,
+                           .message = "declared programs were not registered" });
             }
         }
         return std::unexpected(std::format(
@@ -3500,7 +3560,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
 std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(const std::string& name, bool force) {
     auto platform = detect_platform_();
-    auto currentWorkspacePath = detail_::current_workspace_config_path_();
+    auto currentWorkspacePath = Config::workspace_config_path();
 
     auto parse_target = [](std::string target) {
         auto at = target.find('@');

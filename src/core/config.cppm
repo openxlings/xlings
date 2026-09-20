@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.9.16.1";
+    static constexpr std::string_view VERSION = "2026.9.20.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -177,6 +177,12 @@ private:
     xvm::VersionDB globalVersions_;
     xvm::VersionDB projectVersions_;
     xvm::Workspace globalWorkspace_;
+    // Was `globalWorkspace_` actually READ, or is it empty because nothing
+    // could be read? Consumers that DELETE things must not act on the second
+    // (see `read_workspace_file_`). Starts false and is set by
+    // `load_global_workspace_()`; a home whose global subos has no workspace
+    // file yet is observed-and-empty, which is different again.
+    bool           globalWorkspaceObserved_ { false };
     xvm::Workspace projectWorkspace_;       // from project .xlings.json
     xvm::Workspace projectSubosWorkspace_;  // from project-local subos file
     // Per-subos installed[] sets, paired with the matching workspace map.
@@ -254,6 +260,23 @@ private:
 
     [[nodiscard]] std::filesystem::path project_subos_dir_() const;
 
+    // Which subos is the GLOBAL one.
+    //
+    // A different question from `resolve_subos_scope_()` / `paths_.activeSubos`,
+    // which answer "which subos does this command ACT ON" -- in project scope
+    // that is the project's own subos (`_`, or its declared name), and the
+    // project's subos is never the global scope.
+    //
+    // The two were spelled the same way and `load_global_workspace_()` used the
+    // wrong one, so in project scope it read `<home>/subos/_/.xlings.json` --
+    // a path that does not exist -- and the global workspace silently became
+    // empty. The derived shim table then removed every global entry (#582), and
+    // the next `self doctor` reported them missing (#604). Measured on a real
+    // home: 172 routing entries gone, `gcc` active and not on PATH.
+    //
+    // One answerer, so there is nothing left to disagree with.
+    [[nodiscard]] std::string global_subos_name_() const;
+
     [[nodiscard]] std::filesystem::path global_subos_dir_() const;
 
     [[nodiscard]] static std::vector<std::string>
@@ -321,6 +344,19 @@ private:
     void load_global_versions_from_json_(const nlohmann::json& json);
 
     void load_global_workspace_();
+
+    // The workspace file for a subos, or nullopt when it could not be READ.
+    //
+    // nullopt and an empty workspace are different answers and must stay
+    // different all the way to the consumer. "The file is not there" used to
+    // return an empty workspace, which is indistinguishable from "this subos
+    // has nothing active" -- a legitimate state for a freshly created subos.
+    // A derived table fed that value derives "remove everything".
+    //
+    // Same rule `xvm::ProjectContribution::readable` already applies to the
+    // OTHER input of `compute_desired`; this brings the subos input in line.
+    [[nodiscard]] static std::optional<xvm::SubosWorkspace>
+    read_workspace_file_(const std::filesystem::path& path);
 
     // Re-read the mutable state layers from disk.
     //
@@ -478,6 +514,11 @@ public:
     // does the subos on PATH have active", and that is exactly the question
     // the routing table asks when a project install has to reach it.
     [[nodiscard]] static const xvm::Workspace& global_workspace();
+
+    // False when `global_workspace()` is empty because it could not be read,
+    // rather than because nothing is active. A caller that removes state on
+    // the strength of that map must check this first.
+    [[nodiscard]] static bool global_workspace_observed();
     [[nodiscard]] static const xvm::VersionDB& project_versions();
 
     // Effective data dir: project-local if project config exists, otherwise global
@@ -594,6 +635,18 @@ public:
     static std::string set_active_subos_override(std::string name);
 
     static std::filesystem::path subos_dir(const std::string& name);
+
+    // Where the workspace this scope reads and writes actually lives.
+    //
+    // ONE implementation of the four-way scope branch (named project subos /
+    // anonymous project subos / project state / global). `installer.cpp` used
+    // to carry a hand-copied second version of it; two copies of a branch this
+    // shape is how the two halves of one scope drift apart.
+    //
+    // `createDirs` is for the WRITE path, which must materialise the project
+    // subos skeleton before saving. Readers pass false.
+    [[nodiscard]] static std::filesystem::path
+    workspace_config_path(bool createDirs = false);
 
     [[nodiscard]] static std::filesystem::path global_subos_dir();
 

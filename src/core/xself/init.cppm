@@ -88,7 +88,19 @@ export xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 // Best-effort by design: a failure here means a name is momentarily missing
 // from PATH, not that the install did not happen. Failures are logged, and
 // `self doctor` reports the drift.
-export void sync_shim_tables();
+
+// What a rebuild changed, summed over the scopes it touched. Returned so the
+// callers that run on UPGRADE can say what they repaired -- a repair nobody
+// can see is indistinguishable from one that did not happen.
+export struct ShimSyncSummary {
+    std::size_t added   {};
+    std::size_t removed {};
+    std::size_t refused {};   // scopes whose workspace could not be observed
+
+    [[nodiscard]] bool changed() const { return added != 0 || removed != 0; }
+};
+
+export ShimSyncSummary sync_shim_tables();
 
 bool is_builtin_shim(std::string_view name);
 

@@ -14,11 +14,12 @@ namespace xlings::xvm {
 
 namespace {
 
-#if defined(_WIN32)
-constexpr std::string_view kShimExt = ".exe";
-#else
-constexpr std::string_view kShimExt = "";
-#endif
+// Compile-time platform choice, expressed to the COMPILER rather than to the
+// preprocessor: with `if constexpr` / a constexpr ternary both arms are still
+// type-checked on every target, so a change that breaks the arm this build does
+// not take fails here instead of in the other platform's CI run.
+constexpr std::string_view kShimExt =
+    platform::OS_NAME == "windows" ? ".exe" : "";
 
 // Is `path` one of our shims — a link to the entry binary?
 //

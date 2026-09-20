@@ -71,6 +71,24 @@ export constexpr std::string_view to_wire_string(ErrorCode c) {
     return "E_INTERNAL";
 }
 
+// The inverse of `to_wire_string`, for values that travelled as text.
+//
+// An unknown or empty spelling is E_INTERNAL -- the same default a site that
+// knows nothing more specific would have picked, so a producer that does not
+// set a code and one that sets an unrecognised one land in the same place.
+//
+// Lives here, beside the forward mapping. A second table somewhere else is how
+// a wire spelling comes to mean two different things.
+export constexpr ErrorCode error_code_from_wire(std::string_view s) {
+    if (s == "E_INVALID_INPUT") return ErrorCode::InvalidInput;
+    if (s == "E_NOT_FOUND")     return ErrorCode::NotFound;
+    if (s == "E_NETWORK")       return ErrorCode::Network;
+    if (s == "E_DISK_FULL")     return ErrorCode::DiskFull;
+    if (s == "E_PERMISSION")    return ErrorCode::Permission;
+    if (s == "E_CANCELLED")     return ErrorCode::Cancelled;
+    return ErrorCode::Internal;
+}
+
 export struct ErrorEvent {
     ErrorCode code;
     std::string message;
