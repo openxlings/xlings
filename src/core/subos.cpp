@@ -518,11 +518,45 @@ DefaultRuntime resolve_default_runtime() {
     };
 }
 
+// A subos name has to name a subos.
+//
+// "" is not a subos, and every path this file builds from a name is
+// `<home>/subos/<name>` -- so an empty one resolves to the subos ROOT. That is
+// not a theoretical concern: on 2026.9.16.1, two malformed agent calls
+//
+//     xlings interface create_subos --args '{}'    -> exitCode 0
+//     xlings interface remove_subos --args '{}'    -> exitCode 0
+//
+// registered an entry named "" and then removed `<home>/subos/` with it,
+// deleting `default`, `current` and every other subos in the home, reporting
+// success both times. The capability layer passed `json.value("name", "")`
+// straight through; the CLI never could, because its parser demands the
+// argument ("missing <name> for: xlings subos remove|rm").
+//
+// The interface dispatcher now refuses a params object that omits a declared
+// `required` field, which stops that call before it reaches here. This is the
+// operation's OWN precondition, which is a different statement: whatever asks,
+// there is no subos called "", and nothing may be created at or removed from
+// the path an empty name builds.
+bool reject_empty_subos_name_(std::string_view what, const std::string& name,
+                              EventStream& stream) {
+    if (!name.empty()) return false;
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = std::string("a subos name is required to ") + std::string(what),
+        .recoverable = false,
+        .hint = "an empty name resolves to the subos root, not to a subos",
+    });
+    return true;
+}
+
 int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
                   const std::string& runtime,
                   EventStream& stream) {
     auto& p = Config::paths();
+
+    if (reject_empty_subos_name_("create a subos", name, stream)) return 1;
 
     if (name == "current") {
         stream.emit(ErrorEvent{
@@ -1398,6 +1432,8 @@ int use(const std::string& name, EventStream& stream) {
 }
 
 int remove(const std::string& name, EventStream& stream) {
+    if (reject_empty_subos_name_("remove a subos", name, stream)) return 1;
+
     if (name == "default") {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,

@@ -257,6 +257,7 @@ TESTS=(
     "E2E-114|project_scope_preserves_global_shims_test.sh||"
     "E2E-115|ldd_answers_in_the_files_world_test.sh||"
     "E2E-116|install_outcome_is_a_record_test.sh||"
+    "E2E-117|empty_subos_name_is_refused_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
