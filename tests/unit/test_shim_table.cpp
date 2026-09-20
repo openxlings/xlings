@@ -27,6 +27,7 @@ import std;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim_table;
+import xlings.platform;
 
 namespace xvm = xlings::xvm;
 namespace fs = std::filesystem;
@@ -37,11 +38,11 @@ namespace {
 // if `shim_filename` ever stopped adding `.exe` these tests must fail, and
 // they cannot if they ask the same function for the answer.
 std::string named(std::string_view base) {
-#if defined(_WIN32)
-    return std::string(base) + ".exe";
-#else
-    return std::string(base);
-#endif
+    if constexpr (xlings::platform::OS_NAME == "windows") {
+        return std::string(base) + ".exe";
+    } else {
+        return std::string(base);
+    }
 }
 
 xvm::VersionDB db_with_program(const std::string& target,

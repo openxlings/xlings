@@ -59,6 +59,31 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 
 `--args-file <path>` 可替代 `--args`，从文件读取 JSON 参数（用于 Windows 引号转义问题）。
 
+#### 3.3.1 参数校验（2026.9.20.1+）
+
+在能力被调度之前，服务端会按该能力自己公布的 `inputSchema` 做一次校验：
+
+- `--args` 不是合法 JSON，或不是 JSON 对象；
+- `inputSchema.required` 中任何字段**缺失**或取值为 `null`。
+
+任一条命中即先发一行 `error`（`code` 为 `E_INVALID_INPUT`，`message` 列出缺失的字段名，
+`hint` 给出该能力 `required` 的全集），再发 `result`（`exitCode=1`）并退出。**能力本身不会被执行。**
+
+```jsonc
+// xlings interface plan_install --args '{"packages":["cpp"]}'
+{"kind":"error","code":"E_INVALID_INPUT","message":"missing required field(s): targets","recoverable":false,"hint":"this capability requires: targets — run `xlings interface --list` for the full schema"}
+{"kind":"result","exitCode":1}
+```
+
+在 2026.9.20.1 之前，`required` 只是被**公布**、从未被**执行**：字段名写错的请求会得到
+`{"exitCode":0,"kind":"result"}`，与「这个目标无需安装任何东西」这个合法且常见的回答
+完全同形，客户端无法区分（openxlings/xlings#464）。
+
+校验范围**只有** `required` 与顶层类型，不是完整的 JSON Schema 校验：
+`required` 是已经公布出去的那条承诺，这次只是让它成真；
+把今天宽松接受的其他形状变成硬错误是另一个决定，有它自己的影响面。
+未声明 `required` 的能力不受影响。
+
 ## 4. stdin 控制请求格式
 
 会话执行期间，客户端可通过 stdin 发送控制指令：
@@ -215,12 +240,18 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 | `remove_repo` | 移除索引仓库 | 是 |
 
 各能力的 `inputSchema` / `outputSchema` 通过 `xlings interface --list` 获取。
+其中 `required` 自 2026.9.20.1 起由服务端统一执行，见 §3.3.1。
 
 ## 8. 错误处理
 
 - **启动阶段错误**（如未知能力名）：服务端先输出一行 `error` 事件，再输出 `result`（exitCode=1），然后退出。
 - **执行阶段错误**：通过事件流中的 `error` 事件报告。`recoverable=true` 表示执行未中断；`recoverable=false` 后通常紧跟 `result` 终止行。
+- **参数不满足 `inputSchema.required`**：code 为 `E_INVALID_INPUT`，exitCode=1，能力不被执行（§3.3.1）。
 - **内部异常**：code 为 `E_INTERNAL`，exitCode=1。
+- **解压失败**（2026.9.20.1+）：不再一律是 `E_INTERNAL`。归档损坏 / 含不支持的条目为
+  `E_INVALID_INPUT`（`hint` 说明缓存已清除、重试会重新下载）；写入失败为 `E_DISK_FULL`。
+  在此之前 `ExtractError` 的种类在传递中被丢弃，客户端无法区分「重试」与「清理磁盘」
+  （openxlings/xlings#376）。
 - **取消**：exitCode=130。
 - **被策略拒绝**：exitCode=2。命令是合法的、也没有出错，但 xlings 拒绝执行它。
   与 1 分开，是因为客户端对这两者该做的事不同：1 是"出问题了"，2 是"你要的这件事

@@ -19,6 +19,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.errors;
 import xlings.core.xvm.owner;
 import xlings.core.version_order;
+import xlings.core.elfread;
 // For `project_contributions()` -- the one answer to "which project
 // declares this command". Implementation-unit import only; the xvm
 // interface stays free of xself.
@@ -204,6 +205,22 @@ resolve_dispatch_home(const std::string& program, const char* argv0) {
     return std::nullopt;
 }
 
+// The suffixes an executable may carry on this target, newest-first.
+//
+// Returned as a dynamic-extent span so the two arms have one type and the
+// choice can be made by the COMPILER rather than the preprocessor: both arrays
+// are compiled on every target, so a change that breaks the arm this build does
+// not take fails here instead of in the other platform's CI run.
+std::span<const std::string_view> executable_extensions_() {
+    static constexpr std::string_view kWin[]   = {"", ".exe", ".bat", ".cmd"};
+    static constexpr std::string_view kPosix[] = {""};
+    if constexpr (platform::OS_NAME == "windows") {
+        return std::span<const std::string_view>{kWin};
+    } else {
+        return std::span<const std::string_view>{kPosix};
+    }
+}
+
 std::filesystem::path resolve_executable(const std::string& program_name,
                                          const std::string& path,
                                          const std::string& xlings_home) {
@@ -218,16 +235,16 @@ std::filesystem::path resolve_executable(const std::string& program_name,
     auto candidate2 = base / "bin" / program_name;
     if (fs::exists(candidate2)) return candidate2;
 
-#if defined(_WIN32)
-    // Windows: try .exe / .bat / .cmd (bare name already tried above)
-    constexpr std::string_view win_exts[] = {".exe", ".bat", ".cmd"};
-    for (auto ext : win_exts) {
-        auto p1 = base / (program_name + std::string(ext));
-        if (fs::exists(p1)) return p1;
-        auto p2 = base / "bin" / (program_name + std::string(ext));
-        if (fs::exists(p2)) return p2;
+    if constexpr (platform::OS_NAME == "windows") {
+        // Windows: try .exe / .bat / .cmd (bare name already tried above)
+        constexpr std::string_view win_exts[] = {".exe", ".bat", ".cmd"};
+        for (auto ext : win_exts) {
+            auto p1 = base / (program_name + std::string(ext));
+            if (fs::exists(p1)) return p1;
+            auto p2 = base / "bin" / (program_name + std::string(ext));
+            if (fs::exists(p2)) return p2;
+        }
     }
-#endif
 
     return {};
 }
@@ -258,11 +275,11 @@ AliasResolution resolve_alias_program(const std::string& program_name,
         return {AliasOrigin::Payload, std::move(own)};
     }
 
-#if defined(_WIN32)
-    constexpr std::string_view exts[] = {"", ".exe", ".bat", ".cmd"};
-#else
-    constexpr std::string_view exts[] = {""};
-#endif
+    // Compile-time platform choice, expressed to the COMPILER rather than to the
+    // preprocessor: with `if constexpr` / a constexpr ternary both arms are still
+    // type-checked on every target, so a change that breaks the arm this build does
+    // not take fails here instead of in the other platform's CI run.
+    const auto exts = executable_extensions_();
 
     const auto probe = [&](const fs::path& dir) -> fs::path {
         if (dir.empty()) return {};
@@ -477,11 +494,7 @@ std::filesystem::path find_host_passthrough_(const std::string& program_name,
     auto entry = home / "bin" / (platform::OS_NAME == "windows"
                                      ? "xlings.exe" : "xlings");
 
-#if defined(_WIN32)
-    constexpr std::string_view exts[] = {"", ".exe", ".bat", ".cmd"};
-#else
-    constexpr std::string_view exts[] = {""};
-#endif
+    const auto exts = executable_extensions_();
 
     std::string_view search(rawPath);
     std::size_t start = 0;
@@ -545,6 +558,67 @@ int exec_host_program_(const std::filesystem::path& host,
     }
     return platform::exec(cmd);
 #endif
+}
+
+// ── `ldd` answers in the file's world, not this subos's ──────────────
+//
+// `ldd` is the one registered program whose answer belongs to its ARGUMENT
+// rather than to the subos it was dispatched from. Every ldd -- ours and the
+// host's -- picks a loader from its own `RTLDLIST` and runs the target through
+// it. For a file built against a different glibc that is simply the wrong
+// loader, and the result is not an error message, it is a WRONG ANSWER:
+//
+//   * on a host whose binaries use DT_RELR, the subos loader rejects every one
+//     of them with "DT_RELR without GLIBC_ABI_DT_RELR dependency" (#608);
+//   * on a host whose binaries do not, measured here, it reports every host
+//     library as `not found` -- and exits 0, so `set -e` and `pipefail` both
+//     miss it, and a script that bundles `ldd` output ships an empty bundle.
+//
+// The file already carries the answer. `PT_INTERP` is the loader it was linked
+// for, frozen at build time, and running it with LD_TRACE_LOADED_OBJECTS=1 is
+// exactly what every `ldd` script does once it has chosen one. So: use the
+// file's own answer when the file has one.
+//
+// Note what this is NOT: a "host vs ours" dispatcher. There is no such branch.
+// Adding one would make the loader question have two answerers again (and add
+// a dependency on the host having an `ldd` at all). Deleting the substitution
+// leaves one answerer -- the file.
+//
+// Falls through to the packaged `ldd` for exactly the inputs where the file has
+// no answer: no argument, options only, not an ELF, or no PT_INTERP (a static
+// executable or a shared library). Those are the cases the script handles
+// correctly today, including its `not a dynamic executable` message.
+//
+// Verified byte-for-byte on a real home: for a host binary the output matches
+// `/usr/bin/ldd`, and for a store binary it matches what the packaged `ldd`
+// produced before this existed.
+std::filesystem::path ldd_target_interpreter_(int argc, char* argv[]) {
+    std::filesystem::path target;
+    for (int i = 1; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a.empty()) continue;
+        // Options belong to ldd itself (--version, --help, -v, -u, -r, -d).
+        // A lone "-" is not a path either.
+        if (a.front() == '-') {
+            if (!target.empty()) return {};   // mixed: let the script decide
+            continue;
+        }
+        if (!target.empty()) return {};       // several files: not ours to split
+        target = std::filesystem::path(std::string(a));
+    }
+    if (target.empty()) return {};
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(target, ec) || ec) return {};
+    auto info = elfread::read(target);
+    if (!info || info->interpreter.empty()) return {};
+
+    // The interpreter has to be runnable, or delegating would turn a working
+    // "not found" report into an exec failure. A payload whose PT_INTERP names
+    // a loader that is gone is a real state this home can be in.
+    std::filesystem::path interp(info->interpreter);
+    if (!std::filesystem::is_regular_file(interp, ec) || ec) return {};
+    return interp;
 }
 
 int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
@@ -886,6 +960,30 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             cmd += platform::shell_quote(argv[i]);
         }
         return platform::exec(cmd);
+    }
+
+    // See `ldd_target_interpreter_`. Placed BEFORE `resolve_executable` on
+    // purpose: a payload whose packaged `ldd` script is itself broken (the
+    // 2.39 fromsource build ships one whose RTLDLIST assignment was shredded by
+    // a path rewrite, so it does not survive `bash -n` -- #522) must still give
+    // a correct answer for any file that carries its own loader.
+    // `if constexpr`, not `#ifdef`: the body compiles on every target, so it
+    // cannot rot on the platforms that do not run it. `exec_host_program_`
+    // already owns the one genuinely platform-specific step (execvp where
+    // there is one, a quoted command where there is not).
+    //
+    // ELF and PT_INTERP are a Linux concern; macOS has no `ldd` and Windows
+    // has no loader to hand the file to.
+    if constexpr (platform::OS_NAME == "linux") {
+        if (program_name == "ldd") {
+            if (auto interp = ldd_target_interpreter_(argc, argv);
+                !interp.empty()) {
+                platform::set_env_variable("LD_TRACE_LOADED_OBJECTS", "1");
+                platform::set_env_variable("XLINGS_SHIM_DEPTH",
+                                           std::to_string(depth + 1));
+                return exec_host_program_(interp, argc, argv);
+            }
+        }
     }
 
     auto exe_path = resolve_executable(exec_name, vdata->path, xlings_home);

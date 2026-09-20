@@ -27,6 +27,30 @@ struct InstallStatus {
     InstallPhase phase { InstallPhase::Pending };
     float progress { 0.0f };
     std::string message;
+
+    // ── the fields that make this a RECORD rather than a notification ──
+    //
+    // `planKey` is `<canonicalName>@<version>` -- the same key the plan and
+    // the caller's requested-match table use. Without it a caller can only
+    // match a status back to what it asked for by bare NAME, which is
+    // ambiguous the moment a plan carries two versions of one package.
+    // `Installer::execute` fills it in for every status it forwards, so no
+    // emission site has to remember to.
+    std::string planKey;
+
+    // The ErrorCode wire spelling ("E_INVALID_INPUT", "E_DISK_FULL", ...) and
+    // a remediation hint, for a Failed status. Empty errorCode means "no more
+    // specific code than E_INTERNAL".
+    //
+    // Carried as strings rather than the enum so this module keeps its single
+    // `import std;` -- the wire spelling is what the consumer emits anyway.
+    //
+    // They exist because `ExtractError::kind` used to be discarded at the call
+    // site: disk-full, corrupt-archive and internal all reached the wire as
+    // E_INTERNAL with no hint, so a client could not tell "retry" from
+    // "free some space" (openxlings/xlings#376).
+    std::string errorCode;
+    std::string hint;
 };
 
 // How a node was reached in the dep graph. Determines whether the

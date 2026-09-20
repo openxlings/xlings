@@ -15,10 +15,21 @@ cleanup() {
 trap cleanup EXIT
 write_home_config "$HOME_DIR" "GLOBAL" "$PROJECT_INDEX_DIR"
 
-# --- Clean global subos bin to avoid cache interference ---
+# --- Record what the global subos bin already carries ---
+#
+# It used to `rm -rf` this directory "to avoid cache interference". That wipe
+# is why this test could never see openxlings/xlings#582: with the directory
+# empty there is nothing for a project-scope install to remove, so the question
+# "does it remove what it does not own" was never asked here. The test that
+# owned this area deleted the evidence in its own setup.
+#
+# So: keep whatever is there, remember it, and assert at the end that the ADD
+# this test is about did not come with a silent REMOVE. The removal direction
+# has its own test (project_scope_preserves_global_shims_test.sh, E2E-114);
+# this row is the cheap guard that keeps this test honest about its own scope.
 GLOBAL_BIN="$HOME_DIR/subos/default/bin"
-rm -rf "$GLOBAL_BIN"
 mkdir -p "$GLOBAL_BIN"
+GLOBAL_BEFORE="$(ls "$GLOBAL_BIN" 2>/dev/null | sort | tr '\n' ' ')"
 
 # --- Pre-check: no node shim in global subos bin ---
 [[ ! -e "$GLOBAL_BIN/node" ]] || fail "global node shim already exists before test"
@@ -65,5 +76,22 @@ echo "marker" > "$GLOBAL_BIN/node"
 ) >/dev/null 2>&1
 MARKER="$(cat "$GLOBAL_BIN/node")"
 [[ "$MARKER" = "marker" ]] || fail "global node shim was overwritten (should preserve existing)"
+
+# --- Verify: the mirror ADDED without silently REMOVING ---
+#
+# Everything present before the project install must still be present. The
+# table is derived and rebuilt rather than audited, so "add one name" and
+# "rebuild from a set that happens to be missing the others" look the same
+# from the add side alone (#582).
+GLOBAL_AFTER="$(ls "$GLOBAL_BIN" 2>/dev/null | sort | tr '\n' ' ')"
+for entry in $GLOBAL_BEFORE; do
+  case " $GLOBAL_AFTER " in
+    *" $entry "*) ;;
+    *) fail "project install removed a pre-existing global bin entry '$entry'
+   before: $GLOBAL_BEFORE
+   after:  $GLOBAL_AFTER" ;;
+  esac
+done
+log "  ok: no pre-existing global entry was removed"
 
 log "PASS: project shim mirror to global subos bin"

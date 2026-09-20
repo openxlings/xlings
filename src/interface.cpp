@@ -55,6 +55,67 @@ std::string event_to_ndjson_line_(const Event& e) {
     return line.dump();
 }
 
+namespace {
+
+struct RequiredViolation {
+    std::string message;
+    std::string hint;
+};
+
+// Which declared-required fields the params object does not supply.
+//
+// nullopt means "nothing to complain about" -- including the case where the
+// capability declares no `required` at all, and the case where its schema is
+// not parseable (a broken schema is this binary's bug, and refusing every call
+// over it would be worse than the gap it leaves).
+//
+// A field present but `null` counts as missing: JSON Schema's `required` is
+// about presence, but every consumer here reads the field expecting a value,
+// and `{"targets": null}` reaching a capability is the same mistake with one
+// more step.
+std::optional<RequiredViolation>
+missing_required_fields_(const std::string& inputSchema,
+                         const std::string& params) {
+    auto schema = nlohmann::json::parse(inputSchema, nullptr, false);
+    if (schema.is_discarded() || !schema.is_object()) return std::nullopt;
+    auto req = schema.find("required");
+    if (req == schema.end() || !req->is_array() || req->empty()) return std::nullopt;
+
+    std::vector<std::string> declared;
+    for (const auto& f : *req) {
+        if (f.is_string()) declared.push_back(f.get<std::string>());
+    }
+    if (declared.empty()) return std::nullopt;
+
+    auto join = [](const std::vector<std::string>& v) {
+        std::string out;
+        for (const auto& s : v) { if (!out.empty()) out += ", "; out += s; }
+        return out;
+    };
+    const auto hint = "this capability requires: " + join(declared)
+                    + " — run `xlings interface --list` for the full schema";
+
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    if (json.is_discarded()) {
+        return RequiredViolation{ "params is not valid JSON", hint };
+    }
+    if (!json.is_object()) {
+        return RequiredViolation{ "params must be a JSON object", hint };
+    }
+
+    std::vector<std::string> missing;
+    for (const auto& field : declared) {
+        auto it = json.find(field);
+        if (it == json.end() || it->is_null()) missing.push_back(field);
+    }
+    if (missing.empty()) return std::nullopt;
+
+    return RequiredViolation{
+        "missing required field(s): " + join(missing), hint };
+}
+
+}  // namespace
+
 int run(const mcpplibs::cmdline::ParsedArgs& args,
                EventStream& stream, int tui_listener,
                capability::Registry& registry) {
@@ -127,6 +188,34 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
         std::cout << err.dump() << "\n";
         nlohmann::json done = {{"kind", "result"}, {"exitCode", 1}};
         std::cout << done.dump() << "\n" << std::flush;
+        return 1;
+    }
+
+    // ── The published contract is enforced here, once. ──
+    //
+    // Every capability declares `required` in its inputSchema, and that schema
+    // is handed to clients by `--list`. Nothing checked it: each capability
+    // re-implemented the read with its own `json.contains(...)`, and
+    // `plan_install` -- which declares `["targets"]` -- answered a params
+    // object with the field misspelled (`{"packages":[...]}`) with
+    // `{"exitCode":0,"kind":"result"}`: no plan, no error, and
+    // indistinguishable from "this package needs nothing installed"
+    // (openxlings/xlings#464). 12 of the 20 capabilities declare `required`.
+    //
+    // Only `required` and the top-level type, not full JSON Schema validation.
+    // The schema is already the contract; making it true is the fix. Adding a
+    // validator would also turn shapes that are accepted today into hard
+    // errors, which is a separate decision with its own blast radius.
+    if (auto why = missing_required_fields_(cap->spec().inputSchema, cap_args)) {
+        nlohmann::json err = {
+            {"kind", "error"},
+            {"code", std::string(to_wire_string(ErrorCode::InvalidInput))},
+            {"message", why->message},
+            {"recoverable", false},
+            {"hint", why->hint},
+        };
+        std::cout << err.dump() << "\n";
+        std::cout << R"({"kind":"result","exitCode":1})" << "\n" << std::flush;
         return 1;
     }
 

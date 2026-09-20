@@ -204,11 +204,13 @@ selected_payloadless_config_has_uninstall_(
 // empty, so the env var has to already be back to its previous value BEFORE
 // the override is restored -- restoring the override first would resolve
 // against the env var this guard just switched, landing on the subos being
-// LEFT rather than the one being returned to. The extra explicit
-// `Config::reload_state()` on each end compensates for
-// `set_active_subos_override`'s own reload reading `paths_.activeSubos`
-// before recomputing it, which would otherwise use the state from one
-// transition ago.
+// LEFT rather than the one being returned to.
+//
+// There is no longer an extra explicit `Config::reload_state()` on each end.
+// It existed to compensate for `set_active_subos_override`'s own reload
+// reading `paths_.activeSubos` before recomputing it -- a second answerer to
+// "is the workspace fresh". `global_subos_name_()` puts the override first,
+// so that inner reload now reads the subos being selected.
 struct ScopedSubosOverride {
     explicit ScopedSubosOverride(std::string name);
     ~ScopedSubosOverride();

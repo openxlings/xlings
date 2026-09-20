@@ -269,17 +269,49 @@ void Config::load_resource_servers_from_json_(const nlohmann::json& json,
     }
 }
 
-xvm::SubosWorkspace Config::load_workspace_from_file_(const std::filesystem::path& path) {
+std::optional<xvm::SubosWorkspace>
+Config::read_workspace_file_(const std::filesystem::path& path) {
     namespace fs = std::filesystem;
-    if (!fs::exists(path)) return {};
+    std::error_code ec;
+    if (!fs::exists(path, ec) || ec) {
+        // THREE cases, not two. A missing file is not automatically "could not
+        // observe": a subos that exists and has never had anything activated
+        // in it legitimately has no workspace file, and that is an OBSERVED
+        // empty workspace. Collapsing it into nullopt makes the consumers that
+        // refuse to act on nullopt refuse on every fresh home -- measured:
+        // `project_shim_mirror_test` stopped mirroring the project's shim into
+        // a brand-new global bin, which is the mirror image of the bug this
+        // whole change exists to fix.
+        //
+        // What is genuinely unobservable is being pointed at a subos that is
+        // not there at all.
+        ec.clear();
+        if (fs::is_directory(path.parent_path(), ec) && !ec) {
+            return xvm::SubosWorkspace{};
+        }
+        return std::nullopt;
+    }
     try {
         auto content = platform::read_file_to_string(path.string());
         auto json = nlohmann::json::parse(content, nullptr, false);
-        if (!json.is_discarded() && json.contains("workspace") && json["workspace"].is_object()) {
-            return xvm::subos_workspace_from_json(json["workspace"]);
+        if (json.is_discarded() || !json.is_object()) return std::nullopt;
+        // A subos file with no `workspace` key IS observed -- it is the shape a
+        // freshly created subos has before anything is activated in it. Only a
+        // file we could not read at all is unobserved.
+        if (auto it = json.find("workspace");
+            it != json.end() && it->is_object()) {
+            return xvm::subos_workspace_from_json(*it);
         }
+        return xvm::SubosWorkspace{};
     } catch (...) {}
-    return {};
+    return std::nullopt;
+}
+
+xvm::SubosWorkspace Config::load_workspace_from_file_(const std::filesystem::path& path) {
+    // The lossy view, kept for the callers whose input is a PROJECT file: a
+    // project that cannot be read contributes nothing and removes nothing,
+    // which `xvm::ProjectContribution::readable` already expresses for them.
+    return read_workspace_file_(path).value_or(xvm::SubosWorkspace{});
 }
 
 std::string Config::load_project_subos_name_(const nlohmann::json& json) {
@@ -364,13 +396,19 @@ std::vector<std::string> Config::workspace_targets_from_workspace_(const xvm::Wo
     return {};
 }
 
+[[nodiscard]] std::string Config::global_subos_name_() const {
+    // Override first. Every caller of `set_active_subos_override` pairs it with
+    // XLINGS_ACTIVE_SUBOS today (xim/commands.cpp, subos.cpp x2,
+    // xself/doctor.cpp), so honoring it here changes no behaviour -- it removes
+    // the asymmetry that made "set only one of the two" a recurring defect.
+    if (!activeSubosOverride_.empty()) return activeSubosOverride_;
+    auto env = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+    if (!env.empty()) return env;
+    return globalActiveSubos_;
+}
+
 [[nodiscard]] std::filesystem::path Config::global_subos_dir_() const {
-    auto activeSubos = utils::get_env_or_default(
-        "XLINGS_ACTIVE_SUBOS");
-    if (activeSubos.empty()) {
-        activeSubos = globalActiveSubos_;
-    }
-    return paths_.homeDir / "subos" / activeSubos;
+    return paths_.homeDir / "subos" / global_subos_name_();
 }
 
 [[nodiscard]] std::vector<std::string> Config::lookup_resource_servers_in_(const MirrorServerMap& source, std::string_view mirror) {
@@ -821,11 +859,27 @@ void Config::load_global_versions_from_json_(const nlohmann::json& json) {
 }
 
 void Config::load_global_workspace_() {
-    auto subosConfigPath =
-        paths_.homeDir / "subos" / paths_.activeSubos / ".xlings.json";
-    auto sws = load_workspace_from_file_(subosConfigPath);
-    globalWorkspace_ = std::move(sws.active);
-    globalInstalled_ = std::move(sws.installed);
+    // `global_subos_dir_()`, NOT `paths_.activeSubos`.
+    //
+    // `paths_.activeSubos` answers "which subos does this command act on". In
+    // project scope that is the project's subos, and reading the GLOBAL
+    // workspace out of it meant reading `<home>/subos/_/.xlings.json` (absent
+    // -> empty) or `<home>/subos/<projectSubos>/.xlings.json` (a different
+    // subos's state). `reload_state_()` runs this BEFORE it recomputes the
+    // paths, so the constructor's correct ordering did not save it.
+    auto subosConfigPath = global_subos_dir_() / ".xlings.json";
+    auto sws = read_workspace_file_(subosConfigPath);
+    globalWorkspaceObserved_ = sws.has_value();
+    if (!sws) {
+        log::debug("config: global workspace at {} is unreadable; "
+                   "consumers that remove state must not act on it",
+                   subosConfigPath.string());
+        globalWorkspace_.clear();
+        globalInstalled_.clear();
+        return;
+    }
+    globalWorkspace_ = std::move(sws->active);
+    globalInstalled_ = std::move(sws->installed);
 }
 
 void Config::reload_state_() {
@@ -1004,6 +1058,10 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 [[nodiscard]] const xvm::VersionDB& Config::global_versions() { return instance_().globalVersions_; }
 
 [[nodiscard]] const xvm::Workspace& Config::global_workspace() { return instance_().globalWorkspace_; }
+
+[[nodiscard]] bool Config::global_workspace_observed() {
+    return instance_().globalWorkspaceObserved_;
+}
 
 [[nodiscard]] const xvm::VersionDB& Config::project_versions() { return instance_().projectVersions_; }
 
@@ -1512,56 +1570,57 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     platform::write_string_to_file(configPath.string(), json.dump(2));
 }
 
+std::filesystem::path Config::workspace_config_path(bool createDirs) {
+    namespace fs = std::filesystem;
+    auto& self = instance_();
+    bool useProject = self.hasProjectConfig_ && !self.forceGlobalScope_;
+
+    const auto ensure_project_subos_dirs = [&](const fs::path& projSubosDir) {
+        if (!createDirs) return;
+        std::error_code ec;
+        fs::create_directories(projSubosDir, ec);
+        for (auto sub : {"bin", "lib", "usr", "generations"}) {
+            fs::create_directories(projSubosDir / sub, ec);
+        }
+    };
+    const auto ensure_project_home = [&] {
+        if (!createDirs) return;
+        auto projectHomeDir = self.project_home_dir_();
+        if (projectHomeDir.empty()) return;
+        std::error_code ec;
+        fs::create_directories(projectHomeDir, ec);
+    };
+
+    if (useProject && self.projectSubosMode_ == ProjectSubosMode::Named) {
+        auto projSubosDir = self.project_subos_dir_();
+        ensure_project_subos_dirs(projSubosDir);
+        return projSubosDir / ".xlings.json";
+    }
+    if (useProject && self.projectSubosMode_ == ProjectSubosMode::Anonymous) {
+        ensure_project_home();
+        ensure_project_subos_dirs(self.project_subos_dir_());
+        return self.project_state_path_();
+    }
+    if (useProject && !self.projectDir_.empty()) {
+        ensure_project_home();
+        return self.project_state_path_();
+    }
+    // useProject=false here — either no project config, or forceGlobalScope_
+    // is on (e.g. `xlings install -g`). Both mean "act on global scope".
+    //
+    // `global_subos_dir_()`, never `paths_.activeSubos`: inside an anonymous
+    // project the latter is "_" and stays "_" even after forceGlobalScope_
+    // flips useProject to false. Writing to `~/.xlings/subos/_/.xlings.json`
+    // then fails the save — observed as `Failed to write file` during `self
+    // install`'s patchelf step when run from inside a project tree.
+    return self.global_subos_dir_() / ".xlings.json";
+}
+
 void Config::save_workspace() {
     namespace fs = std::filesystem;
     auto& self = instance_();
     bool useProject = self.hasProjectConfig_ && !self.forceGlobalScope_;
-    fs::path subosConfigPath;
-    if (useProject &&
-        self.projectSubosMode_ == ProjectSubosMode::Named) {
-        auto projSubosDir = self.project_subos_dir_();
-        fs::create_directories(projSubosDir);
-        fs::create_directories(projSubosDir / "bin");
-        fs::create_directories(projSubosDir / "lib");
-        fs::create_directories(projSubosDir / "usr");
-        fs::create_directories(projSubosDir / "generations");
-        subosConfigPath = projSubosDir / ".xlings.json";
-    } else if (useProject &&
-               self.projectSubosMode_ == ProjectSubosMode::Anonymous) {
-        auto projSubosDir = self.project_subos_dir_();
-        auto projectHomeDir = self.project_home_dir_();
-        if (!projectHomeDir.empty()) fs::create_directories(projectHomeDir);
-        fs::create_directories(projSubosDir);
-        fs::create_directories(projSubosDir / "bin");
-        fs::create_directories(projSubosDir / "lib");
-        fs::create_directories(projSubosDir / "usr");
-        fs::create_directories(projSubosDir / "generations");
-        subosConfigPath = self.project_state_path_();
-    } else if (useProject && !self.projectDir_.empty()) {
-        auto projectHomeDir = self.project_home_dir_();
-        if (!projectHomeDir.empty()) fs::create_directories(projectHomeDir);
-        subosConfigPath = self.project_state_path_();
-    } else {
-        // useProject=false here — either no project config, or
-        // forceGlobalScope_ override is on (e.g. `xlings install -g`).
-        // Both paths mean "act on global scope, ignore project mode".
-        //
-        // We must NOT use paths_.activeSubos directly: when the user
-        // is inside an anonymous-project directory, paths_.activeSubos
-        // was set to "_" by update_effective_paths_ (the anonymous
-        // marker) and stays "_" even after forceGlobalScope_ flips
-        // useProject to false. Writing to `~/.xlings/subos/_/.xlings.json`
-        // (a directory that doesn't exist) then fails the workspace
-        // save — surfaced as `Failed to write file` during
-        // `xlings self install`'s patchelf-runtime-dep step (which
-        // spawns `xlings install -g`) when the user happens to run
-        // self install from inside an xlings repo / project tree.
-        //
-        // Resolve the same global-scope subos root used by XVM
-        // filesystem effects.
-        subosConfigPath =
-            self.global_subos_dir_() / ".xlings.json";
-    }
+    fs::path subosConfigPath = workspace_config_path(/*createDirs=*/true);
 
     // XLINGS_HOME is a supported explicit scope, not proof that `self
     // init` has already run. A first package install into a cold home

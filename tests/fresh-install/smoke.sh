@@ -165,6 +165,26 @@ EOF
         || fail "project-local ninja shim reports $got, expected $NINJA_VERSION"
     ok "project-local shim resolves ninja $got"
 
+    section "Routing survives a project-scope install"
+    # Named, so this cell fails with a CAUSE rather than with a generic
+    # doctor exit code. Every `fresh (core)` cell was red from 2026-09-03 to
+    # 2026-09-20 because a project-scope install rebuilt the GLOBAL shim table
+    # from a workspace it had read out of the project's subos -- empty -- and
+    # removed everything the project did not itself declare (#582, #604).
+    # `ninja` survived because the project declares it; `mcpp` did not.
+    #
+    # `self doctor` below does catch it, but only as "shim table: N missing",
+    # which is one indirection away from what happened and was read for weeks
+    # as a doctor problem rather than an install one.
+    local mcpp_shim="$XLINGS_HOME_DIR/subos/default/bin/mcpp"
+    [ "$(uname -s)" = "Windows_NT" ] && mcpp_shim="$mcpp_shim.exe"
+    if [ ! -e "$mcpp_shim" ]; then
+        fail "the project install removed the globally-installed mcpp shim:
+  expected: $mcpp_shim
+  bin now:  $(ls "$XLINGS_HOME_DIR/subos/default/bin" 2>&1 | tr '\n' ' ')"
+    fi
+    ok "globally-installed shims survived the project install"
+
     section "Self-management — doctor"
     run "self doctor" xlings self doctor
 

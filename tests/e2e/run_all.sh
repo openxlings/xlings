@@ -254,6 +254,9 @@ TESTS=(
     # credential prompt, and one refresh has a wall-clock budget past which the
     # remaining sources are skipped and SAID rather than waited on (#599).
     "E2E-113|index_network_bounds_test.sh||"
+    "E2E-114|project_scope_preserves_global_shims_test.sh||"
+    "E2E-115|ldd_answers_in_the_files_world_test.sh||"
+    "E2E-116|install_asserts_registered_scripts_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -578,6 +578,89 @@ TEST(InterfaceProtocol, PlanInstallMissingPackageEmitsStructuredError) {
     std::filesystem::remove_all(home);
 }
 
+// #464: a params object that does not satisfy the capability's own declared
+// `required` must not exit 0.
+//
+// The failure this pins is not "a bad request was accepted". It is that the
+// bad request was INDISTINGUISHABLE from a good one: `plan_install` with the
+// field misspelled answered `{"exitCode":0,"kind":"result"}` with no
+// install_plan event -- byte-identical to the legitimate and common answer
+// "this target needs nothing installed". A caller reading that as an empty
+// plan is reading it correctly; there was nothing else to read.
+TEST(InterfaceProtocol, MissingRequiredFieldIsRefusedNotAnsweredEmpty) {
+    auto home = make_sandbox_home_();
+    // The exact shape from the issue: `packages` where the schema says
+    // `targets`.
+    auto [out, rc] = run_xlings_({"interface", "plan_install", "--args",
+                                  R"({"packages":["cpp"]})"}, home);
+    std::filesystem::remove_all(home);
+
+    auto events = parse_ndjson_(out);
+    ASSERT_FALSE(events.empty()) << out;
+    EXPECT_EQ(events.back().value("kind", ""), "result");
+    EXPECT_NE(events.back().value("exitCode", 0), 0)
+        << "a request missing a declared-required field exited 0: " << out;
+    EXPECT_NE(rc, 0) << out;
+
+    bool saw = false;
+    for (auto& e : events) {
+        if (e.value("kind", "") == "error") {
+            EXPECT_EQ(e.value("code", std::string{}), "E_INVALID_INPUT") << out;
+            // Naming the field is the whole point -- "invalid input" without
+            // it sends the caller back to guess which key was wrong.
+            EXPECT_NE(e.value("message", std::string{}).find("targets"),
+                      std::string::npos) << out;
+            saw = true;
+        }
+    }
+    EXPECT_TRUE(saw) << "no structured error for a missing required field: " << out;
+}
+
+// The same gate, from the other side: a capability that declares no `required`
+// must be unaffected. The validation is the published schema, not a new policy.
+TEST(InterfaceProtocol, CapabilityWithoutRequiredStillAcceptsEmptyParams) {
+    auto home = make_sandbox_home_();
+    auto [out, rc] = run_xlings_({"interface", "list_subos", "--args", "{}"}, home);
+    std::filesystem::remove_all(home);
+    EXPECT_EQ(rc, 0) << out;
+    auto events = parse_ndjson_(out);
+    ASSERT_FALSE(events.empty()) << out;
+    EXPECT_EQ(events.back().value("exitCode", -1), 0) << out;
+}
+
+// Every capability that PUBLISHES a `required` list must enforce it. Asserting
+// the property rather than a list of capability names: a capability added
+// tomorrow is covered without anyone remembering to extend this test, which is
+// exactly how the original gap survived across 12 capabilities.
+TEST(InterfaceProtocol, EveryDeclaredRequiredIsEnforced) {
+    auto home = make_sandbox_home_();
+    auto [listOut, listRc] = run_xlings_({"interface", "--list"}, home);
+    ASSERT_EQ(listRc, 0) << listOut;
+    auto j = nlohmann::json::parse(listOut, nullptr, false);
+    ASSERT_FALSE(j.is_discarded()) << listOut;
+
+    int checked = 0;
+    for (auto& c : j["capabilities"]) {
+        auto schema = c["inputSchema"];
+        if (!schema.is_object()) continue;
+        auto req = schema.find("required");
+        if (req == schema.end() || !req->is_array() || req->empty()) continue;
+        // Destructive capabilities are refused with empty params just the same;
+        // nothing is executed, because validation happens before dispatch.
+        auto name = c["name"].get<std::string>();
+        auto [out, rc] = run_xlings_({"interface", name, "--args", "{}"}, home);
+        EXPECT_NE(rc, 0) << name << " accepted {} despite declaring required: " << out;
+        auto events = parse_ndjson_(out);
+        ASSERT_FALSE(events.empty()) << name << ": " << out;
+        EXPECT_NE(events.back().value("exitCode", 0), 0) << name << ": " << out;
+        ++checked;
+    }
+    std::filesystem::remove_all(home);
+    // A zero here would mean the loop proved nothing -- the shape of
+    // "not measured is never agreement".
+    EXPECT_GT(checked, 0) << "no capability declared `required`; test is vacuous";
+}
+
 TEST(InterfaceProtocol, PlanInstallShowsUpInCapabilityList) {
     auto home = make_sandbox_home_();
     auto [out, rc] = run_xlings_({"interface", "--list"}, home);

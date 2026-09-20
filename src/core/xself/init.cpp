@@ -590,8 +590,30 @@ void sync_shim_tables() {
 
     const auto sync_one = [&](const fs::path& subosDir,
                               const xvm::Workspace& active,
-                              std::string_view label) {
+                              std::string_view label,
+                              bool observed) {
         if (subosDir.empty()) return;
+        // An unobserved workspace is not an empty one.
+        //
+        // This table is DERIVED: it is rebuilt from the workspace rather than
+        // audited against it, which is right -- and which means an input of
+        // "nothing" derives "remove everything". A workspace we could not read
+        // is exactly that input, and acting on it deleted 172 routing entries
+        // on a real home (#582), then reported them missing (#604).
+        //
+        // Binary, not a threshold. "Did we observe it" is a fact the loader
+        // already knows; "did we remove suspiciously many" would be a new
+        // heuristic, and a second answerer to the same question.
+        //
+        // `compute_desired` already applies this rule to its OTHER input
+        // (ProjectContribution::readable, xvm/shim_table.cpp:76). This brings
+        // the subos input in line.
+        if (!observed) {
+            log::warn("shim table for {} not rebuilt: its workspace could not "
+                      "be read ({})", label,
+                      Config::display_path(subosDir / ".xlings.json"));
+            return;
+        }
         auto diff = plan_shim_table(subosDir, active, db, projects);
         if (diff.empty()) return;
         auto report = apply_shim_table(subosDir, diff);
@@ -604,16 +626,22 @@ void sync_shim_tables() {
         }
     };
 
-    // The scope that was just written.
-    sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope");
+    // The scope that was just written. This one is always observed: the
+    // command that got here just wrote it.
+    sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope",
+             /*observed=*/true);
 
     // In project scope, the global active subos too: the project's bin is
     // never on PATH, so its command names must also exist in the directory
     // that is. `project_contributions()` is what carries them there.
+    //
+    // And this is the one that must not be trusted blindly -- it is a
+    // DIFFERENT scope than the one this command wrote, read separately.
     if (Config::has_project_config()) {
         auto globalDir = Config::global_subos_dir();
         if (globalDir != Config::xvm_artifact_subos_dir()) {
-            sync_one(globalDir, Config::global_workspace(), "global");
+            sync_one(globalDir, Config::global_workspace(), "global",
+                     Config::global_workspace_observed());
         }
     }
 }

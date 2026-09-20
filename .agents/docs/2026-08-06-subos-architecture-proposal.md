@@ -61,6 +61,33 @@
 
 **提议 A2**:契约文档里**禁止**"缺省即约定"式措辞。凡是"没有 X 就回退到 Y"的句子,要么改成"X 必须存在"(写端保证全量),要么改成"没有 X 是错误"。
 
+> **A2 的代码侧可执行判据(2026.9.20.1 补,来自 #582 / #604)**
+>
+> 读端出现 `return {}` / `value(key, default)` / `if (!exists) → 空值`
+> 来处理"没读到",就是 R2 违例。**"没读到"必须作为一个与空值不同的值向上传播**,
+> 并且消费者里**会删除状态的那些必须拒绝在它上面执行**。
+>
+> 实例:`Config::load_workspace_from_file_` 对不存在的文件返回空 workspace。
+> shim 路由表是派生表,于是"输入什么都没有"推导出"删除全部"——真机 172 条路由丢失。
+> 同一条规则在 `xvm::ProjectContribution::readable` 上早已正确实现(同一个函数
+> `compute_desired` 的另一个输入),在 `installer.cpp` 的 `load_workspace_file_checked_`
+> 上又被独立重新发现过一次。**一条规则被独立重新发现三次而没有被写成规范,
+> 说明缺的是规范,不是代码。**
+>
+> 落地:`Config::read_workspace_file_` 返回 `std::optional`,
+> `Config::global_workspace_observed()` 传播事实,`sync_shim_tables` 在未观测时拒绝重建。
+> 判据是二元的,不是阈值——"删得太多就不删"是同一个问题的第二个回答者。
+
+> **A1 的三条新实例(2026.9.20.1)**
+>
+> | 问题 | 曾有几个回答者 | 处置 |
+> |---|---|---|
+> | 哪个 subos 是**全局**的 | 2(`global_subos_dir_()` 与 `load_global_workspace_()` 各算各的) | 收敛到 `global_subos_name_()`;顺带删掉 `ScopedSubosOverride` 里那次补偿性 `reload_state()`——"让两个答案更可能一致"按 R3 判据是 workaround |
+> | 这次安装**做成了什么** | 6(plan 级 `expected<>`、两个计数器、Failed 事件、already-installed 表、事后 `has_version` 探测,以及"什么都不问"的那条分支) | 收敛到一条全量 per-node 记录;#606 的错误提示正是"什么都不问"那条 |
+> | 哪个 loader 为**这个文件**负责 | 2(subos 的 `RTLDLIST` 与文件自己的 `PT_INTERP`) | 删掉替换动作,`PT_INTERP` 成为唯一回答者。注意**没有**加"宿主 / 我们的"分支——那会是第二个回答者,还会新增"宿主必须有 ldd"这个依赖 |
+>
+> 三条都通过 R3 判据:**删掉了一个回答者**,而不是增加一条路径。
+
 ### 1.4 下一个还没修的实例
 
 **"一个 dlopen 进来的宿主文件,去哪里找它的依赖?"** 今天有三个答案(recipe 的手写表、宿主默认搜索、什么都不做),见 §2。
@@ -840,6 +867,25 @@ TEXTDOMAINDIR=/home/xlings/.xlings_data/.../fromsource-x-glibc/2.44/share/locale
 
 依赖关系决定顺序,不是优先级。已定的决策见 §7。
 **2026-08-06 更新:第一批已全部落地,B 线门禁已通过。**
+**2026-09-20 更新:本文档的 R2/R3/R4 又各收割了一批实例,见下面的"2026.9.20.1 批次"。**
+
+### 2026.9.20.1 批次 —— 本文档的规则再次命中
+
+| 项 | 规则 | 内容 | 落在哪 |
+|---|---|---|---|
+| **#582 / #604** | R3 | 「哪个 subos 是全局的」两个回答者 → `Config::global_subos_name_()` 一个;删掉 `ScopedSubosOverride` 的补偿 reload | xlings `config.cpp` / `xim/commands.cpp` |
+| **#582 / #604** | R2 | 「读不到」曾塌成「是空的」,派生表据此推导出「删除全部」(真机 172 条) → `read_workspace_file_` 返回 `optional`,`sync_shim_tables` 未观测时拒绝重建 | xlings `config.cpp` / `xself/init.cpp` |
+| **#606 / #376** | R5 + R1 | 「这次安装做成了什么」6 个回答者 → 一条全量 per-node 记录;`ExtractError::kind` 不再被丢弃 | xlings `xim/commands.cpp` / `installer.cpp` |
+| **#602** | R3 | 「会不会切换」两个进程各自决定 → `self update` 用 `--use` 把决定交给子进程 | xlings `xself/update.cpp` |
+| **#464** | R2 | 公布了 `required` 却无人执行,12/20 个能力受影响 → 派发点集中校验 | xlings `interface.cpp` |
+| **#608 / #522** | R3 | 「哪个 loader 为这个文件负责」:subos 的 `RTLDLIST` 替换掉了文件的 `PT_INTERP` → 删掉替换,`PT_INTERP` 成为唯一回答者(**没有**加 host/ours 分支) | xlings `xvm/shim.cpp` |
+| **#522** | R4 | 注册为 program 的 shell 脚本在**安装时**必须能被自己的解释器 `-n` 通过 | xlings `xim/installer.cpp` |
+| **§8 余数** | R4 | `xim-x-glibc` **2.39** 仍是旧改写产物:`RTLDLIST="` 被吞、`TEXTDOMAINDIR` 仍指构建机 | index 侧 recipe 改用 `relocate_build_paths` |
+
+§8 那条"把改写做成 libxpkg 通用能力"已经落地为 `elfpatch.relocate_build_paths`,
+但 **2.39 的 recipe 至今没有调用它** —— 这正是 R4 需要一道**受理断言**而不只是
+**生产者断言**的原因:生产者断言保护调用它的 recipe,受理断言保护用户不受"没调用它的
+recipe"影响。两者作用域不同,谁也不能替代谁。
 
 ### 第一批 —— 已落地(2026.8.6.1 / libxpkg 0.0.51)
 

@@ -53,7 +53,18 @@ int cmd_update() {
     // next `xlings update` routes it back -- the state self-heals.
     log::info("installing xlings@latest...");
     platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
-    rc = platform::exec("xlings install xlings@latest -y");
+    // `--use`, because this command is not DECLINING to switch -- it is the
+    // switch. Without it the install subprocess printed "xlings@<new>
+    // installed, but 'xlings' still resolves to <old> -- `xlings use ...` to
+    // switch", which was true when it was printed and false two lines later,
+    // and sent the reader to run a no-op (#602).
+    //
+    // A "we did not switch" notice is a statement about the FINAL state of the
+    // operation, so only the process that owns that state may make it. Telling
+    // the child it owns the activation is what makes its statement true --
+    // suppressing the message instead would leave two processes both deciding
+    // whether to activate, which is the shape this whole change removes.
+    rc = platform::exec("xlings install xlings@latest -y --use");
     platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
         // This used to warn and return 0. A failed upgrade then looked
@@ -72,6 +83,18 @@ int cmd_update() {
         return rc;
     }
 
+    // Kept, and now the only thing it can still change is the `latest` REF.
+    //
+    // The install above already activated the concrete version it resolved, so
+    // this is normally a no-op. It stays because `latest` is a ref the home
+    // records separately, and because `update_landed_on_index_build` below
+    // judges the provider of whatever ended up active -- a check worth making
+    // against the same spelling a user would get from `xlings use ... latest`.
+    //
+    // Deliberately NOT deleted as "a second actor": both calls go through the
+    // same `xvm::cmd_use`, and the second one resolving to what the first one
+    // already activated is idempotent, not a race. What was removed is the
+    // second DECISION about whether to switch, not the second call.
     rc = platform::exec("xlings use xlings latest");
     if (rc != 0) {
         log::error("installed xlings@latest but could not activate it");
