@@ -169,6 +169,28 @@ Reading a shim's existence as an activation claim is what produced the class
 of bug that design removed — see
 `.agents/docs/2026-09-03-project-shim-routing-vs-state-design.md`.
 
+**Third: a derived table derives "remove everything" from an input of
+nothing.** That is the sharp edge of rebuilding rather than auditing, and it
+cost 172 routing entries on a real home — `gcc` active at 16.1.0 and not on
+PATH — plus every `fresh-install (core)` cell from 2026-09-03 to 2026-09-20.
+Two independent ways to hand it nothing, and neither implies the other:
+
+* **asking the wrong question.** "Which subos does this command act on"
+  (`paths_.activeSubos`) and "which subos is the GLOBAL one"
+  (`Config::global_subos_name_()`) agree outside a project and differ inside
+  one. They were spelled the same way. If you add a reader of either, say in
+  one line which question it is asking.
+* **reading "could not" as "empty".** A missing subos DIRECTORY is not
+  observed; a missing workspace FILE inside an existing one is observed and
+  empty (a fresh subos); an unparseable file is not observed. Only the middle
+  case may be rebuilt from — `Config::global_workspace_observed()` carries
+  that fact, and `sync_shim_tables` refuses on the others. The refusal is
+  binary, never a threshold: "it wanted to delete suspiciously many" is a new
+  heuristic and therefore a second answerer.
+
+`self init` rebuilds the table, so `self update` repairs a home that already
+lost entries; `self doctor --fix` is no longer the only way back.
+
 ### Upstream dependency
 
 `mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via `mcpp.toml`:
