@@ -182,4 +182,33 @@ OUT="$( cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
     "$HOME_DIR/bin/xlings" use alpha 1.0 2>&1 || true )"
 assert_entries "alpha beta " "global scope with an unreadable workspace did not prune the table"
 
+# ── 7. the upgrade repairs a home that was already damaged ───────────
+#
+# Fixing the cause does nothing for the homes it already emptied — 172 routing
+# entries on a measured one, every one an active program the user cannot
+# invoke. `self init` runs on install AND on update, so the upgrade that ships
+# the fix is the moment to put them back, without anyone having to know to run
+# `self doctor --fix`.
+build_home
+rm -f "$GLOBAL_BIN"/*
+OUT="$( cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
+    "$HOME_DIR/bin/xlings" self init 2>&1 )"
+for entry in alpha beta; do
+  [ -e "$GLOBAL_BIN/$entry" ] || fail \
+    "self init did not restore '$entry'; an upgraded home stays broken until someone runs --fix
+$OUT"
+done
+assert_contains "$OUT" "routing table" \
+  "a repair nobody can see is indistinguishable from one that did not happen"
+log "  ok: self init repairs an already-damaged routing table, and says so"
+
+# Idempotent: a healthy home must say nothing at all.
+OUT="$( cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
+    "$HOME_DIR/bin/xlings" self init 2>&1 )"
+case "$OUT" in
+  *"routing table"*) fail "self init reported a repair on a healthy home:
+$OUT" ;;
+esac
+log "  ok: a second run is silent"
+
 log "PASS: project scope preserves global shims"

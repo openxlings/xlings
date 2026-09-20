@@ -461,6 +461,25 @@ bool ensure_home_layout(const fs::path& home_dir) {
                        failures, (default_subos / "bin").string());
             return false;
         }
+
+        // Rebuild the routing table here too, not only on install / use / remove.
+        //
+        // `ensure_subos_shims` places the entry binary's OWN names. Everything
+        // else in the table is derived from the workspace, and a home that lost
+        // entries to the scope defect (#582) has no way back without running
+        // `self doctor --fix` by hand -- 172 names on a measured home, every one
+        // of them an active program the user cannot invoke.
+        //
+        // `self init` runs on install AND on update, so the upgrade that fixes
+        // the cause also repairs what it did. On a healthy home the diff is
+        // empty and this costs one directory scan.
+        //
+        // Not fatal on failure: the table is derived and converges on the next
+        // install / use, and a home whose shims are laid out IS laid out.
+        if (auto sync = sync_shim_tables(); sync.changed()) {
+            log::info("routing table: +{} -{} shim(s)",
+                      sync.added, sync.removed);
+        }
     }
 
     return true;
@@ -565,14 +584,15 @@ xvm::TableReport apply_shim_table(const fs::path& subos_dir,
     return xvm::apply_table(diff, subos_dir / "bin", entry);
 }
 
-void sync_shim_tables() {
+ShimSyncSummary sync_shim_tables() {
+    ShimSyncSummary summary;
     auto entry = xlings_binary_in_home(Config::paths().homeDir);
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {
         // Pre-`self init` bootstrap: there is nothing to link to yet, and
         // ensure_home_layout will build the table when it lands.
         log::debug("[shim-table] no entry binary yet; skipping sync");
-        return;
+        return summary;
     }
 
     // Register the project BEFORE gathering contributions, so the very first
@@ -612,11 +632,14 @@ void sync_shim_tables() {
             log::warn("shim table for {} not rebuilt: its workspace could not "
                       "be read ({})", label,
                       Config::display_path(subosDir / ".xlings.json"));
+            ++summary.refused;
             return;
         }
         auto diff = plan_shim_table(subosDir, active, db, projects);
         if (diff.empty()) return;
         auto report = apply_shim_table(subosDir, diff);
+        summary.added   += report.added.size();
+        summary.removed += report.removed.size();
         log::debug("[shim-table] {}: +{} -{} (failed {})", label,
                    report.added.size(), report.removed.size(),
                    report.failed.size());
@@ -659,6 +682,7 @@ void sync_shim_tables() {
                      Config::global_workspace_observed());
         }
     }
+    return summary;
 }
 
 }
