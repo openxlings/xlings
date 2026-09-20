@@ -598,7 +598,7 @@ PR 3 的 D6 风险最低(实测逐字一致),D7 可延后。
 | D4 | `self update` 改用 `xlings install xlings@latest -y --use` |
 | D5 | `interface.cpp` 派发前 `missing_required_fields_()` 集中校验 |
 | D6 | `shim.cpp` 的 `ldd_target_interpreter_()` + `PT_INTERP` 委派 |
-| D7 | `installer.cpp` 的 `unparsable_registered_scripts_()`,带解释器可用性守卫 |
+| D7 | **撤回,未落地** —— 实测发现它不成立,见下面第 6 条 |
 
 ### 测试
 
@@ -606,7 +606,7 @@ PR 3 的 D6 风险最低(实测逐字一致),D7 可延后。
 |---|---|---|
 | `tests/e2e/project_scope_preserves_global_shims_test.sh`(E2E-114,5 行) | **FAIL** | PASS |
 | `tests/e2e/ldd_answers_in_the_files_world_test.sh`(E2E-115) | **FAIL** | PASS |
-| `tests/e2e/install_asserts_registered_scripts_test.sh`(E2E-116) | **FAIL** | PASS |
+| `tests/e2e/install_outcome_is_a_record_test.sh`(E2E-116,含正向对照) | **FAIL** | PASS |
 | `tests/unit/test_interface_protocol.cpp` 新增 3 个 | **FAIL** | PASS |
 | `tests/e2e/project_shim_mirror_test.sh`(改:不再 `rm -rf` 全局 bin) | PASS | PASS |
 | `tests/fresh-install/smoke.sh`(加:项目安装后 mcpp shim 仍在) | — | — |
@@ -638,7 +638,44 @@ PR 3 的 D6 风险最低(实测逐字一致),D7 可延后。
 4. **「D7 直接跑 `<interp> -n` 就行」** —— 有假阳性。`#!/bin/zsh` 而宿主没装 zsh 时
    `zsh -n` 退出 127,那是「命令找不到」不是「脚本坏了」,会把好包拒掉。
    已加解释器可用性守卫:查不到就跳过 —— **没有观测就不下判决**。
-5. **`#if defined(...)` 平台宏** —— 按 review 意见全部改为 `if constexpr (platform::OS_NAME == ...)`,
+6. **D7「注册的 shell 脚本必须能 parse」是一条不成立的断言** —— 发布前拿真机所有
+   注册脚本量了一遍:**49 个里 3 个被拒,只有 1 个真的坏**。
+
+   | 脚本 | 判定 |
+   |---|---|
+   | `ldd@glibc-2.39` | 真的坏(正是这条守卫的目标) |
+   | `pip@3.13.12` | **假阳性** |
+   | `pip3@3.13.12` | **假阳性** |
+
+   pip 是刻意写成的 sh/python **polyglot**:
+
+   ```sh
+   #!/bin/sh
+   '''exec' "$(dirname -- "$(realpath -- "$0")")/python3.13" "$0" "$@"
+   ' '''
+   import sys
+   ```
+
+   `sh` 把第 2 行读成 `exec` 并把文件交给 python;python 把同一行读成 docstring 开头。
+   它一直能正常工作。`sh -n` 拒绝它,是因为 `-n` 解析**整个文件**,而 shell 根本走不到第 2 行之后。
+
+   也就是说这条检查**无法区分**「被路径改写破坏的产物」与「polyglot / 任何提前 exec 走的脚本」。
+   那不是断言,是一条有已知假阳性类的启发式 —— 而那一类里就有 `pip`,
+   发出去会让**每台机器上的 `xlings install python` 失败**。已撤回。
+
+   它本来要买的东西其实已经有人买了:`relocate_build_paths` 对**它自己改写过的**
+   产物做同一条断言(它知道自己动了什么,这正是同一条检查在那里成立、在这里不成立的原因);
+   2.39 的全新安装已被实测是好的;历史坏产物重装即修;
+   而用户真正撞到的症状(宿主二进制的 `ldd`)由 D6 挡掉,坏脚本根本不在路径上。
+
+7. **D6 第一版把 ldd 的 flag 一起传给了 loader** —— 自我 review 时发现,
+   `ldd -r f` 变成 `ld.so -r f`,loader 把 `-r` 当成要追踪的程序:
+   `-r: cannot open shared object file`。**同一个工具因为一个 flag 给出两种答案**,
+   比它替换掉的那个统一的错误答案更难发现。已改为按 glibc 自己 ldd 的做法把
+   `-d/-r/-u/-v` 翻译成 `LD_WARN`/`LD_BIND_NOW`/`LD_DEBUG`/`LD_VERBOSE`,只把文件交给 loader;
+   不认识的选项原样交回打包脚本。五种形式实测与 `/usr/bin/ldd` 逐字一致。
+
+8. **`#if defined(...)` 平台宏** —— 按 review 意见全部改为 `if constexpr (platform::OS_NAME == ...)`,
    包括本 PR 触及文件里原有的那些(`shim_table.cpp` 的 `kShimExt`、`shim.cpp` 的三处
    可执行后缀、`test_shim_table.cpp` 的 `named()`)。两个分支都会被编译器检查,
    另一个平台的 CI 不再是唯一会发现问题的地方。
