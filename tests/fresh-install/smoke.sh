@@ -176,8 +176,9 @@ EOF
     # `self doctor` below does catch it, but only as "shim table: N missing",
     # which is one indirection away from what happened and was read for weeks
     # as a doctor problem rather than an install one.
+    # No `.exe` branch: this script is the POSIX suite (Linux / CentOS 7 /
+    # macOS). Windows runs smoke.ps1, which carries the same assertion.
     local mcpp_shim="$XLINGS_HOME_DIR/subos/default/bin/mcpp"
-    [ "$(uname -s)" = "Windows_NT" ] && mcpp_shim="$mcpp_shim.exe"
     if [ ! -e "$mcpp_shim" ]; then
         fail "the project install removed the globally-installed mcpp shim:
   expected: $mcpp_shim

@@ -169,6 +169,20 @@ function Invoke-SuiteCore {
     }
     Write-Ok "project-local shim resolves ninja $got"
 
+    Write-Section 'Routing survives a project-scope install'
+    # Named, so this cell fails with a CAUSE rather than a generic doctor exit
+    # code. Every `fresh (core)` cell was red from 2026-09-03 to 2026-09-20
+    # because a project-scope install rebuilt the GLOBAL shim table from a
+    # workspace it had read out of the project's subos - empty - and removed
+    # everything the project did not itself declare (#582, #604). `ninja`
+    # survived because the project declares it; `mcpp` did not.
+    $mcppShim = Join-Path $XlingsHome 'subos\default\bin\mcpp.exe'
+    if (-not (Test-Path $mcppShim)) {
+        $binNow = (Get-ChildItem (Join-Path $XlingsHome 'subos\default\bin') -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ' '
+        Fail "the project install removed the globally-installed mcpp shim:`n  expected: $mcppShim`n  bin now:  $binNow"
+    }
+    Write-Ok 'globally-installed shims survived the project install'
+
     Write-Section 'Self-management - doctor'
     Invoke-Step 'self doctor' @('xlings', 'self', 'doctor')
 
