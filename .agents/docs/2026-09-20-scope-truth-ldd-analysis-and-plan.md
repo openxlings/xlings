@@ -619,6 +619,37 @@ PR 3 的 D6 风险最低(实测逐字一致),D7 可延后。
 - **跨仓** `xim-pkgindex/docs/V2/xpackage-spec.md`:R2 增补「"没观测到"是一个值,且不是空值」及其判据;
   「写契约」一节增补「两个读起来一样的问题就是同一个陷阱」。
 
+### 实现期间新发现的缺陷:两条 agent 调用能删掉一个 home 里的全部 SubOS
+
+不是读代码读出来的,是量 D5 的影响面量出来的。2026.9.16.1 上,12 个声明了 `required`
+的能力里 **6 个对 `{}` 退出 0**;其中 3 个是 destructive,而其中一对组合起来是**数据丢失**:
+
+```console
+$ xlings interface create_subos --args '{}'   # {"exitCode":0}
+$ xlings interface remove_subos --args '{}'   # {"exitCode":0}
+
+subos before: current default keepme
+subos after:  (空的 —— 连 subos 根目录本身都没了)
+```
+
+`create_subos` 注册了一个 name 为 `""`、dir 为 `<home>/subos/` 的条目 —— 那是 subos **根目录**,
+因为 subos.cpp 里每条路径都是 `<home>/subos/<name>` 拼出来的。
+`remove_subos` 随后找到这条注册、通过存在性检查、把根目录删了:
+`default`、`current` 和这个 home 里其他所有 subos,一次调用,两次都报成功。
+
+**只有发布出去的 agent 接口能走到。** CLI 走不到 —— 它的解析器要求这个参数
+(`missing <name> for: xlings subos remove|rm`)。有人在前面看着的那条路,恰好是安全的那条。
+
+两道守卫,互不重复:
+
+| 层 | 陈述的是什么 | 挡得住 `{}` | 挡得住 `{"name":""}` |
+|---|---|---|---|
+| interface 派发点 | **请求**是否符合公布的 schema | ✅ | ❌(字段在,是合法请求) |
+| `subos::create` / `subos::remove` | **操作**自己的前置条件,谁来问都一样 | ✅ | ✅ |
+
+E2E-117 分别钉住两层,并且断言的是**效果**而不是退出码 —— 目录已经没了之后再退出非零毫无意义。
+另外带一条对照:真实名字仍然能建能删(否则「全部拒绝」会通过上面每一行)。
+
 ### 实现期间被度量推翻的判断(v2 的错)
 
 1. **「CLI 上没有 `--use`,需要新增」** —— 错。`cli.cpp` 的 install 子命令**早就有**
