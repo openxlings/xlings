@@ -616,8 +616,62 @@ TEST(InterfaceProtocol, MissingRequiredFieldIsRefusedNotAnsweredEmpty) {
     EXPECT_TRUE(saw) << "no structured error for a missing required field: " << out;
 }
 
+// Malformed params are refused for EVERY capability, not only the ones that
+// declare `required`.
+//
+// A capability with no required field still reads optional ones, and params
+// that did not parse silently become the defaults: `update_packages` updates
+// the whole index instead of the package that was asked for, `list_packages`
+// lists everything instead of filtering. The request did not happen and the
+// answer looks like a legitimate one.
+TEST(InterfaceProtocol, MalformedParamsAreRefusedEvenWithoutRequired) {
+    auto home = make_sandbox_home_();
+    for (const char* bad : {"{not json", "[1,2]", "\"a string\""}) {
+        auto [out, rc] = run_xlings_({"interface", "list_subos", "--args", bad}, home);
+        EXPECT_NE(rc, 0) << "list_subos accepted " << bad << ": " << out;
+        auto events = parse_ndjson_(out);
+        ASSERT_FALSE(events.empty()) << out;
+        EXPECT_NE(events.back().value("exitCode", 0), 0) << out;
+        bool saw = false;
+        for (auto& e : events) {
+            if (e.value("kind", "") == "error") {
+                EXPECT_EQ(e.value("code", std::string{}), "E_INVALID_INPUT") << out;
+                saw = true;
+            }
+        }
+        EXPECT_TRUE(saw) << "no structured error for malformed params: " << out;
+    }
+    std::filesystem::remove_all(home);
+}
+
+// An explicitly empty `--args` means what its absence means. A client writing
+// `--args ""` is saying "no parameters", and the default when the flag is
+// absent is already `{}` -- refusing one spelling and accepting the other
+// would be a compatibility break for nothing.
+TEST(InterfaceProtocol, ExplicitlyEmptyArgsMeansNoParameters) {
+    auto home = make_sandbox_home_();
+    auto [out, rc] = run_xlings_({"interface", "list_subos", "--args", ""}, home);
+    std::filesystem::remove_all(home);
+    EXPECT_EQ(rc, 0) << out;
+    auto events = parse_ndjson_(out);
+    ASSERT_FALSE(events.empty()) << out;
+    EXPECT_EQ(events.back().value("exitCode", -1), 0) << out;
+}
+
+// Unknown fields stay accepted: this is `required` plus the top-level type,
+// not full JSON Schema validation. Tightening beyond the published contract
+// is a separate decision with its own blast radius.
+TEST(InterfaceProtocol, UnknownFieldsAreStillAccepted) {
+    auto home = make_sandbox_home_();
+    auto [out, rc] = run_xlings_({"interface", "list_subos", "--args",
+                                  R"({"nosuchfield":1})"}, home);
+    std::filesystem::remove_all(home);
+    EXPECT_EQ(rc, 0) << out;
+}
+
 // The same gate, from the other side: a capability that declares no `required`
-// must be unaffected. The validation is the published schema, not a new policy.
+// must still answer a well-formed request. The validation is the published
+// schema, not a new policy.
 TEST(InterfaceProtocol, CapabilityWithoutRequiredStillAcceptsEmptyParams) {
     auto home = make_sandbox_home_();
     auto [out, rc] = run_xlings_({"interface", "list_subos", "--args", "{}"}, home);

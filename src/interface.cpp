@@ -74,27 +74,38 @@ struct RequiredViolation {
 // and `{"targets": null}` reaching a capability is the same mistake with one
 // more step.
 std::optional<RequiredViolation>
-missing_required_fields_(const std::string& inputSchema,
-                         const std::string& params) {
-    auto schema = nlohmann::json::parse(inputSchema, nullptr, false);
-    if (schema.is_discarded() || !schema.is_object()) return std::nullopt;
-    auto req = schema.find("required");
-    if (req == schema.end() || !req->is_array() || req->empty()) return std::nullopt;
-
+validate_params_(const std::string& inputSchema, const std::string& params) {
     std::vector<std::string> declared;
-    for (const auto& f : *req) {
-        if (f.is_string()) declared.push_back(f.get<std::string>());
+    auto schema = nlohmann::json::parse(inputSchema, nullptr, false);
+    if (!schema.is_discarded() && schema.is_object()) {
+        if (auto req = schema.find("required");
+            req != schema.end() && req->is_array()) {
+            for (const auto& f : *req) {
+                if (f.is_string()) declared.push_back(f.get<std::string>());
+            }
+        }
     }
-    if (declared.empty()) return std::nullopt;
 
     auto join = [](const std::vector<std::string>& v) {
         std::string out;
         for (const auto& s : v) { if (!out.empty()) out += ", "; out += s; }
         return out;
     };
-    const auto hint = "this capability requires: " + join(declared)
-                    + " — run `xlings interface --list` for the full schema";
+    const auto hint = declared.empty()
+        ? std::string("params must be a JSON object — run `xlings interface "
+                      "--list` for this capability's schema")
+        : "this capability requires: " + join(declared)
+          + " — run `xlings interface --list` for the full schema";
 
+    // Malformed params are refused for EVERY capability, not only the ones
+    // that declare `required`.
+    //
+    // A capability with no required field still reads optional ones, and a
+    // params object that did not parse silently becomes the defaults --
+    // `update_packages` updates the whole index instead of the package that
+    // was asked for, `list_packages` lists everything instead of filtering.
+    // The request did not happen and the answer looks like a legitimate one,
+    // which is the failure shape this whole change exists to remove.
     auto json = nlohmann::json::parse(params, nullptr, false);
     if (json.is_discarded()) {
         return RequiredViolation{ "params is not valid JSON", hint };
@@ -102,6 +113,7 @@ missing_required_fields_(const std::string& inputSchema,
     if (!json.is_object()) {
         return RequiredViolation{ "params must be a JSON object", hint };
     }
+    if (declared.empty()) return std::nullopt;
 
     std::vector<std::string> missing;
     for (const auto& field : declared) {
@@ -206,7 +218,15 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
     // The schema is already the contract; making it true is the fix. Adding a
     // validator would also turn shapes that are accepted today into hard
     // errors, which is a separate decision with its own blast radius.
-    if (auto why = missing_required_fields_(cap->spec().inputSchema, cap_args)) {
+    // An explicitly empty `--args` means what its absence means. A client
+    // that writes `--args ""` is saying "no parameters", not "here is a
+    // malformed document", and refusing it would break that spelling for no
+    // gain -- the default when the flag is absent is already `{}`.
+    if (cap_args.find_first_not_of(" \t\r\n") == std::string::npos) {
+        cap_args = "{}";
+    }
+
+    if (auto why = validate_params_(cap->spec().inputSchema, cap_args)) {
         nlohmann::json err = {
             {"kind", "error"},
             {"code", std::string(to_wire_string(ErrorCode::InvalidInput))},

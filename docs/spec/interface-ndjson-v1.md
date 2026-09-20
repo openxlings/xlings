@@ -61,10 +61,18 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 
 #### 3.3.1 参数校验（2026.9.20.1+）
 
-在能力被调度之前，服务端会按该能力自己公布的 `inputSchema` 做一次校验：
+在能力被调度之前，服务端会做一次校验：
 
-- `--args` 不是合法 JSON，或不是 JSON 对象；
-- `inputSchema.required` 中任何字段**缺失**或取值为 `null`。
+- **对所有能力**：`--args` 不是合法 JSON，或不是 JSON 对象；
+- **对声明了 `required` 的能力**：`inputSchema.required` 中任何字段**缺失**或取值为 `null`。
+
+第一条不限于声明了 `required` 的能力：没有必填字段的能力**仍然会读可选字段**，
+而一份没解析成功的 params 会静默退化成默认值 —— `update_packages` 会去更新整个索引
+而不是被请求的那个包，`list_packages` 会列出全部而不是按 `filter` 过滤。
+请求没有发生，而回答看起来像一个合法的回答。
+
+`--args ""`（显式空串）等同于不传 `--args`，即 `{}`；未声明的多余字段仍然被接受
+（这是 `required` + 顶层类型校验，不是完整的 JSON Schema 校验）。
 
 任一条命中即先发一行 `error`（`code` 为 `E_INVALID_INPUT`，`message` 列出缺失的字段名，
 `hint` 给出该能力 `required` 的全集），再发 `result`（`exitCode=1`）并退出。**能力本身不会被执行。**
