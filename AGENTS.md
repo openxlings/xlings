@@ -188,8 +188,18 @@ Two independent ways to hand it nothing, and neither implies the other:
   binary, never a threshold: "it wanted to delete suspiciously many" is a new
   heuristic and therefore a second answerer.
 
-`self init` rebuilds the table, so `self update` repairs a home that already
-lost entries; `self doctor --fix` is no longer the only way back.
+**Which commands put a lost entry back.** Any global-scope `install` / `use` /
+`remove` rebuilds the whole table, so `self update` repairs a damaged home as a
+side effect of installing the new xlings — verified, not assumed. `self init`
+rebuilds it too (so `self install` and an explicit `xlings self init` work even
+when nothing is being installed). Read-only commands do not, correctly.
+
+Do NOT write "`self init` runs on update" — it does not. The xlings recipe says
+so in as many words ("a FRESH install gets ... an UPGRADE
+(`xlings install xlings@latest`, `xlings self update`) does not"), and
+`main.cpp`'s profile self-heal exists precisely because `xlings update xlings`
+only flips the xvm pointer. `self doctor --fix` is no longer the only way back,
+but it is the install path that carries the repair, not init.
 
 ### Upstream dependency
 

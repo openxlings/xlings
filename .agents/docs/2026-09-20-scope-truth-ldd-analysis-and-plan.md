@@ -711,7 +711,25 @@ E2E-117 分别钉住两层,并且断言的是**效果**而不是退出码 ——
    `-d/-r/-u/-v` 翻译成 `LD_WARN`/`LD_BIND_NOW`/`LD_DEBUG`/`LD_VERBOSE`,只把文件交给 loader;
    不认识的选项原样交回打包脚本。五种形式实测与 `/usr/bin/ldd` 逐字一致。
 
-8. **`#if defined(...)` 平台宏** —— 按 review 意见全部改为 `if constexpr (platform::OS_NAME == ...)`,
+8. **「`self init` 在 install 和 update 时都会跑,所以升级会自动修好」** —— **机制说错了**。
+   xlings 的 recipe 白纸黑字写着 upgrade **不**走 `self init`
+   (`a FRESH install gets ... an UPGRADE (xlings install xlings@latest,
+   xlings self update) does not`),`main.cpp` 里那段 profile 自愈注释也说
+   `xlings update xlings` 只翻 xvm 指针、不调 `ensure_home_layout`。
+
+   **结论(功能)仍然成立,但原因不同**,实测:
+
+   | 操作 | 被 #582 清空的 home |
+   |---|---|
+   | `use` / `install`(全局作用域) | **修复**(走既有的 `sync_shim_tables`) |
+   | `self init` | **修复**(本轮新增) |
+   | 只读命令(`list` 等) | 不变(正确) |
+
+   所以 `self update` 确实会修好 —— 因为它内部跑的是
+   `xlings install xlings@latest -y --use`,**是安装路径带的修复,不是 init**。
+   新增的 `self init` 那条覆盖的是「不装任何东西」的场景。措辞已更正。
+
+9. **`#if defined(...)` 平台宏** —— 按 review 意见全部改为 `if constexpr (platform::OS_NAME == ...)`,
    包括本 PR 触及文件里原有的那些(`shim_table.cpp` 的 `kShimExt`、`shim.cpp` 的三处
    可执行后缀、`test_shim_table.cpp` 的 `named()`)。两个分支都会被编译器检查,
    另一个平台的 CI 不再是唯一会发现问题的地方。
