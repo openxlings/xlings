@@ -717,11 +717,12 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         auto it = outcomes.find(plan_key(match));
         return it != outcomes.end() && it->second.status != NodeStatus::Failed;
     };
-    const auto failed_count = [&] {
-        return std::ranges::count_if(outcomes, [](const auto& kv) {
-            return kv.second.status == NodeStatus::Failed;
+    const auto count_status = [&](NodeStatus want) {
+        return std::ranges::count_if(outcomes, [&](const auto& kv) {
+            return kv.second.status == want;
         });
     };
+    const auto failed_count = [&] { return count_status(NodeStatus::Failed); };
 
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
@@ -913,11 +914,17 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
 
     activate_requested_targets();
     if (!allAlreadyInstalled) {
-        const auto failed = failed_count();
         nlohmann::json summaryPayload;
+        // `Installed` only -- deliberately NOT `outcomes.size() - failed`.
+        //
+        // The record also holds the requested matches that were ALREADY
+        // present, and counting those as installed would quietly change a wire
+        // value mcpp renders: `xlings install A B` with A present would report
+        // two installs where the previous counter reported one. "N package(s)
+        // installed" has to keep meaning what it said.
         summaryPayload["success"] =
-            static_cast<int>(outcomes.size() - static_cast<std::size_t>(failed));
-        summaryPayload["failed"] = static_cast<int>(failed);
+            static_cast<int>(count_status(NodeStatus::Installed));
+        summaryPayload["failed"] = static_cast<int>(failed_count());
         stream.emit(DataEvent{"install_summary", summaryPayload.dump()});
 
         // If this install ran via `sudo`, the downloaded payloads, version DB
