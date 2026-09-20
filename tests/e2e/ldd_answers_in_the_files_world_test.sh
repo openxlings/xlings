@@ -108,6 +108,33 @@ done
 # Not-measured is never agreement.
 [ "$checked" -gt 0 ] || fail "no dynamic host executable was checked; the test proved nothing"
 
+# ── 1b. ldd's own flags are loader environment, and must still work ──
+#
+# A first cut passed the whole command line to the loader, so `ldd -r f` became
+# `ld.so -r f` and the loader read `-r` as the program to trace:
+# "-r: cannot open shared object file". Same tool, two answers depending on a
+# flag — the exact shape this change exists to remove, reintroduced by its own
+# fix. The flags are translated to the environment variables glibc's own ldd
+# sets, and only the file reaches the loader.
+for flag in -d -r -u -v; do
+  host_out="$(/usr/bin/ldd $flag /usr/bin/env 2>&1 | norm)"
+  shim_out="$(run_shim $flag /usr/bin/env 2>&1 | norm)"
+  [ "$shim_out" = "$host_out" ] || fail "ldd $flag disagrees with the host's own ldd:
+--- host ---
+$host_out
+--- shim ---
+$shim_out"
+  log "  ok: ldd $flag agrees with /usr/bin/ldd"
+done
+
+# An option we do NOT understand must reach the packaged ldd, which owns its
+# own usage error. Guessing at it would be the worse failure.
+out="$(run_shim --bogus-option /usr/bin/env 2>&1 || true)"
+case "$out" in
+  *"$MARKER"*) log "  ok: an unknown option falls through to the packaged ldd" ;;
+  *) fail "an unknown option did not reach the packaged ldd: $out" ;;
+esac
+
 # ── 2. where the file has NO answer, the packaged ldd still gets it ───
 # Without these rows, "delegate everything, always" would pass row 1 — and
 # would break `--version`, the usage error and the static case.

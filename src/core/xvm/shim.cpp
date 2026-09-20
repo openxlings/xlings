@@ -592,33 +592,72 @@ int exec_host_program_(const std::filesystem::path& host,
 // Verified byte-for-byte on a real home: for a host binary the output matches
 // `/usr/bin/ldd`, and for a store binary it matches what the packaged `ldd`
 // produced before this existed.
-std::filesystem::path ldd_target_interpreter_(int argc, char* argv[]) {
-    std::filesystem::path target;
+struct LddDelegation {
+    std::filesystem::path interpreter;
+    // Name/value pairs to export before exec'ing it. `ldd`'s own flags are
+    // loader environment variables and nothing else -- the packaged script
+    // translates them exactly this way, which is why doing it here is not a
+    // reimplementation of ldd but the same three-line table.
+    std::vector<std::pair<std::string, std::string>> env;
+};
+
+std::optional<LddDelegation> ldd_delegation_(int argc, char* argv[]) {
+    std::string target;
+    bool warn = false, bindNow = false, unused = false, verbose = false;
+
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if (a.empty()) continue;
-        // Options belong to ldd itself (--version, --help, -v, -u, -r, -d).
-        // A lone "-" is not a path either.
         if (a.front() == '-') {
-            if (!target.empty()) return {};   // mixed: let the script decide
+            // glibc's ldd, verbatim:
+            //   -d/--data-relocs      warn=yes
+            //   -r/--function-relocs  warn=yes bind_now=yes
+            //   -u/--unused           unused=yes
+            //   -v/--verbose          verbose=yes
+            if (a == "-d" || a == "--data-relocs")          { warn = true; }
+            else if (a == "-r" || a == "--function-relocs") { warn = true; bindNow = true; }
+            else if (a == "-u" || a == "--unused")          { unused = true; }
+            else if (a == "-v" || a == "--verbose")         { verbose = true; }
+            else {
+                // --version, --help, `--`, anything unknown: the packaged
+                // script owns those, including the usage error. Passing an
+                // option we do not understand to the loader would make it the
+                // name of the program to trace -- measured: `ldd -r f` became
+                // "-r: cannot open shared object file".
+                return std::nullopt;
+            }
             continue;
         }
-        if (!target.empty()) return {};       // several files: not ours to split
-        target = std::filesystem::path(std::string(a));
+        // Several files is a legitimate ldd invocation and not one we can
+        // serve with a single exec. Hand it back whole.
+        if (!target.empty()) return std::nullopt;
+        target = std::string(a);
     }
-    if (target.empty()) return {};
+    if (target.empty()) return std::nullopt;
 
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(target, ec) || ec) return {};
+    if (!std::filesystem::is_regular_file(target, ec) || ec) return std::nullopt;
     auto info = elfread::read(target);
-    if (!info || info->interpreter.empty()) return {};
+    if (!info || info->interpreter.empty()) return std::nullopt;
 
     // The interpreter has to be runnable, or delegating would turn a working
-    // "not found" report into an exec failure. A payload whose PT_INTERP names
-    // a loader that is gone is a real state this home can be in.
+    // report into an exec failure. A payload whose PT_INTERP names a loader
+    // that is gone is a real state this home can be in.
     std::filesystem::path interp(info->interpreter);
-    if (!std::filesystem::is_regular_file(interp, ec) || ec) return {};
-    return interp;
+    if (!std::filesystem::is_regular_file(interp, ec) || ec) return std::nullopt;
+
+    LddDelegation d{ .interpreter = std::move(interp) };
+    d.env.emplace_back("LD_TRACE_LOADED_OBJECTS", "1");
+    if (warn)    d.env.emplace_back("LD_WARN", "yes");
+    if (bindNow) d.env.emplace_back("LD_BIND_NOW", "yes");
+    if (verbose) d.env.emplace_back("LD_VERBOSE", "yes");
+    if (unused) {
+        const char* existing = std::getenv("LD_DEBUG");
+        std::string value = (existing != nullptr && *existing != '\0')
+            ? std::string(existing) + ",unused" : std::string("unused");
+        d.env.emplace_back("LD_DEBUG", std::move(value));
+    }
+    return d;
 }
 
 int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
@@ -976,12 +1015,24 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // has no loader to hand the file to.
     if constexpr (platform::OS_NAME == "linux") {
         if (program_name == "ldd") {
-            if (auto interp = ldd_target_interpreter_(argc, argv);
-                !interp.empty()) {
-                platform::set_env_variable("LD_TRACE_LOADED_OBJECTS", "1");
+            if (auto d = ldd_delegation_(argc, argv)) {
+                for (const auto& [name, value] : d->env) {
+                    platform::set_env_variable(name, value);
+                }
                 platform::set_env_variable("XLINGS_SHIM_DEPTH",
                                            std::to_string(depth + 1));
-                return exec_host_program_(interp, argc, argv);
+                // Only the file: ldd's own flags became the environment above,
+                // and the loader would read any of them left on the command
+                // line as the program to trace.
+                const char* file = nullptr;
+                for (int i = 1; i < argc; ++i) {
+                    if (argv[i] != nullptr && argv[i][0] != '\0'
+                        && argv[i][0] != '-') { file = argv[i]; break; }
+                }
+                auto interpStr = d->interpreter.string();
+                const char* only[] = { interpStr.c_str(), file, nullptr };
+                return exec_host_program_(d->interpreter, 2,
+                                          const_cast<char**>(only));
             }
         }
     }
