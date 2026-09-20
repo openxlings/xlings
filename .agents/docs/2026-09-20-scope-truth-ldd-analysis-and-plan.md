@@ -599,17 +599,22 @@ PR 3 的 D6 风险最低(实测逐字一致),D7 可延后。
 | D5 | `interface.cpp` 派发前 `missing_required_fields_()` 集中校验 |
 | D6 | `shim.cpp` 的 `ldd_target_interpreter_()` + `PT_INTERP` 委派 |
 | D7 | **撤回,未落地** —— 实测发现它不成立,见下面第 6 条 |
+| 新增 | `subos::create` / `subos::remove` 拒绝空名字 —— 实现期间量出来的数据丢失,见上一节 |
+| 新增 | `interface.cpp` 的 JSON 合法性校验扩到**所有**能力(不只声明了 `required` 的) |
 
 ### 测试
 
 | 测试 | 对 2026.9.16.1 | 对本次构建 |
 |---|---|---|
-| `tests/e2e/project_scope_preserves_global_shims_test.sh`(E2E-114,5 行) | **FAIL** | PASS |
-| `tests/e2e/ldd_answers_in_the_files_world_test.sh`(E2E-115) | **FAIL** | PASS |
-| `tests/e2e/install_outcome_is_a_record_test.sh`(E2E-116,含正向对照) | **FAIL** | PASS |
-| `tests/unit/test_interface_protocol.cpp` 新增 3 个 | **FAIL** | PASS |
-| `tests/e2e/project_shim_mirror_test.sh`(改:不再 `rm -rf` 全局 bin) | PASS | PASS |
-| `tests/fresh-install/smoke.sh`(加:项目安装后 mcpp shim 仍在) | — | — |
+| `tests/e2e/project_scope_preserves_global_shims_test.sh`(E2E-114,7 行:匿名 / 具名 / 不可读 / 全局作用域 / 新建 subos / 升级修复 / 幂等) | **FAIL** | PASS |
+| `tests/e2e/ldd_answers_in_the_files_world_test.sh`(E2E-115,含 `-d -r -u -v` 与未知选项) | **FAIL** | PASS |
+| `tests/e2e/install_outcome_is_a_record_test.sh`(E2E-116,含正向对照并执行它打印的 remedy) | **FAIL** | PASS |
+| `tests/e2e/empty_subos_name_is_refused_test.sh`(E2E-117,两层分别钉住,断言效果) | **FAIL** | PASS |
+| `tests/unit/test_interface_protocol.cpp` 新增 6 个 | **FAIL** | PASS |
+| `tests/e2e/project_shim_mirror_test.sh`(改:不再 `rm -rf` 全局 bin,并断言没有被删) | PASS | PASS |
+| `tests/fresh-install/smoke.sh` + `smoke.ps1`(加:项目安装后 mcpp shim 仍在) | — | — |
+
+四个新 e2e 与 4 个新 unit 另外都对 **musl 静态发布产物**(而不只是 dev 构建)跑过一遍 —— 那才是用户拿到的二进制。
 
 ### 规范 / 文档
 
