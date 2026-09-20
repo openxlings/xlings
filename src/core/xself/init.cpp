@@ -626,10 +626,25 @@ void sync_shim_tables() {
         }
     };
 
-    // The scope that was just written. This one is always observed: the
-    // command that got here just wrote it.
+    // The scope that was just written.
+    //
+    // Observed, with one exception that has to be stated rather than assumed:
+    // when the effective scope IS the global subos (no project, or `-g`),
+    // `Config::workspace()` returns the very map `load_global_workspace_`
+    // filled, so its observation status is that map's. Passing a flat `true`
+    // here would have left the whole non-project path -- the common one --
+    // rebuilding from an unreadable workspace, which is the defect this guard
+    // exists for wearing the other scope's clothes.
+    //
+    // In project scope the value is the project's own workspace, which this
+    // command mutated in memory and `save_workspace` has just written; there
+    // is no read to have failed.
+    const bool scopeObserved =
+        (Config::xvm_artifact_subos_dir() == Config::global_subos_dir())
+            ? Config::global_workspace_observed()
+            : true;
     sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope",
-             /*observed=*/true);
+             scopeObserved);
 
     // In project scope, the global active subos too: the project's bin is
     // never on PATH, so its command names must also exist in the directory

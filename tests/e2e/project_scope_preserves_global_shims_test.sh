@@ -170,4 +170,16 @@ build_project ""
   "a subos with no workspace file yet was treated as unreadable: the project's shim never reached the global bin"
 log "  ok: a fresh subos is observed-and-empty, not unreadable"
 
+# ── 6. the same guard, in GLOBAL scope ───────────────────────────────
+#
+# No project anywhere. `Config::workspace()` then returns the very map
+# `load_global_workspace_` filled, so its observation status is that map's --
+# and a flat "the command just wrote it" would leave the common, non-project
+# path rebuilding from an unreadable workspace. Same defect, other scope.
+build_home
+printf '{ this is not json' > "$HOME_DIR/subos/default/.xlings.json"
+OUT="$( cd /tmp && env -u XLINGS_PROJECT_DIR XLINGS_HOME="$HOME_DIR" \
+    "$HOME_DIR/bin/xlings" use alpha 1.0 2>&1 || true )"
+assert_entries "alpha beta " "global scope with an unreadable workspace did not prune the table"
+
 log "PASS: project scope preserves global shims"
