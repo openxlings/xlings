@@ -594,6 +594,11 @@ int exec_host_program_(const std::filesystem::path& host,
 // produced before this existed.
 struct LddDelegation {
     std::filesystem::path interpreter;
+    // The one file argument, as it was spelled on the command line. Carried
+    // rather than re-found at the call site: two copies of "which argument is
+    // the file" is the shape this whole change removes, and they would agree
+    // only for as long as nobody edited one of them.
+    std::string target;
     // Name/value pairs to export before exec'ing it. `ldd`'s own flags are
     // loader environment variables and nothing else -- the packaged script
     // translates them exactly this way, which is why doing it here is not a
@@ -646,7 +651,8 @@ std::optional<LddDelegation> ldd_delegation_(int argc, char* argv[]) {
     std::filesystem::path interp(info->interpreter);
     if (!std::filesystem::is_regular_file(interp, ec) || ec) return std::nullopt;
 
-    LddDelegation d{ .interpreter = std::move(interp) };
+    LddDelegation d{ .interpreter = std::move(interp),
+                     .target      = std::move(target) };
     d.env.emplace_back("LD_TRACE_LOADED_OBJECTS", "1");
     if (warn)    d.env.emplace_back("LD_WARN", "yes");
     if (bindNow) d.env.emplace_back("LD_BIND_NOW", "yes");
@@ -1021,16 +1027,12 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
                 }
                 platform::set_env_variable("XLINGS_SHIM_DEPTH",
                                            std::to_string(depth + 1));
-                // Only the file: ldd's own flags became the environment above,
-                // and the loader would read any of them left on the command
-                // line as the program to trace.
-                const char* file = nullptr;
-                for (int i = 1; i < argc; ++i) {
-                    if (argv[i] != nullptr && argv[i][0] != '\0'
-                        && argv[i][0] != '-') { file = argv[i]; break; }
-                }
+                // Only the file: ldd's own flags became the environment
+                // above, and the loader would read any of them left on the
+                // command line as the program to trace.
                 auto interpStr = d->interpreter.string();
-                const char* only[] = { interpStr.c_str(), file, nullptr };
+                const char* only[] = { interpStr.c_str(),
+                                       d->target.c_str(), nullptr };
                 return exec_host_program_(d->interpreter, 2,
                                           const_cast<char**>(only));
             }
