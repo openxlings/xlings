@@ -166,10 +166,12 @@ struct PkgRef {
 
 } // namespace new_from_detail_
 
+// `yes`: the caller's explicit auto-confirm (`-y`), passed to create() for a
+// target directory that already exists -- see create().
 export int new_from(const std::string& name, const fs::path& customDir,
                     sandbox::StorageMode storage, const std::string& imageSize,
                     const std::string& fromSpec, const std::string& runtime,
-                    EventStream& stream);
+                    bool yes, EventStream& stream);
 
 // `xlings subos use` modes:
 //

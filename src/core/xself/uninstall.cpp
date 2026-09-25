@@ -308,10 +308,7 @@ int cmd_uninstall(UninstallOpts opts) {
     }
 #endif
 
-    // Sub-paths to remove. With --keep-data we skip data/ but still
-    // remove everything else (so the install is gone but pkg payloads
-    // survive for a quick reinstall).
-    // --keep-data keeps the user's data: the package payloads under data/,
+    // Sub-paths to remove. --keep-data keeps the user's data: the package payloads under data/,
     // and every subos with its home. A later `self install` picks both up as
     // they are.
     std::vector<fs::path> targets = {

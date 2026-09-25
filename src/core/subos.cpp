@@ -651,7 +651,16 @@ int create(const std::string& name, const fs::path& customDir,
     // reported as "created", and a later `subos remove` then deleted files
     // xlings had never made. Taking it over is now the user's call.
     std::error_code existEc;
-    const bool adopting = fs::exists(dir, existEc) && !fs::is_empty(dir, existEc);
+    bool adopting = fs::exists(dir, existEc) && !fs::is_empty(dir, existEc);
+    if (adopting) {
+        // A bare skeleton holds nothing of anyone's: no home files and no
+        // file outside the entries xlings manages. That is what a create the
+        // state lock refused leaves behind (its directories are laid down
+        // before the locked commit), and retrying it must just work -- asking
+        // permission to take over our own leftovers is noise, not safety.
+        const auto held = userdata::census(dir);
+        if (held.home.files == 0 && held.otherFiles == 0) adopting = false;
+    }
     if (adopting) {
         const auto held = destructive_log::measure(dir);
         auto asked = confirm::ask(
@@ -689,9 +698,13 @@ int create(const std::string& name, const fs::path& customDir,
     std::vector<fs::path> createdHere;
     for (const auto* sub : {"bin", "lib", "usr", "generations"}) {
         const auto d = dir / sub;
-        std::error_code mkEc;
-        if (!fs::exists(d, mkEc)) createdHere.push_back(d);
-        fs::create_directories(d, mkEc);
+        std::error_code probeEc;
+        if (!fs::exists(d, probeEc)) createdHere.push_back(d);
+        // The throwing overload on purpose: a read-only home must surface as
+        // the permission error it is (the top-level handler says "not
+        // writable"), not as a failed write three steps later that reads as
+        // an internal bug.
+        fs::create_directories(d);
     }
     if (!fs::exists(dir / ".xlings.json", existEc)) createdHere.push_back(dir / ".xlings.json");
 
@@ -1035,7 +1048,7 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
 int new_from(const std::string& name, const fs::path& customDir,
                     sandbox::StorageMode storage, const std::string& imageSize,
                     const std::string& fromSpec, const std::string& runtime,
-                    EventStream& stream) {
+                    bool yes, EventStream& stream) {
     auto& p = Config::paths();
 
     fs::path baseDir;
@@ -1109,7 +1122,7 @@ int new_from(const std::string& name, const fs::path& customDir,
     // Create target subos via standard `create`. This sets up
     // bin/lib/usr/generations, writes initial .xlings.json, optionally
     // creates home.img, and registers the subos.
-    if (auto rc = create(name, customDir, storage, imageSize, runtime, stream);
+    if (auto rc = create(name, customDir, storage, imageSize, runtime, yes, "-y", stream);
         rc != 0) {
         return rc;
     }
@@ -1905,7 +1918,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             return 1;
         }
         if (!fromSpec.empty()) {
-            return new_from(name, {}, storage, imageSize, fromSpec, runtime, stream);
+            return new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream);
         }
         return create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
     }
