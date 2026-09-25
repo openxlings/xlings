@@ -5,6 +5,8 @@ import xlings.core.config;
 import xlings.core.log;
 import xlings.core.xself.shell_profile;
 import xlings.platform;
+import xlings.core.destructive_log;
+import xlings.core.subos.userdata;
 
 namespace xlings::xself {
 
@@ -140,6 +142,30 @@ int print_summary_(const fs::path& home,
         log::println("  data:           KEEP ({}) — pkgs preserved", format_bytes_(dataSize));
     } else {
         log::println("  data:           remove ({})", format_bytes_(dataSize));
+    }
+    // The subos homes are named separately and first-class. They are where
+    // work lives -- an agent's clone, a shell's history -- and this summary
+    // used to say nothing about them at all, while `--keep-data` ("KEEP ...
+    // pkgs preserved") deleted every one of them regardless.
+    std::error_code listEc;
+    int subosCount = 0;
+    std::uintmax_t homeBytes = 0, homeFiles = 0, otherFiles = 0;
+    for (auto it = fs::directory_iterator(home / "subos", listEc);
+         !listEc && it != std::default_sentinel; it.increment(listEc)) {
+        std::error_code e;
+        if (it->is_symlink(e) || !it->is_directory(e)) continue;
+        const auto c = subos::userdata::census(it->path());
+        ++subosCount;
+        homeBytes += c.home.bytes;
+        homeFiles += c.home.files;
+        otherFiles += c.otherFiles;
+    }
+    if (subosCount > 0) {
+        log::println("  subos:          {} {} subos — their homes hold {} in {} file(s){}",
+                     opts.keepData ? "KEEP" : "remove", subosCount,
+                     format_bytes_(homeBytes), homeFiles,
+                     otherFiles > 0 ? std::format(", plus {} other file(s)", otherFiles)
+                                    : std::string{});
     }
     log::println("");
     log::println("The following will NOT be touched:");
@@ -285,13 +311,16 @@ int cmd_uninstall(UninstallOpts opts) {
     // Sub-paths to remove. With --keep-data we skip data/ but still
     // remove everything else (so the install is gone but pkg payloads
     // survive for a quick reinstall).
+    // --keep-data keeps the user's data: the package payloads under data/,
+    // and every subos with its home. A later `self install` picks both up as
+    // they are.
     std::vector<fs::path> targets = {
         home / "bin",
-        home / "subos",
         home / "config",
         home / ".xlings.json",
     };
     if (!opts.keepData) {
+        targets.push_back(home / "subos");
         targets.push_back(home / "data");
     }
 
@@ -299,7 +328,13 @@ int cmd_uninstall(UninstallOpts opts) {
     for (auto& t : targets) {
         if (!fs::exists(t, ec)) continue;
         std::error_code rmEc;
-        fs::remove_all(t, rmEc);
+        const auto held = destructive_log::measure(t);
+        fs::remove_all(t, rmEc);  // subos-remove-all-ok: self uninstall, confirmed above
+        destructive_log::record({
+            .op = "self-uninstall", .path = t, .bytes = held.bytes,
+            .files = held.files, .confirmedBy = opts.yes ? "-y" : "terminal",
+            .detail = rmEc ? "incomplete: " + rmEc.message() : std::string{},
+        });
         if (rmEc) {
             log::warn("self uninstall: failed to remove {}: {}", t.string(), rmEc.message());
             ++failures;
@@ -311,10 +346,11 @@ int cmd_uninstall(UninstallOpts opts) {
     // Sweep stray top-level files (e.g. lockfiles, leftover state).
     if (fs::exists(home, ec)) {
         for (auto& entry : fs::directory_iterator(home, ec)) {
-            // Skip data/ if we're keeping it.
-            if (opts.keepData && entry.path().filename() == "data") continue;
+            // Skip what we're keeping.
+            if (opts.keepData && (entry.path().filename() == "data"
+                                  || entry.path().filename() == "subos")) continue;
             std::error_code rmEc;
-            fs::remove_all(entry.path(), rmEc);
+            fs::remove_all(entry.path(), rmEc);  // subos-remove-all-ok: kept names skipped above
             if (rmEc) {
                 log::warn("self uninstall: failed to remove {}: {}",
                           entry.path().string(), rmEc.message());
@@ -344,7 +380,7 @@ int cmd_uninstall(UninstallOpts opts) {
 
     log::println("");
     if (opts.keepData) {
-        log::println("xlings uninstalled. data/ preserved at {} (pkg payloads kept).", (home / "data").string());
+        log::println("xlings uninstalled. data/ and subos/ preserved under {} (packages and subos homes kept).", home.string());
     } else {
         log::println("xlings uninstalled. {} removed.", home.string());
     }

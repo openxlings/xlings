@@ -74,6 +74,6 @@ else
   exit 0
 fi
 
-run_x subos remove gpubox >/dev/null 2>&1 || true
+run_x subos remove gpubox -y >/dev/null 2>&1 || true
 
 log "PASS: subos sandbox --gpu (Linux) — 2 scenarios"

@@ -30,7 +30,7 @@ std::vector<RepoDir> real_repo_dirs_() {
     std::vector<RepoDir> out;
     for (auto& repo : Config::global_index_repos()) {
         if (repo.name == "local") continue;
-        out.push_back({repo.name, Config::repo_dir_for(repo, false)});
+        out.push_back({repo.name, effective_repo_dir(repo, false)});
     }
     for (auto& repo : discovered_global_sub_repos()) {
         if (repo.name == "local") continue;

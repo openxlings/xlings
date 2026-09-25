@@ -131,7 +131,9 @@ namespace subos_ansi_ {
     inline std::string amber()   { return palette::fg(palette::amber()); }    // nesting (caution-ish)
 }
 
-void print_subos_created(const std::string& name, const std::string& dir);
+// `adopted`: an existing directory was registered as this subos, contents kept.
+void print_subos_created(const std::string& name, const std::string& dir,
+                         bool adopted = false);
 
 // `subos new --from <base>` returns through a different function than plain
 // `subos new`, and that branch emitted a DataEvent nobody rendered -- so the

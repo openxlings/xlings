@@ -337,9 +337,11 @@ void print_subos_resolved(std::string_view query, std::string_view selected) {
                  palette::strong(), selected, palette::off(), palette::off());
 }
 
-void print_subos_created(const std::string& name, const std::string& dir) {
+void print_subos_created(const std::string& name, const std::string& dir,
+                         bool adopted) {
     using namespace subos_ansi_;
-    std::println(stdout, "{}  {} subos created: {}{}{}{}", green(), theme::icon::done, bold(), name, reset(), reset());
+    std::println(stdout, "{}  {} subos {}: {}{}{}{}", green(), theme::icon::done,
+                 adopted ? "adopted" : "created", bold(), name, reset(), reset());
     if (!dir.empty()) {
         std::println(stdout, "{}    dir:{} {}", gray(), reset(), dir);
     }

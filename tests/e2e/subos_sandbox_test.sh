@@ -354,7 +354,7 @@ log "  ✓ /bin/sh resolves and executes (system() works)"
 
 # ── S15: subos remove cleans up everything (including sandbox dirs)
 log "S15: subos remove cleans up entirely"
-run_x subos remove mybox >/dev/null 2>&1 || true
+run_x subos remove mybox -y >/dev/null 2>&1 || true
 [[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "S15: subos dir not removed"
 log "  ✓ sandbox subos removed cleanly"
 
@@ -402,7 +402,7 @@ echo "echo test > '$marker_file'; exit" | \
 log "  ✓ dotfile isolation (host \$HOME clean)"
 
 # SM5: subos remove works
-run_x subos remove mybox >/dev/null 2>&1 || true
+run_x subos remove mybox -y >/dev/null 2>&1 || true
 [[ ! -d "$HOME_DIR/subos/mybox" ]] || fail "SM5: subos dir not removed"
 log "  ✓ subos removed cleanly"
 

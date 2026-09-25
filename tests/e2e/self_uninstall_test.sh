@@ -6,7 +6,7 @@
 #   - bogus self action → exit 2 (unknown-action regression guard)
 #   - bogus uninstall flag → exit 2
 #   - safety refusal: XLINGS_HOME=/  / XLINGS_HOME=$HOME → exit 1
-#   - --keep-data -y removes everything except data/, exit 0
+#   - --keep-data -y keeps data/ and every subos (their homes are user data), exit 0
 #   - full -y uninstall removes XLINGS_HOME entirely, exit 0
 set -euo pipefail
 
@@ -94,15 +94,17 @@ env -u XLINGS_PROJECT_DIR "$INSTALLED_HOME/bin/xlings" self uninstall -y \
 [[ "$rc" == "1" ]] || fail "T6: safety reject XLINGS_HOME=\$HOME exit $rc != 1"
 log "PASS T6: XLINGS_HOME=\$HOME refused (exit 1)"
 
-# T7 — --keep-data -y preserves data/, removes everything else
+# T7 — --keep-data -y keeps the user's data: data/ AND every subos with its
+# home. It used to print "data: KEEP" and delete every subos home regardless.
+mkdir -p "$INSTALLED_HOME/subos/default/home/u" && echo work > "$INSTALLED_HOME/subos/default/home/u/notes.txt"
 rc="$(run_uninstall --keep-data -y)"
 [[ "$rc" == "0" ]] || fail "T7: --keep-data -y exit $rc != 0"
 [[ -d "$INSTALLED_HOME/data" ]] || fail "T7: data/ should survive --keep-data"
 [[ ! -d "$INSTALLED_HOME/bin" ]] || fail "T7: bin/ should be removed"
-[[ ! -d "$INSTALLED_HOME/subos" ]] || fail "T7: subos/ should be removed"
+[[ -f "$INSTALLED_HOME/subos/default/home/u/notes.txt" ]] || fail "T7: a subos home should survive --keep-data"
 [[ ! -d "$INSTALLED_HOME/config" ]] || fail "T7: config/ should be removed"
 [[ ! -f "$INSTALLED_HOME/.xlings.json" ]] || fail "T7: .xlings.json should be removed"
-log "PASS T7: --keep-data -y removes bin/subos/config + state, keeps data/"
+log "PASS T7: --keep-data -y removes bin/config + state, keeps data/ and subos homes"
 
 # T8 — full -y uninstall removes XLINGS_HOME entirely
 bootstrap_home

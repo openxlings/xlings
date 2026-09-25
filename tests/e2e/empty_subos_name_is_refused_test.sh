@@ -105,7 +105,7 @@ assert_intact "create-then-remove with an explicitly empty name"
 # Without this, "refuse everything" passes every row above.
 run_x subos new throwaway >/dev/null 2>&1 || fail "creating a named subos broke"
 [ -d "$HOME_DIR/subos/throwaway" ] || fail "subos new did not create the directory"
-run_x interface remove_subos --args '{"name":"throwaway"}' >/dev/null 2>&1 \
+run_x interface remove_subos --args '{"name":"throwaway","yes":true}' >/dev/null 2>&1 \
   || fail "removing a named subos through the interface broke"
 [ -d "$HOME_DIR/subos/throwaway" ] && fail "remove_subos did not remove the named subos"
 log "  ok: a real name still creates and removes"

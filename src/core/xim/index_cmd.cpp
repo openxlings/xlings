@@ -32,7 +32,7 @@ std::vector<IndexSourceView> collect_index_sources() {
         view.name = repo.name;
         view.pin  = repo.version;
         view.artifactBases = repo.artifactBases;
-        const auto repoDir = Config::repo_dir_for(repo, false);
+        const auto repoDir = effective_repo_dir(repo, false);
         view.installed = installed_index_version(repoDir);
 
         // Ask the pointer only about repos a pointer answers for -- the same

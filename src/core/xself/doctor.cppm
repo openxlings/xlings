@@ -320,6 +320,22 @@ enum class FindingKind {
     // which is the point -- one broken subos must not change what other
     // commands report for the rest of the home.
     SubosUnreadable,
+    // A directory under subos/ that no registration names. It holds somebody's
+    // files -- a subos whose registration was lost, most often -- so it is
+    // reported with how much it holds and the command that takes it back
+    // (`xlings subos new <name>` asks before adopting it). `--fix` never
+    // touches it: deleting user data is not a repair.
+    SubosUnregistered,
+    // An index_repos entry that configures a sub-index the default index
+    // declares (same name, same url) still has the second copy older clients
+    // synced into data/<name>. The sub-index is read from its own tree now, so
+    // this copy is dead weight; `--fix` deletes it -- index data is derived,
+    // the next `xlings update` would restore anything that mattered.
+    IndexCacheDuplicate,
+    // An index_repos entry that takes a declared sub-index's NAME with another
+    // url: two repositories answering to one namespace. Reported, never
+    // resolved for the user -- which one they meant is theirs to say.
+    IndexNameCollision,
 };
 
 enum class FindingLevel {

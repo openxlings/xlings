@@ -85,7 +85,7 @@ assert_contains "switched to subos s1" "$OUT" "S6"
 
 # ── 7. remove active subos ────────────────────────────────────────
 log "Scenario 7: remove active subos"
-OUT="$(RUN subos remove s1 2>&1)" || true
+OUT="$(RUN subos remove s1 -y 2>&1)" || true
 assert_contains "cannot remove the active subos" "$OUT" "S7"
 assert_contains "switch first" "$OUT" "S7 hint"
 
@@ -102,7 +102,7 @@ assert_contains "subos 'nope' not found" "$OUT" "S9"
 
 # ── 10. switch back to default + remove s1 ────────────────────────
 log "Scenario 10: remove s1 cleanly"
-OUT="$(RUN subos remove s1 2>&1)" || fail "S10: remove exited non-zero"
+OUT="$(RUN subos remove s1 -y 2>&1)" || fail "S10: remove exited non-zero"
 assert_contains "subos removed: s1" "$OUT" "S10"
 [[ ! -d "$HOME_DIR/subos/s1" ]] || fail "S10: subos dir still on disk"
 

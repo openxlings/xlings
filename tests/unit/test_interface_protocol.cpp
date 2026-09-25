@@ -390,9 +390,31 @@ TEST(InterfaceProtocol, SubosLifecycleCreateSwitchRemove) {
         EXPECT_EQ(rc, 0) << out;
     }
 
+    // Without the user's confirmation nothing is deleted, and the agent is
+    // told what WOULD be and how to confirm -- a SubOS home is user data.
     {
         auto [out, rc] = run_xlings_(
             {"interface", "remove_subos", "--args", R"({"name":"iface_test_subos"})"}, home);
+        EXPECT_EQ(rc, 2) << out;
+        const auto events = parse_ndjson_(out);
+        bool informed = false;
+        for (const auto& e : events) {
+            if (e.value("kind", "") != "error") continue;
+            const auto hint = e.value("hint", std::string{});
+            const auto message = e.value("message", std::string{});
+            informed = hint.find("\"yes\": true") != std::string::npos
+                    && hint.find("user") != std::string::npos
+                    && message.find("nothing was removed") != std::string::npos;
+        }
+        EXPECT_TRUE(informed) << out;
+    }
+    EXPECT_TRUE(std::filesystem::exists(
+        std::filesystem::path(home) / "subos" / "iface_test_subos"));
+
+    {
+        auto [out, rc] = run_xlings_(
+            {"interface", "remove_subos", "--args",
+             R"({"name":"iface_test_subos","yes":true})"}, home);
         EXPECT_EQ(rc, 0) << out;
     }
     EXPECT_FALSE(std::filesystem::exists(

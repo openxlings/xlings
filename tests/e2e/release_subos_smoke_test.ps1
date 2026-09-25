@@ -56,7 +56,7 @@ xlings subos list | Out-Null
 
 # ── Cleanup ─────────────────────────────────────────────────────
 xlings subos use default --global
-xlings subos remove s1
-xlings subos remove s2
+xlings subos remove s1 -y
+xlings subos remove s2 -y
 
 Log "PASS: release subos smoke scenario"

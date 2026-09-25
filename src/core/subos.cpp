@@ -53,6 +53,9 @@ import xlings.core.subos.sandbox;
 import xlings.core.subos.manifest;
 import xlings.cli.spec;
 import xlings.i18n;
+import xlings.core.confirm;
+import xlings.core.destructive_log;
+import xlings.core.subos.userdata;
 
 namespace xlings::subos {
 
@@ -538,6 +541,7 @@ DefaultRuntime resolve_default_runtime() {
 // operation's OWN precondition, which is a different statement: whatever asks,
 // there is no subos called "", and nothing may be created at or removed from
 // the path an empty name builds.
+
 bool reject_empty_subos_name_(std::string_view what, const std::string& name,
                               EventStream& stream) {
     if (!name.empty()) return false;
@@ -554,6 +558,14 @@ int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
                   const std::string& runtime,
                   EventStream& stream) {
+    return create(name, customDir, storage, imageSize, runtime,
+                  /*yes=*/false, "-y", stream);
+}
+
+int create(const std::string& name, const fs::path& customDir,
+           sandbox::StorageMode storage, const std::string& imageSize,
+           const std::string& runtime, bool yes, std::string_view yesSpelling,
+           EventStream& stream) {
     auto& p = Config::paths();
 
     if (reject_empty_subos_name_("create a subos", name, stream)) return 1;
@@ -633,10 +645,55 @@ int create(const std::string& name, const fs::path& customDir,
 
     auto dir = customDir.empty() ? (p.homeDir / "subos" / name) : customDir;
 
-    fs::create_directories(dir / "bin");
-    fs::create_directories(dir / "lib");
-    fs::create_directories(dir / "usr");
-    fs::create_directories(dir / "generations");
+    // A directory that is already there but is not a registered subos holds
+    // somebody's files: a subos whose registration was lost, or -- through
+    // `dir` -- any directory at all. It used to be built into silently and
+    // reported as "created", and a later `subos remove` then deleted files
+    // xlings had never made. Taking it over is now the user's call.
+    std::error_code existEc;
+    const bool adopting = fs::exists(dir, existEc) && !fs::is_empty(dir, existEc);
+    if (adopting) {
+        const auto held = destructive_log::measure(dir);
+        auto asked = confirm::ask(
+            stream, "subos_adopt",
+            std::format("{} already exists and is not a registered subos ({} in {} "
+                        "file(s)). Adopt it as subos '{}', keeping everything in it?",
+                        dir.string(), destructive_log::human_bytes(held.bytes),
+                        held.files, name),
+            yes, yesSpelling);
+        if (asked.outcome == confirm::Outcome::Declined) {
+            log::println("cancelled; nothing was created");
+            return 0;
+        }
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format(
+                    "{} already exists and is not a registered subos ({} in {} "
+                    "file(s)); nothing was created",
+                    dir.string(), destructive_log::human_bytes(held.bytes), held.files),
+                .recoverable = true,
+                .hint = yesSpelling == "yes:true"
+                    ? std::string("adopting it registers that directory, contents and "
+                                  "all, as this subos -- the user's decision. Call "
+                                  "create_subos again with \"yes\": true to adopt it, "
+                                  "or use another name")
+                    : std::string("re-run with -y to adopt it as it is, or use another name"),
+            });
+            return 2;
+        }
+    }
+
+    // What THIS run creates, so a rollback takes back exactly that and never
+    // a file that was already there.
+    std::vector<fs::path> createdHere;
+    for (const auto* sub : {"bin", "lib", "usr", "generations"}) {
+        const auto d = dir / sub;
+        std::error_code mkEc;
+        if (!fs::exists(d, mkEc)) createdHere.push_back(d);
+        fs::create_directories(d, mkEc);
+    }
+    if (!fs::exists(dir / ".xlings.json", existEc)) createdHere.push_back(dir / ".xlings.json");
 
     auto subosConfig = dir / ".xlings.json";
     if (!fs::exists(subosConfig)) {
@@ -760,8 +817,14 @@ int create(const std::string& name, const fs::path& customDir,
                 json["subos"].erase(name);
             return true;
         });
+        // Only what this run made. A directory that was already there keeps
+        // everything it held; one this run created goes entirely.
         std::error_code rmec;
-        fs::remove_all(dir, rmec);
+        if (adopting) {
+            for (const auto& made : createdHere) fs::remove_all(made, rmec);  // subos-remove-all-ok: only entries this run created
+        } else {
+            fs::remove_all(dir, rmec);  // subos-remove-all-ok: created by this run
+        }
         stream.emit(ErrorEvent{
             .code = ErrorCode::Internal,
             .message = "subos '" + name + "' did not come out valid: " + detail,
@@ -839,6 +902,7 @@ int create(const std::string& name, const fs::path& customDir,
     payload["dir"]  = dir.string();
     payload["storage"] = sandbox::storage_to_string_(storage);
     payload["runtime"] = effectiveRuntime;
+    if (adopting) payload["adopted"] = true;
     stream.emit(DataEvent{"subos_created", payload.dump()});
     return 0;
 }
@@ -1432,6 +1496,11 @@ int use(const std::string& name, EventStream& stream) {
 }
 
 int remove(const std::string& name, EventStream& stream) {
+    return remove(name, /*yes=*/false, "-y", stream);
+}
+
+int remove(const std::string& name, bool yes, std::string_view yesSpelling,
+           EventStream& stream) {
     if (reject_empty_subos_name_("remove a subos", name, stream)) return 1;
 
     if (name == "default") {
@@ -1466,6 +1535,33 @@ int remove(const std::string& name, EventStream& stream) {
 
     auto dir = Config::subos_dir(name);
     if (fs::exists(dir)) {
+        // A SubOS's home is where its user works -- an agent's clone, a
+        // shell's history, whatever was built there -- and nothing can put it
+        // back. So removing one is the user's decision, asked for and said
+        // out loud: the size of what goes, and a default of no.
+        const auto census = userdata::census(dir);
+        const auto what = userdata::describe(census);
+        auto asked = confirm::ask(
+            stream, "subos_remove",
+            std::format("remove subos '{}'? This deletes {} ({}) and cannot be undone",
+                        name, dir.string(), what),
+            yes, yesSpelling);
+        if (asked.outcome == confirm::Outcome::Declined) {
+            log::println("cancelled; subos '{}' was not removed", name);
+            return 0;
+        }
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format(
+                    "removing subos '{}' deletes {} ({}); nothing was removed",
+                    name, dir.string(), what),
+                .recoverable = true,
+                .hint = userdata::needs_confirmation_hint(yesSpelling, "remove_subos"),
+            });
+            return 2;
+        }
+
         // V6: image-storage subos has an ext4 mount at <subos>/.mountpoint.
         // remove_all would either (a) hit EBUSY at the mountpoint, leaving
         // a half-cleaned tree behind, or (b) silently recurse into the
@@ -1492,12 +1588,11 @@ int remove(const std::string& name, EventStream& stream) {
             }
         }
 #endif
-        std::error_code ec;
-        fs::remove_all(dir, ec);
-        if (ec) {
+        if (auto removed = userdata::delete_subos(dir, "subos-remove", *asked.token);
+            !removed) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Permission,
-                .message = "failed to remove " + dir.string() + ": " + ec.message(),
+                .message = removed.error(),
                 .recoverable = false,
             });
             return 1;
@@ -1719,10 +1814,19 @@ int run(int argc, char* argv[], EventStream& stream) {
     // loops with a catch-all `usageError`, so a documented global flag such as
     // `--yes` -- which an agent is instructed to always pass -- would come
     // back as "unknown option" from a command that has nothing to confirm.
+    //
+    // `-y` is recorded before it is dropped: for the commands that delete or
+    // take over a directory (`remove`, and `new` onto one that exists) it is
+    // the user's explicit answer to the question they would otherwise be asked.
+    bool yesGiven = false;
     std::vector<char*> filtered;
     filtered.reserve(static_cast<std::size_t>(argc));
     for (int i = 0; i < argc; ++i) {
-        if (i >= 3 && cli::spec::is_global_option(argv[i])) continue;
+        if (i >= 3) {
+            const std::string_view a{argv[i]};
+            if (a == "-y" || a == "--yes") yesGiven = true;
+            if (cli::spec::is_global_option(argv[i])) continue;
+        }
         filtered.push_back(argv[i]);
     }
     argc = static_cast<int>(filtered.size());
@@ -1803,7 +1907,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (!fromSpec.empty()) {
             return new_from(name, {}, storage, imageSize, fromSpec, runtime, stream);
         }
-        return create(name, {}, storage, imageSize, runtime, stream);
+        return create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
     }
     if (sub == "use") {
         // Flags supported:
@@ -1973,7 +2077,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             target = pick_subos_or_fail_("remove|rm", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
-        return remove(target, stream);
+        return remove(target, yesGiven, "-y", stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
     if (sub == "stop") {

@@ -381,6 +381,18 @@ std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
     }
     auto globalRepos = Config::global_index_repos();
     for (std::size_t i = 0; i < globalRepos.size(); ++i) {
+        // An entry configuring a sub-index the default index declares is that
+        // sub-index, at sub-index rank -- listing it (the only way to pin it)
+        // must not promote it to a peer of the default index. It is loaded
+        // once, from the sub-index tree, below. Until that tree has been
+        // synced (a home that has not run `update` since upgrading), its old
+        // copy stays readable, at the same rank.
+        const bool declaredSub = classify_index_entry(globalRepos[i])
+            == IndexEntryKind::DeclaredSubIndex;
+        if (declaredSub
+            && std::filesystem::exists(sub_repo_dir_for(globalRepos[i], false) / "pkgs")) {
+            continue;
+        }
         auto repoDir = Config::repo_dir_for(globalRepos[i], false);
         specs.push_back({
             .name = globalRepos[i].name,
@@ -388,6 +400,7 @@ std::vector<RepoIndexSpec> PackageCatalog::repo_specs_() {
             .dir = repoDir,
             .scope = PackageScope::Global,
             .defaultNamespace = globalRepos[i].name,
+            .subIndex = declaredSub,
         });
     }
 

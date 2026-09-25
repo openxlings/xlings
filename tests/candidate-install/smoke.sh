@@ -147,4 +147,4 @@ lifecycle step passed."
 esac
 
 run_candidate "$installed" subos info candidate-probe >/dev/null
-run_candidate "$installed" subos remove candidate-probe
+run_candidate "$installed" subos remove candidate-probe -y

@@ -40,6 +40,9 @@ import xlings.core.xim.install_state;
 import xlings.core.xim.commands;
 import xlings.core.profile;
 import xlings.core.subos.manifest;
+import xlings.core.xim.repo;
+import xlings.core.destructive_log;
+import xlings.core.home_config;
 import xlings.platform.target;
 
 namespace xlings::xself {
@@ -2460,6 +2463,9 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     // a hand-edit mistake shows up instead of quietly dropping that subos out
     // of every cross-subos question.
     for (const auto& name : st.unreadableSubos) {
+        // The remedy used to offer `xlings subos remove <name>` -- which
+        // deletes the subos's home to cure one bad file. What --fix does
+        // instead keeps both: the bad file under another name, the home as is.
         add({
             .kind       = FindingKind::SubosUnreadable,
             .level      = FindingLevel::Warning,
@@ -2468,9 +2474,90 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                                        name,
                                        Config::display_path(
                                            p.homeDir / "subos" / name / ".xlings.json")),
-            .remedyNote = "fix the JSON by hand or `xlings subos remove "
-                          + name + "`",
+            .remedy     = "xlings self doctor --fix",
+            .remedyNote = "--fix keeps the unreadable file as "
+                          ".xlings.json.corrupt-<time> and writes a fresh one; "
+                          "the subos's home is not touched, and its packages "
+                          "need `xlings use` again",
         });
+    }
+
+    // Subos directories nothing registers. Somebody's files, reported with
+    // their size; never a --fix target.
+    {
+        std::set<std::string> registered{"default"};
+        const auto cfg = read_home_config(p.homeDir);
+        if (cfg.contains("subos") && cfg["subos"].is_object()) {
+            for (auto it = cfg["subos"].begin(); it != cfg["subos"].end(); ++it)
+                registered.insert(it.key());
+        }
+        std::error_code ec;
+        for (auto it = fs::directory_iterator(p.homeDir / "subos", ec);
+             !ec && it != std::default_sentinel; it.increment(ec)) {
+            const auto name = it->path().filename().string();
+            if (name.empty() || name.starts_with('.') || name == "current") continue;
+            std::error_code entryEc;
+            if (it->is_symlink(entryEc) || !it->is_directory(entryEc)) continue;
+            if (registered.contains(name)) continue;
+            const auto home = destructive_log::measure(it->path() / "home");
+            add({
+                .kind       = FindingKind::SubosUnregistered,
+                .level      = FindingLevel::Warning,
+                .target     = name,
+                .detail     = std::format(
+                    "{} is a subos directory no registration names "
+                    "(home {} in {} file(s))",
+                    Config::display_path(it->path()),
+                    destructive_log::human_bytes(home.bytes), home.files),
+                .remedyNote = std::format(
+                    "to use it again as it is: `xlings subos new {}` (asks "
+                    "before adopting it); --fix leaves it untouched", name),
+            });
+        }
+    }
+
+    // index_repos entries against what the default index declares.
+    for (const auto& repo : Config::global_index_repos()) {
+        const auto kind = xim::classify_index_entry(repo);
+        if (kind == xim::IndexEntryKind::DeclaredSubIndex) {
+            const auto legacy = Config::repo_dir_for(repo, false);
+            const auto effective = xim::effective_repo_dir(repo, false);
+            std::error_code ec;
+            if (legacy == effective || !fs::exists(legacy, ec)) continue;
+            // Only once the sub-index tree has content: until then the old
+            // copy is still what serves this index.
+            if (!fs::exists(effective / "pkgs", ec)) continue;
+            const auto size = destructive_log::measure(legacy);
+            add({
+                .kind    = FindingKind::IndexCacheDuplicate,
+                .level   = FindingLevel::Notice,
+                .target  = repo.name,
+                .detail  = std::format(
+                    "{} is a second copy of index '{}' ({}); '{}' configures "
+                    "the sub-index the default index declares, which is read "
+                    "from {}",
+                    Config::display_path(legacy), repo.name,
+                    destructive_log::human_bytes(size.bytes), repo.name,
+                    Config::display_path(effective)),
+                .remedy  = "xlings self doctor --fix",
+            });
+        } else if (kind == xim::IndexEntryKind::NameCollision) {
+            add({
+                .kind       = FindingKind::IndexNameCollision,
+                .level      = FindingLevel::Warning,
+                .target     = repo.name,
+                .detail     = std::format(
+                    "index_repos entry '{}' ({}) takes the name of a sub-index "
+                    "the default index declares ({}); two repositories cannot "
+                    "answer to one namespace",
+                    repo.name, repo.url, xim::declared_sub_index_url(repo.name)),
+                .remedyNote = std::format(
+                    "rename the entry: `xlings config --rm-index-repo {}`, then "
+                    "add it back under another name with "
+                    "`xlings config --index-repo <name>:{}`",
+                    repo.name, repo.url),
+            });
+        }
     }
 
     // The one finding says how many symptoms it stands for.
@@ -2909,6 +2996,71 @@ void repair_local_(const DoctorState& st, const Scan& scan,
 // deactivation pass below see a problem that is really this one. Unregistered
 // actives next, for the same reason in reverse: an active pointer into nothing
 // makes a release look incoherent when it is merely absent.
+// Repairs to the home's own layout that detection named: a second copy of a
+// declared sub-index, and a subos config that cannot be parsed. Neither
+// touches user data -- the index copy is derived, and the subos repair keeps
+// the unreadable file and never looks at the home.
+void repair_home_layout_(const Scan& scan, bool dryRun, RepairReport& out) {
+    auto& p = Config::paths();
+    for (const auto& f : scan.findings) {
+        if (f.kind == FindingKind::IndexCacheDuplicate) {
+            const auto& repos = Config::global_index_repos();
+            const auto it = std::ranges::find_if(repos,
+                [&](const IndexRepo& r) { return r.name == f.target; });
+            if (it == repos.end()) continue;
+            const auto legacy = Config::repo_dir_for(*it, false);
+            if (dryRun) {
+                out.planned.push_back(std::format(
+                    "delete {} (a second copy of index '{}')",
+                    Config::display_path(legacy), f.target));
+                continue;
+            }
+            const auto size = destructive_log::measure(legacy);
+            std::error_code ec;
+            fs::remove_all(legacy, ec);  // subos-remove-all-ok: index data, not a subos
+            destructive_log::record({
+                .op = "index-copy", .path = legacy, .bytes = size.bytes,
+                .files = size.files, .confirmedBy = "automatic",
+                .detail = ec ? "incomplete: " + ec.message() : std::string{},
+            });
+            out.notes.emplace_back(
+                glyph::mark(ec ? glyph::failed : glyph::done, "index copy"),
+                ec ? std::format("could not delete {}: {}",
+                                 Config::display_path(legacy), ec.message())
+                   : std::format("deleted {} ({})", Config::display_path(legacy),
+                                 destructive_log::human_bytes(size.bytes)));
+        } else if (f.kind == FindingKind::SubosUnreadable) {
+            const auto config = p.homeDir / "subos" / f.target / ".xlings.json";
+            if (dryRun) {
+                out.planned.push_back(std::format(
+                    "keep {} as .xlings.json.corrupt-<time> and write a fresh one",
+                    Config::display_path(config)));
+                continue;
+            }
+            // ':' is not a filename character on Windows.
+            auto stamp = subos::manifest::utc_now_iso();
+            std::ranges::replace(stamp, ':', '-');
+            const auto kept = config.parent_path() / (".xlings.json.corrupt-" + stamp);
+            std::error_code ec;
+            fs::rename(config, kept, ec);
+            if (!ec) {
+                std::ofstream fresh(config);
+                fresh << nlohmann::json{{"workspace", nlohmann::json::object()}}.dump(2)
+                      << '\n';
+                if (!fresh) ec = std::make_error_code(std::errc::io_error);
+            }
+            out.notes.emplace_back(
+                glyph::mark(ec ? glyph::failed : glyph::done, "subos config"),
+                ec ? std::format("could not replace {}: {}",
+                                 Config::display_path(config), ec.message())
+                   : std::format("subos '{}': the unreadable config is kept as {}; "
+                                 "a fresh one was written (its home was not "
+                                 "touched; run `xlings use` for its packages again)",
+                                 f.target, Config::display_path(kept)));
+        }
+    }
+}
+
 void repair_state_(RepairReport& out) {
     const auto note = [&](std::string label, std::string text) {
         out.notes.emplace_back(std::move(label), std::move(text));
@@ -4470,6 +4622,10 @@ Counts count_(const Scan& scan) {
             // worth of damage, and it must not move the exit code the way an
             // Error-level finding would.
             case FindingKind::SubosUnreadable: ++c.warnings; break;
+            case FindingKind::SubosUnregistered: ++c.warnings; break;
+            case FindingKind::IndexNameCollision: ++c.warnings; break;
+            // Reclaimable space, not a defect: the exit code must not move.
+            case FindingKind::IndexCacheDuplicate: break;
         }
     }
     return c;
@@ -4864,6 +5020,23 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             }
             case FindingKind::SubosUnreadable:
                 add(glyph::mark(glyph::warn, "subos unreadable"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::SubosUnregistered:
+                add(glyph::mark(glyph::warn, "subos unregistered"), f.detail);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::IndexCacheDuplicate:
+                add(glyph::mark(glyph::note, "index copy"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                break;
+            case FindingKind::IndexNameCollision:
+                add(glyph::mark(glyph::warn, "index name"), f.detail);
                 if (!f.remedyNote.empty())
                     add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
@@ -5350,6 +5523,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
 
     if (dryRun) {
         repair_relocation_(state, /*dryRun=*/true, repair);
+        repair_home_layout_(scan, /*dryRun=*/true, repair);
         repair_local_(state, scan, repair, /*dryRun=*/true);
         repair_payloads_(state, scan, probe, /*dryRun=*/true, repair);
         repair_incomplete_(scan, client, run, /*dryRun=*/true, repair);
@@ -5408,6 +5582,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
         refresh();
     }
 
+    repair_home_layout_(scan, /*dryRun=*/false, repair);
     repair_state_(repair);
     repair_other_subos_(state, repair);
     repair_local_(state, scan, repair);

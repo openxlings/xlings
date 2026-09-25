@@ -521,6 +521,34 @@ std::string declared_sub_index_url(std::string_view name) {
     return {};
 }
 
+IndexEntryKind classify_index_entry(const IndexRepo& repo) {
+    if (repo.name == Config::DEFAULT_INDEX_REPO_NAME) return IndexEntryKind::Independent;
+    const auto declared = declared_sub_index_url(repo.name);
+    if (declared.empty()) return IndexEntryKind::Independent;
+    return url_matches_declared_source(repo.url, declared)
+        ? IndexEntryKind::DeclaredSubIndex
+        : IndexEntryKind::NameCollision;
+}
+
+std::filesystem::path effective_repo_dir(const IndexRepo& repo, bool projectScope) {
+    if (!projectScope && classify_index_entry(repo) == IndexEntryKind::DeclaredSubIndex) {
+        return sub_repo_dir_for(repo, false);
+    }
+    return Config::repo_dir_for(repo, projectScope);
+}
+
+IndexRepo with_configured_settings(IndexRepo subIndex) {
+    for (const auto& entry : Config::global_index_repos()) {
+        if (entry.name != subIndex.name) continue;
+        if (classify_index_entry(entry) != IndexEntryKind::DeclaredSubIndex) break;
+        if (!entry.version.empty())       subIndex.version = entry.version;
+        if (!entry.artifactBases.empty()) subIndex.artifactBases = entry.artifactBases;
+        if (!entry.source.empty())        subIndex.source = entry.source;
+        break;
+    }
+    return subIndex;
+}
+
 bool artifact_is_declared_for(const IndexRepo& repo, bool projectScope) {
     // #377: a repo that names its own artifact base has declared its source.
     if (!repo.artifactBases.empty()) return true;
@@ -705,6 +733,14 @@ bool sync_all_repos(bool force) {
 
         int total = 0, ok = 0;
         for (auto* repo : ordered) {
+            // Configuration for a declared sub-index, not a repository of its
+            // own: it is synced ONCE, below, with these settings applied.
+            // Judged after the default index has landed -- the declaration
+            // lives in it.
+            if (!projectScope
+                && classify_index_entry(*repo) == IndexEntryKind::DeclaredSubIndex) {
+                continue;
+            }
             ++total;
             if (pastDeadline()) { ++skippedForDeadline; continue; }
             if (sync_one_repo(*repo, Config::repo_dir_for(*repo, projectScope),
@@ -736,18 +772,21 @@ bool sync_all_repos(bool force) {
     auto subReposRoot = sub_repos_dir();
     fs::create_directories(subReposRoot);
 
-    for (auto& repo : allSubRepos) {
+    for (auto& declared : allSubRepos) {
+        const auto repo = with_configured_settings(declared);
         if (pastDeadline()) {
             ++skippedForDeadline;
             // Keep it in the saved set: it was not refreshed, it was not
             // withdrawn. Dropping it here would deregister a healthy
             // sub-index because the clock ran out.
-            syncedSubRepos.push_back(repo);
+            syncedSubRepos.push_back(declared);
             continue;
         }
+        // The saved set records what is DECLARED; a pin or artifact base from
+        // index_repos stays in the config it came from.
         if (sync_one_repo(repo, sub_repo_dir_for(repo), indexSource, mirror, false, force,
                           /*linkLocalSource=*/false))
-            syncedSubRepos.push_back(repo);
+            syncedSubRepos.push_back(declared);
         else
             log::warn("failed to sync sub-index repo: {} ({})", repo.name, repo.url);
     }

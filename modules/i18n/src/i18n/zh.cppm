@@ -83,6 +83,7 @@ inline constexpr Entry kEntries[] = {
     { "Inline prompts in tui mode",                              "在 tui 模式下使用内联选择" },
     { "Add package recipe",                                      "添加软件包配方" },
     { "Add index repository",                                    "添加索引仓库" },
+    { "Remove index repository",                                 "移除索引仓库" },
     { "Manage SubOS environments",                               "管理 SubOS 子系统环境" },
     { "Create a SubOS",                                          "创建一个 SubOS" },
     { "SubOS name",                                              "SubOS 名字" },

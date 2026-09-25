@@ -61,7 +61,7 @@ readlink "$XLINGS_HOME/subos/current" | grep -q "s2" || fail "failed to switch b
 xlings subos list >/dev/null
 
 xlings subos use default --global
-xlings subos remove s1
-xlings subos remove s2
+xlings subos remove s1 -y
+xlings subos remove s2 -y
 
 log "PASS: release subos smoke scenario"

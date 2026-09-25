@@ -13,6 +13,9 @@ import xlings.runtime;
 import xlings.platform;
 import xlings.core.utils;
 import xlings.core.version_order;
+import xlings.core.confirm;
+import xlings.core.destructive_log;
+import xlings.core.subos.userdata;
 
 namespace xlings::xself {
 
@@ -677,6 +680,9 @@ int cmd_install(EventStream& stream) {
 
     // Version / overwrite confirmation (skip when from temp extract — CI / quick_install)
     bool overwriteDataSubos = false;
+    // Set only by a person answering the overwrite question below; the one
+    // thing that lets this install delete a subos -- and its home -- at all.
+    std::optional<confirm::UserConfirmed> overwriteConfirmed;
     if (!fromTempExtract) {
         if (!pkgVersion.empty() && !installedVersion.empty() && pkgVersion == installedVersion) {
             // Idempotent: the payload is replaced with an identical one.
@@ -688,10 +694,35 @@ int cmd_install(EventStream& stream) {
             }
             if (fs::exists(targetHome / "data") || fs::exists(targetHome / "subos")) {
                 // Destructive and unrecoverable: it discards installed
-                // packages and every subos. Nobody there means no.
-                overwriteDataSubos = confirm_(stream, "self_overwrite_data",
-                                              "overwrite data and subos?", "n",
-                                              IfNobodyAnswers::Decline);
+                // packages and every subos, HOMES INCLUDED. The question used
+                // to be four words that said neither; it now names each subos
+                // and what its home holds. Nobody there means no.
+                std::string question = "overwrite data and subos? This deletes every "
+                                       "installed package and every subos with its home:";
+                std::error_code listEc;
+                for (auto it = fs::directory_iterator(targetHome / "subos", listEc);
+                     !listEc && it != std::default_sentinel; it.increment(listEc)) {
+                    std::error_code e;
+                    if (it->is_symlink(e) || !it->is_directory(e)) continue;
+                    question += std::format("\n    {}: {}",
+                        it->path().filename().string(),
+                        subos::userdata::describe(subos::userdata::census(it->path())));
+                }
+                question += "\n  and cannot be undone";
+                auto asked = confirm::ask(stream, "self_overwrite_data", question,
+                                          /*autoYes=*/false, "-y");
+                if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+                    diag::emit({
+                        .level   = diag::Level::Note,
+                        .code    = "xself.kept_existing",
+                        .summary = "nobody to ask, so the existing data and subos "
+                                   "were left as they are",
+                        .actions = { { "to replace them, run it where you can answer",
+                                       "xlings self install" } },
+                    });
+                }
+                overwriteConfirmed = std::move(asked.token);
+                overwriteDataSubos = overwriteConfirmed.has_value();
             }
         } else if (fs::exists(targetHome / "bin") && fs::exists(targetHome / "subos")) {
             // Name both versions, and say which DIRECTION this is.
@@ -762,17 +793,54 @@ int cmd_install(EventStream& stream) {
 
     std::error_code ec;
 
-    // 1. Remove non-user dirs; preserve data/subos and .xlings.json unless user chose overwrite
+    // 1. Replace what the release ships. Only THAT: this step used to delete
+    //    every top-level entry except data/, subos/ and .xlings.json, so
+    //    anything a person kept under XLINGS_HOME went with each upgrade --
+    //    an upgrade `quick_install` runs without asking.
+    std::set<std::string> shipped;
+    for (auto& entry : platform::dir_entries(srcDir)) {
+        shipped.insert(entry.path().filename().string());
+    }
     if (fs::exists(targetHome)) {
         for (auto& entry : platform::dir_entries(targetHome)) {
             auto name = entry.path().filename().string();
-            if (name == "data" || name == "subos") {
+            if (name == "subos") {
+                if (!overwriteDataSubos || !overwriteConfirmed) continue;
+                // Each subos through the one deletion entry point, with the
+                // answer given above -- then what is left of the root.
+                std::error_code listEc;
+                for (auto it = fs::directory_iterator(entry.path(), listEc);
+                     !listEc && it != std::default_sentinel; it.increment(listEc)) {
+                    std::error_code e;
+                    if (it->is_symlink(e) || !it->is_directory(e)) continue;
+                    if (auto removed = subos::userdata::delete_subos(
+                            it->path(), "self-install-overwrite", *overwriteConfirmed);
+                        !removed) {
+                        log::error("[xlings:self] {}", removed.error());
+                        return 1;
+                    }
+                }
+                fs::remove_all(entry.path(), ec);  // subos-remove-all-ok: children deleted above, confirmed
+                ec.clear();
+                continue;
+            }
+            if (name == "data") {
                 if (!overwriteDataSubos) continue;
+                const auto held = destructive_log::measure(entry.path());
+                fs::remove_all(entry.path(), ec);  // subos-remove-all-ok: data/, overwrite confirmed
+                destructive_log::record({
+                    .op = "self-install-overwrite", .path = entry.path(),
+                    .bytes = held.bytes, .files = held.files,
+                    .confirmedBy = std::string(overwriteConfirmed->how()),
+                });
+                ec.clear();
+                continue;
             }
             // Preserve .xlings.json — it contains the xvm versions DB and user config.
             // We merge the new version into it after copying (step 2).
             if (name == ".xlings.json" && !overwriteDataSubos) continue;
-            fs::remove_all(entry.path(), ec);
+            if (!shipped.contains(name)) continue;
+            fs::remove_all(entry.path(), ec);  // subos-remove-all-ok: an entry the release ships
             ec.clear();
         }
     }
