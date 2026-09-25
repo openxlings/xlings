@@ -538,6 +538,7 @@ public:
     // its build_deps already have their payloads laid down on disk.
     static std::filesystem::path
     locate_dep_install_dir_(const InstallPlan& plan,
+                            const PlanNode& consumer,
                             const std::filesystem::path& dataDir,
                             std::string_view depRef);
 

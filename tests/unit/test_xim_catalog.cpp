@@ -233,6 +233,32 @@ TEST(XimCatalogTest, FormatAmbiguousCandidates) {
     EXPECT_NE(msg.find("xlings install xim:gcc@15.1.0"), std::string::npos);
 }
 
+// A dependency the declaring index lacks and two other indexes offer. The
+// message must not tell anyone to `xlings install` a candidate: that cannot
+// change what a recipe's bare name resolves to, so it is advice that runs
+// successfully and fixes nothing (measured on 2026.9.20.1 with xmake/ncurses).
+TEST(XimCatalogTest, FormatAmbiguousDependencyNamesTheRecipeNotAnInstall) {
+    std::vector<xlings::xim::PackageMatch> matches = {
+        { .name = "ncurses", .version = "6.4", .namespaceName = "scode",
+          .canonicalName = "scode:ncurses", .repoName = "scode",
+          .scope = xlings::xim::PackageScope::Global },
+        { .name = "ncurses", .version = "6.5", .namespaceName = "extra",
+          .canonicalName = "extra:ncurses", .repoName = "extra",
+          .scope = xlings::xim::PackageScope::Global },
+    };
+    std::vector<std::string> removable{"extra"};
+    auto msg = xlings::xim::format_ambiguous_dependency("ncurses", "xim", matches, removable);
+    EXPECT_NE(msg.find("dependency 'ncurses' is ambiguous"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("'xim', the index that declares it"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("1. scode:ncurses@6.4"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("2. extra:ncurses@6.5"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("xlings config --rm-index-repo extra"), std::string::npos) << msg;
+    EXPECT_EQ(msg.find("xlings install"), std::string::npos) << msg;
+
+    auto quiet = xlings::xim::format_ambiguous_dependency("ncurses", "xim", matches, {});
+    EXPECT_EQ(quiet.find("--rm-index-repo"), std::string::npos) << quiet;
+}
+
 TEST(ConfigTest, WorkspaceInstallTargets) {
     xlings::xvm::Workspace ws;
     ws["gcc"] = "15.1.0";

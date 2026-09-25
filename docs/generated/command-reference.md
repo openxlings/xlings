@@ -58,7 +58,7 @@ Options: `-a, --all` — Show every subos; `--strict` — Require a coherent rel
 
 Show or modify configuration
 
-Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository
+Options: `--lang <LANG>` — Set language; `--mirror <MIRROR>` — Set mirror; `--ui-mode <MODE>` — Set UI mode (cli/tui/auto); `--theme <THEME>` — Set colour theme (name, path, or list); `--interactive <BOOL>` — Inline prompts in tui mode; `--add-xpkg <FILE>` — Add package recipe; `--list-xpkg` — List local recipes and how they relate to the synced index; `--remove-xpkg <NAME>` — Remove one local recipe; `--clear-xpkg <all|stale>` — Remove local recipes (all, or stale = identical/behind the synced index); `--index-repo <NS:URL>` — Add index repository; `--rm-index-repo <NAME>` — Remove index repository
 
 ## `xlings subos`
 

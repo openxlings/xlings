@@ -97,9 +97,17 @@ xlings subos info dev-env
 xlings subos use dev-env --sandbox --keep         # keep mount namespace alive
 xlings subos stop dev-env                         # release keeper
 
-# Remove
-xlings subos remove dev-env
+# Remove — deletes the SubOS AND its home (user data). It asks first;
+# with nobody at a terminal it deletes nothing and exits 2 unless -y is given.
+xlings subos remove dev-env            # asks: shows the path and what home/ holds
+xlings subos remove dev-env -y         # only when the USER asked for this deletion
 ```
+
+> **Agents:** a SubOS home holds the user's work. Over the interface,
+> `remove_subos` without `"yes": true` returns what it would delete and changes
+> nothing — tell the user, and pass `"yes": true` only after they confirm.
+> Never add `-y` / `yes` just to make a cleanup step succeed. Every deletion is
+> recorded in `$XLINGS_HOME/logs/destructive.ndjson`.
 
 ### Project-local SubOS
 

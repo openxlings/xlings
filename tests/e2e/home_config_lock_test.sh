@@ -141,7 +141,7 @@ expect_refused() {
 echo "--- 1..4: refused while the lock is held"
 expect_refused "subos new"    subos new probe
 expect_refused "subos use -g" subos use --global doomed
-expect_refused "subos rm"     subos rm doomed
+expect_refused "subos rm"     subos rm doomed -y
 expect_refused "config"       config --lang en
 
 # ---------------------------------------------------------------- 5
@@ -150,7 +150,7 @@ echo "--- 5: the same commands succeed once the lock is free"
 
 RUN subos new probe        >/dev/null
 RUN config --lang en       >/dev/null
-RUN subos rm doomed        >/dev/null
+RUN subos rm doomed -y     >/dev/null
 
 [[ "$(json_get "'probe' in d['subos']")"  == "True"  ]] || { echo "FAIL: subos new did not register"; exit 1; }
 [[ "$(json_get "'doomed' in d['subos']")" == "False" ]] || { echo "FAIL: subos rm did not deregister"; exit 1; }

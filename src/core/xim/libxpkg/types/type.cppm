@@ -69,6 +69,15 @@ struct ExportsRuntime {
     std::string abi;                          // e.g. "linux-x86_64-glibc"
 };
 
+// One resolved dependency of a plan node: what the recipe wrote, and the plan
+// node the resolver chose for it. Everything after the resolver reads this
+// edge; nothing re-derives "which package did `spec` mean" from the name.
+struct DepEdge {
+    std::string spec;      // as written in the recipe: "ncurses", "xim:glibc@>=2.38"
+    DepKind kind { DepKind::Runtime };
+    std::string nodeKey;   // key of the chosen node: "<canonicalName>@<version>"
+};
+
 // A node in the dependency-resolved install plan
 struct PlanNode {
     std::string rawName;
@@ -88,6 +97,8 @@ struct PlanNode {
     // the schema, both lists are equal to `deps` (loader-side fan-out).
     std::vector<std::string> runtime_deps;
     std::vector<std::string> build_deps;
+    // The resolver's answer for each entry of runtime_deps and build_deps.
+    std::vector<DepEdge> depEdges;
     // How this node was added to the plan: Build = a transitive
     // build-only dep of some other node; Runtime = part of a consumer's
     // active workspace contract. Build nodes skip workspace activation.

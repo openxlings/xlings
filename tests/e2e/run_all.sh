@@ -258,6 +258,13 @@ TESTS=(
     "E2E-115|ldd_answers_in_the_files_world_test.sh||"
     "E2E-116|install_outcome_is_a_record_test.sh||"
     "E2E-117|empty_subos_name_is_refused_test.sh||"
+    # A recipe's bare dependency resolves in its own index; an entry that
+    # configures a declared sub-index is that sub-index (the xmake/ncurses
+    # "is ambiguous" failure on 2026.9.20.1).
+    "E2E-118|dep_declarer_scope_test.sh||"
+    # A subos's home leaves only when the user confirmed it; every deletion is
+    # recorded in logs/destructive.ndjson.
+    "E2E-119|subos_user_data_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -40,6 +40,12 @@ jobs:
       - name: fresh-install must track the published latest
         run: bash tests/fresh-install/no_xlings_version_pin_check.sh
 
+      # A subos home is user data; one function deletes a whole subos, and
+      # only with the user's confirmation. This fails any other remove_all on
+      # a subos path. Milliseconds, no build.
+      - name: subos directories are deleted in one place
+        run: bash tools/lint_subos_remove_all.sh
+
       # ── Phase 1: Configure Environment via xlings ─────────────────
 
       - name: Install system deps

@@ -37,6 +37,7 @@ import xlings.core.profile;
 import xlings.core.utf8;
 import xlings.cli.spec;
 import xlings.core.xim.index_cmd;
+import xlings.core.xim.repo;
 
 namespace xlings::cli {
 
@@ -224,7 +225,8 @@ void dispatch_data_event(const DataEvent& e) {
     }
     else if (e.kind == "subos_created") {
         ui::print_subos_created(
-            json.value("name", ""), json.value("dir", ""));
+            json.value("name", ""), json.value("dir", ""),
+            json.value("adopted", false));
     }
     else if (e.kind == "subos_forked") {
         ui::print_subos_forked(json.value("name", ""), json.value("from", ""),
@@ -954,6 +956,32 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
             return 1;
         }
 
+        // A name the default index already declares as a sub-index is one of
+        // two things, and neither is "a second repository": the same url
+        // configures that sub-index (it stays a sub-index -- this is how it
+        // gets pinned with `xlings index use`); a different url would be two
+        // repositories answering to one namespace, which nothing can resolve.
+        {
+            IndexRepo probe;
+            probe.name = name;
+            probe.url = url;
+            switch (xim::classify_index_entry(probe)) {
+            case xim::IndexEntryKind::NameCollision:
+                log::error("'{}' is already a sub-index declared by the default index ({})",
+                           name, xim::declared_sub_index_url(name));
+                log::error("  two repositories cannot share one namespace -- use another name");
+                return 1;
+            case xim::IndexEntryKind::DeclaredSubIndex:
+                log::println("note: '{}' is a sub-index declared by the default index; "
+                             "this entry configures it (for example "
+                             "`xlings index use {} <version>`) and it stays a sub-index",
+                             name, name);
+                break;
+            case xim::IndexEntryKind::Independent:
+                break;
+            }
+        }
+
         // Upsert against the freshly-read document: a repo another process
         // added since we started must be updated in place, not duplicated.
         edits.push_back([name, url](nlohmann::json& json) {
@@ -978,6 +1006,40 @@ int cmd_config_(const mcpplibs::cmdline::ParsedArgs& args, EventStream& stream) 
             json["index_repos"].push_back(entry);
         });
         log::println("index-repo {} = {}", name, url);
+    }
+
+    // --rm-index-repo <NAME>
+    //
+    // The inverse of --index-repo. Until now the only way to take an entry out
+    // was the NDJSON `remove_repo` capability or a hand-edit -- so the remedy a
+    // dependency-ambiguity error needs to print had no command a person types.
+    if (auto rm = args.value("rm-index-repo")) {
+        const std::string name(*rm);
+        bool removed = false;
+        edits.push_back([name, &removed](nlohmann::json& json) {
+            if (!json.contains("index_repos") || !json["index_repos"].is_array()) return;
+            auto& arr = json["index_repos"];
+            for (auto it = arr.begin(); it != arr.end(); ) {
+                if (it->is_object() && it->contains("name") && (*it)["name"].is_string()
+                    && (*it)["name"].get<std::string>() == name) {
+                    it = arr.erase(it);
+                    removed = true;
+                } else {
+                    ++it;
+                }
+            }
+        });
+        if (!commit_edits()) return 1;
+        if (!removed) {
+            log::error("no index_repos entry named '{}'", name);
+            log::error("  `xlings index` lists the configured sources");
+            return 1;
+        }
+        log::println("index-repo {} removed", name);
+        if (name == Config::DEFAULT_INDEX_REPO_NAME) {
+            log::println("  the default index stays configured with its built-in source");
+        }
+        return 0;
     }
 
     if (!edits.empty()) {
@@ -1863,6 +1925,7 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("remove-xpkg").takes_value().value_name("NAME").help("Remove one local recipe"))
             .option(cmdline::Option("clear-xpkg").takes_value().value_name("all|stale").help("Remove local recipes (all, or stale = identical/behind the synced index)"))
             .option(cmdline::Option("index-repo").takes_value().value_name("NS:URL").help("Add/update index repo (e.g. myns:https://...git)"))
+            .option(cmdline::Option("rm-index-repo").takes_value().value_name("NAME").help("Remove an index repo entry"))
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
                 return cmd_config_(args, stream);

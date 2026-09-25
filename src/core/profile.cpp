@@ -6,6 +6,7 @@ module;
 module xlings.core.profile;
 
 import std;
+import xlings.core.destructive_log;
 import xlings.core.config;
 import xlings.libs.json;
 import xlings.core.log;
@@ -228,20 +229,35 @@ bool save_subos_workspace(const fs::path& subosRoot,
 
 // Build a set of referenced xpkg "dirname/version" keys from all subos workspaces
 // by mapping workspace target names to xpkg directory paths via the versions DB.
-std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
+// Every `<store>/<version>` some subos still references -- or why that cannot
+// be answered. "Could not read" is not "references nothing": an unreadable
+// subos config or version DB used to contribute no references, and every
+// payload only it used was then collected (measured with `self clean
+// --dry-run`: one bad subos config, its package listed for removal). So a
+// reader that cannot see everything refuses, and says which part it could not
+// see. The refusal is binary on purpose -- see AGENTS.md on derived tables.
+std::expected<std::set<std::string>, std::string>
+collect_subos_references_(const fs::path& xlingsHome) {
     std::set<std::string> referenced;
-    auto xpkgsDir = xlingsHome / "data" / "xpkgs";
 
     // Load global versions DB
     auto configPath = xlingsHome / ".xlings.json";
     xvm::VersionDB globalDB;
     if (fs::exists(configPath)) {
+        nlohmann::json json;
         try {
-            auto content = platform::read_file_to_string(configPath.string());
-            auto json = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded() && json.contains("versions"))
-                globalDB = xvm::versions_from_json(json["versions"]);
-        } catch (...) {}
+            json = nlohmann::json::parse(
+                platform::read_file_to_string(configPath.string()), nullptr, false);
+        } catch (...) {
+            json = nlohmann::json::value_t::discarded;
+        }
+        if (json.is_discarded() || !json.is_object()) {
+            return std::unexpected(std::format(
+                "{} could not be read, so which packages are in use is unknown",
+                configPath.string()));
+        }
+        if (json.contains("versions"))
+            globalDB = xvm::versions_from_json(json["versions"]);
     }
 
     // Build a map: xpkg_dir_name/version -> key, from versions DB paths
@@ -264,26 +280,43 @@ std::set<std::string> collect_subos_references_(const fs::path& xlingsHome) {
             if (it == globalDB.end()) continue;
             for (auto& [verKey, vdata] : it->second.versions) {
                 if (vdata.path.empty()) continue;
-                // Extract xpkg dir from path: .../xpkgs/<dirname>/<version>/...
-                auto xpkgsPos = vdata.path.find("xpkgs/");
-                if (xpkgsPos == std::string::npos) continue;
-                auto rel = vdata.path.substr(xpkgsPos + 6); // after "xpkgs/"
-                // rel is like "xim-x-gcc/15.1.0/bin" or "xim-x-gcc/15.1.0"
-                // Extract first two path components: dirname/version
-                auto slash1 = rel.find('/');
-                if (slash1 == std::string::npos) continue;
-                auto slash2 = rel.find('/', slash1 + 1);
-                auto dirAndVer = (slash2 != std::string::npos)
-                    ? rel.substr(0, slash2)
-                    : rel;
-                referenced.insert(dirAndVer);
+                // `.../xpkgs/<store>/<version>/...`, by path component: a
+                // substring search for "xpkgs/" missed every record written
+                // with backslashes.
+                // Split by hand on both separators: portable across libc++
+                // (whose path iterators do not compare here) and across
+                // records written on another platform.
+                std::vector<std::string> parts;
+                std::string current;
+                for (char c : vdata.path) {
+                    if (c == '/' || c == '\\') {
+                        if (!current.empty()) parts.push_back(std::move(current));
+                        current.clear();
+                    } else {
+                        current += c;
+                    }
+                }
+                if (!current.empty()) parts.push_back(std::move(current));
+                for (std::size_t i = 0; i + 2 < parts.size(); ++i) {
+                    if (parts[i] != "xpkgs") continue;
+                    referenced.insert(parts[i + 1] + "/" + parts[i + 2]);
+                    break;
+                }
             }
         }
     };
 
     // Scan all subos workspace files
-    for (auto& snapshot : load_subos_snapshots(xlingsHome)) {
+    std::vector<std::string> unreadable;
+    for (auto& snapshot : load_subos_snapshots(xlingsHome, &unreadable)) {
         add_refs_from_subos_workspace(snapshot.workspace);
+    }
+    if (!unreadable.empty()) {
+        std::string names;
+        for (const auto& n : unreadable) names += (names.empty() ? "" : ", ") + n;
+        return std::unexpected(std::format(
+            "the config of subos {} could not be read, so the packages it uses "
+            "are unknown", names));
     }
 
     return referenced;
@@ -337,7 +370,14 @@ std::vector<std::string> find_subos_pinning_version(
 }
 
 int gc(const fs::path& xlingsHome, bool dryRun) {
-    auto referenced = collect_subos_references_(xlingsHome);
+    auto references = collect_subos_references_(xlingsHome);
+    if (!references) {
+        std::println("[xlings:store] gc refused: {}", references.error());
+        std::println("  nothing was removed; `xlings self doctor --fix` repairs an "
+                     "unreadable subos config, then run this again");
+        return 1;
+    }
+    const auto& referenced = *references;
 
     auto pkgDir = xlingsHome / "data" / "xpkgs";
     if (!fs::exists(pkgDir)) {
@@ -362,7 +402,13 @@ int gc(const fs::path& xlingsHome, bool dryRun) {
                     std::println("  would remove xpkgs/{}/{} ({} MB)", pkgName, ver, mb);
                 } else {
                     std::error_code ec;
+                    const auto held = destructive_log::measure(verEntry.path());
                     fs::remove_all(verEntry.path(), ec);
+                    destructive_log::record({
+                        .op = "gc", .path = verEntry.path(), .bytes = held.bytes,
+                        .files = held.files, .confirmedBy = "self clean",
+                        .detail = ec ? "incomplete: " + ec.message() : std::string{},
+                    });
                     if (!ec)
                         std::println("[xlings:store] removed xpkgs/{}/{}", pkgName, ver);
                 }

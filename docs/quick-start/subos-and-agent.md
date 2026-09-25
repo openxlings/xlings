@@ -96,8 +96,8 @@ Linux sandbox 模式提供独立文件系统视图；macOS/Windows 只分离配�
 xlings subos new ephemeral --storage tmpfs
 xlings subos use ephemeral --sandbox --cmd "claude --task 'audit this repo for security issues'"
 
-# 任务完成后清理
-xlings subos remove ephemeral
+# 任务完成后清理（会删除这个 SubOS 的 home；没有终端可确认时需要 -y）
+xlings subos remove ephemeral -y
 ```
 
 适合代码审查、安全扫描、实验性修改等不需要保留结果的场景。
@@ -113,8 +113,12 @@ xlings interface --list
 # 每次调用在命令行指定 capability 和 JSON 参数
 xlings interface create_subos --args '{"name":"ci-agent"}'
 xlings interface list_subos --args '{}'
-xlings interface remove_subos --args '{"name":"ci-agent"}'
+xlings interface remove_subos --args '{"name":"ci-agent","yes":true}'
 ```
+
+`remove_subos` 会删除 SubOS 的 home（用户数据），所以只有带 `"yes": true`（表示用户已确认）
+才会执行；不带时什么都不改，返回将要删除的路径和数据量（exitCode=2），见
+[NDJSON 规范 §7.1](../spec/interface-ndjson-v1.md)。
 
 stdin 只传递 `cancel`、`pause`、`resume` 和 `prompt-reply` 等运行时控制
 消息，不用于选择 capability。
@@ -141,7 +145,7 @@ exit
 # 4. 确认无误后，释放 keeper 进程
 xlings subos stop feature-dev
 
-# 5. 不再需要时删除环境
+# 5. 不再需要时删除环境（会先确认，列出 home 里有多少数据）
 xlings subos remove feature-dev
 ```
 
@@ -173,5 +177,5 @@ sequenceDiagram
 | `xlings subos use <name> --sandbox` | 进入沙箱环境 |
 | `xlings subos use <name> --cmd "..."` | 在 SubOS 中执行命令 |
 | `xlings subos stop <name>` | 释放 keeper 进程 |
-| `xlings subos remove <name>` | 删除 SubOS |
+| `xlings subos remove <name>` | 删除 SubOS（连同 home，先确认；无终端时需 `-y`） |
 | `xlings interface` | 启动 NDJSON 程序化接口 |

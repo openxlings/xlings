@@ -1508,3 +1508,46 @@ TEST(SweptPayloadMarkerTest, ACleanPayloadIsNotFlagged) {
     EXPECT_EQ(swept_payload_marker(dir), "");
     fs::remove_all(dir);
 }
+
+// ── the installer reads the resolver's edge, not the dependency's name ──
+//
+// With `scode:ncurses` and `xim:ncurses` in one plan, a consumer's bare
+// `ncurses` used to get whichever node came first in the plan -- a walk over an
+// unordered_map. The resolver now records which node it chose; this pins that
+// the installer follows that record.
+namespace {
+xlings::xim::PlanNode dep_node_(std::string ns, std::string name, std::string version) {
+    xlings::xim::PlanNode n;
+    n.name = name;
+    n.rawName = name;
+    n.namespaceName = ns;
+    n.canonicalName = ns + ":" + name;
+    n.version = std::move(version);
+    return n;
+}
+}
+
+TEST(XimInstallerDepEdgeTest, LocateDepInstallDirFollowsTheResolversEdge) {
+    namespace fs = std::filesystem;
+    const fs::path data = fs::temp_directory_path() / "xlings-dep-edge-data";
+    xlings::xim::InstallPlan plan;
+    plan.nodes.push_back(dep_node_("scode", "ncurses", "6.4"));  // FIRST in the plan
+    plan.nodes.push_back(dep_node_("xim", "ncurses", "6.5"));
+    auto consumer = dep_node_("xim", "xmake", "3.1.1");
+    consumer.depEdges.push_back({ .spec = "ncurses",
+                                  .kind = xlings::xim::DepKind::Build,
+                                  .nodeKey = "xim:ncurses@6.5" });
+
+    auto dir = xlings::xim::Installer::locate_dep_install_dir_(plan, consumer, data, "ncurses");
+    EXPECT_EQ(dir, data / "xpkgs" / "xim-x-ncurses" / "6.5");
+
+    // An edge naming a node the plan does not hold answers nothing -- guessing
+    // by name would put a plausible wrong directory in front of the hook.
+    consumer.depEdges.front().nodeKey = "xim:ncurses@9.9";
+    EXPECT_TRUE(xlings::xim::Installer::locate_dep_install_dir_(plan, consumer, data, "ncurses").empty());
+
+    // No edge at all (a hand-built plan): the old name match still answers.
+    consumer.depEdges.clear();
+    EXPECT_EQ(xlings::xim::Installer::locate_dep_install_dir_(plan, consumer, data, "xim:ncurses"),
+              data / "xpkgs" / "xim-x-ncurses" / "6.5");
+}

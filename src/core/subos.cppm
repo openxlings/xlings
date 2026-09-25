@@ -97,6 +97,15 @@ export int create(const std::string& name, const fs::path& customDir,
                   const std::string& runtime,
                   EventStream& stream);
 
+// As above, and a directory that already exists and holds files is adopted --
+// registered as this subos, contents kept -- only once the user confirmed
+// (terminal, or `yes` spelled `yesSpelling`). Without that, nothing is
+// created and it returns 2. The forms without `yes` never adopt silently.
+export int create(const std::string& name, const fs::path& customDir,
+                  sandbox::StorageMode storage, const std::string& imageSize,
+                  const std::string& runtime, bool yes, std::string_view yesSpelling,
+                  EventStream& stream);
+
 // What a subos gets when nobody named a runtime: the index's answer for
 // manifest::DEFAULT_RUNTIME_PACKAGE, or the pinned fallback when the index
 // cannot be read.
@@ -157,10 +166,12 @@ struct PkgRef {
 
 } // namespace new_from_detail_
 
+// `yes`: the caller's explicit auto-confirm (`-y`), passed to create() for a
+// target directory that already exists -- see create().
 export int new_from(const std::string& name, const fs::path& customDir,
                     sandbox::StorageMode storage, const std::string& imageSize,
                     const std::string& fromSpec, const std::string& runtime,
-                    EventStream& stream);
+                    bool yes, EventStream& stream);
 
 // `xlings subos use` modes:
 //
@@ -493,6 +504,15 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
 export int use(const std::string& name, EventStream& stream);
 
 export int remove(const std::string& name, EventStream& stream);
+
+// Removing a SubOS deletes its home and every other file in it, so it happens
+// only once the user confirmed: at a terminal, or through the caller's explicit
+// auto-confirm (`yes`, spelled `yesSpelling` -- "-y" or "yes:true" -- in what
+// is reported and logged). With neither, nothing is deleted and the call
+// returns 2 with what it WOULD have deleted. The two-argument form never
+// auto-confirms.
+export int remove(const std::string& name, bool yes, std::string_view yesSpelling,
+                  EventStream& stream);
 
 export std::optional<SubosInfo> info(const std::string& name);
 

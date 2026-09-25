@@ -55,24 +55,57 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
     std::unordered_map<std::string, Color_> color;
     std::unordered_map<std::string, PlanNode> nodeMap;
 
-    std::function<bool(const std::string&, std::vector<std::string>&, DepKind)> expand =
-        [&](const std::string& target, std::vector<std::string>& path, DepKind kind) -> bool {
+    // One report per distinct failure. The loader fans a flat `deps` list out
+    // into BOTH runtime_deps and build_deps, so a dependency that could not be
+    // resolved used to be reported twice -- the same paragraph, twice, with
+    // nothing to say it was one problem.
+    std::unordered_set<std::string> reported;
+    auto report = [&](std::string message) {
+        if (reported.insert(message).second) plan.errors.push_back(std::move(message));
+    };
+    auto chain_of = [](const std::vector<std::string>& path) {
+        std::string chain;
+        for (const auto& item : path) {
+            if (!chain.empty()) chain += " -> ";
+            chain += item;
+        }
+        return chain;
+    };
+
+    // `declarer` is the index the recipe naming `target` came from; null for
+    // what the user typed. `chosenKey` receives the node the target resolved
+    // to, which the caller records as the dependency edge.
+    std::function<bool(const std::string&, std::vector<std::string>&, DepKind,
+                       const DeclaringRepo*, std::string*)> expand =
+        [&](const std::string& target, std::vector<std::string>& path, DepKind kind,
+            const DeclaringRepo* declarer, std::string* chosenKey) -> bool {
+        const auto lookup = [&](const std::string& spec) {
+            return declarer ? catalog.resolve_dependency(spec, *declarer, platform)
+                            : catalog.resolve_target(spec, platform);
+        };
         // Pin before resolving, and fall back to the unpinned target if the
         // pinned one no longer exists in the catalog -- an active version can
         // outlive its declaration, and that must degrade to "resolve normally"
-        // rather than to "package not found".
+        // rather than to "package not found". The fallback asks the SAME
+        // declaring index: a pin that index cannot satisfy is no reason to
+        // take another index's package of the same name.
         const auto pinned = pin_target_to_subos(target, subosVersionOf);
-        auto resolved = catalog.resolve_target(pinned, platform);
+        auto resolved = lookup(pinned);
         if (!resolved && pinned != target) {
-            resolved = catalog.resolve_target(target, platform);
+            resolved = lookup(target);
         }
         if (!resolved) {
-            plan.errors.push_back(resolved.error());
+            // Say whose dependency it is. The user typed `xmake`; a bare
+            // "package 'ncurses' is ambiguous" names nothing they asked for.
+            report(path.empty()
+                ? resolved.error()
+                : std::format("{} -> {}: {}", chain_of(path), target, resolved.error()));
             return false;
         }
 
         auto match = *resolved;
         auto key = node_key_(match);
+        if (chosenKey) *chosenKey = key;
 
         auto it = color.find(key);
         if (it != color.end()) {
@@ -176,11 +209,22 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
 
             DepKind rt_kind = (kind == DepKind::Build) ? DepKind::Build
                                                        : DepKind::Runtime;
+            // The recipe's own index is where its bare names are looked up.
+            const DeclaringRepo self{ .repoName = match.repoName,
+                                      .scope    = match.scope };
             for (auto& dep : node.runtime_deps) {
-                if (!expand(dep, path, rt_kind)) { /* keep collecting */ }
+                std::string depKey;
+                if (expand(dep, path, rt_kind, &self, &depKey)) {
+                    node.depEdges.push_back({ .spec = dep, .kind = rt_kind,
+                                              .nodeKey = std::move(depKey) });
+                }
             }
             for (auto& dep : node.build_deps) {
-                if (!expand(dep, path, DepKind::Build)) { /* keep collecting */ }
+                std::string depKey;
+                if (expand(dep, path, DepKind::Build, &self, &depKey)) {
+                    node.depEdges.push_back({ .spec = dep, .kind = DepKind::Build,
+                                              .nodeKey = std::move(depKey) });
+                }
             }
         } else {
             log::warn("failed to load package {}: {}", key, pkg.error());
@@ -194,7 +238,7 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
 
     for (auto& target : targets) {
         std::vector<std::string> path;
-        expand(target, path, DepKind::Runtime);
+        expand(target, path, DepKind::Runtime, nullptr, nullptr);
     }
 
     if (plan.has_errors()) {
@@ -212,15 +256,11 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         auto it = nodeMap.find(key);
         if (it == nodeMap.end()) return;
 
-        for (auto& dep : it->second.deps) {
-            // Pin exactly as expand() did, or this recomputes a key the node
-            // map does not have and the edge is silently dropped.
-            const auto pinned = pin_target_to_subos(dep, subosVersionOf);
-            auto depMatch = catalog.resolve_target(pinned, platform);
-            if (!depMatch && pinned != dep) {
-                depMatch = catalog.resolve_target(dep, platform);
-            }
-            if (depMatch) topoVisit(node_key_(*depMatch));
+        // The edges expand() recorded -- not a second resolution of the
+        // dependency names, which had to agree with the first to the letter
+        // or the edge was silently dropped.
+        for (const auto& edge : it->second.depEdges) {
+            topoVisit(edge.nodeKey);
         }
         topoOrder.push_back(key);
     };

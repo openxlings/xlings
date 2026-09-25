@@ -8,10 +8,12 @@ import xlings.runtime.capability;
 import xlings.libs.json;
 import xlings.core.xim.commands;
 import xlings.core.xim.index_cmd;
+import xlings.core.xim.repo;
 import xlings.core.xvm.commands;
 import xlings.core.config;
 import xlings.core.home_config;
 import xlings.core.subos;
+import xlings.core.subos.sandbox;
 import xlings.core.xself;
 import xlings.platform;
 import xlings.runtime.cancellation;
@@ -74,11 +76,44 @@ auto SearchPackages::execute(Params params, EventStream& stream) -> Result {
     return exit_result(xim::cmd_search(keyword, stream));
 }
 
+namespace {
+
+// `noDeps` was published in the install_packages / plan_install schemas as
+// "Skip dependency installation" and was never read by anything: a caller that
+// set it got every dependency installed while believing it had skipped them.
+// It is not implemented now either -- a package whose declared dependencies
+// are missing is one that does not run -- so asking for it is refused out
+// loud, and the field is gone from the schemas. `false` is what always
+// happened, so it stays accepted.
+bool refuse_no_deps_(const nlohmann::json& json, EventStream& stream) {
+    if (!json.is_object() || !json.contains("noDeps")) return false;
+    const auto& v = json["noDeps"];
+    if (v.is_boolean() && !v.get<bool>()) return false;
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = "noDeps is not supported: a package's declared dependencies "
+                   "are always installed with it, because it does not work "
+                   "without them. Nothing was installed.",
+        .recoverable = true,
+        .hint = "drop \"noDeps\" from the request",
+    });
+    return true;
+}
+
+// `"yes": true` and nothing else. A string "true" or a 1 is not the user
+// saying yes to deleting their data; it is a malformed request, read as no.
+bool explicit_yes_(const nlohmann::json& json) {
+    return json.is_object() && json.contains("yes") && json["yes"].is_boolean()
+        && json["yes"].get<bool>();
+}
+
+}  // namespace
+
 auto InstallPackages::spec() const -> CapabilitySpec {
     return {
         .name = "install_packages",
         .description = "Install one or more packages",
-        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"noDeps":{"type":"boolean","description":"Skip dependency installation"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"}},"required":["targets"]})",
+        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"}},"required":["targets"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -94,11 +129,11 @@ auto InstallPackages::execute(Params params, EventStream& stream, CancellationTo
     if (json.contains("targets") && json["targets"].is_array()) {
         for (auto& t : json["targets"]) targets.push_back(t.get<std::string>());
     }
+    if (refuse_no_deps_(json, stream)) return exit_result(2);
     bool yes = json.value("yes", false);
-    bool noDeps = json.value("noDeps", false);
     bool global = json.value("global", false);
     bool useAfter = json.value("useAfterInstall", false);
-    return exit_result(xim::cmd_install(targets, yes, noDeps, stream, global,
+    return exit_result(xim::cmd_install(targets, yes, /*noDeps=*/false, stream, global,
                                          cancel, /*dryRun=*/false, useAfter));
 }
 
@@ -106,7 +141,7 @@ auto PlanInstall::spec() const -> CapabilitySpec {
     return {
         .name = "plan_install",
         .description = "Resolve targets and report what install_packages WOULD do (no download, no install)",
-        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"noDeps":{"type":"boolean"},"global":{"type":"boolean"}},"required":["targets"]})",
+        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"global":{"type":"boolean"}},"required":["targets"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -118,9 +153,9 @@ auto PlanInstall::execute(Params params, EventStream& stream) -> Result {
     if (json.contains("targets") && json["targets"].is_array()) {
         for (auto& t : json["targets"]) targets.push_back(t.get<std::string>());
     }
-    bool noDeps = json.value("noDeps", false);
+    if (refuse_no_deps_(json, stream)) return exit_result(2);
     bool global = json.value("global", false);
-    return exit_result(xim::cmd_install(targets, /*yes=*/true, noDeps, stream,
+    return exit_result(xim::cmd_install(targets, /*yes=*/true, /*noDeps=*/false, stream,
                                          global, /*cancel=*/nullptr, /*dryRun=*/true));
 }
 
@@ -343,7 +378,7 @@ auto CreateSubos::spec() const -> CapabilitySpec {
     return {
         .name = "create_subos",
         .description = "Create a new sub-OS. The name must be alphanumeric (plus _ or -); 'current' is reserved",
-        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"},"dir":{"type":"string","description":"Optional custom directory; defaults to $XLINGS_HOME/subos/<name>"}},"required":["name"]})",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"},"dir":{"type":"string","description":"Optional custom directory; defaults to $XLINGS_HOME/subos/<name>"},"yes":{"type":"boolean","description":"The user confirmed adopting a directory that already exists and holds files. Without it such a call changes nothing and reports what is there"}},"required":["name"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -356,6 +391,7 @@ auto CreateSubos::execute(Params params, EventStream& stream) -> Result {
     return exit_result(subos::create(
         name,
         dir.empty() ? std::filesystem::path{} : std::filesystem::path{dir},
+        subos::sandbox::StorageMode::Shared, "50G", "", explicit_yes_(json), "yes:true",
         stream));
 }
 
@@ -377,8 +413,8 @@ auto SwitchSubos::execute(Params params, EventStream& stream) -> Result {
 auto RemoveSubos::spec() const -> CapabilitySpec {
     return {
         .name = "remove_subos",
-        .description = "Remove a sub-OS. Refuses to remove 'default' or the currently active sub-OS",
-        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})",
+        .description = "Remove a sub-OS, deleting its home and every file in it. Refuses to remove 'default' or the currently active sub-OS. Deletes only with \"yes\": true -- the user's confirmation; without it nothing is removed and the error says what would be deleted",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"},"yes":{"type":"boolean","description":"The user confirmed deleting this sub-OS and its data"}},"required":["name"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -386,7 +422,8 @@ auto RemoveSubos::spec() const -> CapabilitySpec {
 
 auto RemoveSubos::execute(Params params, EventStream& stream) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
-    return exit_result(subos::remove(json.value("name", ""), stream));
+    return exit_result(subos::remove(json.value("name", ""), explicit_yes_(json),
+                                     "yes:true", stream));
 }
 
 auto ListRepos::spec() const -> CapabilitySpec {
@@ -443,6 +480,38 @@ auto AddRepo::execute(Params params, EventStream& stream) -> Result {
             .recoverable = false,
         });
         return exit_result(1);
+    }
+
+    // Same rule as `xlings config --index-repo`, from the same predicate: a
+    // declared sub-index's own url configures it; another url under its name
+    // would be two repositories answering to one namespace.
+    {
+        IndexRepo probe;
+        probe.name = name;
+        probe.url = url;
+        switch (xim::classify_index_entry(probe)) {
+        case xim::IndexEntryKind::NameCollision:
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format(
+                    "'{}' is already a sub-index declared by the default index ({}); "
+                    "two repositories cannot share one namespace",
+                    name, xim::declared_sub_index_url(name)),
+                .recoverable = true,
+                .hint = "use another name",
+            });
+            return exit_result(1);
+        case xim::IndexEntryKind::DeclaredSubIndex:
+            stream.emit(LogEvent{
+                .level = LogLevel::info,
+                .message = std::format(
+                    "'{}' is a sub-index declared by the default index; this entry "
+                    "configures it and it stays a sub-index", name),
+            });
+            break;
+        case xim::IndexEntryKind::Independent:
+            break;
+        }
     }
 
     auto committed = update_home_config(

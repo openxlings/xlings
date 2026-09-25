@@ -105,7 +105,7 @@ try {
   }
   & $installed subos info candidate-probe | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "subos info failed" }
-  & $installed subos remove candidate-probe
+  & $installed subos remove candidate-probe -y
   if ($LASTEXITCODE -ne 0) { throw "subos remove failed" }
 } finally { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
 

@@ -157,6 +157,30 @@ std::vector<IndexRepo> discovered_global_sub_repos();
 // Return all discovered project-local sub-repos
 std::vector<IndexRepo> discovered_project_sub_repos();
 
+// What a global index_repos entry IS, decided from configuration.
+//
+// An entry whose name AND url match a sub-index the default index declares is
+// not a second repository: it is configuration for that sub-index (a pinned
+// snapshot, an artifact base). It used to be synced a second time into
+// data/<name> and ranked as a primary index -- so listing `scode` explicitly,
+// which is the only way to pin it with `xlings index use`, quietly promoted it
+// to a peer of `xim` and made every name the two share ambiguous.
+//
+// Same name, different url: two repositories claiming one namespace. Refused
+// on write, reported by doctor, never guessed between.
+enum class IndexEntryKind { Independent, DeclaredSubIndex, NameCollision };
+IndexEntryKind classify_index_entry(const IndexRepo& repo);
+
+// The one directory an index entry's content lives in: the sub-index tree for
+// a DeclaredSubIndex entry, Config::repo_dir_for otherwise. Every reader that
+// asks "where is this repo on disk" -- sync, catalog, `xlings index`, overlay
+// -- must ask HERE, or a pin lands in one copy while resolution reads another.
+std::filesystem::path effective_repo_dir(const IndexRepo& repo, bool projectScope);
+
+// Overlay the settings of the global index_repos entry configuring this
+// declared sub-index (version pin, artifact bases, source) onto it.
+IndexRepo with_configured_settings(IndexRepo subIndex);
+
 // #366: true once the default/global sub-indexes have been synced at least
 // once (the persisted xim-indexrepos.json marker exists). On a fresh machine
 // this is false even though the main index rebuilds fine, which is exactly why

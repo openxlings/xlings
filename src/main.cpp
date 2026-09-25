@@ -5,6 +5,7 @@ import xlings.core.config;
 import xlings.platform;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.lock;
+import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
@@ -84,6 +85,7 @@ int main(int argc, char* argv[]) {
             command += ' ';
             command += argv[i];
         }
+        xlings::destructive_log::set_command(command);
         xlings::xvm::set_lock_command_hint(std::move(command));
     }
 

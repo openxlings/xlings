@@ -172,7 +172,8 @@ void render_data_event(const DataEvent& e) {
         }
     }
     else if (e.kind == "subos_created") {
-        std::println("Created subos: {} ({})",
+        std::println("{} subos: {} ({})",
+            json.value("adopted", false) ? "Adopted" : "Created",
             json.value("name", ""), json.value("dir", ""));
     }
     else if (e.kind == "subos_switched") {
