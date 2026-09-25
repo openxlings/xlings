@@ -1,0 +1,16 @@
+// Windows resource script for xlings.exe.
+//
+// Embeds a UTF-8 activeCodePage application manifest (Windows 10 1903+).
+// With it present, std::filesystem::path::string() and the -A Win32 APIs
+// operate in UTF-8 instead of the process's legacy ANSI code page, so a
+// working directory whose name contains a character the ANSI code page
+// cannot represent no longer raises an uncaught std::system_error during
+// start-up (mcpp#693). Compiled through [resources] in mcpp.toml; only PE
+// targets compile this file, and the manifest is also listed under
+// [resources] extra-inputs there, because the .rc input scanner recognises
+// the `MANIFEST` keyword but not the equivalent numeric resource type used
+// below.
+//
+// 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID, the ordinal the loader reads for
+// the executable's own manifest; 24 is RT_MANIFEST.
+1 24 "xlings.exe.manifest"
