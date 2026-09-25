@@ -43,9 +43,10 @@ $VERSION = (Select-String -Path (Join-Path $env:GITHUB_WORKSPACE "src\core\confi
 if (-not $VERSION) { throw "could not read the xlings version from src\core\config.cppm" }
 Write-Host "expected version: $VERSION"
 
-# Built from code points so the workflow source stays plain ASCII: 0x6D4B
-# 0x8BD5 spell "测试" ("test"); 0x1F9EA is the test-tube emoji from mcpp#693,
-# a supplementary-plane character that needs a UTF-16 surrogate pair.
+# Built from code points so the script stays plain ASCII: U+6D4B U+8BD5 are
+# the two Chinese characters for "test", and U+1F9EA is the character from
+# mcpp#693, a supplementary-plane code point that needs a UTF-16 surrogate
+# pair.
 $dirName = "repro-" + [char]0x6D4B + [char]0x8BD5 + "-" + [char]::ConvertFromUtf32(0x1F9EA)
 $testDir = Join-Path $env:RUNNER_TEMP $dirName
 New-Item -ItemType Directory -Force -Path $testDir | Out-Null
