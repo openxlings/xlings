@@ -37,6 +37,12 @@ struct Census {
 delete_subos(const std::filesystem::path& dir, std::string_view op,
              const confirm::UserConfirmed& confirmed);
 
+// The mount point under `dir` (or `dir` itself) in a /proc/self/mountinfo
+// text, octal escapes decoded. Split out so the parsing is testable without a
+// mount; delete_subos reads the real file on Linux.
+[[nodiscard]] std::optional<std::filesystem::path>
+mount_under_in(std::string_view mountinfo, const std::filesystem::path& dir);
+
 // The hint for a refusal that lacked confirmation, worded for who asked:
 // an agent ("yes:true") is told the decision is the user's.
 [[nodiscard]] std::string needs_confirmation_hint(std::string_view yesSpelling,

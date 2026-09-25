@@ -53,19 +53,16 @@ std::string describe(const Census& c) {
     return out;
 }
 
-#if defined(__linux__)
-namespace {
-// A live mount anywhere under `dir`, from /proc/self/mountinfo. Deleting
-// through one erases the mounted filesystem's contents, not this tree's.
-std::optional<fs::path> mount_under(const fs::path& dir) {
-    std::ifstream in("/proc/self/mountinfo");
+std::optional<std::filesystem::path>
+mount_under_in(std::string_view mountinfo, const std::filesystem::path& dir) {
+    std::istringstream in{std::string(mountinfo)};
     std::string line;
     const auto prefix = dir.string();
     while (std::getline(in, line)) {
         std::istringstream fields(line);
         std::string id, parent, devno, root, point;
         if (!(fields >> id >> parent >> devno >> root >> point)) continue;
-        std::string decoded;   // \040 etc. are octal escapes
+        std::string decoded;   // \040 (space) and friends are octal escapes
         for (std::size_t i = 0; i < point.size(); ++i) {
             if (point[i] == '\\' && i + 3 < point.size()
                 && std::isdigit(static_cast<unsigned char>(point[i + 1]))) {
@@ -75,9 +72,20 @@ std::optional<fs::path> mount_under(const fs::path& dir) {
                 decoded += point[i];
             }
         }
-        if (decoded == prefix || decoded.starts_with(prefix + "/")) return fs::path(decoded);
+        if (decoded == prefix || decoded.starts_with(prefix + "/")) {
+            return std::filesystem::path(decoded);
+        }
     }
     return std::nullopt;
+}
+
+#if defined(__linux__)
+namespace {
+// A live mount anywhere under `dir`. Deleting through one erases the mounted
+// filesystem's contents, not this tree's.
+std::optional<fs::path> mount_under(const fs::path& dir) {
+    std::ifstream in("/proc/self/mountinfo");
+    return mount_under_in(std::string(std::istreambuf_iterator<char>(in), {}), dir);
 }
 }  // namespace
 #endif

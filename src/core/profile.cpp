@@ -283,14 +283,23 @@ collect_subos_references_(const fs::path& xlingsHome) {
                 // `.../xpkgs/<store>/<version>/...`, by path component: a
                 // substring search for "xpkgs/" missed every record written
                 // with backslashes.
-                const fs::path recorded(vdata.path);
-                for (auto part = recorded.begin(); part != recorded.end(); ++part) {
-                    if (part->string() != "xpkgs") continue;
-                    auto store = std::next(part);
-                    if (store == recorded.end()) break;
-                    auto version = std::next(store);
-                    if (version == recorded.end()) break;
-                    referenced.insert(store->string() + "/" + version->string());
+                // Split by hand on both separators: portable across libc++
+                // (whose path iterators do not compare here) and across
+                // records written on another platform.
+                std::vector<std::string> parts;
+                std::string current;
+                for (char c : vdata.path) {
+                    if (c == '/' || c == '\\') {
+                        if (!current.empty()) parts.push_back(std::move(current));
+                        current.clear();
+                    } else {
+                        current += c;
+                    }
+                }
+                if (!current.empty()) parts.push_back(std::move(current));
+                for (std::size_t i = 0; i + 2 < parts.size(); ++i) {
+                    if (parts[i] != "xpkgs") continue;
+                    referenced.insert(parts[i + 1] + "/" + parts[i + 2]);
                     break;
                 }
             }

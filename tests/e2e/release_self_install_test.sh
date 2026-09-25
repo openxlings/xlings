@@ -44,4 +44,23 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     fail "patchelf binary not found after self install"
 fi
 
+# Installing over a home replaces what the release SHIPS and nothing else.
+# Step 1 used to delete every top-level entry except data/, subos/ and
+# .xlings.json, so whatever a person kept under XLINGS_HOME -- and a subos
+# home is only one step away -- went with every upgrade, and `quick_install`
+# runs that step without asking. A second install from the same package, with
+# nobody at the terminal, must keep all of it.
+mkdir -p "$INSTALLED_HOME/my-work" "$INSTALLED_HOME/subos/default/home/u"
+echo "keep me" > "$INSTALLED_HOME/my-work/notes.txt"
+echo "keep me" > "$INSTALLED_HOME/subos/default/home/u/notes.txt"
+HOME="$INSTALL_USER_DIR" \
+PATH="$(minimal_system_path)" \
+env -u XLINGS_HOME "$PKG_DIR/bin/xlings" self install </dev/null >/dev/null 2>&1 \
+  || fail "second self install over an existing home failed"
+[[ -f "$INSTALLED_HOME/my-work/notes.txt" ]] \
+  || fail "self install deleted a directory the release does not ship (my-work/)"
+[[ -f "$INSTALLED_HOME/subos/default/home/u/notes.txt" ]] \
+  || fail "self install deleted a subos home"
+[[ -x "$INSTALLED_HOME/bin/xlings" ]] || fail "second self install left no bin/xlings"
+
 log "PASS: release self install scenario"

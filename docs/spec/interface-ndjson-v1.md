@@ -250,11 +250,46 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 各能力的 `inputSchema` / `outputSchema` 通过 `xlings interface --list` 获取。
 其中 `required` 自 2026.9.20.1 起由服务端统一执行，见 §3.3.1。
 
+### 7.1 需要用户确认的能力（2026.9.26.1+）
+
+sub-OS 的 home 是用户数据，删掉就无法恢复。因此下面两个能力只有在调用方带上
+`"yes": true`（表示**用户已经确认**）时才会动手；不带时什么都不改，返回
+`E_INVALID_INPUT`、exitCode=2，`message` 写明会删除 / 接管哪个目录、里面有多少数据，
+`hint` 说明这是用户的决定：
+
+| 能力 | 什么时候需要 `yes` |
+|------|------------------|
+| `remove_subos` | 总是需要：它会删除这个 sub-OS 的 home 和其中所有文件 |
+| `create_subos` | 目标目录已经存在且不是空的（未登记的 sub-OS 目录，或通过 `dir` 传入的已有目录）：`yes` 表示用户同意原样接管它 |
+
+agent 的正确做法：把 `message` 里的内容告诉用户，用户同意后再带 `"yes": true` 重新调用。
+不要为了让调用成功而自行加上 `yes`。
+
+```jsonc
+// xlings interface remove_subos --args '{"name":"dev"}'
+{"kind":"error","code":"E_INVALID_INPUT","recoverable":true,
+ "message":"removing subos 'dev' deletes /home/u/.xlings/subos/dev (home 2.5 GB in 30256 file(s)); nothing was removed",
+ "hint":"this needs the user's confirmation. Tell the user what would be deleted; if they ask for it, call remove_subos again with \"yes\": true"}
+{"kind":"result","exitCode":2}
+```
+
+每次实际发生的删除都会追加一行到 `<XLINGS_HOME>/logs/destructive.ndjson`，记录路径、
+大小、确认方式（`terminal` / `-y` / `yes:true`）、命令行和父进程。
+
+### 7.2 已移除的字段
+
+`install_packages` / `plan_install` 的 `noDeps` 曾写着 "Skip dependency installation"，
+但从未生效（依赖总会被安装）。2026.9.26.1 起它从 schema 中删除；传 `"noDeps": true`
+会被拒绝（`E_INVALID_INPUT`，exitCode=2），`false` 或不传与以往相同。
+
 ## 8. 错误处理
 
 - **启动阶段错误**（如未知能力名）：服务端先输出一行 `error` 事件，再输出 `result`（exitCode=1），然后退出。
 - **执行阶段错误**：通过事件流中的 `error` 事件报告。`recoverable=true` 表示执行未中断；`recoverable=false` 后通常紧跟 `result` 终止行。
 - **参数不满足 `inputSchema.required`**：code 为 `E_INVALID_INPUT`，exitCode=1，能力不被执行（§3.3.1）。
+- **需要确认但没有确认**（2026.9.26.1+）：code 为 `E_INVALID_INPUT`，exitCode=2，什么都没有改变（§7.1）。
+- **依赖解析失败**（2026.9.26.1+）：`message` 以依赖链开头，例如
+  `xim:xmake@3.1.1 -> ncurses: ...`，同一个失败只报一次。
 - **内部异常**：code 为 `E_INTERNAL`，exitCode=1。
 - **解压失败**（2026.9.20.1+）：不再一律是 `E_INTERNAL`。归档损坏 / 含不支持的条目为
   `E_INVALID_INPUT`（`hint` 说明缓存已清除、重试会重新下载）；写入失败为 `E_DISK_FULL`。

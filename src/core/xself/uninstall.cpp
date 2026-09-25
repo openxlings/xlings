@@ -162,7 +162,7 @@ int print_summary_(const fs::path& home,
     }
     if (subosCount > 0) {
         log::println("  subos:          {} {} subos — their homes hold {} in {} file(s){}",
-                     opts.keepData ? "KEEP" : "remove", subosCount,
+                     std::string(opts.keepData ? "KEEP" : "remove"), subosCount,
                      format_bytes_(homeBytes), homeFiles,
                      otherFiles > 0 ? std::format(", plus {} other file(s)", otherFiles)
                                     : std::string{});

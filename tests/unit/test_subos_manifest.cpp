@@ -10,6 +10,7 @@
 import std;
 import xlings.core.subos.manifest;
 import xlings.libs.json;
+import xlings.core.subos.userdata;
 
 namespace m = xlings::subos::manifest;
 namespace fs = std::filesystem;
@@ -1301,3 +1302,32 @@ TEST(SubosSysrootRuntime, NoAnswerLeavesTheLinkUntouched) {
     EXPECT_TRUE(m::sysroot_runtime(fx.subos(), &via).empty());
     EXPECT_EQ(via, "sentinel") << "no observation must not overwrite the out-param";
 }
+
+// ── a live mount under a subos stops its deletion ──────────────────────
+// Deleting through a bind mount erases the MOUNTED filesystem. The parser is
+// tested here because CI runners rarely allow an unprivileged mount namespace
+// (the e2e case is reported as SKIP there, not as a pass).
+TEST(SubosUserData, MountUnderFindsMountsAtAndBelowTheDirectory) {
+    namespace ud = xlings::subos::userdata;
+    const std::string info =
+        "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        "30 22 0:5 /x /home/h/.xlings/subos/s1/home/mnt rw - none none rw\n"
+        "31 22 0:6 / /home/h/.xlings/subos/s1\\040b rw - tmpfs tmpfs rw\n";
+    auto hit = ud::mount_under_in(info, "/home/h/.xlings/subos/s1");
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_EQ(*hit, std::filesystem::path("/home/h/.xlings/subos/s1/home/mnt"));
+
+    // `s1 b` (escaped space) is a sibling, not something under `s1`.
+    EXPECT_FALSE(ud::mount_under_in(
+        "31 22 0:6 / /home/h/.xlings/subos/s1\\040b rw - tmpfs tmpfs rw\n",
+        "/home/h/.xlings/subos/s1").has_value());
+    // ...and it decodes to the directory it names.
+    EXPECT_TRUE(ud::mount_under_in(
+        "31 22 0:6 / /home/h/.xlings/subos/s1\\040b rw - tmpfs tmpfs rw\n",
+        "/home/h/.xlings/subos/s1 b").has_value());
+    // A prefix that is not a path component boundary is not "under".
+    EXPECT_FALSE(ud::mount_under_in(
+        "30 22 0:5 / /home/h/.xlings/subos/s10 rw - none none rw\n",
+        "/home/h/.xlings/subos/s1").has_value());
+}
+

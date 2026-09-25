@@ -201,6 +201,54 @@ so in as many words ("a FRESH install gets ... an UPGRADE
 only flips the xvm pointer. `self doctor --fix` is no longer the only way back,
 but it is the install path that carries the repair, not init.
 
+### SubOS user data
+
+**A SubOS's home is user data. Only a deletion the user initiated may remove
+it, and only after they confirmed.** The maintainer's rule, 2026-09-26:
+
+| What | Examples | Who may delete it |
+|---|---|---|
+| derived data | payloads in `data/xpkgs/`, sysroot links into them, shims in `bin/`, `generations/`, registrations, index copies | any flow — a reinstall or `use` puts it back |
+| user data | `home/`, `home.img`, and **any regular file in the SubOS xlings cannot prove it owns** (a sandbox writes the user's `/usr` and `/etc` into this tree) | only a command that *is* a SubOS deletion (`subos remove`, `self uninstall`, `self install`'s overwrite), confirmed at a terminal or with an explicit `-y` / `"yes": true` |
+
+What is **never** a way to delete user data: `self doctor --fix` and its
+children, upgrades (`self update`, `self install`'s normal path), a rollback,
+GC, a printed remedy. With nobody to ask and no auto-confirm, the command
+deletes nothing and exits 2, saying what it would have deleted.
+
+How it is enforced, so it does not depend on remembering it:
+
+* `subos::userdata::delete_subos` is the one whole-SubOS deletion. It takes a
+  `confirm::UserConfirmed`, which only `confirm::ask()` produces — a path that
+  never asked cannot call it. It refuses the `subos/` root, `current`, symlinks
+  and (Linux) a tree with a live mount.
+* `tools/lint_subos_remove_all.sh` (in `xlings-ci-linux`) fails any other
+  `remove_all` on a SubOS path. A legitimate one carries
+  `subos-remove-all-ok: <why>` on its line.
+* Every destructive operation appends to
+  `<XLINGS_HOME>/logs/destructive.ndjson` (path, size, how confirmed, command,
+  parent process). The loss that produced this rule could not be attributed
+  because nothing recorded it — read that file first next time.
+
+"Could not read" is never "empty" here either: GC refuses when a SubOS config
+is unreadable instead of collecting what that SubOS uses.
+
+### Dependency names resolve in the declaring index
+
+A bare dependency in a recipe (`deps = { "ncurses" }`) means the package of
+that name in **the index the recipe came from**; only a name that index lacks
+falls through to the global rule. A version or platform the declaring index
+cannot satisfy is an error naming it — never a reason to take another index's
+package of the same name. The resolver records its choice as a `DepEdge` on the
+plan node; the installer and the remove guard read the edge and must not
+re-derive "which package did this name mean".
+
+An `index_repos` entry whose name and url match a sub-index the default index
+declares is configuration for that sub-index (a pin, an artifact base), not a
+second repository: one directory (`xim::effective_repo_dir`), sub-index rank.
+Same name with another url is refused. See
+`.agents/docs/2026-09-25-dep-name-resolution-optimization-plan.md`.
+
 ### Upstream dependency
 
 `mcpplibs/libxpkg` provides the xpkg loader/executor. Referenced via `mcpp.toml`:

@@ -40,7 +40,9 @@ int cmd_clean(bool dryRun) {
         }
     }
 
-    profile::gc(p.homeDir, dryRun);
+    // A refused GC is a failed clean. It used to be ignored here, and
+    // `self clean` printed "clean ok" and exited 0 right under the refusal.
+    if (profile::gc(p.homeDir, dryRun) != 0) return 1;
 
     if (!dryRun) log::info("clean ok");
     return 0;
