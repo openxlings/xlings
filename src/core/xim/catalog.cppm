@@ -105,6 +105,25 @@ ParsedPackageTarget parse_package_target(std::string target);
 std::string format_ambiguous_candidates(std::string_view target,
                                         std::span<const PackageMatch> matches);
 
+// The index a recipe was loaded from. A bare dependency name in that recipe
+// means the package of that name in THIS index first -- not whatever the
+// installing user's configured indexes happen to offer.
+struct DeclaringRepo {
+    std::string repoName;
+    PackageScope scope { PackageScope::Global };
+};
+
+// A dependency the declaring index does not provide, offered by more than one
+// other index. Unlike format_ambiguous_candidates it does not suggest
+// `xlings install <candidate>`: installing one does not change what the
+// recipe's bare name resolves to, so that advice cannot unblock anything.
+// `removable` names the candidates' repos that are plain index_repos entries,
+// for which `xlings config --rm-index-repo` is a real way out.
+std::string format_ambiguous_dependency(std::string_view spec,
+                                        std::string_view declarer,
+                                        std::span<const PackageMatch> matches,
+                                        std::span<const std::string> removable);
+
 namespace detail_ {
 
 struct ParsedTarget_ {
@@ -282,6 +301,18 @@ class PackageCatalog {
     // distinguishable. See the definition for why that matters.
     std::string not_found_(const std::string& target) const;
 
+    // The tie-break resolve_target applies to a candidate list: project scope
+    // first, then namespace priority. `chosen` is empty when it could not
+    // decide, and `tied` then holds every candidate it could not choose
+    // between -- the one list both resolve_target and resolve_dependency
+    // format, each in its own words.
+    struct Decision_ {
+        std::optional<PackageMatch> chosen;
+        std::vector<PackageMatch> tied;
+    };
+    Decision_ decide_(const std::string& target,
+                      std::vector<PackageMatch> matches) const;
+
 public:
     std::expected<void, std::string> rebuild(bool forceRebuild = false);
 
@@ -310,6 +341,19 @@ public:
     std::expected<PackageMatch, std::string>
     resolve_target(const std::string& target,
                    const std::string& platform) const;
+
+    // Resolve a dependency declared by a recipe from `declarer`.
+    //
+    // An explicit `ns:name` is resolve_target, unchanged. A bare name is
+    // looked up in the declaring index first, and if that index has the name
+    // at all, the answer comes from there: a version or platform it cannot
+    // satisfy is an error naming it, never a reason to switch to another
+    // index's package of the same name. Only a name the declaring index does
+    // not have falls through to the global rule.
+    std::expected<PackageMatch, std::string>
+    resolve_dependency(const std::string& spec,
+                       const DeclaringRepo& declarer,
+                       const std::string& platform) const;
 
     // Resolve an already-indexed package identity without evaluating its Lua
     // recipe, selecting a version, syncing a repository, or touching payload

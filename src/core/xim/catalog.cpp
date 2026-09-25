@@ -48,6 +48,33 @@ std::string format_ambiguous_candidates(std::string_view target,
     return msg;
 }
 
+std::string format_ambiguous_dependency(std::string_view spec,
+                                        std::string_view declarer,
+                                        std::span<const PackageMatch> matches,
+                                        std::span<const std::string> removable) {
+    std::string msg = std::format(
+        "dependency '{}' is ambiguous: '{}', the index that declares it, has no "
+        "package of that name, and more than one other index does:\n",
+        spec, declarer);
+    for (std::size_t i = 0; i < matches.size(); ++i) {
+        const auto& match = matches[i];
+        msg += std::format("{}. {}@{}   from {} repo '{}'\n", i + 1,
+                           match.canonicalName, match.version,
+                           package_scope_label(match.scope), match.repoName);
+    }
+    msg += std::format(
+        "\nthe recipe has to name one (for example '{}') -- installing a "
+        "candidate first does not change what the bare name resolves to\n",
+        matches.empty() ? std::string(spec) : matches.front().canonicalName);
+    if (!removable.empty()) {
+        msg += "or, if one of these indexes should not be configured here:\n";
+        for (const auto& repo : removable) {
+            msg += std::format("  xlings config --rm-index-repo {}\n", repo);
+        }
+    }
+    return msg;
+}
+
 namespace detail_ {
 
 ParsedTarget_ parse_target_(std::string target) {
@@ -799,25 +826,97 @@ std::expected<PackageMatch, std::string> PackageCatalog::resolve_target(const st
         }
         return std::unexpected(not_found_(target));
     }
-    if (matches.size() > 1) {
-        matches = prefer_project_scope_(std::move(matches));
-        if (matches.size() == 1) return matches.front();
-        if (!detail_::parse_target_(target).explicitNamespace) {
-            auto ranked = detail_::prefer_namespace_rank_(matches);
-            if (ranked.kept.size() == 1) {
-                auto chosen = std::move(ranked.kept.front());
-                chosen.demoted = std::move(ranked.demoted);
-                announce_demotion_(target, chosen);
-                return chosen;
-            }
+    auto decision = decide_(target, std::move(matches));
+    if (decision.chosen) return std::move(*decision.chosen);
+    return std::unexpected(format_ambiguous_candidates(target, decision.tied));
+}
+
+PackageCatalog::Decision_
+PackageCatalog::decide_(const std::string& target,
+                        std::vector<PackageMatch> matches) const {
+    if (matches.size() == 1) return { .chosen = std::move(matches.front()) };
+    matches = prefer_project_scope_(std::move(matches));
+    if (matches.size() == 1) return { .chosen = std::move(matches.front()) };
+    if (!detail_::parse_target_(target).explicitNamespace) {
+        auto ranked = detail_::prefer_namespace_rank_(matches);
+        if (ranked.kept.size() == 1) {
+            auto chosen = std::move(ranked.kept.front());
+            chosen.demoted = std::move(ranked.demoted);
+            announce_demotion_(target, chosen);
+            return { .chosen = std::move(chosen) };
         }
-        // The candidate list stays COMPLETE here on purpose. Ranking
-        // failed to decide, so the user has to; hiding the demoted
-        // candidate would offer a menu that does not contain the answer
-        // they may want.
-        return std::unexpected(format_ambiguous_candidates(target, matches));
     }
-    return matches.front();
+    // The candidate list stays COMPLETE here on purpose. Ranking failed to
+    // decide, so a person has to; hiding the demoted candidate would offer a
+    // menu that does not contain the answer they may want.
+    return { .tied = std::move(matches) };
+}
+
+std::expected<PackageMatch, std::string>
+PackageCatalog::resolve_dependency(const std::string& spec,
+                                   const DeclaringRepo& declarer,
+                                   const std::string& platform) const {
+    const auto parsed = detail_::parse_target_(spec);
+    if (parsed.explicitNamespace || declarer.repoName.empty()) {
+        return resolve_target(spec, platform);
+    }
+
+    // The declaring index, and only it. `forSearch` keeps a candidate whose
+    // version could not be selected, so "this index has the name but not the
+    // version" stays distinguishable from "this index does not have it".
+    const auto& repos = declarer.scope == PackageScope::Project
+        ? projectRepos_ : globalRepos_;
+    std::vector<PackageMatch> own;
+    std::vector<PackageMatch> nameOnly;
+    for (const auto& repo : repos) {
+        if (repo.spec.name != declarer.repoName) continue;
+        for (auto& match : build_matches_(repo, parsed, platform, /*forSearch=*/true)) {
+            (match.version.empty() ? nameOnly : own).push_back(std::move(match));
+        }
+    }
+    own = detail_::dedupe_matches_(std::move(own));
+    if (!own.empty()) {
+        auto decision = decide_(spec, std::move(own));
+        if (decision.chosen) return std::move(*decision.chosen);
+        return std::unexpected(format_ambiguous_candidates(spec, decision.tied));
+    }
+    if (!nameOnly.empty()) {
+        // The name binds to this index. Switching to another index's package
+        // because this one lacks a version is a provider change nobody asked
+        // for -- the shape that put a source tarball under xmake.
+        const auto& found = nameOnly.front();
+        const auto where = platform.empty() ? std::string("this platform") : platform;
+        return std::unexpected(parsed.version.empty()
+            ? std::format("dependency '{}' is {} from '{}', the index that "
+                          "declares it, and that package has no build for {}",
+                          spec, found.canonicalName, declarer.repoName, where)
+            : std::format("dependency '{}' is {} from '{}', the index that "
+                          "declares it, and that package has no version "
+                          "matching '{}' for {}",
+                          spec, found.canonicalName, declarer.repoName,
+                          parsed.version, where));
+    }
+
+    // Not in the declaring index: the global rule, worded as a dependency.
+    auto matches = collect_matches_(spec, platform);
+    if (matches.empty()) return resolve_target(spec, platform);
+    auto decision = decide_(spec, std::move(matches));
+    if (decision.chosen) return std::move(*decision.chosen);
+
+    std::vector<std::string> removable;
+    for (const auto& match : decision.tied) {
+        if (match.scope != PackageScope::Global) continue;
+        const auto it = std::ranges::find_if(globalRepos_, [&](const RepoState& r) {
+            return r.spec.name == match.repoName;
+        });
+        if (it == globalRepos_.end() || it->spec.subIndex) continue;
+        if (match.repoName == Config::DEFAULT_INDEX_REPO_NAME
+            || match.repoName == "local") continue;
+        if (std::ranges::find(removable, match.repoName) == removable.end())
+            removable.push_back(match.repoName);
+    }
+    return std::unexpected(format_ambiguous_dependency(
+        spec, declarer.repoName, decision.tied, removable));
 }
 
 std::expected<PackageMatch, std::string> PackageCatalog::resolve_local_identity(const std::string& target) const {

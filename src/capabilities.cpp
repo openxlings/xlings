@@ -74,11 +74,37 @@ auto SearchPackages::execute(Params params, EventStream& stream) -> Result {
     return exit_result(xim::cmd_search(keyword, stream));
 }
 
+namespace {
+
+// `noDeps` was published in the install_packages / plan_install schemas as
+// "Skip dependency installation" and was never read by anything: a caller that
+// set it got every dependency installed while believing it had skipped them.
+// It is not implemented now either -- a package whose declared dependencies
+// are missing is one that does not run -- so asking for it is refused out
+// loud, and the field is gone from the schemas. `false` is what always
+// happened, so it stays accepted.
+bool refuse_no_deps_(const nlohmann::json& json, EventStream& stream) {
+    if (!json.is_object() || !json.contains("noDeps")) return false;
+    const auto& v = json["noDeps"];
+    if (v.is_boolean() && !v.get<bool>()) return false;
+    stream.emit(ErrorEvent{
+        .code = ErrorCode::InvalidInput,
+        .message = "noDeps is not supported: a package's declared dependencies "
+                   "are always installed with it, because it does not work "
+                   "without them. Nothing was installed.",
+        .recoverable = true,
+        .hint = "drop \"noDeps\" from the request",
+    });
+    return true;
+}
+
+}  // namespace
+
 auto InstallPackages::spec() const -> CapabilitySpec {
     return {
         .name = "install_packages",
         .description = "Install one or more packages",
-        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"noDeps":{"type":"boolean","description":"Skip dependency installation"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"}},"required":["targets"]})",
+        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"},"description":"Format: name, name@version, or namespace:name@version"},"yes":{"type":"boolean","description":"Auto-confirm without prompting"},"global":{"type":"boolean","description":"Install to global scope"},"useAfterInstall":{"type":"boolean","description":"Activate the installed version even if another version is currently active"}},"required":["targets"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = true,
     };
@@ -94,11 +120,11 @@ auto InstallPackages::execute(Params params, EventStream& stream, CancellationTo
     if (json.contains("targets") && json["targets"].is_array()) {
         for (auto& t : json["targets"]) targets.push_back(t.get<std::string>());
     }
+    if (refuse_no_deps_(json, stream)) return exit_result(2);
     bool yes = json.value("yes", false);
-    bool noDeps = json.value("noDeps", false);
     bool global = json.value("global", false);
     bool useAfter = json.value("useAfterInstall", false);
-    return exit_result(xim::cmd_install(targets, yes, noDeps, stream, global,
+    return exit_result(xim::cmd_install(targets, yes, /*noDeps=*/false, stream, global,
                                          cancel, /*dryRun=*/false, useAfter));
 }
 
@@ -106,7 +132,7 @@ auto PlanInstall::spec() const -> CapabilitySpec {
     return {
         .name = "plan_install",
         .description = "Resolve targets and report what install_packages WOULD do (no download, no install)",
-        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"noDeps":{"type":"boolean"},"global":{"type":"boolean"}},"required":["targets"]})",
+        .inputSchema = R"({"type":"object","properties":{"targets":{"type":"array","items":{"type":"string"}},"global":{"type":"boolean"}},"required":["targets"]})",
         .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
         .destructive = false,
     };
@@ -118,9 +144,9 @@ auto PlanInstall::execute(Params params, EventStream& stream) -> Result {
     if (json.contains("targets") && json["targets"].is_array()) {
         for (auto& t : json["targets"]) targets.push_back(t.get<std::string>());
     }
-    bool noDeps = json.value("noDeps", false);
+    if (refuse_no_deps_(json, stream)) return exit_result(2);
     bool global = json.value("global", false);
-    return exit_result(xim::cmd_install(targets, /*yes=*/true, noDeps, stream,
+    return exit_result(xim::cmd_install(targets, /*yes=*/true, /*noDeps=*/false, stream,
                                          global, /*cancel=*/nullptr, /*dryRun=*/true));
 }
 

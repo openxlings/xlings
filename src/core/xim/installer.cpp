@@ -985,6 +985,46 @@ std::string plan_key_(const PlanNode& node) {
     return name + "@" + node.version;
 }
 
+// The plan node that `consumer`'s dependency `spec` resolved to.
+//
+// The resolver chose it and recorded the choice as an edge; this reads the
+// edge. It used to be re-derived here by matching `spec` against every node's
+// name and taking the FIRST hit -- so with `scode:ncurses` and `xim:ncurses`
+// both in one plan, which one a consumer's bare `ncurses` got depended on the
+// order the plan happened to be walked in.
+//
+// A plan with no edges (hand-built by a test, or by a caller that skipped
+// resolve()) still gets the old name match, which is right exactly when the
+// name is unique in the plan.
+const PlanNode* dep_node_for_(const InstallPlan& plan, const PlanNode& consumer,
+                              std::string_view spec) {
+    for (const auto& edge : consumer.depEdges) {
+        if (edge.spec != spec) continue;
+        for (const auto& candidate : plan.nodes) {
+            if (plan_key_(candidate) == edge.nodeKey) return &candidate;
+        }
+        // An edge to a node the plan does not hold is a resolver defect;
+        // guessing by name here would hide it behind a plausible answer.
+        return nullptr;
+    }
+
+    auto at = spec.find('@');
+    auto baseRef = at == std::string_view::npos ? spec : spec.substr(0, at);
+    auto version = at == std::string_view::npos ? std::string_view{} : spec.substr(at + 1);
+    auto colon = baseRef.find(':');
+    auto ns = colon == std::string_view::npos ? std::string_view{} : baseRef.substr(0, colon);
+    auto bare = colon == std::string_view::npos ? baseRef : baseRef.substr(colon + 1);
+    for (const auto& candidate : plan.nodes) {
+        bool match = candidate.canonicalName == baseRef
+                  || candidate.name == bare
+                  || candidate.rawName == spec;
+        if (!ns.empty()) match = match && candidate.namespaceName == ns;
+        if (!match || !dep_version_matches_(candidate.version, std::string(version))) continue;
+        return &candidate;
+    }
+    return nullptr;
+}
+
 std::filesystem::path data_root_for_(const std::filesystem::path& targetRoot) {
     if (targetRoot.filename() == "xpkgs") return targetRoot.parent_path();
     return targetRoot;
@@ -2476,28 +2516,13 @@ Installer::Installer(IndexManager& index) : index_(&index) {}
 Installer::Installer(PackageCatalog& catalog) : catalog_(&catalog) {}
 
 std::filesystem::path Installer::locate_dep_install_dir_(const InstallPlan& plan,
+                            const PlanNode& consumer,
                             const std::filesystem::path& dataDir,
                             std::string_view depRef) {
-    auto at = depRef.find('@');
-    auto baseRef = (at == std::string_view::npos) ? depRef
-                                                   : depRef.substr(0, at);
-    auto colon = baseRef.find(':');
-    std::string ns = (colon == std::string_view::npos)
-        ? std::string{}
-        : std::string(baseRef.substr(0, colon));
-    std::string bare = (colon == std::string_view::npos)
-        ? std::string(baseRef)
-        : std::string(baseRef.substr(colon + 1));
-    for (auto& n : plan.nodes) {
-        bool match = (n.name == bare)
-                   || (n.canonicalName == baseRef)
-                   || (n.rawName == depRef);
-        if (!ns.empty()) match = match && (n.namespaceName == ns);
-        if (!match) continue;
-        auto root = n.storeRoot.empty() ? (dataDir / "xpkgs") : n.storeRoot;
-        return root / detail_::effective_store_name_(n) / n.version;
-    }
-    return {};
+    const auto* n = detail_::dep_node_for_(plan, consumer, depRef);
+    if (!n) return {};
+    auto root = n->storeRoot.empty() ? (dataDir / "xpkgs") : n->storeRoot;
+    return root / detail_::effective_store_name_(*n) / n->version;
 }
 
 std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressRenderer onRender, CancellationToken* cancel, bool useAfterInstall) {
@@ -2781,21 +2806,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // for as long as it did. Ranges are the documented syntax, and the
         // resolver already honours them -- this one comparison did not.
         for (auto& dep_spec : node.runtime_deps) {
-            std::string dep_base = dep_spec;
             std::string dep_ver;
-            if (auto at = dep_base.find('@'); at != std::string::npos) {
-                dep_ver = dep_base.substr(at + 1);
-                dep_base.resize(at);
+            if (auto at = dep_spec.find('@'); at != std::string::npos) {
+                dep_ver = dep_spec.substr(at + 1);
             }
-            for (auto& depNode : plan.nodes) {
-                bool name_match = (depNode.canonicalName == dep_base
-                                || depNode.name == dep_base
-                                || depNode.rawName == dep_base);
-                if (!name_match
-                    || !detail_::dep_version_matches_(depNode.version,
-                                                      dep_ver)) {
-                    continue;
-                }
+            {
+                const auto* chosen = detail_::dep_node_for_(plan, node, dep_spec);
+                if (!chosen) continue;
+                const auto& depNode = *chosen;
                 auto depRoot = depNode.storeRoot.empty()
                     ? (dataDir / "xpkgs") : depNode.storeRoot;
                 auto depInstallDir = depRoot
@@ -2845,7 +2863,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 if (depNode.exports.loader.empty() && depNode.exports.libdirs.empty()) {
                     // Nothing declared: no DepExport entry, by design.
                     // The resolved record above is what consumers use.
-                    break;
+                    continue;
                 }
                 mcpplibs::xpkg::DepExport e;
                 if (!depNode.exports.loader.empty()) {
@@ -2856,7 +2874,6 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                     e.libdirs.push_back((depInstallDir / d).string());
                 }
                 ctx.deps_exports[dep_spec] = std::move(e);
-                break;
             }
         }
 
@@ -3103,7 +3120,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             std::vector<std::string> setEnvKeys;
             std::string newPath = oldPath;
             for (auto& bd : node.build_deps) {
-                auto bdDir = locate_dep_install_dir_(plan, dataDir, bd);
+                auto bdDir = locate_dep_install_dir_(plan, node, dataDir, bd);
                 if (bdDir.empty()) {
                     log::debug("[{}] build_dep '{}' not found in plan",
                                node.name, bd);

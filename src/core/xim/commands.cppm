@@ -180,8 +180,15 @@ struct Dependent { std::string name; std::string version; };
 // direct dep (elfpatch's closure_lib_paths reads the direct list). A
 // package two hops away does not have this payload on any search path, so
 // removing it cannot break that package through the loader.
+//
+// `targetCanonical` ("xim:ncurses"), when given, is compared against what the
+// consumer's install actually resolved -- its `.xlings-resolution.json` -- so
+// removing `scode:ncurses` does not name xmake, whose `ncurses` was
+// `xim:ncurses`. A consumer installed before those records existed is still
+// matched by bare name: over-reporting is the safe direction for a guard.
 std::vector<Dependent> direct_dependents_of(PackageCatalog& catalog,
-                                            std::string_view targetBare);
+                                            std::string_view targetBare,
+                                            std::string_view targetCanonical = {});
 
 std::expected<bool, std::string>
 selected_payloadless_config_has_uninstall_(

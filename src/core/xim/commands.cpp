@@ -986,7 +986,8 @@ selected_payloadless_config_has_uninstall_(
 }
 
 std::vector<Dependent> direct_dependents_of(PackageCatalog& catalog,
-                                            std::string_view targetBare) {
+                                            std::string_view targetBare,
+                                            std::string_view targetCanonical) {
     std::vector<Dependent> dependents;
     const auto platform = detect_platform();
     const auto bare_of = [](const std::string& s) {
@@ -1006,6 +1007,31 @@ std::vector<Dependent> direct_dependents_of(PackageCatalog& catalog,
         auto depMatch = catalog.resolve_target(
             rec.canonicalName + "@" + rec.version, platform);
         if (!depMatch) continue;
+        // What this consumer's install actually resolved, when it recorded it.
+        // Read before the recipe: the recipe says what it ASKED for, the record
+        // says which package it GOT, and only the second can tell two
+        // same-named packages apart.
+        if (!targetCanonical.empty()) {
+            const auto record = depMatch->storeRoot
+                / package_store_name(depMatch->namespaceName, depMatch->name)
+                / depMatch->version / ".xlings-resolution.json";
+            std::error_code rec_ec;
+            if (std::filesystem::is_regular_file(record, rec_ec)) {
+                auto doc = nlohmann::json::parse(
+                    platform::read_file_to_string(record.string()), nullptr, false);
+                if (!doc.is_discarded() && doc.contains("deps")
+                    && doc["deps"].is_array()) {
+                    for (const auto& d : doc["deps"]) {
+                        if (d.is_object() && d.value("name", std::string{}) == targetCanonical) {
+                            dependents.push_back({rec.canonicalName, rec.version});
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
         auto depPkg = catalog.load_package(*depMatch);
         if (!depPkg) continue;
 
@@ -1179,7 +1205,9 @@ int cmd_remove_resolved_(const std::string& target,
         const auto targetBare =
             match ? bare_of(match->canonicalName) : bare_of(target);
 
-        auto dependents = direct_dependents_of(catalog, targetBare);
+        auto dependents = direct_dependents_of(
+            catalog, targetBare,
+            match ? std::string_view(match->canonicalName) : std::string_view{});
 
         if (!dependents.empty()) {
             log::error("{}@{} is required by {} installed package(s) in subos '{}':",
