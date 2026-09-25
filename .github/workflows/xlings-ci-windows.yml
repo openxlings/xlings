@@ -320,6 +320,10 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\tools\windows_release.ps1"
 
+      - name: "Regression: directory outside the ANSI code page (mcpp#693)"
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE\tests\e2e\ansi_code_page_directory_test.ps1"'
+
       - name: SubOS sandbox command contract
         shell: pwsh
         run: '& "$env:GITHUB_WORKSPACE\tests\e2e\subos_cmd_contract_test.ps1"'
