@@ -305,5 +305,7 @@ fresh-install 保持不 pin xlings（AGENTS.md 的规定）；升级场景放在
 | I7 | doctor 的标签用 "stale shim" | **"outdated shim"** | 和已有的 "stale shim table" 提示冲突，测试的否定断言会被误伤 |
 | I8 | — | 路由表 diff 同时包含 `toRepoint`，`sync_shim_tables` 顺带重新指向当前作用域和 global | 每次写操作都会收敛，不依赖是否刚替换过 entry |
 | I9 | — | 修复提示（`hint`）在存在 outdated shim 时写 entry 的完整路径 | 同第 3 节第 4 层："`xlings` 在 PATH 上就是旧客户端" |
+| I10 | — | `subos new` / fork / 自动安装改用 `xlings_binary_in_home` | Windows CI 第一次跑 E2E-120w 时发现：这三处查找的是不带 `.exe` 的 `bin/xlings`，所以 Windows 上新建的 subos **从来没有** `xlings` shim。同样是"一个问题多个回答者" |
+| I11 | — | `self install` 不复制也不删除 `.xlings.lock` 和 `.xlings.lock.owner` | `self init` 现在持锁（R4），执行过它的便携 home 里会留下锁文件；`self install` 把它复制到自己持有的目标锁上，Windows 拒绝复制，POSIX 会替换掉被 flock 的 inode（参见"atomic write vs flock"）。Windows 的 E2E-01 暴露了这个问题，Linux 上一直是绿的 |
 
 实测：Linux 的单元测试（gcc 和 clang/libc++ 各 61 个套件）和 E2E-120 都通过；在 Linux 上用硬链接复现了 #615 的机制（`ReplacingTheEntryDetachesHardLinkShimsAndRepointHeals`）。Windows 路径（`CreateProcessW` 转交、硬链接重新指向）由 `xlings-ci-windows.yml` 的 E2E-120w 覆盖。
