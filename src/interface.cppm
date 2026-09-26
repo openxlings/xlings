@@ -22,7 +22,11 @@ import xlings.runtime;
 
 namespace xlings::interface {
 
-export constexpr const char* kProtocolVersion = "1.0";
+// 1.1 (2026.9.27.1, additive): the `install_targets` data event, and the
+// recipe revision as a third element of each `install_plan` entry. A 1.0
+// client ignores both. Clients detect a capability by its presence on the
+// wire, not by comparing this string.
+export constexpr const char* kProtocolVersion = "1.1";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

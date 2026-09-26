@@ -10,7 +10,7 @@ Three minimal clients exercising the v1 NDJSON protocol from different runtimes:
 
 Each client does the same flow:
 
-1. Probe `xlings interface --version` → assert `protocol_version == "1.0"`
+1. Probe `xlings interface --version` → assert the `protocol_version` major is `1` (a minor bump is additive)
 2. Probe `--list` → print capability count
 3. Call `env` capability → print active sub-OS + paths
 4. Call `list_subos` capability → print sub-OSs

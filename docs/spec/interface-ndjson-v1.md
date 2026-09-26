@@ -1,10 +1,18 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 编写日期: 2026-05-17 | 版本: 2026.9.27.1
 
-# NDJSON 接口协议规范 v1.0
+# NDJSON 接口协议规范 v1.1
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.0**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.1**，基于 NDJSON（Newline-Delimited JSON）。
+
+| 协议版本 | xlings | 变化 |
+|----------|--------|------|
+| 1.0 | 0.4.36 起 | 初始版本 |
+| 1.1 | 2026.9.27.1 起 | 增补：`install_targets` 事件；`install_plan` 条目的第三个元素 `revision`（§6.3.1） |
+
+次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
+判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
 
 ## 2. 传输层
 
@@ -34,7 +42,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.0"}
+{"protocol_version":"1.1"}
 ```
 
 ### 3.2 查询可用能力
@@ -46,7 +54,7 @@ xlings interface --list
 服务端输出能力清单后退出：
 
 ```json
-{"protocol_version":"1.0","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{...},"outputSchema":{...}}, ...]}
+{"protocol_version":"1.1","capabilities":[{"name":"install_packages","description":"...","destructive":true,"inputSchema":{...},"outputSchema":{...}}, ...]}
 ```
 
 ### 3.3 执行能力
@@ -158,6 +166,70 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 | dataKind | string | 数据类别标识 |
 | payload | object/string | 结构化数据；若原始 JSON 解析失败则为字符串 |
 
+#### 6.3.1 安装相关的 data 事件
+
+`install_packages`（以及 CLI 的 `xlings install`）按以下顺序输出三类 data 事件。
+
+**`install_plan`**：待安装的节点（依赖已展开，已安装且为当前载荷的节点不列出）。全部目标均已
+安装时不输出。`plan_install`（dry-run）输出此事件后结束。
+
+```json
+{"kind":"data","dataKind":"install_plan","payload":{"packages":[["xim:glibc@2.44.3","reinstall: recipe revision 1, installed revision 0",1],["xim:node@22.4.0","",0]]}}
+```
+
+`packages` 的每一项为数组 `[坐标, 说明, 修订号]`：
+
+| 位置 | 类型 | 说明 |
+|------|------|------|
+| 0 | string | `<namespace>:<name>@<version>` |
+| 1 | string | 说明；磁盘上已有该版本但修订号不同时为重装原因，否则为空串 |
+| 2 | integer | 配方对该版本声明的打包修订号（1.1 起；见 xpkg 规范 5.1.1） |
+
+**`install_summary`**：本次运行的计数。全部目标均已安装时不输出。
+
+```json
+{"kind":"data","dataKind":"install_summary","payload":{"success":1,"failed":0}}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | integer | 本次运行实际安装的节点数；载荷已存在且为当前载荷的节点不计入 |
+| failed | integer | 失败的节点数 |
+
+**`install_targets`**（1.1 起）：每个请求目标解析到的版本与载荷位置。由顶层安装调用在
+**每一条路径**上输出一次，包括全部目标均已安装、解析失败和安装失败；配方在安装过程中
+通过 `pkgmanager.install()` 发起的嵌套安装不输出此事件。`update_packages` 升级到新版本时
+内部执行的安装同样输出此事件；`plan_install`（dry-run）不输出。
+
+```json
+{"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"glibc@2.44","namespace":"xim","name":"glibc","version":"2.44.3","revision":1,"status":"installed","payload_dir":"/home/u/.xlings/data/xpkgs/xim-x-glibc/2.44.3"}]}}
+```
+
+`targets` 与请求中的 `targets` 一一对应、顺序相同。`status` 描述本次运行是否满足了该请求：
+运行在生成安装计划之前终止时（例如另一个目标无法解析），每一项均为 `failed`，已解析的项仍
+填写 `namespace`、`name`、`version`。每一项包含：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| request | string | 调用方请求的原始字符串 |
+| namespace | string | 解析到的包命名空间；未能解析时为空串 |
+| name | string | 解析到的包名；未能解析时为空串 |
+| version | string | 实际解析到的版本；未能解析时为空串 |
+| revision | integer | 配方对该版本声明的打包修订号 |
+| status | string | `installed`（本次运行安装）/ `already_present`（载荷已存在且为当前载荷）/ `failed` |
+| payload_dir | string | 载荷目录的绝对路径；`status` 为 `failed` 时为空串 |
+
+三种情形的示例：
+
+```jsonc
+// 全新安装
+{"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"xim:node@22","namespace":"xim","name":"node","version":"22.4.0","revision":0,"status":"installed","payload_dir":"/home/u/.xlings/data/xpkgs/xim-x-node/22.4.0"}]}}
+// 全部已安装（此时不输出 install_plan 与 install_summary）
+{"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"xim:node@22","namespace":"xim","name":"node","version":"22.4.0","revision":0,"status":"already_present","payload_dir":"/home/u/.xlings/data/xpkgs/xim-x-node/22.4.0"}]}}
+// 失败（此处为目标不存在；解析成功而安装失败时 namespace/name/version 仍会填写）
+{"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"xim:nosuchpkg","namespace":"","name":"","version":"","revision":0,"status":"failed","payload_dir":""}]}}
+```
+
 ### 6.4 prompt
 
 服务端向客户端请求用户输入。
@@ -207,13 +279,15 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 终止行，标志会话结束。每次执行恰好输出一行。
 
 ```json
-{"kind":"result","exitCode":0,"data":{"installed":["gcc@14.2.0"]}}
+{"kind":"result","exitCode":0}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | exitCode | integer | 0 成功，非 0 失败，130 表示取消 |
-| data | object? | 能力返回的结构化结果（可选） |
+| data | object? | 能力返回值中 `exitCode` 以外的字段（可选；返回值只有 `exitCode` 时省略） |
+
+安装结果不在 `result` 行中，而在 `install_targets` 事件中（§6.3.1）。
 
 ### 6.7 heartbeat
 
@@ -332,8 +406,9 @@ stdout 输出（每行一个 JSON）：
 {"kind":"progress","phase":"downloading","percent":80,"message":"node-v22.4.0-linux-x64.tar.xz"}
 {"kind":"log","level":"info","message":"extracting node-v22.4.0-linux-x64.tar.xz"}
 {"kind":"progress","phase":"installing","percent":90,"message":"linking shims"}
-{"kind":"data","dataKind":"install_summary","payload":{"installed":["node@22.4.0"]}}
-{"kind":"result","exitCode":0,"data":{"installed":["node@22.4.0"]}}
+{"kind":"data","dataKind":"install_summary","payload":{"success":1,"failed":0}}
+{"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"node@22","namespace":"xim","name":"node","version":"22.4.0","revision":0,"status":"installed","payload_dir":"/home/u/.xlings/data/xpkgs/xim-x-node/22.4.0"}]}}
+{"kind":"result","exitCode":0}
 ```
 
 客户端收到 `kind: result` 后即可关闭 stdin 并退出。

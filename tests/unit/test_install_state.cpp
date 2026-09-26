@@ -281,3 +281,106 @@ TEST(InstallState, FailureReasonWithQuotesStaysReadable) {
     EXPECT_TRUE(xim::stamped_incomplete(dir));
     fs::remove_all(home);
 }
+
+// ── the packaging revision (#620) ──────────────────────────────────────────
+//
+// One rule: a payload is current iff the revision its stamp records equals
+// the recipe's. What these defend is the reading of the two shapes that carry
+// no field -- an older stamp (revision 0, so a recipe bump reaches it) and no
+// stamp at all (no verdict, so nothing pre-stamp starts reinstalling).
+
+namespace {
+
+// A stamp as a client before revisions wrote it: every field but `revision`.
+void write_prerevision_stamp(const fs::path& dir, const std::string& version) {
+    write_file(dir / ".xpkg-install.json",
+               "{\n  \"os\": \"linux\",\n  \"version\": \"" + version
+               + "\",\n  \"xlings_version\": \"2026.9.26.3\",\n"
+                 "  \"registered\": 1\n}\n");
+}
+
+}  // namespace
+
+TEST(InstallStateRevision, TheStampRecordsTheRevisionItWasGiven) {
+    const auto home = make_temp_root("rev-roundtrip");
+    const auto dir = payload_dir(home, "xim", "glibc", "2.44.3");
+    write_file(dir / "lib" / "libc.so.6", "payload");
+
+    xim::write_payload_stamp(dir, "2.44.3", /*registered=*/3, /*revision=*/2);
+    EXPECT_EQ(xim::stamped_revision(dir), 2);
+    EXPECT_EQ(xim::stamped_registration_count(dir), 3);
+
+    // Written even when it is 0: this client's stamps never rely on the
+    // absent-field reading.
+    xim::write_payload_stamp(dir, "2.44.3");
+    EXPECT_EQ(xim::stamped_revision(dir), 0);
+    std::string text;
+    {
+        // Closed before remove_all: Windows refuses to delete an open file.
+        std::ifstream in(dir / ".xpkg-install.json");
+        text.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    EXPECT_NE(text.find("\"revision\": 0"), std::string::npos) << text;
+    fs::remove_all(home);
+}
+
+TEST(InstallStateRevision, AStampWithoutTheFieldIsRevisionZero) {
+    const auto home = make_temp_root("rev-absent");
+    const auto dir = payload_dir(home, "xim", "glibc", "2.44.3");
+    write_file(dir / "lib" / "libc.so.6", "payload");
+    write_prerevision_stamp(dir, "2.44.3");
+
+    EXPECT_EQ(xim::stamped_revision(dir), 0);
+
+    // A recipe that states none leaves every older payload alone ...
+    EXPECT_FALSE(xim::payload_revision_verdict(dir, 0).stale);
+    // ... and one that states 1 reaches every older payload.
+    const auto bumped = xim::payload_revision_verdict(dir, 1);
+    EXPECT_TRUE(bumped.stale);
+    EXPECT_EQ(bumped.recorded, 0);
+    EXPECT_EQ(bumped.recipe, 1);
+    EXPECT_EQ(bumped.reason(), "recipe revision 1, installed revision 0");
+    fs::remove_all(home);
+}
+
+TEST(InstallStateRevision, CurrentIffTheTwoRevisionsAreEqual) {
+    const auto home = make_temp_root("rev-equal");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    write_file(dir / "bin" / "demo", "payload");
+    xim::write_payload_stamp(dir, "1.0", /*registered=*/1, /*revision=*/2);
+
+    EXPECT_FALSE(xim::payload_revision_verdict(dir, 2).stale);
+    EXPECT_TRUE(xim::payload_revision_verdict(dir, 3).stale);
+    // Equality, not order: a recipe that went back to an earlier packaging
+    // is still a different packaging from the one on disk.
+    EXPECT_TRUE(xim::payload_revision_verdict(dir, 1).stale);
+    fs::remove_all(home);
+}
+
+// The falsification half: nothing observed, nothing decided.
+TEST(InstallStateRevision, NoStampGivesNoVerdict) {
+    const auto home = make_temp_root("rev-nostamp");
+    const auto dir = payload_dir(home, "xim", "linux-headers", "5.11.1");
+    write_file(dir / "include" / "linux" / "types.h", "payload");
+
+    const auto verdict = xim::payload_revision_verdict(dir, 4);
+    EXPECT_FALSE(verdict.stale);
+    EXPECT_EQ(verdict.recorded, xim::kRevisionUnrecorded);
+    EXPECT_EQ(xim::stamped_revision(dir), xim::kRevisionUnrecorded);
+    fs::remove_all(home);
+}
+
+// An incomplete payload is reinstalled by the incomplete path; the revision
+// verdict does not claim it a second time, and an absent payload is not stale.
+TEST(InstallStateRevision, IncompleteOrAbsentPayloadIsNotStale) {
+    const auto home = make_temp_root("rev-incomplete");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    write_file(dir / "lib" / "libdemo.so", "partial");
+    xim::write_payload_failure_marker(dir, "1.0", "install hook returned false");
+    EXPECT_FALSE(xim::payload_revision_verdict(dir, 1).stale);
+
+    const auto empty = payload_dir(home, "xim", "demo", "2.0");
+    EXPECT_FALSE(xim::payload_revision_verdict(empty, 1).stale);
+    EXPECT_FALSE(xim::payload_revision_verdict(home / "missing", 1).stale);
+    fs::remove_all(home);
+}

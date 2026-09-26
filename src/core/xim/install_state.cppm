@@ -135,4 +135,40 @@ bool unverifiable_stamped_payload(const LedgerIndex& ledger,
                                   std::string_view version,
                                   const std::filesystem::path& payloadDir);
 
+// Whether a payload is the recipe's CURRENT packaging of its version
+// (openxlings/xlings#620).
+//
+// A recipe states `revision = N` on a version entry when what it installs
+// changes and the upstream version does not (a rebuilt tarball, a fixed
+// install hook). Without it the store can only answer "is 2.44.3 here", and a
+// machine that installed 2.44.3 before the fix keeps that payload for good,
+// because every probe says it is installed.
+//
+// The rule, decided here only -- the resolver plans with it, and the
+// installer asks it again after its own fast paths (the `installed` hook, the
+// version database), each of which would otherwise answer "installed":
+//
+//   a payload is current iff the revision its stamp records equals the
+//   recipe's revision for that version.
+//
+// `stamped_revision` reads a stamp without the field as 0, so a recipe that
+// states revision 1 reaches every payload installed before revisions existed,
+// and a recipe that states none reinstalls nothing. Two shapes give no verdict
+// and are never stale:
+//
+//   * no stamp at all -- nothing was observed about that install;
+//   * a stamp that records a failed install -- that payload is Incomplete
+//     (`installation_state`), and the incomplete path reinstalls it already.
+struct RevisionVerdict {
+    bool stale { false };
+    int recorded { kRevisionUnrecorded };   // what the stamp records
+    int recipe { 0 };                       // what the recipe states
+
+    // "recipe revision 1, installed revision 0"
+    [[nodiscard]] std::string reason() const;
+};
+
+RevisionVerdict payload_revision_verdict(const std::filesystem::path& payloadDir,
+                                         int recipeRevision);
+
 }  // namespace xlings::xim

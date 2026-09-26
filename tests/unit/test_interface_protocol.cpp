@@ -192,7 +192,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.0");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.1");
     std::filesystem::remove_all(home);
 }
 
@@ -597,7 +597,45 @@ TEST(InterfaceProtocol, PlanInstallMissingPackageEmitsStructuredError) {
     EXPECT_TRUE(saw_err)
         << "non-zero plan_install exit produced no error event (issue #374): " << out;
 
+    // A dry run installs nothing, so it reports no install_targets.
+    for (auto& e : events) {
+        EXPECT_NE(e.value("dataKind", std::string{}), "install_targets") << out;
+    }
+
     std::filesystem::remove_all(home);
+}
+
+// Protocol 1.1: every top-level install reports, per request, what it
+// resolved to -- on the failure paths too, including one that stops before
+// anything resolves. A client reads the entry for its request instead of
+// inferring "nothing happened" from an event that never came.
+TEST(InterfaceProtocol, InstallPackagesReportsEveryRequestEvenWhenNothingResolves) {
+    auto home = make_sandbox_home_();
+    auto [out, _rc] = run_xlings_({"interface", "install_packages", "--args",
+        R"({"targets":["xim:nonexistent_pkg_xyz"],"yes":true})"}, home);
+    std::filesystem::remove_all(home);
+
+    auto events = parse_ndjson_(out);
+    ASSERT_FALSE(events.empty()) << out;
+    EXPECT_NE(events.back().value("exitCode", 0), 0) << out;
+
+    int reports = 0;
+    for (auto& e : events) {
+        if (e.value("dataKind", std::string{}) != "install_targets") continue;
+        ++reports;
+        ASSERT_TRUE(e["payload"].is_object()) << out;
+        const auto& targets = e["payload"]["targets"];
+        ASSERT_TRUE(targets.is_array()) << out;
+        ASSERT_EQ(targets.size(), 1u) << out;
+        const auto& t = targets[0];
+        EXPECT_EQ(t.value("request", std::string{}), "xim:nonexistent_pkg_xyz");
+        EXPECT_EQ(t.value("status", std::string{}), "failed");
+        EXPECT_EQ(t.value("payload_dir", std::string{"?"}), "");
+        EXPECT_EQ(t.value("version", std::string{"?"}), "");
+        EXPECT_TRUE(t.contains("revision") && t["revision"].is_number_integer());
+        EXPECT_TRUE(t.contains("namespace") && t.contains("name"));
+    }
+    EXPECT_EQ(reports, 1) << "exactly one install_targets per invocation: " << out;
 }
 
 // #464: a params object that does not satisfy the capability's own declared

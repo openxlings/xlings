@@ -59,6 +59,7 @@ xpkg 包描述文件是一个 Lua 脚本（`.lua`），用于声明软件包的�
 | `url`    | string / table | 下载地址；table 时为镜像表 `{GLOBAL=..., CN=...}` |
 | `sha256` | string / nil   | 校验和；nil 表示暂未计算                   |
 | `ref`    | string         | 引用另一版本（别名），如 `latest` → 实际版本 |
+| `revision` | integer      | 打包修订号，非负整数，缺省为 0；见 5.1.1     |
 
 示例：
 
@@ -67,6 +68,35 @@ xpkg 包描述文件是一个 Lua 脚本（`.lua`），用于声明软件包的�
 ["20.1.7"] = {
     url = "https://example.com/pkg-20.1.7.tar.xz",
     sha256 = "abcdef...",
+},
+```
+
+#### 5.1.1 打包修订号 `revision`（xlings 2026.9.27.1 / libxpkg 0.0.58）
+
+上游版本不变而安装内容发生变化时（重新构建的归档、修正后的安装钩子），版本条目以
+`revision` 递增表达这一变化。未声明或取值不是非负整数时按 0 读取；`ref` 别名不携带
+修订号，其值取自别名最终指向的条目。
+
+xlings 安装载荷时把修订号写入载荷目录的 `.xpkg-install.json`（`"revision": N`）。
+判定规则只有一条：载荷记录的修订号等于配方对该版本声明的修订号时，载荷为当前载荷；
+否则视为未安装，下一次 `xlings install` 重新安装该版本并输出原因，例如
+`reinstalling glibc@2.44.3: recipe revision 1, installed revision 0`。
+
+- 不含 `revision` 字段的记录（2026.9.27.1 之前的客户端写入）按修订号 0 读取，因此
+  配方声明 `revision = 1` 即覆盖所有旧载荷，未声明修订号的配方不触发重装。
+- 载荷目录中没有 `.xpkg-install.json` 时不作判定，行为与此前相同。
+- 重装过程中载荷始终存在：先下载并校验归档，再把旧载荷移至 `<data>/stale/`，在原路径
+  安装新载荷（配方会把 `install_dir()` 写入所安装的文件，因此不能在临时目录安装后改名）；
+  成功后删除旧载荷，失败时删除不完整的新载荷并移回旧载荷。其他工具写入旧载荷目录的文件
+  （例如 mcpp 的 `.mcpp_ok`、`.mcpp-fixup.json`）随旧载荷一并删除。
+- 移出旧载荷之前，在 `<data>/stale/` 中写入记录原路径与所属进程的标记。进程被强制终止时，
+  后续的 `install` 在该进程已不存在后处理遗留的旧载荷：原路径缺失或为空时移回，否则删除。
+
+```lua
+["2.44.3"] = {
+    url = "https://example.com/glibc-2.44.3-linux-x86_64.tar.gz",
+    sha256 = "abcdef...",
+    revision = 1,
 },
 ```
 

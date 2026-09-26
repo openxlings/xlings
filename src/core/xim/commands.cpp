@@ -288,7 +288,90 @@ int cmd_why(const std::string& target, const std::string& dep,
     return 0;
 }
 
+// ── install_targets: what each request of one install resolved to ──────
+//
+// A client that asks for `libglvnd@1.7` has, without this, no way to learn
+// which version that selected or where its payload is, except by running the
+// version grammar a second time on its own side -- a second answerer, which
+// disagrees with this one the first time either grammar changes. And when
+// everything was already installed, nothing at all reached the wire.
+//
+// So the top-level invocation reports one entry per request, in request
+// order, on every path: success, "everything was already installed", and
+// every failure, including those before resolution (the entry then carries
+// the request and nothing else). Nested installs -- the ones a recipe asks
+// for through pkgmanager.install() -- write into the same event stream and
+// do not report: their requests are not the caller's. A dry run does not
+// report either: it installs nothing, and a status would be a prediction.
+//
+// Protocol 1.1 (additive). Clients detect it by the event's presence.
+struct InstallTargetReport_ {
+    std::string request;
+    std::string namespaceName;
+    std::string name;
+    std::string version;
+    int revision { 0 };
+    std::string status { "failed" };   // installed | already_present | failed
+    std::filesystem::path payloadDir;  // published unless failed
+};
+
+std::string install_targets_payload_(std::span<const InstallTargetReport_> targets) {
+    nlohmann::json list = nlohmann::json::array();
+    for (const auto& t : targets) {
+        std::string payloadDir;
+        if (t.status != "failed" && !t.payloadDir.empty()) {
+            std::error_code ec;
+            const auto absolute = std::filesystem::absolute(t.payloadDir, ec);
+            payloadDir = (ec ? t.payloadDir : absolute).lexically_normal().string();
+        }
+        list.push_back({
+            {"request",     t.request},
+            {"namespace",   t.namespaceName},
+            {"name",        t.name},
+            {"version",     t.version},
+            {"revision",    t.revision},
+            {"status",      t.status},
+            {"payload_dir", payloadDir},
+        });
+    }
+    nlohmann::json payload;
+    payload["targets"] = std::move(list);
+    return payload.dump();
+}
+
+int install_(std::span<const std::string> targets, bool yes, bool noDeps,
+             EventStream& stream, bool forceGlobal, CancellationToken* cancel,
+             bool dryRun, bool useAfterInstall,
+             std::vector<InstallTargetReport_>* report);
+
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall) {
+    std::vector<InstallTargetReport_> report;
+    report.reserve(targets.size());
+    for (const auto& target : targets) {
+        report.push_back(InstallTargetReport_{ .request = target });
+    }
+    const auto emit_report = [&] {
+        if (dryRun) return;
+        stream.emit(DataEvent{"install_targets", install_targets_payload_(report)});
+    };
+    int rc = 0;
+    try {
+        rc = install_(targets, yes, noDeps, stream, forceGlobal, cancel,
+                      dryRun, useAfterInstall, &report);
+    } catch (...) {
+        // A cancellation arrives as an exception; the report still goes out,
+        // with whatever this run had established before it.
+        emit_report();
+        throw;
+    }
+    emit_report();
+    return rc;
+}
+
+int install_(std::span<const std::string> targets, bool yes, bool noDeps,
+             EventStream& stream, bool forceGlobal, CancellationToken* cancel,
+             bool dryRun, bool useAfterInstall,
+             std::vector<InstallTargetReport_>* report) {
     // An emulated build installs emulated packages -- correctly, since they
     // have to match this process's ABI, and slowly, since every one of them
     // then runs under Rosetta / WOW64 / qemu. The user is the only one who can
@@ -627,6 +710,14 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         if (!match->version.empty()) {
             target += "@" + match->version;
         }
+        // One match per request, in request order, so the count so far is
+        // this request's index.
+        if (report && requestedMatches.size() < report->size()) {
+            auto& entry = (*report)[requestedMatches.size()];
+            entry.namespaceName = match->namespaceName;
+            entry.name = match->name;
+            entry.version = match->version;
+        }
         requestedMatches.push_back(*match);
     }
 
@@ -674,11 +765,23 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     auto plan_key = [](const PackageMatch& match) {
         return match.canonicalName + "@" + match.version;
     };
+    const auto plan_node_of = [&](const PackageMatch& match) -> const PlanNode* {
+        const auto key = plan_key(match);
+        for (const auto& node : plan.nodes) {
+            if (detail_::plan_key_(node) == key) return &node;
+        }
+        return nullptr;
+    };
 
+    // The planner's verdict where it has one: it also knows a payload whose
+    // packaging revision is stale (#620), which the match -- "a payload
+    // directory exists" -- cannot.
     std::unordered_map<std::string, bool> requestedAlreadyInstalled;
     for (auto& match : requestedMatches) {
-        requestedAlreadyInstalled[plan_key(match)] =
-            match.installed && !match.payloadForeign;
+        const auto* node = plan_node_of(match);
+        requestedAlreadyInstalled[plan_key(match)] = node
+            ? node->alreadyInstalled
+            : match.installed && !match.payloadForeign;
     }
 
     // ── What this run actually did, per node. One record, many readers. ──
@@ -723,6 +826,31 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         });
     };
     const auto failed_count = [&] { return count_status(NodeStatus::Failed); };
+
+    // The install_targets entries, read off the same record. A request with no
+    // outcome was not satisfied by this run and reports `failed`.
+    const auto record_report = [&] {
+        if (!report) return;
+        for (std::size_t i = 0;
+             i < requestedMatches.size() && i < report->size(); ++i) {
+            const auto& match = requestedMatches[i];
+            auto& entry = (*report)[i];
+            if (const auto* node = plan_node_of(match)) {
+                entry.revision = node->revision;
+                const auto storeRoot = node->storeRoot.empty()
+                    ? Config::paths().dataDir / "xpkgs" : node->storeRoot;
+                entry.payloadDir = storeRoot
+                    / package_store_name(node->namespaceName, node->name)
+                    / node->version;
+            }
+            const auto it = outcomes.find(plan_key(match));
+            entry.status = it == outcomes.end() ? "failed"
+                : it->second.status == NodeStatus::Installed ? "installed"
+                : it->second.status == NodeStatus::AlreadyPresent ? "already_present"
+                : "failed";
+        }
+    };
+    record_report();
 
     auto activate_requested_targets = [&]() {
         auto db = Config::versions();
@@ -772,13 +900,22 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     }
 
     // Show install plan with themed UI
+    //
+    // Each entry is `[coordinate, note, revision]`. The note says why a
+    // payload that is on disk is installed again (#620); the third element is
+    // the recipe's packaging revision, appended so that readers of the first
+    // two are unaffected.
     if (!allAlreadyInstalled) {
         nlohmann::json planPackages = nlohmann::json::array();
         for (auto& node : plan.nodes) {
             if (!node.alreadyInstalled) {
                 std::string nameVer = node.canonicalName;
                 if (!node.version.empty()) nameVer += "@" + node.version;
-                planPackages.push_back({nameVer, ""});
+                std::string note;
+                if (!node.staleReason.empty()) {
+                    note = "reinstall: " + node.staleReason;
+                }
+                planPackages.push_back({nameVer, note, node.revision});
             }
         }
         nlohmann::json planPayload;
@@ -847,9 +984,14 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                     break;
                 case InstallPhase::Done:
                     log::debug("[{}] done", status.name);
+                    // A node whose payload was present and current also ends
+                    // in Done (its config hook runs again); it is recorded as
+                    // present, not as installed by this run.
                     if (!status.planKey.empty()) {
-                        outcomes[status.planKey] =
-                            { NodeStatus::Installed, {}, {}, {} };
+                        outcomes[status.planKey] = {
+                            status.payloadReused ? NodeStatus::AlreadyPresent
+                                                 : NodeStatus::Installed,
+                            {}, {}, {} };
                     }
                     break;
                 case InstallPhase::Failed:
@@ -887,9 +1029,11 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
                 if (req.op == "install") {
                     log::debug("installing sub-dependency: {}", req.target);
                     std::vector<std::string> subTargets = { req.target };
-                    cmd_install(subTargets, /*yes=*/true, /*noDeps=*/false, stream,
-                                forceGlobal, /*cancel=*/nullptr, /*dryRun=*/false,
-                                useAfterInstall);
+                    // Nested: no install_targets report of its own (see
+                    // cmd_install).
+                    install_(subTargets, /*yes=*/true, /*noDeps=*/false, stream,
+                             forceGlobal, /*cancel=*/nullptr, /*dryRun=*/false,
+                             useAfterInstall, /*report=*/nullptr);
                 } else if (req.op == "remove") {
                     log::debug("removing sub-dependency: {}", req.target);
                     // force: an xpkg hook asking for a removal has already
@@ -901,6 +1045,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
             }
         },
         dlRenderer, cancel, useAfterInstall);
+    record_report();
 
     if (!result) {
         // #374: structured error on the wire (was a swallowed log::error)
