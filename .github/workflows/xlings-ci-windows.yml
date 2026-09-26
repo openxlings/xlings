@@ -353,6 +353,14 @@ jobs:
 
       # ── Phase 3: E2E Tests ─────────────────────────────────────
 
+      # A shim runs the entry binary's code after every upgrade (#615): on
+      # Windows shims are hard links, and replacing the entry detached them.
+      # Uses the pinned bootstrap xlings as the pre-fix "legacy" build.
+      - name: "E2E-120w: Shim identity across upgrades"
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_shim_identity_test.ps1" -Archive "build\release.zip" -LegacyBinary "$env:USERPROFILE\.xlings\bin\xlings.exe"
+
       - name: "E2E-02: Release Self Install"
         shell: pwsh
         run: |

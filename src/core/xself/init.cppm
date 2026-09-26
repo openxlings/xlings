@@ -95,12 +95,71 @@ export xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 export struct ShimSyncSummary {
     std::size_t added   {};
     std::size_t removed {};
+    std::size_t repointed {};
     std::size_t refused {};   // scopes whose workspace could not be observed
 
-    [[nodiscard]] bool changed() const { return added != 0 || removed != 0; }
+    [[nodiscard]] bool changed() const {
+        return added != 0 || removed != 0 || repointed != 0;
+    }
 };
 
 export ShimSyncSummary sync_shim_tables();
+
+// ─── Shims that run an older build than the entry (#615) ────────────
+//
+// Replacing the entry binary changes its FILE OBJECT on Windows (a running
+// image cannot be overwritten in place), and every shim there is a hard link
+// to the old one. These two find and fix that across EVERY bin directory that
+// holds this home's shims -- all real subos and every known project's subos
+// -- not just the scope a command wrote.
+//
+// That breadth is allowed because relinking is not a routing decision: no
+// name is added or removed, the file behind a name is swapped for the file it
+// was always meant to be. The name set stays `sync_shim_tables`'s alone.
+
+export struct StaleShims {
+    fs::path                  binDir;
+    // Legacy builds: they run their own (old) dispatcher. The #615 state.
+    std::vector<std::string>  legacy;
+    // Newer builds: they hand off to the entry at startup, so they already
+    // run the right code; relinking only saves a process.
+    std::vector<std::string>  handoff;
+    std::vector<std::string>  unknown;   // could not be read
+
+    [[nodiscard]] bool empty() const {
+        return legacy.empty() && handoff.empty();
+    }
+};
+
+// Read-only. One entry per bin directory that has something to report.
+export std::vector<StaleShims> find_stale_shims(const fs::path& home);
+
+export struct RepointSummary {
+    std::size_t repointed {};
+    std::size_t swept     {};   // `*.xlings.old*` leftovers deleted
+    std::vector<std::pair<fs::path, std::string>> failed;
+    bool refused { false };     // could not take the state lock
+};
+
+// Relink every stale shim to the entry. Takes the state lock (re-entrant).
+export RepointSummary repoint_stale_shims(const fs::path& home);
+
+// A command that runs THIS home's entry binary, spelled so it can be pasted.
+//
+// Not `xlings ...`: on a home with stale shims the `xlings` on PATH is one of
+// them, and the command would run the old client -- which does not know the
+// repair it is being asked for. PowerShell needs `&` to run a quoted path.
+export std::string entry_command(const fs::path& home, std::string_view args);
+
+// Replace the entry binary with `payloadBinary`, then re-point every shim at
+// it. The one way `use` and `install` switch the running client: whoever
+// changes the entry's file object is the one that knows every hard-link shim
+// just detached from it, so the repair lives with the change rather than
+// with each caller remembering it.
+export bool replace_entry_binary(const fs::path& payloadBinary,
+                                 const fs::path& entry,
+                                 std::string_view coordinate,
+                                 std::string_view toVersion);
 
 bool is_builtin_shim(std::string_view name);
 

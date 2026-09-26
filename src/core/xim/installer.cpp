@@ -2210,7 +2210,7 @@ bool process_xvm_operations_(const PlanNode& node,
                         // Two independent replacements of the one file every shim
                         // dispatches through is how a home ends up running a
                         // client nobody chose -- see entry_binary.cppm.
-                        entry_binary::replace_with(
+                        xself::replace_entry_binary(
                             activeBin, xlings_bin,
                             std::format("{}@{}", resolved->target, effect.version),
                             effect.version);

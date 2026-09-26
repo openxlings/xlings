@@ -54,6 +54,9 @@ namespace platform {
     export using platform_impl::displace_locked_file;
     export using platform_impl::atomic_replace_executable;
     export using platform_impl::atomic_swap_paths;
+    export using platform_impl::FileIdentity;
+    export using platform_impl::file_identity;
+    export using platform_impl::handoff_exec;
     export using platform_impl::FileLock;
 
     // ── Execution identity (root / sudo awareness) ──────────────────

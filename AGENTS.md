@@ -201,6 +201,34 @@ so in as many words ("a FRESH install gets ... an UPGRADE
 only flips the xvm pointer. `self doctor --fix` is no longer the only way back,
 but it is the install path that carries the repair, not init.
 
+**Fourth: "is this shim ours" and "is it current" are two questions (#615).**
+A Windows shim is a hard link to the entry's FILE OBJECT, and every upgrade
+replaces that object (a running image cannot be overwritten in place). While
+both questions were answered by "same file as the entry", an upgrade made
+every shim in the home read as somebody else's file AND left it running the
+previous client — `xlings --version` on PATH printed the old release with
+`self update` at exit 0. Now `xvm::ShimClassifier` answers both, and is the
+only thing that does:
+
+* **ours** = the file IS an xlings build: it carries `kMulticallMarker`, or
+  (builds before 2026.9.26.3, `COMPAT … drop in 2027.3`) `create_shim`'s own
+  error format string. What it links to is irrelevant.
+* **current** = the entry's file object, or byte-identical to it.
+* **unreadable** = Unknown, never Stale: nothing that could not be read is
+  replaced.
+
+`xself::replace_entry_binary` is the one way `use`/`install` switch the
+client, and it re-points every stale shim in **every** subos and known
+project right after (relinking changes no name, so it is not a routing
+decision). A stale shim that is itself a marked build hands off to the entry
+at startup (`main.cpp`, `xvm::handoff_target`), so it runs the entry's code
+even before it is relinked; `XLINGS_HANDOFF_TRACE=1` prints the handoff.
+`self doctor` reports a legacy stale shim as `outdated shim` (an error), and
+prints its remedy with the entry's full path, because `xlings` on PATH is one
+of the stale files. A home an older client upgraded needs that command once
+(`& "$env:USERPROFILE\.xlings\bin\xlings.exe" self init` also works): new code
+never runs there on its own.
+
 ### SubOS user data
 
 **A SubOS's home is user data. Only a deletion the user initiated may remove

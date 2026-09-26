@@ -35,6 +35,7 @@ import std;
 import xlings.core.log;
 import xlings.core.version_order;
 import xlings.platform;
+import xlings.core.xvm.shim_identity;
 
 namespace xlings::entry_binary {
 
@@ -78,6 +79,16 @@ bool replace_with(const fs::path& payloadBinary, const fs::path& entry,
                   std::string_view coordinate, std::string_view toVersion) {
     // Read BEFORE the swap: afterwards the old version is unrecoverable, and
     // "we changed something, we cannot say from what" is not a report.
+    // Identical bytes: nothing to replace, and replacing anyway is not free.
+    // On Windows it gives the entry a new file object, which detaches every
+    // hard-link shim in the home from it (#615) -- `self update` used to do
+    // that twice per run, once in `install --use` and again in
+    // `use xlings latest`, for the same content.
+    if (xvm::same_bytes(payloadBinary, entry)) {
+        log::debug("entry binary already is {} ({})", coordinate,
+                   payloadBinary.string());
+        return true;
+    }
     const auto before = version_of(entry);
     if (!platform::atomic_replace_executable(payloadBinary, entry)) {
         log::warn("could not replace the entry binary {} <- {}",

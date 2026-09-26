@@ -31,6 +31,7 @@ export module xlings.core.xvm.shim_table;
 import std;
 
 import xlings.core.xvm.types;
+import xlings.core.xvm.shim_identity;
 
 export namespace xlings::xvm {
 
@@ -68,20 +69,27 @@ struct ProjectContribution {
     bool                      readable { true };
 };
 
-// Files found in a bin directory, split by whether they are ours.
+// Files found in a bin directory, split by what they are (`shim_identity`).
 struct ActualScan {
-    std::set<std::string>     ours;      // filenames that ARE entry-binary links
-    std::vector<std::string>  foreign;   // everything else — reported, never touched
+    std::set<std::string>     ours;      // current: the entry binary, or identical to it
+    // Ours, but an older xlings build than the entry: what every Windows shim
+    // became after an upgrade (#615). name -> handoff-capable.
+    std::map<std::string, bool> stale;
+    std::vector<std::string>  foreign;   // not an xlings build — reported, never touched
+    std::vector<std::string>  unknown;   // could not be read — reported, never touched
 };
 
 // What a rebuild would change. Filenames, already suffixed.
 struct TableDiff {
     std::vector<std::string>  toAdd;
     std::vector<std::string>  toRemove;
+    // Stale shims whose NAME stays: relinked to the entry, not re-decided.
+    std::vector<std::string>  toRepoint;
     std::vector<std::string>  foreign;
+    std::vector<std::string>  unknown;
 
     [[nodiscard]] bool empty() const {
-        return toAdd.empty() && toRemove.empty();
+        return toAdd.empty() && toRemove.empty() && toRepoint.empty();
     }
 };
 
@@ -89,6 +97,7 @@ struct TableDiff {
 struct TableReport {
     std::vector<std::string>  added;
     std::vector<std::string>  removed;
+    std::vector<std::string>  repointed;
     std::vector<std::string>  foreign;
     // name -> why. A locked file on Windows lands here rather than being
     // discarded: `ensure_subos_shims` returns a failure count for the same
@@ -97,7 +106,7 @@ struct TableReport {
     std::vector<std::pair<std::string, std::string>> failed;
 
     [[nodiscard]] bool changed() const {
-        return !added.empty() || !removed.empty();
+        return !added.empty() || !removed.empty() || !repointed.empty();
     }
 };
 
@@ -130,13 +139,17 @@ std::set<std::string> compute_desired(
     const Workspace& active,
     const std::vector<ProjectContribution>& projects);
 
-// Read a bin directory, classifying each file by whether it is one of our
-// shims. `std::filesystem::equivalent` is the predicate on BOTH platforms:
-// it follows symlinks (POSIX shims) and compares file identity (Windows
-// hardlinks). Do not reach for `fs::is_symlink` — Windows shims are hard
-// links, so a symlink test is false there for every shim we ever wrote, which
-// is why `cleanup_legacy_alias_shims` has never once fired on Windows.
+// Read a bin directory, classifying each file with `ShimClassifier`.
+//
+// File identity alone is NOT the predicate. It answers "is this the entry's
+// file object", which on Windows every upgrade makes false for every shim on
+// purpose -- so it read a whole home's shims as somebody else's files and
+// left them running the previous client (#615). What makes a file ours is
+// what it IS (an xlings build); identity only decides whether it is current.
 ActualScan scan_actual(const fs::path& binDir, const fs::path& entryBinary);
+// Same, sharing one classifier -- and its per-file-object cache -- across
+// several directories.
+ActualScan scan_actual(const fs::path& binDir, ShimClassifier& classifier);
 
 // Pure. The whole rebuild decision, reachable from a unit test.
 //
@@ -152,6 +165,10 @@ ActualScan scan_actual(const fs::path& binDir, const fs::path& entryBinary);
 // into a subos must give that subos its shim, so the add side stays open. A
 // project subos gets neither, because its workspace has no `xlings` and its
 // bin is not on PATH for anything to dispatch through.
+//
+// A stale shim is ours, so it follows the same rule as a current one: kept
+// when desired (relinked, `toRepoint`), removed when not. An unknown file is
+// treated like a foreign one -- nothing that could not be read is replaced.
 TableDiff plan_table(const std::set<std::string>& desired,
                      const ActualScan& actual,
                      const std::vector<std::string>& reserved);

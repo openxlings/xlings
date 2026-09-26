@@ -25,6 +25,33 @@ import xlings.core.xself.compat;
 #endif
 
 int main(int argc, char* argv[]) {
+    // Shim handoff (#615), before anything else runs -- in particular before
+    // any path is narrowed to the ANSI code page, which is where a stale
+    // client dies silently in a directory outside it (mcpp#693).
+    //
+    // A shim in a subos bin whose home entry binary is a different file runs
+    // the entry instead: the entry is the authority on what runs, and on
+    // Windows a hard-link shim can be left pointing at the previous build.
+    // Nothing here writes; relinking belongs to the writer paths. Any failure
+    // runs this process as before.
+    if (!xlings::xvm::consume_handoff_marker()) {
+        try {
+            const auto own = xlings::platform::get_executable_path();
+            if (auto entry = xlings::xvm::handoff_target(own)) {
+                if (const char* t = std::getenv("XLINGS_HANDOFF_TRACE");
+                    t != nullptr && *t != '\0') {
+                    std::cerr << "xlings: handoff " << own.string() << " -> "
+                              << entry->string() << std::endl;
+                }
+                if (auto rc = xlings::platform::handoff_exec(*entry, argc, argv)) {
+                    return *rc;
+                }
+            }
+        } catch (...) {
+            // Not a reason to fail: run this build.
+        }
+    }
+
     // Restore terminal cursor visibility on exit (safety net for TUI download progress)
     // Only emit when stdout is a TTY to avoid polluting captured output
     std::atexit([]() {

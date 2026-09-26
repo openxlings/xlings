@@ -74,6 +74,28 @@ bool home_knows_program(const std::filesystem::path& home,
 std::optional<std::filesystem::path>
 resolve_dispatch_home(const std::string& program, const char* argv0);
 
+// The entry binary this process should hand itself to, or nullopt to run.
+//
+// On POSIX a shim is a symlink to the entry's PATH, so running a shim always
+// runs the entry's code. On Windows it is a hard link to the entry's FILE
+// OBJECT, which every upgrade replaces -- so a shim that missed the relink
+// would keep running the previous client (#615). This restores the POSIX
+// guarantee at runtime: a shim (a file in `<home>/subos/<s>/bin/`) whose home
+// entry is a different file runs the entry instead.
+//
+// Cheap on purpose -- it is on every tool invocation: two file-identity
+// queries and two stats, no file content read. A copy of the entry (what
+// `create_shim` writes without hard links) carries the entry's size and
+// timestamp and does not hand off. The owner is `resolve_owner_home`'s answer,
+// not a second one.
+std::optional<std::filesystem::path>
+handoff_target(const std::filesystem::path& ownImage);
+
+// True when this process was started by a handoff. Clears the marker so that
+// nothing this process starts inherits it: a tool that runs another shim must
+// see that shim make its own decision.
+bool consume_handoff_marker();
+
 // Resolve the real executable path for a shim target
 std::filesystem::path resolve_executable(const std::string& program_name,
                                          const std::string& path,
