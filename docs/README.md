@@ -1,134 +1,67 @@
 # xlings 文档
 
-xlings 是一个通用包管理基础设施,支持多版本共存、OS-like SubOS 环境隔离和去中心化包索引生态。可以作为操作系统的系统级包管理器使用。
+xlings 是一个通用包管理基础设施，支持多版本共存、SubOS 环境隔离和去中心化包索引。它可以在 Linux、macOS 和 Windows 上以单一二进制运行，并提供面向 Agent 的 NDJSON 接口。
 
 | 发布目标 | 包管理 | Sandbox 边界 |
 |---|---|---|
-| Linux x86_64 / aarch64 | 支持 | bwrap/proot 文件系统隔离 |
+| Linux x86_64 / aarch64 | 支持 | bwrap / proot 文件系统隔离 |
 | macOS 14+ arm64 | 支持 | 仅 HOME 重定向 |
 | Windows x86_64 | 支持 | 仅 USERPROFILE 重定向 |
 
-macOS/Windows 的重定向不是不受信代码的安全边界。
+macOS 与 Windows 的重定向不是不受信代码的安全边界。
 
-## 目录
+## 快速了解
 
-- **[一、快速开始](#一快速开始)**
-  - [1.1 安装](#11-安装)
-  - [1.2 基本使用](#12-基本使用)
-  - [1.3 典型场景](#13-典型场景)
-  - [1.4 SubOS 环境隔离](#14-subos-环境隔离)
-  - [1.5 包索引](#15-包索引)
-- **[二、使用指南](#二使用指南)**
-  - [2.1 多版本管理](quick-start/multi-version.md)
-  - [2.2 项目环境](quick-start/project-env.md)
-  - [2.3 SubOS 与 Agent](quick-start/subos-and-agent.md)
-  - [2.4 自定义包索引](quick-start/custom-index.md)
-  - [2.5 自我管理与修复](quick-start/self-management.md)
-- **[三、高级主题](#三高级主题)**
-  - [3.1 架构](#31-架构)
-  - [3.2 设计](#32-设计)
-  - [3.3 规范](#33-规范)
+| 概念 | 一句话说明 | 入口 |
+|---|---|---|
+| 多版本共存 | 同一工具可安装多个版本，通过 shim 在环境内切换 | [多版本管理](guide/multi-version.md) |
+| 项目环境 | `.xlings.json` 声明依赖，项目获得独立 SubOS | [项目环境](guide/project-env.md) |
+| SubOS | shell、文件系统、镜像三级隔离环境 | [SubOS 隔离模型](design/subos-isolation.md) |
+| xim | 包索引、依赖解析、下载与安装子系统 | [包索引生态](design/package-index-ecosystem.md) |
+| xvm | 版本视图、引用计数与 shim 分发子系统 | [xvm 版本管理](design/xvm-version-management.md) |
+| xpkg | 包描述与资源声明格式 | [xpkg 规范 v1](spec/xpkg-manifest-v1.md) |
+| interface | 面向 Agent、CI 与 IDE 的 NDJSON 协议 | [NDJSON v1](spec/interface-ndjson-v1.md) |
+| self | 客户端升级、体检、修复与清理 | [自我管理与修复](guide/self-management.md) |
 
----
-
-## 一、快速开始
-
-### 1.1 安装
-
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.sh | bash
-
-# Windows PowerShell
-irm https://raw.githubusercontent.com/openxlings/xlings/main/tools/other/quick_install.ps1 | iex
-```
-
-### 1.2 基本使用
-
-```bash
-xlings install gcc@16 node@24 cmake    # 安装工具(支持指定版本)
-xlings use gcc@16                       # 切换当前使用的版本
-xlings search python                    # 搜索可用包
-xlings list                             # 查看已安装的包
-xlings remove gcc                       # 卸载
-```
-
-### 1.3 典型场景
-
-| 场景 | 操作 |
-|------|------|
-| 多版本共存 | `xlings install gcc@16 gcc@11` 后通过 `xlings use` 切换 |
-| 项目环境复现 | 在项目目录放 `.xlings.json` 声明依赖,`xlings install` 一键安装 |
-| 为 Agent 创建隔离环境 | `xlings subos new agent-ws --from subos:dev-env@latest` |
-| 进入隔离的 SubOS | `xlings subos use agent-ws --sandbox` |
-| 在 SubOS 中执行命令 | `xlings subos use agent-ws --sandbox --cmd "python run.py"` |
-| 升级 xlings 自己 | `xlings self update` |
-| 环境出问题、命令报错 | `xlings self doctor` 体检，`xlings self doctor --fix` 一键修复 |
-
-### 1.4 SubOS 环境隔离
-
-SubOS 提供三级隔离,满足从日常开发到 Agent 安全执行的不同需求:
-
-| 级别 | 隔离范围 | 需要 root | 适用场景 |
-|------|----------|:---------:|----------|
-| Shell | 工具版本 | 否 | 日常开发、版本切换 |
-| FS | 文件系统(HOME, /tmp) | 否 | Agent 运行、实验、不信任代码 |
-| Image | 块设备完整隔离 | 是 | 重型工作负载 |
-
-### 1.5 包索引
-
-支持同时使用多个包索引仓库:
-
-- 官方索引:`openxlings/xim-pkgindex`
-- 第三方社区索引:任何人可以创建
-- 自建私有索引:团队内部使用
-
----
-
-## 二、使用指南
-
-详细的操作说明,按主题组织。
+## 一、架构
 
 | 文档 | 内容 |
-|------|------|
-| [多版本管理](quick-start/multi-version.md) | 安装、切换、共存原理 |
-| [项目环境](quick-start/project-env.md) | .xlings.json 配置、一键安装、项目级 SubOS |
-| [SubOS 与 Agent](quick-start/subos-and-agent.md) | 创建隔离环境、运行 Agent、多实例 |
-| [自定义包索引](quick-start/custom-index.md) | 搭建私有仓库、添加第三方索引 |
-| [自我管理与修复](quick-start/self-management.md) | `self update` 升级、`self doctor` 体检与一键修复、清理 |
-| [从源码构建](build-from-source.md) | 用 mcpp 构建 xlings 本身 |
-| [与其他工具对比](comparison.md) | xlings vs apt / nix / docker |
+|---|---|
+| [系统架构概览](architecture/overview.md) | 模块关系、数据布局、安装流程与隔离模型 |
 
----
-
-## 三、高级主题
-
-面向需要了解内部实现或参与开发的读者。
-
-### 3.1 架构
+## 二、设计
 
 | 文档 | 内容 |
-|------|------|
-| [系统架构概览](architecture/overview.md) | 模块关系、数据布局、安装流程、隔离模型 |
+|---|---|
+| [SubOS-as-XPKG](design/subos-as-xpkg.md) | `type="subos"` 包格式、fork 机制与非交互执行 |
+| [SubOS 隔离模型](design/subos-isolation.md) | shell / FS / image 三级隔离与存储模式 |
+| [xvm 版本管理](design/xvm-version-management.md) | 版本视图、引用计数与 shim 分发 |
+| [包索引生态](design/package-index-ecosystem.md) | 多源索引、命名空间与资源服务器 |
+| [索引分发](design/index-distribution.md) | 索引工件的获取、区域回退与网络边界 |
+| [索引版本契约](design/index-version-contract.md) | 索引快照对客户端版本的要求与发布方流程 |
+| [xpkg 资源解析](design/xpkg-resource-resolution.md) | `xpm.source`、多架构 SHA256 与兼容规则 |
+| [Interface 协议](design/interface-protocol.md) | `xlings interface` 的事件与会话设计 |
 
-### 3.2 设计
-
-| 文档 | 内容 |
-|------|------|
-| [SubOS-as-XPKG](design/subos-as-xpkg.md) | type="subos" 包格式、fork 机制、非交互执行 |
-| [xpkg 资源解析](design/xpkg-resource-resolution.md) | `xpm.source`、多架构 SHA256、libxpkg compat 与索引发布契约 |
-| [xvm 版本管理](design/xvm-version-management.md) | 版本视图 + 引用计数实现多版本共存 |
-| [SubOS 隔离机制](design/subos-isolation.md) | 三级隔离(shell / FS / image)的实现细节 |
-| [包索引生态](design/package-index-ecosystem.md) | 去中心化索引设计 |
-| [Interface 协议](design/interface-protocol.md) | `xlings interface` NDJSON 通信协议 |
-| [命令参考（生成）](generated/command-reference.md) | 由内置 `CommandSpec` 生成并经 CI 校验 |
-
-### 3.3 规范
+## 三、规范
 
 | 文档 | 内容 |
-|------|------|
-| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | .lua 包描述文件的字段、type、hook、`xpm.source` 与多架构资源约定 |
-| [.xlings.json 字段](spec/xlings-json-schema.md) | 配置文件各字段语义 |
-| [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求/响应/事件协议 |
-| [诊断信息规约](spec/diagnostics.md) | 一个问题一个标记、`source`/`actions`、严重级、`--ui-mode`、交互与配置面 |
-| [配色主题](spec/themes.md) | 九个角色槽、部分覆盖、路径引用、自带主题 |
+|---|---|
+| [xpkg 包描述格式 v1](spec/xpkg-manifest-v1.md) | 包字段、类型、hook、依赖与资源矩阵 |
+| [.xlings.json 字段](spec/xlings-json-schema.md) | 全局、项目与 SubOS 配置字段 |
+| [Interface NDJSON v1](spec/interface-ndjson-v1.md) | 请求、事件、能力与退出码契约 |
+| [诊断信息规约](spec/diagnostics.md) | 诊断字段、严重级、交互与稳定错误码 |
+| [配色主题](spec/themes.md) | 角色槽、部分覆盖与主题加载规则 |
+| [命令参考](generated/command-reference.md) | 由 `CommandSpec` 生成并经 CI 校验 |
+
+## 四、指南
+
+| 文档 | 内容 |
+|---|---|
+| [多版本管理](guide/multi-version.md) | 安装、切换、卸载与坐标写法 |
+| [项目环境](guide/project-env.md) | 项目声明、SubOS 模式与团队协作 |
+| [SubOS 与 Agent](guide/subos-and-agent.md) | 创建隔离环境、运行 Agent 与多实例 |
+| [自定义包索引](guide/custom-index.md) | 第三方索引、artifact 与私有部署 |
+| [自我管理与修复](guide/self-management.md) | `self update`、`self doctor` 与清理 |
+| [配色主题](guide/themes.md) | 主题设置、自定义与故障回退 |
+| [从源码构建](guide/build-from-source.md) | 使用 mcpp 构建与测试 xlings |
+| [与其他工具对比](guide/comparison.md) | 与 apt、nix、docker 的定位对比 |

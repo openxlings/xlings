@@ -1,6 +1,6 @@
-> 更新日期：2026-08-03
-
 # SubOS 隔离模型
+
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 概述
 
@@ -154,4 +154,4 @@ xlings subos use mygpu --sandbox --gpu
 - `--gpu` 必须与 `--sandbox` 同时使用，否则解析期报错
 - proot 后端默认即 `--bind /dev` + `--bind /sys` 全透传，`--gpu` 在 proot 模式下静默无视
 
-实现位于 `src/core/subos/gpu.cppm`，独立于 `subos.cppm`，方便后续扩展 AMD ROCm (`/dev/kfd`) 等。设计文档：`.agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md`。
+实现位于 `src/core/subos/gpu.cppm`，独立于 `subos.cppm`，方便后续扩展 AMD ROCm (`/dev/kfd`) 等。

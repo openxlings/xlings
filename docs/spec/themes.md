@@ -1,8 +1,9 @@
 # 配色主题 (Themes)
 
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 > 状态: 生效 (2026.8.22.1 起)
 > 实现: `modules/theme/`(独立 mcpp 成员包)· `config/themes/*.json`(随发行包交付的样例)
-> 使用说明: [`../theme.md`](../theme.md)
+> 使用说明: [`../guide/themes.md`](../guide/themes.md)
 
 ## 1. 选一个
 

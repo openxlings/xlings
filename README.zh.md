@@ -42,7 +42,7 @@
 > 把 dotfile 写到隔离位置，但不隔离文件系统、网络或进程。要运行不受信任的代码，
 > 请使用操作系统级沙箱或虚拟机。
 
-→ [xlings 与 apt / nix / docker 对比](docs/comparison.md)
+→ [xlings 与 apt / nix / docker 对比](docs/guide/comparison.md)
 
 ## 核心能力
 
@@ -103,7 +103,7 @@ xlings install gcc@16 gcc@11 node@24 cmake
 xlings use gcc@11        # 随时切回 —— 两个版本都还在
 ```
 
-→ [多版本管理](docs/quick-start/multi-version.md)
+→ [多版本管理](docs/guide/multi-version.md)
 
 ### 📦 可复现的项目环境,跨系统一致
 
@@ -124,7 +124,7 @@ cd my-project/           # 进入目录即激活项目级 SubOS
 xlings install           # 按声明的版本装进项目级隔离环境
 ```
 
-→ [项目环境](docs/quick-start/project-env.md)
+→ [项目环境](docs/guide/project-env.md)
 
 ### 🤖 在隔离 SubOS 中运行 Agent / 不受信代码
 
@@ -137,7 +137,7 @@ xlings subos use agent-ws --sandbox                       # 进入隔离世界
 xlings subos use agent-ws --sandbox --cmd "python run.py" # 或一次性执行
 ```
 
-→ [SubOS 与 Agent](docs/quick-start/subos-and-agent.md)
+→ [SubOS 与 Agent](docs/guide/subos-and-agent.md)
 
 ### 🩺 升级与修复，不用手改状态文件
 
@@ -151,7 +151,7 @@ xlings self doctor --fix --dry-run     # 先看会做什么
 xlings self doctor --fix               # 修复
 ```
 
-→ [自我管理与修复](docs/quick-start/self-management.md)
+→ [自我管理与修复](docs/guide/self-management.md)
 
 ## 文档
 
@@ -159,7 +159,7 @@ xlings self doctor --fix               # 修复
 
 | 分类 | 文档 |
 |------|------|
-| **快速上手** | [多版本管理](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [自我管理与修复](docs/quick-start/self-management.md) · [从源码构建](docs/build-from-source.md) |
+| **快速上手** | [多版本管理](docs/guide/multi-version.md) · [项目环境](docs/guide/project-env.md) · [SubOS 与 Agent](docs/guide/subos-and-agent.md) · [自定义索引](docs/guide/custom-index.md) · [自我管理与修复](docs/guide/self-management.md) · [从源码构建](docs/guide/build-from-source.md) |
 | **架构** | [系统架构概览](docs/architecture/overview.md) |
 | **设计** | [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm 版本管理](docs/design/xvm-version-management.md) · [SubOS 隔离机制](docs/design/subos-isolation.md) · [包索引生态](docs/design/package-index-ecosystem.md) · [Interface 协议](docs/design/interface-protocol.md) |
 | **规范** | [xpkg 包描述格式 v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json 字段](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) |

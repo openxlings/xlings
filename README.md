@@ -46,7 +46,7 @@ you are told the recipe could not confirm your architecture.
 > not contain the filesystem, the network or processes. Use an OS sandbox or a
 > VM to run code you do not trust.
 
-→ [How xlings compares to apt / nix / docker](docs/comparison.md)
+→ [How xlings compares to apt / nix / docker](docs/guide/comparison.md)
 
 ## Core capabilities
 
@@ -107,7 +107,7 @@ xlings install gcc@16 gcc@11 node@24 cmake
 xlings use gcc@11        # switch back anytime — both stay installed
 ```
 
-→ [Multi-version guide](docs/quick-start/multi-version.md)
+→ [Multi-version guide](docs/guide/multi-version.md)
 
 ### 📦 Reproducible project environments, consistent across OSes
 
@@ -128,7 +128,7 @@ cd my-project/           # entering the dir activates the project SubOS
 xlings install           # installs the declared versions, project-local
 ```
 
-→ [Project env guide](docs/quick-start/project-env.md)
+→ [Project env guide](docs/guide/project-env.md)
 
 ### 🤖 Agents & untrusted code in an isolated SubOS
 
@@ -142,7 +142,7 @@ xlings subos use agent-ws --sandbox                       # enter the isolated w
 xlings subos use agent-ws --sandbox --cmd "python run.py" # or one-shot exec
 ```
 
-→ [SubOS & Agent guide](docs/quick-start/subos-and-agent.md)
+→ [SubOS & Agent guide](docs/guide/subos-and-agent.md)
 
 ### 🩺 Upgrade and repair, without hand-editing state
 
@@ -158,7 +158,7 @@ xlings self doctor --fix --dry-run     # preview the repairs
 xlings self doctor --fix               # repair
 ```
 
-→ [Self-management guide](docs/quick-start/self-management.md)
+→ [Self-management guide](docs/guide/self-management.md)
 
 ## Documentation
 
@@ -166,7 +166,7 @@ Guides, design notes, and specs live in [`docs/`](docs/).
 
 | Area | Docs |
 |------|------|
-| **Get started** | [Multi-version](docs/quick-start/multi-version.md) · [Project env](docs/quick-start/project-env.md) · [SubOS & Agent](docs/quick-start/subos-and-agent.md) · [Custom index](docs/quick-start/custom-index.md) · [Self-management](docs/quick-start/self-management.md) · [Build from source](docs/build-from-source.md) |
+| **Get started** | [Multi-version](docs/guide/multi-version.md) · [Project env](docs/guide/project-env.md) · [SubOS & Agent](docs/guide/subos-and-agent.md) · [Custom index](docs/guide/custom-index.md) · [Self-management](docs/guide/self-management.md) · [Build from source](docs/guide/build-from-source.md) |
 | **Architecture** | [System overview](docs/architecture/overview.md) |
 | **Design** | [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm versioning](docs/design/xvm-version-management.md) · [SubOS isolation](docs/design/subos-isolation.md) · [Index ecosystem](docs/design/package-index-ecosystem.md) · [Interface protocol](docs/design/interface-protocol.md) |
 | **Spec** | [xpkg manifest v1](docs/spec/xpkg-manifest-v1.md) · [.xlings.json schema](docs/spec/xlings-json-schema.md) · [Interface NDJSON v1](docs/spec/interface-ndjson-v1.md) |

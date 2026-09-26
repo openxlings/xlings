@@ -1,6 +1,6 @@
-> 编写日期: 2026-05-17 | 版本: 0.4.36
-
 # 包索引生态系统设计
+
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 概述
 
@@ -84,7 +84,7 @@ flowchart LR
 
 查找顺序：项目配置 → 全局配置 → 内置默认值 → GLOBAL 兜底。
 
-### xpkg 资源声明契约（0.4.63）
+### xpkg 资源声明契约（0.4.63 引入）
 
 包配方保持 `xpm.<platform>.<version>` 原模型，并可用根级或平台级
 `xpm.source = "xlings-res" | <URL template>` 消除重复 URL。版本项显式 `url` 覆盖
@@ -135,17 +135,6 @@ flowchart LR
 
 ## 官方索引常驻保证
 
-`Config` 构造函数中 (config.cppm L443-459)：
+`Config` 的索引仓库装配保证官方 `xim` 索引始终存在：没有用户配置时直接采用默认值；有配置时也会把缺失的默认索引补回列表。这样即使用户只配置了第三方或私有索引，基础包（python、gcc 等）仍然可解析。
 
-```
-if (globalIndexRepos_.empty()) {
-    globalIndexRepos_ = default_global_index_repos_(mirror_);
-} else {
-    // 确保默认索引始终在列表头部
-    for (auto& def : defaults) {
-        if (!found) globalIndexRepos_.insert(begin, def);
-    }
-}
-```
-
-无论用户如何配置 `index_repos`，官方 `xim` 索引始终被插入到列表首位，保证基础包（python、gcc 等）始终可解析。
+默认索引的内容由名为 `xim` 的条目自身的 `url` 决定；它在数组中的位置不参与判定（2026.8.30.1 起）。索引来源、artifact 候选链和自建服务器覆盖规则见 [索引分发](index-distribution.md)。

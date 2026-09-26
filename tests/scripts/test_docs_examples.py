@@ -15,14 +15,15 @@ root = Path(__file__).resolve().parents[2]
 files = [
     root / "README.md",
     root / "README.zh.md",
-    root / "docs/quick-start/multi-version.md",
-    root / "docs/quick-start/subos-and-agent.md",
+    root / "docs/guide/multi-version.md",
+    root / "docs/guide/subos-and-agent.md",
     root / "docs/design/subos-isolation.md",
     root / "docs/design/interface-protocol.md",
 ]
 text = "\n".join(path.read_text() for path in files)
 for stale in ("xlings subos create", "xlings subos enter",
-              '{"action":"subos.new"', "版本: 0.4.36"):
+              '{"action":"subos.new"', "版本: 0.4.36", "版本: 0.4.51",
+              "版本: 0.4.53", "版本: 0.4.63"):
     if stale in text:
         raise SystemExit(f"stale command/protocol remains: {stale}")
 if not re.search(r"macOS.*HOME", text, re.DOTALL):

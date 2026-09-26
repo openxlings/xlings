@@ -1,10 +1,10 @@
 # 系统架构概览
 
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 概述
 
-xlings 是一个用 C++23 模块���现的单二进制包管理工具。提供多版本包管理、环境隔离(SubOS)和面向 Agent 的程序化接口。
+xlings 是一个用 C++23 模块实现的单二进制包管理工具。提供多版本包管理、环境隔离(SubOS)和面向 Agent 的程序化接口。
 
 ## 模块关系
 
@@ -22,7 +22,7 @@ graph TD
 
     INSTALLER --> TYPE_PKG[type: package<br/>标准包]
     INSTALLER --> TYPE_SCRIPT[type: script<br/>脚本包]
-    INSTALLER --> TYPE_SUBOS[type: subos<br/>环境��]
+    INSTALLER --> TYPE_SUBOS[type: subos<br/>环境模板]
 
     SUBOS --> KEEPER[keeper.cppm<br/>命名空间复用]
     SUBOS --> XVM[xvm/<br/>版本管理]
@@ -67,7 +67,7 @@ graph LR
     XPKGS --> |"版本视图"| USER
 ```
 
-每个 SubOS 通过 workspace 元数据(.xlings.json)声明���见的包版本。包载荷存储在 `xpkgs/` 中,多个 SubOS 共享同一份物理文件(版本视图 + 引用计数)。
+每个 SubOS 通过 workspace 元数据(.xlings.json)声明可见的包版本。包载荷存储在 `xpkgs/` 中,多个 SubOS 共享同一份物理文件(版本视图 + 引用计数)。
 
 ## 包安装流程
 
@@ -116,14 +116,14 @@ graph TD
 |------|------|:---------:|----------|----------|
 | Shell | 环境变量 + PATH 操作 | 否 | 工具版本可见性 | 日常开发 |
 | FS | bwrap(优先)/ proot 沙箱 | 否 | 文件系统(HOME, /tmp 私有)| Agent, 实验 |
-| Image | ext4 稀疏文件 + loop 挂载 | 是 | ��设备级完整隔离 | 重型工作负载 |
+| Image | ext4 稀疏文件 + loop 挂载 | 是 | 块设备级完整隔离 | 重型工作负载 |
 
-三个级别共享同一个 `xpkgs/` 载荷存储。隔离通过 workspace 元数据(哪些版本可见)和文件系统命名空间(哪些路径���访问)实现。
+三个级别共享同一个 `xpkgs/` 载荷存储。隔离通过 workspace 元数据(哪些版本可见)和文件系统命名空间(哪些路径可访问)实现。
 
 ## 核心设计原则
 
 1. **单二进制** — 除 libc 外无运行时依赖(Linux release 使用 musl 静态链接)
-2. **版本视图 + 引用计数** — N 个 SubOS 引用同一份物理包载荷,无重复���储
-3. **类��驱动分发** — 包类型(package/script/subos)决定安装/配置/卸载行为
+2. **版本视图 + 引用计数** — N 个 SubOS 引用同一份物理包载荷,无重复存储
+3. **类型驱动分发** — 包类型(package/script/subos)决定安装/配置/卸载行为
 4. **去中心化索引** — 官方、第三方、自建仓库共存;资源服务器提供二进制镜像
 5. **跨平台** — Linux / macOS / Windows 共用同一代码库,平台特定代码隔离在 `platform/`

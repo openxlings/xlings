@@ -1,6 +1,6 @@
-> 编写日期: 2026-06-22 | 版本: 0.4.53 | 关联: [package-index-ecosystem.md](./package-index-ecosystem.md)
-
 # 包索引的分发与更新机制（git-clone → 工件 / Y-asset）
+
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 本文记录 xlings **包索引如何被获取与更新**的演进:从早期的"运行时 `git clone`"
 到 0.4.52+ 的"**索引作为版本化资源工件**(Y-asset)"。包含旧机制、新机制与对比分析。
@@ -28,7 +28,7 @@
 | — | git 不可断点续传、拿不到 CDN、为读 13KB 目录要 clone 1.7MB 带全量历史的仓库 |
 
 行业对照:没有任何主流包管理器对 GitHub 做运行时 `git clone` 取索引(Homebrew→JSON-over-CDN、
-Cargo→稀疏 HTTP 索引、Go→GOPROXY 静态文件)。详见 `.agents/docs/2026-06-21-pkgindex-mirror-analysis.md`。
+Cargo→稀疏 HTTP 索引、Go→GOPROXY 静态文件)。
 
 ---
 
@@ -203,6 +203,4 @@ secrets:`XLINGS_RES_TOKEN`(对 xlings-res 写)、`GITCODE_TOKEN`;CI 用 vendored
 
 - 代码:`src/core/xim/indexfetch.cppm`、`src/core/xim/repo.cppm`(`sync_all_repos`)、`src/core/config.cppm`(resource servers)
 - 工具:`tools/build_xim_index_artifact.sh`、`tools/publish_xim_index.sh`、`tools/gtc`
-- 设计/调研:`.agents/docs/2026-06-21-pkgindex-mirror-analysis.md`(现状深析)、
-  `2026-06-21-pkgindex-redesign-proposal.md`(方案 §7.5 X-full / §7.7 Y-asset / §7.8 索引即包资源)、
-  `2026-06-22-index-as-resource-impl-plan.md`(实施 + 进度)
+设计背景与实施记录保留在 agent 工作区。

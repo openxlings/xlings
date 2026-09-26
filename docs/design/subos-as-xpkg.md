@@ -1,6 +1,6 @@
 # SubOS as XPKG
 
-> 编写日期: 2026-05-17 | 版本: 0.4.36
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 概要
 
@@ -44,7 +44,7 @@ package = {
 }
 ```
 
-tarball 内容:`.xlings.json`(workspace 声明)+ 可选模板��件��无需编写 install hook;内置的 `type = "subos"` 处理器自动处理。作者可通过定义 `install()` / `config()` / `uninstall()` 函数覆盖默认行为。
+tarball 内容:`.xlings.json`(workspace 声明)+ 可选模板文件,无需编写 install hook;内置的 `type = "subos"` 处理器自动处理。作者可通过定义 `install()` / `config()` / `uninstall()` 函数覆盖默认行为。
 
 ## 命令行接口
 
@@ -67,9 +67,9 @@ tarball 内容:`.xlings.json`(workspace 声明)+ 可选模板��件��无�
 | xvm 注册 | 正常注册 | 保持包生命周期一致性(安装/卸载/查询) |
 | Fork 机制 | 文件系统复制(支持 reflink 的文件系统上为 COW) | COW 文件系统上零成本;其它文件系统退化为完整复制 |
 | 存储模式 | 由 fork 时用户选择,base 包不指定 | base 是平台无关的配方;存储模式是运行时决策 |
-| 升级路径 | 显��� — 多版本在 xpkgs/ 中并存 | 避免静默替换用户已修改的环境 |
+| 升级路径 | 显式 — 多版本在 xpkgs/ 中并存 | 避免静默替换用户已修改的环境 |
 
 ## 相关文档
 
 - [系统架构概览](../architecture/overview.md)
-- 完整设计迭代历史:`.agents/docs/subos-as-xpkg-design-2026-05-16.md`
+完整设计迭代历史保留在 agent 工作区。

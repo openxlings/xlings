@@ -1,6 +1,6 @@
 # xpkg 资源解析与兼容设计
 
-> 编写日期: 2026-07-12 | 版本: 0.4.63
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 1. 设计结论
 
@@ -58,4 +58,4 @@ release sidecar/manifest 生成配方，缺失资源、sidecar 或 hash 时 fail
 - [xpkg manifest v1 与资源扩展](../spec/xpkg-manifest-v1.md)
 - [包索引生态](package-index-ecosystem.md)
 - [索引分发](index-distribution.md)
-- [完整实施台账](../../.agents/docs/2026-07-11-issue-356-partial-download-cache-fix-plan.md)
+完整实施记录保留在 agent 工作区，不属于面向使用者的文档。
