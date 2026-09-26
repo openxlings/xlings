@@ -1,6 +1,6 @@
-> 更新日期：2026-08-03
-
 # Interface Protocol — NDJSON over stdio
+
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 
 ## 概述
 

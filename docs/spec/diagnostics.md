@@ -1,8 +1,8 @@
 # 诊断信息规约 (Diagnostics)
 
+> 更新日期: 2026-09-26 | 版本: 2026.9.26.3
 > 状态: 生效 (2026.8.22.1 起;§2.1 / §2.1b / §3 于 2026.8.22.2 修订)
 > 实现: `src/core/diag.cppm` · `src/core/uimode.cppm` · `modules/theme/`
-> 设计: [`.agents/docs/2026-08-22-cli-diagnostics-experience-design.md`](../../.agents/docs/2026-08-22-cli-diagnostics-experience-design.md)
 
 ## 1. 一个问题,一个严重级标记
 
