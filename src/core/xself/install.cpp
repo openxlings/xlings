@@ -801,6 +801,16 @@ int cmd_install(EventStream& stream) {
     for (auto& entry : platform::dir_entries(srcDir)) {
         shipped.insert(entry.path().filename().string());
     }
+    // A home's state lock and its owner sidecar are that home's live runtime
+    // state, never content to ship: a source home that ever ran a mutating
+    // command has them (`self init` takes the lock), and this process HOLDS
+    // the target's. Replacing a held lock is the bug it exists to prevent --
+    // Windows refuses the copy, POSIX silently swaps the flock'd inode.
+    const std::set<std::string> lockFiles{
+        xvm::state_lock_path({}).filename().string(),
+        xvm::state_lock_owner_path({}).filename().string(),
+    };
+    for (const auto& name : lockFiles) shipped.erase(name);
     if (fs::exists(targetHome)) {
         for (auto& entry : platform::dir_entries(targetHome)) {
             auto name = entry.path().filename().string();
@@ -848,6 +858,7 @@ int cmd_install(EventStream& stream) {
     // 2. Copy from release, skip data/subos when target already has them; merge subos static parts if exists
     for (auto& entry : platform::dir_entries(srcDir)) {
         auto name = entry.path().filename().string();
+        if (lockFiles.contains(name)) continue;
         if (name == "data") {
             if (fs::exists(targetHome / "data") && fs::is_directory(targetHome / "data"))
                 continue;
