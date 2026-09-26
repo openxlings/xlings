@@ -869,8 +869,12 @@ bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
                                     toVersion)) {
         return false;
     }
-    // The entry sits at `<home>/bin/xlings`; its home is two levels up.
-    const auto summary = repoint_stale_shims(entry.parent_path().parent_path());
+    // `<home>/bin/xlings`, or `<home>/xlings` in the bootstrap layout
+    // (`xlings_binary_in_home` accepts both, so this must too).
+    const auto home = entry.parent_path().filename() == "bin"
+        ? entry.parent_path().parent_path()
+        : entry.parent_path();
+    const auto summary = repoint_stale_shims(home);
     if (summary.repointed != 0) {
         log::info("re-pointed {} shim(s) to the new entry binary",
                   summary.repointed);
