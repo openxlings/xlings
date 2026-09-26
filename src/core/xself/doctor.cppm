@@ -115,6 +115,12 @@ enum class FindingKind {
     // someone put there. Notice-only and never touched: reporting it is the
     // whole action.
     ForeignBinEntry,
+    // Shims that are xlings builds OLDER than the entry binary (#615) -- in
+    // any subos or project, not only the active one, because relinking them
+    // is not a routing decision. Error when a legacy build: it runs its own
+    // dispatcher, so the user is running the previous client. Notice when it
+    // hands off to the entry at startup. `detail` names them; repair relinks.
+    ShimDispatcherStale,
     LegacyAliasShim,
     ShimAnchor,
     BrokenPayload,
@@ -589,10 +595,12 @@ struct Counts {
     // alongside it, so without this the exit code would say a moved home is
     // fine.
     int relocated { 0 };
+    // Bin directories whose shims run a legacy build older than the entry.
+    int staleShims { 0 };
 
     [[nodiscard]] int issues() const {
         return missing + orphans + broken + binding + inactive + aliasBroken
-             + subos + relocated;
+             + subos + relocated + staleShims;
     }
 };
 

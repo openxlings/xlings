@@ -211,6 +211,56 @@ TEST(ShimTablePlan, ReservedNameIsStillAddedWhenActive) {
     EXPECT_EQ(diff.toAdd.front(), named("xlings"));
 }
 
+// ─── stale shims (#615): ours, so the same keep/remove rule ──────────
+
+TEST(ShimTablePlan, DesiredStaleShimIsRepointedNotAdded) {
+    xvm::ActualScan actual;
+    actual.stale = {{named("mcpp"), false}};
+
+    auto diff = xvm::plan_table({named("mcpp")}, actual, {});
+
+    EXPECT_EQ(diff.toRepoint, std::vector<std::string>{named("mcpp")});
+    EXPECT_TRUE(diff.toAdd.empty())
+        << "a name that has a (stale) file must be relinked, not re-added";
+    EXPECT_TRUE(diff.toRemove.empty());
+    EXPECT_FALSE(diff.empty());
+}
+
+TEST(ShimTablePlan, UndesiredStaleShimIsRemoved) {
+    xvm::ActualScan actual;
+    actual.stale = {{named("gone"), true}};
+
+    auto diff = xvm::plan_table({}, actual, {});
+
+    EXPECT_EQ(diff.toRemove, std::vector<std::string>{named("gone")});
+    EXPECT_TRUE(diff.toRepoint.empty());
+}
+
+// The entry's own name in a subos that never installed the package: kept
+// by the reserved rule, and kept CURRENT -- this is the PATH `xlings` that
+// printed the previous version after every Windows upgrade.
+TEST(ShimTablePlan, ReservedStaleShimIsRepointed) {
+    xvm::ActualScan actual;
+    actual.stale = {{named("xlings"), false}};
+
+    auto diff = xvm::plan_table({}, actual, {"xlings"});
+
+    EXPECT_EQ(diff.toRepoint, std::vector<std::string>{named("xlings")});
+    EXPECT_TRUE(diff.toRemove.empty());
+}
+
+TEST(ShimTablePlan, UnreadableFileIsNeverReplaced) {
+    xvm::ActualScan actual;
+    actual.unknown = {named("node")};
+
+    auto diff = xvm::plan_table({named("node")}, actual, {});
+
+    EXPECT_TRUE(diff.toAdd.empty());
+    EXPECT_TRUE(diff.toRepoint.empty());
+    EXPECT_TRUE(diff.toRemove.empty());
+    EXPECT_EQ(diff.unknown, std::vector<std::string>{named("node")});
+}
+
 // ─── scan_actual: which files are ours ──────────────────────────────
 
 TEST(ShimTableScan, ClassifiesLinksToTheEntryBinaryAsOurs) {

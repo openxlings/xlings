@@ -139,6 +139,25 @@ namespace platform_impl {
     export bool atomic_swap_paths(const std::filesystem::path& a,
                                   const std::filesystem::path& b);
 
+    // Which file object a path names -- the question `fs::equivalent`
+    // answers, as a value that can key a map. Follows symlinks. Empty when the
+    // path cannot be observed: an unreadable path has no identity, and a
+    // made-up one would compare equal to the next made-up one.
+    export struct FileIdentity {
+        std::uint64_t device {};
+        std::uint64_t index  {};
+        auto operator<=>(const FileIdentity&) const = default;
+    };
+    export std::optional<FileIdentity> file_identity(const std::filesystem::path& p);
+
+    // Run `target` in place of this process: same arguments, same argv[0], so
+    // a shim handed to the entry binary still dispatches under its own name.
+    // execv(2) -- no second process. Returns only when the exec failed, and
+    // then the caller runs itself; a handoff that cannot happen is not an
+    // error, it is the pre-handoff behaviour.
+    export std::optional<int> handoff_exec(const std::filesystem::path& target,
+                                           int argc, char* argv[]);
+
     // ── Execution identity primitives (root / sudo awareness) ───────
     // Only the OS primitives live here; all policy (sudo parsing, priv
     // prefix, chown-back) is cross-platform in platform.cppm. See

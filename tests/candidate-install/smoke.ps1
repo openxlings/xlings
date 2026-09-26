@@ -67,6 +67,12 @@ try {
   if (-not (Test-Path $installed)) { throw "the running binary was displaced without a replacement" }
   & $installed --version | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "the replaced binary does not run" }
+  # What a user runs is the PATH shim, not the entry (#615): it must be the
+  # entry's bytes after the entry was replaced, not the previous file object.
+  $pathShim = Join-Path $env:XLINGS_HOME "subos\current\bin\xlings.exe"
+  if ((Get-FileHash -Algorithm SHA256 $pathShim).Hash -ne (Get-FileHash -Algorithm SHA256 $installed).Hash) {
+    throw "subos\current\bin\xlings.exe does not match the replaced entry binary (#615)"
+  }
   $fixture = Join-Path $repoRoot "tests\candidate-install\candidate-helper.lua"
   & $installed config --add-xpkg $fixture
   if ($LASTEXITCODE -ne 0) { throw "fixture import failed" }

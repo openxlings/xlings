@@ -265,6 +265,11 @@ TESTS=(
     # A subos's home leaves only when the user confirmed it; every deletion is
     # recorded in logs/destructive.ndjson.
     "E2E-119|subos_user_data_test.sh||"
+    # A shim runs the entry binary's code in every subos (#615): legacy stale
+    # shims are an error, --fix / self init relink all of them, and a stale
+    # copy of a new build hands off. Differential against 2026.9.26.2: S1
+    # fails (no marker), and its doctor reports the legacy shims as "not ours".
+    "E2E-120|shim_identity_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

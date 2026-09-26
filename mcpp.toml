@@ -29,7 +29,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.9.26.2"
+version = "2026.9.26.3"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -50,8 +50,11 @@ cxxflags = ["-DLIBARCHIVE_STATIC", "-DUNICODE", "-D_UNICODE"]
 # ANSI code page, so xlings no longer raises an uncaught std::system_error
 # during start-up when its working directory contains a character the ANSI
 # code page cannot represent (mcpp#693). The shims xlings creates on
-# Windows are hard links or file copies of xlings.exe (see
-# create_shim in src/core/xself/init.cpp), so they carry the same manifest.
+# Windows are hard links or file copies of xlings.exe (see create_shim in
+# src/core/xself/init.cpp) -- of the xlings.exe that was the entry when they
+# were made. An upgrade replaces the entry's file object, so a shim carries
+# THIS manifest only once it has been re-pointed (`replace_entry_binary`) or
+# hands off to the entry at startup (#615).
 [resources]
 files = ["res/xlings.rc"]
 # The .rc input scanner recognises the `MANIFEST` keyword but not the

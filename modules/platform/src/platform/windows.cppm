@@ -178,6 +178,30 @@ namespace platform_impl {
     export bool atomic_swap_paths(const std::filesystem::path& a,
                                   const std::filesystem::path& b);
 
+    // Which file object a path names -- the question `fs::equivalent`
+    // answers, as a value that can key a map. Follows symlinks. Empty when the
+    // path cannot be observed: an unreadable path has no identity, and a
+    // made-up one would compare equal to the next made-up one.
+    export struct FileIdentity {
+        std::uint64_t device {};
+        std::uint64_t index  {};
+        auto operator<=>(const FileIdentity&) const = default;
+    };
+    export std::optional<FileIdentity> file_identity(const std::filesystem::path& p);
+
+    // Run `target` for this process and exit with its code. Windows has no
+    // exec, so this is CreateProcessW with THIS process's command line passed
+    // through untouched -- argv[0] stays the shim's name, so the entry
+    // dispatches under it -- a wait, and the child's exit code. Returns
+    // nullopt when the child could not be started; the caller then runs
+    // itself.
+    //
+    // No job object. KILL_ON_JOB_CLOSE would also take down every daemon the
+    // tool started (build servers, language servers), and the normal dispatch
+    // path does not own its children either; this matches it.
+    export std::optional<int> handoff_exec(const std::filesystem::path& target,
+                                           int argc, char* argv[]);
+
 } // namespace platform_impl
 }
 

@@ -761,11 +761,11 @@ int create(const std::string& name, const fs::path& customDir,
         fs::create_directories(dir / ".mountpoint");
     }
 
-    // Create shim hardlinks from xlings binary
-    auto xlingsBin = p.homeDir / "xlings";
-    if (!fs::exists(xlingsBin))
-        xlingsBin = p.homeDir / "bin" / "xlings";
-    if (fs::exists(xlingsBin)) {
+    // Create shim hardlinks from xlings binary. `xlings_binary_in_home` is
+    // the one answer to where that is: the spelling this replaced had no
+    // `.exe`, so on Windows a new subos got no `xlings` shim at all.
+    auto xlingsBin = xself::xlings_binary_in_home(p.homeDir);
+    if (!xlingsBin.empty()) {
         if (xself::ensure_subos_shims(dir / "bin", xlingsBin, p.homeDir) != 0) {
             log::warn("some shims could not be written into {}; commands may "
                       "not resolve inside this subos", (dir / "bin").string());
@@ -1065,9 +1065,7 @@ int new_from(const std::string& name, const fs::path& customDir,
             // with the same context (XLINGS_HOME, mirror config, etc.).
             log::info("base subos pkg '{}' not installed; auto-installing...",
                       fromSpec);
-            auto xlings_bin = p.homeDir / "xlings";
-            if (!fs::exists(xlings_bin))
-                xlings_bin = p.homeDir / "bin" / "xlings";
+            auto xlings_bin = xself::xlings_binary_in_home(p.homeDir);
 
             auto cmd = std::format("{} install -y {}",
                                    xlings_bin.string(), fromSpec);
@@ -1191,10 +1189,8 @@ int new_from(const std::string& name, const fs::path& customDir,
 
     // Re-mint subos shims (they may have been clobbered by copy_tree_
     // if base happened to ship its own bin/ — defensive).
-    auto xlingsBin = p.homeDir / "xlings";
-    if (!fs::exists(xlingsBin))
-        xlingsBin = p.homeDir / "bin" / "xlings";
-    if (fs::exists(xlingsBin)) {
+    auto xlingsBin = xself::xlings_binary_in_home(p.homeDir);
+    if (!xlingsBin.empty()) {
         if (xself::ensure_subos_shims(dstDir / "bin", xlingsBin, p.homeDir) != 0) {
             log::warn("some shims could not be written into {}; commands may "
                       "not resolve inside this subos", (dstDir / "bin").string());

@@ -80,6 +80,50 @@ resolve_owner_home(const std::filesystem::path& invoked) {
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path>
+handoff_target(const std::filesystem::path& ownImage) {
+    namespace fs = std::filesystem;
+    if (ownImage.empty()) return std::nullopt;
+
+    // A shim by location: `<home>/subos/<s>/bin/<name>`. The entry itself,
+    // a payload in the store, a release archive and a dev build all live
+    // elsewhere, and none of them ever hands off.
+    const auto bin = ownImage.parent_path();
+    if (bin.filename() != "bin") return std::nullopt;
+    if (bin.parent_path().parent_path().filename() != "subos") {
+        return std::nullopt;
+    }
+
+    const auto home = resolve_owner_home(ownImage);
+    if (!home) return std::nullopt;
+    const auto entry = *home / "bin"
+        / ((platform::OS_NAME == "windows") ? "xlings.exe" : "xlings");
+
+    const auto self = platform::file_identity(ownImage);
+    const auto target = platform::file_identity(entry);
+    if (!self || !target || *self == *target) return std::nullopt;
+
+    std::error_code ec;
+    const auto sizeA = fs::file_size(ownImage, ec);
+    if (ec) return std::nullopt;
+    const auto sizeB = fs::file_size(entry, ec);
+    if (ec) return std::nullopt;
+    const auto timeA = fs::last_write_time(ownImage, ec);
+    if (ec) return std::nullopt;
+    const auto timeB = fs::last_write_time(entry, ec);
+    if (ec) return std::nullopt;
+    if (sizeA == sizeB && timeA == timeB) return std::nullopt;
+
+    return entry;
+}
+
+bool consume_handoff_marker() {
+    const char* v = std::getenv("XLINGS_HANDOFF");
+    if (v == nullptr || *v == '\0') return false;
+    platform::set_env_variable("XLINGS_HANDOFF", "");
+    return true;
+}
+
 bool home_knows_program(const std::filesystem::path& home,
                         const std::string& program) {
     namespace fs = std::filesystem;

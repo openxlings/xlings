@@ -977,7 +977,9 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
             }
         }
 
-        if (!diff.empty()) {
+        // `toRepoint` is left to the finding below: a stale shim is not a
+        // routing difference, and one fact must not be reported twice.
+        if (!diff.toAdd.empty() || !diff.toRemove.empty()) {
             std::string detail;
             if (!diff.toAdd.empty()) {
                 detail += std::format(
@@ -1032,6 +1034,55 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                 .detail = std::format(
                     "{} is not an xlings shim — left alone",
                     Config::display_path(p.binDir / name)),
+            });
+        }
+        for (const auto& name : diff.unknown) {
+            add({
+                .kind   = FindingKind::ForeignBinEntry,
+                .level  = FindingLevel::Notice,
+                .target = name,
+                .detail = std::format(
+                    "{} could not be read — left alone",
+                    Config::display_path(p.binDir / name)),
+            });
+        }
+    }
+
+    // Check 1'': do the shims run the entry binary's code? (#615)
+    //
+    // The question the user's PATH actually asks. Every check before this one
+    // compared the entry binary with a record, and on Windows the entry is
+    // exactly the file that was upgraded while the shims -- hard links to
+    // its previous file object -- kept running the old client, with every
+    // channel reporting health. Every bin directory of the home, because the
+    // upgrade detached all of them at once.
+    for (const auto& group : find_stale_shims(p.homeDir)) {
+        const auto dir = Config::display_path(group.binDir);
+        const auto remedy = entry_command(p.homeDir, "self doctor --fix");
+        if (!group.legacy.empty()) {
+            add({
+                .kind   = FindingKind::ShimDispatcherStale,
+                .level  = FindingLevel::Error,
+                .target = dir,
+                .detail = std::format(
+                    "{} shim(s) in {} run an older xlings than bin/xlings "
+                    "({})", group.legacy.size(), dir,
+                    join_names_(group.legacy, 6)),
+                .remedy = remedy,
+                .shimPath = group.binDir,
+            });
+        }
+        if (!group.handoff.empty()) {
+            add({
+                .kind   = FindingKind::ShimDispatcherStale,
+                .level  = FindingLevel::Notice,
+                .target = dir,
+                .detail = std::format(
+                    "{} shim(s) in {} are an older build that hands off to "
+                    "bin/xlings at startup ({})", group.handoff.size(), dir,
+                    join_names_(group.handoff, 6)),
+                .remedy = remedy,
+                .shimPath = group.binDir,
             });
         }
     }
@@ -2794,6 +2845,32 @@ void repair_local_(const DoctorState& st, const Scan& scan,
         }
     }
 
+    // Stale shims: one relink pass for the whole home, however many bin
+    // directories reported. `repoint_stale_shims` takes the state lock and
+    // re-classifies under it, so what it changes is what is stale NOW.
+    if (std::ranges::any_of(scan.findings, [](const Finding& f) {
+            return f.kind == FindingKind::ShimDispatcherStale;
+        })) {
+        if (dryRun) {
+            plan("re-point outdated shims to bin/xlings");
+        } else {
+            const auto summary = repoint_stale_shims(p.homeDir);
+            if (summary.repointed != 0) {
+                note(glyph::mark(glyph::bullet, "shims re-pointed"),
+                     std::format("{} to {}", summary.repointed,
+                                 Config::display_path(st.xlingsBin)));
+            }
+            if (summary.refused) {
+                note(glyph::mark(glyph::failed, "outdated shims"),
+                     "not re-pointed: the state lock is held");
+            }
+            for (const auto& [path, why] : summary.failed) {
+                note(glyph::mark(glyph::failed, "shim repair failed"),
+                     std::format("{}: {}", Config::display_path(path), why));
+            }
+        }
+    }
+
     for (const auto& f : scan.findings) {
         if (f.kind == FindingKind::ShimTableDrift) {
             // Rebuild by applying the diff, not by wiping and recreating.
@@ -2842,6 +2919,10 @@ void repair_local_(const DoctorState& st, const Scan& scan,
             if (!report.removed.empty()) {
                 note(glyph::mark(glyph::bullet, "stale shims removed"),
                      join_names_(report.removed, 8));
+            }
+            if (!report.repointed.empty()) {
+                note(glyph::mark(glyph::bullet, "shims re-pointed"),
+                     join_names_(report.repointed, 8));
             }
             for (const auto& [name, why] : report.failed) {
                 note(glyph::mark(glyph::failed, "shim repair failed"),
@@ -4495,6 +4576,9 @@ Counts count_(const Scan& scan) {
             // file that is not ours being left alone is the correct outcome,
             // not a defect.
             case FindingKind::ForeignBinEntry: break;
+            case FindingKind::ShimDispatcherStale:
+                if (f.level != FindingLevel::Notice) ++c.staleShims;
+                break;
             case FindingKind::LegacyAliasShim: ++c.orphans; break;
             case FindingKind::BrokenPayload:   ++c.broken;  break;
             case FindingKind::ForeignPayload:  ++c.foreignPayloads; break;
@@ -4754,6 +4838,16 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::ForeignBinEntry:
                 if (verbose) add(glyph::mark(glyph::note, "not ours"), f.detail);
+                break;
+            case FindingKind::ShimDispatcherStale:
+                if (f.level == FindingLevel::Notice) {
+                    if (!verbose) break;
+                    add(glyph::mark(glyph::note, "outdated shim"), f.detail);
+                } else {
+                    add(glyph::mark(glyph::failed, "outdated shim"), f.detail);
+                }
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 break;
             case FindingKind::LegacyAliasShim:
                 add(glyph::mark(glyph::failed, "legacy alias shim"), f.detail); break;
@@ -5048,7 +5142,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
     // Thirty `release anchor` lines saying "nothing is wrong here" is how the
     // four lines that matter got lost.
     if (!verbose) {
-        int anchors = 0, foreignEntries = 0, staleShims = 0;
+        int anchors = 0, foreignEntries = 0, staleShims = 0, handoffShims = 0;
         int bindingNotices = 0, subosNotices = 0;
         int unverified = 0;
         // Per TARGET, like the warning line it replaced: one package's alias
@@ -5058,6 +5152,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             if (f.kind == FindingKind::UnverifiedPayload) ++unverified;
             else if (f.kind == FindingKind::ReleaseAnchor) ++anchors;
             else if (f.kind == FindingKind::ForeignBinEntry) ++foreignEntries;
+            else if (f.kind == FindingKind::ShimDispatcherStale
+                     && f.level == FindingLevel::Notice) ++handoffShims;
             else if (f.kind == FindingKind::ShimTableDrift
                      && f.level == FindingLevel::Notice) ++staleShims;
             else if (f.kind == FindingKind::BindingState
@@ -5081,6 +5177,7 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         part(static_cast<int>(hostAliasTargets.size()), "host alias");
         part(foreignEntries, "file not ours");
         part(staleShims, "stale shim table");
+        part(handoffShims, "outdated shim dir (hands off)");
         part(bindingNotices, "binding notice");
         part(subosNotices, "other-subos notice");
         part(unverified, "unverified install");
@@ -5159,6 +5256,8 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             add("missing shims", std::to_string(counts.missing));
         if (counts.orphans > 0)
             add("orphan shims", std::to_string(counts.orphans));
+        if (counts.staleShims > 0)
+            add("outdated shims", std::to_string(counts.staleShims));
         if (counts.broken > 0)
             add("broken payloads", std::to_string(counts.broken));
         if (counts.subos > 0)
@@ -5189,7 +5288,15 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
         if (counts.issues() > 0)
             add("hint", "some findings remain — see the reasons above", true);
     } else if (counts.issues() > 0 || counts.otherSubos > 0) {
-        add("hint", "run `xlings self doctor --fix` to repair", true);
+        // With outdated shims, `xlings` on PATH IS one of them: the hint has
+        // to name the entry binary, or it sends the user to the old client.
+        add("hint",
+            counts.staleShims > 0
+                ? std::format("run `{}` to repair",
+                              entry_command(Config::paths().homeDir,
+                                            "self doctor --fix"))
+                : std::string("run `xlings self doctor --fix` to repair"),
+            true);
     }
 
     // The nudge, for a home the running client has not yet verified. Last

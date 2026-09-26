@@ -11,6 +11,7 @@ module;
 #include <sys/time.h>
 #include <sys/file.h>
 #include <pwd.h>
+#include <sys/stat.h>
 #endif
 #if defined(__linux__)
 #include <sys/syscall.h>
@@ -224,6 +225,24 @@ std::string home_for_user_(const std::string& name) {
         if (struct passwd* pw = ::getpwnam(name.c_str()); pw && pw->pw_dir)
             return std::string{pw->pw_dir};
         return {};
+    }
+
+    std::optional<FileIdentity> file_identity(const std::filesystem::path& p) {
+        struct stat st {};
+        if (::stat(p.c_str(), &st) != 0) return std::nullopt;
+        return FileIdentity{
+            .device = static_cast<std::uint64_t>(st.st_dev),
+            .index  = static_cast<std::uint64_t>(st.st_ino),
+        };
+    }
+
+    std::optional<int> handoff_exec(const std::filesystem::path& target,
+                                    int argc, char* argv[]) {
+        if (argc < 1 || argv == nullptr) return std::nullopt;
+        ::setenv("XLINGS_HANDOFF", "1", 1);
+        ::execv(target.c_str(), argv);
+        ::unsetenv("XLINGS_HANDOFF");
+        return std::nullopt;
     }
 
 }

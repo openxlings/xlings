@@ -860,7 +860,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
             auto active_bin = fs::path(vd->path)
                             / ("xlings" + std::string(shim_ext));
             if (fs::exists(active_bin)) {
-                entry_binary::replace_with(
+                xself::replace_entry_binary(
                     active_bin, xlings_bin,
                     std::format("{}@{}", target, resolved), resolved);
             }

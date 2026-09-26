@@ -14,6 +14,9 @@ import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.shim_table;
+import xlings.core.xvm.shim_identity;
+import xlings.core.xvm.lock;
+import xlings.core.entry_binary;
 
 namespace xlings::xself {
 
@@ -102,7 +105,16 @@ LinkResult create_shim(const fs::path& source, const fs::path& target) {
 
     // Final fallback: copy
     fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
-    if (!ec) return LinkResult::Copy;
+    if (!ec) {
+        // Carry the entry's timestamp. The startup handoff tells "a copy of
+        // the entry" from "an older build" by size and time without reading
+        // either file, and a copy that looked newer would hand off on every
+        // run of every tool.
+        std::error_code tec;
+        const auto when = fs::last_write_time(source, tec);
+        if (!tec) fs::last_write_time(target, when, tec);
+        return LinkResult::Copy;
+    }
 
     log::error("[xlings:self]: failed to create shim {} - {}",
         target.string(), ec.message());
@@ -477,8 +489,22 @@ bool ensure_home_layout(const fs::path& home_dir) {
         // Not fatal on failure: the table is derived and converges on the next
         // install / use, and a home whose shims are laid out IS laid out.
         if (auto sync = sync_shim_tables(); sync.changed()) {
-            log::info("routing table: +{} -{} shim(s)",
-                      sync.added, sync.removed);
+            log::info("routing table: +{} -{} ~{} shim(s)",
+                      sync.added, sync.removed, sync.repointed);
+        }
+
+        // Every other bin directory too. The table sync above covers the
+        // scope and the global subos; a home an older client upgraded has
+        // stale shims in every subos and every project (#615), and this is
+        // the path `self init` / `self install` give it back through.
+        const auto repoint = repoint_stale_shims(home_dir);
+        if (repoint.repointed != 0) {
+            log::info("re-pointed {} shim(s) to the entry binary",
+                      repoint.repointed);
+        }
+        for (const auto& [path, why] : repoint.failed) {
+            log::warn("could not re-point {}: {}", Config::display_path(path),
+                      why);
         }
     }
 
@@ -487,6 +513,13 @@ bool ensure_home_layout(const fs::path& home_dir) {
 
 int cmd_init() {
     auto& p = Config::paths();
+    // Under the state lock: this rewrites shims in every subos, and a
+    // concurrent install in another shell is writing the same directories.
+    auto lock = xvm::acquire_state_lock(p.homeDir);
+    if (!lock) {
+        log::error("{}", lock.error());
+        return 1;
+    }
     if (!ensure_home_layout(p.homeDir)) return 1;
     log::info("init ok");
     return 0;
@@ -638,8 +671,9 @@ ShimSyncSummary sync_shim_tables() {
         auto diff = plan_shim_table(subosDir, active, db, projects);
         if (diff.empty()) return;
         auto report = apply_shim_table(subosDir, diff);
-        summary.added   += report.added.size();
-        summary.removed += report.removed.size();
+        summary.added     += report.added.size();
+        summary.removed   += report.removed.size();
+        summary.repointed += report.repointed.size();
         log::debug("[shim-table] {}: +{} -{} (failed {})", label,
                    report.added.size(), report.removed.size(),
                    report.failed.size());
@@ -683,6 +717,186 @@ ShimSyncSummary sync_shim_tables() {
         }
     }
     return summary;
+}
+
+
+// ─── Shims that run an older build than the entry (#615) ────────────
+
+namespace {
+
+// Every directory whose files are this home's shims, each once.
+//
+// Real subos directories, deduplicated by canonical path so `subos/current`
+// (a link to one of them) is not visited twice, plus each known project's
+// subos: those are links to THIS entry too, and nothing on PATH would ever
+// report them.
+std::vector<fs::path> shim_bin_dirs_(const fs::path& home) {
+    std::vector<fs::path> out;
+    std::set<fs::path> seen;
+    const auto add_subos_root = [&](const fs::path& root) {
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) return;
+        for (fs::directory_iterator it(root, ec); !ec && it != std::default_sentinel;
+             it.increment(ec)) {
+            std::error_code dec;
+            if (!it->is_directory(dec)) continue;
+            auto bin = it->path() / "bin";
+            if (!fs::is_directory(bin, dec)) continue;
+            auto canon = fs::weakly_canonical(bin, dec);
+            if (dec) canon = bin;
+            if (seen.insert(canon).second) out.push_back(bin);
+        }
+    };
+    add_subos_root(home / "subos");
+
+    std::error_code ec;
+    const bool thisHome = fs::weakly_canonical(home, ec)
+                          == fs::weakly_canonical(Config::paths().homeDir, ec);
+    if (thisHome) {
+        for (const auto& project : Config::known_projects()) {
+            add_subos_root(project / ".xlings" / "subos");
+        }
+    }
+    return out;
+}
+
+bool is_displacement_debris_(const std::string& name) {
+    return name.find(".xlings.old") != std::string::npos;
+}
+
+// Listed up front, never iterated while the directory changes underneath: a
+// relink renames and creates entries in the directory being walked. An
+// unreadable directory lists as empty here -- it has nothing this pass can
+// act on, and `find_stale_shims` is what reports.
+std::vector<fs::path> list_files_(const fs::path& dir) {
+    std::vector<fs::path> out;
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec); !ec && it != std::default_sentinel;
+         it.increment(ec)) {
+        std::error_code fec;
+        if (it->is_regular_file(fec) || it->is_symlink(fec)) {
+            out.push_back(it->path());
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::vector<StaleShims> find_stale_shims(const fs::path& home) {
+    std::vector<StaleShims> out;
+    const auto entry = xlings_binary_in_home(home);
+    std::error_code ec;
+    if (entry.empty() || !fs::exists(entry, ec)) return out;
+
+    xvm::ShimClassifier classifier(entry);
+    for (const auto& bin : shim_bin_dirs_(home)) {
+        StaleShims group{ .binDir = bin };
+        for (const auto& path : list_files_(bin)) {
+            auto name = path.filename().string();
+            if (is_displacement_debris_(name)) continue;
+            const auto id = classifier.classify(path);
+            if (id.state == xvm::ShimState::Stale) {
+                (id.handoffCapable ? group.handoff : group.legacy)
+                    .push_back(std::move(name));
+            } else if (id.state == xvm::ShimState::Unknown) {
+                group.unknown.push_back(std::move(name));
+            }
+        }
+        if (!group.empty() || !group.unknown.empty()) {
+            std::ranges::sort(group.legacy);
+            std::ranges::sort(group.handoff);
+            std::ranges::sort(group.unknown);
+            out.push_back(std::move(group));
+        }
+    }
+    return out;
+}
+
+RepointSummary repoint_stale_shims(const fs::path& home) {
+    RepointSummary summary;
+    const auto entry = xlings_binary_in_home(home);
+    std::error_code ec;
+    if (entry.empty() || !fs::exists(entry, ec)) return summary;
+
+    auto lock = xvm::acquire_state_lock(home);
+    if (!lock) {
+        log::warn("shims not re-pointed: {}", lock.error());
+        summary.refused = true;
+        return summary;
+    }
+
+    xvm::ShimClassifier classifier(entry);
+
+    // Leftovers of a displaced running image. `MOVEFILE_DELAY_UNTIL_REBOOT`
+    // needs administrator rights, so for an ordinary user nothing ever
+    // deletes them; they are deleted here once nothing maps them. Only files
+    // that are provably xlings builds -- a name is not proof.
+    const auto sweep = [&](const fs::path& dir) {
+        for (const auto& path : list_files_(dir)) {
+            if (!is_displacement_debris_(path.filename().string())) continue;
+            const auto id = classifier.classify(path);
+            if (id.state != xvm::ShimState::Stale
+                && id.state != xvm::ShimState::Current) continue;
+            std::error_code rec;
+            if (fs::remove(path, rec) && !rec) ++summary.swept;
+        }
+    };
+    sweep(home / "bin");
+
+    for (const auto& bin : shim_bin_dirs_(home)) {
+        sweep(bin);
+        for (const auto& path : list_files_(bin)) {
+            if (is_displacement_debris_(path.filename().string())) continue;
+            if (classifier.classify(path).state != xvm::ShimState::Stale) {
+                continue;
+            }
+            if (create_shim(entry, path) == LinkResult::Failed) {
+                summary.failed.emplace_back(path, "could not relink");
+                continue;
+            }
+            ++summary.repointed;
+        }
+    }
+    return summary;
+}
+
+
+bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
+                          std::string_view coordinate,
+                          std::string_view toVersion) {
+    if (!entry_binary::replace_with(payloadBinary, entry, coordinate,
+                                    toVersion)) {
+        return false;
+    }
+    // `<home>/bin/xlings`, or `<home>/xlings` in the bootstrap layout
+    // (`xlings_binary_in_home` accepts both, so this must too).
+    const auto home = entry.parent_path().filename() == "bin"
+        ? entry.parent_path().parent_path()
+        : entry.parent_path();
+    const auto summary = repoint_stale_shims(home);
+    if (summary.repointed != 0) {
+        log::info("re-pointed {} shim(s) to the new entry binary",
+                  summary.repointed);
+    }
+    for (const auto& [path, why] : summary.failed) {
+        log::warn("could not re-point {}: {} -- run `self doctor --fix`",
+                  Config::display_path(path), why);
+    }
+    return true;
+}
+
+
+std::string entry_command(const fs::path& home, std::string_view args) {
+    auto entry = xlings_binary_in_home(home);
+    if (entry.empty()) entry = home / "bin" / (platform::OS_NAME == "windows"
+                                                   ? "xlings.exe" : "xlings");
+    const auto quoted = platform::shell_quote(entry.string());
+    if constexpr (platform::OS_NAME == "windows") {
+        return std::format("& {} {}", quoted, args);
+    } else {
+        return std::format("{} {}", quoted, args);
+    }
 }
 
 }

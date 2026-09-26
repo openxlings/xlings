@@ -349,6 +349,70 @@ bool displace_locked_file(const std::filesystem::path& path) {
         return false;
     }
 
+std::optional<FileIdentity> file_identity(const std::filesystem::path& p) {
+        // FILE_READ_ATTRIBUTES with every share mode: identity must be
+        // observable for a file another process is running or writing.
+        HANDLE h = ::CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE
+                                     | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return std::nullopt;
+        BY_HANDLE_FILE_INFORMATION info {};
+        const BOOL ok = ::GetFileInformationByHandle(h, &info);
+        ::CloseHandle(h);
+        if (!ok) return std::nullopt;
+        return FileIdentity{
+            .device = static_cast<std::uint64_t>(info.dwVolumeSerialNumber),
+            .index  = (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32)
+                      | info.nFileIndexLow,
+        };
+    }
+
+std::optional<int> handoff_exec(const std::filesystem::path& target,
+                                int, char*[]) {
+        // The command line is passed through as the OS gave it, not rebuilt
+        // from argv: re-quoting is where arguments get mangled, and argv[0]
+        // must stay the shim's own spelling for dispatch to see its name.
+        std::wstring cmdline = ::GetCommandLineW();
+        std::vector<wchar_t> buf(cmdline.begin(), cmdline.end());
+        buf.push_back(L'\0');
+
+        // Explicit standard handles, made inheritable: without
+        // STARTF_USESTDHANDLES a redirected stdout (a pipe from CI or an
+        // IDE) is not guaranteed to reach the child.
+        STARTUPINFOW si {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdInput  = ::GetStdHandle(STD_INPUT_HANDLE);
+        si.hStdOutput = ::GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError  = ::GetStdHandle(STD_ERROR_HANDLE);
+        for (HANDLE h : {si.hStdInput, si.hStdOutput, si.hStdError}) {
+            if (h != nullptr && h != INVALID_HANDLE_VALUE) {
+                ::SetHandleInformation(h, HANDLE_FLAG_INHERIT,
+                                       HANDLE_FLAG_INHERIT);
+            }
+        }
+
+        ::SetEnvironmentVariableW(L"XLINGS_HANDOFF", L"1");
+        PROCESS_INFORMATION pi {};
+        if (!::CreateProcessW(target.c_str(), buf.data(), nullptr, nullptr,
+                              TRUE, 0, nullptr, nullptr, &si, &pi)) {
+            ::SetEnvironmentVariableW(L"XLINGS_HANDOFF", nullptr);
+            return std::nullopt;
+        }
+        // The child shares this console and receives Ctrl+C itself; this
+        // process only waits for it, so it must not die first and return the
+        // shell a prompt while the tool is still running.
+        ::SetConsoleCtrlHandler(nullptr, TRUE);
+        ::CloseHandle(pi.hThread);
+        ::WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 1;
+        ::GetExitCodeProcess(pi.hProcess, &code);
+        ::CloseHandle(pi.hProcess);
+        return static_cast<int>(code);
+    }
+
 bool atomic_swap_paths(const std::filesystem::path& a,
                                   const std::filesystem::path& b) {
         (void)a; (void)b;

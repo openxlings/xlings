@@ -3,6 +3,7 @@ module xlings.core.xself.update;
 import std;
 import xlings.core.config;
 import xlings.core.entry_binary;
+import xlings.core.xself.init;
 import xlings.core.xvm.db;
 import xlings.core.log;
 import xlings.platform;
@@ -144,6 +145,45 @@ int cmd_update() {
         log::error("  then: xlings use xlings <version> (a version with no "
                    "`<provider>:` prefix)");
         return 1;
+    }
+
+    // Did the SHIMS land on it too? (#615)
+    //
+    // The entry binary is not what a user runs: every name on PATH is a shim,
+    // and on Windows a shim is a hard link to the entry's previous file object
+    // until something relinks it. The install above re-pointed them; this is
+    // the check that it happened, because "the entry is new" was exactly the
+    // observation that let the old outcome report success -- `xlings
+    // --version` kept printing the previous release with this command at 0.
+    //
+    // Only LEGACY stale shims fail the update: they run the previous client's
+    // own dispatcher. A newer build that merely missed the relink hands off to
+    // the entry at startup and is already correct.
+    {
+        const auto home = Config::paths().homeDir;
+        std::size_t legacy = 0;
+        for (const auto& group : find_stale_shims(home)) {
+            legacy += group.legacy.size();
+            if (!group.legacy.empty()) {
+                log::error("{} shim(s) in {} still run the previous xlings: {}",
+                           group.legacy.size(),
+                           Config::display_path(group.binDir),
+                           [&] {
+                               std::string names;
+                               for (std::size_t i = 0;
+                                    i < group.legacy.size() && i < 6; ++i) {
+                                   if (!names.empty()) names += ", ";
+                                   names += group.legacy[i];
+                               }
+                               if (group.legacy.size() > 6) names += ", ...";
+                               return names;
+                           }());
+            }
+        }
+        if (legacy != 0) {
+            log::error("  run:  {}", entry_command(home, "self doctor --fix"));
+            return 1;
+        }
     }
 
     // The migration nudge, printed rather than performed.
