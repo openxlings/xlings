@@ -1,6 +1,5 @@
 {
   "$schema-comment": "Build dependencies for xlings itself. CI / release / contributors run `xlings install` from this directory; mcpp then resolves project toolchains from mcpp.toml via its own xlings-backed sandbox.",
-  "projectScope": false,
   "mirror": "GLOBAL",
   "workspace": {
     "mcpp": "2026.8.8.4"

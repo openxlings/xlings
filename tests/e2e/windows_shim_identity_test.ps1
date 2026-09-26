@@ -53,7 +53,7 @@ try {
   function Hash($p) { (Get-FileHash -Algorithm SHA256 $p).Hash.ToUpperInvariant() }
 
   function Assert-SameAsEntry($p, $why) {
-    if ((Hash $p) -ne (Hash $entry)) { throw "$why: $p differs from the entry" }
+    if ((Hash $p) -ne (Hash $entry)) { throw "${why}: $p differs from the entry" }
   }
 
   # A native exe's stderr, merged via 2>&1, is surfaced to PowerShell as an
