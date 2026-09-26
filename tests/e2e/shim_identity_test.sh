@@ -109,7 +109,12 @@ grep -qE "'?${ENTRY}'? self doctor --fix" <<<"$out" \
 
 # ── S3 ────────────────────────────────────────────────────────────────
 log "S3: --fix relinks every subos, and converges"
-RUN self doctor --fix >/dev/null 2>&1 || true
+set +e
+fixout=$(RUN self doctor --fix 2>&1); fixrc=$?
+set -e
+# A repair that worked must say so in its exit code, or every script that
+# runs `--fix` reads a healed home as a failure.
+[[ $fixrc -eq 0 ]] || fail "S3: --fix exited $fixrc after repairing everything: $fixout"
 points_at_entry "$SHIM_DEFAULT" || fail "S3: default's shim still is not the entry"
 points_at_entry "$SHIM_S2" || fail "S3: s2's shim was not relinked -- only the active subos was repaired"
 out=$(RUN self doctor 2>&1 || true)
