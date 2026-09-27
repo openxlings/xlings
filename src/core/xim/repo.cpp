@@ -566,7 +566,8 @@ bool sync_one_repo(const IndexRepo& repo,
                    const std::string& mirror,
                    bool projectScope,
                    bool force,
-                   bool linkLocalSource) {
+                   bool linkLocalSource,
+                   BytesProgress onBytesProgress) {
     const std::string mode = repo.source.empty() ? globalIndexSource : repo.source;
     auto custom = artifact_source_for(repo);
 
@@ -588,7 +589,8 @@ bool sync_one_repo(const IndexRepo& repo,
         std::string ferr;
         if (select_manifest(pointers, key, custom.has_value())) {
             ok = fetch_index_artifact(repoDir, ferr, key,
-                                      custom ? &*custom : nullptr, repo.version);
+                                      custom ? &*custom : nullptr, repo.version,
+                                      onBytesProgress);
         } else {
             // Say how many bases were declared only when there IS a chain.
             // A repo entitled through the official pointer declares none of
@@ -639,7 +641,7 @@ bool sync_one_repo(const IndexRepo& repo,
     return true;
 }
 
-bool sync_all_repos(bool force) {
+bool sync_all_repos(bool force, RepoSyncProgress onProgress, BytesProgress onBytesProgress) {
     namespace fs = std::filesystem;
     auto mirror = Config::mirror();
 
@@ -731,21 +733,29 @@ bool sync_all_repos(bool force) {
         for (auto& repo : repos)
             if (repo.name != Config::DEFAULT_INDEX_REPO_NAME) ordered.push_back(&repo);
 
-        int total = 0, ok = 0;
+        // Filtered up front so the progress callback can report a true
+        // total -- a declared sub-index is configuration, not a step of its
+        // own (see above), and must not inflate the count it is reported
+        // against.
+        std::vector<const IndexRepo*> toSync;
+        toSync.reserve(ordered.size());
         for (auto* repo : ordered) {
-            // Configuration for a declared sub-index, not a repository of its
-            // own: it is synced ONCE, below, with these settings applied.
-            // Judged after the default index has landed -- the declaration
-            // lives in it.
             if (!projectScope
                 && classify_index_entry(*repo) == IndexEntryKind::DeclaredSubIndex) {
                 continue;
             }
-            ++total;
+            toSync.push_back(repo);
+        }
+
+        int ok = 0, step = 0;
+        const int total = static_cast<int>(toSync.size());
+        for (auto* repo : toSync) {
+            ++step;
+            if (onProgress) onProgress(repo->name, step, total);
             if (pastDeadline()) { ++skippedForDeadline; continue; }
             if (sync_one_repo(*repo, Config::repo_dir_for(*repo, projectScope),
                               indexSource, mirror, projectScope, force,
-                              /*linkLocalSource=*/true)) ++ok;
+                              /*linkLocalSource=*/true, onBytesProgress)) ++ok;
         }
         return total == 0 || ok > 0;
     };
@@ -772,23 +782,29 @@ bool sync_all_repos(bool force) {
     auto subReposRoot = sub_repos_dir();
     fs::create_directories(subReposRoot);
 
-    for (auto& declared : allSubRepos) {
-        const auto repo = with_configured_settings(declared);
-        if (pastDeadline()) {
-            ++skippedForDeadline;
-            // Keep it in the saved set: it was not refreshed, it was not
-            // withdrawn. Dropping it here would deregister a healthy
-            // sub-index because the clock ran out.
-            syncedSubRepos.push_back(declared);
-            continue;
+    {
+        int step = 0;
+        const int total = static_cast<int>(allSubRepos.size());
+        for (auto& declared : allSubRepos) {
+            ++step;
+            const auto repo = with_configured_settings(declared);
+            if (onProgress) onProgress(repo.name, step, total);
+            if (pastDeadline()) {
+                ++skippedForDeadline;
+                // Keep it in the saved set: it was not refreshed, it was not
+                // withdrawn. Dropping it here would deregister a healthy
+                // sub-index because the clock ran out.
+                syncedSubRepos.push_back(declared);
+                continue;
+            }
+            // The saved set records what is DECLARED; a pin or artifact base
+            // from index_repos stays in the config it came from.
+            if (sync_one_repo(repo, sub_repo_dir_for(repo), indexSource, mirror, false, force,
+                              /*linkLocalSource=*/false, onBytesProgress))
+                syncedSubRepos.push_back(declared);
+            else
+                log::warn("failed to sync sub-index repo: {} ({})", repo.name, repo.url);
         }
-        // The saved set records what is DECLARED; a pin or artifact base from
-        // index_repos stays in the config it came from.
-        if (sync_one_repo(repo, sub_repo_dir_for(repo), indexSource, mirror, false, force,
-                          /*linkLocalSource=*/false))
-            syncedSubRepos.push_back(declared);
-        else
-            log::warn("failed to sync sub-index repo: {} ({})", repo.name, repo.url);
     }
 
     save_sub_repos_json(sub_repos_json_path(), syncedSubRepos);
@@ -812,7 +828,11 @@ bool sync_all_repos(bool force) {
         std::vector<IndexRepo> projSyncedSubs;
         auto projSubRoot = sub_repos_dir(true);
         fs::create_directories(projSubRoot);
+        int projStep = 0;
+        const int projTotal = static_cast<int>(projMerged.size());
         for (auto& [name, repo] : projMerged) {
+            ++projStep;
+            if (onProgress) onProgress(repo.name, projStep, projTotal);
             if (pastDeadline()) {
                 ++skippedForDeadline;
                 projSyncedSubs.push_back(repo);
@@ -820,7 +840,7 @@ bool sync_all_repos(bool force) {
             }
             if (sync_one_repo(repo, sub_repo_dir_for(repo, true),
                               indexSource, mirror, true, force,
-                              /*linkLocalSource=*/false)) {
+                              /*linkLocalSource=*/false, onBytesProgress)) {
                 projSyncedSubs.push_back(repo);
             } else {
                 log::warn("failed to sync project sub-index repo: {} ({})", repo.name, repo.url);

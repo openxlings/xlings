@@ -6,8 +6,10 @@ module;
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <cerrno>
 #else
 #include <io.h>
+#include <fcntl.h>
 #define NOMINMAX
 #include <windows.h>
 #endif
@@ -161,6 +163,126 @@ void set_tui_mode(bool enabled) {
 
 bool is_tui_mode() {
         return tui_mode_.load(std::memory_order_relaxed);
+    }
+
+int dup_stdout_fd() {
+#if defined(_WIN32)
+        return ::_dup(1);
+#else
+        return ::dup(1);
+#endif
+    }
+
+bool write_fd(int fd, std::string_view data) {
+        if (fd < 0) return false;
+        const char* p = data.data();
+        std::size_t remaining = data.size();
+        while (remaining > 0) {
+#if defined(_WIN32)
+            unsigned int chunk = static_cast<unsigned int>(
+                std::min<std::size_t>(remaining, 1u << 20));
+            int n = ::_write(fd, p, chunk);
+            if (n <= 0) return false;
+#else
+            ssize_t n = ::write(fd, p, remaining);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+            if (n == 0) return false;
+#endif
+            p += n;
+            remaining -= static_cast<std::size_t>(n);
+        }
+        return true;
+    }
+
+void close_fd(int fd) {
+        if (fd < 0) return;
+#if defined(_WIN32)
+        ::_close(fd);
+#else
+        ::close(fd);
+#endif
+    }
+
+StdoutCapture::StdoutCapture(std::function<void(std::string_view)> onLine) {
+        std::fflush(stdout);
+        savedFd_ = dup_stdout_fd();
+        if (savedFd_ < 0) return;  // best-effort: leave fd 1 untouched
+
+        int fds[2];
+#if defined(_WIN32)
+        if (::_pipe(fds, 1u << 16, _O_BINARY) != 0) {
+            close_fd(savedFd_);
+            savedFd_ = -1;
+            return;
+        }
+        if (::_dup2(fds[1], 1) != 0) {
+            ::_close(fds[0]);
+            ::_close(fds[1]);
+            close_fd(savedFd_);
+            savedFd_ = -1;
+            return;
+        }
+        ::_close(fds[1]);
+#else
+        if (::pipe(fds) != 0) {
+            close_fd(savedFd_);
+            savedFd_ = -1;
+            return;
+        }
+        if (::dup2(fds[1], 1) < 0) {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            close_fd(savedFd_);
+            savedFd_ = -1;
+            return;
+        }
+        ::close(fds[1]);
+#endif
+        pipeRead_ = fds[0];
+
+        // EOF on pipeRead_ (a zero-length read) is the signal that fd 1 was
+        // handed back to the real terminal in the destructor -- that closes
+        // the pipe's last write-end reference, which is what unblocks this
+        // read() without any cooperative cancellation.
+        reader_ = std::thread([this, onLine = std::move(onLine)]() {
+            std::string buf;
+            char chunk[4096];
+            for (;;) {
+#if defined(_WIN32)
+                int n = ::_read(pipeRead_, chunk, sizeof(chunk));
+                if (n <= 0) break;
+#else
+                ssize_t n = ::read(pipeRead_, chunk, sizeof(chunk));
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+#endif
+                for (int i = 0; i < n; ++i) {
+                    char c = chunk[i];
+                    if (c == '\n' || c == '\r') {
+                        if (!buf.empty()) { onLine(buf); buf.clear(); }
+                    } else {
+                        buf.push_back(c);
+                    }
+                }
+            }
+            if (!buf.empty()) onLine(buf);
+        });
+    }
+
+StdoutCapture::~StdoutCapture() {
+        if (savedFd_ < 0) return;
+        std::fflush(stdout);
+#if defined(_WIN32)
+        ::_dup2(savedFd_, 1);
+#else
+        ::dup2(savedFd_, 1);
+#endif
+        close_fd(savedFd_);
+        if (reader_.joinable()) reader_.join();
+        if (pipeRead_ >= 0) close_fd(pipeRead_);
     }
 
 int exec(const std::string& cmd) {

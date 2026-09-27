@@ -63,6 +63,12 @@ private:
     EventStream& stream_;
     CancellationToken& token_;
     std::mutex io_mtx_;
+    // A duplicate of fd 1 taken at construction time, before any capability
+    // runs. Every NDJSON line this session writes goes out through it
+    // rather than through fd 1 directly, so a platform::StdoutCapture
+    // installed around a capability's execution (see run()) can redirect
+    // fd 1 without swallowing the protocol's own output along with it.
+    int wireFd_ { -1 };
     std::atomic<bool> saw_error_ { false };
     std::atomic<std::chrono::steady_clock::time_point> last_emit_;
     std::jthread heartbeat_thread_;

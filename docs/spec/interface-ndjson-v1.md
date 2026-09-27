@@ -122,7 +122,13 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 
 ## 5. stdout 事件格式
 
-每行为一个 JSON 对象，必含 `"kind"` 字段标识类型。
+每行为一个 JSON 对象，必含 `"kind"` 字段标识类型。stdout 上不会出现这一行 JSON
+之外的任何字节——包括某能力在执行期间于进程内运行的、xlings 自身不控制的代码
+（例如索引缓存失效后，通过库的 Lua 沙箱执行下载来的索引构建脚本）。这类代码
+即使直接写系统级 stdout，也会被截获：可识别为进度的输出转换成一条 `progress`
+事件，其余转发到 stderr，两种情况都不出现在 stdout 上——此前 `update_packages`／
+`install_packages` 触发的索引重建会把这类脚本的原始终端文本（含 `\r`、ANSI
+清行序列）直接混进 NDJSON 流，客户端解析到该行即失败。
 
 ## 6. 事件类型
 
@@ -139,6 +145,21 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 | phase | string | 当前阶段标识 |
 | percent | number | 0-100 整数，-1 表示不确定 |
 | message | string | 人类可读描述 |
+
+#### 6.1.1 `update_packages` 的 progress 事件
+
+`update_packages` 在刷新索引（未指定 `target`，或指定 `target` 时刷新之前）的
+过程中，按下列 phase 报告进度；三者都可能一次都不出现——本地/离线源没有网络
+字节可报，缓存未失效时不会重建：
+
+| phase | 何时出现 | i/n 的含义 |
+|-------|---------|-----------|
+| `index_sync` | 每同步一个配置的索引仓库 | 该仓库在其所属分组（顶层 index_repos，或一批已发现的子索引）中的序号/该分组总数 |
+| `index_rebuild` | 索引缓存失效、重新解析 pkgs/ 时 | 已处理/待处理的包文件总数 |
+
+`percent` 为 `i/n`（分组总数为 0 时为 0）；`message` 同时给出仓库名或包文件名，
+便于在没有专门 UI 的客户端里也能打印出有意义的一行。索引工件下载的字节级进度
+走 `download_progress`（§6.3.2），不走这里。
 
 ### 6.2 log
 
@@ -229,6 +250,28 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 // 失败（此处为目标不存在；解析成功而安装失败时 namespace/name/version 仍会填写）
 {"kind":"data","dataKind":"install_targets","payload":{"targets":[{"request":"xim:nosuchpkg","namespace":"","name":"","version":"","revision":0,"status":"failed","payload_dir":""}]}}
 ```
+
+#### 6.3.2 download_progress
+
+字节级下载进度，`install_packages` 与 `update_packages` 共用同一形状——后者
+用它报告索引工件（当索引仓库以工件方式获取、且字节数已知时；git/本地源没有
+这一层进度）的下载，客户端因此无需为两者各写一套渲染逻辑。
+
+```json
+{"kind":"data","dataKind":"download_progress","payload":{"files":[{"name":"xim","totalBytes":204800,"downloadedBytes":102400,"started":true,"finished":false,"success":false}],"nameWidth":3,"elapsedSec":1.2,"sizesReady":true,"prevLines":0}}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| files | array | 本次渲染帧里的每一个下载任务 |
+| files[].name | string | 任务标签——`update_packages` 用索引仓库名，`install_packages` 用文件名 |
+| files[].totalBytes | number | 总字节数；`sizesReady` 为 false 时无意义 |
+| files[].downloadedBytes | number | 已下载字节数 |
+| files[].started / finished / success | boolean | 该任务的生命周期 |
+| nameWidth | number | 渲染对齐用的标签列宽；结构化客户端可忽略 |
+| elapsedSec | number | 自本次刷新/安装开始的已用秒数 |
+| sizesReady | boolean | 总字节数是否已知（服务器在响应头给出前不知道） |
+| prevLines | number | 上一帧渲染的终端行数；结构化客户端可忽略 |
 
 ### 6.4 prompt
 

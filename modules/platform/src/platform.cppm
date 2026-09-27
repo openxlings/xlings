@@ -139,6 +139,53 @@ namespace platform {
 
     export bool is_tui_mode();
 
+    // ── Real stdout, decoupled from whatever fd 1 currently means ──────
+    //
+    // The interface protocol (xlings.interface) writes NDJSON to fd 1 and
+    // forbids anything else there. In-process code this program does not
+    // control -- a Lua build script run through a vendored package-index
+    // loader, for the one measured case -- can still put raw text straight
+    // onto the C library's `stdout`, which is fd 1 underneath regardless of
+    // who wrote it. `StdoutCapture` below redirects fd 1 away from the real
+    // terminal for as long as such code might run; a writer that must keep
+    // reaching the real terminal throughout (the NDJSON writer itself) has
+    // to hold ITS OWN duplicate of fd 1, taken with dup_stdout_fd() BEFORE
+    // any capture starts, so the redirection cannot swallow the very output
+    // it exists to protect.
+
+    // A duplicate of the process's current fd 1, usable with write_fd() /
+    // close_fd() regardless of what fd 1 is later redirected to. -1 on
+    // failure (descriptor limit, or an unsupported platform).
+    export int dup_stdout_fd();
+
+    // Write `data` in full to `fd`, retrying across short writes and EINTR.
+    // Returns false on a hard I/O error (fd closed, broken pipe, ...).
+    export bool write_fd(int fd, std::string_view data);
+
+    export void close_fd(int fd);
+
+    // RAII: while alive, redirects the real fd 1 into an internal pipe and
+    // delivers whatever is written there to `onLine`, one line at a time --
+    // split on '\n' AND on a bare '\r', since a self-refreshing terminal
+    // progress line never sends '\n' until it is done. Restores the
+    // original fd 1 on destruction and joins the reader thread.
+    //
+    // Mechanical only: it does not parse what it captures. Not reentrant --
+    // at most one instance should be alive per process, since a nested one's
+    // destructor would hand fd 1 back to the outer capture's pipe rather than
+    // to the real terminal.
+    export class StdoutCapture {
+    public:
+        explicit StdoutCapture(std::function<void(std::string_view)> onLine);
+        ~StdoutCapture();
+        StdoutCapture(const StdoutCapture&) = delete;
+        StdoutCapture& operator=(const StdoutCapture&) = delete;
+    private:
+        int savedFd_   { -1 };
+        int pipeRead_  { -1 };
+        std::thread reader_;
+    };
+
     export int exec(const std::string& cmd);
 
     export [[nodiscard]] std::string shell_quote(const std::string& arg);

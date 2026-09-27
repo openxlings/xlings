@@ -116,7 +116,8 @@ bool sync_one_repo(const IndexRepo& repo,
                    const std::string& mirror,
                    bool projectScope,
                    bool force,
-                   bool linkLocalSource);
+                   bool linkLocalSource,
+                   BytesProgress onBytesProgress = nullptr);
 
 // A local repo source (file:// URL or a filesystem path) has no network host,
 // so the TCP reachability probe below always reports it "unreachable" and would
@@ -205,9 +206,21 @@ bool sub_indexes_initialized();
 // index and nowhere else.
 std::filesystem::path main_repo_dir();
 
+// Reported once per repository, right before sync_one_repo runs it: its
+// name, its 1-based position, and the total for the GROUP it belongs to
+// (top-level index_repos, or one batch of discovered sub-indexes). There is
+// no single grand total across every group in one call -- sub-index repos
+// are only discovered after the default index has synced, so a caller
+// cannot know that count in advance without having done the work already.
+using RepoSyncProgress = std::function<void(std::string_view repoName, int index, int total)>;
+
 // Sync all configured repos.
 // Global repos live under XLINGS_HOME/data, project repos under project .xlings/data.
-bool sync_all_repos(bool force = false);
+// `onBytesProgress` (see indexfetch's BytesProgress) is forwarded to whichever
+// repo is being fetched as an artifact; a git clone or a local-source link has
+// no byte-granular progress to report and never calls it.
+bool sync_all_repos(bool force = false, RepoSyncProgress onProgress = nullptr,
+                    BytesProgress onBytesProgress = nullptr);
 
 // Read the git HEAD hash for a repo directory.
 // Returns empty string for non-git repos or on any error.

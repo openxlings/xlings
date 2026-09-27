@@ -40,7 +40,8 @@ std::string lower_hex_(std::string s) {
 // if its bytes match. Returns empty string on success, else the last error.
 std::string download_candidates_(std::vector<std::string> urls,
                                  const std::filesystem::path& destFile,
-                                 std::string_view wantSha256) {
+                                 std::string_view wantSha256,
+                                 BytesProgress onProgress = nullptr) {
     if (urls.empty()) return "no candidate URLs";
     // With a pinned sha256, mirrors may race ahead of the authoritative URL;
     // without one (the manifest pointer), keep the authoritative server first.
@@ -92,6 +93,12 @@ std::string download_candidates_(std::vector<std::string> urls,
                                    url, digest ? *digest : "<unreadable>", want);
             };
         }
+        if (onProgress) {
+            opts.onProgress = [onProgress, label = destFile.filename().string()]
+                              (double total, double now) {
+                onProgress(label, total, now);
+            };
+        }
         auto r = tinyhttps::download_file(opts);
         if (r.success) return {};
         lastErr = r.error.empty() ? ("failed: " + u) : r.error;
@@ -138,7 +145,8 @@ BaseOverride resolve_base_() {
 // custom source passes an EMPTY override ("use the URL list as-is").
 std::string obtain_file(const std::string& filename, std::vector<std::string> remoteUrls,
                         const std::filesystem::path& dest, std::string_view wantSha,
-                        const BaseOverride* forced = nullptr) {
+                        const BaseOverride* forced = nullptr,
+                        BytesProgress onProgress = nullptr) {
     namespace fs = std::filesystem;
     auto b = forced ? *forced : resolve_base_();
 
@@ -165,14 +173,15 @@ std::string obtain_file(const std::string& filename, std::vector<std::string> re
     for (const auto& e : b.entries) {
         const std::string& name = e.filename.empty() ? filename : e.filename;
         auto err = e.local ? copy_local_(*e.local, name)
-                           : download_candidates_({ e.base + "/" + name }, dest, wantSha);
+                           : download_candidates_({ e.base + "/" + name }, dest, wantSha,
+                                                  onProgress);
         if (err.empty()) return {};
         lastErr = err;
     }
     if (!b.entries.empty() && !b.allowRemoteUrls) return lastErr;
     if (remoteUrls.empty())
         return lastErr.empty() ? std::string("no candidate URLs") : lastErr;
-    auto err = download_candidates_(std::move(remoteUrls), dest, wantSha);
+    auto err = download_candidates_(std::move(remoteUrls), dest, wantSha, onProgress);
     if (err.empty()) return {};
     return lastErr.empty() ? err : lastErr + "; " + err;
 }
@@ -624,7 +633,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName,
                           const ArtifactSource* custom,
-                          std::string_view pin) {
+                          std::string_view pin,
+                          BytesProgress onProgress) {
     namespace fs = std::filesystem;
     auto mirrorKey = Config::mirror();
     std::string key = custom ? custom->key
@@ -688,10 +698,21 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
     detail_::BaseOverride forcedStorage;
     const detail_::BaseOverride* forced = nullptr;
     if (custom) { forcedStorage = detail_::base_override_for_(*custom); forced = &forcedStorage; }
+    // Relabels every progress callback with the index's own name (`key`)
+    // rather than the artifact's filename -- that is what a client already
+    // reports the sync step under, and a download rendered as a second,
+    // differently-labelled entry for the SAME index would look like an
+    // unrelated one.
+    BytesProgress relabelled = onProgress
+        ? BytesProgress([onProgress, key](std::string_view, double total, double now) {
+              onProgress(key, total, now);
+          })
+        : BytesProgress{};
     if (auto e = detail_::obtain_file(snapshot.artifact_name,
                     index_asset_urls(snapshot.artifact_name, mirrorKey,
                                      snapshot.index_version, custom),
-                    artifactFile, snapshot.artifact_sha256, forced); !e.empty()) {
+                    artifactFile, snapshot.artifact_sha256, forced,
+                    relabelled); !e.empty()) {
         err = std::format("fetch index artifact failed: {}", e);
         return false;
     }

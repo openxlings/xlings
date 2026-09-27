@@ -274,6 +274,11 @@ TESTS=(
     # keeps the previous one when the reinstall fails (#620); every top-level
     # install reports install_targets, including "already installed".
     "E2E-121|install_revision_test.sh||"
+    # `interface update_packages` reports progress for an index refresh and
+    # never lets a downloaded pkgindex-build.lua's raw terminal text reach
+    # stdout, even when the forced rebuild it triggers runs under
+    # install_packages instead.
+    "E2E-122|interface_update_packages_progress_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
