@@ -4,6 +4,8 @@
 
 import std;
 import xlings.core.xvm.shim;
+import xlings.core.xvm.db;
+import xlings.core.home_identity;
 import xlings.platform;
 
 namespace fs = std::filesystem;
@@ -50,13 +52,13 @@ fs::path make_home(const fs::path& root, std::string_view versionsJson = "{}") {
 
 } // namespace
 
-// ── is_home_root ─────────────────────────────────────────────────────
+// ── home_identity::is_home ───────────────────────────────────────────
 
 TEST(ShimAnchorHomeRoot, RealHomeMatches) {
     TempDir tmp;
     auto home = tmp.path / "home";
     make_home(home);
-    EXPECT_TRUE(xlings::xvm::is_home_root(home));
+    EXPECT_TRUE(xlings::home_identity::is_home(home));
 }
 
 TEST(ShimAnchorHomeRoot, SubosDirDoesNotMatch) {
@@ -68,7 +70,25 @@ TEST(ShimAnchorHomeRoot, SubosDirDoesNotMatch) {
     auto current = home / "subos" / "current";
     touch(current / ".xlings.json", "{ \"workspace\": {} }");
     touch(current / "bin" / kXlingsBin);
-    EXPECT_FALSE(xlings::xvm::is_home_root(current));
+    EXPECT_FALSE(xlings::home_identity::is_home(current));
+}
+
+// #617: every SubOS now has an empty `subos/` of its own, so a SubOS carries
+// the whole legacy layout. It is still not a home -- with the parent marked,
+// and with the parent recognised only by its layout.
+TEST(ShimAnchorHomeRoot, SubosWithItsOwnSubosDirIsNotAHome) {
+    TempDir tmp;
+    for (bool marked : {false, true}) {
+        auto home = tmp.path / (marked ? "marked" : "legacy");
+        make_home(home);
+        if (marked) ASSERT_TRUE(xlings::home_identity::write_marker(home));
+        auto sub = home / "subos" / "v615";
+        touch(sub / ".xlings.json", "{ \"workspace\": {} }");
+        touch(sub / "bin" / kXlingsBin);
+        fs::create_directories(sub / "subos");
+        EXPECT_FALSE(xlings::home_identity::is_home(sub)) << "marked=" << marked;
+        EXPECT_TRUE(xlings::home_identity::is_home(home)) << "marked=" << marked;
+    }
 }
 
 TEST(ShimAnchorHomeRoot, ProjectStateDirDoesNotMatch) {
@@ -78,7 +98,38 @@ TEST(ShimAnchorHomeRoot, ProjectStateDirDoesNotMatch) {
     auto state = tmp.path / "project" / ".xlings";
     touch(state / ".xlings.json", "{}");
     fs::create_directories(state / "subos" / "_" / "bin");
-    EXPECT_FALSE(xlings::xvm::is_home_root(state));
+    EXPECT_FALSE(xlings::home_identity::is_home(state));
+}
+
+// The marker alone makes a home, whatever the layout; a legacy home is adopted
+// once and keeps its identity.
+TEST(ShimAnchorHomeRoot, MarkerIsTheDeclarationAndAdoptionWritesItOnce) {
+    TempDir tmp;
+    auto bare = tmp.path / "bare";
+    fs::create_directories(bare);
+    EXPECT_FALSE(xlings::home_identity::is_home(bare));
+    ASSERT_TRUE(xlings::home_identity::write_marker(bare));
+    EXPECT_TRUE(xlings::home_identity::is_home(bare));
+
+    auto legacy = tmp.path / "legacy";
+    make_home(legacy);
+    EXPECT_FALSE(xlings::home_identity::has_marker(legacy));
+    EXPECT_TRUE(xlings::home_identity::adopt_legacy_home(legacy));
+    ASSERT_TRUE(xlings::home_identity::has_marker(legacy));
+    std::ifstream first(xlings::home_identity::marker_path(legacy));
+    const std::string before{std::istreambuf_iterator<char>(first), {}};
+    EXPECT_TRUE(xlings::home_identity::adopt_legacy_home(legacy));
+    std::ifstream second(xlings::home_identity::marker_path(legacy));
+    const std::string after{std::istreambuf_iterator<char>(second), {}};
+    EXPECT_EQ(before, after);
+
+    // A SubOS is never adopted, whatever it contains.
+    auto sub = legacy / "subos" / "s1";
+    touch(sub / ".xlings.json", "{}");
+    touch(sub / "bin" / kXlingsBin);
+    fs::create_directories(sub / "subos");
+    EXPECT_FALSE(xlings::home_identity::adopt_legacy_home(sub));
+    EXPECT_FALSE(xlings::home_identity::has_marker(sub));
 }
 
 // ── resolve_owner_home ───────────────────────────────────────────────
@@ -244,4 +295,44 @@ TEST(ShimAnchorChain, LegacyModeDisablesAnchoring) {
     auto chosen = xlings::xvm::resolve_dispatch_home(
         "tool", shim.string().c_str());
     EXPECT_FALSE(chosen.has_value());
+}
+
+// #617: a shim in a SubOS that has a `subos/` of its own anchors to the home
+// above it, not to the SubOS.
+TEST(ShimAnchorOwner, ShimInASubosWithItsOwnSubosDirAnchorsToTheHome) {
+    TempDir tmp;
+    auto home = tmp.path / "home";
+    make_home(home);
+    auto sub = home / "subos" / "v615";
+    touch(sub / ".xlings.json", "{ \"workspace\": {} }");
+    touch(sub / "bin" / kXlingsBin);
+    fs::create_directories(sub / "subos");
+    auto shim = sub / "bin" / "ninja";
+    touch(shim);
+
+    auto owner = xlings::xvm::resolve_owner_home(shim);
+    ASSERT_TRUE(owner.has_value());
+    EXPECT_EQ(fs::weakly_canonical(*owner), fs::weakly_canonical(home));
+}
+
+// #624: a home nested under another home's SubOS keeps its own paths. The
+// outer home's `subos/<name>/` segment precedes the inner home, and the path
+// is the inner home's: normalising it for the inner home's active SubOS must
+// leave it alone, while the inner home's own SubOS paths are still re-rooted.
+TEST(ShimAnchorOwner, NestedHomePathsAreNotReRootedByTheOuterSubos) {
+    TempDir tmp;
+    auto outer = tmp.path / ".xlings";
+    make_home(outer);
+    auto inner = outer / "subos" / "eco" / "work" / "mcpphome" / "registry";
+    make_home(inner);
+    const auto script = (inner / "data" / "xpkgs" / "xim-x-gcc-specs-config" / "0.0.1"
+                         / "gcc-specs-config.lua").string();
+    const auto innerActive = (inner / "subos" / "default").string();
+    const auto alias = "xlings script " + script;
+    EXPECT_EQ(xlings::xvm::normalize_subos_paths(alias, inner.string(), innerActive),
+              alias);
+    // The inner home's own SubOS path still follows the active SubOS.
+    const auto baked = "--sysroot=" + (inner / "subos" / "old").string();
+    EXPECT_EQ(xlings::xvm::normalize_subos_paths(baked, inner.string(), innerActive),
+              "--sysroot=" + innerActive);
 }

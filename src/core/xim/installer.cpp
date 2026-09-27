@@ -2525,7 +2525,7 @@ std::filesystem::path Installer::locate_dep_install_dir_(const InstallPlan& plan
     return root / detail_::effective_store_name_(*n) / n->version;
 }
 
-std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressRenderer onRender, CancellationToken* cancel, bool useAfterInstall) {
+std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall) {
 
     if (plan.has_errors()) {
         return std::unexpected(
@@ -2683,7 +2683,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     // Download all
     if (!dlTasks.empty()) {
         log::debug("downloading {} package(s)...", dlTasks.size());
-        auto results = download_all(dlTasks, dlConfig, onRender,
+        auto results = download_all(dlTasks, dlConfig, onProgressState,
             [&](std::string_view name, float progress) {
                 if (onStatus) {
                     InstallStatus status;

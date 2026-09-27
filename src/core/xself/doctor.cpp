@@ -44,6 +44,7 @@ import xlings.core.xim.repo;
 import xlings.core.destructive_log;
 import xlings.core.home_config;
 import xlings.platform.target;
+import xlings.core.home_identity;
 
 namespace xlings::xself {
 
@@ -884,6 +885,21 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
                 "re-points the versions database and the sysroot links; "
                 "binaries that baked the old path into PT_INTERP/RPATH are "
                 "NOT repaired — re-provision the home if the toolchain fails",
+        });
+    }
+
+    // The home's identity (home_identity). By the time doctor runs, startup
+    // has already tried to write a missing marker; if it is still missing,
+    // the home could not receive it.
+    if (!home_identity::has_marker(p.homeDir)) {
+        add({
+            .kind    = FindingKind::HomeMarkerMissing,
+            .level   = FindingLevel::Notice,
+            .target  = "xlings",
+            .detail  = std::format(
+                "{} carries no {} marker and could not be given one (read-only "
+                "storage?); it is recognised by its layout until it can",
+                Config::display_path(p.homeDir), home_identity::kMarkerName),
         });
     }
 
@@ -4611,6 +4627,7 @@ Counts count_(const Scan& scan) {
             // than usual: the symptoms it stands in for are deliberately not
             // reported, so without this a moved home would exit 0.
             case FindingKind::HomeRelocated:   ++c.relocated; break;
+            case FindingKind::HomeMarkerMissing: break;
             case FindingKind::BindingState:
                 if (f.level != FindingLevel::Notice) ++c.binding;
                 break;
@@ -4921,6 +4938,9 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
             }
             case FindingKind::SysrootMissing:
                 add(glyph::mark(glyph::warn, "missing sysroot link"), f.detail);
+                break;
+            case FindingKind::HomeMarkerMissing:
+                add(glyph::mark(glyph::note, "home marker"), f.detail);
                 break;
             case FindingKind::HomeRelocated:
                 add(glyph::mark(glyph::failed, "home relocated"), f.detail);

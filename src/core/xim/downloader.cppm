@@ -155,24 +155,63 @@ struct TaskProgress {
     bool success  { false };
 };
 
-// Callback for rendering download progress.
-// Called from the TUI refresh thread (under mutex) every ~200ms.
-// prevLines: number of lines from the previous frame (0 on first call or when
-//            rewriting is unsupported). The renderer should move cursor up by
-//            prevLines and overwrite in a single write to avoid flicker.
-// Returns the number of terminal lines rendered (for the next cursor-up).
-using DownloadProgressRenderer = std::function<int(
+// Where the state of a batch of downloads is sent (protocol 1.3).
+//
+// DATA, NOT A FRAME. The sink receives the per-task state and nothing about how
+// it was last drawn: whether a terminal is rewritten in place, how many lines
+// the previous frame took and how often a frame is drawn are the renderer's
+// decisions, kept by the renderer per stream. A producer that computed them
+// (the `prevLines` of protocol 1.2) put a renderer's state on the wire, and the
+// one producer that did not compute it -- the index download -- printed a new
+// frame for every received chunk.
+//
+// Called from the refresh thread, under the downloader's mutex, at most once
+// per `kProgressInterval` while the state changes, and once more when every task
+// has finished.
+using DownloadProgressSink = std::function<void(
     std::span<const TaskProgress> state,
     std::size_t nameWidth,
     double elapsedSec,
-    bool sizesReady,
-    int prevLines)>;
+    bool sizesReady)>;
+
+// THE PRODUCER BOUNDS WHAT IT SENDS; THE RENDERER DECIDES WHAT IT DRAWS.
+//
+// A download reports progress for every chunk it receives, and on the NDJSON
+// interface each report is a line every consumer parses in full. So a producer
+// sends at most one `download_progress` event per interval and stream, and
+// always the final one. This bounds the data on the wire; it carries no
+// rendering state, and a renderer is free to draw less often still.
+inline constexpr std::chrono::milliseconds kProgressInterval{100};
+
+class ProgressCoalescer {
+public:
+    // Whether an event observed at `now` is sent. The first event is sent, then
+    // at most one per `kProgressInterval`; a final event is always sent, once.
+    // After the final one nothing more is sent: a stream has one end.
+    bool admit(bool final,
+               std::chrono::steady_clock::time_point now =
+                   std::chrono::steady_clock::now()) {
+        if (finalSent_) return false;
+        if (final) {
+            finalSent_ = true;
+            last_ = now;
+            return true;
+        }
+        if (last_ && now - *last_ < kProgressInterval) return false;
+        last_ = now;
+        return true;
+    }
+
+private:
+    std::optional<std::chrono::steady_clock::time_point> last_;
+    bool finalSent_ = false;
+};
 
 // Download all tasks with limited concurrency, real-time per-task progress
 std::vector<DownloadResult>
 download_all(std::span<const DownloadTask> tasks,
              const DownloaderConfig& config,
-             DownloadProgressRenderer onRender,
+             DownloadProgressSink onProgressState,
              std::function<void(std::string_view name, float progress)> onProgress,
              CancellationToken* cancel = nullptr);
 

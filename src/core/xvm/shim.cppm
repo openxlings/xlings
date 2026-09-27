@@ -39,16 +39,11 @@ std::string extract_program_name(const char* argv0);
 // `0`/`off`) restores the pre-0.4.48 env-first behavior as release
 // insurance.
 
-// Structural home-root signature. Deliberately structural (no JSON
-// content sniffing): a real home has all three of `.xlings.json`,
-// `bin/xlings[.exe]`, and a `subos/` directory. A subos dir
-// (`<home>/subos/current`) has no `subos/` inside it, and a project
-// state dir (`<project>/.xlings`) has no `bin/xlings` — so neither can
-// false-match. Project shims must anchor to the GLOBAL home (their
-// payloads live there); the project state dir is excluded by design.
-bool is_home_root(const std::filesystem::path& dir);
-
 // Find the home that owns the invoked shim by walking parents upward.
+// "Home" is xlings.core.home_identity's answer (the `.xlings-home` marker,
+// else the legacy layout minus a SubOS); a project state dir
+// (`<project>/.xlings`) is never one, so project shims anchor to the GLOBAL
+// home, where their payloads live.
 // Tries the shim file as invoked first (only when argv[0] carries a
 // path — a bare name came from PATH search and is not a location),
 // then the running executable path (Windows: the hardlinked shim path;

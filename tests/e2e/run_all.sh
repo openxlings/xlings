@@ -279,6 +279,17 @@ TESTS=(
     # stdout, even when the forced rebuild it triggers runs under
     # install_packages instead.
     "E2E-122|interface_update_packages_progress_test.sh||"
+    # Protocol 1.3: download progress is data and the renderer owns its frames.
+    # Off a terminal each download prints one start and one finish line; on a
+    # pseudo-terminal the frames are bounded by the elapsed time; the interface
+    # stream names its stream and is bounded the same way. Fails on 2026.9.28.1,
+    # whose index download printed 769 progress lines for one index.
+    "E2E-123|download_progress_frames_test.sh||"
+    # A home is declared by `.xlings-home` (#617, #624): self init writes it, a
+    # home without it gains it on its first command, a read-only home keeps
+    # working, and a home nested under another home's SubOS runs its own
+    # script packages. H4 fails on 2026.9.28.1 with "package file not found".
+    "E2E-124|home_identity_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

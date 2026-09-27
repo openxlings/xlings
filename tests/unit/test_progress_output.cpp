@@ -4,6 +4,7 @@ import std;
 import xlings.ui;
 import xlings.core.palette;
 import xlings.platform;
+import xlings.core.xim.downloader;
 
 TEST(ProgressOutput, AgentAndRedirectionDisableTtyRewrite) {
     EXPECT_TRUE(xlings::palette::cursor_rewrite_allowed(true, false, false));
@@ -59,4 +60,64 @@ TEST(ProgressOutput, RedirectedRenderingHasNoControlBytes) {
     EXPECT_EQ(output.find('\033'), std::string::npos);
     EXPECT_EQ(output.find('\0'), std::string::npos);
     EXPECT_EQ(output.find('\r'), std::string::npos);
+}
+
+// Protocol 1.3: the producer bounds what it sends. The first event and then at
+// most one per interval, the final event always and exactly once, nothing
+// after it. Measured against a clock the test controls, not the wall clock.
+TEST(ProgressOutput, CoalescerSendsTheFirstOnePerIntervalAndTheFinalOnce) {
+    using namespace std::chrono_literals;
+    xlings::xim::ProgressCoalescer c;
+    const auto t0 = std::chrono::steady_clock::time_point{} + 1h;
+    EXPECT_TRUE(c.admit(false, t0));
+    EXPECT_FALSE(c.admit(false, t0 + 10ms));
+    EXPECT_FALSE(c.admit(false, t0 + 99ms));
+    EXPECT_TRUE(c.admit(false, t0 + 100ms));
+    EXPECT_FALSE(c.admit(false, t0 + 150ms));
+    // The final one is never held back by the interval.
+    EXPECT_TRUE(c.admit(true, t0 + 151ms));
+    // A stream has one end: a second final, or anything later, is not sent.
+    EXPECT_FALSE(c.admit(true, t0 + 152ms));
+    EXPECT_FALSE(c.admit(false, t0 + 1s));
+}
+
+// A thousand chunk reports in one second become at most eleven events: one per
+// 100 ms and the final one. This is the index download's shape, which sent all
+// thousand before 1.3.
+TEST(ProgressOutput, CoalescerBoundsAChunkStorm) {
+    using namespace std::chrono_literals;
+    xlings::xim::ProgressCoalescer c;
+    const auto t0 = std::chrono::steady_clock::time_point{} + 1h;
+    int sent = 0;
+    for (int i = 0; i < 1000; ++i)
+        if (c.admit(false, t0 + std::chrono::milliseconds(i))) ++sent;
+    if (c.admit(true, t0 + 1000ms)) ++sent;
+    EXPECT_LE(sent, 11);
+    EXPECT_GE(sent, 2);
+}
+
+TEST(ProgressOutput, BytesAreFormattedWithOneDecimal) {
+    EXPECT_EQ(xlings::ui::format_bytes(0), "0 B");
+    EXPECT_EQ(xlings::ui::format_bytes(512), "512 B");
+    EXPECT_EQ(xlings::ui::format_bytes(1536), "1.5 KB");
+    EXPECT_EQ(xlings::ui::format_bytes(6291456), "6.0 MB");
+    EXPECT_EQ(xlings::ui::format_bytes(3.5 * 1024 * 1024 * 1024), "3.5 GB");
+}
+
+// A destination that cannot be rewritten gets plain lines: no cursor control
+// and no carriage return, one line per call.
+TEST(ProgressOutput, MilestonesArePlainLines) {
+    const xlings::ui::DownloadProgressEntry done{
+        .name = "fixture", .totalBytes = 2048, .downloadedBytes = 2048,
+        .started = true, .finished = true, .success = true,
+    };
+    testing::internal::CaptureStdout();
+    xlings::ui::print_download_milestone(done, /*finished=*/false, 0.0);
+    xlings::ui::print_download_milestone(done, /*finished=*/true, 1.25);
+    const auto output = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(output.find('\033'), std::string::npos);
+    EXPECT_EQ(output.find('\r'), std::string::npos);
+    EXPECT_EQ(std::ranges::count(output, '\n'), 2);
+    EXPECT_NE(output.find("fixture  2.0 KB\n"), std::string::npos);
+    EXPECT_NE(output.find("fixture  2.0 KB  1.2s\n"), std::string::npos);
 }

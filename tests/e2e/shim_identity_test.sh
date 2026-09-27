@@ -19,6 +19,9 @@
 #   S5  a stale copy that IS a new build hands off to the entry (execv), with
 #       the entry's exit code; a user's own program in the bin directory is
 #       never touched by any of it.
+#   S6  a tool shim in a SubOS that has a `subos/` of its own (what a
+#       `--sandbox` session leaves) hands off to the HOME's entry, not to the
+#       SubOS's xlings shim (#617): a SubOS is not a home.
 #
 # Refs: .agents/docs/2026-09-26-issue615-shim-identity-design.md
 set -euo pipefail
@@ -152,4 +155,22 @@ RUN self doctor --fix >/dev/null 2>&1 || true
 points_at_entry "$SHIM_S2" || fail "S5: --fix did not relink the handoff-capable copy"
 [[ -f "$THEIRS" ]] || fail "S5: a user's program was removed"
 
-log "PASS: shim identity (S1-S5)"
+# ── S6 ────────────────────────────────────────────────────────────────
+log "S6: a tool shim in a SubOS with its own subos/ hands off to the home's entry (#617)"
+mkdir -p "$HOME_DIR/subos/s2/subos"
+STALE_TOOL="$HOME_DIR/subos/s2/bin/ninja-617"
+rm -f "$STALE_TOOL"
+cp "$ENTRY" "$STALE_TOOL"
+printf 'YYYYYYYYYYYYYYYY' >> "$STALE_TOOL"   # a different build, same code
+chmod +x "$STALE_TOOL"
+out=$(cd /tmp && env -i HOME="$HOME" PATH=/usr/bin:/bin XLINGS_HOME="$HOME_DIR" \
+        XLINGS_HANDOFF_TRACE=1 "$STALE_TOOL" --version 2>&1 || true)
+grep -q 'xlings: handoff' <<<"$out" || fail "S6: no handoff happened: $out"
+if grep -qF -- "-> $HOME_DIR/subos/s2/bin/xlings" <<<"$out"; then
+  fail "S6: the handoff stopped at the SubOS's own xlings shim, not the home's entry: $out"
+fi
+grep -qF -- "-> $(readlink -f "$ENTRY")" <<<"$out" || grep -qF -- "-> $ENTRY" <<<"$out" \
+  || fail "S6: handed off to something other than the home's entry: $out"
+rm -f "$STALE_TOOL"
+
+log "PASS: shim identity (S1-S6)"

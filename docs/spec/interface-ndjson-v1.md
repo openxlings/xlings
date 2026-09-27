@@ -1,16 +1,17 @@
-> 编写日期: 2026-05-17 | 版本: 2026.9.27.1
+> 编写日期: 2026-05-17 | 版本: 2026.9.28.2
 
-# NDJSON 接口协议规范 v1.2
+# NDJSON 接口协议规范 v1.3
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.2**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.3**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
 | 1.0 | 0.4.36 起 | 初始版本 |
 | 1.1 | 2026.9.27.1 起 | 增补：`install_targets` 事件；`install_plan` 条目的第三个元素 `revision`（§6.3.1） |
 | 1.2 | 2026.9.28.1 起 | 增补：`update_packages` 的 `progress` 事件（`index_sync`、`index_rebuild`，§6.1.1）与 `download_progress` 数据事件（§6.3.2）；任何能力都不向 stdout 写 NDJSON 以外的内容（§5） |
+| 1.3 | 2026.9.28.2 起 | 增补：`download_progress` 的 `stream` 字段与发送频率的上限（§6.3.2）；`prevLines` 废弃，恒为 0 |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -43,7 +44,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.2"}
+{"protocol_version":"1.3"}
 ```
 
 ### 3.2 查询可用能力
@@ -259,12 +260,20 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 这一层进度）的下载，客户端因此无需为两者各写一套渲染逻辑。
 
 ```json
-{"kind":"data","dataKind":"download_progress","payload":{"files":[{"name":"xim","totalBytes":204800,"downloadedBytes":102400,"started":true,"finished":false,"success":false}],"nameWidth":3,"elapsedSec":1.2,"sizesReady":true,"prevLines":0}}
+{"kind":"data","dataKind":"download_progress","payload":{"stream":"index:xim","files":[{"name":"xim","totalBytes":204800,"downloadedBytes":102400,"started":true,"finished":false,"success":false}],"nameWidth":3,"elapsedSec":1.2,"sizesReady":true,"prevLines":0}}
 ```
+
+事件只携带数据，不携带渲染状态（1.3 起）。如何绘制由客户端决定，并由客户端按 `stream`
+保存：上一帧的行数、上一帧的时间、哪些任务已经报告过开始与结束。
+
+发送频率有上限：同一个 `stream` 每 100 ms 至多一个事件，状态未变化时不重复发送，而最后
+一个事件（其中每个任务都已 `finished`）总会发送。以工件方式获取的索引在获取完成后发送
+一个 `finished` 为真的事件，无论下载过程中是否知道总字节数。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| files | array | 本次渲染帧里的每一个下载任务 |
+| stream | string | 事件所属的流（1.3 起）：`index:<仓库名>` 为一次索引获取，`install:<n>` 为一次安装的一批下载；客户端按它保存各自的渲染状态。1.2 的服务端不发送该字段，其事件视为同一个流 |
+| files | array | 本次事件里的每一个下载任务 |
 | files[].name | string | 任务标签——`update_packages` 用索引仓库名，`install_packages` 用文件名 |
 | files[].totalBytes | number | 总字节数；`sizesReady` 为 false 时无意义 |
 | files[].downloadedBytes | number | 已下载字节数 |
@@ -272,7 +281,7 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 | nameWidth | number | 渲染对齐用的标签列宽；结构化客户端可忽略 |
 | elapsedSec | number | 自本次刷新/安装开始的已用秒数 |
 | sizesReady | boolean | 总字节数是否已知（服务器在响应头给出前不知道） |
-| prevLines | number | 上一帧渲染的终端行数；结构化客户端可忽略 |
+| prevLines | number | 已废弃（1.3 起恒为 0，2.0 移除）。1.2 中它是上一帧渲染的终端行数，即渲染器的状态；1.3 的客户端忽略它 |
 
 ### 6.4 prompt
 

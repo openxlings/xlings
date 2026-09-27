@@ -716,6 +716,16 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
         err = std::format("fetch index artifact failed: {}", e);
         return false;
     }
+    // The fetch is complete, and the progress stream says so once. Every
+    // chunk's report is conditional on the transfer knowing its size, and a
+    // local base copies without reporting at all; a renderer that waits for a
+    // finished item would otherwise wait for an event that may never come.
+    if (relabelled) {
+        std::error_code sizeEc;
+        const auto bytes = static_cast<double>(
+            std::filesystem::file_size(artifactFile, sizeEc));
+        if (!sizeEc) relabelled(key, bytes, bytes);
+    }
 
     // 3. Extract to a staging dir, sanity-check, atomically swap into place.
     auto stage = tmpRoot / "stage";

@@ -7,6 +7,11 @@
 #                                     remains installed (multi-version semantics)
 #   3. update again                 → "already the latest"; no install attempt
 #   4. bare `xlings update`         → only refreshes the index, exit 0
+#   5. update active=1.0.0 while 2.0.0 is already in the store
+#                                   → "is in the store", then
+#                                     "active: 1.0.0 -> 2.0.0"; never "upgraded"
+#   6. bare `xlings update` with a stale index cache
+#                                   → the index's pkgindex-build.lua runs ONCE
 
 set -euo pipefail
 
@@ -156,4 +161,47 @@ OUT_S4="$(RUN update 2>&1)" || fail "S4: command exited non-zero"
 echo "$OUT_S4" | grep -q "index updated" \
   || fail "S4: expected 'index updated'; got:\n$OUT_S4"
 
-log "PASS: update <pkg> scenarios 1, 2, 3, 4"
+# ── Scenario 5: the target is already in the store ──────────────────
+# 2.0.0 stays in the store after S2; switching back to 1.0.0 makes `update`
+# move the active version without installing anything. The two lines it prints
+# say that. Before this was worded, the output was "is already installed"
+# followed by "upgraded ...: 1.0.0 -> 2.0.0" -- both true, and read together a
+# contradiction.
+log "Scenario 5: update upgrade-fixture while 2.0.0 is in the store"
+RUN use upgrade-fixture 1.0.0 >/dev/null 2>&1 || fail "S5 setup: use 1.0.0 failed"
+OUT_S5="$(RUN update upgrade-fixture -y 2>&1)" || fail "S5: command exited non-zero"
+echo "$OUT_S5" | grep -qF "xim:upgrade-fixture@2.0.0 is in the store" \
+  || fail "S5: expected 'xim:upgrade-fixture@2.0.0 is in the store'; got:\n$OUT_S5"
+echo "$OUT_S5" | grep -qF "active: 1.0.0 -> 2.0.0" \
+  || fail "S5: expected 'active: 1.0.0 -> 2.0.0'; got:\n$OUT_S5"
+if echo "$OUT_S5" | grep -qE "is already installed|upgraded "; then
+  fail "S5: a store hit must not read as 'already installed' or 'upgraded'; got:\n$OUT_S5"
+fi
+
+# ── Scenario 6: one rebuild per update ─────────────────────────────
+# The index's pkgindex-build.lua runs on every catalog build and records each
+# run in a file. With the cache deleted, the catalog's implicit first build and
+# the forced rebuild `update` performs were two builds; `update` now performs
+# only the forced one.
+log "Scenario 6: bare update runs the index build script once"
+RUNS_FILE="$RUNTIME_DIR/pkgindex-build-runs.log"
+rm -f "$RUNS_FILE"
+cat > "$LOCAL_INDEX_DIR/pkgindex-build.lua" <<LUA
+package = { name = "pkgindex-update", namespace = "fixture" }
+function installed() return false end
+function install()
+    local f = io.open("$RUNS_FILE", "a")
+    if f then f:write("run\\n") f:close() end
+    print("[1/1] fixture::upgrade-fixture")
+    return true
+end
+function uninstall() return true end
+LUA
+rm -f "$LOCAL_INDEX_DIR/.xlings-index-cache.json"
+OUT_S6="$(RUN update 2>&1)" || fail "S6: command exited non-zero:\n$OUT_S6"
+[[ -f "$RUNS_FILE" ]] || fail "S6: the index build script never ran; got:\n$OUT_S6"
+runs=$(grep -c '^run$' "$RUNS_FILE")
+[[ "$runs" -eq 1 ]] \
+  || fail "S6: the index build script ran $runs times for one update; got:\n$OUT_S6"
+
+log "PASS: update <pkg> scenarios 1-6"

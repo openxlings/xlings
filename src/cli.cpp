@@ -38,6 +38,7 @@ import xlings.core.utf8;
 import xlings.cli.spec;
 import xlings.core.xim.index_cmd;
 import xlings.core.xim.repo;
+import xlings.core.palette;
 
 namespace xlings::cli {
 
@@ -71,6 +72,95 @@ bool kind_is_interface_only_(std::string_view kind) {
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);
+}
+
+// THE RENDERER OWNS ITS FRAMES (protocol 1.3).
+//
+// A `download_progress` event is data: the files, their bytes, the elapsed
+// time and the stream it belongs to. How it is drawn is decided here and kept
+// here, per stream: how many lines the last frame took (so the next one is
+// drawn over it), when it was drawn (so a terminal gets at most one frame per
+// `kDownloadFrameInterval`), and which items have been announced (so a
+// destination that cannot be rewritten gets one line per item start and one
+// per item finish). Protocol 1.2 put the line count on the wire; the index
+// download never filled it in, and every one of its events became a new frame.
+// A 1.2 producer's `prevLines` is ignored; its events share one stream.
+constexpr auto kDownloadFrameInterval = std::chrono::milliseconds(100);
+
+struct DownloadStreamView_ {
+    int lines = 0;
+    bool drawn = false;
+    bool cursorHidden = false;
+    std::chrono::steady_clock::time_point lastDraw{};
+    std::set<std::string> started;
+    std::set<std::string> finished;
+};
+
+std::map<std::string, DownloadStreamView_>& download_streams_() {
+    static std::map<std::string, DownloadStreamView_> streams;
+    return streams;
+}
+
+void render_download_event_(const nlohmann::json& json) {
+    auto nameWidth = json.value("nameWidth", std::size_t{20});
+    auto elapsedSec = json.value("elapsedSec", 0.0);
+    auto sizesReady = json.value("sizesReady", false);
+    std::vector<ui::DownloadProgressEntry> entries;
+    if (json.contains("files") && json["files"].is_array()) {
+        for (auto& f : json["files"]) {
+            entries.push_back({
+                f.value("name", std::string{}),
+                f.value("totalBytes", 0.0),
+                f.value("downloadedBytes", 0.0),
+                f.value("started", false),
+                f.value("finished", false),
+                f.value("success", false)
+            });
+        }
+    }
+    const auto streamId = json.value("stream", std::string{});
+    auto& streams = download_streams_();
+    auto& view = streams[streamId];
+    const bool final = !entries.empty()
+        && std::ranges::all_of(entries, [](auto const& f) { return f.finished; });
+
+    if (palette::cursor_rewrite_allowed()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (view.drawn && !final && now - view.lastDraw < kDownloadFrameInterval) return;
+        if (!view.cursorHidden) {
+            // A cancelled batch may never send an all-finished event, so the
+            // cursor is also restored at exit, once per process.
+            static const bool restoreAtExit = [] {
+                std::atexit([] { std::fputs("\033[?25h", stdout); std::fflush(stdout); });
+                return true;
+            }();
+            (void)restoreAtExit;
+            std::fputs("\033[?25l", stdout);
+            view.cursorHidden = true;
+        }
+        view.lines = ui::render_download_progress(entries, nameWidth, elapsedSec,
+                                                  sizesReady, view.drawn ? view.lines : 0);
+        view.drawn = true;
+        view.lastDraw = now;
+        if (final) {
+            std::fputs("\033[?25h", stdout);
+            std::fflush(stdout);
+            streams.erase(streamId);
+        }
+        return;
+    }
+
+    for (auto const& f : entries) {
+        if ((f.started || f.finished) && !view.started.contains(f.name)) {
+            view.started.insert(f.name);
+            ui::print_download_milestone(f, /*finished=*/false, elapsedSec);
+        }
+        if (f.finished && !view.finished.contains(f.name)) {
+            view.finished.insert(f.name);
+            ui::print_download_milestone(f, /*finished=*/true, elapsedSec);
+        }
+    }
+    if (final) streams.erase(streamId);
 }
 
 void dispatch_data_event(const DataEvent& e) {
@@ -285,24 +375,7 @@ void dispatch_data_event(const DataEvent& e) {
     else if (e.kind == "download_progress") {
         // Skip CLI rendering in TUI mode (agent TUI handles progress separately)
         if (platform::is_tui_mode()) return;
-        auto nameWidth = json.value("nameWidth", std::size_t{20});
-        auto elapsedSec = json.value("elapsedSec", 0.0);
-        auto sizesReady = json.value("sizesReady", false);
-        std::vector<ui::DownloadProgressEntry> entries;
-        if (json.contains("files") && json["files"].is_array()) {
-            for (auto& f : json["files"]) {
-                entries.push_back({
-                    f.value("name", std::string{}),
-                    f.value("totalBytes", 0.0),
-                    f.value("downloadedBytes", 0.0),
-                    f.value("started", false),
-                    f.value("finished", false),
-                    f.value("success", false)
-                });
-            }
-        }
-        auto prevLines = json.value("prevLines", 0);
-        ui::render_download_progress(entries, nameWidth, elapsedSec, sizesReady, prevLines);
+        render_download_event_(json);
     }
     else if (!kind_is_interface_only_(e.kind)) {
         // A screen with no renderer is a screen the user never sees, and at

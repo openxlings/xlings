@@ -551,7 +551,7 @@ public:
             const DownloaderConfig& dlConfig,
             std::function<void(const InstallStatus&)> onStatus,
             InstallRequestHandler onInstallRequests = nullptr,
-            DownloadProgressRenderer onRender = nullptr,
+            DownloadProgressSink onProgressState = nullptr,
             CancellationToken* cancel = nullptr,
             bool useAfterInstall = false);
 

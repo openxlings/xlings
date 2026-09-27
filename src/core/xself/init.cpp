@@ -17,6 +17,7 @@ import xlings.core.xvm.shim_table;
 import xlings.core.xvm.shim_identity;
 import xlings.core.xvm.lock;
 import xlings.core.entry_binary;
+import xlings.core.home_identity;
 
 namespace xlings::xself {
 
@@ -432,6 +433,16 @@ bool ensure_home_layout(const fs::path& home_dir) {
 
     auto current_link = home_dir / "subos" / "current";
     platform::create_directory_link(current_link, default_subos);
+
+    // The home's identity (home_identity): written once, by the layout that
+    // makes the directory a home, and never into a SubOS. A failure here is
+    // reported and not fatal -- the legacy layout still answers for the home,
+    // exactly as it does for one on read-only storage.
+    if (!home_identity::has_marker(home_dir)) {
+        if (auto w = home_identity::write_marker(home_dir); !w)
+            log::warn("[xlings:self]: {} -- the home is recognised by its layout "
+                      "until the marker can be written", w.error());
+    }
 
     // Not write_if_missing_: every home that predates `subos_info` already has
     // this file, so "missing" is exactly the case that never fires on the

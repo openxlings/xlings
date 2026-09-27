@@ -270,7 +270,9 @@ std::string get_binding(const VersionDB& db,
 // home itself, or end in `.xlings` (which is how a PROJECT subos --
 // <projectDir>/.xlings/subos/<name>, not under homeDir at all -- is caught).
 // A user's own /opt/subos/foo, the flags around the path, and all quoting come
-// through byte-identical.
+// through byte-identical. So does a path that continues into a home nested
+// below the `subos/<name>/` segment (home_identity::is_home): the nearest home
+// owns it, and re-rooting it at this home's SubOS broke the inner home (#624).
 std::string normalize_subos_paths(const std::string& text,
                                   const std::string& xlings_home,
                                   const std::string& active_subos_dir);
