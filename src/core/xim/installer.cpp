@@ -2550,6 +2550,16 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     }
 
     auto dataDir = Config::paths().dataDir;
+
+    // Finish what an earlier, interrupted reinstall (#620) left parked
+    // under <data>/stale/: PayloadReplacement's rollback is a C++
+    // destructor, which never runs when the process is killed (SIGKILL,
+    // power loss) instead of unwound, so nothing else ever revisits what it
+    // parked there. Once per execute() call -- this is the store's first
+    // touch for the install, not the per-node loop below -- and never on a
+    // dry run, which returns before execute() is ever called.
+    recover_parked_payloads(dataDir / "stale");
+
     auto platform = detect_platform_();
 
     // Phase 1: Collect download tasks for non-installed packages
@@ -3094,6 +3104,40 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             }
         }
 
+        // A payload of another packaging revision (#620). Asked again here,
+        // not only by the planner, because the fast paths above -- the
+        // `installed` hook and the version database -- each answer
+        // "installed" about it, which is how `install` of an already
+        // installed version returned without looking at the recipe.
+        //
+        // The old tree is moved aside only now: the artifact was downloaded
+        // and verified in phase 1 and extracted above, so every step that
+        // can fail without touching the store has already run. From here to
+        // `commit` below, any early exit of this iteration destroys
+        // `replacement`, which removes the partial tree and puts the old one
+        // back (PayloadReplacement, payload.cppm).
+        std::optional<PayloadReplacement> replacement;
+        if (const auto revision = foreignPayload
+                ? RevisionVerdict{}
+                : payload_revision_verdict(ctx.install_dir, node.revision);
+            revision.stale) {
+            log::info("reinstalling {}@{}: {}",
+                      node.name, node.version, revision.reason());
+            auto aside = set_aside_payload(ctx.install_dir);
+            if (!aside) {
+                const auto message = std::format(
+                    "{}; the installed payload (revision {}) is unchanged",
+                    aside.error(), revision.recorded);
+                log::error("[{}@{}] {}", node.name, node.version, message);
+                if (onStatus) {
+                    onStatus({ node.name, InstallPhase::Failed, 0.0f, message });
+                }
+                continue;
+            }
+            replacement.emplace(std::move(*aside));
+            payloadInstalled = false;
+        }
+
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3306,7 +3350,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         if (!payloadInstalled && node.pkgType != 3 /* Config */
             && classify_payload_content(ctx.install_dir)
                    != PayloadPlatform::Foreign) {
-            write_payload_stamp(ctx.install_dir, node.version);
+            write_payload_stamp(ctx.install_dir, node.version,
+                                kRegisteredUnrecorded, node.revision);
         }
 
         // Apply elfpatch auto-patching if the install hook enabled it
@@ -3518,11 +3563,17 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         // Without it, "the run reached the end" and "the run did its work"
         // are the same output, which is how a stack that wired nothing
         // reported `installed` on a real home.
+        //
+        // The recipe's revision is recorded on this path too. A payload this
+        // run did not install reached here either current by the revision
+        // check above, which makes the two numbers equal, or with no stamp
+        // and so no verdict, which the recipe's revision now adopts.
         if (node.pkgType != 3 /* Config */) {
             const auto registered = count_ledger_registrations(
                 Config::versions(), Config::paths().homeDir.string(),
                 node.namespaceName, node.name, node.version);
-            write_payload_stamp(ctx.install_dir, node.version, registered);
+            write_payload_stamp(ctx.install_dir, node.version, registered,
+                                node.revision);
         }
 
         if (catalog_) {
@@ -3542,9 +3593,16 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             index_->mark_installed(node.name, true);
         }
 
+        // Every step that can fail has run: the stale payload, if one was set
+        // aside, is no longer needed.
+        if (replacement) replacement->commit();
+
         if (onStatus) {
-            onStatus({ node.name, InstallPhase::Done, 1.0f,
-                       payloadInstalled ? "already installed" : "" });
+            onStatus({ .name = node.name,
+                       .phase = InstallPhase::Done,
+                       .progress = 1.0f,
+                       .message = payloadInstalled ? "already installed" : "",
+                       .payloadReused = payloadInstalled });
         }
         if (payloadInstalled) {
             log::debug("{}@{} mapping to current subos", node.name, node.version);

@@ -270,6 +270,10 @@ TESTS=(
     # copy of a new build hands off. Differential against 2026.9.26.2: S1
     # fails (no marker), and its doctor reports the legacy shims as "not ours".
     "E2E-120|shim_identity_test.sh||"
+    # A recipe's packaging revision reinstalls a stale payload in place and
+    # keeps the previous one when the reinstall fails (#620); every top-level
+    # install reports install_targets, including "already installed".
+    "E2E-121|install_revision_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -57,7 +57,9 @@ def main() -> int:
     # 1. protocol_version (one-line JSON, not NDJSON)
     [version_obj] = list(call(xlings, "interface", "--version"))
     print(f"protocol_version: {version_obj['protocol_version']}")
-    assert version_obj["protocol_version"] == "1.0"
+    # Major version only: a minor bump is additive, and a capability is
+    # detected by its presence on the wire, not by this number.
+    assert version_obj["protocol_version"].split(".")[0] == "1"
 
     # 2. capability list (one big JSON object)
     [list_obj] = list(call(xlings, "interface", "--list"))

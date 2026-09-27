@@ -208,8 +208,9 @@ void render_data_event(const DataEvent& e) {
             }
         }
     }
-    // download_progress, system_info, env, repo_list, subos_shims:
-    // these are either noisy (progress) or already covered by info_panel.
+    // download_progress, system_info, env, repo_list, subos_shims,
+    // install_targets: these are either noisy (progress), already covered by
+    // info_panel, or a structured duplicate of the plan and the summary.
     // Skip silently — the log messages carry the essential info.
 }
 

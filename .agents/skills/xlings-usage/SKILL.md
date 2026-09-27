@@ -142,8 +142,8 @@ xlings subos new agent-ws-2 --from subos:dev-env@latest
 
 ```bash
 xlings interface
-# NDJSON protocol v1.0 over stdio
-# → {"protocol":"1.0","capabilities":[...]}
+# NDJSON protocol v1.1 over stdio
+# → {"protocol":"1.1","capabilities":[...]}
 ```
 
 ### One-shot command execution

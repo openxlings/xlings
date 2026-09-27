@@ -27,7 +27,7 @@ xlings interface --version
 返回：
 
 ```json
-{"protocol_version":"1.0"}
+{"protocol_version":"1.1"}
 ```
 
 ### 能力发现

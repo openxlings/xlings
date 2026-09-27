@@ -51,6 +51,12 @@ struct InstallStatus {
     // "free some space" (openxlings/xlings#376).
     std::string errorCode;
     std::string hint;
+
+    // Done only: the payload was already present and current, so this run
+    // installed nothing into it (its config hook and registrations may still
+    // have run). What separates `already_present` from `installed` in the
+    // install_targets record, without reading the free-text `message`.
+    bool payloadReused { false };
 };
 
 // How a node was reached in the dep graph. Determines whether the
@@ -118,6 +124,12 @@ struct PlanNode {
     bool isSystemPM { false };
     PackageScope scope { PackageScope::Global };
     int pkgType { 0 };  // 0=Package, 1=Script, 2=Template, 3=Config, 4=Subos
+    // The recipe's packaging revision for this version (`revision` on the
+    // version entry, 0 when it states none). Recorded in the payload stamp.
+    int revision { 0 };
+    // Non-empty when a payload of this version is on disk but stale: the
+    // resolver's `payload_revision_verdict`, phrased for the plan.
+    std::string staleReason;
 
     // Explicit special members to work around GCC 15 module linker bug
     PlanNode() = default;

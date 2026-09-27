@@ -150,12 +150,13 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
         // an incomplete payload, while a planner that still called it
         // installed printed "nothing to do" and then "already installed" in
         // the same run that reinstalled it. Same predicate, both places.
+        const auto payloadDir = match.storeRoot
+            / package_store_name(match.namespaceName, match.name)
+            / match.version;
         node.alreadyInstalled = match.installed && !match.payloadForeign
             && !installation_state(
                    ledgerIndex, match.namespaceName, match.name, match.version,
-                   match.storeRoot
-                       / package_store_name(match.namespaceName, match.name)
-                       / match.version)
+                   payloadDir)
                    .is_incomplete();
         node.kind = kind;
 
@@ -167,6 +168,20 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
             // enumerates its architectures and does not list this one -- a
             // package-level `archs` union is never enough to stop a plan.
             const auto* entry = find_entry(*pkg, platform, node.version);
+
+            // A payload of another packaging revision plans as not installed,
+            // like a foreign or an incomplete one, so its artifact is
+            // downloaded and the installer replaces it (#620). Same verdict
+            // function as the installer's check.
+            if (entry) node.revision = entry->revision;
+            if (node.alreadyInstalled) {
+                const auto verdict =
+                    payload_revision_verdict(payloadDir, node.revision);
+                if (verdict.stale) {
+                    node.alreadyInstalled = false;
+                    node.staleReason = verdict.reason();
+                }
+            }
             const auto compatibility = check_target_compatibility(
                 *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {

@@ -35,6 +35,7 @@
 
 import std;
 import xlings.core.xim.payload;
+import xlings.platform;
 
 namespace xim = xlings::xim;
 namespace fs = std::filesystem;
@@ -291,4 +292,289 @@ TEST(PayloadRemove, SweepingNothingIsFine) {
     StoreFixture fx{"sweep-empty"};
     EXPECT_EQ(xim::sweep_payload_trash(xim::payload_trash_root(fx.payload())), 0);
     EXPECT_EQ(xim::sweep_payload_trash({}), 0);
+}
+
+// ── replacing a stale payload (#620) ─────────────────────────────────
+//
+// The reinstall of a payload whose recipe revision moved on must never leave
+// the version without a payload: the old tree is set aside, the new one is
+// installed at the real path, and the old one is either deleted (commit) or
+// put back (rollback, or destruction without commit).
+
+namespace {
+
+std::string read_(const fs::path& p) {
+    std::ifstream in(p);
+    return {std::istreambuf_iterator<char>(in), {}};
+}
+
+}  // namespace
+
+TEST(PayloadReplace, SetAsideLeavesAnEmptyPathAndParksOutsideTheStore) {
+    StoreFixture fx{"replace-aside"};
+    fx.file("bin/node", "old");
+    fx.file(".mcpp_ok", "mcpp");
+
+    auto aside = xim::set_aside_payload(fx.payload());
+    ASSERT_TRUE(aside) << aside.error();
+
+    EXPECT_TRUE(fs::is_directory(fx.payload()));
+    EXPECT_TRUE(fs::is_empty(fx.payload()))
+        << "the install hook needs its install_dir, and an empty one";
+    EXPECT_EQ(read_(aside->parked() / "bin" / "node"), "old");
+    EXPECT_EQ(aside->parked().parent_path(), fx.root / "data" / "stale");
+
+    // Parked where no store scan reads it as a version of this package.
+    EXPECT_EQ(fx.versions_as_seen_by_the_store(),
+              std::vector<std::string>{"22.17.1"});
+    aside->commit();
+}
+
+TEST(PayloadReplace, CommitDeletesTheOldTreeWithWhatOtherToolsWroteIntoIt) {
+    StoreFixture fx{"replace-commit"};
+    fx.file("bin/node", "old");
+    fx.file(".mcpp_ok", "mcpp");
+    fx.file(".mcpp-fixup.json", "{}");
+
+    auto aside = xim::set_aside_payload(fx.payload());
+    ASSERT_TRUE(aside) << aside.error();
+    const auto parked = aside->parked();
+    fx.file("bin/node", "new");
+    aside->commit();
+
+    EXPECT_EQ(read_(fx.payload() / "bin" / "node"), "new");
+    EXPECT_FALSE(fs::exists(fx.payload() / ".mcpp_ok"))
+        << "a marker written about the old payload must not describe the new one";
+    EXPECT_FALSE(fs::exists(fx.payload() / ".mcpp-fixup.json"));
+    EXPECT_FALSE(fs::exists(parked));
+    EXPECT_FALSE(fs::exists(fx.root / "data" / "stale"))
+        << "an empty parking directory is noise in the data dir";
+}
+
+TEST(PayloadReplace, RollbackPutsTheOldPayloadBackAndDropsThePartialOne) {
+    StoreFixture fx{"replace-rollback"};
+    fx.file("bin/node", "old");
+    fx.file(".mcpp_ok", "mcpp");
+
+    auto aside = xim::set_aside_payload(fx.payload());
+    ASSERT_TRUE(aside) << aside.error();
+    fx.file("bin/node", "partial");
+    fx.file("lib/half-written.so", "partial");
+
+    EXPECT_EQ(aside->rollback(), "");
+    EXPECT_EQ(read_(fx.payload() / "bin" / "node"), "old");
+    EXPECT_TRUE(fs::exists(fx.payload() / ".mcpp_ok"));
+    EXPECT_FALSE(fs::exists(fx.payload() / "lib" / "half-written.so"));
+    EXPECT_FALSE(fs::exists(fx.root / "data" / "stale"));
+}
+
+// Every early exit of an install step is a scope exit. The destructor is what
+// makes all of them restore the old payload without each remembering to.
+TEST(PayloadReplace, LeavingScopeWithoutCommitRollsBack) {
+    StoreFixture fx{"replace-scope"};
+    fx.file("bin/node", "old");
+    {
+        auto aside = xim::set_aside_payload(fx.payload());
+        ASSERT_TRUE(aside) << aside.error();
+        fx.file("bin/node", "partial");
+    }
+    EXPECT_EQ(read_(fx.payload() / "bin" / "node"), "old");
+}
+
+TEST(PayloadReplace, AMoveThatIsRefusedLeavesThePayloadInPlace) {
+    if (running_as_root()) GTEST_SKIP() << "root ignores directory write bits";
+    StoreFixture fx{"replace-refused"};
+    fx.file("bin/node", "old");
+    freeze_(fx.pkgDir());
+
+    auto aside = xim::set_aside_payload(fx.payload());
+    thaw_(fx.pkgDir());
+
+    EXPECT_FALSE(aside) << "a reinstall that cannot keep the old payload "
+                           "recoverable must not start";
+    EXPECT_EQ(read_(fx.payload() / "bin" / "node"), "old");
+}
+
+// ── recovering a parked payload after a crash ─────────────────────────
+//
+// PayloadReplacement's rollback is a destructor: a kill between the rename
+// in `set_aside_payload` and that destructor never runs it, and nothing else
+// ever revisits `<data>/stale/` again. These tests drive the marker and the
+// sweep that finishes the job on a LATER run, once the parking process is
+// gone.
+
+namespace {
+
+// A pid that is guaranteed not to be running: spawn a trivial child and
+// reap it before returning, rather than guessing a number. Cross-platform
+// through the same process primitives the rest of xlings uses to run one.
+int dead_pid_() {
+    auto handle = xlings::platform::spawn_command("exit 0");
+    auto [code, output] = xlings::platform::wait_or_kill(
+        handle, nullptr, std::chrono::seconds(5));
+    (void)code; (void)output;
+    return handle.pid;
+}
+
+fs::path make_stale_root_(std::string_view tag) {
+    auto root = fs::temp_directory_path() /
+        ("xlings-payload-stale-" + std::string(tag));
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    return root;
+}
+
+}  // namespace
+
+TEST(ParkedPayloadMarker, RoundTrips) {
+    auto stale = make_stale_root_("marker-roundtrip");
+    const auto parked = stale / "xim-x-node-22.17.1.stale-4242";
+    // A path with characters JSON would otherwise treat as its own escapes,
+    // to exercise the escape/unescape pair rather than only the common case.
+    const auto original = fs::temp_directory_path() /
+        "xpkgs" / "xim-x-node" / "a \"quoted\" \\ name" / "22.17.1";
+
+    xim::write_parked_payload_marker(parked, original, 4242);
+    auto marker = xim::read_parked_payload_marker(parked);
+    ASSERT_TRUE(marker.has_value());
+    EXPECT_EQ(marker->payloadDir, original);
+    EXPECT_EQ(marker->pid, 4242);
+
+    xim::remove_parked_payload_marker(parked);
+    EXPECT_FALSE(xim::read_parked_payload_marker(parked).has_value());
+
+    std::error_code ec;
+    fs::remove_all(stale, ec);
+}
+
+TEST(ParkedPayloadMarker, NoMarkerReadsAsNullopt) {
+    auto stale = make_stale_root_("marker-absent");
+    EXPECT_FALSE(xim::read_parked_payload_marker(stale / "nothing-here")
+                     .has_value());
+    std::error_code ec;
+    fs::remove_all(stale, ec);
+}
+
+TEST(RecoverParkedPayloads, RestoresAParkedPayloadWhoseOriginalPathIsMissing) {
+    auto stale = make_stale_root_("recover-missing");
+    const auto parked = stale / "xim-x-node-22.17.1.stale-1";
+    std::error_code ec;
+    fs::create_directories(parked / "bin", ec);
+    std::ofstream(parked / "bin" / "node") << "old";
+
+    const auto original = fs::temp_directory_path() /
+        "xlings-payload-stale-recover-missing-orig" / "22.17.1";
+    fs::remove_all(original.parent_path(), ec);   // make sure it is absent
+
+    xim::write_parked_payload_marker(parked, original, dead_pid_());
+
+    EXPECT_EQ(xim::recover_parked_payloads(stale), 1);
+    EXPECT_TRUE(fs::exists(original / "bin" / "node"))
+        << "the parked payload should have moved back to its original path";
+    EXPECT_EQ(read_(original / "bin" / "node"), "old");
+    EXPECT_FALSE(fs::exists(parked)) << "the parked directory should be gone";
+    EXPECT_FALSE(fs::exists(stale))
+        << "an emptied stale root is noise in the data dir";
+
+    fs::remove_all(original.parent_path(), ec);
+}
+
+TEST(RecoverParkedPayloads,
+     RestoresAParkedPayloadWhoseOriginalIsTheEmptyPlaceholder) {
+    // The exact shape set_aside_payload leaves behind when a crash lands
+    // between the rename and the destructor running: the parked copy holds
+    // the old payload, and the real path holds the empty directory
+    // set_aside_payload recreates right after parking it.
+    auto stale = make_stale_root_("recover-placeholder");
+    const auto parked = stale / "xim-x-node-22.17.1.stale-1";
+    std::error_code ec;
+    fs::create_directories(parked / "bin", ec);
+    std::ofstream(parked / "bin" / "node") << "old";
+
+    const auto original = fs::temp_directory_path() /
+        "xlings-payload-stale-recover-placeholder-orig" / "22.17.1";
+    fs::remove_all(original.parent_path(), ec);
+    fs::create_directories(original, ec);   // empty placeholder
+
+    xim::write_parked_payload_marker(parked, original, dead_pid_());
+
+    EXPECT_EQ(xim::recover_parked_payloads(stale), 1);
+    EXPECT_EQ(read_(original / "bin" / "node"), "old");
+    EXPECT_FALSE(fs::exists(parked));
+
+    fs::remove_all(original.parent_path(), ec);
+}
+
+TEST(RecoverParkedPayloads, DeletesAParkedPayloadWhoseOriginalHoldsANewerPayload) {
+    auto stale = make_stale_root_("recover-superseded");
+    const auto parked = stale / "xim-x-node-22.17.1.stale-1";
+    std::error_code ec;
+    fs::create_directories(parked / "bin", ec);
+    std::ofstream(parked / "bin" / "node") << "old";
+
+    const auto original = fs::temp_directory_path() /
+        "xlings-payload-stale-recover-superseded-orig" / "22.17.1";
+    fs::remove_all(original.parent_path(), ec);
+    fs::create_directories(original / "bin", ec);
+    std::ofstream(original / "bin" / "node") << "new";   // already replaced
+
+    xim::write_parked_payload_marker(parked, original, dead_pid_());
+
+    EXPECT_EQ(xim::recover_parked_payloads(stale), 1);
+    EXPECT_FALSE(fs::exists(parked))
+        << "the superseded parked copy should be discarded";
+    EXPECT_EQ(read_(original / "bin" / "node"), "new")
+        << "recovery must never overwrite what already replaced the parked "
+           "payload";
+
+    fs::remove_all(original.parent_path(), ec);
+}
+
+TEST(RecoverParkedPayloads, EntriesOfALiveProcessAreUntouched) {
+    auto stale = make_stale_root_("recover-live");
+    const auto parked = stale / "xim-x-node-22.17.1.stale-1";
+    std::error_code ec;
+    fs::create_directories(parked / "bin", ec);
+    std::ofstream(parked / "bin" / "node") << "old";
+
+    const auto original = fs::temp_directory_path() /
+        "xlings-payload-stale-recover-live-orig" / "22.17.1";
+    fs::remove_all(original.parent_path(), ec);   // absent, same as the
+                                                    // crash case above
+
+    xim::write_parked_payload_marker(parked, original, xlings::platform::get_pid());
+
+    EXPECT_EQ(xim::recover_parked_payloads(stale), 0)
+        << "an entry whose owning process is still running must not be "
+           "touched -- it may yet run its own rollback";
+    EXPECT_TRUE(fs::exists(parked));
+    EXPECT_TRUE(xim::read_parked_payload_marker(parked).has_value());
+    EXPECT_FALSE(fs::exists(original))
+        << "recovery must not act on this entry at all";
+
+    fs::remove_all(stale, ec);
+    fs::remove_all(original.parent_path(), ec);
+}
+
+TEST(RecoverParkedPayloads, AnEntryWithNoMarkerIsLeftAlone) {
+    // Not every directory under stale/ is necessarily ours: nothing says a
+    // marker-less one is safe to touch, so it is left exactly as found.
+    auto stale = make_stale_root_("recover-no-marker");
+    const auto mystery = stale / "something-else.stale-1";
+    std::error_code ec;
+    fs::create_directories(mystery, ec);
+    std::ofstream(mystery / "file") << "x";
+
+    EXPECT_EQ(xim::recover_parked_payloads(stale), 0);
+    EXPECT_TRUE(fs::exists(mystery / "file"));
+
+    fs::remove_all(stale, ec);
+}
+
+TEST(RecoverParkedPayloads, SweepingAnAbsentStaleRootIsFine) {
+    EXPECT_EQ(xim::recover_parked_payloads({}), 0);
+    EXPECT_EQ(xim::recover_parked_payloads(
+                  fs::temp_directory_path() / "xlings-no-such-stale-root"),
+              0);
 }

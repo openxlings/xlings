@@ -104,6 +104,27 @@ bool stamped_incomplete(const std::filesystem::path& dir);
 
 int stamped_registration_count(const std::filesystem::path& dir);
 
+// The packaging revision the install that wrote this stamp recorded
+// (openxlings/xlings#620).
+//
+// A recipe may state `revision = N` on a version entry: a change to what it
+// installs that keeps the upstream version. The stamp records the revision
+// the payload was built from, and `payload_revision_verdict`
+// (install_state.cppm) compares the two.
+//
+// Three answers, and the difference between the last two is deliberate:
+//   * no stamp at all            -> kRevisionUnrecorded: no observation, and
+//                                   so no verdict (a pre-stamp payload is not
+//                                   reinstalled on this account);
+//   * a stamp without the field  -> 0: the install happened, before revisions
+//                                   existed, and a recipe that states none is
+//                                   revision 0. A recipe that states 1 or more
+//                                   therefore reaches every older payload;
+//   * the field                  -> its value.
+constexpr int kRevisionUnrecorded = -1;
+
+int stamped_revision(const std::filesystem::path& dir);
+
 // Record what this platform installed, so the next run does not have to guess.
 //
 // `registered` is the count of xvm nodes the install produced. It is what
@@ -112,9 +133,14 @@ int stamped_registration_count(const std::filesystem::path& dir);
 // does. Measured on a real home: 29 payloads carried a stamp, reported
 // `installed`, and had no ledger entry at all -- the whole graphics stack
 // among them. See .agents/docs/2026-08-11-five-issues-triage-and-plan.md.
+//
+// `revision` is the recipe's packaging revision for this version; see
+// `stamped_revision`. It is always written, 0 included, so a stamp from this
+// client never relies on the absent-field reading.
 void write_payload_stamp(const std::filesystem::path& dir,
                          std::string_view version,
-                         int registered = kRegisteredUnrecorded);
+                         int registered = kRegisteredUnrecorded,
+                         int revision = 0);
 
 // Mark this payload as the residue of an install that did not finish.
 //
@@ -223,5 +249,142 @@ RemoveOutcome settle_removal(const std::filesystem::path& root,
 // Returns how many entries are still held, so a caller can say so instead of
 // implying the store is clean.
 int sweep_payload_trash(const std::filesystem::path& trashRoot);
+
+// ── replacing a payload that is installed but stale ──────────────────
+//
+// A payload whose recipe revision moved on (#620) is replaced, and the
+// replacement must never leave a window in which the version has no payload:
+// a failed reinstall that had already deleted the old tree turns "outdated"
+// into "absent", for a package other payloads may link against.
+//
+// The new payload is installed into the REAL path, never into a temporary
+// directory renamed afterwards: recipes write install_dir() into the files
+// they install (gcc's specs, pkg-config files, rpaths), so a payload built
+// anywhere else names a directory that does not hold it. The old tree is
+// moved out of the way instead, and that move is what this type owns:
+//
+//   set_aside_payload   renames the old tree to its parking place and leaves
+//                       an empty directory at the real path;
+//   commit              the reinstall succeeded: the parked tree is deleted;
+//   rollback            it did not: the partial tree is deleted and the
+//                       parked one renamed back. The destructor does the same
+//                       when neither was called, so every early exit of an
+//                       install step restores the old payload.
+//
+// Files another tool wrote into the old tree (mcpp's `.mcpp_ok` and
+// `.mcpp-fixup.json`) are deleted with it on commit. They describe the old
+// payload, and carrying them over would assert them of the new one.
+//
+// The parking place is `<data>/stale/`, beside `xpkgs` and so on the same
+// filesystem. Not a sibling of the version directory: every reader of a store
+// takes each subdirectory of `xpkgs/<pkg>/` for a version (see
+// `payload_trash_root`). Not the trash root either: `remove` sweeps it, and a
+// recipe may request a removal between its install and config hooks, which
+// is inside this window.
+class PayloadReplacement {
+public:
+    PayloadReplacement(std::filesystem::path payloadDir,
+                       std::filesystem::path parkedDir);
+    PayloadReplacement(PayloadReplacement&& other) noexcept;
+    PayloadReplacement& operator=(PayloadReplacement&&) = delete;
+    PayloadReplacement(const PayloadReplacement&) = delete;
+    PayloadReplacement& operator=(const PayloadReplacement&) = delete;
+    ~PayloadReplacement();
+
+    [[nodiscard]] const std::filesystem::path& parked() const;
+
+    void commit();
+
+    // Empty when the old payload is back at its path; otherwise a sentence
+    // naming where it was left.
+    std::string rollback();
+
+private:
+    std::filesystem::path payloadDir_;
+    std::filesystem::path parkedDir_;
+    bool settled_ { false };
+};
+
+// Where `payloadDir` is parked while it is replaced: under `<data>/stale/`
+// for a payload inside an `xpkgs` store, a `.stale-<pid>` sibling otherwise.
+// Unique within this process.
+std::filesystem::path stale_payload_parking(const std::filesystem::path& payloadDir);
+
+// Moves the payload aside and recreates its directory empty. Refused, with the
+// payload untouched, when the move is not possible (a held file on Windows, a
+// store split across filesystems): a reinstall that cannot keep the old
+// payload recoverable does not start.
+std::expected<PayloadReplacement, std::string>
+set_aside_payload(const std::filesystem::path& payloadDir);
+
+// ── recovering a parked payload after a crash ─────────────────────────
+//
+// PayloadReplacement's rollback is a destructor: it runs when the process
+// that called `set_aside_payload` unwinds, by any path, without `commit()`.
+// A kill (SIGKILL, power loss) between the rename in `set_aside_payload` and
+// that destructor never runs it, and nothing else ever looks under
+// `<data>/stale/` again -- `sweep_payload_trash` walks a different root
+// (`<data>/trash`, `payload_trash_root`), for a different leftover
+// (something `remove` displaced, not something an install parked). Every
+// crash at that point leaks one directory, forever.
+//
+// The fix is a record written before the fact, because there is nothing to
+// read after the fact: once the process is gone, the only thing that still
+// says a parked directory was ever meant to go somewhere is whatever was
+// written down while it still could be. `write_parked_payload_marker` is
+// called from `set_aside_payload`, before the rename that creates the
+// parked directory, so a crash in the smallest possible window after it
+// still leaves the marker findable. It is written atomically
+// (`platform::write_file_atomic`: temp file + rename), so a crash WHILE
+// writing it leaves either the old marker (absent, the first time) or the
+// new one -- never a torn file a later reader could misparse as valid.
+struct ParkedPayloadMarker {
+    std::filesystem::path payloadDir;  // where the parked directory came from
+    int pid { 0 };                     // the process that parked it
+};
+
+// The marker's path for a given parked directory: a sibling of it (never a
+// child), so writing or removing the marker is never mistaken for a change
+// to the parked payload itself, and the marker survives exactly as long as
+// the question it answers is still open.
+std::filesystem::path parked_marker_path(const std::filesystem::path& parkedDir);
+
+// Written before `parkedDir` exists. `pid` is the parking process's own,
+// e.g. `platform::get_pid()`.
+void write_parked_payload_marker(const std::filesystem::path& parkedDir,
+                                 const std::filesystem::path& payloadDir,
+                                 int pid);
+
+// `std::nullopt` when there is no marker, or what is there cannot be read
+// as one -- treated identically by `recover_parked_payloads`: nothing here
+// says it is safe to touch a directory whose marker cannot be read.
+std::optional<ParkedPayloadMarker> read_parked_payload_marker(
+    const std::filesystem::path& parkedDir);
+
+// Idempotent: removing an already-absent marker is not an error.
+void remove_parked_payload_marker(const std::filesystem::path& parkedDir);
+
+// Finishes what a crashed reinstall left parked under `staleRoot`
+// (`<data>/stale`), for every entry whose marker names a process that is no
+// longer running:
+//
+//   * the original payload path is missing, or is the empty directory
+//     `set_aside_payload` recreates right after parking the old one --
+//     nothing replaced it, so the parked payload moves back;
+//   * anything else is already at the original path -- a later install
+//     that finished cleanly, or a leftover from the SAME interrupted
+//     replacement that this same rule already discarded once -- so the
+//     parked payload and its marker are removed rather than guessed about
+//     a second time.
+//
+// An entry with no readable marker, or whose owning process is still alive,
+// is left exactly as found: the first because nothing says it is ours to
+// touch, the second because that process may yet run its own rollback.
+//
+// Meant to run once per command, at the point installation first touches
+// the store -- not once per package, and not on a dry run, which never
+// touches the store at all. Returns how many entries were resolved, so a
+// caller can log a count instead of nothing.
+int recover_parked_payloads(const std::filesystem::path& staleRoot);
 
 }  // namespace xlings::xim

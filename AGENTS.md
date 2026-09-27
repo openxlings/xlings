@@ -17,7 +17,7 @@ Core capabilities:
 src/
 ├── main.cpp                         # Entry point
 ├── cli.cppm                         # CLI dispatch (positional + flag parsing)
-├── interface.cppm                   # NDJSON programmatic interface (protocol v1.0)
+├── interface.cppm                   # NDJSON programmatic interface (protocol v1.1)
 ├── core/
 │   ├── config.cppm                  # 3-layer config (global → subos → project)
 │   ├── subos.cppm                   # SubOS lifecycle (create/use/fork/remove/stop)

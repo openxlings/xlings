@@ -53,7 +53,8 @@ console.log(`→ using ${xlings}`);
     const { events } = callXlings(xlings, "interface", "--version");
     const v = events[0]?.protocol_version;
     console.log(`protocol_version: ${v}`);
-    if (v !== "1.0") {
+    // Major version only: a minor bump is additive.
+    if (typeof v !== "string" || v.split(".")[0] !== "1") {
         console.error(`ERROR: unexpected version ${v}`);
         process.exit(1);
     }

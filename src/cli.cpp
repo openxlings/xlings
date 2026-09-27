@@ -65,6 +65,9 @@ bool kind_is_interface_only_(std::string_view kind) {
     };
     static constexpr std::string_view kWireDuplicate[] = {
         "remove_blocked", "update_plan", "update_summary",
+        // What each request of an install resolved to (protocol 1.1); the
+        // terminal already shows the plan, the progress and the summary.
+        "install_targets",
     };
     return std::ranges::contains(kCapabilityOnly, kind)
         || std::ranges::contains(kWireDuplicate, kind);

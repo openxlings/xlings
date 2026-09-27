@@ -91,6 +91,18 @@ bool unverifiable_stamped_payload(const LedgerIndex& ledger,
                payloadDir / std::filesystem::path(kPayloadStampFile));
 }
 
+RevisionVerdict payload_revision_verdict(const std::filesystem::path& payloadDir,
+                                         int recipeRevision) {
+    RevisionVerdict verdict;
+    verdict.recipe = std::max(recipeRevision, 0);
+    if (!payload_has_content(payloadDir)) return verdict;
+    if (stamped_incomplete(payloadDir)) return verdict;
+    verdict.recorded = stamped_revision(payloadDir);
+    verdict.stale = verdict.recorded != kRevisionUnrecorded
+        && verdict.recorded != verdict.recipe;
+    return verdict;
+}
+
 }
 
 
@@ -108,6 +120,11 @@ namespace xlings::xim {
 
 [[nodiscard]] bool InstallStateReport::should_run_install_hook() const {
     return state != InstallState::Installed;
+}
+
+[[nodiscard]] std::string RevisionVerdict::reason() const {
+    return std::format("recipe revision {}, installed revision {}",
+                       recipe, recorded);
 }
 
 LedgerIndex::LedgerIndex(const xvm::VersionDB& db, const std::string& xlingsHome) {
