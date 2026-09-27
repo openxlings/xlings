@@ -75,6 +75,20 @@ std::string format_eta(int seconds);
 
 std::string format_speed(double bytesPerSec);
 
+// "512 B", "12.3 KB", "4.5 MB", "1.2 GB".
+std::string format_bytes(double bytes);
+
+// ONE LINE WHEN AN ITEM STARTS, ONE WHEN IT FINISHES (protocol 1.3).
+//
+// The form of download progress for a destination that cannot be rewritten in
+// place: a CI log, an agent transcript, a redirected file. A frame per update
+// appended there is a log that grows with the download's duration; these two
+// lines grow with the number of items. `finished` selects the second line,
+// which states success or failure, the size, and the time since the batch
+// began.
+void print_download_milestone(const DownloadProgressEntry& entry, bool finished,
+                              double elapsedSec);
+
 // Render download progress using FTXUI themed elements.
 // Called from a TUI refresh thread. Outputs to stdout.
 // Render download progress. prevLines > 0 means move cursor up and overwrite.

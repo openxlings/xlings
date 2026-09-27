@@ -157,7 +157,7 @@ PackageCatalog& get_catalog(CatalogAccess access) {
     // fires on a failure it can see.
     std::optional<std::expected<void, std::string>> result;
     if (!initialized) {
-        result = mgr.rebuild();
+        if (access != CatalogAccess::CallerBuilds) result = mgr.rebuild();
         initialized = true;
     }
 
@@ -344,7 +344,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              bool dryRun, bool useAfterInstall,
              std::vector<InstallTargetReport_>* report);
 
-int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall) {
+int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall, bool* allInStore) {
     std::vector<InstallTargetReport_> report;
     report.reserve(targets.size());
     for (const auto& target : targets) {
@@ -365,6 +365,11 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
         throw;
     }
     emit_report();
+    // Read from the same record `install_targets` publishes, so the caller's
+    // wording and the machine-readable status cannot disagree.
+    if (allInStore)
+        *allInStore = !report.empty() && std::ranges::all_of(report,
+            [](const InstallTargetReport_& t) { return t.status == "already_present"; });
     return rc;
 }
 
@@ -894,8 +899,15 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     auto pending = plan.pending_count();
     auto allAlreadyInstalled = (pending == 0);
     if (allAlreadyInstalled) {
+        // With `--use` (and from `update`) the payload being present is the
+        // first half of what happens: activation follows. "is already
+        // installed" followed by "upgraded" read as a contradiction although
+        // both were true, so the store is named for what it is.
         for (auto& m : requestedMatches) {
-            log::println("{}@{} is already installed", m.canonicalName, m.version);
+            if (useAfterInstall)
+                log::println("{}@{} is in the store", m.canonicalName, m.version);
+            else
+                log::println("{}@{} is already installed", m.canonicalName, m.version);
         }
     }
 
@@ -945,11 +957,15 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     auto mirror = Config::mirror();
     if (!mirror.empty()) dlConfig.preferredMirror = mirror;
 
-    // Download progress renderer: emit via EventStream so consumers can render.
-    // CLI consumer renders ftxui progress bars; agent TUI shows summary text.
-    DownloadProgressRenderer dlRenderer = [&stream](std::span<const TaskProgress> state,
-                  std::size_t nameWidth, double elapsedSec, bool sizesReady,
-                  int prevLines) -> int {
+    // Download progress: the batch's state as data on the EventStream
+    // (protocol 1.3). The CLI consumer draws it, the agent TUI summarises it,
+    // and each keeps its own frame state under this batch's stream id. The id
+    // is per batch rather than per command because a hook can start a nested
+    // install, whose downloads are a second batch drawn as their own frame.
+    static std::atomic<int> installBatches{0};
+    const std::string streamId = std::format("install:{}", ++installBatches);
+    DownloadProgressSink dlSink = [&stream, streamId](std::span<const TaskProgress> state,
+                  std::size_t nameWidth, double elapsedSec, bool sizesReady) {
         nlohmann::json files = nlohmann::json::array();
         for (auto& p : state) {
             files.push_back({
@@ -962,13 +978,15 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             });
         }
         nlohmann::json payload;
+        payload["stream"] = streamId;
         payload["files"] = std::move(files);
         payload["nameWidth"] = nameWidth;
         payload["elapsedSec"] = elapsedSec;
         payload["sizesReady"] = sizesReady;
-        payload["prevLines"] = prevLines;
+        // Deprecated in 1.3 and always 0: a minor version only adds, so the
+        // field stays until 2.0, and it carries no renderer state any more.
+        payload["prevLines"] = 0;
         stream.emit(DataEvent{"download_progress", payload.dump()});
-        return static_cast<int>(state.size()) + 2;
     };
 
     auto result = installer.execute(plan, dlConfig,
@@ -1044,7 +1062,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 }
             }
         },
-        dlRenderer, cancel, useAfterInstall);
+        dlSink, cancel, useAfterInstall);
     record_report();
 
     if (!result) {
@@ -2723,15 +2741,24 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     };
     // Bytes-level progress for whichever repo is fetched as an artifact
     // (a git clone or a local-source link never calls this). Shaped exactly
-    // like install_packages' own `download_progress` (see DownloadProgressRenderer
-    // above in this file) so a client renders an index download the same way
+    // like install_packages' own `download_progress` (see DownloadProgressSink
+    // in the downloader) so a client renders an index download the same way
     // it already renders a package download, rather than needing a second
     // code path for one more `files[]` shape.
+    //
+    // One stream per index, `index:<name>`, and the same bound as a package
+    // download (protocol 1.3): this callback runs for every received chunk,
+    // and each call used to become an event -- and, in the CLI, a frame.
     const auto downloadStart = std::chrono::steady_clock::now();
-    auto onIndexBytes = [&stream, downloadStart](std::string_view label,
+    std::map<std::string, ProgressCoalescer, std::less<>> indexStreams;
+    auto onIndexBytes = [&stream, &indexStreams, downloadStart](std::string_view label,
                                                  double total, double downloaded) {
         const bool sizesReady = total > 0.0;
         const bool finished = sizesReady && downloaded >= total;
+        auto it = indexStreams.find(label);
+        if (it == indexStreams.end())
+            it = indexStreams.emplace(std::string(label), ProgressCoalescer{}).first;
+        if (!it->second.admit(finished)) return;
         nlohmann::json files = nlohmann::json::array();
         files.push_back({
             {"name", std::string(label)},
@@ -2742,12 +2769,13 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
             {"success", finished}
         });
         nlohmann::json payload;
+        payload["stream"] = std::format("index:{}", label);
         payload["files"] = std::move(files);
         payload["nameWidth"] = static_cast<int>(label.size());
         payload["elapsedSec"] = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - downloadStart).count();
         payload["sizesReady"] = sizesReady;
-        payload["prevLines"] = 0;
+        payload["prevLines"] = 0;   // deprecated in 1.3, see the install sink
         stream.emit(DataEvent{"download_progress", payload.dump()});
     };
     if (!sync_all_repos(true, onRepoSync, onIndexBytes)) {
@@ -2755,8 +2783,10 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
         return 1;
     }
 
-    // Force rebuild index (writes fresh cache)
-    auto& catalog = get_catalog();
+    // One forced rebuild, which writes the fresh cache. The catalog is taken
+    // without its implicit first build: that build ran every index's
+    // pkgindex-build.lua, and the forced one below ran them all again.
+    auto& catalog = get_catalog(CatalogAccess::CallerBuilds);
     auto rebuildResult = catalog.rebuild(true);
     if (!rebuildResult) {
         log::error("failed to rebuild catalog: {}", rebuildResult.error());
@@ -2834,9 +2864,10 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     // never re-prompt regardless). useAfterInstall=true because update by
     // definition moves the active pointer forward to the new version.
     std::vector<std::string> installTargets = { bareName + "@" + latest };
+    bool inStore = false;
     auto rc = cmd_install(installTargets, /*yes=*/true, /*noDeps=*/false, stream,
                           /*forceGlobal=*/false, /*cancel=*/nullptr,
-                          /*dryRun=*/false, /*useAfterInstall=*/true);
+                          /*dryRun=*/false, /*useAfterInstall=*/true, &inStore);
     if (rc != 0) return rc;
 
     nlohmann::json summaryPayload;
@@ -2845,7 +2876,13 @@ int cmd_update(const std::string& target, bool yes, EventStream& stream) {
     summaryPayload["to"]   = latest;
     stream.emit(DataEvent{"update_summary", summaryPayload.dump()});
 
-    log::println("upgraded {}: {} -> {}", match->canonicalName, currentActive, latest);
+    // A payload that was already in the store was not upgraded by this
+    // command; only the active version moved, and the line says exactly that
+    // after "is in the store".
+    if (inStore)
+        log::println("active: {} -> {}", currentActive, latest);
+    else
+        log::println("upgraded {}: {} -> {}", match->canonicalName, currentActive, latest);
     log::println("  old version retained — remove with: xlings remove {}@{}",
                  bareName, currentActive);
     return 0;

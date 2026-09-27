@@ -5,6 +5,7 @@ import xlings.core.config;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.xvm.shim;
+import xlings.core.home_identity;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
@@ -116,6 +117,13 @@ int main(int argc, char* argv[]) {
         // Have the new binary auto-upgrade them on its first run. Cheap on the
         // unchanged path (one read + version compare per profile file).
         xlings::xself::compat::v0_4_17::auto_upgrade_profiles_if_stale(p.homeDir);
+
+        // A home that predates `.xlings-home` gains it on the first command of
+        // a version that knows it (home_identity). A command, not a tool shim:
+        // running `gcc` should not write into the home. One stat on the
+        // ordinary path; a read-only home stays as it is and keeps being
+        // recognised by its layout.
+        if (is_cli) xlings::home_identity::adopt_legacy_home(p.homeDir);
 
         // What this process calls itself when another one has to wait for its
         // state lock. Set here because this is the only place that has argv and

@@ -25,6 +25,7 @@ import xlings.core.elfread;
 // interface stays free of xself.
 import xlings.core.xself.init;
 import xlings.core.xvm.shim_table;
+import xlings.core.home_identity;
 
 namespace xlings::xvm {
 
@@ -37,32 +38,19 @@ std::string extract_program_name(const char* argv0) {
     return p.stem().string();
 }
 
-bool is_home_root(const std::filesystem::path& dir) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    if (!fs::is_regular_file(dir / ".xlings.json", ec)) return false;
-    constexpr std::string_view bin_name =
-        (platform::OS_NAME == "windows") ? "xlings.exe" : "xlings";
-    if (!fs::exists(dir / "bin" / bin_name, ec)) return false;
-    if (!fs::is_directory(dir / "subos", ec)) return false;
-    return true;
-}
-
 std::optional<std::filesystem::path>
 resolve_owner_home(const std::filesystem::path& invoked) {
     namespace fs = std::filesystem;
 
+    // The nearest home above the file, by home_identity's one answer: its
+    // marker, else the legacy layout minus a SubOS. The structural predicate
+    // this replaced accepted a SubOS, since every SubOS has an empty `subos/`
+    // of its own (#617), and the walk stopped one level too early.
     auto walk_up = [](fs::path p) -> std::optional<fs::path> {
         std::error_code ec;
         auto canon = fs::weakly_canonical(p, ec);
         if (!ec && !canon.empty()) p = canon;
-        for (auto dir = p.parent_path(); !dir.empty();) {
-            if (is_home_root(dir)) return dir;
-            auto parent = dir.parent_path();
-            if (parent == dir) break;
-            dir = parent;
-        }
-        return std::nullopt;
+        return home_identity::nearest_home(p.parent_path());
     };
 
     if (invoked.has_parent_path() && !invoked.parent_path().empty()) {

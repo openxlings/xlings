@@ -29,7 +29,11 @@ namespace xlings::interface {
 // 1.2 (2026.9.28.1, additive): `update_packages` reports its work as
 // `progress` events (`index_sync`, `index_rebuild`) and `download_progress`
 // data events, and no capability writes anything but NDJSON to stdout.
-export constexpr const char* kProtocolVersion = "1.2";
+// 1.3 (2026.9.28.2, additive): `download_progress` names its `stream`, and a
+// producer sends at most one per 100 ms per stream plus the final one; the
+// renderer keeps its own frame state, so `prevLines` is deprecated and always
+// 0 (it stays until 2.0 because a minor version only adds).
+export constexpr const char* kProtocolVersion = "1.3";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

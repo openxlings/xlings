@@ -4,6 +4,7 @@ import std;
 import xlings.core.xvm.types;
 import xlings.libs.json;
 import xlings.platform;
+import xlings.core.home_identity;
 
 namespace xlings::xvm {
 
@@ -650,6 +651,48 @@ std::string normalize_subos_paths(const std::string& text,
             path_equal(prefix, xlings_home)
             || (prefix.size() >= 7
                 && path_equal(prefix.substr(prefix.size() - 7), ".xlings"));
+
+        // THE NEAREST HOME WINS (#624). A path that continues past this
+        // `subos/<name>/` into a home nested there is that inner home's path,
+        // not a SubOS path of the outer one: an xlings home placed under
+        // another home's SubOS had its package script paths joined to its own
+        // `subos/default/`. Asked only of a segment that would otherwise be
+        // rewritten, one directory per component of what follows it, and the
+        // DEEPEST home found owns the path. Positions are indexes into `text`,
+        // so the text's own separators are never normalised.
+        if (ours && nameEnd > nameStart) {
+            std::size_t tokenEnd = nameEnd;
+            while (tokenEnd < text.size() && !is_boundary(text[tokenEnd])) ++tokenEnd;
+            std::size_t innerEnd = std::string::npos;
+            for (std::size_t q = nameEnd; q <= tokenEnd; ++q) {
+                if (q < tokenEnd && !is_sep(text[q])) continue;
+                if (q == nameEnd) continue;
+                if (home_identity::is_home(std::filesystem::path(text.substr(start, q - start))))
+                    innerEnd = q;
+            }
+            if (innerEnd != std::string::npos) {
+                // The inner home's own `subos/<name>` directly after it follows
+                // the same rule as any other: re-rooted when that home is this
+                // one (or a project's `.xlings`), kept otherwise.
+                const std::string_view innerPrefix(text.data() + start, innerEnd - start);
+                const bool innerOurs = path_equal(innerPrefix, xlings_home)
+                    || (innerPrefix.size() >= 7
+                        && path_equal(innerPrefix.substr(innerPrefix.size() - 7), ".xlings"));
+                const bool subosNext = text.compare(innerEnd, kPosix.size(), kPosix) == 0
+                    || text.compare(innerEnd, kWin.size(), kWin) == 0;
+                std::size_t innerNameEnd = innerEnd + kPosix.size();
+                while (innerNameEnd < tokenEnd && !is_sep(text[innerNameEnd])) ++innerNameEnd;
+                if (innerOurs && subosNext && innerNameEnd > innerEnd + kPosix.size()) {
+                    out.append(text, cursor, start - cursor);
+                    out.append(active_subos_dir);
+                    cursor = innerNameEnd;
+                } else {
+                    out.append(text, cursor, tokenEnd - cursor);
+                    cursor = tokenEnd;
+                }
+                continue;
+            }
+        }
 
         if (!ours || nameEnd == nameStart) {
             out.append(text, cursor, nameEnd - cursor);   // passthrough

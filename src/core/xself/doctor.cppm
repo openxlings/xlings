@@ -178,6 +178,11 @@ enum class FindingKind {
     // and each of them invites a repair that is wrong: reinstalling a payload
     // that is present, or deleting a link that can be re-pointed.
     HomeRelocated,
+    // The home carries no `.xlings-home` marker (home_identity) and could not
+    // be given one -- a home on read-only storage. Notice only: the legacy
+    // layout keeps answering for it, and the next command run where it can be
+    // written adds it.
+    HomeMarkerMissing,
     BindingState,
     OtherSubos,
     // The subos does not describe itself: no `subos_info` block, or one that

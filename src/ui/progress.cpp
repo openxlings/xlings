@@ -194,6 +194,38 @@ std::string format_speed(double bytesPerSec) {
     return std::to_string(mb / 10) + "." + std::to_string(mb % 10) + " MB/s";
 }
 
+std::string format_bytes(double bytes) {
+    if (bytes < 1024.0)
+        return std::to_string(static_cast<long long>(bytes)) + " B";
+    constexpr std::array<std::string_view, 3> units{"KB", "MB", "GB"};
+    double v = bytes / 1024.0;
+    std::size_t u = 0;
+    while (v >= 1024.0 && u + 1 < units.size()) { v /= 1024.0; ++u; }
+    const auto tenths = static_cast<long long>(v * 10.0);
+    return std::format("{}.{} {}", tenths / 10, tenths % 10, units[u]);
+}
+
+void print_download_milestone(const DownloadProgressEntry& entry, bool finished,
+                              double elapsedSec) {
+    std::string line;
+    if (!finished) {
+        line = std::format("    {} {}", theme::icon::downloading, entry.name);
+        if (entry.totalBytes > 0.0) line += "  " + format_bytes(entry.totalBytes);
+    } else if (entry.success) {
+        line = std::format("    {} {}", theme::icon::done, entry.name);
+        if (entry.totalBytes > 0.0) line += "  " + format_bytes(entry.totalBytes);
+        line += std::format("  {:.1f}s", elapsedSec);
+    } else {
+        line = std::format("    {} {}  failed", theme::icon::failed, entry.name);
+    }
+    line += '\n';
+    // The same sink and lock as the frames below: log lines from worker
+    // threads share stdout, and a milestone must not land inside one.
+    std::lock_guard guard(console::output_mutex());
+    std::fwrite(line.data(), 1, line.size(), stdout);
+    std::fflush(stdout);
+}
+
 int render_download_progress(std::span<const DownloadProgressEntry> progState, std::size_t nameWidth, double elapsedSec, bool sizesReady, int prevLines) {
     using namespace ftxui;
     const bool rewrite = palette::cursor_rewrite_allowed();

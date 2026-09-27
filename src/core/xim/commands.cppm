@@ -28,7 +28,11 @@ namespace xpkg = mcpplibs::xpkg;
 
 export namespace xlings::xim {
 
-enum class CatalogAccess { LocalOnly, InstallReady };
+// `CallerBuilds` is for a caller that rebuilds the catalog itself as its next
+// step (`update`, which forces a rebuild after syncing). The first access
+// otherwise builds the catalog, and a forced rebuild right after it runs every
+// index's build script a second time.
+enum class CatalogAccess { LocalOnly, InstallReady, CallerBuilds };
 
 // Shared IndexManager instance (lazy-initialized)
 PackageCatalog& get_catalog(CatalogAccess access = CatalogAccess::LocalOnly);
@@ -130,10 +134,13 @@ bool index_refresh_cooldown_elapsed();
 int cmd_why(const std::string& target, const std::string& dep,
             EventStream& stream);
 
+// allInStore: when non-null, set to whether every requested payload was
+// already in the store, which is the install plan's own answer. `update` reads
+// it to say "is in the store" and "active: a -> b" instead of "upgraded".
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                 EventStream& stream, bool forceGlobal = false,
                 CancellationToken* cancel = nullptr, bool dryRun = false,
-                bool useAfterInstall = false);
+                bool useAfterInstall = false, bool* allInStore = nullptr);
 
 // === remove command ===
 //
