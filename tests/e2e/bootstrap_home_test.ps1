@@ -96,7 +96,32 @@ try {
 }
 
 # ── Move test ───────────────────────────────────────────────────
-Move-Item $PORTABLE_DIR $MOVED_DIR
+# A directory cannot be renamed while any process holds a handle inside it,
+# and right after `self init` has written new executables an on-access scanner
+# can still hold one: this rename failed on 2026-09-14 and on 2026-09-27, on
+# branches that did not touch init, and passed on their next runs. The rename
+# is therefore retried for a bounded time. [IO.Directory]::Move is a single
+# rename that either happens or leaves the tree where it was; Move-Item falls
+# back to moving the tree entry by entry, and a failure part-way leaves it
+# split between the two directories.
+$moveError = $null
+for ($attempt = 1; $attempt -le 20; $attempt++) {
+    try {
+        [System.IO.Directory]::Move($PORTABLE_DIR, $MOVED_DIR)
+        $moveError = $null
+        break
+    } catch {
+        $moveError = $_.Exception.Message
+        Start-Sleep -Milliseconds 500
+    }
+}
+if ($moveError) {
+    $holders = @(Get-Process | Where-Object {
+        $_.Path -and $_.Path.StartsWith($PORTABLE_DIR, [System.StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object { "$($_.Id) $($_.Path)" })
+    Fail "portable home could not be moved in 10 s ($moveError); processes running from it: $(if ($holders) { $holders -join ', ' } else { 'none' })"
+}
+if ($attempt -gt 1) { Write-Host "portable home moved on attempt $attempt" }
 
 Push-Location $MOVED_DIR
 try {
