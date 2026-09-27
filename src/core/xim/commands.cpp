@@ -2708,8 +2708,49 @@ int cmd_clear_xpkg(const std::string& what) {
 }
 
 int cmd_update(const std::string& target, bool yes, EventStream& stream) {
-    // Sync repos
-    if (!sync_all_repos(true)) {
+    // Sync repos. Reported per repository so an interface client can show
+    // progress for a step that otherwise runs silently until it either
+    // finishes or times out (#599's XLINGS_UPDATE_TIMEOUT budget) -- there
+    // used to be nothing on the wire for this at all, only the heartbeat.
+    auto onRepoSync = [&stream](std::string_view repoName, int index, int total) {
+        stream.emit(ProgressEvent{
+            .phase = "index_sync",
+            .percent = total > 0
+                ? static_cast<float>(index) / static_cast<float>(total) : 0.0f,
+            .message = std::format("syncing index repo {}/{}: {}",
+                                   index, total, repoName),
+        });
+    };
+    // Bytes-level progress for whichever repo is fetched as an artifact
+    // (a git clone or a local-source link never calls this). Shaped exactly
+    // like install_packages' own `download_progress` (see DownloadProgressRenderer
+    // above in this file) so a client renders an index download the same way
+    // it already renders a package download, rather than needing a second
+    // code path for one more `files[]` shape.
+    const auto downloadStart = std::chrono::steady_clock::now();
+    auto onIndexBytes = [&stream, downloadStart](std::string_view label,
+                                                 double total, double downloaded) {
+        const bool sizesReady = total > 0.0;
+        const bool finished = sizesReady && downloaded >= total;
+        nlohmann::json files = nlohmann::json::array();
+        files.push_back({
+            {"name", std::string(label)},
+            {"totalBytes", total},
+            {"downloadedBytes", downloaded},
+            {"started", true},
+            {"finished", finished},
+            {"success", finished}
+        });
+        nlohmann::json payload;
+        payload["files"] = std::move(files);
+        payload["nameWidth"] = static_cast<int>(label.size());
+        payload["elapsedSec"] = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - downloadStart).count();
+        payload["sizesReady"] = sizesReady;
+        payload["prevLines"] = 0;
+        stream.emit(DataEvent{"download_progress", payload.dump()});
+    };
+    if (!sync_all_repos(true, onRepoSync, onIndexBytes)) {
         log::error("failed to sync repositories");
         return 1;
     }

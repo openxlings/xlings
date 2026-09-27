@@ -177,6 +177,15 @@ std::vector<std::string> index_pointer_urls(std::string_view filename,
 const std::map<std::string, IndexManifest>& load_index_pointers(std::string_view mirror,
                                             const ArtifactSource* custom = nullptr);
 
+// Bytes-level progress for a network fetch this layer performs, labelled by
+// the caller (a repo name, an artifact filename, ...) so a client can show
+// what is downloading. Only the artifact fetch reports through it: a git
+// clone has no byte-granular signal to give, and the pointer file ahead of
+// it is too small to be worth one.
+using BytesProgress = std::function<void(std::string_view label,
+                                         double totalBytes,
+                                         double downloadedBytes)>;
+
 // Fetch the latest index artifact for `subName` ("" = main index) and atomically
 // install it into destIndexDir. Returns true on success; on failure `err` is set
 // and destIndexDir is left untouched (caller may fall back to git).
@@ -186,7 +195,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName = {},
                           const ArtifactSource* custom = nullptr,
-                          std::string_view pin = {});
+                          std::string_view pin = {},
+                          BytesProgress onProgress = nullptr);
 
 // Reconcile leftover index temp dirs from crashed / SIGKILL'd runs: restore an
 // index dir orphaned by an interrupted swap (`<base>.old.<deadpid>` holding
@@ -288,7 +298,8 @@ bool fetch_index_artifact(const std::filesystem::path& destIndexDir,
                           std::string& err,
                           std::string_view subName,
                           const ArtifactSource* custom,
-                          std::string_view pin);
+                          std::string_view pin,
+                          BytesProgress onProgress);
 
 // Reconcile leftover index temp dirs from crashed / SIGKILL'd runs. Two jobs:
 //   1) RECOVER: if a live index dir is missing or empty but a sibling

@@ -26,7 +26,10 @@ namespace xlings::interface {
 // recipe revision as a third element of each `install_plan` entry. A 1.0
 // client ignores both. Clients detect a capability by its presence on the
 // wire, not by comparing this string.
-export constexpr const char* kProtocolVersion = "1.1";
+// 1.2 (2026.9.28.1, additive): `update_packages` reports its work as
+// `progress` events (`index_sync`, `index_rebuild`) and `download_progress`
+// data events, and no capability writes anything but NDJSON to stdout.
+export constexpr const char* kProtocolVersion = "1.2";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the
@@ -63,6 +66,12 @@ private:
     EventStream& stream_;
     CancellationToken& token_;
     std::mutex io_mtx_;
+    // A duplicate of fd 1 taken at construction time, before any capability
+    // runs. Every NDJSON line this session writes goes out through it
+    // rather than through fd 1 directly, so a platform::StdoutCapture
+    // installed around a capability's execution (see run()) can redirect
+    // fd 1 without swallowing the protocol's own output along with it.
+    int wireFd_ { -1 };
     std::atomic<bool> saw_error_ { false };
     std::atomic<std::chrono::steady_clock::time_point> last_emit_;
     std::jthread heartbeat_thread_;
