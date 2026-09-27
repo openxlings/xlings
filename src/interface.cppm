@@ -26,7 +26,10 @@ namespace xlings::interface {
 // recipe revision as a third element of each `install_plan` entry. A 1.0
 // client ignores both. Clients detect a capability by its presence on the
 // wire, not by comparing this string.
-export constexpr const char* kProtocolVersion = "1.1";
+// 1.2 (2026.9.28.1, additive): `update_packages` reports its work as
+// `progress` events (`index_sync`, `index_rebuild`) and `download_progress`
+// data events, and no capability writes anything but NDJSON to stdout.
+export constexpr const char* kProtocolVersion = "1.2";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

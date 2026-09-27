@@ -1,15 +1,16 @@
 > 编写日期: 2026-05-17 | 版本: 2026.9.27.1
 
-# NDJSON 接口协议规范 v1.1
+# NDJSON 接口协议规范 v1.2
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.1**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.2**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
 | 1.0 | 0.4.36 起 | 初始版本 |
 | 1.1 | 2026.9.27.1 起 | 增补：`install_targets` 事件；`install_plan` 条目的第三个元素 `revision`（§6.3.1） |
+| 1.2 | 2026.9.28.1 起 | 增补：`update_packages` 的 `progress` 事件（`index_sync`、`index_rebuild`，§6.1.1）与 `download_progress` 数据事件（§6.3.2）；任何能力都不向 stdout 写 NDJSON 以外的内容（§5） |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -42,7 +43,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.1"}
+{"protocol_version":"1.2"}
 ```
 
 ### 3.2 查询可用能力

@@ -192,7 +192,7 @@ TEST(InterfaceProtocol, VersionFlagPrintsProtocolVersion) {
     auto j = nlohmann::json::parse(out, nullptr, false);
     ASSERT_FALSE(j.is_discarded()) << "non-JSON output: " << out;
     ASSERT_TRUE(j.contains("protocol_version"));
-    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.1");
+    EXPECT_EQ(j["protocol_version"].get<std::string>(), "1.2");
     std::filesystem::remove_all(home);
 }
 
