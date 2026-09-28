@@ -968,9 +968,13 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             for (const auto& m : requestedMatches) {
                 coords += " " + m.canonicalName + (m.version.empty() ? "" : "@" + m.version);
             }
+            // std::string, not the `const char*` a ternary of literals makes:
+            // libc++ under `import std` deduces a wide format string for that
+            // argument and the build fails (macOS / Windows).
+            const std::string scopeFlag = forceGlobal ? " -g" : "";
             log::println("  its configuration is current here; to run it again: "
                          "xlings install{}{} --reconfig",
-                         coords, forceGlobal ? " -g" : "");
+                         coords, scopeFlag);
         }
         record_report();
         activate_requested_targets();
@@ -1053,7 +1057,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                         const auto total = std::max(nodesWithWork, nodesDone);
                         const auto& what = status.planKey.empty()
                             ? status.name : status.planKey;
-                        const std::string_view verb =
+                        const std::string verb =
                             status.payloadReused ? "configured" : "installed";
                         stream.emit(ProgressEvent{
                             .phase = "configure",
