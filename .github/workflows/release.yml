@@ -33,8 +33,8 @@ env:
   # runtime package -- it installs one version while declaring another. That
   # is what kept glibc 2.44.2 out of the index; see xlings#573.
   BOOTSTRAP_XLINGS_VERSION: v2026.8.27.5
-  # Must contain the mcpp version pinned in .xlings.json (2026.8.8.4).
-  XIM_PKGINDEX_REF: 3d80079485ded53d161212857027122ee6029419
+  # Must contain the mcpp version pinned in .xlings.json (2026.9.28.3).
+  XIM_PKGINDEX_REF: 7b9bf4368663f50eb3e736a41009d0eaf2051180
 
 jobs:
   build-linux:
