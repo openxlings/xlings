@@ -95,6 +95,44 @@ int count_ledger_registrations(const xvm::VersionDB& db,
                                std::string_view name,
                                std::string_view version);
 
+// Has this package's config() already run in the scope an install writes, for
+// the recipe revision it is at now? (#632)
+//
+// `install` of something already installed used to re-run config() for every
+// node of its closure -- 89 nodes and ~85 s for one desktop app, with nothing
+// downloaded and nothing changed. A payload being in the store is a HOME fact;
+// having been configured is a fact about ONE scope (a subos, or a project's),
+// so the answer needs a record kept in that scope: Config::configured_revision.
+// Deriving it from the ledger alone cannot see a revision bump installed from
+// another subos (whose new config would then never reach this one), and has no
+// evidence at all for a package that registers nothing.
+//
+// Configured only when BOTH hold:
+//   1. the scope's record names the recipe's current revision;
+//   2. every ledger entry this payload owns is claimed by the scope's
+//      installed[] -- vacuous for a package that registers nothing. This is
+//      the guard against a record that outlived its binding.
+// No record is "not configured": config runs and writes one. That is the safe
+// direction, and it is how a home from before the record migrates.
+struct ConfiguredVerdict {
+    bool configured { false };
+    std::string reason;   // why not; empty when configured
+};
+
+ConfiguredVerdict configured_verdict(std::optional<int> recordedRevision,
+                                     int recipeRevision,
+                                     const xvm::VersionDB& db,
+                                     const xvm::WorkspaceInstalled& installed,
+                                     const std::string& xlingsHome,
+                                     std::string_view namespaceName,
+                                     std::string_view name,
+                                     std::string_view version);
+
+// The record's key for a package: "<ns>:<name>@<version>".
+std::string configured_identity(std::string_view namespaceName,
+                                std::string_view name,
+                                std::string_view version);
+
 // The predicate.
 //
 // COMPATIBILITY, and why the obvious rule is wrong. "Payload present, ledger

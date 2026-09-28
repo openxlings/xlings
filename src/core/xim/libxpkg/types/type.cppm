@@ -57,6 +57,13 @@ struct InstallStatus {
     // have run). What separates `already_present` from `installed` in the
     // install_targets record, without reading the free-text `message`.
     bool payloadReused { false };
+
+    // Done only: this run executed the node's configuration -- a fresh
+    // install, or a payload mapped into this scope for the first time. False
+    // when there was nothing left to do because it had already been
+    // configured here (#632), which is what lets a frontend say nothing about
+    // that node instead of narrating a no-op.
+    bool configured { false };
 };
 
 // How a node was reached in the dep graph. Determines whether the
@@ -130,6 +137,10 @@ struct PlanNode {
     // Non-empty when a payload of this version is on disk but stale: the
     // resolver's `payload_revision_verdict`, phrased for the plan.
     std::string staleReason;
+    // The payload is current AND its config() has already run in the scope
+    // this command writes, at this revision (xim::configured_verdict, #632).
+    // Such a node has nothing left to do unless `--reconfig` asks for it.
+    bool configuredHere { false };
 
     // Explicit special members to work around GCC 15 module linker bug
     PlanNode() = default;

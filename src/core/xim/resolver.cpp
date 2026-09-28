@@ -182,6 +182,19 @@ resolve(PackageCatalog& catalog, std::span<const std::string> targets, const std
                     node.staleReason = verdict.reason();
                 }
             }
+            // Asked here as well as by the installer, with the same function,
+            // so the plan and the run cannot disagree about whether an
+            // already-installed closure has anything left to do (#632). The
+            // scope's own DB and installed[]: the scope is what config writes.
+            if (node.alreadyInstalled) {
+                node.configuredHere = configured_verdict(
+                    Config::configured_revision(configured_identity(
+                        match.namespaceName, match.name, match.version)),
+                    node.revision, Config::versions_mut(),
+                    Config::workspace_installed(),
+                    Config::paths().homeDir.string(),
+                    match.namespaceName, match.name, match.version).configured;
+            }
             const auto compatibility = check_target_compatibility(
                 *pkg, entry, platform, hostArch);
             if (!compatibility.supported) {

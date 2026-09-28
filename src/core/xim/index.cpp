@@ -169,6 +169,109 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 
 namespace xlings::xim {
 
+std::optional<BracketedStep> parse_bracketed_step(std::string_view line) {
+    // Strip a trailing ANSI CSI sequence (ESC '[' <params> <final-byte>).
+    // The one this writer emits is "\x1b[K" (clear to end of line); stripping
+    // any CSI is no less correct and also covers a coloured variant.
+    if (auto esc = line.rfind('\x1b'); esc != std::string_view::npos) {
+        auto rest = line.substr(esc);
+        std::size_t i = (rest.size() > 1 && rest[1] == '[') ? 2 : rest.size();
+        while (i < rest.size() && ((rest[i] >= '0' && rest[i] <= '9') || rest[i] == ';')) ++i;
+        // A parameter section may be empty ("\x1b[K" has none between '['
+        // and the final byte) -- what marks a valid CSI is a final byte
+        // present after it, not how many parameter characters were consumed.
+        if (i >= 2 && i < rest.size()) line = line.substr(0, esc);
+    }
+    if (line.empty() || line.front() != '[') return std::nullopt;
+    auto close = line.find(']');
+    if (close == std::string_view::npos) return std::nullopt;
+    auto inner = line.substr(1, close - 1);
+    auto slash = inner.find('/');
+    if (slash == std::string_view::npos) return std::nullopt;
+
+    auto parse_int = [](std::string_view s, int& out) {
+        auto r = std::from_chars(s.data(), s.data() + s.size(), out);
+        return r.ec == std::errc{} && r.ptr == s.data() + s.size();
+    };
+    int index = 0, total = 0;
+    if (!parse_int(inner.substr(0, slash), index)) return std::nullopt;
+    if (!parse_int(inner.substr(slash + 1), total)) return std::nullopt;
+    if (total <= 0 || index < 0) return std::nullopt;
+
+    auto rest = line.substr(close + 1);
+    while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+    return BracketedStep{ index, total, std::string(rest) };
+}
+
+namespace {
+
+IndexBuildObserver& index_build_observer_() {
+    static IndexBuildObserver observer;
+    return observer;
+}
+
+std::mutex& index_build_observer_mutex_() {
+    static std::mutex m;
+    return m;
+}
+
+// What a build script wrote, cut into lines. A frame of the script's progress
+// line ends in '\r', not '\n', so both end a line. Steps go to the observer
+// and are counted; anything else the script says is passed on as it is -- a
+// failure report from the script must not be swallowed with the frames.
+class BuildTranscript_ {
+public:
+    explicit BuildTranscript_(std::string label) : label_(std::move(label)) {}
+
+    void feed(std::string_view text) {
+        for (char c : text) {
+            if (c == '\n' || c == '\r') { flush_(); continue; }
+            pending_.push_back(c);
+        }
+    }
+
+    void finish() { flush_(); }
+
+    int steps() const { return steps_; }
+    int total() const { return total_; }
+
+private:
+    void flush_() {
+        if (pending_.empty()) return;
+        const std::string line = std::exchange(pending_, {});
+        if (auto step = parse_bracketed_step(line)) {
+            ++steps_;
+            total_ = step->total;
+            IndexBuildObserver observer;
+            {
+                std::lock_guard lock(index_build_observer_mutex_());
+                observer = index_build_observer_();
+            }
+            if (observer) observer(label_, *step);
+            return;
+        }
+        if (platform::is_tui_mode()) {
+            // The NDJSON interface owns stdout. A script's own words go where
+            // its stray output always went there, rather than nowhere.
+            std::cerr << "[stray stdout] " << line << "\n";
+        } else {
+            log::println("{}", line);
+        }
+    }
+
+    std::string label_;
+    std::string pending_;
+    int steps_ = 0;
+    int total_ = 0;
+};
+
+} // namespace
+
+void set_index_build_observer(IndexBuildObserver observer) {
+    std::lock_guard lock(index_build_observer_mutex_());
+    index_build_observer_() = std::move(observer);
+}
+
 IndexManager::IndexManager(const std::filesystem::path& repoDir, std::string defaultNamespace) : repoDir_(repoDir),
       defaultNamespace_(std::move(defaultNamespace)) {}
 
@@ -194,7 +297,20 @@ std::expected<void, std::string> IndexManager::rebuild() {
 
     log::debug("building package index from {}", repoDir_.string());
 
-    auto result = xpkg::build_index(repoDir_, defaultNamespace_);
+    // The index's own build script reports progress as a self-refreshing
+    // terminal line. It cannot know where this process's output goes, so it
+    // writes to us and we decide (#629): the observer hears each step, and a
+    // finished build is one line on any destination -- no carriage returns,
+    // no escape sequences in a file or a pipe.
+    const auto label = defaultNamespace_.empty()
+        ? repoDir_.filename().string() : defaultNamespace_;
+    BuildTranscript_ transcript(label);
+    auto result = xpkg::build_index(repoDir_, defaultNamespace_,
+        [&transcript](std::string_view text) { transcript.feed(text); });
+    transcript.finish();
+    if (transcript.steps() > 0) {
+        log::info("[index] built {} ({} files)", label, transcript.total());
+    }
     if (!result) {
         return std::unexpected(
             std::format("build_index failed: {}", result.error()));

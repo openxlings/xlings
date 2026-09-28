@@ -32,6 +32,58 @@ int count_ledger_registrations(const xvm::VersionDB& db,
     return count;
 }
 
+std::string configured_identity(std::string_view namespaceName,
+                                std::string_view name,
+                                std::string_view version) {
+    return std::format("{}:{}@{}", namespaceName, name, version);
+}
+
+ConfiguredVerdict configured_verdict(std::optional<int> recordedRevision,
+                                     int recipeRevision,
+                                     const xvm::VersionDB& db,
+                                     const xvm::WorkspaceInstalled& installed,
+                                     const std::string& xlingsHome,
+                                     std::string_view namespaceName,
+                                     std::string_view name,
+                                     std::string_view version) {
+    if (!recordedRevision) {
+        return { false, "no record of its configuration in this scope" };
+    }
+    if (*recordedRevision != recipeRevision) {
+        return { false, std::format("configured at revision {}, recipe is at {}",
+                                    *recordedRevision, recipeRevision) };
+    }
+
+    // Same ownership test as count_ledger_registrations: the payload path the
+    // installer wrote IS the package identity.
+    const xvm::InstallCoordinate wanted{
+        .ns = std::string(namespaceName),
+        .package = std::string(name),
+        .version = std::string(version),
+    };
+    const auto claimed = [&](const std::string& target, const std::string& key) {
+        auto it = installed.find(target);
+        if (it == installed.end()) return false;
+        const auto bare = xvm::strip_namespace(key);
+        return std::ranges::any_of(it->second, [&](const std::string& v) {
+            return v == key || xvm::strip_namespace(v) == bare;
+        });
+    };
+    for (const auto& [target, info] : db) {
+        for (const auto& [versionKey, data] : info.versions) {
+            if (data.path.empty()) continue;
+            const auto expanded = xvm::expand_path(data.path, xlingsHome);
+            const auto coord = xvm::coordinate_from_payload_path(expanded);
+            if (!coord || !(*coord == wanted)) continue;
+            if (!claimed(target, versionKey)) {
+                return { false, std::format("{}@{} is registered but not in this "
+                                            "scope's installed[]", target, versionKey) };
+            }
+        }
+    }
+    return { true, {} };
+}
+
 InstallStateReport installation_state(
     const LedgerIndex& ledger,
     std::string_view namespaceName,

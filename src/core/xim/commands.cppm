@@ -137,10 +137,16 @@ int cmd_why(const std::string& target, const std::string& dep,
 // allInStore: when non-null, set to whether every requested payload was
 // already in the store, which is the install plan's own answer. `update` reads
 // it to say "is in the store" and "active: a -> b" instead of "upgraded".
+//
+// reconfig (`--reconfig`): run config() again for every node of the plan,
+// including those already configured in this scope at their current revision.
+// Without it such a node is left alone, and an install whose whole closure is
+// in that state does nothing beyond activation (#632).
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                 EventStream& stream, bool forceGlobal = false,
                 CancellationToken* cancel = nullptr, bool dryRun = false,
-                bool useAfterInstall = false, bool* allInStore = nullptr);
+                bool useAfterInstall = false, bool* allInStore = nullptr,
+                bool reconfig = false);
 
 // === remove command ===
 //

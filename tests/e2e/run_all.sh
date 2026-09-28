@@ -290,6 +290,17 @@ TESTS=(
     # working, and a home nested under another home's SubOS runs its own
     # script packages. H4 fails on 2026.9.28.1 with "package file not found".
     "E2E-124|home_identity_test.sh||"
+    # #632 §1: config() runs once per scope and recipe revision. A no-op
+    # install configures nothing and says how to (`--reconfig`); a second
+    # subos, a revision bump seen from another subos, and a remove each
+    # configure again; a later node's hook runs an earlier node's command by
+    # name in the same plan. C1 fails on 2026.9.28.2, which records nothing.
+    "E2E-125|install_configured_record_test.sh||"
+    # #629: an index build script's progress goes to xlings, not to fd 1.
+    # `update` to a file carries no '\r' and no ESC and names the build once;
+    # the script's own words still print; the interface still gets its
+    # index_rebuild steps. B1 fails on 2026.9.28.2.
+    "E2E-126|index_build_output_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

@@ -23,6 +23,7 @@ import xlings.core.xim.repo;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
+import xlings.core.xself.init;
 import xlings.core.xim.overlay;
 // A leaf module -- it imports only std and the json wrapper -- so reading the
 // subos's own declaration here closes no cycle. The alternative was a second
@@ -341,10 +342,10 @@ std::string install_targets_payload_(std::span<const InstallTargetReport_> targe
 
 int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              EventStream& stream, bool forceGlobal, CancellationToken* cancel,
-             bool dryRun, bool useAfterInstall,
+             bool dryRun, bool useAfterInstall, bool reconfig,
              std::vector<InstallTargetReport_>* report);
 
-int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall, bool* allInStore) {
+int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall, bool* allInStore, bool reconfig) {
     std::vector<InstallTargetReport_> report;
     report.reserve(targets.size());
     for (const auto& target : targets) {
@@ -357,7 +358,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
     int rc = 0;
     try {
         rc = install_(targets, yes, noDeps, stream, forceGlobal, cancel,
-                      dryRun, useAfterInstall, &report);
+                      dryRun, useAfterInstall, reconfig, &report);
     } catch (...) {
         // A cancellation arrives as an exception; the report still goes out,
         // with whatever this run had established before it.
@@ -375,7 +376,7 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, Eve
 
 int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              EventStream& stream, bool forceGlobal, CancellationToken* cancel,
-             bool dryRun, bool useAfterInstall,
+             bool dryRun, bool useAfterInstall, bool reconfig,
              std::vector<InstallTargetReport_>* report) {
     // An emulated build installs emulated packages -- correctly, since they
     // have to match this process's ABI, and slowly, since every one of them
@@ -940,6 +941,55 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         return 0;
     }
 
+    // Whether a node will do anything in this run. A present, current payload
+    // whose config already ran in this scope at its revision has nothing left
+    // (#632) -- the planner's `configuredHere`, from the same function the
+    // installer asks. A build-only dep never configures, so a present one is
+    // done; a Config-type package has no stamp to prove it and always runs.
+    const auto node_has_work = [reconfig](const PlanNode& node) {
+        if (!node.alreadyInstalled) return true;
+        if (node.kind == DepKind::Build) return false;
+        return reconfig || node.pkgType == 3 || !node.configuredHere;
+    };
+
+    // Nothing to do at all. Before #632 this still ran config() for every
+    // node of the closure -- ~85 s of silence for an app already installed.
+    // What remains is what `install` promises about the REQUESTED packages:
+    // their report, their activation, and the routing table every global
+    // install rebuilds (AGENTS.md: a damaged table is repaired by any install).
+    if (allAlreadyInstalled && std::ranges::none_of(plan.nodes, node_has_work)) {
+        // Said to the person who typed `install`, and only to them: not from
+        // inside another install (a hook's pkgmanager.install, which passes no
+        // report), and not when the point of the command is activation
+        // (`--use`, `update`, `self update`), where "configure again" answers
+        // a question nobody asked.
+        if (report != nullptr && !useAfterInstall) {
+            std::string coords;
+            for (const auto& m : requestedMatches) {
+                coords += " " + m.canonicalName + (m.version.empty() ? "" : "@" + m.version);
+            }
+            // std::string, not the `const char*` a ternary of literals makes:
+            // libc++ under `import std` deduces a wide format string for that
+            // argument and the build fails (macOS / Windows).
+            const std::string scopeFlag = forceGlobal ? " -g" : "";
+            log::println("  its configuration is current here; to run it again: "
+                         "xlings install{}{} --reconfig",
+                         coords, scopeFlag);
+        }
+        record_report();
+        activate_requested_targets();
+        xself::sync_shim_tables();
+        return 0;
+    }
+
+    // One line per node that does something, numbered against the nodes that
+    // will: a long closure used to install and configure in silence, which
+    // reads as a hang. A frontend other than this one gets the same fact as a
+    // `configure` progress event.
+    const std::size_t nodesWithWork = static_cast<std::size_t>(
+        std::ranges::count_if(plan.nodes, node_has_work));
+    std::size_t nodesDone = 0;
+
     // Confirm via EventStream prompt
     if (!allAlreadyInstalled && !yes) {
         int rc = 0;
@@ -1002,6 +1052,21 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                     break;
                 case InstallPhase::Done:
                     log::debug("[{}] done", status.name);
+                    if (!status.payloadReused || status.configured) {
+                        ++nodesDone;
+                        const auto total = std::max(nodesWithWork, nodesDone);
+                        const auto& what = status.planKey.empty()
+                            ? status.name : status.planKey;
+                        const std::string verb =
+                            status.payloadReused ? "configured" : "installed";
+                        stream.emit(ProgressEvent{
+                            .phase = "configure",
+                            .percent = static_cast<float>(nodesDone)
+                                     / static_cast<float>(total),
+                            .message = std::format("{} {}", verb, what),
+                        });
+                        log::println("  [{}/{}] {} {}", nodesDone, total, verb, what);
+                    }
                     // A node whose payload was present and current also ends
                     // in Done (its config hook runs again); it is recorded as
                     // present, not as installed by this run.
@@ -1042,7 +1107,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         },
         // Process deferred pkgmanager.install()/remove() requests synchronously
         // between install and config hooks so config can access sub-dependencies
-        [forceGlobal, useAfterInstall, &stream](const std::vector<mcpplibs::xpkg::InstallRequest>& reqs) {
+        [forceGlobal, useAfterInstall, reconfig, &stream](const std::vector<mcpplibs::xpkg::InstallRequest>& reqs) {
             for (auto& req : reqs) {
                 if (req.op == "install") {
                     log::debug("installing sub-dependency: {}", req.target);
@@ -1051,7 +1116,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                     // cmd_install).
                     install_(subTargets, /*yes=*/true, /*noDeps=*/false, stream,
                              forceGlobal, /*cancel=*/nullptr, /*dryRun=*/false,
-                             useAfterInstall, /*report=*/nullptr);
+                             useAfterInstall, reconfig, /*report=*/nullptr);
                 } else if (req.op == "remove") {
                     log::debug("removing sub-dependency: {}", req.target);
                     // force: an xpkg hook asking for a removal has already
@@ -1062,7 +1127,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                 }
             }
         },
-        dlSink, cancel, useAfterInstall);
+        dlSink, cancel, useAfterInstall, reconfig);
     record_report();
 
     if (!result) {

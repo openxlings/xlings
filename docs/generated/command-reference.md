@@ -16,7 +16,7 @@ Options: `-h, --help` — Show help for the selected command; `--version` — Sh
 
 Install packages
 
-Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version
+Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran
 
 ## `xlings remove <package> [version]`
 

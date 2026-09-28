@@ -54,28 +54,11 @@ inline auto opted_out_() -> bool {
     return false;
 }
 
-// Whether the destination can be redrawn in place. Three independent
-// questions decide the shape of xlings's output and each one only looks at
-// what it is about:
-//
-//   colours        a terminal, and the user has not opted out of colour
-//   cursor rewrite a terminal, no TUI owning the screen, not forced plain
-//   live progress  always -- rewritten when it can be, appended when it cannot
-//
-// NO_COLOR deliberately does NOT appear here. It asks for no colour, not for
-// no cursor control; folding it in left `NO_COLOR=1 xlings install llvm` with
-// no feedback at all for the length of the download. `--agent` (plain forced)
-// does appear, because that output is parsed by a machine.
-inline auto cursor_rewrite_allowed(bool stdoutTerminal, bool tuiMode,
-                                   bool plainOutput) -> bool {
-    return stdoutTerminal && !tuiMode && !plainOutput;
-}
-
-inline auto cursor_rewrite_allowed() -> bool {
-    return cursor_rewrite_allowed(stdout_is_terminal(),
-                                  platform::is_tui_mode(), plain_forced());
-}
-
+// Whether the destination can be redrawn in place is NOT answered here: it is
+// the frontend's capability (ui::capabilities_of, core/uimode), which folds in
+// the terminal, `--agent` and `--ui-mode cli`. Colour is a separate question
+// with its own opt-outs below; NO_COLOR asks for no colour, not for no cursor
+// control.
 inline auto colors_enabled() -> bool {
     return !opted_out_() && stdout_is_terminal();
 }

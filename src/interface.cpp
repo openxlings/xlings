@@ -20,6 +20,7 @@ import mcpplibs.cmdline;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.runtime;
+import xlings.core.xim.index;
 
 namespace xlings::interface {
 
@@ -126,50 +127,6 @@ validate_params_(const std::string& inputSchema, const std::string& params) {
         "missing required field(s): " + join(missing), hint };
 }
 
-// One recognised shape for a line captured off the real stdout while a
-// capability runs: "[i/n] <message>", the in-place progress line written by
-// xim-pkgindex-*/pkgindex-build.lua while rebuilding a stale index cache
-// (run in-process through libxpkg's Lua sandbox, which is why it can put raw
-// text on stdout at all -- see docs/spec/interface-ndjson-v1.md §5). Not
-// specific to that one script: anything else shaped like a bracketed step
-// counter reads the same way, which is what makes converting it to a
-// `progress` event a general answer rather than a special case for one
-// vendored file.
-struct BracketedStep { int index; int total; std::string message; };
-
-std::optional<BracketedStep> parse_bracketed_step_(std::string_view line) {
-    // Strip a trailing ANSI CSI sequence (ESC '[' <params> <final-byte>).
-    // The one this writer emits is "\x1b[K" (clear to end of line); stripping
-    // any CSI is no less correct and also covers a coloured variant.
-    if (auto esc = line.rfind('\x1b'); esc != std::string_view::npos) {
-        auto rest = line.substr(esc);
-        std::size_t i = (rest.size() > 1 && rest[1] == '[') ? 2 : rest.size();
-        while (i < rest.size() && ((rest[i] >= '0' && rest[i] <= '9') || rest[i] == ';')) ++i;
-        // A parameter section may be empty ("\x1b[K" has none between '['
-        // and the final byte) -- what marks a valid CSI is a final byte
-        // present after it, not how many parameter characters were consumed.
-        if (i >= 2 && i < rest.size()) line = line.substr(0, esc);
-    }
-    if (line.empty() || line.front() != '[') return std::nullopt;
-    auto close = line.find(']');
-    if (close == std::string_view::npos) return std::nullopt;
-    auto inner = line.substr(1, close - 1);
-    auto slash = inner.find('/');
-    if (slash == std::string_view::npos) return std::nullopt;
-
-    auto parse_int = [](std::string_view s, int& out) {
-        auto r = std::from_chars(s.data(), s.data() + s.size(), out);
-        return r.ec == std::errc{} && r.ptr == s.data() + s.size();
-    };
-    int index = 0, total = 0;
-    if (!parse_int(inner.substr(0, slash), index)) return std::nullopt;
-    if (!parse_int(inner.substr(slash + 1), total)) return std::nullopt;
-    if (total <= 0 || index < 0) return std::nullopt;
-
-    auto rest = line.substr(close + 1);
-    while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
-    return BracketedStep{ index, total, std::string(rest) };
-}
 
 }  // namespace
 
@@ -302,17 +259,32 @@ int run(const mcpplibs::cmdline::ParsedArgs& args,
     // whole call: a recognisable "[i/n] ..." step becomes a `progress`
     // event (so a client renders it, rather than losing it); anything else
     // is not left on stdout at all -- it goes to stderr instead.
-    platform::StdoutCapture stdoutCapture([&session](std::string_view line) {
-        if (auto step = parse_bracketed_step_(line)) {
-            session.emit_event(Event{ProgressEvent{
-                .phase = "index_rebuild",
-                .percent = static_cast<float>(step->index)
-                         / static_cast<float>(step->total),
-                .message = step->total > 0
-                    ? std::format("rebuilding index cache {}/{}: {}",
-                                  step->index, step->total, step->message)
-                    : step->message,
-            }});
+    //
+    // The index build scripts no longer reach fd 1 at all: libxpkg hands
+    // their output to xim::IndexManager, which reports each step through the
+    // observer set here -- the same event, spelled the same way, as the
+    // capture below produced when it was the only route.
+    const auto emit_index_step = [&session](const xim::BracketedStep& step) {
+        session.emit_event(Event{ProgressEvent{
+            .phase = "index_rebuild",
+            .percent = static_cast<float>(step.index)
+                     / static_cast<float>(step.total),
+            .message = step.total > 0
+                ? std::format("rebuilding index cache {}/{}: {}",
+                              step.index, step.total, step.message)
+                : step.message,
+        }});
+    };
+    xim::set_index_build_observer(
+        [emit_index_step](std::string_view, const xim::BracketedStep& step) {
+            emit_index_step(step);
+        });
+    struct ObserverReset_ {
+        ~ObserverReset_() { xim::set_index_build_observer({}); }
+    } observerReset;
+    platform::StdoutCapture stdoutCapture([&session, emit_index_step](std::string_view line) {
+        if (auto step = xim::parse_bracketed_step(line)) {
+            emit_index_step(*step);
         } else if (!line.empty()) {
             std::cerr << "[stray stdout] " << line << "\n";
         }

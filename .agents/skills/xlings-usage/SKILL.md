@@ -30,6 +30,7 @@ Verify: `xlings --version`
 ```bash
 xlings install gcc@16          # install specific version
 xlings install node cmake      # install multiple
+xlings install gcc --reconfig  # re-run config even where it already ran (else a no-op when configured)
 xlings remove gcc              # remove
 xlings search python           # search packages
 xlings update                  # update package index
@@ -200,6 +201,7 @@ xlings subos new exp --from subos:py-ds@1.0.0 # fork (0s, shared storage)
 | `--ttl <sec>` | `subos use` | Custom keeper idle timeout |
 | `-y` | `install` | Skip confirmation prompts |
 | `-g` | `install` | Install to global scope (not project) |
+| `--reconfig` | `install` | Run config() again for the whole closure; without it a package already configured in this scope at its recipe revision is left alone |
 
 ## Toolchain Switching (dev)
 

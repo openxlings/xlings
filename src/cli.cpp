@@ -124,7 +124,20 @@ void render_download_event_(const nlohmann::json& json) {
     const bool final = !entries.empty()
         && std::ranges::all_of(entries, [](auto const& f) { return f.finished; });
 
-    if (palette::cursor_rewrite_allowed()) {
+    // Who may redraw: the frontend's one answer (terminal, not `--agent`, not
+    // `--ui-mode cli`). This used to ask palette::cursor_rewrite_allowed(),
+    // which never looked at the UI mode, so `--ui-mode cli` -- documented as
+    // plain text -- still drew bars on a terminal.
+    //
+    // And never for an index artifact (`index:<name>`): a few kilobytes, one
+    // per sub-index, each announced again by "[index] updated from artifact"
+    // right after. A frame for each was noise between two lines that say the
+    // same thing; the start and finish lines below still show what a slow
+    // mirror is waiting on.
+    const bool frames = ui::current_capabilities().cursorRewrite
+        && !streamId.starts_with("index:");
+
+    if (frames) {
         const auto now = std::chrono::steady_clock::now();
         if (view.drawn && !final && now - view.lastDraw < kDownloadFrameInterval) return;
         if (!view.cursorHidden) {
@@ -143,7 +156,10 @@ void render_download_event_(const nlohmann::json& json) {
         view.drawn = true;
         view.lastDraw = now;
         if (final) {
-            std::fputs("\033[?25h", stdout);
+            // One blank line under the last frame: whatever follows -- a hook's
+            // log, a configure warning -- starts a paragraph of its own instead
+            // of reading as another row of the progress block.
+            std::fputs("\033[?25h\n", stdout);
             std::fflush(stdout);
             streams.erase(streamId);
         }
@@ -611,7 +627,7 @@ bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
 }
 
 // Install packages from project .xlings.json workspace
-int install_from_project_config_(EventStream& stream) {
+int install_from_project_config_(EventStream& stream, bool reconfig) {
     namespace fs = std::filesystem;
     std::error_code ec;
     auto cwd = fs::current_path(ec);
@@ -648,7 +664,9 @@ int install_from_project_config_(EventStream& stream) {
                                                 /*forceGlobal=*/false,
                                                 /*cancel=*/nullptr,
                                                 /*dryRun=*/false,
-                                                /*useAfterInstall=*/true);
+                                                /*useAfterInstall=*/true,
+                                                /*allInStore=*/nullptr,
+                                                reconfig);
                     }
                 }
             } catch (...) {
@@ -671,7 +689,9 @@ int install_from_project_config_(EventStream& stream) {
                                         /*forceGlobal=*/false,
                                         /*cancel=*/nullptr,
                                         /*dryRun=*/false,
-                                        /*useAfterInstall=*/true);
+                                        /*useAfterInstall=*/true,
+                                        /*allInStore=*/nullptr,
+                                        reconfig);
             }
         }
 
@@ -1793,6 +1813,7 @@ int dispatch_(int argc, char* argv[]) {
             .description("Install packages (e.g. xlings install gcc@15 node)")
             .option(cmdline::Option("global").short_name('g').help("Install to global scope (not project-local subos)"))
             .option(cmdline::Option("use").short_name('u').help("Activate the installed version even if another version is currently active"))
+            .option(cmdline::Option("reconfig").help("Run the configuration step again, even for packages already configured here"))
             .arg("packages").help("Package names with optional version")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
@@ -1819,14 +1840,16 @@ int dispatch_(int argc, char* argv[]) {
                               targets[0], targets[1], targets[0], targets[1]);
                 }
 
-                if (targets.empty()) return install_from_project_config_(stream);
+                const bool reconfig = args.is_flag_set("reconfig");
+                if (targets.empty()) return install_from_project_config_(stream, reconfig);
 
                 bool yes = args.is_flag_set("yes");
                 bool global = args.is_flag_set("global");
                 bool useAfter = args.is_flag_set("use");
                 return xim::cmd_install(targets, yes, false, stream, global,
                                         /*cancel=*/nullptr, /*dryRun=*/false,
-                                        useAfter);
+                                        useAfter, /*allInStore=*/nullptr,
+                                        reconfig);
             }))
 
         // remove

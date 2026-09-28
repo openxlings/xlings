@@ -384,3 +384,100 @@ TEST(InstallStateRevision, IncompleteOrAbsentPayloadIsNotStale) {
     EXPECT_FALSE(xim::payload_revision_verdict(home / "missing", 1).stale);
     fs::remove_all(home);
 }
+
+// ── configured_verdict (#632) ────────────────────────────────────────
+//
+// Whether an install may leave a present payload's config() alone: only when
+// the scope's record names the recipe's current revision AND every ledger
+// entry the payload owns is claimed by the scope's installed[]. Anything less
+// configures again -- the safe direction.
+
+TEST(ConfiguredVerdict, NoRecordConfiguresAgain) {
+    const auto home = make_temp_root("cv-norecord");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("demo", "1.0", dir);
+    xvm::WorkspaceInstalled installed{ { "demo", { "1.0" } } };
+    auto v = xim::configured_verdict(std::nullopt, 0, db, installed,
+                                     home.string(), "xim", "demo", "1.0");
+    EXPECT_FALSE(v.configured);
+    EXPECT_FALSE(v.reason.empty());
+    fs::remove_all(home);
+}
+
+TEST(ConfiguredVerdict, OtherRevisionConfiguresAgain) {
+    const auto home = make_temp_root("cv-rev");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("demo", "1.0", dir);
+    xvm::WorkspaceInstalled installed{ { "demo", { "1.0" } } };
+    auto v = xim::configured_verdict(0, 1, db, installed,
+                                     home.string(), "xim", "demo", "1.0");
+    EXPECT_FALSE(v.configured);
+    EXPECT_NE(v.reason.find("revision 0"), std::string::npos) << v.reason;
+    fs::remove_all(home);
+}
+
+TEST(ConfiguredVerdict, RecordAndClaimedRegistrationsAreConfigured) {
+    const auto home = make_temp_root("cv-ok");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("demo", "1.0", dir);
+    xvm::WorkspaceInstalled installed{ { "demo", { "1.0" } } };
+    auto v = xim::configured_verdict(0, 0, db, installed,
+                                     home.string(), "xim", "demo", "1.0");
+    EXPECT_TRUE(v.configured) << v.reason;
+    fs::remove_all(home);
+}
+
+// The record outlived its binding: a registration this scope does not claim
+// means config must run again, whatever the record says.
+TEST(ConfiguredVerdict, UnclaimedRegistrationConfiguresAgain) {
+    const auto home = make_temp_root("cv-unclaimed");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("demo", "1.0", dir);
+    xvm::WorkspaceInstalled installed;   // nothing claimed here
+    auto v = xim::configured_verdict(0, 0, db, installed,
+                                     home.string(), "xim", "demo", "1.0");
+    EXPECT_FALSE(v.configured);
+    EXPECT_NE(v.reason.find("demo@1.0"), std::string::npos) << v.reason;
+    fs::remove_all(home);
+}
+
+// A package that registers nothing has nothing to claim: the record decides.
+TEST(ConfiguredVerdict, NoRegistrationsIsDecidedByTheRecord) {
+    const auto home = make_temp_root("cv-noreg");
+    payload_dir(home, "xim", "demo", "1.0");
+    xvm::VersionDB db;
+    xvm::WorkspaceInstalled installed;
+    EXPECT_TRUE(xim::configured_verdict(3, 3, db, installed, home.string(),
+                                        "xim", "demo", "1.0").configured);
+    EXPECT_FALSE(xim::configured_verdict(std::nullopt, 3, db, installed,
+                                         home.string(), "xim", "demo", "1.0").configured);
+    fs::remove_all(home);
+}
+
+// Version keys are spelled bare or namespaced in different records; the claim
+// is about the version, not its spelling.
+TEST(ConfiguredVerdict, BareAndNamespacedKeysAreOneClaim) {
+    const auto home = make_temp_root("cv-ns");
+    const auto dir = payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("demo", "xim:1.0", dir);
+    xvm::WorkspaceInstalled installed{ { "demo", { "1.0" } } };
+    EXPECT_TRUE(xim::configured_verdict(0, 0, db, installed, home.string(),
+                                        "xim", "demo", "1.0").configured);
+    fs::remove_all(home);
+}
+
+// Another package's registrations are not this one's to claim.
+TEST(ConfiguredVerdict, AnotherPackagesRegistrationIsIgnored) {
+    const auto home = make_temp_root("cv-other");
+    const auto other = payload_dir(home, "xim", "other", "1.0");
+    payload_dir(home, "xim", "demo", "1.0");
+    auto db = ledger_with("other", "1.0", other);
+    xvm::WorkspaceInstalled installed;
+    EXPECT_TRUE(xim::configured_verdict(0, 0, db, installed, home.string(),
+                                        "xim", "demo", "1.0").configured);
+    fs::remove_all(home);
+}
+
+TEST(ConfiguredVerdict, IdentityIsNamespaceNameAndVersion) {
+    EXPECT_EQ(xim::configured_identity("xim", "glibc", "2.44"), "xim:glibc@2.44");
+}

@@ -3,14 +3,37 @@
 import std;
 import xlings.ui;
 import xlings.core.palette;
+import xlings.core.uimode;
 import xlings.platform;
 import xlings.core.xim.downloader;
 
-TEST(ProgressOutput, AgentAndRedirectionDisableTtyRewrite) {
-    EXPECT_TRUE(xlings::palette::cursor_rewrite_allowed(true, false, false));
-    EXPECT_FALSE(xlings::palette::cursor_rewrite_allowed(true, false, true));
-    EXPECT_FALSE(xlings::palette::cursor_rewrite_allowed(false, false, false));
-    EXPECT_FALSE(xlings::palette::cursor_rewrite_allowed(true, true, false));
+namespace {
+
+// What the frontend resolves to and whether it may redraw, asked the way the
+// CLI asks it at startup: resolve the mode, then its capabilities.
+bool redraws(std::optional<xlings::ui::UiMode> preferred, bool agent,
+             const xlings::ui::Detected& env) {
+    const auto mode = xlings::ui::resolve(
+        preferred, xlings::ui::PreferenceOrigin::Flag, agent, env).mode;
+    return xlings::ui::capabilities_of(mode, false, agent, env).cursorRewrite;
+}
+
+constexpr xlings::ui::Detected kTerminal{
+    .stdoutIsTerminal = true, .stdinIsTerminal = true, .colorAllowed = true };
+
+} // namespace
+
+// One answer to "may this run redraw in place": the frontend's capability.
+// The download renderer used to ask a second predicate that never looked at
+// the UI mode, so `--ui-mode cli` -- documented as plain text -- still drew
+// progress bars on a terminal. `self update` relies on that flag to keep the
+// bars out of its child installs.
+TEST(ProgressOutput, AgentRedirectionAndCliModeDisableTtyRewrite) {
+    EXPECT_TRUE(redraws(std::nullopt, false, kTerminal));
+    EXPECT_FALSE(redraws(std::nullopt, true, kTerminal));              // --agent
+    EXPECT_FALSE(redraws(std::nullopt, false, xlings::ui::Detected{})); // redirected
+    EXPECT_FALSE(redraws(xlings::ui::UiMode::Cli, false, kTerminal));  // --ui-mode cli
+    EXPECT_TRUE(redraws(xlings::ui::UiMode::Tui, false, kTerminal));
 }
 
 // NO_COLOR asks for no colour. Folding it into the cursor-rewrite decision
@@ -23,23 +46,21 @@ TEST(ProgressOutput, NoColorSuppressesColourButNotProgress) {
 
     xlings::platform::set_env_variable("NO_COLOR", "1");
     EXPECT_TRUE(xlings::palette::opted_out_());
-    // What the production path feeds to the rewrite decision is `plain_forced`,
-    // not the colour opt-out, so a terminal keeps redrawing in place.
-    EXPECT_FALSE(xlings::palette::plain_forced());
-    EXPECT_TRUE(xlings::palette::cursor_rewrite_allowed(
-        true, false, xlings::palette::plain_forced()));
+    // A terminal whose colour is opted out still redraws in place.
+    xlings::ui::Detected noColour = kTerminal;
+    noColour.colorAllowed = false;
+    EXPECT_TRUE(redraws(std::nullopt, false, noColour));
+    EXPECT_FALSE(xlings::ui::capabilities_of(
+        xlings::ui::UiMode::Tui, false, false, noColour).color);
 
     // Present but empty is how a wrapper clears an inherited value; treating
     // it as an opt-out would make colour impossible to turn back on.
     xlings::platform::set_env_variable("NO_COLOR", "");
     EXPECT_FALSE(xlings::palette::opted_out_());
 
-    // `--agent` is the one that does stop cursor control: that output is
-    // parsed by a machine.
+    // `--agent` does opt out of colour: that output is parsed by a machine.
     xlings::palette::set_plain(true);
     EXPECT_TRUE(xlings::palette::opted_out_());
-    EXPECT_FALSE(xlings::palette::cursor_rewrite_allowed(
-        true, false, xlings::palette::plain_forced()));
     xlings::palette::set_plain(false);
 
     if (!saved.empty()) {

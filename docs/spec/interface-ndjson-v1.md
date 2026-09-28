@@ -1,10 +1,10 @@
 > 编写日期: 2026-05-17 | 版本: 2026.9.28.2
 
-# NDJSON 接口协议规范 v1.3
+# NDJSON 接口协议规范 v1.4
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.3**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.4**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
@@ -12,6 +12,7 @@
 | 1.1 | 2026.9.27.1 起 | 增补：`install_targets` 事件；`install_plan` 条目的第三个元素 `revision`（§6.3.1） |
 | 1.2 | 2026.9.28.1 起 | 增补：`update_packages` 的 `progress` 事件（`index_sync`、`index_rebuild`，§6.1.1）与 `download_progress` 数据事件（§6.3.2）；任何能力都不向 stdout 写 NDJSON 以外的内容（§5） |
 | 1.3 | 2026.9.28.2 起 | 增补：`download_progress` 的 `stream` 字段与发送频率的上限（§6.3.2）；`prevLines` 废弃，恒为 0 |
+| 1.4 | 2026.9.29.1 起 | 增补：`install_packages` 的 `reconfig` 字段（§7.3）与 `configure` 进度事件（§6.1.2）；已在本 scope 按当前 revision 配置过的包不再重跑 config |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -44,7 +45,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.3"}
+{"protocol_version":"1.4"}
 ```
 
 ### 3.2 查询可用能力
@@ -162,6 +163,21 @@ xlings interface install_packages --args '{"targets":["gcc@14"],"yes":true}'
 `percent` 为 `i/n`（分组总数为 0 时为 0）；`message` 同时给出仓库名或包文件名，
 便于在没有专门 UI 的客户端里也能打印出有意义的一行。索引工件下载的字节级进度
 走 `download_progress`（§6.3.2），不走这里。
+
+`index_rebuild` 的步骤来自索引自带的 `pkgindex-build.lua`。自 2026.9.29.1 起这些输出经
+libxpkg 的 `BuildOutput` 直接交给 xlings，不再经过进程的 stdout；事件的 phase 与 message
+写法不变。
+
+#### 6.1.2 `install_packages` 的 progress 事件（1.4 起）
+
+安装过程中，每个**确实做了事**的节点完成时报告一次：
+
+| phase | 何时出现 | message |
+|-------|---------|---------|
+| `configure` | 一个节点装好（payload 本次写入）或在本 scope 配置好（payload 已在 store，本次映射进来） | `installed <ns:name@version>` 或 `configured <ns:name@version>` |
+
+`percent` 为已完成数 / 本次预计要做事的节点数。已在本 scope 按当前 revision 配置过的节点
+不做任何事，也不报告（见 §7.3）。CLI 前端把同一件事打印成一行 `  [i/n] installed …`。
 
 ### 6.2 log
 
@@ -408,6 +424,25 @@ agent 的正确做法：把 `message` 里的内容告诉用户，用户同意后
 `install_packages` / `plan_install` 的 `noDeps` 曾写着 "Skip dependency installation"，
 但从未生效（依赖总会被安装）。2026.9.26.1 起它从 schema 中删除；传 `"noDeps": true`
 会被拒绝（`E_INVALID_INPUT`，exitCode=2），`false` 或不传与以往相同。
+
+### 7.3 `install_packages` 的 `reconfig`（1.4 起）
+
+包的 payload 由整个 home 共享，而"在某个 scope（subos 或项目）里配置过"是那个 scope 的事实。
+自 2026.9.29.1 起，每个 scope 在自己的 `.xlings.json` 里记录 `configured`
+（`"<ns>:<name>@<version>": <revision>`）。一个节点同时满足以下两条时，安装不会重跑它的 config：
+
+1. 这条记录的 revision 等于配方当前的 revision；
+2. 该 payload 在 ledger 里的每个注册项都在本 scope 的 `installed[]` 中。
+
+整个闭包都满足时，`install_packages` 只做激活和一次路由表重建，`install_targets` 照常报告
+`already_present`。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| reconfig | boolean | 为 `true` 时，plan 里的每个节点都重跑 config（即 2026.9.29.1 之前的行为）。默认 `false` |
+
+没有记录一律视为"未配置"：config 会运行并写入记录，旧 home 由此自然迁移。配方改变了 config
+的效果时必须提升 `revision`，各 scope 会在下一次触及该包的安装时各自重新配置。
 
 ## 8. 错误处理
 
