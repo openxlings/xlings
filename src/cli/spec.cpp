@@ -20,7 +20,7 @@ const CommandSpec& root() {
         },
         .children = {
             {"install", "Install packages", {}, {{"packages", "Package names", false, true}},
-                {{"-g, --global", "Use global scope"}, {"-u, --use", "Activate installed version"}}, {}},
+                {{"-g, --global", "Use global scope"}, {"-u, --use", "Activate installed version"}, {"--reconfig", "Run the configuration step again, even where it already ran"}}, {}},
             {"remove", "Remove a package", {}, {{"package", "Package name", true}, {"version", "Optional version", false}},
                 {{"-g, --global", "Use global scope"},
                  {"--force", "Remove even if packages depend on it, the recipe is gone, or its uninstall hook fails"},

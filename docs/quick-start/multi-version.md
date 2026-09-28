@@ -1,4 +1,4 @@
-> 编写日期: 2026-05-17 | 更新: 2026-07-29 | 版本: 2026.7.29.0
+> 编写日期: 2026-05-17 | 更新: 2026-09-29 | 版本: 2026.9.29.1
 
 # 多版本管理
 
@@ -124,6 +124,28 @@ xlings 在 SubOS 的 `bin/` 目录中放置与工具同名的硬链接，指向 
 ### Version-View 与引用计数
 
 多个 SubOS 环境共享同一份物理安装（位于 `~/.xlings/data/xpkgs/`），每个环境仅记录自己的"版本视图"。引用计数确保仅当最后一个使用者卸载时才删除物理文件。
+
+### 重复安装与 `--reconfig`（2026.9.29.1 起）
+
+一个包装进 store 之后，还要在每个 SubOS（或项目）里跑一次它的配置步骤：注册命令、建 sysroot 链接、
+记录环境声明。每个环境在自己的 `.xlings.json` 里记下哪些包已经按哪个配方 revision 配置过：
+
+```bash
+xlings install chatgpt          # 第一次：下载、安装、配置整个依赖闭包
+xlings install chatgpt          # 再次：已安装且已配置，什么都不重跑
+#   xim:chatgpt@26.924.22138 is already installed
+#     its configuration is current here; to run it again: xlings install xim:chatgpt@26.924.22138 --reconfig
+xlings install chatgpt --reconfig   # 显式要求：整个闭包重新配置
+```
+
+会自动重新配置的情况：
+
+- 在另一个 SubOS 里第一次安装（payload 共享，配置是每个环境各自的）；
+- 配方提升了 `revision`（配方改了配置效果时必须这样做），每个环境下一次安装时各自补上；
+- 在本环境里 `remove` 过再装回来。
+
+手工改坏了某个环境的 sysroot 链接或环境变量时，用 `xlings install <pkg> --reconfig`，
+或者 `xlings self doctor --fix`。
 
 ### 架构图
 

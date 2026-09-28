@@ -673,7 +673,11 @@ std::vector<Finding> detect_subos_manifest_(const xvm::VersionDB& db,
                 "subos '{}' does not record a runtime -- nothing here "
                 "declares, activates or serves one, so tools that need to "
                 "know which libc this is will fall back", subosName),
-            .remedy  = "xlings install glibc",
+            // `--reconfig`: glibc's config is what records the runtime, and
+            // an install that finds glibc already configured in this subos
+            // no longer runs it (#632) -- without the flag this printed
+            // command would do nothing.
+            .remedy  = "xlings install glibc --reconfig",
             .remedyNote = "then the runtime will be recorded",
         });
     }

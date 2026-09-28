@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.9.28.2";
+    static constexpr std::string_view VERSION = "2026.9.29.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -183,6 +183,24 @@ private:
     // `load_global_workspace_()`; a home whose global subos has no workspace
     // file yet is observed-and-empty, which is different again.
     bool           globalWorkspaceObserved_ { false };
+    // `knownProjects` of the home config, as last read or written by THIS
+    // process, with the file's size and mtime from before that read (after,
+    // for a write). `known_projects()` is asked on every routing-table rebuild
+    // -- once per installed package -- and used to parse the whole home config
+    // for one key each time; it now re-reads only when the file differs.
+    // The parses that already happen (startup, the locked reload,
+    // save_versions) refresh it, so the common case costs one stat.
+    struct KnownProjectsSnapshot_ {
+        bool valid { false };
+        std::uintmax_t size {};
+        std::filesystem::file_time_type mtime {};
+        std::map<std::filesystem::path, std::string> lastSeen;   // key -> stamp
+    };
+    KnownProjectsSnapshot_ knownProjects_;
+    void remember_known_projects_(const nlohmann::json& json,
+                                  std::uintmax_t size,
+                                  std::filesystem::file_time_type mtime);
+    void refresh_known_projects_();
     xvm::Workspace projectWorkspace_;       // from project .xlings.json
     xvm::Workspace projectSubosWorkspace_;  // from project-local subos file
     // Per-subos installed[] sets, paired with the matching workspace map.
@@ -191,6 +209,11 @@ private:
     // corresponding installed map (Plan 3 of the C2 schema design).
     xvm::WorkspaceInstalled globalInstalled_;
     xvm::WorkspaceInstalled projectSubosInstalled_;
+    // The `configured` record (#632), per subos file, loaded and saved with
+    // the installed[] beside it. See configured_revision().
+    std::map<std::string, int> globalConfigured_;
+    std::map<std::string, int> projectSubosConfigured_;
+    std::map<std::string, int>& configured_mut_();
     bool hasProjectConfig_ = false;
     std::string activeSubosOverride_;
     bool forceGlobalScope_ = false;
@@ -618,6 +641,20 @@ public:
     // Same invariant as workspace()/workspace_mut() above, same reason.
     [[nodiscard]] static const xvm::WorkspaceInstalled& workspace_installed();
     [[nodiscard]] static xvm::WorkspaceInstalled& workspace_installed_mut();
+
+    // Which packages' config() has already run in the scope this command
+    // writes, and at which recipe revision (#632). Keyed
+    // "<ns>:<name>@<version>". `install` skips a package's config when the
+    // payload is current and this record matches the recipe's revision -- see
+    // xim::configured_verdict for the whole predicate. Written only by the
+    // installer after a successful config; erased by an uninstall or an unbind
+    // in the same scope. Held in memory like installed[] and persisted by
+    // save_workspace().
+    [[nodiscard]] static std::optional<int> configured_revision(std::string_view identity);
+    static void mark_configured(const std::string& identity, int revision);
+    static bool forget_configured(std::string_view identity);
+    // Every namespace's record of "<name>@<version>" (a manifest binding).
+    static bool forget_configured_binding(std::string_view binding);
     [[nodiscard]] static bool has_project_config();
 
     // Force all version/workspace writes to go to global scope.

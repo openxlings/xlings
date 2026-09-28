@@ -9,6 +9,7 @@ module xlings.ui;
 import std;
 import xlings.core.console;
 import xlings.core.palette;
+import xlings.core.uimode;
 
 namespace xlings::ui {
 
@@ -228,7 +229,9 @@ void print_download_milestone(const DownloadProgressEntry& entry, bool finished,
 
 int render_download_progress(std::span<const DownloadProgressEntry> progState, std::size_t nameWidth, double elapsedSec, bool sizesReady, int prevLines) {
     using namespace ftxui;
-    const bool rewrite = palette::cursor_rewrite_allowed();
+    // The same answer the caller acted on: the frontend's capability, which
+    // already folds in the terminal, `--agent` and `--ui-mode cli`.
+    const bool rewrite = ui::current_capabilities().cursorRewrite;
     constexpr std::size_t statusWidth = 8;
     constexpr int iconW = 6;   // "    <icon> "
 

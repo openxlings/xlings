@@ -13,7 +13,10 @@
 #   P1  off a terminal, each download prints exactly two lines: one when it
 #       starts and one when it finishes;
 #   P2  on a pseudo-terminal, the number of frames drawn is at most the
-#       command's elapsed time over 100 ms, plus two (the first and the last);
+#       command's elapsed time over 100 ms, plus two (the first and the last),
+#       and the last one is followed by a blank line; an index artifact draws
+#       no frame at all (its start and finish lines only), and neither does
+#       anything under `--ui-mode cli`;
 #   P3  on the NDJSON interface, one stream's events number at most its elapsed
 #       time over 100 ms plus two, and every event names its stream.
 #
@@ -186,13 +189,52 @@ in_pty "$WORK/p2-update.log" env XLINGS_HOME="$H" XLINGS_INDEX_BASE_URL="$BASE" 
   XLINGS_NON_INTERACTIVE=1 TERM=xterm-256color "$XLINGS_BIN" update \
   || { cat "$WORK/p2-update.log"; fail "P2: update failed on a pseudo-terminal"; }
 t1="$(now_ms)"
-frames_bound_ok "$WORK/p2-update.log" $(( t1 - t0 )) "update"
+no_frames_ok() {  # $1=transcript $2=label $3=milestone name
+  local frames n
+  # `|| true`: no match is the expected answer here, and under pipefail a
+  # failing grep in an assignment ends the script without a word.
+  frames="$( { LC_ALL=C grep -o $'\033\\[J' "$1" || true; } | wc -l | tr -d ' ')"
+  [[ "$frames" -eq 0 ]] || { cat "$1"; fail "P2 ($2): $frames frame(s) drawn, expected none"; }
+  n="$(count_milestones "$1" "$3")"
+  [[ "$n" -eq 2 ]] || { cat "$1"; fail "P2 ($2): $n start/finish line(s), expected 2"; }
+  log "  ok: $2 drew no frame, and said when it started and finished"
+}
+# An index artifact is a few kilobytes, announced again by "[index] updated
+# from artifact" right after: no frame for it, on a terminal either.
+no_frames_ok "$WORK/p2-update.log" "update (index artifact)" xim
 t0="$(now_ms)"
 in_pty "$WORK/p2-install.log" env XLINGS_HOME="$H" XLINGS_INDEX_BASE_URL="$BASE" \
   XLINGS_NON_INTERACTIVE=1 TERM=xterm-256color "$XLINGS_BIN" install progress-fixture@1.0.0 -y \
   || { cat "$WORK/p2-install.log"; fail "P2: install failed on a pseudo-terminal"; }
 t1="$(now_ms)"
 frames_bound_ok "$WORK/p2-install.log" $(( t1 - t0 )) "install"
+# What follows the progress block starts a paragraph of its own: the frame
+# that finishes the block shows the cursor again and then ends one blank line.
+python3 - "$WORK/p2-install.log" <<'PY' || fail "P2 (install): no blank line after the last frame"
+import sys
+data = open(sys.argv[1], "rb").read()
+# The LAST frame, then the cursor-show that closes it. Not simply the last
+# cursor-show in the transcript: an exit handler writes one more at the very
+# end, with nothing after it.
+last_frame = data.rfind(b"\x1b[J")
+if last_frame < 0:
+    sys.exit("no frame in the transcript")
+at = data.find(b"\x1b[?25h", last_frame)
+if at < 0:
+    sys.exit("the cursor was never shown again")
+tail = data[at + len(b"\x1b[?25h"):]
+if not (tail.startswith(b"\n") or tail.startswith(b"\r\n")):
+    sys.exit("after the last frame: %r" % tail[:40])
+PY
+log "  ok: a blank line follows the last frame"
+# `--ui-mode cli` is plain text: the same download, no frame (`self update`
+# runs its child installs this way).
+H="$(fresh_home p2cli)"
+run_in "$H" update >/dev/null 2>&1 || fail "P2: update failed (p2cli)"
+in_pty "$WORK/p2-cli.log" env XLINGS_HOME="$H" XLINGS_INDEX_BASE_URL="$BASE" \
+  XLINGS_NON_INTERACTIVE=1 TERM=xterm-256color "$XLINGS_BIN" --ui-mode cli install progress-fixture@1.0.0 -y \
+  || { cat "$WORK/p2-cli.log"; fail "P2: --ui-mode cli install failed on a pseudo-terminal"; }
+no_frames_ok "$WORK/p2-cli.log" "install --ui-mode cli" 'xim:progress-fixture@1\.0\.0'
 
 # ── P3: the interface stream is bounded and names its streams ───────
 log "P3: interface update_packages sends a bounded, named stream"

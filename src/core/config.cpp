@@ -15,6 +15,38 @@ import xlings.core.xvm.lock;
 
 namespace xlings {
 
+namespace {
+
+// Size and mtime of a file, or nothing when it cannot be stat'ed. Used to tell
+// whether the home config changed since this process last read it.
+std::optional<std::pair<std::uintmax_t, std::filesystem::file_time_type>>
+file_stat_(const std::filesystem::path& p) {
+    std::error_code sizeEc;
+    std::error_code timeEc;
+    const auto size = std::filesystem::file_size(p, sizeEc);
+    const auto mtime = std::filesystem::last_write_time(p, timeEc);
+    if (sizeEc || timeEc) return std::nullopt;
+    return std::pair{size, mtime};
+}
+
+// The `configured` record of a subos file (#632). Anything that is not a
+// non-negative integer is dropped: a record that cannot be read proves nothing,
+// and a missing entry only means "configure it", the safe direction.
+std::map<std::string, int> configured_from_json_(const nlohmann::json& doc) {
+    std::map<std::string, int> out;
+    auto it = doc.find("configured");
+    if (it == doc.end() || !it->is_object()) return out;
+    for (auto e = it->begin(); e != it->end(); ++e) {
+        if (e.key().empty() || !e->is_number_integer()) continue;
+        const auto revision = e->get<long long>();
+        if (revision < 0 || revision > std::numeric_limits<int>::max()) continue;
+        out.emplace(e.key(), static_cast<int>(revision));
+    }
+    return out;
+}
+
+} // namespace
+
 void capture_ambient_home_env() {
     if (detail_::ambientHomeCaptured_) return;   // first call wins
     detail_::ambientHomeCaptured_ = true;
@@ -298,11 +330,13 @@ Config::read_workspace_file_(const std::filesystem::path& path) {
         // A subos file with no `workspace` key IS observed -- it is the shape a
         // freshly created subos has before anything is activated in it. Only a
         // file we could not read at all is unobserved.
+        xvm::SubosWorkspace sws;
         if (auto it = json.find("workspace");
             it != json.end() && it->is_object()) {
-            return xvm::subos_workspace_from_json(*it);
+            sws = xvm::subos_workspace_from_json(*it);
         }
-        return xvm::SubosWorkspace{};
+        sws.configured = configured_from_json_(json);
+        return sws;
     } catch (...) {}
     return std::nullopt;
 }
@@ -584,9 +618,11 @@ Config::Config() {
     auto configPath = paths_.homeDir / ".xlings.json";
     if (fs::exists(configPath)) {
         try {
+            const auto before = file_stat_(configPath);
             auto content = platform::read_file_to_string(configPath.string());
             auto json    = nlohmann::json::parse(content, nullptr, false);
             if (!json.is_discarded()) {
+                if (before) remember_known_projects_(json, before->first, before->second);
                 if (json.contains("activeSubos") && json["activeSubos"].is_string()) {
                     auto val = json["activeSubos"].get<std::string>();
                     if (!val.empty()) globalActiveSubos_ = val;
@@ -741,6 +777,7 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                 auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
                 projectSubosWorkspace_ = std::move(sws.active);
                 projectSubosInstalled_ = std::move(sws.installed);
+                projectSubosConfigured_ = std::move(sws.configured);
             } else {
                 projectSubosMode_ = ProjectSubosMode::Anonymous;
                 if (hasProjectStateJson && projectStateJson.contains("workspace") &&
@@ -748,10 +785,12 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
                     auto sws = xvm::subos_workspace_from_json(projectStateJson["workspace"]);
                     projectSubosWorkspace_ = std::move(sws.active);
                     projectSubosInstalled_ = std::move(sws.installed);
+                    projectSubosConfigured_ = configured_from_json_(projectStateJson);
                 } else {
                     auto sws = load_workspace_from_file_(project_subos_dir_() / ".xlings.json");
                     projectSubosWorkspace_ = std::move(sws.active);
                     projectSubosInstalled_ = std::move(sws.installed);
+                    projectSubosConfigured_ = std::move(sws.configured);
                 }
             }
         }
@@ -876,10 +915,12 @@ void Config::load_global_workspace_() {
                    subosConfigPath.string());
         globalWorkspace_.clear();
         globalInstalled_.clear();
+        globalConfigured_.clear();
         return;
     }
     globalWorkspace_ = std::move(sws->active);
     globalInstalled_ = std::move(sws->installed);
+    globalConfigured_ = std::move(sws->configured);
 }
 
 void Config::reload_state_() {
@@ -887,9 +928,13 @@ void Config::reload_state_() {
     auto configPath = paths_.homeDir / ".xlings.json";
     if (fs::exists(configPath)) {
         try {
+            const auto before = file_stat_(configPath);
             auto content = platform::read_file_to_string(configPath.string());
             auto json = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded()) load_global_versions_from_json_(json);
+            if (!json.is_discarded()) {
+                load_global_versions_from_json_(json);
+                if (before) remember_known_projects_(json, before->first, before->second);
+            }
         } catch (...) {}
     } else {
         globalVersions_.clear();
@@ -1338,6 +1383,14 @@ void Config::save_versions() {
     auto& versions = useGlobal ? self.globalVersions_ : self.projectVersions_;
     json["versions"] = xvm::versions_to_json(versions);
     platform::write_string_to_file(configPath.string(), json.dump(2));
+    // The home config was just parsed and written whole; what it now says
+    // about known projects is `json`. Taken after the write, under the state
+    // lock every caller holds, so the next rebuild's stat matches it.
+    if (useGlobal) {
+        if (const auto after = file_stat_(configPath)) {
+            self.remember_known_projects_(json, after->first, after->second);
+        }
+    }
 }
 
 namespace {
@@ -1510,21 +1563,65 @@ void Config::mark_hint_seen(std::string_view id) {
                                   });
 }
 
-[[nodiscard]] std::vector<std::filesystem::path> Config::known_projects() {
+void Config::remember_known_projects_(const nlohmann::json& json,
+                                      std::uintmax_t size,
+                                      std::filesystem::file_time_type mtime) {
+    KnownProjectsSnapshot_ snap;
+    snap.valid = true;
+    snap.size = size;
+    snap.mtime = mtime;
+    if (auto it = json.find("knownProjects");
+        it != json.end() && it->is_object()) {
+        for (auto e = it->begin(); e != it->end(); ++e) {
+            if (e.key().empty()) continue;
+            std::string stamp;
+            if (e->is_object()) {
+                if (auto ls = e->find("lastSeen"); ls != e->end() && ls->is_string()) {
+                    stamp = ls->get<std::string>();
+                }
+            }
+            snap.lastSeen.emplace(e.key(), std::move(stamp));
+        }
+    }
+    knownProjects_ = std::move(snap);
+}
+
+// Re-read the home config's `knownProjects` only when the file is not the one
+// the snapshot was taken from. The stat is taken BEFORE the read: a write that
+// lands between the two leaves new content under an old stat, and the next
+// call re-reads -- the harmless direction. The opposite order would pair old
+// content with a new stat and keep it.
+void Config::refresh_known_projects_() {
     namespace fs = std::filesystem;
-    std::vector<fs::path> out;
-    auto configPath = instance_().paths_.homeDir / ".xlings.json";
-    if (!fs::exists(configPath)) return out;
+    auto configPath = paths_.homeDir / ".xlings.json";
+    const auto before = file_stat_(configPath);
+    if (!before) {
+        knownProjects_ = {};
+        return;
+    }
+    if (knownProjects_.valid && knownProjects_.size == before->first
+        && knownProjects_.mtime == before->second) {
+        return;
+    }
     try {
         auto content = platform::read_file_to_string(configPath.string());
         auto json = nlohmann::json::parse(content, nullptr, false);
-        if (json.is_discarded() || !json.is_object()) return out;
-        auto it = json.find("knownProjects");
-        if (it == json.end() || !it->is_object()) return out;
-        for (auto e = it->begin(); e != it->end(); ++e) {
-            if (!e.key().empty()) out.emplace_back(e.key());
+        if (json.is_discarded() || !json.is_object()) {
+            knownProjects_ = {};
+            return;
         }
-    } catch (...) { return out; }
+        remember_known_projects_(json, before->first, before->second);
+    } catch (...) {
+        knownProjects_ = {};
+    }
+}
+
+[[nodiscard]] std::vector<std::filesystem::path> Config::known_projects() {
+    auto& self = instance_();
+    self.refresh_known_projects_();
+    std::vector<std::filesystem::path> out;
+    out.reserve(self.knownProjects_.lastSeen.size());
+    for (const auto& [key, _] : self.knownProjects_.lastSeen) out.push_back(key);
     std::ranges::sort(out);
     return out;
 }
@@ -1541,7 +1638,30 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     if (ec || key.empty()) key = fs::absolute(dir, ec);
     if (ec || key.empty()) return;
 
-    auto configPath = instance_().paths_.homeDir / ".xlings.json";
+    std::string stamp;
+    {
+        auto now = std::chrono::system_clock::now();
+        stamp = std::format("{:%FT%TZ}",
+                            std::chrono::floor<std::chrono::seconds>(
+                                std::chrono::time_point_cast<
+                                    std::chrono::seconds>(now)));
+    }
+
+    // Written at most once a day per project. This runs on every routing-table
+    // rebuild in project scope -- once per installed package -- and each write
+    // is a read, parse and rewrite of the whole home config (3.6 MB on a
+    // measured home) to move `lastSeen` forward by a few seconds. Nothing reads
+    // `lastSeen`; a day's resolution is all it can carry anyway.
+    auto& self = instance_();
+    self.refresh_known_projects_();
+    if (auto it = self.knownProjects_.lastSeen.find(key);
+        it != self.knownProjects_.lastSeen.end()
+        && it->second.size() >= 10 && stamp.size() >= 10
+        && it->second.compare(0, 10, stamp, 0, 10) == 0) {
+        return;
+    }
+
+    auto configPath = self.paths_.homeDir / ".xlings.json";
     nlohmann::json json = nlohmann::json::object();
     if (fs::exists(configPath)) {
         try {
@@ -1556,18 +1676,12 @@ void Config::register_known_project(const std::filesystem::path& dir) {
 
     auto& projects = json["knownProjects"];
     if (!projects.is_object()) projects = nlohmann::json::object();
-
-    std::string stamp;
-    {
-        auto now = std::chrono::system_clock::now();
-        stamp = std::format("{:%FT%TZ}",
-                            std::chrono::floor<std::chrono::seconds>(
-                                std::chrono::time_point_cast<
-                                    std::chrono::seconds>(now)));
-    }
     projects[key.string()] = nlohmann::json{{"lastSeen", stamp}};
 
     platform::write_string_to_file(configPath.string(), json.dump(2));
+    if (const auto after = file_stat_(configPath)) {
+        self.remember_known_projects_(json, after->first, after->second);
+    }
 }
 
 std::filesystem::path Config::workspace_config_path(bool createDirs) {
@@ -1673,6 +1787,7 @@ void Config::save_workspace() {
          self.projectSubosMode_ == ProjectSubosMode::Anonymous)) {
         sws.active = self.projectSubosWorkspace_;
         sws.installed = self.projectSubosInstalled_;
+        sws.configured = self.projectSubosConfigured_;
     } else if (useProject) {
         // Reachable only via the third save-path branch above (project
         // mode without a subos mode, currently unreachable in practice
@@ -1683,9 +1798,56 @@ void Config::save_workspace() {
     } else {
         sws.active = self.globalWorkspace_;
         sws.installed = self.globalInstalled_;
+        sws.configured = self.globalConfigured_;
     }
     json["workspace"] = xvm::subos_workspace_to_json(sws);
+    if (sws.configured.empty()) {
+        json.erase("configured");
+    } else {
+        json["configured"] = sws.configured;
+    }
     platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
+}
+
+// The map `save_workspace` writes for the scope this command acts on -- the
+// same selection as workspace_installed_mut(), so a record always lands next
+// to the installed[] it is checked against.
+std::map<std::string, int>& Config::configured_mut_() {
+    if (forceGlobalScope_ || !hasProjectConfig_) return globalConfigured_;
+    if (projectSubosMode_ == ProjectSubosMode::Named ||
+        projectSubosMode_ == ProjectSubosMode::Anonymous) return projectSubosConfigured_;
+    return globalConfigured_;
+}
+
+[[nodiscard]] std::optional<int> Config::configured_revision(std::string_view identity) {
+    const auto& map = instance_().configured_mut_();
+    if (auto it = map.find(std::string(identity)); it != map.end()) return it->second;
+    return std::nullopt;
+}
+
+void Config::mark_configured(const std::string& identity, int revision) {
+    instance_().configured_mut_()[identity] = revision;
+}
+
+bool Config::forget_configured(std::string_view identity) {
+    return instance_().configured_mut_().erase(std::string(identity)) > 0;
+}
+
+bool Config::forget_configured_binding(std::string_view binding) {
+    // A binding is "<name>@<version>" with no namespace; a record key is
+    // "<ns>:<name>@<version>". Every namespace's record of that name and
+    // version goes -- the binding that was unbound names no namespace to keep.
+    auto& map = instance_().configured_mut_();
+    bool any = false;
+    for (auto it = map.begin(); it != map.end();) {
+        const auto& key = it->first;
+        const auto colon = key.find(':');
+        const std::string_view bare = colon == std::string::npos
+            ? std::string_view(key) : std::string_view(key).substr(colon + 1);
+        if (bare == binding) { it = map.erase(it); any = true; }
+        else ++it;
+    }
+    return any;
 }
 
 void Config::print_paths() {

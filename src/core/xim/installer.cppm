@@ -546,6 +546,9 @@ public:
     // useAfterInstall: when true, force the installed program version to
     // become the active one even if another version is currently active.
     // Default behavior preserves the existing active version.
+    // reconfig (`--reconfig`): run config() for every node again, including
+    // those already configured in this scope at their current revision
+    // (xim::configured_verdict). That is what every install did before #632.
     std::expected<void, std::string>
     execute(const InstallPlan& plan,
             const DownloaderConfig& dlConfig,
@@ -553,7 +556,8 @@ public:
             InstallRequestHandler onInstallRequests = nullptr,
             DownloadProgressSink onProgressState = nullptr,
             CancellationToken* cancel = nullptr,
-            bool useAfterInstall = false);
+            bool useAfterInstall = false,
+            bool reconfig = false);
 
     // What `uninstall` actually did.
     //

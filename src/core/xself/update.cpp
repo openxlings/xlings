@@ -30,9 +30,14 @@ bool update_landed_on_index_build(std::string_view activeVersion) {
 }
 
 int cmd_update() {
+    // Both children run with `--ui-mode cli`: no progress bars. This command's
+    // output is a short narrative of steps; a bar redrawn inside it, followed
+    // by the next step's log, left the two glued together, and the downloads
+    // here (index artifacts, the xlings payload) each still say when they
+    // start and finish.
     log::info("updating package index...");
     platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
-    int rc = platform::exec("xlings update");
+    int rc = platform::exec("xlings --ui-mode cli update");
     platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
         log::error("failed to update package index");
@@ -65,7 +70,7 @@ int cmd_update() {
     // the child it owns the activation is what makes its statement true --
     // suppressing the message instead would leave two processes both deciding
     // whether to activate, which is the shape this whole change removes.
-    rc = platform::exec("xlings install xlings@latest -y --use");
+    rc = platform::exec("xlings --ui-mode cli install xlings@latest -y --use");
     platform::set_env_variable("XLINGS_INDEX_PIN", "");
     if (rc != 0) {
         // This used to warn and return 0. A failed upgrade then looked

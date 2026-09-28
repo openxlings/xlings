@@ -1809,6 +1809,21 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     // std::map, not unordered: the write order of sections shows up in the file
     // a user reads and in diffs of it.
     std::map<std::string, std::vector<mf::EnvDecl>> perBinding;
+    // What each binding's section says BEFORE this run replaces it -- the
+    // other side of the comparison the privileged-env notice below needs.
+    const auto recorded = mf::parse(*doc).envs;
+    const auto already_recorded = [&](const mcpplibs::xpkg::XvmOp& op) {
+        for (const auto& provider : recorded) {
+            if (provider.binding != op.binding) continue;
+            for (const auto& decl : provider.decls) {
+                if (decl.var == op.var && decl.op == op.mode
+                    && decl.value == op.value) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
     for (const auto* op : declarations) {
         if (!mf::is_binding(op->binding)) {
             log::error("[xim] {}@{} declared env '{}' with binding '{}' "
@@ -1833,7 +1848,14 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
         //
         // Default-deny by variable name (manifest::names_only_data), so a
         // variable nobody has classified reads as privileged. See AD-3.
-        if (mf::is_privileged_env(op->var, op->value)) {
+        //
+        // Said when the declaration is NEW to this binding's section, not on
+        // every re-record of it (#632 §4): a config that runs again records
+        // the same lines, and eight identical warnings on every install whose
+        // closure reaches the graphics stack taught users to skip them. The
+        // human-is-watching moment is the first one, and a CHANGED value is a
+        // new declaration by this test.
+        if (mf::is_privileged_env(op->var, op->value) && !already_recorded(*op)) {
             log::warn("[xim] {}@{} declares {} = {}", canonical, node.version,
                       op->var, op->value);
             log::warn("      This variable can load code from our payload into "
@@ -1877,6 +1899,21 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
     for (const auto& binding : superseded) {
         if (!mf::remove_provider(*doc, binding)) continue;
         changed = true;
+        // The unbound version's `configured` record (#632) goes with it, in
+        // memory and in the document this function writes back -- which is the
+        // same subos file, read before any of this, so an erase made in memory
+        // alone would be overwritten by the write below.
+        Config::forget_configured_binding(binding);
+        if (auto it = doc->find("configured"); it != doc->end() && it->is_object()) {
+            for (auto e = it->begin(); e != it->end();) {
+                const auto& key = e.key();
+                const auto colon = key.find(':');
+                const std::string_view bare = colon == std::string::npos
+                    ? std::string_view(key) : std::string_view(key).substr(colon + 1);
+                if (bare == binding) e = it->erase(e);
+                else ++e;
+            }
+        }
         log::info("[xim] subos '{}' now holds {}@{}; unbound {} (it declares no "
                   "xvm version, so nothing else could say which is live)",
                   Config::paths().activeSubos.empty()
@@ -2186,8 +2223,11 @@ bool process_xvm_operations_(const PlanNode& node,
                 // The file itself is not written here any more.
                 //
                 // `xself::sync_shim_tables()` below derives the whole routing
-                // table from the workspace once the install has finished, which
-                // is what removed the second half of this block: a project-scope
+                // table from the workspace as soon as this node's registrations
+                // are saved -- per node, not once per plan: a later node's hook
+                // may run this one's command by name (see the PATH note at the
+                // elfpatch step). That is what removed the second half of this
+                // block: a project-scope
                 // mirror into the global bin that nothing recorded and nothing
                 // could reclaim. Reaching this point still means "this name is
                 // active here", which is exactly what the table will conclude.
@@ -2525,7 +2565,7 @@ std::filesystem::path Installer::locate_dep_install_dir_(const InstallPlan& plan
     return root / detail_::effective_store_name_(*n) / n->version;
 }
 
-std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall) {
+std::expected<void, std::string> Installer::execute(const InstallPlan& plan, const DownloaderConfig& dlConfig, std::function<void(const InstallStatus&)> onStatus, InstallRequestHandler onInstallRequests, DownloadProgressSink onProgressState, CancellationToken* cancel, bool useAfterInstall, bool reconfig) {
 
     if (plan.has_errors()) {
         return std::unexpected(
@@ -3138,6 +3178,44 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
             payloadInstalled = false;
         }
 
+        // Nothing left to do (#632): the payload is current, and its config()
+        // already ran in the scope this command writes, at this revision. Same
+        // function the planner asked, asked again now because an earlier node
+        // of this run may have changed the scope's state. A build-only dep
+        // never configures, so a present one is always done. `--reconfig`
+        // takes every node down the path below, which is what every install
+        // did before -- 89 nodes of config and ~85 s for an app that was
+        // already installed, with nothing printed.
+        if (payloadInstalled && !reconfig && node.pkgType != 3 /* Config */) {
+            bool done = node.kind == DepKind::Build;
+            if (!done) {
+                const auto verdict = configured_verdict(
+                    Config::configured_revision(configured_identity(
+                        node.namespaceName, node.name, node.version)),
+                    node.revision, Config::versions_mut(),
+                    Config::workspace_installed(),
+                    Config::paths().homeDir.string(),
+                    node.namespaceName, node.name, node.version);
+                done = verdict.configured;
+                if (!done) {
+                    log::debug("[{}@{}] configuring in this scope: {}",
+                               node.name, node.version, verdict.reason);
+                }
+            }
+            if (done) {
+                if (onStatus) {
+                    onStatus({ .name = node.name,
+                               .phase = InstallPhase::Done,
+                               .progress = 1.0f,
+                               .message = "already configured",
+                               .payloadReused = true });
+                }
+                log::debug("{}@{} already configured in this scope",
+                           node.name, node.version);
+                continue;
+            }
+        }
+
         // Run install hook
         if (!payloadInstalled && executor.has_hook(mcpplibs::xpkg::HookType::Install)) {
             log::debug("installing {}...", node.name);
@@ -3356,7 +3434,17 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
         // Apply elfpatch auto-patching if the install hook enabled it
         if (!payloadInstalled) {
-            // Ensure binDir is in PATH so elfpatch can find patchelf
+            // Ensure binDir is in PATH so elfpatch can find patchelf.
+            //
+            // Deliberately left in place for the rest of the process, and now
+            // load-bearing beyond elfpatch: every later hook of this plan sees
+            // the scope's bin/ first on PATH, and recipes rely on running a
+            // dependency installed EARLIER IN THE SAME PLAN by name through
+            // it -- musl-gcc runs `patchelf`, media-crawler `uv`,
+            // mcpp-vscode-clangd `mcpp`, claude-llm `claude`; gcc's config
+            // even calls <bindir>/gcc-specs-config by path. Which is why the
+            // routing table is rebuilt after each node rather than once at the
+            // end of the plan (measured 2026-09-29, #632 §1).
             auto binDir = ctx.bin_dir.string();
             auto curPath = std::string(std::getenv("PATH") ? std::getenv("PATH") : "");
             if (!binDir.empty() && curPath.find(binDir) == std::string::npos) {
@@ -3574,6 +3662,18 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 node.namespaceName, node.name, node.version);
             write_payload_stamp(ctx.install_dir, node.version, registered,
                                 node.revision);
+
+            // Only here, after every step that can fail: the record is what
+            // lets the next install skip this node, so it must never say
+            // "configured" about a config that did not finish. Saved now
+            // rather than at the end of the plan -- a run killed halfway
+            // keeps what it finished, and whatever it did not record simply
+            // configures again next time.
+            if (node.kind != DepKind::Build) {
+                Config::mark_configured(configured_identity(
+                    node.namespaceName, node.name, node.version), node.revision);
+                Config::save_workspace();
+            }
         }
 
         if (catalog_) {
@@ -3602,7 +3702,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                        .phase = InstallPhase::Done,
                        .progress = 1.0f,
                        .message = payloadInstalled ? "already installed" : "",
-                       .payloadReused = payloadInstalled });
+                       .payloadReused = payloadInstalled,
+                       .configured = node.kind != DepKind::Build });
         }
         if (payloadInstalled) {
             log::debug("{}@{} mapping to current subos", node.name, node.version);
@@ -3828,8 +3929,19 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
             currentWorkspacePath,
             force);
 
+    // The `configured` record (#632) describes a binding in THIS scope, so it
+    // goes with the binding on both paths below: a later install here must
+    // configure again rather than find a record for something taken out.
+    const auto forget_configured_here = [&] {
+        if (!resolvedMatch) return false;
+        return Config::forget_configured(configured_identity(
+            resolvedMatch->namespaceName, resolvedMatch->name,
+            resolvedMatch->version));
+    };
+
     if (stillReferenced) {
         detail_::detach_current_subos_(detachTarget, detachVersion);
+        if (forget_configured_here()) Config::save_workspace();
         log::debug("{}@{} detached from current subos; payload retained",
                   detachTarget, detachVersion);
         // Reported, not just logged at debug: this is the branch whose
@@ -4038,6 +4150,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         detail_::detach_current_subos_(
             detachTarget, detachVersion, false);
     }
+    forget_configured_here();
 
     Config::save_versions();
     Config::save_workspace();

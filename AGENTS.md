@@ -261,6 +261,36 @@ How it is enforced, so it does not depend on remembering it:
 "Could not read" is never "empty" here either: GC refuses when a SubOS config
 is unreadable instead of collecting what that SubOS uses.
 
+### Install configures once per scope (2026.9.29.1, #632)
+
+A payload in `data/xpkgs/` is a HOME fact; having run its `config()` is a fact
+about ONE scope (a subos, or a project's). Each scope's `.xlings.json` carries
+`configured: { "<ns>:<name>@<version>": <revision> }`, a top-level sibling of
+`workspace` (never inside it: an older client reads every `workspace` key as a
+target name). `install` leaves a present payload's config alone only when
+`xim::configured_verdict` says so -- the record names the recipe's current
+revision AND every ledger entry the payload owns is claimed by the scope's
+`installed[]`. No record means "configure" (the safe direction; old homes
+migrate on their next install). An install whose whole closure is configured
+does only the report, the activation and one routing-table rebuild.
+`--reconfig` (interface: `reconfig: true`) restores the old run-everything
+behaviour.
+
+Rules that follow from it:
+
+* **A recipe that changes what its config does must bump `revision`.** That is
+  the only signal every scope acts on; each reconfigures on its next install.
+* **A config hook must not write scope-specific data into the shared payload**
+  (two scopes would fight, and with this record neither rewrites it again).
+  gcc's specs are payload-direct for this reason.
+* **The routing table is rebuilt per node, never once per plan.** Later hooks
+  in the same plan run earlier nodes' commands by name (musl-gcc → `patchelf`,
+  gcc config → `<bindir>/gcc-specs-config`); the elfpatch step's PATH prepend
+  is deliberately left in place for them. What was slow in a rebuild was
+  re-reading the 3.6 MB home config for `knownProjects` -- now cached against
+  the file's size/mtime -- not the table itself.
+* A printed remedy that needs config to run again must say `--reconfig`.
+
 ### Dependency names resolve in the declaring index
 
 A bare dependency in a recipe (`deps = { "ncurses" }`) means the package of

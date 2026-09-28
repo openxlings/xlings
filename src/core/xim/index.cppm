@@ -31,6 +31,22 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 
 export namespace xlings::xim {
 
+// One recognised shape for a line a package index's build script writes:
+// "[i/n] <message>", the self-refreshing progress line of
+// xim-pkgindex-*/pkgindex-build.lua. Not specific to that script: anything
+// else shaped like a bracketed step counter reads the same way. A trailing
+// ANSI CSI (the "\033[K" the script ends each frame with) is not part of it.
+struct BracketedStep { int index; int total; std::string message; };
+std::optional<BracketedStep> parse_bracketed_step(std::string_view line);
+
+// Who hears about each step of an index build, when anyone does. The NDJSON
+// interface sets it to turn steps into `progress` events; the CLI leaves it
+// empty and prints one line per build when it finishes. `label` is the index's
+// namespace (or its directory name for the default index).
+using IndexBuildObserver = std::function<void(std::string_view label,
+                                              const BracketedStep& step)>;
+void set_index_build_observer(IndexBuildObserver observer);
+
 class IndexManager {
     xpkg::PackageIndex index_;
     std::filesystem::path repoDir_;

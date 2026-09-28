@@ -131,6 +131,12 @@ using WorkspaceInstalled = std::map<std::string, std::vector<std::string>>;
 struct SubosWorkspace {
     Workspace active;
     WorkspaceInstalled installed;
+    // Packages whose config() has run in this subos, keyed
+    // "<ns>:<name>@<version>", valued by the recipe revision it ran at
+    // (#632). Stored as a top-level sibling of `workspace` in the subos file,
+    // never inside it: an older client reads every key of `workspace` as a
+    // target name. Read and written by Config, not by the workspace codec.
+    std::map<std::string, int> configured;
 };
 
 // How an entry is actually materialized, once defaults are applied.
