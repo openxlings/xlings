@@ -304,7 +304,8 @@ installer 对已配置的节点直接跳过 config、snapshot、re-stamp 和 clo
 | openxlings/libxpkg | #44 → 0.0.59 | §4 的规则 1–3；`build_index(repo, ns, BuildOutput)` |
 | mcpplibs/mcpp-index | #485 | xpkg 0.0.59（三个平台块，GitHub 与 GitCode 字节一致） |
 | openxlings/xim-pkgindex | #903 | qt-base / qt 的 linux 条目 `revision = 1`；贡献指南 §5.4 |
-| openxlings/xlings | 本 PR（2026.9.29.1） | A1–A3、B1–B4、doctor `:676` |
+| openxlings/xlings | #633（2026.9.29.1） | A1–A3、B1–B4、doctor `:676`；另有 mcpp 2026.9.28.3 版本钉和一处 libc++ 修复 |
+| openxlings/xim-pkgindex | #904 | xlings `latest` → 2026.9.29.1 |
 
 与计划的差异，以及实现时才确定的细节：
 
