@@ -386,7 +386,7 @@ I  openxlings/xim-pkgindex C1 E2 E3(+revision) E4 + 文档 ───────
 | B：下载失败的状态可以交给转发包装补 planKey | 不行。下载发生在逐节点循环之前，那时包装里的 `currentPlanKey` 为空，失败不会进入 outcome 表 | 失败状态显式设置 `planKey`（下载任务就是以 planKey 命名的） |
 | 版本号 2026.9.29.2 | 实施到 23:05，发布必然跨零点 | 版本号用 2026.9.30.1 |
 
-## 9. 发布后的真实验证（计划）
+## 9. 发布后的真实验证（已执行，结果见 2026-09-30-release-2026.9.30.1-notes.md §4，V1–V8 全部符合预期）
 
 在真实 home 上执行（`xlings config --mirror CN`），每次经过沙箱前先确认 `xlings --version`：
 
