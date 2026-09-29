@@ -272,3 +272,113 @@ TEST(DownloadOrder, TheWinningCandidateIsReported) {
     EXPECT_EQ(r.finalUrl, "https://cdn.example/blob");
     std::filesystem::remove(dest);
 }
+
+// ── Attribution: whose fault a failed download is ────────────────────
+//
+// Measured on a real home (2026-09-29): a 420,831,054-byte download on a full
+// disk left 220,979,200 bytes in the file while the client reported every
+// byte written. The file was hashed, the verdict was "sha256 mismatch", the
+// host was demoted and its retries skipped -- a local failure blamed on the
+// source. What landed is now checked against what was reported before the
+// content is judged.
+
+TEST(DownloadAttribution, FileShorterThanReportedIsLocalAndStopsEveryCandidate) {
+    auto dest = std::filesystem::temp_directory_path() / "xlings-dlattr-1.bin";
+    th::DownloadOptions o;
+    o.destFile = dest;
+    o.urls = {"https://first/x", "https://second/x"};
+    std::vector<std::string> tried;
+    o.transferOverride = [&](const std::string& url, const std::filesystem::path& d)
+        -> th::DownloadFileResult {
+        tried.push_back(url);
+        std::ofstream(d, std::ios::binary) << "abc";   // the disk kept 3 bytes
+        return {.success = true, .bytesWritten = 10, .expectedBytes = 10};
+    };
+    int verified = 0;
+    o.onVerify = [&](const std::string&) -> std::string { ++verified; return "sha256 mismatch"; };
+    int blamed = 0;
+    o.onUrlAttemptFailed = [&](const std::string&, const std::string&) { ++blamed; };
+
+    auto r = th::download_file(o);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.failure, th::FailureKind::Local);
+    EXPECT_NE(r.error.find("3 of 10 bytes reached the disk"), std::string::npos) << r.error;
+    EXPECT_EQ(tried.size(), 1u);   // another mirror writes to the same disk
+    EXPECT_EQ(verified, 0);        // a truncated file is never hashed
+    EXPECT_EQ(blamed, 0);          // and no host is demoted for it
+    EXPECT_FALSE(std::filesystem::exists(dest));
+}
+
+TEST(DownloadAttribution, CompleteFileWithWrongContentStaysTheSourcesFault) {
+    auto dest = std::filesystem::temp_directory_path() / "xlings-dlattr-2.bin";
+    th::DownloadOptions o;
+    o.destFile = dest;
+    o.urls = {"https://first/x", "https://second/x"};
+    o.transferOverride = [](const std::string&, const std::filesystem::path& d)
+        -> th::DownloadFileResult {
+        std::ofstream(d, std::ios::binary) << "0123456789";
+        return {.success = true, .bytesWritten = 10, .expectedBytes = 10};
+    };
+    o.onVerify = [](const std::string&) -> std::string { return "sha256 mismatch (test)"; };
+    std::vector<std::string> blamed;
+    o.onUrlAttemptFailed = [&](const std::string& u, const std::string&) { blamed.push_back(u); };
+
+    auto r = th::download_file(o);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.failure, th::FailureKind::Source);
+    EXPECT_EQ(blamed.size(), 2u);
+}
+
+TEST(DownloadAttribution, ShortTransferIsTheTransfersFaultAndRetried) {
+    auto dest = std::filesystem::temp_directory_path() / "xlings-dlattr-3.bin";
+    th::DownloadOptions o;
+    o.destFile = dest;
+    o.urls = {"https://only/x"};
+    o.retryCount = 1;
+    int attempts = 0;
+    o.transferOverride = [&](const std::string&, const std::filesystem::path& d)
+        -> th::DownloadFileResult {
+        ++attempts;
+        std::ofstream(d, std::ios::binary) << "abc";
+        return {.success = true, .bytesWritten = 3, .expectedBytes = 10};
+    };
+
+    auto r = th::download_file(o);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.failure, th::FailureKind::Transfer);
+    EXPECT_EQ(attempts, 2);
+    EXPECT_NE(r.error.find("wrote 3 of 10 bytes"), std::string::npos) << r.error;
+}
+
+TEST(DownloadAttribution, ALocalFailureFromTheTransferStopsEveryCandidate) {
+    auto dest = std::filesystem::temp_directory_path() / "xlings-dlattr-4.bin";
+    th::DownloadOptions o;
+    o.destFile = dest;
+    o.urls = {"https://first/x", "https://second/x"};
+    int attempts = 0;
+    o.transferOverride = [&](const std::string&, const std::filesystem::path&)
+        -> th::DownloadFileResult {
+        ++attempts;
+        return {.success = false, .error = "not enough space for x: needs 1.0 GB",
+                .failure = th::FailureKind::Local};
+    };
+    int blamed = 0;
+    o.onUrlAttemptFailed = [&](const std::string&, const std::string&) { ++blamed; };
+
+    auto r = th::download_file(o);
+    EXPECT_FALSE(r.success);
+    EXPECT_EQ(r.failure, th::FailureKind::Local);
+    EXPECT_EQ(attempts, 1);
+    EXPECT_EQ(blamed, 0);
+}
+
+TEST(DownloadAttribution, SpaceShortfallIsZeroWhenItFitsOrIsUnknown) {
+    namespace d = th::detail_;
+    EXPECT_EQ(d::space_shortfall_(std::nullopt, 100), 0u);   // unknown: never refuse
+    EXPECT_EQ(d::space_shortfall_(200u, 100), 0u);
+    EXPECT_EQ(d::space_shortfall_(100u, 100), 0u);
+    EXPECT_EQ(d::space_shortfall_(40u, 100), 60u);
+    EXPECT_EQ(d::space_shortfall_(0u, 0), 0u);
+    EXPECT_EQ(d::human_bytes_(0), "0 B");
+    EXPECT_EQ(d::human_bytes_(3ull * 1024 * 1024 * 1024 + 300ull * 1024 * 1024), "3.3 GB");
+}

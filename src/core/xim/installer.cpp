@@ -799,9 +799,131 @@ std::optional<std::filesystem::path> store_version_dir_from_recorded_path_(
         / coord->version;
 }
 
+std::filesystem::path hook_log_path_(std::string_view coordinate,
+                                     std::string_view version,
+                                     std::string_view hook) {
+    if (!platform::is_tui_mode()) {
+        if (log::get_level() <= log::Level::Debug) return {};
+        if (const char* e = std::getenv("XLINGS_HOOK_OUTPUT");
+            e && std::string_view(e) == "inherit") {
+            return {};
+        }
+    }
+    auto file = std::format("{}@{}.{}.log", coordinate, version, hook);
+    for (auto& c : file) {
+        if (c == ':' || c == '/' || c == '\\') c = '-';
+    }
+    auto dir = Config::paths().homeDir / "logs" / "hooks";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir / file;
+}
+
+std::string log_last_line_(const std::filesystem::path& log, std::size_t maxBytes) {
+    std::ifstream in(log, std::ios::binary);
+    if (!in) return {};
+    in.seekg(0, std::ios::end);
+    const auto size = static_cast<std::int64_t>(in.tellg());
+    const std::int64_t window = 4096;
+    in.seekg(std::max<std::int64_t>(0, size - window));
+    std::string tail((std::istreambuf_iterator<char>(in)), {});
+
+    // A progress bar redraws with '\r'; its last state is the line that
+    // counts, so '\r' ends a line too.
+    std::string line;
+    std::size_t end = tail.size();
+    while (end > 0) {
+        auto start = tail.find_last_of("\r\n", end - 1);
+        auto from = start == std::string::npos ? 0 : start + 1;
+        std::string candidate;
+        for (auto i = from; i < end; ++i) {
+            const auto ch = static_cast<unsigned char>(tail[i]);
+            if (ch >= 0x20 && ch != 0x7f) candidate.push_back(static_cast<char>(ch));
+        }
+        while (!candidate.empty() && candidate.back() == ' ') candidate.pop_back();
+        std::size_t lead = 0;
+        while (lead < candidate.size() && candidate[lead] == ' ') ++lead;
+        candidate.erase(0, lead);
+        // The header libxpkg writes names the hook, which the status line
+        // already does.
+        if (!candidate.empty() && !candidate.starts_with("# ")) {
+            line = std::move(candidate);
+            break;
+        }
+        if (start == std::string::npos) break;
+        end = start;
+    }
+    if (line.size() > maxBytes) {
+        auto cut = maxBytes;
+        while (cut > 0 && (static_cast<unsigned char>(line[cut]) & 0xc0) == 0x80) --cut;
+        line.resize(cut);
+        line += "...";
+    }
+    return line;
+}
+
+HookHeartbeat_::HookHeartbeat_(std::function<void(const InstallStatus&)> onStatus,
+                               std::string name, std::string planKey,
+                               std::string hook, std::filesystem::path log) {
+    int firstSec = 15, everySec = 60;
+    if (const char* e = std::getenv("XLINGS_HOOK_HEARTBEAT"); e && *e) {
+        std::string_view v = e;
+        if (v == "off" || v == "0") return;
+        if (auto colon = v.find(':'); colon != std::string_view::npos) {
+            int a = 0, b = 0;
+            auto [p1, e1] = std::from_chars(v.data(), v.data() + colon, a);
+            auto [p2, e2] = std::from_chars(v.data() + colon + 1, v.data() + v.size(), b);
+            if (e1 == std::errc{} && e2 == std::errc{} && a > 0 && b > 0) {
+                firstSec = a;
+                everySec = b;
+            }
+        }
+    }
+    if (!onStatus) return;
+    thread_ = std::thread([this, onStatus = std::move(onStatus),
+                           name = std::move(name), planKey = std::move(planKey),
+                           hook = std::move(hook), log = std::move(log),
+                           firstSec, everySec] {
+        const auto start = std::chrono::steady_clock::now();
+        auto next = start + std::chrono::seconds(firstSec);
+        std::unique_lock lock(mutex_);
+        while (!cv_.wait_until(lock, next, [this] { return stop_; })) {
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - start).count();
+            auto elapsed = secs < 60 ? std::format("{}s", secs)
+                                     : std::format("{}m{:02}s", secs / 60, secs % 60);
+            auto last = log.empty() ? std::string{} : log_last_line_(log);
+            InstallStatus status;
+            status.name = name;
+            // Set explicitly: the forwarding wrapper's key belongs to the
+            // installing thread.
+            status.planKey = planKey;
+            status.phase = InstallPhase::Installing;
+            status.message = last.empty()
+                ? std::format("{} hook running {}", hook, elapsed)
+                : std::format("{} hook running {}: {}", hook, elapsed, last);
+            lock.unlock();
+            onStatus(status);
+            lock.lock();
+            next += std::chrono::seconds(everySec);
+        }
+    });
+}
+
+HookHeartbeat_::~HookHeartbeat_() {
+    if (!thread_.joinable()) return;
+    {
+        std::lock_guard lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+}
+
 std::string format_hook_failure(
         std::string_view hookName,
-        const mcpplibs::xpkg::HookResult& result) {
+        const mcpplibs::xpkg::HookResult& result,
+        const std::filesystem::path& log) {
     auto trim = [](std::string_view text) {
         while (!text.empty()
                && std::isspace(static_cast<unsigned char>(text.front()))) {
@@ -816,14 +938,39 @@ std::string format_hook_failure(
 
     auto error = trim(result.error);
     auto output = trim(result.output);
+    // A hook run with a log starts it with "# <hook> hook of <pkg>@<ver>",
+    // which this message's first line already says.
+    if (!log.empty() && output.starts_with("# ")) {
+        auto nl = output.find('\n');
+        output = trim(nl == std::string_view::npos ? std::string_view{}
+                                                   : output.substr(nl + 1));
+    }
     std::string message = std::format("{} hook failed", hookName);
     if (!error.empty()) {
         message += ": ";
         message.append(error);
     }
     if (!output.empty() && output != error) {
+        // The tail is what identifies a failure; the whole record is in the
+        // log, and 16 KB of an archiver's listing in an error helps nobody.
+        constexpr std::size_t kTailLines = 20;
+        std::size_t cut = output.size();
+        std::size_t lines = 0;
+        while (cut > 0 && lines < kTailLines) {
+            auto nl = output.rfind('\n', cut - 1);
+            ++lines;
+            if (nl == std::string_view::npos) { cut = 0; break; }
+            cut = nl;
+        }
         message.push_back('\n');
-        message.append(result.output);
+        if (cut > 0) message.append("...\n");
+        message.append(cut > 0 ? output.substr(cut + 1) : output);
+    }
+    if (!log.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(log, ec)) {
+            message.append(std::format("\n  full log: {}", log.string()));
+        }
     }
     return message;
 }
@@ -2449,10 +2596,19 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
         onStatus({ node.name, InstallPhase::Configuring, 0.8f, "" });
     }
     ScopedCurrentDir_ configCwd(ctx.install_dir);
-    auto hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
+    ctx.hook_log = hook_log_path_(
+        node.canonicalName.empty() ? node.name : node.canonicalName,
+        node.version, "config");
+    mcpplibs::xpkg::HookResult hookResult;
+    {
+        HookHeartbeat_ heartbeat(onStatus, node.name, plan_key_(node),
+                                 "config", ctx.hook_log);
+        hookResult = executor.run_hook(mcpplibs::xpkg::HookType::Config, ctx);
+    }
+    const auto hookLog = std::exchange(ctx.hook_log, {});
     if (!hookResult.success) {
         if (failureMessage) {
-            *failureMessage = format_hook_failure("config", hookResult);
+            *failureMessage = format_hook_failure("config", hookResult, hookLog);
         }
         return false;
     }
@@ -2719,26 +2875,46 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
     }
 
     std::unordered_map<std::string, DownloadResult> downloadResults;
+    // Plan keys whose download failed and has been reported as such.
+    std::unordered_set<std::string> downloadFailed;
 
     // Download all
     if (!dlTasks.empty()) {
         log::debug("downloading {} package(s)...", dlTasks.size());
+        // A failed download is reported once, below, with its reason. The
+        // progress callback's -1 only marks the row in the download panel
+        // (that is the TaskProgress state); turning it into a Failed status
+        // as well produced a second, reasonless "[<pkg>] failed:" line in
+        // the middle of the progress frames.
         auto results = download_all(dlTasks, dlConfig, onProgressState,
             [&](std::string_view name, float progress) {
-                if (onStatus) {
+                if (onStatus && progress >= 0) {
                     InstallStatus status;
                     status.name = std::string(name);
-                    status.phase = progress >= 0
-                        ? InstallPhase::Downloading
-                        : InstallPhase::Failed;
-                    status.progress = std::max(0.0f, progress);
+                    status.phase = InstallPhase::Downloading;
+                    status.progress = progress;
                     onStatus(status);
                 }
             }, cancel);
 
         for (auto& r : results) {
             if (!r.success) {
-                log::error("download failed for {}: {}", r.name, r.error);
+                downloadFailed.insert(r.name);
+                if (onStatus) {
+                    InstallStatus status;
+                    status.name = r.name;
+                    // Set here: this is before the per-node loop, where the
+                    // forwarding wrapper would fill in no key at all, and the
+                    // outcome table is keyed by it.
+                    status.planKey = r.name;   // a download task is named by its plan key
+                    status.phase = InstallPhase::Failed;
+                    status.message = std::format("download failed: {}", r.error);
+                    status.errorCode = r.errorCode;
+                    status.hint = r.hint;
+                    onStatus(status);
+                } else {
+                    log::error("download failed for {}: {}", r.name, r.error);
+                }
             } else {
                 downloadResults[r.name] = r;
             }
@@ -2931,9 +3107,14 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
         auto dlIt = downloadResults.find(planKey);
 
         if (plannedDownloads.contains(planKey) && dlIt == downloadResults.end()) {
+            // Already reported with its reason when the download failed.
+            if (downloadFailed.contains(planKey)) continue;
+            // A planned download with neither a result nor a failure is this
+            // installer's own inconsistency, not something the user can act on.
             log::error("download artifact missing for {}", node.name);
             if (onStatus) {
-                onStatus({ node.name, InstallPhase::Failed, 0.0f, "download artifact missing" });
+                onStatus({ node.name, InstallPhase::Failed, 0.0f,
+                           "internal: the planned download produced no result" });
             }
             continue;
         }
@@ -3274,8 +3455,19 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 platform::set_env_variable("PATH", newPath);
             }
 
-            auto hookResult = executor.run_hook(
-                mcpplibs::xpkg::HookType::Install, ctx);
+            // The commands the hook runs write to a log, not to the
+            // terminal the progress output owns; a failure prints its tail.
+            ctx.hook_log = detail_::hook_log_path_(
+                node.canonicalName.empty() ? node.name : node.canonicalName,
+                node.version, "install");
+            mcpplibs::xpkg::HookResult hookResult;
+            {
+                detail_::HookHeartbeat_ heartbeat(onStatus, node.name, planKey,
+                                                  "install", ctx.hook_log);
+                hookResult = executor.run_hook(
+                    mcpplibs::xpkg::HookType::Install, ctx);
+            }
+            const auto hookLog = std::exchange(ctx.hook_log, {});
 
             // Restore env regardless of hook outcome
             if (!setEnvKeys.empty()) {
@@ -3287,7 +3479,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
             if (!hookResult.success) {
                 auto message = detail_::format_hook_failure(
-                    "install", hookResult);
+                    "install", hookResult, hookLog);
                 // Record the failure ON the payload. Without this the next
                 // `xlings install` finds a non-empty directory, concludes
                 // "already installed", skips the hook, and reports success
@@ -3993,8 +4185,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
 
         if (executor.has_hook(mcpplibs::xpkg::HookType::Uninstall)) {
             log::debug("uninstalling {}...", name);
+            ctx.hook_log = detail_::hook_log_path_(
+                resolvedMatch && !resolvedMatch->canonicalName.empty()
+                    ? resolvedMatch->canonicalName : name,
+                ctx.version, "uninstall");
             auto result = executor.run_hook(
                 mcpplibs::xpkg::HookType::Uninstall, ctx);
+            const auto hookLog = std::exchange(ctx.hook_log, {});
             if (!result.success) {
                 // The recipe's own cleanup failed. Before this change that
                 // was fatal HERE, before the version DB entry, the
@@ -4006,7 +4203,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                 // below runs regardless, and the caller (cmd_remove)
                 // decides whether "state withdrawn, hook unhappy" is enough
                 // to call this a success.
-                hookFailure = detail_::format_hook_failure("uninstall", result);
+                hookFailure = detail_::format_hook_failure("uninstall", result, hookLog);
                 useDefaultRemoval = true;
             }
         } else {

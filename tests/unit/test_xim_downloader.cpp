@@ -388,6 +388,43 @@ TEST(XimDownloaderTest, RejectsIncompleteReportedTransferBeforeCommit) {
     fs::remove_all(tmp);
 }
 
+TEST(XimDownloaderTest, ALocalWriteFailureIsReportedAsDiskFullNotAsTheSource) {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "xim_download_local_failure";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    xlings::xim::DownloadTask task {
+        .name = "local-failure-test",
+        .url = "https://origin.test/payload.bin",
+        .sha256 = std::string(64, 'a'),
+        .cacheIdentity = "local-failure-test/1/linux/x86_64/url",
+        .destDir = tmp,
+        .fallbackUrls = {"https://mirror.test/payload.bin"},
+    };
+    int attempts = 0;
+    xlings::xim::DownloadTestHooks_ hooks;
+    hooks.transferOverride = [&](const std::string&, const fs::path& path) {
+        ++attempts;
+        std::ofstream(path) << "trunc";   // the disk kept 5 of 100 bytes
+        return xlings::tinyhttps::DownloadFileResult {
+            .success = true,
+            .bytesWritten = 100,
+            .expectedBytes = 100,
+        };
+    };
+
+    auto result = xlings::xim::download_one(task, nullptr, nullptr, &hooks);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(attempts, 1);
+    EXPECT_EQ(result.errorCode, "E_DISK_FULL");
+    EXPECT_FALSE(result.hint.empty());
+    EXPECT_EQ(result.error.find("sha256"), std::string::npos) << result.error;
+    EXPECT_NE(result.error.find("5 of 100 bytes reached the disk"), std::string::npos)
+        << result.error;
+    fs::remove_all(tmp);
+}
+
 TEST(XimDownloaderTest, PersistsAcceptedGetMetadataInCommittedSidecar) {
     namespace fs = std::filesystem;
     auto tmp = fs::temp_directory_path() / "xim_download_get_metadata";

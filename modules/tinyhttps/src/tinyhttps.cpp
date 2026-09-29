@@ -109,6 +109,65 @@ std::pair<int, int> effective_low_speed_(int limitBytes, int windowSec) {
     return {limitBytes, windowSec};
 }
 
+std::string human_bytes_(std::uintmax_t bytes) {
+    constexpr std::array<const char*, 5> units { "B", "KB", "MB", "GB", "TB" };
+    double value = static_cast<double>(bytes);
+    std::size_t unit = 0;
+    while (value >= 1024.0 && unit + 1 < units.size()) {
+        value /= 1024.0;
+        ++unit;
+    }
+    if (unit == 0) return std::format("{} B", bytes);
+    return std::format("{:.1f} {}", value, units[unit]);
+}
+
+std::optional<std::uintmax_t> available_bytes_(const std::filesystem::path& dir) {
+    std::error_code ec;
+    auto info = std::filesystem::space(dir, ec);
+    if (ec) return std::nullopt;
+    return info.available;
+}
+
+std::uintmax_t space_shortfall_(std::optional<std::uintmax_t> available,
+                                std::int64_t remaining) {
+    if (!available || remaining <= 0) return 0;
+    auto need = static_cast<std::uintmax_t>(remaining);
+    return *available >= need ? 0 : need - *available;
+}
+
+std::optional<LandedVerdict> check_landed_(const std::filesystem::path& dest,
+                                           const DownloadFileResult& reported) {
+    const std::int64_t claimed = reported.expectedBytes.value_or(reported.bytesWritten);
+    if (claimed <= 0) return std::nullopt;
+
+    if (reported.expectedBytes && reported.bytesWritten < *reported.expectedBytes) {
+        return LandedVerdict{ FailureKind::Transfer, std::format(
+            "incomplete transfer: wrote {} of {} bytes",
+            reported.bytesWritten, *reported.expectedBytes) };
+    }
+
+    // The client counts what it RECEIVED; only the file says what was kept.
+    std::error_code ec;
+    auto onDisk = std::filesystem::file_size(dest, ec);
+    if (ec) {
+        return LandedVerdict{ FailureKind::Local, std::format(
+            "could not read back {}: {}", dest.filename().string(), ec.message()) };
+    }
+    if (static_cast<std::int64_t>(onDisk) < claimed) {
+        return LandedVerdict{ FailureKind::Local, std::format(
+            "could not write {}: {} of {} bytes reached the disk",
+            dest.filename().string(), onDisk, claimed) };
+    }
+    return std::nullopt;
+}
+
+bool space_check_enabled_() {
+    const char* env = std::getenv("XLINGS_DOWNLOAD_SPACE_CHECK");
+    if (!env) return true;
+    std::string_view v = env;
+    return !(v == "off" || v == "0");
+}
+
 DownloadFileResult download_once(const std::string& url, const std::filesystem::path& dest, int connectSec, int maxSec, int lowSpeedLimitBytes, int lowSpeedTimeSec, std::function<void(double, double)> onProgress, std::function<bool()> isCancelled) {
     StallDetector detector(lowSpeedLimitBytes, lowSpeedTimeSec);
 
@@ -124,9 +183,20 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
     bool stalled = false;
     auto t0 = std::chrono::steady_clock::now();
 
+    // Asked once, at the first figure the server gives: a disk that cannot
+    // hold the body stops the transfer before it is spent, instead of after.
+    bool spaceChecked = !space_check_enabled_();
+    std::uintmax_t shortBy = 0;
+    std::int64_t needed = 0;
+
     mcpplibs::tinyhttps::DownloadProgressFn progress;
-    if (onProgress || detector.enabled()) {
+    if (onProgress || detector.enabled() || !spaceChecked) {
         progress = [&](std::int64_t total, std::int64_t downloaded) {
+            if (!spaceChecked && total > 0) {
+                spaceChecked = true;
+                needed = total - downloaded;
+                shortBy = space_shortfall_(available_bytes_(dest.parent_path()), needed);
+            }
             if (onProgress) {
                 onProgress(static_cast<double>(total),
                            static_cast<double>(downloaded));
@@ -142,15 +212,29 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
     }
 
     std::function<bool()> cancel;
-    if (isCancelled || detector.enabled()) {
+    if (isCancelled || detector.enabled() || !spaceChecked) {
         cancel = [&]() -> bool {
-            if (stalled) return true;
+            if (stalled || shortBy > 0) return true;
             return isCancelled && isCancelled();
         };
     }
 
     auto result = client.download_to_file(url, dest, progress, cancel);
 
+    if (shortBy > 0) {
+        auto dir = dest.parent_path();
+        return {
+            .success = false,
+            .error = std::format(
+                "not enough space for {}: needs {}, {} free under {} "
+                "(set XLINGS_DOWNLOAD_SPACE_CHECK=off to skip this check)",
+                dest.filename().string(),
+                human_bytes_(static_cast<std::uintmax_t>(needed)),
+                human_bytes_(static_cast<std::uintmax_t>(needed) - shortBy),
+                dir.string()),
+            .failure = FailureKind::Local,
+        };
+    }
     if (result.ok() && !stalled) {
         return {
             .success = true,
@@ -162,11 +246,26 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
         };
     }
     if (stalled) {
-        return {false, std::format(
-            "stalled: average speed below {} B/s over {} s "
-            "(set XLINGS_DOWNLOAD_LOW_SPEED=off to disable the watchdog)",
-            lowSpeedLimitBytes, lowSpeedTimeSec)};
+        return {
+            .success = false,
+            .error = std::format(
+                "stalled: average speed below {} B/s over {} s "
+                "(set XLINGS_DOWNLOAD_LOW_SPEED=off to disable the watchdog)",
+                lowSpeedLimitBytes, lowSpeedTimeSec),
+            .failure = FailureKind::Transfer,
+        };
     }
+    // A status the server chose is the source's answer; anything else (a
+    // reset, a timeout, a short read) is the transfer's.
+    //
+    // A destination the client could not open is the disk's (full, or not
+    // writable) -- the one local failure this client reports, and it reports
+    // it only in words: "Cannot open file: <path>" (tinyhttps 0.2.9; 0.3.2
+    // keeps the text and adds `writeFailed`).
+    FailureKind kind = FailureKind::Transfer;
+    if (isCancelled && isCancelled()) kind = FailureKind::Cancelled;
+    else if (result.error.starts_with("Cannot open file: ")) kind = FailureKind::Local;
+    else if (result.statusCode >= 400) kind = FailureKind::Source;
     return {
         .success = false,
         .error = result.error.empty()
@@ -176,6 +275,7 @@ DownloadFileResult download_once(const std::string& url, const std::filesystem::
         .finalUrl = result.finalUrl,
         .etag = result.etag,
         .lastModified = result.lastModified,
+        .failure = kind,
     };
 }
 
@@ -219,14 +319,36 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
     // give-up-on-this-host rule; only the order changes. A host that failed
     // for a transient reason is still worth a second try, just not before the
     // alternatives have had a first one.
+    // A local failure ends the whole download: every candidate writes to the
+    // same disk. It is reported without the free space it ran into only when
+    // that figure cannot be read.
+    auto local_failure = [&](std::string error) {
+        std::filesystem::remove(opts.destFile, ec);
+        auto dir = opts.destFile.parent_path();
+        if (auto free = detail_::available_bytes_(dir);
+                free && !error.contains(" free under ")) {
+            error += std::format(" ({} free under {})",
+                                 detail_::human_bytes_(*free), dir.string());
+        }
+        return DownloadFileResult{
+            .success = false,
+            .error = std::move(error),
+            .failure = FailureKind::Local,
+        };
+    };
+
     std::string lastErr;
+    FailureKind lastKind = FailureKind::None;
     std::vector<bool> exhausted(opts.urls.size(), false);
     for (int round = 0; round <= opts.retryCount; ++round) {
         bool anyLive = false;
         for (std::size_t i = 0; i < opts.urls.size(); ++i) {
             if (exhausted[i]) continue;
             const auto& url = opts.urls[i];
-            if (opts.isCancelled && opts.isCancelled()) return {false, "cancelled"};
+            if (opts.isCancelled && opts.isCancelled()) {
+                return {.success = false, .error = "cancelled",
+                        .failure = FailureKind::Cancelled};
+            }
             anyLive = true;
             auto r = opts.transferOverride
                 ? opts.transferOverride(url, opts.destFile)
@@ -235,6 +357,20 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                       lowSpeedBytes, lowSpeedSecs,
                       opts.onProgress, opts.isCancelled);
             if (r.success) {
+                // What the file holds is checked against what the transfer
+                // reported BEFORE its content is judged: a file the disk cut
+                // short hashes to the wrong digest too, and that verdict
+                // would blame the source.
+                if (auto landed = detail_::check_landed_(opts.destFile, r)) {
+                    if (landed->kind == FailureKind::Local) {
+                        return local_failure(std::move(landed->error));
+                    }
+                    lastErr = landed->error;
+                    lastKind = landed->kind;
+                    if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, lastErr);
+                    std::filesystem::remove(opts.destFile, ec);
+                    continue;
+                }
                 // Candidate acceptance: integrity failures are a property
                 // of the SOURCE, not the transfer — reject and move to
                 // the next URL rather than failing the whole download.
@@ -245,6 +381,7 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                     return r;
                 }
                 lastErr = verdict;
+                lastKind = FailureKind::Source;
                 if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, verdict);
                 std::filesystem::remove(opts.destFile, ec);
                 // The same bytes would fail again: this source is out for
@@ -252,7 +389,13 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                 exhausted[i] = true;
                 continue;
             }
+            if (r.failure == FailureKind::Local) return local_failure(std::move(r.error));
+            if (r.failure == FailureKind::Cancelled) {
+                std::filesystem::remove(opts.destFile, ec);
+                return r;
+            }
             lastErr = r.error;
+            lastKind = r.failure == FailureKind::None ? FailureKind::Transfer : r.failure;
             if (opts.onUrlAttemptFailed) opts.onUrlAttemptFailed(url, r.error);
             std::filesystem::remove(opts.destFile, ec);
             // A stalled attempt means this host is throttled for us right
@@ -265,7 +408,7 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
                 std::chrono::milliseconds(500 * (round + 1)));
         }
     }
-    return {false, lastErr};
+    return {.success = false, .error = lastErr, .failure = lastKind};
 }
 
 double probe_latency(const std::string& url, int timeoutMs) {

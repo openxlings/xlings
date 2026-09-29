@@ -216,6 +216,10 @@ struct DownloadResult {
     bool success { false };
     std::string error;
     std::filesystem::path localFile;
+    // For a failure: the ErrorCode wire spelling and a remedy, as for an
+    // InstallStatus. Empty means nothing more specific than E_INTERNAL.
+    std::string errorCode;
+    std::string hint;
 };
 
 // Downloader configuration

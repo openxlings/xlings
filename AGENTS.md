@@ -291,6 +291,38 @@ Rules that follow from it:
   the file's size/mtime -- not the table itself.
 * A printed remedy that needs config to run again must say `--reconfig`.
 
+### Download failures are attributed; hook output goes to a log (2026.9.30.1)
+
+**A failed download says whose fault it was** (`xlings::tinyhttps::FailureKind`,
+decided in one place: the xhttp wrapper's candidate loop). What landed on disk
+is compared with what the transfer reported BEFORE the content is judged: a
+file the disk cut short hashes to the wrong digest too, and until this release
+that verdict demoted the host and skipped its retries. Measured on a real home:
+a full disk kept 220,979,200 of 420,831,054 bytes, the client reported all of
+them written (tinyhttps ≤0.3.1 never checks `ofs.write`), and the user was told
+`sha256 mismatch`.
+
+| Kind | Example | What happens |
+|---|---|---|
+| Source | complete file, wrong sha256; HTTP ≥400 | next candidate; bad bytes demote the host |
+| Transfer | short read, timeout, stall | retried on a later round |
+| Local | file shorter than received, cannot open the destination, not enough space | stop every candidate, demote nobody, `E_DISK_FULL` with the free space |
+
+Do not add a caller that decides the kind from the wording of `error`.
+
+**The commands a hook runs write to `<home>/logs/hooks/<ns>-<name>@<ver>.<hook>.log`**
+(libxpkg ≥0.0.60 `ExecutionContext::hook_log`, set by the installer before
+every `run_hook`). A failure prints the log's last 20 lines and its path; a
+hook running past 15 s prints a heartbeat line. A recipe command that must
+reach the terminal passes `system.exec(cmd, { tty = true })`; older clients
+ignore the option and inherit anyway. `XLINGS_HOOK_OUTPUT=inherit` / `-v`
+restore the terminal for everything (never in the interface or the TUI).
+
+**`use` announces only a switch that moved something.** `self update` runs
+`use` twice; on a current home both printed `xlings -> <v>`. The plan's
+`alreadyActive` is true only when the target AND every member of its release
+are already at the selected versions.
+
 ### Dependency names resolve in the declaring index
 
 A bare dependency in a recipe (`deps = { "ncurses" }`) means the package of

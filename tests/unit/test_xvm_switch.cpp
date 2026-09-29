@@ -393,6 +393,28 @@ TEST(XvmSwitchPlan, AnAlreadyActiveMemberIsRematerializedButNotUnwound) {
     EXPECT_TRUE(cxxChange->previousVersion.empty());
 }
 
+// `self update` runs `use` twice; on a current home both announced
+// `xlings -> <v>`. Only a switch that moves something may say so.
+TEST(XvmSwitchPlan, AlreadyActiveOnlyWhenTheWholeReleaseIsInPlace) {
+    xlings::xvm::VersionDB db;
+    switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0");
+
+    const xlings::xvm::Workspace whole{{"gcc", "15.1.0"}, {"g++", "15.1.0"}};
+    auto same = xlings::xvm::plan_use_switch(db, whole, "gcc", "15.1.0", kNoHome);
+    ASSERT_TRUE(same.has_value()) << same.error().what;
+    EXPECT_TRUE(same->alreadyActive);
+
+    // The entry point is active but a member is not: this is a switch.
+    const xlings::xvm::Workspace partial{{"gcc", "15.1.0"}};
+    auto completing = xlings::xvm::plan_use_switch(db, partial, "gcc", "15.1.0", kNoHome);
+    ASSERT_TRUE(completing.has_value()) << completing.error().what;
+    EXPECT_FALSE(completing->alreadyActive);
+
+    auto first = xlings::xvm::plan_use_switch(db, {}, "gcc", "15.1.0", kNoHome);
+    ASSERT_TRUE(first.has_value()) << first.error().what;
+    EXPECT_FALSE(first->alreadyActive);
+}
+
 TEST(XvmSwitchPlan, AMemberWithNoMaterializedAssetsEmitsNothing) {
     xlings::xvm::VersionDB db;
     switch_group_(db, "15.1.0", {"gcc", "g++"}, "15.1.0", /*withDirs=*/false);

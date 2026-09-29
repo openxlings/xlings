@@ -57,6 +57,9 @@ int cmd_update() {
     // plus per-arch sha256) has been stable across every release so far. If
     // the install fails partway the tree is newer than the client, and the
     // next `xlings update` routes it back -- the state self-heals.
+    // What was active before, so a no-op update can say so (below).
+    const auto activeBefore =
+        xvm::get_active_version(Config::effective_workspace(), "xlings");
     log::info("installing xlings@latest...");
     platform::set_env_variable("XLINGS_INDEX_PIN", "newest");
     // `--use`, because this command is not DECLINING to switch -- it is the
@@ -150,6 +153,15 @@ int cmd_update() {
         log::error("  then: xlings use xlings <version> (a version with no "
                    "`<provider>:` prefix)");
         return 1;
+    }
+
+    // Nothing moved. `use` no longer announces a switch that did not happen,
+    // so without this line an already-current home would end its update on
+    // "is in the store" and leave the reader to infer the rest.
+    if (const auto active =
+            xvm::get_active_version(Config::effective_workspace(), "xlings");
+        !active.empty() && active == activeBefore) {
+        log::info("xlings is already at {} (latest)", active);
     }
 
     // Did the SHIMS land on it too? (#615)

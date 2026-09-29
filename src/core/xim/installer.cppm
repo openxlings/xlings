@@ -224,9 +224,50 @@ bool evict_invalid_archive_cache_(
 
 namespace detail_ {
 
+// `<hook> hook failed: <error>`, then the last lines of what the hook and its
+// commands printed, then where the whole record is. `log` is the file the
+// hook ran with (empty: none).
 std::string format_hook_failure(
         std::string_view hookName,
-        const mcpplibs::xpkg::HookResult& result);
+        const mcpplibs::xpkg::HookResult& result,
+        const std::filesystem::path& log = {});
+
+// Where the commands a hook runs write their output
+// (mcpplibs::xpkg::ExecutionContext::hook_log): one file per package and
+// hook under `<home>/logs/hooks/`, rewritten by every run. Empty -- inherit
+// the terminal, as before 2026.9.30.1 -- when XLINGS_HOOK_OUTPUT=inherit or
+// -v asks for it, and never while something else owns stdout (the
+// interface's NDJSON stream, the TUI).
+std::filesystem::path hook_log_path_(std::string_view coordinate,
+                                     std::string_view version,
+                                     std::string_view hook);
+
+// The last non-empty line of a log, cleaned for a one-line status: control
+// characters dropped, cut to `maxBytes` on a UTF-8 boundary. Empty when the
+// file cannot be read.
+std::string log_last_line_(const std::filesystem::path& log,
+                           std::size_t maxBytes = 80);
+
+// Says that a hook is still running: a status after `first`, then every
+// `every`, until destroyed. Lines rather than a redrawn frame, because a
+// frame shares the terminal with every line the hook's own work prints.
+// XLINGS_HOOK_HEARTBEAT=<first>:<every> (seconds) overrides the 15 s / 60 s
+// defaults; `off` disables it.
+class HookHeartbeat_ {
+public:
+    HookHeartbeat_(std::function<void(const InstallStatus&)> onStatus,
+                   std::string name, std::string planKey, std::string hook,
+                   std::filesystem::path log);
+    ~HookHeartbeat_();
+    HookHeartbeat_(const HookHeartbeat_&) = delete;
+    HookHeartbeat_& operator=(const HookHeartbeat_&) = delete;
+
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_ { false };
+    std::thread thread_;
+};
 
 // Does a resolved node's version satisfy the version half of a dep spec?
 //

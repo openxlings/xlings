@@ -151,6 +151,12 @@ struct UseSwitchPlan {
     std::string toProvider;
     std::string toProviderVersion;
 
+    // The target and every member of its release were already active at the
+    // versions this switch selects. The switch still runs (re-materializing
+    // is how `use` repairs a sysroot), but it moves nothing, so it has
+    // nothing to announce.
+    bool alreadyActive { false };
+
     // Header assets for the whole release, deduplicated, with the two lists
     // already disjoint.
     //
