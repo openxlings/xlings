@@ -1,10 +1,10 @@
 > 编写日期: 2026-05-17 | 版本: 2026.9.28.2
 
-# NDJSON 接口协议规范 v1.4
+# NDJSON 接口协议规范 v1.5
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.4**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.5**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
@@ -13,6 +13,7 @@
 | 1.2 | 2026.9.28.1 起 | 增补：`update_packages` 的 `progress` 事件（`index_sync`、`index_rebuild`，§6.1.1）与 `download_progress` 数据事件（§6.3.2）；任何能力都不向 stdout 写 NDJSON 以外的内容（§5） |
 | 1.3 | 2026.9.28.2 起 | 增补：`download_progress` 的 `stream` 字段与发送频率的上限（§6.3.2）；`prevLines` 废弃，恒为 0 |
 | 1.4 | 2026.9.29.1 起 | 增补：`install_packages` 的 `reconfig` 字段（§7.3）与 `configure` 进度事件（§6.1.2）；已在本 scope 按当前 revision 配置过的包不再重跑 config |
+| 1.5 | 2026.9.30.1 起 | 增补：`install_packages` 的 `hook` 进度事件（§6.1.2）；安装 hook 启动的命令的输出写入 hook 日志，不再以 `[stray stdout]` 转发到 stderr（§5）；下载因本地写入失败（磁盘满、无权限）时错误码为 `E_DISK_FULL`（§6.1.3） |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -45,7 +46,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.4"}
+{"protocol_version":"1.5"}
 ```
 
 ### 3.2 查询可用能力
@@ -178,6 +179,24 @@ libxpkg 的 `BuildOutput` 直接交给 xlings，不再经过进程的 stdout；�
 
 `percent` 为已完成数 / 本次预计要做事的节点数。已在本 scope 按当前 revision 配置过的节点
 不做任何事，也不报告（见 §7.3）。CLI 前端把同一件事打印成一行 `  [i/n] installed …`。
+
+1.5 起，一个 install / config hook 运行较久时还会出现：
+
+| phase | 何时出现 | message |
+|-------|---------|---------|
+| `hook` | hook 已运行 15 秒，之后每 60 秒一次，直到它结束 | `<ns:name@version> <hook> hook running <耗时>[: <日志最后一行>]` |
+
+`percent` 与 `configure` 事件相同（已完成数 / 预计节点数）。hook 启动的命令的输出写入
+`<XLINGS_HOME>/logs/hooks/<ns>-<name>@<version>.<hook>.log`（每次运行重写）；此前它们由 §5
+的截获转发到 stderr（每行带 `[stray stdout]` 前缀），stderr 上的输出则原样到达。hook 失败时，
+`error` 事件的 message 带有输出的最后 20 行和这个日志的路径。
+
+#### 6.1.3 下载失败的错误码（1.5 起）
+
+一个包的下载失败时，`error` 事件恰好出现一次，message 是失败原因（此前还会多出一个 message
+为空的事件，和一个 `download artifact missing`）。原因在本机——写入失败、磁盘上的文件比收到的
+短、或按服务器给出的大小判断磁盘放不下——时 `code` 为 `E_DISK_FULL`，`hint` 给出下载目录；此时
+不会再尝试其他镜像（它们写的是同一块磁盘）。
 
 ### 6.2 log
 

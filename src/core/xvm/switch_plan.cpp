@@ -174,6 +174,20 @@ std::expected<UseSwitchPlan, XvmUserError> plan_use_switch(
     // Which package this switch moves between, for the report line.
     std::tie(plan.toProvider, plan.toProviderVersion) =
         detail_::provider_of_(db, target, resolvedVersion);
+    // Nothing moves only when the WHOLE release is already where this switch
+    // would put it: an active entry point with a member that is not (a
+    // release that gained a program) is still a switch.
+    plan.alreadyActive =
+        [&] {
+            const auto activeIt = workspace.find(target);
+            if (activeIt == workspace.end() || activeIt->second != resolvedVersion)
+                return false;
+            for (const auto& [memberTarget, memberVersion] : plan.members) {
+                const auto it = workspace.find(memberTarget);
+                if (it == workspace.end() || it->second != memberVersion) return false;
+            }
+            return true;
+        }();
 
     // What the release being left had, that this one does not.
     //

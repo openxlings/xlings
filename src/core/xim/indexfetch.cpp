@@ -103,6 +103,8 @@ std::string download_candidates_(std::vector<std::string> urls,
         if (r.success) return {};
         lastErr = r.error.empty() ? ("failed: " + u) : r.error;
         log::debug("[index] candidate failed ({}): {}", u, lastErr);
+        // The next candidate writes to the same disk.
+        if (r.failure == tinyhttps::FailureKind::Local) return lastErr;
     }
     return lastErr.empty() ? "all candidates failed" : lastErr;
 }

@@ -883,20 +883,28 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     //
     // The `{target} -> {version}` half is unchanged, deliberately: it is what
     // scripts and tests grep for.
+    //
+    // Only a switch that moved something says so. `self update` runs `use`
+    // twice (the install's `--use`, then `use xlings latest`), and on a home
+    // that was already current both printed `xlings -> <v>` -- two claims of
+    // a switch that did not happen.
+    std::string line;
     if (plan->toProvider.empty()) {
-        log::info("{} -> {}", target, resolved);   // no group metadata
+        line = std::format("{} -> {}", target, resolved);   // no group metadata
     } else if (plan->fromProvider.empty()) {
-        log::info("{} -> {}  ({} {})", target, resolved,
-                  plan->toProvider, plan->toProviderVersion);
+        line = std::format("{} -> {}  ({} {})", target, resolved,
+                           plan->toProvider, plan->toProviderVersion);
     } else if (plan->fromProvider == plan->toProvider) {
-        log::info("{} -> {}  ({} {} -> {})", target, resolved,
-                  plan->toProvider, plan->fromProviderVersion,
-                  plan->toProviderVersion);
+        line = std::format("{} -> {}  ({} {} -> {})", target, resolved,
+                           plan->toProvider, plan->fromProviderVersion,
+                           plan->toProviderVersion);
     } else {
-        log::info("{} -> {}  ({} {} -> {} {})", target, resolved,
-                  plan->fromProvider, plan->fromProviderVersion,
-                  plan->toProvider, plan->toProviderVersion);
+        line = std::format("{} -> {}  ({} {} -> {} {})", target, resolved,
+                           plan->fromProvider, plan->fromProviderVersion,
+                           plan->toProvider, plan->toProviderVersion);
     }
+    if (plan->alreadyActive) log::debug("{}", line);
+    else                     log::info("{}", line);
 
     // `-v` is the global flag; nothing here needs an option of its own.
     const bool verbose = log::get_level() <= log::Level::Debug;
