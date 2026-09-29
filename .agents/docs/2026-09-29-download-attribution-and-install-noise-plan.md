@@ -385,3 +385,18 @@ I  openxlings/xim-pkgindex C1 E2 E3(+revision) E4 + 文档 ───────
 | D：“目标已激活”就等于 `use` 什么都没动 | 不对。一个 release 的入口已激活、某个成员没激活时（release 新增了程序），`use` 会移动那个成员 | `alreadyActive` 要求整个 release 的每个成员都已在目标版本，单测 `AlreadyActiveOnlyWhenTheWholeReleaseIsInPlace` 覆盖三种情况 |
 | B：下载失败的状态可以交给转发包装补 planKey | 不行。下载发生在逐节点循环之前，那时包装里的 `currentPlanKey` 为空，失败不会进入 outcome 表 | 失败状态显式设置 `planKey`（下载任务就是以 planKey 命名的） |
 | 版本号 2026.9.29.2 | 实施到 23:05，发布必然跨零点 | 版本号用 2026.9.30.1 |
+
+## 9. 发布后的真实验证（计划）
+
+在真实 home 上执行（`xlings config --mirror CN`），每次经过沙箱前先确认 `xlings --version`：
+
+| # | 命令 | 期望 |
+|---|---|---|
+| V1 | `xlings self update`（由 2026.9.29.1 执行） | 升到 2026.9.30.1，exit 0 |
+| V2 | 再执行一次 `xlings self update` | 最后一行是 `xlings is already at 2026.9.30.1 (latest)`；没有 `xlings -> …` 行 |
+| V3 | `xlings subos new verify-0930`，然后 `xlings subos use verify-0930 --sandbox --cmd "xlings --version"` | 2026.9.30.1 |
+| V4 | 沙箱里 `xlings install chatgpt -y` | 26.924.22138 revision 1：payload 被替换，闭包 78 个节点、没有 qt5/qt-base；输出里没有 7-Zip 的横幅；`app/libqt*_shim.so` 不存在 |
+| V5 | 沙箱里 `xlings install chatgpt@26.917.71314 -y` | 用户最初失败的那条命令，在有空间时成功，sha256 与 recipe 一致 |
+| V6 | 沙箱里 `xlings install qt-base -y`（新 scope） | 只 configure；没有 7z/7zz 被激活到这个 subos 的 bin |
+| V7 | `xlings info chatgpt` | runtime deps 34 个，build deps 只有 `xim:7zip@26.02` |
+| V8 | `ls <home>/logs/hooks/` | 本轮安装过的 hook 各有一个日志 |
