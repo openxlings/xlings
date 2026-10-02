@@ -190,4 +190,4 @@ xlings self doctor --fix               # 修复
   <img src="https://contrib.rocks/image?repo=openxlings/xlings" />
 </a>
 
-[![Star History Chart](https://api.star-history.com/svg?repos=openxlings/xlings,openxlings/xim-pkgindex&type=Date)](https://star-history.com/#openxlings/xlings&openxlings/xim-pkgindex&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=openxlings/xlings,openxlings/xim-pkgindex&type=Date)](https://star-history.dera.page/#openxlings/xlings&openxlings/xim-pkgindex&Date)
