@@ -270,6 +270,13 @@ enum class FindingKind {
     // wreckage, so `xlings install` skipped the hook and reported success
     // forever. See xim/install_state.cppm.
     IncompletePayload,
+    // The versions DB file (<home>/data/versions.json) and the home config's
+    // `versions` field disagree. Writers emit both in one dump, so xlings
+    // cannot produce this -- a hand-edited config can. Readers prefer the
+    // file, so the divergence means hand-edits are invisible to every shim
+    // dispatch. A Warning, not an Error: dispatch still resolves, it just
+    // resolves from the older of the two copies.
+    VersionsDbDivergence,
     // A payload whose top level carries the fingerprint of mcpp-community/mcpp#636: a
     // download-cache sidecar, or another package's archive, that a hookless
     // install used to sweep in from the shared runtime directory instead of

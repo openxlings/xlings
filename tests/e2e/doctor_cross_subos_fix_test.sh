@@ -189,6 +189,7 @@ PY
 # No workspace anywhere lists 9.9.9 (default has nothing; other has 1.0.0
 # active), and its payload directory was never created -- unclaimed and
 # unreachable from the moment it was written.
+drop_versions_db_copy "$HOME_DIR"
 
 run_capture default self doctor --fix --dry-run
 [[ $rc -ne 0 ]] \

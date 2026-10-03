@@ -414,6 +414,7 @@ data = json.loads(p.read_text())
 data["versions"]["alias-fixture"]["versions"]["1.0.0"]["alias"] = ["sh"]
 p.write_text(json.dumps(data, indent=2))
 PY
+drop_versions_db_copy "$HOME_DIR"
 rc=0
 out=$(RUN self doctor 2>&1) || rc=$?
 echo "$out" | grep -q "alias unresolved" \
@@ -430,6 +431,7 @@ data = json.loads(p.read_text())
 data["versions"]["alias-fixture"]["versions"]["1.0.0"]["alias"] = ["alias-real"]
 p.write_text(json.dumps(data, indent=2))
 PY
+drop_versions_db_copy "$HOME_DIR"
 rc=0
 out=$(RUN self doctor 2>&1) || rc=$?
 echo "$out" | grep -q "alias unresolved" \
@@ -490,6 +492,7 @@ for i in range(30):
     }
 p.write_text(json.dumps(data))
 PY
+drop_versions_db_copy "$HOME_DIR"
 
 rc=0
 out=$(RUN self doctor 2>&1) || rc=$?

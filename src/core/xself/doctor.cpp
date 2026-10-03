@@ -743,10 +743,59 @@ std::string dangling_payload_key_(const fs::path& target,
 //
 // An unreadable entry produces NOTHING. No observation is not a verdict --
 // the same rule `registered`/`kRegisteredUnrecorded` follows one module over.
+// The versions DB file (<home>/data/versions.json) and the home config's
+// `versions` field disagree.
+//
+// save_versions writes both in one dump, so xlings cannot produce this --
+// a hand-edited home config can. Readers prefer the file (load_versions_json),
+// so the divergence means edits to the config are invisible to every shim
+// dispatch while the stale copy stands. Compared by exact dump, not by
+// entry count: "same count, different content" is precisely the divergence
+// that matters. Unreadable on either side is NO finding -- readers fall
+// back to the other source, and a corrupt file has its own reporting.
+std::vector<Finding> detect_versions_sources_() {
+    std::vector<Finding> out;
+    auto& p = Config::paths();
+    const auto dbPath = versions_db_path(p.homeDir);
+    std::error_code ec;
+    if (!fs::is_regular_file(dbPath, ec) || ec) return out;
+
+    nlohmann::json dbRoot = nlohmann::json::value_t::discarded;
+    try {
+        dbRoot = nlohmann::json::parse(
+            platform::read_file_to_string(dbPath.string()), nullptr, false);
+    } catch (...) {
+        return out;
+    }
+    if (!dbRoot.is_object()) return out;
+
+    // The home config's OWN field -- not load_versions_json's answer, which
+    // prefers the file and could never disagree with itself.
+    auto doc = read_home_config(p.homeDir);
+    if (!doc.is_object()) return out;
+    auto field = doc.find("versions");
+    if (field == doc.end() || !field->is_object()) return out;
+
+    if (dbRoot.dump() == field->dump()) return out;
+    out.push_back({
+        .kind    = FindingKind::VersionsDbDivergence,
+        .level   = FindingLevel::Warning,
+        .target  = "versions",
+        .detail  = std::format(
+            "{} and the `versions` field in {} disagree; dispatch reads the "
+            "file, so the config's versions are not what tools see",
+            Config::display_path(dbPath),
+            Config::display_path(p.homeDir / ".xlings.json")),
+        .remedy  = "xlings self doctor --fix",
+        .remedyNote = "removes the derived file; the home config stays "
+                      "authoritative and the next install/use rewrites it",
+    });
+    return out;
+}
+
 std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
     std::vector<Finding> out;
     auto& p = Config::paths();
-
     const auto entry = entry_binary::path_of(p.homeDir);
     const auto actual = entry_binary::version_of(entry);
     if (actual.empty()) return out;   // absent, or would not answer
@@ -917,6 +966,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     }
 
     for (auto&& f : detect_entry_binary_(st)) add(std::move(f));
+
+    for (auto&& f : detect_versions_sources_()) add(std::move(f));
 
     // The PATH an aliased command would inherit. Read once, and read from
     // THIS process: doctor is normally started from the user's shell, so this
@@ -3167,6 +3218,39 @@ void repair_state_(RepairReport& out) {
         out.notes.emplace_back(std::move(label), std::move(text));
     };
 
+    // A versions DB file that disagrees with the home config's `versions`
+    // field (detect_versions_sources_). The file is DERIVED: removing it
+    // hands authority back to the config -- readers fall back to the field,
+    // and the next save_versions regenerates the file from the merged
+    // truth. Deleting what this home provably derives is not a user-data
+    // deletion.
+    {
+        const auto dbPath = versions_db_path(Config::paths().homeDir);
+        std::error_code ec;
+        if (fs::is_regular_file(dbPath, ec) && !ec) {
+            nlohmann::json dbRoot = nlohmann::json::value_t::discarded;
+            try {
+                dbRoot = nlohmann::json::parse(
+                    platform::read_file_to_string(dbPath.string()),
+                    nullptr, false);
+            } catch (...) {
+            }
+            auto doc = read_home_config(Config::paths().homeDir);
+            auto field = doc.find("versions");
+            if (dbRoot.is_object() && field != doc.end() && field->is_object()
+                && dbRoot.dump() != field->dump()) {
+                std::error_code rmEc;
+                if (fs::remove(dbPath, rmEc) && !rmEc) {
+                    note(glyph::mark(glyph::bullet, "versions file"),
+                         std::format("removed stale {} (the home config's "
+                                     "versions field stays authoritative)",
+                                     Config::display_path(dbPath)));
+                    Config::reload_state();
+                }
+            }
+        }
+    }
+
     auto db = Config::versions();
     if (auto pruning = xvm::plan_dangling_edge_pruning(db); !pruning.empty()) {
         auto lock = xvm::acquire_state_lock(Config::paths().homeDir);
@@ -4686,6 +4770,11 @@ Counts count_(const Scan& scan) {
             case FindingKind::SubosRuntimeDrift:
                 ++c.warnings;
                 break;
+            case FindingKind::VersionsDbDivergence:
+                // Same bucket as the other drift: dispatch still resolves,
+                // just from the older copy of one record.
+                ++c.warnings;
+                break;
             case FindingKind::SubosRuntimeUnknown:
                 // Counts as nothing, on purpose, and for the reason spelled
                 // out on UnverifiedPayload: it reports state we could not
@@ -5035,6 +5124,13 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                 break;
             case FindingKind::SubosRuntimeDrift:
                 add(glyph::mark(glyph::warn, "subos runtime drift"), f.detail);
+                if (!f.remedy.empty())
+                    add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty())
+                    add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
+                break;
+            case FindingKind::VersionsDbDivergence:
+                add(glyph::mark(glyph::warn, "versions dual-source drift"), f.detail);
                 if (!f.remedy.empty())
                     add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
                 if (!f.remedyNote.empty())
