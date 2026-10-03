@@ -1141,6 +1141,21 @@ VersionDB versions_from_json(const nlohmann::json& j) {
     return db;
 }
 
+nlohmann::json program_index_to_json(const VersionDB& db) {
+    nlohmann::json j = nlohmann::json::object();
+    for (auto it = db.begin(); it != db.end(); ++it) {
+        // The stem, because the shim file's name is what PATH dispatches on
+        // and the DB key may differ from it (VInfo::filename); home
+        // lookup falls back to that same stem comparison.
+        std::string stem;
+        if (!it->second.filename.empty()) {
+            stem = std::filesystem::path(it->second.filename).stem().string();
+        }
+        j[it->first] = stem;
+    }
+    return j;
+}
+
 Workspace workspace_from_json(const nlohmann::json& j) {
     Workspace ws;
     if (!j.is_object()) return ws;
