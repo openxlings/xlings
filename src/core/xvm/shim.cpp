@@ -25,6 +25,8 @@ import xlings.core.elfread;
 // interface stays free of xself.
 import xlings.core.xself.init;
 import xlings.core.xvm.shim_table;
+import xlings.core.xvm.shim_view;
+import xlings.core.home_config;
 import xlings.core.home_identity;
 
 namespace xlings::xvm {
@@ -131,34 +133,58 @@ bool home_knows_program(const std::filesystem::path& home,
         return false;
     }
 
-    try {
-        auto content = platform::read_file_to_string(cfg.string());
-        auto j = nlohmann::json::parse(content, nullptr, false);
-        if (j.is_discarded() || !j.is_object()) return false;
-        if (!j.contains("versions") || !j["versions"].is_object()) return false;
-        const auto& versions = j["versions"];
+    auto has_versions = [](const nlohmann::json& e) {
+        return e.is_object() && e.contains("versions")
+            && e["versions"].is_object() && !e["versions"].empty();
+    };
 
-        auto has_versions = [](const nlohmann::json& e) {
-            return e.is_object() && e.contains("versions")
-                && e["versions"].is_object() && !e["versions"].empty();
-        };
-
-        if (versions.contains(program) && has_versions(versions[program]))
-            return true;
-
-        // The shim file name may differ from the DB key (VInfo::filename).
-        for (auto it = versions.begin(); it != versions.end(); ++it) {
-            const auto& e = it.value();
-            if (!e.is_object()) continue;
-            if (!e.contains("filename") || !e["filename"].is_string()) continue;
-            auto fn = e["filename"].get<std::string>();
-            if (!fn.empty() && fs::path(fn).stem().string() == program
-                && has_versions(e)) {
-                return true;
+    // Fast path: the home config's `dbIndex` (written beside `versions` by
+    // every current writer) answers the existence question from the cheap
+    // capture -- a lex of the config's first few hundred bytes instead of a
+    // DOM of all 3.6 MB. The index is a fast path, never an authority: a
+    // MISS here falls through to the real database below, because a
+    // hand-edited config can carry a `versions` entry the index does not
+    // know. A HIT is as good as the DB saying yes -- both were written by
+    // the same save_versions dump, so trusting the index on a hit is the
+    // same trust every DB reader already extends to that writer.
+    if (auto cap = home_config_capture(cfg, HomeCaptureMode::AbortAtVersions);
+        cap && cap->ok) {
+        if (auto idx = cap->json.find("dbIndex"); idx != cap->json.end()
+            && idx->is_object()) {
+            if (idx->contains(program)) return true;
+            for (auto it = idx->begin(); it != idx->end(); ++it) {
+                // The stem, because the shim file's name may differ from
+                // the DB key (VInfo::filename) -- the same comparison the
+                // slow path below performs.
+                if (it->is_string()
+                    && it->get<std::string>() == program) {
+                    return true;
+                }
             }
         }
-    } catch (...) {
-        return false;
+    }
+
+    // The real check, against the real database: the versions DB file when
+    // the home has one, else the home config's `versions` field.
+    // load_versions_json owns that choice; neither source counts as "empty"
+    // just because the other exists.
+    auto versionsRoot = load_versions_json(home);
+    if (!versionsRoot || !versionsRoot->is_object()) return false;
+    const auto& versions = *versionsRoot;
+
+    if (versions.contains(program) && has_versions(versions[program]))
+        return true;
+
+    // The shim file name may differ from the DB key (VInfo::filename).
+    for (auto it = versions.begin(); it != versions.end(); ++it) {
+        const auto& e = it.value();
+        if (!e.is_object()) continue;
+        if (!e.contains("filename") || !e["filename"].is_string()) continue;
+        auto fn = e["filename"].get<std::string>();
+        if (!fn.empty() && fs::path(fn).stem().string() == program
+            && has_versions(e)) {
+            return true;
+        }
     }
     return false;
 }
@@ -718,12 +744,74 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // (project subos > XLINGS_ACTIVE_SUBOS > the home's activeSubos field).
     auto active_subos_dir = Config::xvm_artifact_subos_dir().string();
 
-    // Get effective workspace (project > subos > global)
-    auto workspace = Config::effective_workspace();
+    // ── The dispatch view: cache first, full resolution on any miss ────
+    //
+    // Every input file the view was resolved from is stamped ONCE, here,
+    // and the same stats serve the load check and the store stamp: a view's
+    // content and its stamp must come from the same instant, or a stale
+    // view could wear a fresh stamp. Every load failure is a miss, and a
+    // miss resolves the slow way -- it can never produce a different
+    // answer.
+    constexpr xvm::ShimViewStat kAbsentFile{0, -1};
+    std::map<std::string, xvm::ShimViewStat> viewFingerprint;
+    auto addFingerprint = [&viewFingerprint, kAbsentFile](const std::filesystem::path& p) {
+        viewFingerprint[p.string()] =
+            xvm::shim_view_stat(p).value_or(kAbsentFile);
+    };
+    // EVERY file the workspace and versions answer can be read from, at
+    // every layer the merge consults. The workspace alone has three stores:
+    // the global subos file (the base layer), `workspace_config_path()` --
+    // Config's one answer for the file THIS scope reads and writes, which
+    // in project scope is the project state file or the project subos file,
+    // NOT the global one (a use that switched a project's node used to be
+    // invisible to a fingerprint that only named the subos file) -- and the
+    // project manifest, whose `workspace` is the intent layer. The project
+    // state file also carries project-scope versions, so find_vinfo's
+    // project half is stamped by the same entry.
+    addFingerprint(cfg.homeDir / ".xlings.json");
+    addFingerprint(xlings::versions_db_path(cfg.homeDir));
+    addFingerprint(Config::global_subos_dir() / ".xlings.json");
+    addFingerprint(Config::workspace_config_path());
+    std::string viewCtx;
+    if (Config::has_project_config() && !Config::project_dir().empty()) {
+        addFingerprint(Config::project_manifest_path());
+        addFingerprint(Config::project_state_path());
+        // The context tag keeps projects out of each other's cache: two
+        // projects sharing the global subos resolve different workspaces
+        // against the same subos file, so the file identities alone cannot
+        // tell their views apart -- the project it was resolved for has to
+        // be part of the cache key.
+        auto h = std::hash<std::string>{}(Config::project_dir().string());
+        viewCtx = std::format("{:08x}",
+                              static_cast<std::uint32_t>(h & 0xffffffffu));
+    }
+
+    std::optional<xvm::ShimView> view = xvm::load_shim_view(
+        active_subos_dir, viewCtx, program_name, viewFingerprint);
+
+    xvm::Workspace workspace;
+    xvm::WorkspaceInstalled installed;
+    xvm::VersionDB db;
+    if (view) {
+        workspace = std::move(view->workspace);
+        installed = std::move(view->installed);
+        db = std::move(view->slice);
+    } else {
+        // Get effective workspace (project > subos > global)
+        workspace = Config::effective_workspace();
+        installed = Config::workspace_installed();
+        // This dispatch needs ONE target's entry, not the whole merged
+        // database: match_version, get_vdata and the diagnostics below are
+        // all target-scoped, and find_vinfo applies the same
+        // project-over-global overlay merged_versions would, for this
+        // target alone.
+        if (auto info = Config::find_vinfo(program_name)) {
+            db[program_name] = std::move(*info);
+        }
+    }
 
     // Look up active version for this program
     auto version = get_active_version(workspace, program_name);
-    auto db = Config::versions();
     if (version.empty()) {
         // Tri-state diagnostic, scoped to the CURRENT subos's installed[]
         // (NOT the global versions DB — pre-0.4.19 the "available" list
@@ -738,7 +826,7 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         //   * installed[] non-empty                     → some versions
         //     are opted-in but no active pointer; list THOSE versions
         //     and tell the user to `xlings use` one of them
-        const auto& subos_installed = Config::workspace_installed();
+        const auto& subos_installed = installed;
         std::vector<std::string> here;
         if (auto it = subos_installed.find(program_name); it != subos_installed.end()) {
             here = it->second;
@@ -935,6 +1023,20 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     if (!vdata) {
         log::error("xlings: no path info for {} {}", program_name, resolved_version);
         return 1;
+    }
+
+    // Full resolution succeeded under the stats stamped above: hand the
+    // next dispatch of this program the answer. Stored under those SAME
+    // stats, so an input that changes later reads as a mismatch -- never
+    // as a fresh stamp on stale content. Cache hits skip this: their
+    // content came from the cache, not from a resolution worth re-storing.
+    if (!view) {
+        xvm::ShimView fresh;
+        fresh.workspace = workspace;
+        fresh.installed = installed;
+        fresh.slice = db;
+        xvm::store_shim_view(active_subos_dir, viewCtx, program_name,
+                             viewFingerprint, fresh);
     }
 
     // Each target (including binding targets) has its own workspace version
