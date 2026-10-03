@@ -97,23 +97,29 @@ fi
 
 # dist-profile gate, checked on the artifact rather than the build command: a
 # dev build (-O0 -g) passes every functional check below -- it just unpacks,
-# runs, and dispatches shims an order of magnitude slower. macOS `file` never
-# reports stripped/debug_info for Mach-O (those strings are ELF-only), so
-# strip state is read off otool -- by the SYMBOL COUNT, not the presence of
-# the LC_SYMTAB load command: strip(1) empties the symbol table but the
-# command can remain in the load commands, measured on CI 2026-10-04 (a
-# LC_SYMTAB-presence check fails a perfectly stripped binary).
+# runs, and dispatches shims an order of magnitude slower.
 #
-# dist's link-time strip (-s) rides the link line mcpp builds, and that line
-# depends on the mcpp version driving the build -- CI bootstraps a pinned
-# mcpp that may predate it on the Apple link path. strip(1) is on every
-# runner, so the artifact's strippedness is made independent of the build
-# tool's version: strip here unconditionally, then the gate below verifies
-# it actually happened.
+# What CAN be asserted about a macOS binary, learned on CI 2026-10-04 the
+# hard way (two failed runs, two wrong predicates):
+#
+#   * `file(1)` never says stripped/debug_info for Mach-O -- those strings
+#     are ELF-only.
+#   * A stripped Mach-O does NOT have an empty symbol table: the LC_SYMTAB
+#     load command stays, and it MUST keep the undefined (imported) symbols
+#     dyld binds against -- measured: 451 imports survive a full strip.
+#     So "no LC_SYMTAB" and "nsyms == 0" are both unsatisfiable.
+#
+# What actually separates dev from dist here is MAGNITUDE: a -O0 -g build
+# carries a symbol table entry (plus STABS debug-map entries) per function,
+# tens of thousands; a stripped dist build carries only its imports,
+# hundreds. Strip unconditionally (strip(1) is on every runner, so the
+# artifact's strippedness does not depend on the mcpp version driving the
+# build), then assert the residual count is in import territory. The 80 MB
+# size cap below is the second, size-based dev detector.
 strip "$BIN_SRC"
 SYM_COUNT="$(otool -l "$BIN_SRC" | awk '/LC_SYMTAB/{f=1; next} f && /nsyms/{print $2; exit}')"
-if [[ -n "$SYM_COUNT" && "$SYM_COUNT" != "0" ]]; then
-    fail "binary carries $SYM_COUNT symbols (not stripped) — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev"
+if [[ -n "$SYM_COUNT" && "$SYM_COUNT" -gt 5000 ]]; then
+    fail "binary carries $SYM_COUNT symbols — release artifact must be dist profile (-O3 + stripped; a stripped build keeps only its dyld imports, hundreds); if you see this, the build profile fell back to dev (-O0 -g, tens of thousands of symbols)"
 fi
 BIN_SIZE="$(wc -c < "$BIN_SRC")"
 if (( BIN_SIZE > 80 * 1024 * 1024 )); then
