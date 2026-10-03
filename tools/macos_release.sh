@@ -99,8 +99,10 @@ fi
 # dev build (-O0 -g) passes every functional check below -- it just unpacks,
 # runs, and dispatches shims an order of magnitude slower. macOS `file` never
 # reports stripped/debug_info for Mach-O (those strings are ELF-only), so
-# strip state is read off otool: a stripped binary carries no LC_SYMTAB load
-# command.
+# strip state is read off otool -- by the SYMBOL COUNT, not the presence of
+# the LC_SYMTAB load command: strip(1) empties the symbol table but the
+# command can remain in the load commands, measured on CI 2026-10-04 (a
+# LC_SYMTAB-presence check fails a perfectly stripped binary).
 #
 # dist's link-time strip (-s) rides the link line mcpp builds, and that line
 # depends on the mcpp version driving the build -- CI bootstraps a pinned
@@ -109,8 +111,9 @@ fi
 # tool's version: strip here unconditionally, then the gate below verifies
 # it actually happened.
 strip "$BIN_SRC"
-if otool -l "$BIN_SRC" | grep -q "LC_SYMTAB"; then
-    fail "binary carries a symbol table (not stripped) — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev"
+SYM_COUNT="$(otool -l "$BIN_SRC" | awk '/LC_SYMTAB/{f=1; next} f && /nsyms/{print $2; exit}')"
+if [[ -n "$SYM_COUNT" && "$SYM_COUNT" != "0" ]]; then
+    fail "binary carries $SYM_COUNT symbols (not stripped) — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev"
 fi
 BIN_SIZE="$(wc -c < "$BIN_SRC")"
 if (( BIN_SIZE > 80 * 1024 * 1024 )); then
