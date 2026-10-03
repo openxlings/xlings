@@ -665,6 +665,14 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
         if (!transferResult.success) {
             fs::remove(stagingFile, ec);
             result.error = transferResult.error;
+            // The same wire code an extraction that could not write carries
+            // (#376): what the user does next is free space, not retry.
+            if (transferResult.failure == tinyhttps::FailureKind::Local) {
+                result.errorCode = "E_DISK_FULL";
+                result.hint = std::format(
+                    "free space under {} (or check its permissions), then retry",
+                    task.destDir.string());
+            }
             return result;
         }
         // Say so when the bytes did not come from where the plan said they
@@ -676,16 +684,6 @@ DownloadResult download_one(const DownloadTask& task, std::function<void(double 
             log::info("[mirror] {} served by {}", task.name,
                       transferResult.sourceUrl);
         }
-    }
-
-    if (transferResult.expectedBytes
-            && transferResult.bytesWritten != *transferResult.expectedBytes) {
-        result.error = std::format(
-            "incomplete transfer for {}: wrote {} of {} bytes",
-            task.name, transferResult.bytesWritten,
-            *transferResult.expectedBytes);
-        fs::remove(stagingFile, ec);
-        return result;
     }
 
     // Size sanity check for archives without sha256. When a recipe

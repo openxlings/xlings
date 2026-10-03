@@ -126,7 +126,7 @@ libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
 cmdline = "0.0.2"
-xpkg = "0.0.59"
+xpkg = "0.0.60"
 capi.lua = "0.0.3"
 
 [dev-dependencies.compat]

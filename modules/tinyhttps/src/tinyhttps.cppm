@@ -7,6 +7,24 @@ export namespace xlings::tinyhttps {
 
 // ── Public types ─────────────────────────────────────────────────────
 
+// Whose fault a failed download was. Callers act on this, never on the
+// wording of `error`, because each answer calls for a different move:
+//
+//   Source     the bytes arrived and are wrong (integrity check), or the
+//              source refused them: try the next candidate.
+//   Transfer   the bytes did not all arrive: this source may do better on a
+//              later round.
+//   Local      the bytes arrived and could not be kept -- a write failed, the
+//              file on disk is shorter than what was received, or the disk
+//              cannot hold what is coming. Every candidate writes to the same
+//              disk, so the download stops; and no host is to blame.
+//   Cancelled  the caller asked to stop.
+//
+// A full disk used to surface as "sha256 mismatch": the underlying client
+// does not check its writes, the truncated file was hashed, and the source
+// was demoted for the rest of the session with its retries skipped.
+enum class FailureKind { None, Source, Transfer, Local, Cancelled };
+
 struct DownloadFileResult {
     bool success { false };
     std::string error;
@@ -21,6 +39,7 @@ struct DownloadFileResult {
     std::string sourceUrl;
     std::string etag;
     std::string lastModified;
+    FailureKind failure { FailureKind::None };
 };
 
 struct DownloadOptions {
@@ -139,6 +158,28 @@ auto make_client(int connectTimeoutSec, int readTimeoutSec, std::string_view url
 //   XLINGS_DOWNLOAD_LOW_SPEED=off|0      → disabled
 //   XLINGS_DOWNLOAD_LOW_SPEED=<b>:<s>    → custom limit bytes / window secs
 std::pair<int, int> effective_low_speed_(int limitBytes, int windowSec);
+
+// What landed on disk, checked against what the transfer reported, before
+// anything reads the file's content. nullopt when the two agree. Only a
+// transfer that reported a size can be judged; one that reported nothing is
+// left to the content check.
+struct LandedVerdict {
+    FailureKind kind;
+    std::string error;
+};
+std::optional<LandedVerdict> check_landed_(const std::filesystem::path& dest,
+                                           const DownloadFileResult& reported);
+
+// Free bytes on the filesystem holding `dir`; nullopt when it cannot be read.
+std::optional<std::uintmax_t> available_bytes_(const std::filesystem::path& dir);
+
+// How many bytes short `available` is of `remaining`; 0 when they fit or when
+// the free space is unknown -- a figure that could not be read is not a
+// reason to refuse a download.
+std::uintmax_t space_shortfall_(std::optional<std::uintmax_t> available,
+                                std::int64_t remaining);
+
+std::string human_bytes_(std::uintmax_t bytes);
 
 // Single download attempt: stream GET url → dest file with progress + cancel
 // + optional stall watchdog.

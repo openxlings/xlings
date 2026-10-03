@@ -301,6 +301,17 @@ TESTS=(
     # the script's own words still print; the interface still gets its
     # index_rebuild steps. B1 fails on 2026.9.28.2.
     "E2E-126|index_build_output_test.sh||"
+    # The commands an install hook runs write to the hook's log
+    # (<home>/logs/hooks/), not to the install's terminal; a failing hook
+    # prints its tail and the log's path; XLINGS_HOOK_OUTPUT=inherit restores
+    # the terminal; a long hook sends a heartbeat (CLI line, interface `hook`
+    # progress); the interface's streams carry none of the commands' output.
+    # H1 fails on 2026.9.29.1, where 7-Zip's output filled an install.
+    "E2E-127|hook_output_log_test.sh||"
+    # A failed download is reported once, with its reason, and `info` shows
+    # one `deps` row for a recipe that declared one list. F1 fails on
+    # 2026.9.29.1: a reasonless `failed:` line and `download artifact missing`.
+    "E2E-128|download_failure_report_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

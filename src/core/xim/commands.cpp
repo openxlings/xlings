@@ -988,7 +988,8 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
     // `configure` progress event.
     const std::size_t nodesWithWork = static_cast<std::size_t>(
         std::ranges::count_if(plan.nodes, node_has_work));
-    std::size_t nodesDone = 0;
+    // Atomic: a hook's heartbeat reads it from its own thread.
+    std::atomic<std::size_t> nodesDone = 0;
 
     // Confirm via EventStream prompt
     if (!allAlreadyInstalled && !yes) {
@@ -1044,28 +1045,47 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             switch (status.phase) {
                 case InstallPhase::Downloading:
                     break;  // TUI progress bar handles this
-                case InstallPhase::Installing:
-                    log::debug("[{}] installing...", status.name);
+                case InstallPhase::Installing: {
+                    if (status.message.empty()) {
+                        log::debug("[{}] installing...", status.name);
+                        break;
+                    }
+                    // A hook still running (the installer's heartbeat: after
+                    // 15 s, then every 60 s). Its commands' own output is in
+                    // the hook's log, not on this terminal.
+                    const auto& what = status.planKey.empty()
+                        ? status.name : status.planKey;
+                    const auto done = nodesDone.load();
+                    const auto total = std::max<std::size_t>(
+                        std::max(nodesWithWork, done), 1);
+                    stream.emit(ProgressEvent{
+                        .phase = "hook",
+                        .percent = static_cast<float>(done)
+                                 / static_cast<float>(total),
+                        .message = std::format("{} {}", what, status.message),
+                    });
+                    log::println("  … {} {}", what, status.message);
                     break;
+                }
                 case InstallPhase::Configuring:
                     log::debug("[{}] configuring...", status.name);
                     break;
                 case InstallPhase::Done:
                     log::debug("[{}] done", status.name);
                     if (!status.payloadReused || status.configured) {
-                        ++nodesDone;
-                        const auto total = std::max(nodesWithWork, nodesDone);
+                        const std::size_t doneNow = ++nodesDone;
+                        const auto total = std::max(nodesWithWork, doneNow);
                         const auto& what = status.planKey.empty()
                             ? status.name : status.planKey;
                         const std::string verb =
                             status.payloadReused ? "configured" : "installed";
                         stream.emit(ProgressEvent{
                             .phase = "configure",
-                            .percent = static_cast<float>(nodesDone)
+                            .percent = static_cast<float>(doneNow)
                                      / static_cast<float>(total),
                             .message = std::format("{} {}", verb, what),
                         });
-                        log::println("  [{}/{}] {} {}", nodesDone, total, verb, what);
+                        log::println("  [{}/{}] {} {}", doneNow, total, verb, what);
                     }
                     // A node whose payload was present and current also ends
                     // in Done (its config hook runs again); it is recorded as
@@ -2393,11 +2413,15 @@ int cmd_info(const std::string& target, EventStream& stream, bool allVersions) {
     auto bdIt = pkg->xpm.build_deps.find(platform);
     bool hasRuntime = (rtIt != pkg->xpm.runtime_deps.end() && !rtIt->second.empty());
     bool hasBuild   = (bdIt != pkg->xpm.build_deps.end()   && !bdIt->second.empty());
-    if (hasRuntime || hasBuild) {
-        // Show split form when either is non-empty. The legacy `deps`
-        // field was always the union, so omit it to avoid duplication
-        // when a package only declares the array form (loader fans
-        // legacy → both kinds, so listing all three would triple-print).
+    // A recipe that writes `deps = { ... }` (the array form) declares no
+    // split: the loader copies the one list into both kinds. Printing both
+    // rows then shows the same list twice and reads as a package that needs
+    // every runtime dependency again to build. Only a recipe that wrote
+    // `runtime = {...}` / `build = {...}` gets two rows.
+    const bool sameLists = hasRuntime && hasBuild && rtIt->second == bdIt->second;
+    if (sameLists) {
+        addField(fieldsJson, "deps", join_deps(rtIt->second));
+    } else if (hasRuntime || hasBuild) {
         if (hasRuntime) addField(fieldsJson, "runtime deps", join_deps(rtIt->second));
         if (hasBuild)   addField(fieldsJson, "build deps",   join_deps(bdIt->second));
     } else {
