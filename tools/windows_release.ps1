@@ -40,7 +40,7 @@ if (-not (Get-Command $MCPP_BIN -ErrorAction SilentlyContinue)) {
 # Keep the Windows release build aligned with the CI unit build. The optional
 # fingerprint mode currently exits non-zero on windows-latest before diagnostics
 # are emitted, while the normal incremental build path is the supported path.
-$mcppArgs = @("build")
+$mcppArgs = @("build", "--profile", "dist")
 if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
 & $MCPP_BIN @mcppArgs
 if ($LASTEXITCODE -ne 0) { Fail "mcpp build failed" }
@@ -51,6 +51,21 @@ $BIN_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "xlings.exe" |
   Select-Object -First 1
 if (-not $BIN_FILE) { Fail "C++ binary not found under target\*\bin\xlings.exe" }
 $BIN_SRC = $BIN_FILE.FullName
+
+# dist-profile gate, checked on the artifact rather than the build command: a
+# dev build (-O0 -g) passes every functional check below -- it just unpacks,
+# runs, and dispatches shims an order of magnitude slower. dist links with
+# debug=false, so no PDB is produced beside the exe; one there reads as a
+# profile fallback to dev.
+$pdbPath = [System.IO.Path]::ChangeExtension($BIN_SRC, ".pdb")
+if (Test-Path $pdbPath) {
+  Fail "release artifact must be dist profile (-O3 + stripped); found $pdbPath — if you see this, the build profile fell back to dev (-O0 -g)"
+}
+$binSize = (Get-Item $BIN_SRC).Length
+if ($binSize -gt 80MB) {
+  Fail "binary is $binSize bytes (> 80 MB) — release artifact must be dist profile (-O3 + stripped, expect ~15-30 MB); a dev-profile (-O0 -g) build is ~127 MB. If you see this, the build profile fell back to dev"
+}
+Info "OK: binary is dist profile (-O3 + stripped)"
 
 # -- 2. Assemble package -----------------------------------------
 Info "Assembling $OUT_DIR ..."

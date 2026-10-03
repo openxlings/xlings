@@ -44,7 +44,10 @@ MCPP_BIN="${MCPP_BIN:-mcpp}"
 command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
 rm -rf "$PROJECT_DIR/target"
-MCPP_ARGS=(build --print-fingerprint --no-cache)
+# --profile dist: -O3 + link-time strip. mcpp's default profile is dev
+# (-O0 -g) -- that default is what shipped 127 MB release binaries; the
+# artifact checks below make a silent fallback to dev fail instead.
+MCPP_ARGS=(build --profile dist --print-fingerprint --no-cache)
 if [[ -n "${MCPP_TARGET:-}" ]]; then
   MCPP_ARGS+=(--target "$MCPP_TARGET")
 fi
@@ -91,6 +94,21 @@ if [[ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
     fi
     info "OK: minos ${MACOSX_DEPLOYMENT_TARGET}, static libc++"
 fi
+
+# dist-profile gate, checked on the artifact rather than the build command: a
+# dev build (-O0 -g) passes every functional check below -- it just unpacks,
+# runs, and dispatches shims an order of magnitude slower. macOS `file` never
+# reports stripped/debug_info for Mach-O (those strings are ELF-only), so
+# strip state is read off otool: `ld -s` removes the symbol table, so a
+# stripped binary carries no LC_SYMTAB load command.
+if otool -l "$BIN_SRC" | grep -q "LC_SYMTAB"; then
+    fail "binary carries a symbol table (not stripped) — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev"
+fi
+BIN_SIZE="$(wc -c < "$BIN_SRC")"
+if (( BIN_SIZE > 80 * 1024 * 1024 )); then
+    fail "binary is ${BIN_SIZE} bytes (> 80 MB) — release artifact must be dist profile (-O3 + stripped, expect ~15-30 MB); a dev-profile (-O0 -g) build is ~127 MB. If you see this, the build profile fell back to dev"
+fi
+info "OK: binary is dist profile (-O3 + stripped)"
 
 # ── 2. Assemble package ─────────────────────────────────────────
 info "Assembling $OUT_DIR ..."
