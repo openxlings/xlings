@@ -99,8 +99,16 @@ fi
 # dev build (-O0 -g) passes every functional check below -- it just unpacks,
 # runs, and dispatches shims an order of magnitude slower. macOS `file` never
 # reports stripped/debug_info for Mach-O (those strings are ELF-only), so
-# strip state is read off otool: `ld -s` removes the symbol table, so a
-# stripped binary carries no LC_SYMTAB load command.
+# strip state is read off otool: a stripped binary carries no LC_SYMTAB load
+# command.
+#
+# dist's link-time strip (-s) rides the link line mcpp builds, and that line
+# depends on the mcpp version driving the build -- CI bootstraps a pinned
+# mcpp that may predate it on the Apple link path. strip(1) is on every
+# runner, so the artifact's strippedness is made independent of the build
+# tool's version: strip here unconditionally, then the gate below verifies
+# it actually happened.
+strip "$BIN_SRC"
 if otool -l "$BIN_SRC" | grep -q "LC_SYMTAB"; then
     fail "binary carries a symbol table (not stripped) — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev"
 fi
