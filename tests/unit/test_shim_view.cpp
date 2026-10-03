@@ -7,6 +7,7 @@
 // shim on disk — they test the READ layer dispatch sits on.
 
 #include <gtest/gtest.h>
+#include <cstdio>
 #ifndef _WIN32
 #include <unistd.h>  // getpid
 #endif
@@ -71,6 +72,29 @@ protected:
         fs::create_directories(dir);
         xlings::platform::write_string_to_file(
             xlings::versions_db_path(home_).string(), std::string(content));
+    }
+    // The DB file's real shape since the freshness stamp: a wrapper carrying
+    // format, the home config's stat, and the versions map. `stampOverride`
+    // empty means "stamp with the config's CURRENT stat" (what a writer
+    // that just wrote both files produces); anything else simulates a
+    // config that changed since.
+    void writeVersionsDbWrapper(std::string_view versions,
+                                std::string_view stampOverride = "") {
+        std::error_code sec, tec;
+        auto cfgPath = home_ / ".xlings.json";
+        const auto size = fs::file_size(cfgPath, sec);
+        const auto mtime = fs::last_write_time(cfgPath, tec);
+        auto stamp = stampOverride.empty()
+            ? std::format("{}:{}",
+                          static_cast<std::int64_t>(size),
+                          static_cast<std::int64_t>(
+                              mtime.time_since_epoch().count()))
+            : std::string(stampOverride);
+        nlohmann::json wrapper = nlohmann::json::object();
+        wrapper["format"] = 1;
+        wrapper["stamp"] = stamp;
+        wrapper["versions"] = nlohmann::json::parse(versions);
+        writeVersionsDb(wrapper.dump(2));
     }
     std::string readVersionsDb() {
         return xlings::platform::read_file_to_string(
@@ -192,13 +216,39 @@ TEST_F(ShimViewTest, MemoServesSameFileAndInvalidatesOnChange) {
 
 // ── versions DB file: preference and fallback ───────────────────────
 
-TEST_F(ShimViewTest, VersionsDbFileWinsWhenReadable) {
+TEST_F(ShimViewTest, VersionsDbFileWinsWhenStampMatches) {
     writeHomeConfig(kHomeConfig);
-    writeVersionsDb(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})");
+    writeVersionsDbWrapper(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})");
     auto root = xlings::load_versions_json(home_);
     ASSERT_NE(root, std::nullopt);
     EXPECT_TRUE(root->contains("solo"));
     EXPECT_FALSE(root->contains("mcpp"));
+}
+
+// THE dual-write-window case: a client that has never heard of the DB file
+// (every client ≤2026.9.30.1) rewrote the home config's `versions` field
+// and left file + stamp behind. The config's stat no longer matches the
+// stamp, so the file -- now the STALE copy -- must be bypassed.
+TEST_F(ShimViewTest, StaleStampFallsBackToHomeConfig) {
+    writeHomeConfig(kHomeConfig);
+    // The file's stamp names a config stat that no longer holds: the
+    // fixture rewrites the config after stamping by hand.
+    writeVersionsDbWrapper(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})",
+                           "999999:1");
+    auto root = xlings::load_versions_json(home_);
+    ASSERT_NE(root, std::nullopt);
+    EXPECT_TRUE(root->contains("mcpp"));
+    EXPECT_FALSE(root->contains("solo"));
+}
+
+TEST_F(ShimViewTest, MissingStampOrFormatFallsBackToHomeConfig) {
+    writeHomeConfig(kHomeConfig);
+    // An old-shape file: a bare versions map, no wrapper. Written by the
+    // first released layout of data/versions.json; treat it as stale.
+    writeVersionsDb(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})");
+    auto root = xlings::load_versions_json(home_);
+    ASSERT_NE(root, std::nullopt);
+    EXPECT_TRUE(root->contains("mcpp"));
 }
 
 TEST_F(ShimViewTest, CorruptDbFileFallsBackToHomeConfig) {
@@ -271,7 +321,7 @@ TEST_F(ShimViewTest, HomeKnowsProgramFallsBackToVersionsDbFile) {
     // through to the real database.
     writeHomeConfig(R"({"activeSubos": "default", "versions": {
       "mcpp": {"type": "program", "filename": "mcpp", "versions": {"1.0": {}}}}})");
-    writeVersionsDb(R"({"mcpp": {"type": "program", "filename": "mcpp", "versions": {"1.0": {}}}})");
+    writeVersionsDbWrapper(R"({"mcpp": {"type": "program", "filename": "mcpp", "versions": {"1.0": {}}}})");
     EXPECT_TRUE(xlings::xvm::home_knows_program(home_, "mcpp"));
     EXPECT_FALSE(xlings::xvm::home_knows_program(home_, "nope"));
 }
@@ -368,16 +418,43 @@ TEST_F(ShimViewTest, ViewMissesOnWrongProgramContextOrGarbage) {
 //
 // save_versions needs a live Config, which pins this test to the shape the
 // e2e suites already cover; here the CONTRACT is pinned instead: the DB
-// file's root IS the versions map, so versions_from_json consumes it
-// unchanged and the fallback in load_versions_json stays lossless.
+// file's wrapped `versions` IS the versions map, so versions_from_json
+// consumes it unchanged and the fallback in load_versions_json stays
+// lossless.
 TEST_F(ShimViewTest, VersionsDbRootShapeIsTheVersionsMap) {
     writeHomeConfig(kHomeConfig);
-    writeVersionsDb(dumpOf(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})"));
+    writeVersionsDbWrapper(dumpOf(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})"));
     auto root = xlings::load_versions_json(home_);
     ASSERT_NE(root, std::nullopt);
     auto db = xlings::xvm::versions_from_json(*root);
     ASSERT_EQ(db.count("solo"), 1u);
     EXPECT_EQ(db["solo"].type, "program");
+}
+
+// The cache never stores a view resolved from a file written within the
+// last two seconds (shim_dispatch's fresh-write suppression), so an
+// equal-length rewrite landing in the same mtime tick cannot be laundered
+// into a stale hit. The suppression lives in the dispatcher; here the
+// ENCODING side is pinned: a stat pair round-trips through the fingerprint
+// JSON, and the explicit "absent" mark reads back as the same sentinel.
+TEST_F(ShimViewTest, FingerprintAbsentMarkRoundTrips) {
+    xlings::xvm::ShimView view;
+    view.workspace["mcpp"] = "1.0";
+    std::map<std::string, xlings::xvm::ShimViewStat> fp;
+    fp["/inputs/home"] = xlings::xvm::ShimViewStat{10, 100};
+    fp["/inputs/gone"] = xlings::xvm::ShimViewStat{
+        0, std::numeric_limits<std::int64_t>::min()};  // absent sentinel
+
+    xlings::xvm::store_shim_view(home_, "", "mcpp", fp, view);
+    // The absent mark is visible in the file as a word, not magic numbers.
+    auto raw = xlings::platform::read_file_to_string(
+        (home_ / ".shim-view" / "mcpp.json").string());
+    EXPECT_NE(raw.find("\"absent\""), std::string::npos);
+
+    // And a load whose fingerprint carries the same sentinel hits.
+    auto loaded = xlings::xvm::load_shim_view(home_, "", "mcpp", fp);
+    ASSERT_NE(loaded, std::nullopt);
+    EXPECT_EQ(loaded->workspace.at("mcpp"), "1.0");
 }
 
 }  // namespace

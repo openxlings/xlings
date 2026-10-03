@@ -267,44 +267,163 @@ std::filesystem::path versions_db_path(const std::filesystem::path& home) {
     return home / "data" / "versions.json";
 }
 
+namespace {
+
+// The DB file's wrapper: format, the freshness stamp of the home config it
+// was written beside, and the versions map itself. The stamp is what makes
+// the dual-write window safe: a client that does not know the DB file
+// exists (every client ≤2026.9.30.1) updates the home config's `versions`
+// field and leaves both the stamp and the file behind -- and the reader,
+// seeing the config's current stat no longer matches, falls back to the
+// config. "Which copy is fresher" is decided by data, not by write order.
+constexpr std::string_view kDbFormatKey = "format";
+constexpr std::string_view kDbStampKey = "stamp";
+constexpr std::string_view kDbVersionsKey = "versions";
+constexpr int kDbFormat = 1;
+
+std::string db_stat_to_json(const std::uintmax_t size,
+                            const std::filesystem::file_time_type mtime) {
+    // file_clock's rep is __int128 on libc++; ticks fit int64 for every
+    // file that exists, and the value is only compared against another one.
+    return std::format("{}:{}",
+                       static_cast<std::int64_t>(size),
+                       static_cast<std::int64_t>(
+                           mtime.time_since_epoch().count()));
+}
+
+// The memo: one versions read per process, keyed by both files' identities.
+// home_knows_program's existence check and Config's version load hit the
+// same entry, so an unmigrated home pays one parse per process, not two.
+struct VersionsMemoEntry {
+    std::uintmax_t configSize {};
+    std::filesystem::file_time_type configMtime {};
+    std::uintmax_t dbSize {};
+    std::filesystem::file_time_type dbMtime {};
+    bool dbExists { false };
+    std::shared_ptr<const nlohmann::json> versions;
+};
+
+std::mutex& versions_memo_mutex() {
+    static std::mutex mu;
+    return mu;
+}
+
+std::unordered_map<std::string, VersionsMemoEntry>& versions_memo() {
+    static std::unordered_map<std::string, VersionsMemoEntry> memo;
+    return memo;
+}
+
+}  // namespace
+
 std::optional<nlohmann::json> load_versions_json(const std::filesystem::path& home) {
     namespace fs = std::filesystem;
     const auto dbPath = versions_db_path(home);
+    const auto configPath = home_config_path(home);
     std::error_code ec;
-    if (fs::is_regular_file(dbPath, ec) && !ec) {
+
+    const auto configStat = [&]() -> std::optional<
+        std::pair<std::uintmax_t, std::filesystem::file_time_type>> {
+        if (!fs::is_regular_file(configPath, ec) || ec) return std::nullopt;
+        std::error_code sec, tec;
+        const auto size = fs::file_size(configPath, sec);
+        const auto mtime = fs::last_write_time(configPath, tec);
+        if (sec || tec) return std::nullopt;
+        return std::pair{size, mtime};
+    }();
+    const bool dbExists = fs::is_regular_file(dbPath, ec) && !ec;
+    const auto dbStat = [&]() -> std::optional<
+        std::pair<std::uintmax_t, std::filesystem::file_time_type>> {
+        if (!dbExists) return std::nullopt;
+        std::error_code sec, tec;
+        const auto size = fs::file_size(dbPath, sec);
+        const auto mtime = fs::last_write_time(dbPath, tec);
+        if (sec || tec) return std::nullopt;
+        return std::pair{size, mtime};
+    }();
+
+    if (configStat && dbStat) {
+        std::scoped_lock lock(versions_memo_mutex());
+        auto it = versions_memo().find(home.string());
+        if (it != versions_memo().end()
+            && it->second.configSize == configStat->first
+            && it->second.configMtime == configStat->second
+            && it->second.dbExists && it->second.dbSize == dbStat->first
+            && it->second.dbMtime == dbStat->second) {
+            return std::optional<nlohmann::json>{*it->second.versions};
+        }
+    }
+
+    std::optional<nlohmann::json> result;
+    std::optional<std::pair<std::uintmax_t, std::filesystem::file_time_type>>
+        stampedConfig;
+
+    if (dbExists) {
         try {
             auto content = platform::read_file_to_string(dbPath.string());
             auto json = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded() && json.is_object()) return json;
-            log::warn("{} is malformed; falling back to the versions in {}",
-                      dbPath.string(), home_config_path(home).string());
+            if (!json.is_discarded() && json.is_object()
+                && json.value(kDbFormatKey, 0) == kDbFormat
+                && json.contains(kDbStampKey) && json[kDbStampKey].is_string()
+                && json.contains(kDbVersionsKey)
+                && json[kDbVersionsKey].is_object()) {
+                // Trust the file only while the home config it was written
+                // beside still has the stat the stamp recorded. A client
+                // that never heard of this file (or a hand edit) changed
+                // the config since, and the config is the fresher copy.
+                if (configStat) {
+                    const auto expected = json[kDbStampKey].get<std::string>();
+                    if (expected == db_stat_to_json(configStat->first,
+                                                    configStat->second)) {
+                        result = json[kDbVersionsKey];
+                        stampedConfig = configStat;
+                    }
+                }
+            } else {
+                log::warn("{} is malformed; falling back to the versions in {}",
+                          dbPath.string(), configPath.string());
+            }
         } catch (const std::exception& e) {
             log::warn("could not read {} ({}); falling back to the versions in {}",
-                      dbPath.string(), e.what(),
-                      home_config_path(home).string());
+                      dbPath.string(), e.what(), configPath.string());
         }
     }
-    // The home config: three cases, not two. A config that is ABSENT is an
-    // observed empty database (a fresh home's legitimate shape). A config
-    // that exists but cannot be parsed is UNOBSERVED -- nullopt -- because
-    // the consumers that refuse on nullopt must keep refusing: profile.cpp's
-    // payload collector treats "could not read" as "references unknown", and
-    // treating it as empty would list live payloads for removal.
-    auto configPath = home_config_path(home);
-    if (!fs::is_regular_file(configPath, ec) || ec) {
-        return nlohmann::json::object();
-    }
-    try {
-        auto content = platform::read_file_to_string(configPath.string());
-        auto doc = nlohmann::json::parse(content, nullptr, false);
-        if (doc.is_discarded() || !doc.is_object()) return std::nullopt;
-        if (auto it = doc.find(kVersionsKey); it != doc.end() && it->is_object()) {
-            return *it;
+    if (!result) {
+        // The home config: three cases, not two. A config that is ABSENT is
+        // an observed empty database (a fresh home's legitimate shape). A
+        // config that exists but cannot be parsed is UNOBSERVED -- nullopt
+        // -- because the consumers that refuse on nullopt must keep
+        // refusing: profile.cpp's payload collector treats "could not read"
+        // as "references unknown", and treating it as empty would list live
+        // payloads for removal.
+        if (!fs::is_regular_file(configPath, ec) || ec) {
+            result = nlohmann::json::object();
+        } else {
+            try {
+                auto content = platform::read_file_to_string(configPath.string());
+                auto doc = nlohmann::json::parse(content, nullptr, false);
+                if (doc.is_discarded() || !doc.is_object()) return std::nullopt;
+                if (auto it = doc.find(kVersionsKey);
+                    it != doc.end() && it->is_object()) {
+                    result = *it;
+                } else {
+                    result = nlohmann::json::object();
+                }
+            } catch (...) {
+                return std::nullopt;
+            }
         }
-        return nlohmann::json::object();
-    } catch (...) {
-        return std::nullopt;
     }
+
+    if (result && configStat && dbStat) {
+        std::scoped_lock lock(versions_memo_mutex());
+        versions_memo()[home.string()] = VersionsMemoEntry{
+            configStat->first, configStat->second, dbStat->first,
+            dbStat->second,    true,
+            std::make_shared<const nlohmann::json>(*result)};
+    }
+    // The memo path returns a COPY from the shared json; this path hands
+    // out the parsed value directly. Callers only read.
+    return result;
 }
 
 nlohmann::json read_home_config(const std::filesystem::path& home) {

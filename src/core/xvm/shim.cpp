@@ -751,12 +751,14 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // content and its stamp must come from the same instant, or a stale
     // view could wear a fresh stamp. Every load failure is a miss, and a
     // miss resolves the slow way -- it can never produce a different
-    // answer.
-    constexpr xvm::ShimViewStat kAbsentFile{0, -1};
+    // answer. Absent inputs use INT64_MIN, which both round-trips through
+    // the cache file (as the "absent" mark) and sorts as "the least fresh
+    // possible" in the store-suppression check below.
     std::map<std::string, xvm::ShimViewStat> viewFingerprint;
-    auto addFingerprint = [&viewFingerprint, kAbsentFile](const std::filesystem::path& p) {
+    auto addFingerprint = [&viewFingerprint](const std::filesystem::path& p) {
         viewFingerprint[p.string()] =
-            xvm::shim_view_stat(p).value_or(kAbsentFile);
+            xvm::shim_view_stat(p).value_or(xvm::ShimViewStat{
+                0, std::numeric_limits<std::int64_t>::min()});
     };
     // EVERY file the workspace and versions answer can be read from, at
     // every layer the merge consults. The workspace alone has three stores:
@@ -780,10 +782,19 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // projects sharing the global subos resolve different workspaces
         // against the same subos file, so the file identities alone cannot
         // tell their views apart -- the project it was resolved for has to
-        // be part of the cache key.
-        auto h = std::hash<std::string>{}(Config::project_dir().string());
+        // be part of the cache key. FNV-1a rather than std::hash: the tag
+        // is part of a PERSISTENT file name, and std::hash makes no
+        // stability promise across standard-library versions (a new
+        // libstdc++ would silently invalidate every cache file). A
+        // collision only evicts the other project's entry -- the
+        // fingerprint still guards correctness.
+        std::uint64_t fnv = 1469598103934665603ull;
+        for (char c : Config::project_dir().string()) {
+            fnv ^= static_cast<unsigned char>(c);
+            fnv *= 1099511628211ull;
+        }
         viewCtx = std::format("{:08x}",
-                              static_cast<std::uint32_t>(h & 0xffffffffu));
+                              static_cast<std::uint32_t>(fnv & 0xffffffffu));
     }
 
     std::optional<xvm::ShimView> view = xvm::load_shim_view(
@@ -1030,13 +1041,52 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
     // stats, so an input that changes later reads as a mismatch -- never
     // as a fresh stamp on stale content. Cache hits skip this: their
     // content came from the cache, not from a resolution worth re-storing.
+    //
+    // NOT stored when any input was written in the last two seconds. A
+    // fingerprint of size+mtime can be fooled by an equal-length rewrite
+    // landing in the same timestamp tick (1-2s on FAT/exFAT/some network
+    // mounts; `xlings use node 20.19.0` → `use node 22.17.1` is exactly an
+    // equal-length rewrite). Suppressing the store for 2s after any input
+    // write closes that window completely: a stale hit would need a
+    // rewrite AFTER the store whose mtime equals the stored one, but the
+    // store only happens ≥2s after the previous write, and the rewrite's
+    // mtime is ≥ its own time -- strictly newer than anything the store
+    // could have recorded. A suppressed store costs the next dispatch one
+    // full resolution; nothing else.
     if (!view) {
-        xvm::ShimView fresh;
-        fresh.workspace = workspace;
-        fresh.installed = installed;
-        fresh.slice = db;
-        xvm::store_shim_view(active_subos_dir, viewCtx, program_name,
-                             viewFingerprint, fresh);
+        // "Not stored when any input was written in the last two seconds."
+        // Absent inputs (the {0,-1} sentinel) are SKIPPED here, not
+        // treated as ancient: with a negative file_clock their sentinel
+        // mtime would make now-mtime a huge NEGATIVE number, which reads
+        // as "written in the future" and would suppress every store
+        // forever -- measured, the first version of this guard never
+        // stored anything.
+        const auto nowTicks =
+            std::chrono::file_clock::now().time_since_epoch().count();
+        const auto freshWindow = std::chrono::duration_cast<
+            std::chrono::file_clock::duration>(std::chrono::seconds(2))
+                                     .count();
+        bool freshlyWritten = false;
+        for (const auto& [file, stat] : viewFingerprint) {
+            if (stat.mtime == std::numeric_limits<std::int64_t>::min()) {
+                continue;  // absent input: nothing was written
+            }
+            if (nowTicks - stat.mtime < freshWindow) {
+                freshlyWritten = true;
+                break;
+            }
+        }
+        if (freshlyWritten) {
+            log::debug("shim view: inputs freshly written; not storing {}",
+                       program_name);
+        } else {
+            xvm::ShimView fresh;
+            fresh.workspace = workspace;
+            fresh.installed = installed;
+            fresh.slice = db;
+            xvm::store_shim_view(active_subos_dir, viewCtx, program_name,
+                                 viewFingerprint, fresh);
+        }
     }
 
     // Each target (including binding targets) has its own workspace version

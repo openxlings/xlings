@@ -991,6 +991,7 @@ void Config::reload_state_() {
         remember_known_projects_(cap->json, cap->size, cap->mtime);
     }
     load_global_workspace_();
+    globalWorkspaceLoaded_ = true;
     if (hasProjectConfig_) load_project_config_();
     update_effective_paths_();
 }
@@ -1475,31 +1476,6 @@ void Config::save_versions() {
     json["versions"] = xvm::versions_to_json(versions);
 
     if (useGlobal) {
-        // The DB file gets its own copy of the versions map
-        // (load_versions_json reads it in preference to the home config's
-        // `versions` field, which stays for older clients). Written BEFORE
-        // the home config: a crash between the two writes leaves the file
-        // newer than the config, and readers prefer the file -- the other
-        // order leaves them preferring an older config.
-        //
-        // If the file cannot be written (read-only home, full disk), any
-        // stale copy is removed so the home config remains the authority
-        // readers fall back to; a DB file shadowing newer config content
-        // would be exactly the divergence the fallback exists to avoid.
-        auto dbPath = xlings::versions_db_path(self.paths_.homeDir);
-        std::error_code ec;
-        fs::create_directories(dbPath.parent_path(), ec);
-        try {
-            platform::write_file_atomic(dbPath.string(),
-                                        xvm::versions_to_json(versions).dump(2));
-        } catch (const std::exception& e) {
-            log::warn("could not write {} ({}); the home config's versions "
-                      "field stays the authoritative copy",
-                      dbPath.string(), e.what());
-            std::error_code rmEc;
-            fs::remove(dbPath, rmEc);
-        }
-
         // The program-name index the cheap home-config capture answers
         // "does this home know this program" from, without lexing
         // `versions`. Written in the same dump as `versions`, so this
@@ -1509,6 +1485,46 @@ void Config::save_versions() {
         json["dbIndex"] = xvm::program_index_to_json(versions);
     }
     platform::write_string_to_file(configPath.string(), json.dump(2));
+
+    if (useGlobal) {
+        // The DB file gets its own copy of the versions map, wrapped with a
+        // STAMP of the home config's size+mtime taken AFTER the config was
+        // written. load_versions_json trusts the file only while the
+        // config's current stat still matches the stamp: a client that has
+        // never heard of this file (every client ≤2026.9.30.1) updates the
+        // config's `versions` field and leaves both file and stamp behind,
+        // and the reader falls back to the config -- the copy every writer
+        // updates is the fresher one by construction, whichever client wrote
+        // last. (A crash between the two writes leaves the previous stamp on
+        // the previous file, which the new config's stat no longer matches:
+        // the same fallback, in the crash direction too.)
+        //
+        // If the file cannot be written (read-only home, full disk), any
+        // stale copy is removed so the home config remains the authority
+        // readers fall back to; a DB file shadowing newer config content
+        // would be exactly the divergence the fallback exists to avoid.
+        auto dbPath = xlings::versions_db_path(self.paths_.homeDir);
+        std::error_code ec;
+        fs::create_directories(dbPath.parent_path(), ec);
+        if (const auto stamp = file_stat_(configPath)) {
+            nlohmann::json wrapper = nlohmann::json::object();
+            wrapper["format"] = 1;
+            wrapper["stamp"] = std::format(
+                "{}:{}", static_cast<std::int64_t>(stamp->first),
+                static_cast<std::int64_t>(
+                    stamp->second.time_since_epoch().count()));
+            wrapper["versions"] = xvm::versions_to_json(versions);
+            try {
+                platform::write_file_atomic(dbPath.string(), wrapper.dump(2));
+            } catch (const std::exception& e) {
+                log::warn("could not write {} ({}); the home config's versions "
+                          "field stays the authoritative copy",
+                          dbPath.string(), e.what());
+                std::error_code rmEc;
+                fs::remove(dbPath, rmEc);
+            }
+        }
+    }
     // The home config was just parsed and written whole; what it now says
     // about known projects is `json`. Taken after the write, under the state
     // lock every caller holds, so the next rebuild's stat matches it.

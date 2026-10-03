@@ -126,6 +126,18 @@ std::filesystem::path versions_db_path(const std::filesystem::path& home);
 // `versions` field (every home written before it, and any home where the
 // DB file could not be written).
 //
+// The DB file is a DERIVED copy, and the home config's field is what every
+// client ≤2026.9.30.1 writes (they do not know the DB file exists). So the
+// DB file carries a STAMP of the home config's size+mtime taken when both
+// were written together, and the reader TRUSTS the file only while the
+// config's current stat still matches: an older client's write changes the
+// config and leaves the stamp behind, and the reader falls back to the
+// config field — the config, which every writer updates, is the fresher of
+// the two by construction. (Size alone catches the common case — installs
+// and removes change it; the mtime covers equal-length rewrites up to the
+// filesystem's timestamp granularity, the same residual the view cache's
+// fingerprint carries.)
+//
 // Returns nullopt only when the DB file is unreadable AND the home config
 // exists but cannot be parsed -- UNOBSERVED state, which the consumers that
 // refuse on nullopt (profile.cpp's payload collector) must keep refusing
@@ -135,7 +147,9 @@ std::filesystem::path versions_db_path(const std::filesystem::path& home);
 //
 // The returned object is the versions MAP itself (program name → entry),
 // the same shape as the home config's `versions` field, so
-// xvm::versions_from_json consumes it unchanged.
+// xvm::versions_from_json consumes it unchanged. Memoized per process
+// against both files' stats: home_knows_program's existence check and
+// Config's version load share one parse.
 [[nodiscard]] std::optional<nlohmann::json>
 load_versions_json(const std::filesystem::path& home);
 

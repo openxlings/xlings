@@ -461,3 +461,35 @@ nlohmann map dump 天然有序)。
 - **窗口截止**:双写窗口到 `drop in 2027.4`(与 #615 的 2027.3 惯例同构);到点删除
   home 配置的 `versions` 字段,届时 home 配置缩 ~90%,CLI 的 SkipVersions 二次捕获
   也可以随之删除。
+
+---
+
+## 14. Review 修复记录(2026-10-04,外部 review 之后)
+
+外部 review(PR #639,`pr639-review.md`)提出 1×P0、2×P1、若干 P2/P3。逐条处置:
+
+### 已修复
+
+**P0(双写窗口内旧客户端写入 → 新客户端分发出错)— 采纳,修复方式即建议 1。**
+`data/versions.json` 从裸 versions map 改为**包装格式**:`{format: 1, stamp: "<config size>:<config file_clock ticks>", versions: {...}}`。stamp 是 save_versions 写完 config **之后**取的 config stat;`load_versions_json` 只在"config 当前 stat 仍等于 stamp"时信任文件,否则回退 config 字段。谁更新由数据自己说话,不依赖写入顺序——旧客户端(不知道该文件存在)改了 config 就天然使 stamp 失配,新客户端的 install/use/remove 重写双源后重新生效。单测 3 例(命中/stale 回退/无 stamp 旧形状回退)+ e2e `dual_write_window_test.sh`(S1 新写→S2 模拟旧客户端只改 config+workspace→S3 分发必须看到旧客户端的包;S4 旧客户端 remove 后分发不得再跑)。
+顺带:`load_versions_json` 带进程内 memo(双文件 stat 身份),review §4.2 的"一个进程解析两次"一并解决。
+
+**P1(指纹 size+mtime,等长改写 + 粗粒度 mtime 可命中旧视图)— 采纳,采用建议的"更便宜做法"而非 hash。**
+方案文档 §7.2 说"指纹用 hash",实现没照做也没说明偏差——review 说得对。现在:**任何输入文件距当前时间 <2s 时不落缓存**。这条是可证明的:store 只发生在上次写入 ≥2s 之后,而改写文件的时间戳 ≥ 改写时刻 > store 时刻记录的一切,所以陈旧命中需要"改写后 mtime 恰好等于 store 时记录的旧值"——粗粒度 FS 上同秒写入也只能在 store 后 2s 内发生,而那 2s 内不 store。等长改写 `1.0.0→9.9.9` + `os.utime` 冻结 mtime 的复现脚本通过(改写后正确报 9.9.9 not installed)。选它而非内容 hash 的理由:hash 每次分发要读 6 个文件全文(其中 home config 数 MB,即便只 hash 前缀也要把 AbortAtVersions 已 lex 过的内容再读一遍),而 2s 抑制只在"刚写过"的少数 dispatch 上多付一次全解析。**这个修复自己引入过一个 bug**:缺省哨兵 mtime=-1 与负值 file_clock 相减得到巨大负数,被 `< 2s` 判成"来自未来",永不落缓存——实测抓到,缺省文件现在跳过 fresh 判定,哨兵改为 INT64_MIN。
+
+**P3(dbIndex 快路径不查 has_versions / absent 哨兵魔法数 / reload_state_ 双读 / std::hash 做持久文件名)— 采纳。**
+reload_state_ 现在直接置 `globalWorkspaceLoaded_ = true`(一次读);view ctx 改 FNV-1a;absent 哨兵在缓存 JSON 里编码为 `"absent"`;dbIndex 命中的 has_versions 语义差异保留(见未采纳理由)。
+
+### 未采纳(附理由)
+
+- **"dbIndex 存在但查不到 → 直接判定不认识"**:review 自己在 P3 里指出快路径不查 `has_versions` 旧逻辑会查——两条建议互相矛盾,后者更安全。当前"miss 落回真实 DB"只慢不错,维持。
+- **"legacy home 在任何 CLI 首次运行时持锁迁移"**:每次 CLI 都加一次写锁 + 双文件重写,把"读命令不写 home"的原则(AGENTS.md:tool shim 不写 home)破坏面扩大到全部 CLI;而 install/use/`self update` 已覆盖活跃 home 的迁移。维持现状 + load memo。
+- **"视图只存 active 版本"**:match_version 的 fuzzy 匹配(前缀、namespace fallback)和 recorded_owner 需要同目标的相邻版本信息;裁到只剩 active 会改变 pinned-missing 等诊断行为。留待真实案例。
+- **"P2:shim 写 home 违反 'Nothing here writes'"**:部分成立,已把 `.shim-view` 记入方案文档作为派生缓存与 routing table 同类的既有例外(bin/ 的 shim 文件本身也是 shim 运行时读写的派生物);只读 home 下 store 失败已被捕获且只损失加速。GC 未做:按项目目录 hash 分隔,每个项目每个程序一个 ~KB 文件,量级远小于它优化的对象;留给 doctor 的后续项。
+- **"P2:release 测 dev 发 dist"**——不成立:CI 的 `xlings-ci-linux-e2e.yml` 就是先 `linux_release.sh`(dist)再用产物跑全套 e2e;单测跑 dev 是 asan/快速反馈的常规分工。
+- **"P3:R4 拆独立 PR"**——用户明确要求单 PR 全部实现;R4 的失效面由"miss 只变慢"纪律 + 本轮加固兜住。
+
+### 顺带修正的 review 陈述
+
+- §1 表中"mcpp 3000 版本命中 19ms(视图 1.5MB)":视图文件按 per-program 存,大的是**那个程序自己的版本表**,这正是 dispatch 匹配所需的数据集;线性于该程序的版本数、与 home 总规模无关(3000 条的总库命中仍 3ms——review 自己的数据也支持这点)。
+- §5"release 测 dev 发 dist":见上,e2e job 跑的就是 dist 产物。

@@ -17,6 +17,13 @@ constexpr std::string_view kProgramKey = "program";
 constexpr std::string_view kFingerprintKey = "fingerprint";
 constexpr std::string_view kVinfoKey = "vinfo";
 constexpr int kFormat = 1;
+// The encoded form of "this input did not exist" -- explicit in the JSON
+// rather than a magic number pair, so a reader of the cache file can tell
+// absence from a file whose stat happens to be zero. Must agree with the
+// sentinel shim_dispatch stamps absent inputs with.
+constexpr std::string_view kAbsentMark = "absent";
+constexpr xlings::xvm::ShimViewStat kAbsentStat{0,
+                                                std::numeric_limits<std::int64_t>::min()};
 
 // <subos>/.shim-view/<ctxTag>[-]<program>.json
 std::filesystem::path shim_view_path(const std::filesystem::path& subosDir,
@@ -39,10 +46,14 @@ std::filesystem::path shim_view_path(const std::filesystem::path& subosDir,
 }
 
 std::string stat_to_json_value(const ShimViewStat& s) {
+    if (s == kAbsentStat) return std::string(kAbsentMark);
     return std::format("{}:{}", s.size, s.mtime);
 }
 
 std::optional<ShimViewStat> stat_from_json_value(const nlohmann::json& j) {
+    if (j.is_string() && j.get<std::string>() == kAbsentMark) {
+        return kAbsentStat;
+    }
     if (!j.is_string()) return std::nullopt;
     auto text = j.get<std::string>();
     auto colon = text.find(':');
