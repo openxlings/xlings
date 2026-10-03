@@ -292,6 +292,7 @@ if "tcxx" in versions:
 with open(path, "w") as fh:
     json.dump(data, fh, indent=2)
 PY
+drop_versions_db_copy "$HOME_DIR"
 
 if RUN use tcc 1.0.0 >/dev/null 2>&1; then
   fail "S5: use succeeded despite a missing member"

@@ -63,7 +63,11 @@ std::optional<ShimViewStat> shim_view_stat(const std::filesystem::path& p) {
     const auto size = std::filesystem::file_size(p, sec);
     const auto mtime = std::filesystem::last_write_time(p, tec);
     if (sec || tec) return std::nullopt;
-    return ShimViewStat{size, mtime.time_since_epoch().count()};
+    // file_clock's rep is __int128 on libc++; the ticks fit int64 until the
+    // year ~2495, and the value is only ever COMPARED against a stored one,
+    // so the narrowing is lossless for every file that exists.
+    const auto ticks = static_cast<std::int64_t>(mtime.time_since_epoch().count());
+    return ShimViewStat{size, ticks};
 }
 
 std::optional<ShimView>

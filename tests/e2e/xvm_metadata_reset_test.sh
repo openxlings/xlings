@@ -117,6 +117,7 @@ entry = versions["mdfixture"]["versions"]["1.0.0"]
 entry["bindingGroup"] = group
 json.dump(state, open(path, "w"), indent=2)
 PY
+drop_versions_db_copy "$HOME_DIR"
 
 read_group() {
   python3 - "$STATE" <<'PY'
