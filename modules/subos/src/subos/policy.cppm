@@ -81,7 +81,19 @@ inline constexpr std::array<std::string_view, 9> kBaseEnvPass{
     "TERM", "COLORTERM", "LANG", "LC_*", "TZ", "NO_COLOR", "XLINGS_AGENT_MODE",
     "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE"};
 
-// The policy of an instance nobody declared one for.
+// What dev (and an undeclared instance) passes on top of the base: the
+// variables people rely on for a working toolchain and network that name no
+// credential. A secret, a socket into the desktop or an agent, and the X
+// authority are exactly what is NOT here (#640 F3) -- they enter only when
+// named in env_pass or through a grant.
+inline constexpr std::array<std::string_view, 17> kDevEnvPass{
+    "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY",
+    "all_proxy", "ALL_PROXY", "EDITOR", "VISUAL", "PAGER", "COLUMNS", "LINES",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "XLINGS_RELEASE_MIRROR", "XLINGS_MIRROR"};
+
+// The policy of an instance nobody declared one for: what it had before, plus
+// the S0 fixes every sandbox gets (environment allow-list, pid / ipc / uts
+// namespaces, no terminal injection).
 Policy legacy();
 
 // Whether `name` matches an env_pass entry (exact, or `PREFIX*`).

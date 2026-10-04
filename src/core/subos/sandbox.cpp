@@ -43,6 +43,7 @@ import xlings.subos.policy;
 import xlings.subos.caps;
 import xlings.subos.spec;
 import xlings.subos.provider;
+import xlings.subos.seccomp;
 import xlings.core.subos.ports;
 
 namespace xlings::subos::sandbox {
@@ -239,46 +240,52 @@ int unmount_image_(const fs::path& mountpoint) {
 // ─────────────────────────────────────────────────────────────────────
 
 
-// Translate a failed bwrap probe's captured output into an actionable
-// hint. Three known modes; anything else falls through to "show the
-// raw stderr" so users always see the truth instead of a stale
-// "xlings install bwrap" suggestion that won't help.
+// Translate a failed bwrap probe into what happened and what to do about it.
+//
+// The raw output always comes first: "bwrap failed" without bwrap's own words
+// is how #640 was misdiagnosed. The remedies are in least-privilege order and
+// never include turning off the kernel's user-namespace restriction for the
+// whole machine -- that was the old advice, and it trades every other
+// program's protection for this one's convenience.
 std::string classify_bwrap_probe_error_(const std::string& output,
                                          const fs::path& bin) {
-    if (output.find("setuid use of bubblewrap is not supported")
-        != std::string::npos)
-    {
-        return "xim:bwrap binary was built without setuid support; "
-               "rebuild xlings-res/bwrap mirror with "
-               "`-Dsupport_setuid=true` and bump the version\n"
-               "  binary: " + bin.string();
+    auto first_line = output.substr(0, output.find('\n'));
+    while (!first_line.empty() && (first_line.back() == '\r' || first_line.back() == ' '))
+        first_line.pop_back();
+    std::string out = "bwrap cannot create a sandbox here: " + first_line
+                      + "\n  binary: " + bin.string();
+
+    if (output.find("setuid use of bubblewrap is not supported") != std::string::npos) {
+        out += "\n  this bwrap is setuid but was built without setuid support;"
+               " xlings no longer uses setuid bwrap";
+    } else if (output.find("uid map") != std::string::npos
+               || output.find("Permission denied") != std::string::npos
+               || output.find("Operation not permitted") != std::string::npos
+               || output.find("user namespaces are not enabled") != std::string::npos) {
+        // Name the restriction that is in force, read from the kernel, so the
+        // reader does not have to guess which of the two it is.
+        auto read_sysctl = [](const char* path) -> std::string {
+            std::ifstream in(path);
+            std::string v;
+            std::getline(in, v);
+            return v;
+        };
+        auto apparmor = read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+        auto clone = read_sysctl("/proc/sys/kernel/unprivileged_userns_clone");
+        if (apparmor == "1")
+            out += "\n  cause: AppArmor restricts unprivileged user namespaces for "
+                   "programs without a profile (kernel.apparmor_restrict_unprivileged_userns=1)";
+        else if (clone == "0")
+            out += "\n  cause: the kernel disables unprivileged user namespaces "
+                   "(kernel.unprivileged_userns_clone=0)";
+        else
+            out += "\n  cause: user namespaces are not available to this user";
     }
-    if (output.find("setting up uid map: Permission denied")
-        != std::string::npos
-        || output.find("write to uid_map failed")
-        != std::string::npos)
-    {
-        return "kernel restricts unprivileged user namespaces "
-               "(LSM/AppArmor)\n"
-               "  check: cat /proc/sys/kernel/"
-               "apparmor_restrict_unprivileged_userns\n"
-               "  workaround: sudo sysctl -w "
-               "kernel.apparmor_restrict_unprivileged_userns=0";
-    }
-    if (output.find("clone() failed: Operation not permitted")
-        != std::string::npos
-        || output.find("user namespaces are not enabled")
-        != std::string::npos)
-    {
-        return "kernel disables unprivileged_userns_clone\n"
-               "  check: cat /proc/sys/kernel/"
-               "unprivileged_userns_clone";
-    }
-    auto trimmed = output;
-    while (!trimmed.empty() &&
-           (trimmed.back() == '\n' || trimmed.back() == '\r'))
-        trimmed.pop_back();
-    return "bwrap probe failed; raw output:\n  " + trimmed;
+    out += "\n  fix, least privilege first:"
+           "\n    1. xlings self doctor --isolation --fix"
+           "   (one sudo: a root-owned bwrap with a narrow AppArmor profile)"
+           "\n    2. --sandbox proot   (works anywhere; a view, not a security boundary)";
+    return out;
 }
 
 // Should we even try to fetch a sandbox backend for this host? Answered from
@@ -577,7 +584,19 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     payload["storage"] = storage_to_string_(storage);
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
-    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(sb)
+    // The terminal-injection filter travels to bwrap on an inherited pipe
+    // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
+    std::optional<int> seccomp_fd;
+    if (sb.backend == spec::Backend::Bwrap && sb.block_tiocsti) {
+        auto program = seccomp::block_terminal_injection();
+        int fds[2];
+        if (!program.empty() && ::pipe(fds) == 0) {
+            (void)::write(fds[1], program.data(), program.size());
+            ::close(fds[1]);
+            seccomp_fd = fds[0];
+        }
+    }
+    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(sb, seccomp_fd)
                                                    : provider::proot_argv(sb);
     auto env = provider::process_env(sb, request.host_env);
     std::vector<std::string> env_strings;

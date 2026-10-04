@@ -75,13 +75,15 @@ V concat(std::initializer_list<V> parts) {
 
 }  // namespace
 
-XTEST(SubosSpec, LegacyBwrapArgvIsUnchanged,
+XTEST(SubosSpec, LegacyBwrapArgvIsTheOldOnePlusTheS0Fixes,
       .area = "subos", .covers = {"ISO-SPEC-GOLDEN", "COMPAT-UNDECLARED"}) {
     auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), request({"/bin/bash", "-c", "true"}));
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->backend, sp::Backend::Bwrap);
     auto expected = concat({
-        {"/h/data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap", "--dev", "/dev", "--proc", "/proc"},
+        {"/h/data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap",
+         "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent", "--new-session",
+         "--dev", "/dev", "--proc", "/proc"},
         kLegacyBinds,
         {"--bind", "/h/subos/box/home", "/home",
          "--bind", "/h/subos/box/tmp", "/tmp",
@@ -93,7 +95,7 @@ XTEST(SubosSpec, LegacyBwrapArgvIsUnchanged,
          "--chdir", "/home/u", "--", "/bin/bash", "-c", "true"},
     });
     EXPECT_EQ(pv::bwrap_argv(*spec), expected);
-    EXPECT_FALSE(spec->clear_env);
+    EXPECT_TRUE(spec->clear_env);       // S0: an allow-list, not inheritance
     EXPECT_EQ(spec->env.at("HOME"), "/home/u");
     EXPECT_EQ(spec->env.at("PATH"), "/h/subos/box/bin:/h/bin:/usr/local/bin:/usr/bin:/bin");
     EXPECT_EQ(spec->env.at("XLINGS_SUBOS_MODE"), "sandbox");
@@ -106,6 +108,11 @@ XTEST(SubosSpec, LegacyInteractiveShellGetsDashIOnlyOnATerminal,
     auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), r);
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->argv, (V{"/bin/bash", "-i"}));
+    // A terminal keeps its job control: no new session, the seccomp filter instead.
+    EXPECT_FALSE(spec->new_session);
+    EXPECT_TRUE(spec->block_tiocsti);
+    auto a = pv::bwrap_argv(*spec, 7);
+    EXPECT_NE(std::ranges::search(a, V{"--seccomp", "7"}).begin(), a.end());
     r.interactive = false;
     EXPECT_EQ(sp::compile(pol::legacy(), kHome, linux_caps(), r)->argv, (V{"/bin/bash"}));
 }
@@ -233,4 +240,27 @@ XTEST(SubosSpec, ThePlatformMatrixIsMeasured,
     EXPECT_EQ(find(m, "FsGate").enforced, gates::Enforced::Advisory);
     EXPECT_FALSE(find(m, "NetGate").supported);
     EXPECT_FALSE(find(m, "NetGate").route.empty());
+}
+
+XTEST(SubosSpec, TheEnvironmentIsAnAllowList,
+      .area = "subos", .covers = {"F3"}) {
+    auto r = request();
+    r.host_env = {{"GITHUB_TOKEN", "x"}, {"SSH_AUTH_SOCK", "/run/a"}, {"XAUTHORITY", "/x"},
+                  {"DBUS_SESSION_BUS_ADDRESS", "unix:"}, {"LANG", "C.UTF-8"}, {"LC_ALL", "C"},
+                  {"EDITOR", "vi"}, {"https_proxy", "http://p"}, {"XLINGS_AGENT_MODE", "1"}};
+    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), r);
+    ASSERT_TRUE(spec.has_value());
+    for (auto k : {"GITHUB_TOKEN", "SSH_AUTH_SOCK", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"})
+        EXPECT_FALSE(spec->env.contains(k)) << k;
+    for (auto k : {"LANG", "LC_ALL", "EDITOR", "https_proxy", "XLINGS_AGENT_MODE"})
+        EXPECT_TRUE(spec->env.contains(k)) << k;
+    EXPECT_EQ(spec->env.at("USER"), "u");
+}
+
+XTEST(SubosSpec, ProotSaysWhatItCannotIsolate,
+      .area = "subos", .covers = {"ISO-MUST-SHOULD"}) {
+    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), request());
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_FALSE(spec->unshare_pid);
+    EXPECT_FALSE(spec->degraded.empty());
 }

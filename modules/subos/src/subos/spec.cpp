@@ -210,6 +210,24 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.proot_root = dir / "sandbox-root";
     }
 
+    // ── processes and terminal (S0, design §16) ──────────────────────
+    if (s.backend == Backend::Bwrap || s.backend == Backend::Fake) {
+        s.unshare_pid = true;      // host processes invisible (F4)
+        s.unshare_ipc = true;
+        s.unshare_uts = true;      // hostname changes stay inside
+        s.die_with_parent = true;  // nothing outlives the session's owner
+        // TIOCSTI from inside would type into the user's shell (F8). A
+        // non-interactive run gets a new session (no controlling terminal);
+        // an interactive one keeps its terminal for job control and gets the
+        // seccomp filter instead.
+        if (r.interactive) s.block_tiocsti = true;
+        else s.new_session = true;
+    } else if (s.backend == Backend::Proot) {
+        for (auto dim : {"pid", "ipc", "terminal"})
+            s.degraded.push_back({dim, "proot has no namespaces", "xlings self doctor --isolation",
+                                  policy::Need::Should});
+    }
+
     // ── environment ──────────────────────────────────────────────────
     s.clear_env = !policy.env_inherit;
     if (s.clear_env) {

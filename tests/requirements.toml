@@ -62,12 +62,12 @@ status = "planned"
 [F3]
 text = "only allow-listed environment variables enter the sandbox"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F4]
 text = "host processes are invisible (pid namespace)"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F5]
 text = "net=nat/none hides the host's network identity (ARP, interfaces)"
@@ -87,7 +87,7 @@ status = "planned"
 [F8]
 text = "terminal injection (TIOCSTI) is blocked"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F10]
 text = "backend lookup: root-owned bwrap, then a system bwrap that probes, then the payload; no setuid"
@@ -99,7 +99,7 @@ status = "planned"
 
 [F12]
 text = "a failed probe reports the raw error and least-privilege fixes, never a global sysctl"
-status = "planned"
+status = "required"
 
 [F13]
 text = "a lane that declares a capability fails when it is missing"
