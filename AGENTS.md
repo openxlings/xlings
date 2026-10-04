@@ -94,6 +94,21 @@ for (int i = 3; i < argc; ++i) {
 }
 ```
 
+### Core and interaction surfaces are separate (2026.10, #640)
+
+Who is reading the output (a person or an agent) and how it is drawn (cli,
+tui, `--json`, the NDJSON interface) are two independent axes, and neither
+belongs in core code. Core returns structured results and asks questions only
+through the `Asker` port (`modules/guard`); it never branches on the audience
+and never assembles user-facing text. The audience is DECLARED, never
+inferred: `--agent` or `XLINGS_AGENT_MODE=1` (`0` turns it off). In agent mode
+a command never waits for input -- a question it cannot answer becomes a
+structured error with the candidates and the exact flag that answers it.
+
+The SubOS design this comes from, and the module layout it implies
+(`modules/guard`, `modules/observe`, `modules/subos`, `src/core/home/`), is
+`.agents/docs/2026-10-05-subos-architecture-design.md`.
+
 ### Type-specific install dispatch
 
 `installer.cppm` checks `node.pkgType`:

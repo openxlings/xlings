@@ -1,23 +1,34 @@
-> 更新日期：2026-08-03
+> 更新日期：2026-10-05
+>
+> 总体架构（部署形态、策略档位、进入与外部执行、可观测性、平台抽象）见
+> `.agents/docs/2026-10-05-subos-architecture-design.md`。本文描述的是该设计落地之前的
+> 隔离模型，其中的已知问题在下面"安全模型"一节列出。
 
 # SubOS 隔离模型
 
 ## 概述
 
-SubOS 提供三级轻量环境隔离，从零开销的环境变量切换到完整块设备隔离，按需递进。隔离级别与存储模式是正交的两个维度，可自由组合。
+SubOS 有两条互相独立的轴：**隔离**（Shell 级 / FS 级沙箱）和**存储**（shared / tmpfs / image）。
+image 是存储方式，不是更高一级的隔离：它只改变沙箱里 `/home` 放在哪里，不增加任何边界。
 
 ```mermaid
 graph TD
-    subgraph 隔离级别
+    subgraph 隔离
         L1[Shell 级: env/PATH 切换]
         L2[FS 级: bwrap / proot 文件系统视图隔离]
-        L3[Image 级: ext4 稀疏文件 + loop 挂载]
+    end
+    subgraph 存储（只在 FS 级生效）
+        S1[shared]
+        S2[tmpfs]
+        S3[image: ext4 稀疏文件 + loop 挂载]
     end
     L1 -->|--sandbox| L2
-    L2 -->|--storage image| L3
+    L2 -.-> S1
+    L2 -.-> S2
+    L2 -.-> S3
 ```
 
-## 三级隔离详解
+## 隔离与存储详解
 
 ### Level 1 — Shell 级
 
@@ -44,7 +55,7 @@ graph TD
 - `/tmp` — 私有临时目录
 - `~/.xlings` — 与宿主共享 (工具链/配置)
 
-### Level 3 — Image 级
+### 存储：image
 
 - 创建: `xlings subos new <name> --storage image`
 - 机制: `truncate` 创建稀疏文件 + `mkfs.ext4` 格式化 + `sudo mount -o loop` 挂载
@@ -67,10 +78,13 @@ flowchart LR
 
 | 后端 | 机制 | 特权要求 | 存储模式支持 |
 |------|------|----------|--------------|
-| bwrap | setuid + mount namespace | xim 安装时 chmod 4755 | Shared / Tmpfs / Image |
+| bwrap | user namespace + mount namespace | 需要内核允许非特权 user namespace | Shared / Tmpfs / Image |
 | proot | ptrace 系统调用拦截 | 无 | 仅 Shared |
 
-bwrap 为首选后端。系统 `/usr/bin/bwrap` 被跳过 (缺 setuid、AppArmor 限制)；仅使用 xim-pool 管理的 setuid 二进制。Image/Tmpfs 存储模式要求 bwrap (需要 mount namespace)，proot 不支持。
+bwrap 为首选后端，只使用 xim-pool 里的二进制。recipe 的安装钩子会尝试 `chmod 4755`，但没有
+sudo 时这一步会静默失败，实际运行的是 user namespace 模式；在限制非特权 user namespace 的系统上
+（Ubuntu 24.04 默认的 AppArmor 策略）探针失败并回退到 proot。新设计改为：root 拥有的 bwrap + 窄
+AppArmor profile，不再创建 setuid（设计文档 §20）。Image/Tmpfs 存储模式要求 bwrap (需要 mount namespace)，proot 不支持。
 
 ## 存储模式与隔离级别
 
@@ -121,11 +135,16 @@ Shell 级入口永远不触发挂载操作；非 Shared 存储仅在 `--sandbox`
 - 禁止嵌套沙箱 (检测 `XLINGS_SUBOS_MODE=sandbox`)
 - proot 后端无法阻止 ptrace escape (安全边界为便利性隔离，非安全容器)
 
+**已知问题（#640，由总体架构设计修复）:**
+- `~/.xlings` 整体读写可见：沙箱里的进程可以改写宿主 home 的 profile、shim 和其他实例
+- 没有 pid / ipc / uts / net namespace：宿主进程、主机名、本机网络服务都可见
+- 环境变量原样带入沙箱
+
 ## 跨平台行为
 
-| 平台 | Shell 级 | FS 级 (Sandbox) | Image 级 |
+| 平台 | Shell 级 | FS 级 (Sandbox) | image 存储 |
 |------|----------|-----------------|----------|
-| **Linux** | 完整支持 | bwrap (首选) / proot (回退) | ext4 loop mount |
+| **Linux** | 完整支持 | bwrap (首选) / proot (回退) | ext4 loop mount（需要 sudo） |
 | **macOS 14+ arm64** | 支持 | 仅 HOME 重定向（无 namespace/ptrace） | 不支持 |
 | **Windows x86_64** | 支持 | 仅 USERPROFILE 重定向 | 不支持 |
 
