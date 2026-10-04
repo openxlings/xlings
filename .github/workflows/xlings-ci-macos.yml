@@ -277,8 +277,10 @@ jobs:
         run: |
           mcpp build
           mcpp build -p xdev
-          xdev="$(find target -name xdev -type f -perm -111 | head -1)"
-          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev under target/"; find target -maxdepth 4 -name 'xdev*'; exit 1; }
+          # A member's binary lands under the root's target/ or the member's
+          # own, depending on the mcpp version.
+          xdev="$(find target apps/xdev -name xdev -type f -perm -111 2>/dev/null | head -1)"
+          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
           "$xdev" test --out target/xdev/macos-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"

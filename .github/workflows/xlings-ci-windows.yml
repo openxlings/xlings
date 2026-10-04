@@ -276,7 +276,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           mcpp build -p xdev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $xdev = Get-ChildItem target -Recurse -Filter xdev.exe | Select-Object -First 1
+          # A member's binary lands under the root's target\ or the member's
+          # own, depending on the mcpp version.
+          $xdev = Get-ChildItem target, apps\xdev -Recurse -Filter xdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $xdev) { Write-Host "::error::mcpp build -p xdev produced no xdev.exe under target/"; exit 1 }
           & $xdev.FullName test --out target/xdev/windows-unit
           if ($LASTEXITCODE -ne 0) {
