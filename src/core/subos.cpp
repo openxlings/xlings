@@ -58,6 +58,7 @@ import xlings.core.destructive_log;
 import xlings.subos.userdata;
 import xlings.subos.model;
 import xlings.core.subos.ports;
+import xlings.core.home;
 
 namespace xlings::subos {
 
@@ -342,8 +343,14 @@ void update_current_symlink_(EventStream& stream,
 // "the file is there" does not mean "the subos describes itself".
 bool ensure_subos_info_(const fs::path& dir, manifest::Intent intent,
                         std::string_view requested) {
-    auto json = read_config_json_(dir / ".xlings.json");
-    if (!json.is_object()) json = nlohmann::json::object();
+    // An unparseable manifest is not an empty one: rebuilding it from {} would
+    // write a blank workspace over the subos's real one (home::read_json_for_update).
+    auto read = home::read_json_for_update(dir / ".xlings.json");
+    if (!read) {
+        log::warn("{} -- not rewriting it", read.error());
+        return false;
+    }
+    auto json = std::move(*read);
     if (!json.contains("workspace")) json["workspace"] = nlohmann::json::object();
 
     // Only replace a block that is absent or unusable. Rewriting a valid one

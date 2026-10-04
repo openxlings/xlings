@@ -122,6 +122,18 @@ std::expected<void, std::string> declare(const fs::path& home,
     return {};
 }
 
+std::expected<nlohmann::json, std::string> read_json_for_update(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return nlohmann::json::object();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::unexpected(path.string() + ": cannot be read");
+    std::string text{std::istreambuf_iterator<char>(in), {}};
+    auto j = nlohmann::json::parse(text, nullptr, false);
+    if (j.is_discarded() || !j.is_object())
+        return std::unexpected(path.string() + ": could not be parsed as a JSON object");
+    return j;
+}
+
 bool is_read_only_command(std::span<const std::string_view> argv) {
     if (argv.empty()) return true;
     const auto first = argv[0];

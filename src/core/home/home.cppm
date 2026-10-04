@@ -70,4 +70,12 @@ Mode infer_mode(const fs::path& home, Source source);
 // For read-only commands only: the commands an unknown-layout home allows.
 bool is_read_only_command(std::span<const std::string_view> argv);
 
+// The writer rule (design §25 "schema"): read a JSON document in order to
+// update it. A missing file is a new, empty document. A file that exists and
+// does not parse as an object is an ERROR -- not an empty document -- and the
+// caller must not write: replacing it would turn "could not be read" into
+// "is now empty", which no repair can walk back. Writers update the object
+// they read, so every key they do not know survives.
+std::expected<nlohmann::json, std::string> read_json_for_update(const fs::path& path);
+
 }  // namespace xlings::home

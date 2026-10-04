@@ -1476,14 +1476,18 @@ void Config::save_versions() {
         if (!projectHomeDir.empty()) fs::create_directories(projectHomeDir);
     }
 
-    nlohmann::json json;
-    if (fs::exists(configPath)) {
-        try {
-            auto content = platform::read_file_to_string(configPath.string());
-            json = nlohmann::json::parse(content, nullptr, false);
-            if (json.is_discarded()) json = nlohmann::json::object();
-        } catch (...) { json = nlohmann::json::object(); }
+    // Refuse rather than replace (home::read_json_for_update): this file
+    // also holds the mirror, the subos registry and known projects, and
+    // writing `versions` into a blank object over an unparseable one would
+    // erase all of them. The same promise the workspace writer below makes.
+    auto read = home::read_json_for_update(configPath);
+    if (!read) {
+        log::warn("{} -- leaving it untouched rather than overwriting it; the "
+                  "version change is not recorded. Run `xlings self doctor`.",
+                  read.error());
+        return;
     }
+    nlohmann::json json = std::move(*read);
 
     auto& versions = useGlobal ? self.globalVersions_ : self.projectVersions_;
     json["versions"] = xvm::versions_to_json(versions);

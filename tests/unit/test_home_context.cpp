@@ -115,3 +115,38 @@ XTEST(HomeContext, ANewerLayoutIsReadNeverWritten,
     // and the marker was not lowered by anyone
     EXPECT_EQ(nlohmann::json::parse(tk::read_file(marker))["layout"], h::kLayout + 7);
 }
+
+XTEST(WriterRules, AnUnparseableDocumentIsAnErrorNotAnEmptyOne,
+      .area = "home", .covers = {"HOME-KEEP-UNKNOWN-KEYS"}) {
+    auto home = fresh_home("writer");
+    auto missing = h::read_json_for_update(home / "absent.json");
+    ASSERT_TRUE(missing.has_value());
+    EXPECT_TRUE(missing->empty());
+
+    tk::write_file(home / "kept.json", R"({"known":1,"unknown":{"x":true}})");
+    auto kept = h::read_json_for_update(home / "kept.json");
+    ASSERT_TRUE(kept.has_value());
+    EXPECT_TRUE(kept->contains("unknown"));
+
+    tk::write_file(home / "broken.json", R"({"workspace": )");
+    EXPECT_FALSE(h::read_json_for_update(home / "broken.json").has_value());
+    tk::write_file(home / "array.json", "[1,2]");
+    EXPECT_FALSE(h::read_json_for_update(home / "array.json").has_value());
+    fs::remove_all(home);
+}
+
+XTEST(WriterRules, SubosNewDoesNotBlankAnUnparseableManifest,
+      .area = "home", .cost = tk::Cost::Medium,
+      .covers = {"HOME-KEEP-UNKNOWN-KEYS"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("writer-subos");
+    fs::create_directories(home.dir() / "subos" / "default");
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    auto manifest = home.dir() / "subos" / "box" / ".xlings.json";
+    const std::string broken = R"({"workspace": {"gcc": "16.1.0"}, )";
+    tk::write_file(manifest, broken);
+
+    // Adopting the existing directory again must not rebuild it from {}.
+    auto r = home.xlings({"subos", "new", "box", "-y"});
+    EXPECT_NE(r.exit_code, 0) << r.transcript();
+    EXPECT_EQ(tk::read_file(manifest), broken);
+}
