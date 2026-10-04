@@ -56,6 +56,7 @@ import xlings.i18n;
 import xlings.core.confirm;
 import xlings.core.destructive_log;
 import xlings.subos.userdata;
+import xlings.subos.model;
 import xlings.core.subos.ports;
 
 namespace xlings::subos {
@@ -165,105 +166,23 @@ std::vector<SubosInfo> list_all() {
     return candidate_view().candidates;
 }
 
-std::string lowercase_name_(std::string_view name) {
-    std::string lowered(name);
-    for (auto& ch : lowered) {
-        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
-    }
-    return lowered;
-}
-
-std::size_t edit_distance_(std::string_view lhs, std::string_view rhs) {
-    std::vector<std::size_t> prev(rhs.size() + 1);
-    std::vector<std::size_t> next(rhs.size() + 1);
-    std::iota(prev.begin(), prev.end(), std::size_t{0});
-    for (std::size_t i = 0; i < lhs.size(); ++i) {
-        next[0] = i + 1;
-        for (std::size_t j = 0; j < rhs.size(); ++j) {
-            const auto replace = prev[j] + (lhs[i] == rhs[j] ? 0u : 1u);
-            next[j + 1] = std::min({prev[j + 1] + 1, next[j] + 1, replace});
-        }
-        std::swap(prev, next);
-    }
-    return prev.back();
-}
-
-std::vector<SubosInfo> suggestions_(
-        std::string_view query,
-        std::span<const SubosInfo> candidates) {
-    struct Scored {
-        int substringRank;
-        std::size_t distance;
-        SubosInfo candidate;
-    };
-    const auto loweredQuery = lowercase_name_(query);
-    std::vector<Scored> scored;
-    scored.reserve(candidates.size());
-    for (const auto& candidate : candidates) {
-        const auto lowered = lowercase_name_(candidate.name);
-        const bool related = lowered.contains(loweredQuery)
-            || loweredQuery.contains(lowered);
-        scored.push_back({related ? 0 : 1,
-                          edit_distance_(loweredQuery, lowered), candidate});
-    }
-    std::ranges::sort(scored, [](const auto& lhs, const auto& rhs) {
-        return std::tie(lhs.substringRank, lhs.distance, lhs.candidate.name)
-             < std::tie(rhs.substringRank, rhs.distance, rhs.candidate.name);
-    });
-    std::vector<SubosInfo> result;
-    for (std::size_t i = 0; i < std::min<std::size_t>(3, scored.size()); ++i) {
-        result.push_back(std::move(scored[i].candidate));
-    }
-    return result;
-}
-
+// The rules live in the SubOS core (xlings.subos.model) and work on names;
+// this maps their answer back to the instances it is about.
 CandidateResolution_ resolve_candidate_(std::string_view query) {
     auto all = candidate_view(false).candidates;
-    if (query.empty()) {
-        return {.reason = "missing_name", .candidates = std::move(all)};
-    }
+    std::vector<std::string> names;
+    names.reserve(all.size());
+    for (const auto& c : all) names.push_back(c.name);
 
-    if (auto exact = std::ranges::find(all, query, &SubosInfo::name);
-        exact != all.end()) {
-        return {.selected = exact->name,
-                .reason = "exact",
-                .candidates = {*exact}};
+    auto r = model::resolve_name(query, names);
+    CandidateResolution_ out{ .selected = std::move(r.selected),
+                              .reason = std::move(r.reason),
+                              .autoSelected = r.autoSelected };
+    for (const auto& name : r.matches) {
+        if (auto it = std::ranges::find(all, name, &SubosInfo::name); it != all.end())
+            out.candidates.push_back(*it);
     }
-
-    const auto loweredQuery = lowercase_name_(query);
-    std::vector<SubosInfo> matches;
-    for (const auto& candidate : all) {
-        if (lowercase_name_(candidate.name) == loweredQuery) {
-            matches.push_back(candidate);
-        }
-    }
-    if (matches.size() == 1) {
-        return {.selected = matches.front().name,
-                .reason = "case_insensitive_exact",
-                .candidates = std::move(matches),
-                .autoSelected = true};
-    }
-    if (matches.size() > 1) {
-        return {.reason = "ambiguous", .candidates = std::move(matches)};
-    }
-
-    for (const auto& candidate : all) {
-        if (lowercase_name_(candidate.name).starts_with(loweredQuery)) {
-            matches.push_back(candidate);
-        }
-    }
-    if (matches.size() == 1) {
-        return {.selected = matches.front().name,
-                .reason = "unique_prefix",
-                .candidates = std::move(matches),
-                .autoSelected = true};
-    }
-    if (matches.size() > 1) {
-        return {.reason = "ambiguous", .candidates = std::move(matches)};
-    }
-
-    return {.reason = "not_found",
-            .candidates = suggestions_(query, all)};
+    return out;
 }
 
 void emit_candidates_(EventStream& stream,
