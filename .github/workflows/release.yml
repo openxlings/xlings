@@ -278,6 +278,12 @@ jobs:
         run: |
           bash tests/e2e/prepare_fixture_index.sh
 
+      # The dist-profile artifact gate (binary must be -O3 + link-time strip:
+      # file says "stripped" with no debug_info, size <= 80 MB; a fallback to
+      # the dev profile fails the run) lives inside tools/linux_release.sh,
+      # which is the only build step for the artifact in this job -- the
+      # checks necessarily execute here and are not duplicated in the
+      # workflow.
       - name: Build (linux_release)
         run: |
           chmod +x ./tools/linux_release.sh
@@ -393,6 +399,10 @@ jobs:
           "$MCPP" self config --mirror GLOBAL
           echo "MCPP=$MCPP" >> "$GITHUB_ENV"
 
+      # The dist-profile artifact gate (stripped + no debug_info + size cap)
+      # lives inside tools/linux_release.sh, the only build step for the
+      # artifact -- the mcpp source build above produces the cross build
+      # TOOL, not the release artifact, so the gate necessarily runs below.
       - name: Build (linux_release — aarch64 cross)
         run: |
           chmod +x ./tools/linux_release.sh
@@ -612,6 +622,11 @@ jobs:
           # file that literally contains the string. Slice the section for
           # THIS platform first.
 
+      # The dist-profile artifact gate (binary must be -O3 + link-time strip:
+      # no LC_SYMTAB load command, size <= 80 MB) lives inside
+      # tools/macos_release.sh, which is the only build step for the artifact
+      # in this job -- the checks necessarily execute here and are not
+      # duplicated in the workflow.
       - name: Build (macos_release)
         env:
           # macOS min-version support: floor 14.0 (the official LLVM
@@ -804,6 +819,10 @@ jobs:
           # file that literally contains the string. Slice the section for
           # THIS platform first.
 
+      # The dist-profile artifact gate (no PDB beside the exe, size <= 80 MB)
+      # lives inside tools/windows_release.ps1, the only build step for the
+      # artifact in this job -- the checks necessarily execute here and are
+      # not duplicated in the workflow.
       - name: Build (windows_release)
         shell: pwsh
         run: |

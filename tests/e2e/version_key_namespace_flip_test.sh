@@ -329,6 +329,7 @@ for name in ("default", "other"):
     entry["active"] = "1.1.0"                          # both subos on the loser
     p.write_text(json.dumps(ws, indent=2))
 PY
+drop_versions_db_copy "$HOME_DIR"
 keys="$(db_keys flip-tool)"
 [[ "$keys" == *"1.1.0"* && "$keys" == *"xim:1.1.0"* ]] || fail "S5 setup: twins not seeded: '$keys'"
 

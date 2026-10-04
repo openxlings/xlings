@@ -44,7 +44,10 @@ MCPP_BIN="${MCPP_BIN:-mcpp}"
 command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
 rm -rf "$PROJECT_DIR/target"
-MCPP_ARGS=(build --print-fingerprint --no-cache)
+# --profile dist: -O3 + link-time strip. mcpp's default profile is dev
+# (-O0 -g) -- that default is what shipped 127 MB release binaries; the
+# artifact checks below make a silent fallback to dev fail instead.
+MCPP_ARGS=(build --profile dist --print-fingerprint --no-cache)
 if [[ -n "${MCPP_TARGET:-}" ]]; then
   MCPP_ARGS+=(--target "$MCPP_TARGET")
 fi
@@ -91,6 +94,38 @@ if [[ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
     fi
     info "OK: minos ${MACOSX_DEPLOYMENT_TARGET}, static libc++"
 fi
+
+# dist-profile gate, checked on the artifact rather than the build command: a
+# dev build (-O0 -g) passes every functional check below -- it just unpacks,
+# runs, and dispatches shims an order of magnitude slower.
+#
+# What CAN be asserted about a macOS binary, learned on CI 2026-10-04 the
+# hard way (two failed runs, two wrong predicates):
+#
+#   * `file(1)` never says stripped/debug_info for Mach-O -- those strings
+#     are ELF-only.
+#   * A stripped Mach-O does NOT have an empty symbol table: the LC_SYMTAB
+#     load command stays, and it MUST keep the undefined (imported) symbols
+#     dyld binds against -- measured: 451 imports survive a full strip.
+#     So "no LC_SYMTAB" and "nsyms == 0" are both unsatisfiable.
+#
+# What actually separates dev from dist here is MAGNITUDE: a -O0 -g build
+# carries a symbol table entry (plus STABS debug-map entries) per function,
+# tens of thousands; a stripped dist build carries only its imports,
+# hundreds. Strip unconditionally (strip(1) is on every runner, so the
+# artifact's strippedness does not depend on the mcpp version driving the
+# build), then assert the residual count is in import territory. The 80 MB
+# size cap below is the second, size-based dev detector.
+strip "$BIN_SRC"
+SYM_COUNT="$(otool -l "$BIN_SRC" | awk '/LC_SYMTAB/{f=1; next} f && /nsyms/{print $2; exit}')"
+if [[ -n "$SYM_COUNT" && "$SYM_COUNT" -gt 5000 ]]; then
+    fail "binary carries $SYM_COUNT symbols — release artifact must be dist profile (-O3 + stripped; a stripped build keeps only its dyld imports, hundreds); if you see this, the build profile fell back to dev (-O0 -g, tens of thousands of symbols)"
+fi
+BIN_SIZE="$(wc -c < "$BIN_SRC")"
+if (( BIN_SIZE > 80 * 1024 * 1024 )); then
+    fail "binary is ${BIN_SIZE} bytes (> 80 MB) — release artifact must be dist profile (-O3 + stripped, expect ~15-30 MB); a dev-profile (-O0 -g) build is ~127 MB. If you see this, the build profile fell back to dev"
+fi
+info "OK: binary is dist profile (-O3 + stripped)"
 
 # ── 2. Assemble package ─────────────────────────────────────────
 info "Assembling $OUT_DIR ..."

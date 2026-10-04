@@ -12,6 +12,7 @@ import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.lock;
+import xlings.core.home_config;
 
 namespace xlings {
 
@@ -157,6 +158,7 @@ std::vector<IndexRepo> Config::default_global_index_repos_(const std::string& mi
     // Safe to reach the singleton here: every caller asks at sync time, long
     // after initialisation. (default_global_index_repos_ above cannot.)
     auto& self = instance_();
+    self.ensure_index_config_();
     if (!self.defaultIndexRepoUrl_.empty()) return self.defaultIndexRepoUrl_;
     // No key in the config: fall back to the same built-in the default entry
     // itself would have used, so an entry that matches the built-in default is
@@ -616,67 +618,33 @@ Config::Config() {
     }
 
     auto configPath = paths_.homeDir / ".xlings.json";
-    if (fs::exists(configPath)) {
-        try {
-            const auto before = file_stat_(configPath);
-            auto content = platform::read_file_to_string(configPath.string());
-            auto json    = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded()) {
-                if (before) remember_known_projects_(json, before->first, before->second);
-                if (json.contains("activeSubos") && json["activeSubos"].is_string()) {
-                    auto val = json["activeSubos"].get<std::string>();
-                    if (!val.empty()) globalActiveSubos_ = val;
-                }
-                if (json.contains("mirror") && json["mirror"].is_string())
-                    mirror_ = json["mirror"].get<std::string>();
-                if (json.contains("lang") && json["lang"].is_string())
-                    lang_ = json["lang"].get<std::string>();
-                load_ui_prefs_from_json_(json);
-                // Load global versions
-                load_global_versions_from_json_(json);
-                // BEFORE parse_index_repos_json / default_global_index_repos_:
-                // both of those ask what the default index's URL is, and this
-                // is where the answer comes from. `mirror_` is already read
-                // above, which the region lookup needs.
-                defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
-                globalIndexRepos_ = parse_index_repos_json(json, mirror_);
-                load_resource_servers_from_json_(json, globalResourceServers_);
-                if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBases_ = std::move(v);
-            }
-        } catch (...) {}
-    }
-    if (globalIndexRepos_.empty()) {
-        globalIndexRepos_ = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
-    } else {
-        // Ensure the default index repo is always present when user
-        // defines custom index_repos (e.g. adding "ros2").  Without
-        // this, user-defined repos replace the default and packages
-        // in the primary index (like "python") become unfindable.
-        auto defaults = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
-        for (auto& def : defaults) {
-            bool found = false;
-            for (auto& repo : globalIndexRepos_) {
-                if (repo.name == def.name) { found = true; break; }
-            }
-            if (!found) {
-                globalIndexRepos_.insert(globalIndexRepos_.begin(), std::move(def));
-            }
+    // The cheap capture, not a full parse: it stops before `versions`,
+    // which is ~90% of the bytes on a real home and which nothing here
+    // reads anymore (globalVersions_ loads on first use, from the versions
+    // DB file when the home has one). Index config waits too -- it needs
+    // `xim`, which sorts after `versions` -- so `ensure_index_config_`
+    // re-captures with SkipVersions on first use.
+    if (auto cap = home_config_capture(configPath, HomeCaptureMode::AbortAtVersions);
+        cap && cap->ok) {
+        remember_known_projects_(cap->json, cap->size, cap->mtime);
+        const auto& json = cap->json;
+        if (json.contains("activeSubos") && json["activeSubos"].is_string()) {
+            auto val = json["activeSubos"].get<std::string>();
+            if (!val.empty()) globalActiveSubos_ = val;
         }
+        if (json.contains("mirror") && json["mirror"].is_string())
+            mirror_ = json["mirror"].get<std::string>();
+        if (json.contains("lang") && json["lang"].is_string())
+            lang_ = json["lang"].get<std::string>();
+        load_ui_prefs_from_json_(json);
     }
-
     paths_.dataDir  = paths_.homeDir / "data";
     update_effective_paths_();
 
     log::debug("config: home={}, selfContained={}", paths_.homeDir.string(), paths_.selfContained);
 
-    // Load subos workspace from the path resolved by
-    // update_effective_paths_, which honors XLINGS_ACTIVE_SUBOS env
-    // overrides. Using `globalActiveSubos_` directly here (a snapshot
-    // of `~/.xlings.json activeSubos`) would silently load the wrong
-    // subos's workspace whenever the user is in a spawned subos shell
-    // with XLINGS_ACTIVE_SUBOS set, which then corrupts that subos
-    // when `xvm use` writes back through save_workspace().
-    load_global_workspace_();
+    // The global subos workspace loads lazily too (ensure_global_workspace_):
+    // a shim dispatch on a shim-view cache hit never reads it.
 
     // Load project-level config (walk up from cwd)
     load_project_config_();
@@ -749,7 +717,7 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
             projectIndexRepos_ = parse_index_repos_json(json, mirror_);
             load_resource_servers_from_json_(json, projectResourceServers_);
             if (auto v = resolve_index_base_(json, mirror_); !v.empty())
-                indexBases_ = std::move(v);   // project overrides global
+                projectIndexBases_ = std::move(v);   // project overrides global
             projectSubosName_ = load_project_subos_name_(json);
 
             auto projectStatePath = project_state_path_();
@@ -889,12 +857,98 @@ void Config::load_project_config_() {
     }
 }
 
-void Config::load_global_versions_from_json_(const nlohmann::json& json) {
-    if (json.contains("versions") && json["versions"].is_object()) {
-        globalVersions_ = xvm::versions_from_json(json["versions"]);
+void Config::ensure_global_versions_() {
+    if (globalVersionsLoaded_) return;
+    globalVersionsLoaded_ = true;
+    // ONE source decision, owned by load_versions_json: the versions DB
+    // file when the home has one, else the home config's `versions` field,
+    // and never "unreadable" mistaken for "empty".
+    if (auto root = load_versions_json(paths_.homeDir)) {
+        globalVersions_ = xvm::versions_from_json(*root);
     } else {
+        log::debug("config: versions unreadable in {}; treating as empty",
+                   paths_.homeDir.string());
         globalVersions_.clear();
     }
+}
+
+void Config::ensure_global_workspace_() {
+    if (globalWorkspaceLoaded_) return;
+    globalWorkspaceLoaded_ = true;
+    // Load subos workspace from the path resolved by global_subos_dir_(),
+    // which honors XLINGS_ACTIVE_SUBOS env overrides. Using
+    // `globalActiveSubos_` directly here (a snapshot of
+    // `~/.xlings.json activeSubos`) would silently load the wrong subos's
+    // workspace whenever the user is in a spawned subos shell with
+    // XLINGS_ACTIVE_SUBOS set, which then corrupts that subos when
+    // `xvm use` writes back through save_workspace().
+    load_global_workspace_();
+}
+
+void Config::ensure_index_config_() {
+    if (indexConfigLoaded_) return;
+    indexConfigLoaded_ = true;
+    // SkipVersions, not AbortAtVersions: this layer needs `xim`, which
+    // sorts AFTER `versions` and is therefore absent from the cheap
+    // capture by design. The capture still skips `versions` itself, so an
+    // oversized database costs a lex pass here, not a DOM.
+    auto configPath = paths_.homeDir / ".xlings.json";
+    nlohmann::json json = nlohmann::json::object();
+    if (auto cap = home_config_capture(configPath, HomeCaptureMode::SkipVersions);
+        cap && cap->ok) {
+        json = cap->json;
+    }
+    // BEFORE parse_index_repos_json / default_global_index_repos_:
+    // both of those ask what the default index's URL is, and this
+    // is where the answer comes from. `mirror_` is already read
+    // (at construction), which the region lookup needs.
+    defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
+    globalIndexRepos_ = parse_index_repos_json(json, mirror_);
+    load_resource_servers_from_json_(json, globalResourceServers_);
+    globalIndexBases_ = resolve_index_base_(json, mirror_);
+
+    if (globalIndexRepos_.empty()) {
+        globalIndexRepos_ = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
+    } else {
+        // Ensure the default index repo is always present when user
+        // defines custom index_repos (e.g. adding "ros2").  Without
+        // this, user-defined repos replace the default and packages
+        // in the primary index (like "python") become unfindable.
+        auto defaults = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
+        for (auto& def : defaults) {
+            bool found = false;
+            for (auto& repo : globalIndexRepos_) {
+                if (repo.name == def.name) { found = true; break; }
+            }
+            if (!found) {
+                globalIndexRepos_.insert(globalIndexRepos_.begin(), std::move(def));
+            }
+        }
+    }
+}
+
+std::optional<xvm::VInfo> Config::find_vinfo_(const std::string& target) {
+    ensure_global_versions_();
+    std::optional<xvm::VInfo> out;
+    if (auto it = globalVersions_.find(target); it != globalVersions_.end()) {
+        out = it->second;
+    }
+    // The overlay merge_versions_into_ performs, restricted to this target:
+    // the project's versions and bindings WIN per entry, type and filename
+    // are filled from global when the project leaves them empty.
+    if (!forceGlobalScope_ && hasProjectConfig_) {
+        if (auto it = projectVersions_.find(target); it != projectVersions_.end()) {
+            auto& p = it->second;
+            if (!out) out = xvm::VInfo{};
+            if (out->type.empty() && !p.type.empty()) out->type = p.type;
+            if (out->filename.empty() && !p.filename.empty()) out->filename = p.filename;
+            for (auto& [ver, vdata] : p.versions) out->versions[ver] = vdata;
+            for (auto& [name, vermap] : p.bindings) {
+                for (auto& [ver, value] : vermap) out->bindings[name][ver] = value;
+            }
+        }
+    }
+    return out;
 }
 
 void Config::load_global_workspace_() {
@@ -925,21 +979,19 @@ void Config::load_global_workspace_() {
 
 void Config::reload_state_() {
     namespace fs = std::filesystem;
-    auto configPath = paths_.homeDir / ".xlings.json";
-    if (fs::exists(configPath)) {
-        try {
-            const auto before = file_stat_(configPath);
-            auto content = platform::read_file_to_string(configPath.string());
-            auto json = nlohmann::json::parse(content, nullptr, false);
-            if (!json.is_discarded()) {
-                load_global_versions_from_json_(json);
-                if (before) remember_known_projects_(json, before->first, before->second);
-            }
-        } catch (...) {}
-    } else {
-        globalVersions_.clear();
+    // Drop the lazily-loaded layers; the next accessor re-reads them from
+    // disk. The capture memo self-invalidates against the file's stat, so
+    // a capture taken after the write this reload follows reflects it.
+    globalVersionsLoaded_ = false;
+    globalWorkspaceLoaded_ = false;
+    indexConfigLoaded_ = false;
+    if (auto cap = home_config_capture(paths_.homeDir / ".xlings.json",
+                                       HomeCaptureMode::AbortAtVersions);
+        cap && cap->ok) {
+        remember_known_projects_(cap->json, cap->size, cap->mtime);
     }
     load_global_workspace_();
+    globalWorkspaceLoaded_ = true;
     if (hasProjectConfig_) load_project_config_();
     update_effective_paths_();
 }
@@ -1076,35 +1128,59 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 }
 
 [[nodiscard]] std::vector<std::string> Config::resource_servers(std::string_view mirror) {
+    instance_().ensure_index_config_();
     return instance_().candidate_resource_servers_for_(mirror);
 }
 
 [[nodiscard]] std::vector<std::string> Config::resource_servers_with_cross_region(std::string_view mirror) {
+    instance_().ensure_index_config_();
     return instance_().all_resource_servers_for_(mirror);
 }
 
 [[nodiscard]] std::string Config::resource_server(std::string_view mirror) {
+    instance_().ensure_index_config_();
     return instance_().selected_resource_server_for_(mirror);
 }
 
-[[nodiscard]] std::vector<ArtifactBase> Config::index_bases() { return instance_().indexBases_; }
+[[nodiscard]] std::vector<ArtifactBase> Config::index_bases() {
+    auto& self = instance_();
+    if (self.hasProjectConfig_ && !self.projectIndexBases_.empty())
+        return self.projectIndexBases_;
+    self.ensure_index_config_();
+    return self.globalIndexBases_;
+}
 
 [[nodiscard]] xvm::VersionDB Config::versions() {
     auto& self = instance_();
+    self.ensure_global_versions_();
     return merged_versions(self.globalVersions_, self.projectVersions_);
+}
+
+[[nodiscard]] std::optional<xvm::VInfo> Config::find_vinfo(const std::string& target) {
+    return instance_().find_vinfo_(target);
 }
 
 [[nodiscard]] xvm::VersionDB& Config::versions_mut() {
     auto& self = instance_();
-    if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalVersions_;
+    if (self.forceGlobalScope_ || !self.hasProjectConfig_) {
+        self.ensure_global_versions_();
+        return self.globalVersions_;
+    }
     return self.projectVersions_;
 }
 
-[[nodiscard]] const xvm::VersionDB& Config::global_versions() { return instance_().globalVersions_; }
+[[nodiscard]] const xvm::VersionDB& Config::global_versions() {
+    instance_().ensure_global_versions_();
+    return instance_().globalVersions_;
+}
 
-[[nodiscard]] const xvm::Workspace& Config::global_workspace() { return instance_().globalWorkspace_; }
+[[nodiscard]] const xvm::Workspace& Config::global_workspace() {
+    instance_().ensure_global_workspace_();
+    return instance_().globalWorkspace_;
+}
 
 [[nodiscard]] bool Config::global_workspace_observed() {
+    instance_().ensure_global_workspace_();
     return instance_().globalWorkspaceObserved_;
 }
 
@@ -1139,6 +1215,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 }
 
 [[nodiscard]] const std::vector<IndexRepo>& Config::global_index_repos() {
+    instance_().ensure_index_config_();
     return instance_().globalIndexRepos_;
 }
 
@@ -1151,6 +1228,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     if (self.hasProjectConfig_ && !self.projectIndexRepos_.empty()) {
         return self.projectIndexRepos_;
     }
+    self.ensure_index_config_();
     return self.globalIndexRepos_;
 }
 
@@ -1206,6 +1284,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] xvm::Workspace Config::effective_workspace() {
     auto& self = instance_();
+    self.ensure_global_workspace_();
     // `-g` means "act on the home, not on this project" -- and that has to
     // include which workspace is authoritative, not only which directory
     // the artifacts land in. Honoring it for paths alone is how
@@ -1224,6 +1303,7 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] Config::VersionOrigin Config::version_origin(const std::string& target) {
     auto& self = instance_();
+    self.ensure_global_workspace_();
 
     const auto claims = [&](const xvm::Workspace& ws) {
         auto it = ws.find(target);
@@ -1271,7 +1351,10 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] const xvm::Workspace& Config::workspace() {
     auto& self = instance_();
-    if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalWorkspace_;
+    if (self.forceGlobalScope_ || !self.hasProjectConfig_) {
+        self.ensure_global_workspace_();
+        return self.globalWorkspace_;
+    }
     if (self.projectSubosMode_ == ProjectSubosMode::Named ||
         self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosWorkspace_;
     return self.projectWorkspace_;
@@ -1279,7 +1362,10 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] xvm::Workspace& Config::workspace_mut() {
     auto& self = instance_();
-    if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalWorkspace_;
+    if (self.forceGlobalScope_ || !self.hasProjectConfig_) {
+        self.ensure_global_workspace_();
+        return self.globalWorkspace_;
+    }
     if (self.projectSubosMode_ == ProjectSubosMode::Named ||
         self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosWorkspace_;
     return self.projectWorkspace_;
@@ -1287,17 +1373,25 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 
 [[nodiscard]] const xvm::WorkspaceInstalled& Config::workspace_installed() {
     auto& self = instance_();
-    if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalInstalled_;
+    if (self.forceGlobalScope_ || !self.hasProjectConfig_) {
+        self.ensure_global_workspace_();
+        return self.globalInstalled_;
+    }
     if (self.projectSubosMode_ == ProjectSubosMode::Named ||
         self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosInstalled_;
+    self.ensure_global_workspace_();
     return self.globalInstalled_;
 }
 
 [[nodiscard]] xvm::WorkspaceInstalled& Config::workspace_installed_mut() {
     auto& self = instance_();
-    if (self.forceGlobalScope_ || !self.hasProjectConfig_) return self.globalInstalled_;
+    if (self.forceGlobalScope_ || !self.hasProjectConfig_) {
+        self.ensure_global_workspace_();
+        return self.globalInstalled_;
+    }
     if (self.projectSubosMode_ == ProjectSubosMode::Named ||
         self.projectSubosMode_ == ProjectSubosMode::Anonymous) return self.projectSubosInstalled_;
+    self.ensure_global_workspace_();
     return self.globalInstalled_;
 }
 
@@ -1362,6 +1456,7 @@ void Config::save_versions() {
     namespace fs = std::filesystem;
     auto& self = instance_();
     bool useGlobal = self.forceGlobalScope_ || !self.hasProjectConfig_ || self.projectDir_.empty();
+    if (useGlobal) self.ensure_global_versions_();
     auto configPath = useGlobal
         ? self.paths_.homeDir / ".xlings.json"
         : self.project_state_path_();
@@ -1382,7 +1477,55 @@ void Config::save_versions() {
 
     auto& versions = useGlobal ? self.globalVersions_ : self.projectVersions_;
     json["versions"] = xvm::versions_to_json(versions);
+
+    if (useGlobal) {
+        // The program-name index the cheap home-config capture answers
+        // "does this home know this program" from, without lexing
+        // `versions`. Written in the same dump as `versions`, so this
+        // writer cannot make the two diverge. (A hand-edited config can;
+        // the index is a fast path whose miss falls through to the real
+        // database, never an authority.)
+        json["dbIndex"] = xvm::program_index_to_json(versions);
+    }
     platform::write_string_to_file(configPath.string(), json.dump(2));
+
+    if (useGlobal) {
+        // The DB file gets its own copy of the versions map, wrapped with a
+        // STAMP of the home config's size+mtime taken AFTER the config was
+        // written. load_versions_json trusts the file only while the
+        // config's current stat still matches the stamp: a client that has
+        // never heard of this file (every client ≤2026.9.30.1) updates the
+        // config's `versions` field and leaves both file and stamp behind,
+        // and the reader falls back to the config -- the copy every writer
+        // updates is the fresher one by construction, whichever client wrote
+        // last. (A crash between the two writes leaves the previous stamp on
+        // the previous file, which the new config's stat no longer matches:
+        // the same fallback, in the crash direction too.)
+        //
+        // If the file cannot be written (read-only home, full disk), any
+        // stale copy is removed so the home config remains the authority
+        // readers fall back to; a DB file shadowing newer config content
+        // would be exactly the divergence the fallback exists to avoid.
+        auto dbPath = xlings::versions_db_path(self.paths_.homeDir);
+        std::error_code ec;
+        fs::create_directories(dbPath.parent_path(), ec);
+        if (const auto stamp = file_stat_(configPath)) {
+            nlohmann::json wrapper = nlohmann::json::object();
+            wrapper["format"] = 1;
+            wrapper["stamp"] =
+                xlings::versions_db_stamp(stamp->first, stamp->second);
+            wrapper["versions"] = xvm::versions_to_json(versions);
+            try {
+                platform::write_file_atomic(dbPath.string(), wrapper.dump(2));
+            } catch (const std::exception& e) {
+                log::warn("could not write {} ({}); the home config's versions "
+                          "field stays the authoritative copy",
+                          dbPath.string(), e.what());
+                std::error_code rmEc;
+                fs::remove(dbPath, rmEc);
+            }
+        }
+    }
     // The home config was just parsed and written whole; what it now says
     // about known projects is `json`. Taken after the write, under the state
     // lock every caller holds, so the next rebuild's stat matches it.
@@ -1470,6 +1613,11 @@ std::expected<void, std::string> rmw_home_config_locked_(
     } catch (const std::exception& e) {
         return std::unexpected(e.what());
     }
+
+    // The config write just invalidated the versions DB file's stamp; carry
+    // it forward only if the DB still mirrors the `versions` just written
+    // (see restamp_versions_db_if_equal for why write order is not proof).
+    xlings::restamp_versions_db_if_equal(homeDir, json);
     return {};
 }
 
@@ -1679,6 +1827,10 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     projects[key.string()] = nlohmann::json{{"lastSeen", stamp}};
 
     platform::write_string_to_file(configPath.string(), json.dump(2));
+    // This runs right after save_versions in a project-scope install; keep
+    // the versions DB trusted rather than demoting every reader until the
+    // next install (no-op unless the DB mirrors what was just written).
+    xlings::restamp_versions_db_if_equal(self.paths_.homeDir, json);
     if (const auto after = file_stat_(configPath)) {
         self.remember_known_projects_(json, after->first, after->second);
     }
@@ -1796,6 +1948,9 @@ void Config::save_workspace() {
         // workspace through with no installed[] info.
         sws.active = self.projectWorkspace_;
     } else {
+        // Lazily loaded: never write "not loaded yet" back as an empty
+        // workspace over the subos's real one.
+        self.ensure_global_workspace_();
         sws.active = self.globalWorkspace_;
         sws.installed = self.globalInstalled_;
         sws.configured = self.globalConfigured_;
@@ -1813,9 +1968,13 @@ void Config::save_workspace() {
 // same selection as workspace_installed_mut(), so a record always lands next
 // to the installed[] it is checked against.
 std::map<std::string, int>& Config::configured_mut_() {
-    if (forceGlobalScope_ || !hasProjectConfig_) return globalConfigured_;
+    if (forceGlobalScope_ || !hasProjectConfig_) {
+        ensure_global_workspace_();
+        return globalConfigured_;
+    }
     if (projectSubosMode_ == ProjectSubosMode::Named ||
         projectSubosMode_ == ProjectSubosMode::Anonymous) return projectSubosConfigured_;
+    ensure_global_workspace_();
     return globalConfigured_;
 }
 

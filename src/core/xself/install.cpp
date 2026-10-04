@@ -4,6 +4,7 @@ import std;
 import xlings.core.xself.init;
 import xlings.core.xself.shell_profile;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.core.xvm.lock;
 import xlings.libs.json;
 import xlings.libs.tinyhttps;
@@ -144,6 +145,7 @@ void configure_install_mirror_(const fs::path& targetHome,
 
     set_mirror_fields_(json, mirror);
     platform::write_string_to_file(configPath.string(), json.dump(2));
+    restamp_versions_db_if_equal(targetHome, json);
     log::println("[xlings:self] mirror: {}", mirror);
 }
 
@@ -896,6 +898,7 @@ int cmd_install(EventStream& stream) {
                 if (!json.is_discarded() && json.is_object()) {
                     json["version"] = "v" + pkgVersion;
                     platform::write_string_to_file(configPath.string(), json.dump(2));
+                    restamp_versions_db_if_equal(targetHome, json);
                 }
             } catch (...) {}
         }

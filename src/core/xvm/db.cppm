@@ -375,6 +375,13 @@ nlohmann::json versions_to_json(const VersionDB& db);
 
 VersionDB versions_from_json(const nlohmann::json& j);
 
+// The home config's cheap index of the DB's keys: {program: filename-stem}.
+// Written beside `versions` (as `dbIndex`) in the same dump, so the writer
+// cannot make the two diverge. Read by the partial home-config capture to
+// answer "does this home know this program" without lexing `versions`.
+// A fast path, never an authority: a miss falls through to the real DB.
+nlohmann::json program_index_to_json(const VersionDB& db);
+
 // Resolve a project-style workspace value (string | platform-conditional
 // object) to a single version string. Lifted out of workspace_from_json
 // so subos_workspace_from_json can reuse the same fallback semantics

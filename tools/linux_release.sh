@@ -54,7 +54,10 @@ MCPP_TARGET="${MCPP_TARGET:-x86_64-linux-musl}"
 command -v "$MCPP_BIN" >/dev/null 2>&1 || fail "mcpp not found; run xlings install first"
 
 rm -rf "$PROJECT_DIR/target/$MCPP_TARGET"
-"$MCPP_BIN" build --target "$MCPP_TARGET" --print-fingerprint --no-cache 2>&1 || fail "mcpp build failed"
+# --profile dist: -O3 + link-time strip. mcpp's default profile is dev
+# (-O0 -g) -- that default is what shipped 127 MB release binaries; the
+# artifact checks below make a silent fallback to dev fail instead.
+"$MCPP_BIN" build --profile dist --target "$MCPP_TARGET" --print-fingerprint --no-cache 2>&1 || fail "mcpp build failed"
 
 # NEWEST by mtime, not last by fingerprint.
 #
@@ -77,6 +80,25 @@ elif command -v ldd &>/dev/null; then
   ldd "$BIN_SRC" 2>&1 | grep -Eq "not a dynamic executable|statically linked" || fail "binary is not statically linked"
 fi
 info "OK: binary is fully static"
+
+# dist-profile gate, checked on the artifact rather than the build command: a
+# dev build (-O0 -g) passes every functional check below -- it just unpacks,
+# runs, and dispatches shims an order of magnitude slower. "not stripped" is
+# rejected explicitly because it contains "stripped" as a substring.
+if command -v file &>/dev/null; then
+  FILE_OUT="$(file "$BIN_SRC")"
+  if echo "$FILE_OUT" | grep -Eqi "not stripped|with debug_info"; then
+    fail "binary is not stripped / carries debug_info — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev. file says: $FILE_OUT"
+  fi
+  if ! echo "$FILE_OUT" | grep -qi "stripped"; then
+    fail "binary is not stripped — release artifact must be dist profile (-O3 + stripped); if you see this, the build profile fell back to dev. file says: $FILE_OUT"
+  fi
+fi
+BIN_SIZE="$(wc -c < "$BIN_SRC")"
+if (( BIN_SIZE > 80 * 1024 * 1024 )); then
+  fail "binary is ${BIN_SIZE} bytes (> 80 MB) — release artifact must be dist profile (-O3 + stripped, expect ~15-30 MB); a dev-profile (-O0 -g) build is ~127 MB. If you see this, the build profile fell back to dev"
+fi
+info "OK: binary is dist profile (-O3 + stripped)"
 
 # ── 2. Assemble package ─────────────────────────────────────────
 info "Assembling $OUT_DIR ..."

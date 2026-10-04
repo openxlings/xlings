@@ -10,7 +10,7 @@ import xlings.core.xvm.db;
 namespace xlings {
 
 export struct Info {
-    static constexpr std::string_view VERSION = "2026.9.30.1";
+    static constexpr std::string_view VERSION = "2026.10.4.1";
     static constexpr std::string_view REPO = "https://github.com/openxlings/xlings";
 };
 
@@ -157,8 +157,12 @@ private:
     PathInfo paths_;
     std::string mirror_;
     // xim.index-base override, as a preference chain (#598); empty = default
-    // xlings-res.
-    std::vector<ArtifactBase> indexBases_;
+    // xlings-res. Two layers, read by index_bases(): the project's wins when
+    // it sets one. Kept apart because they load at different times -- the
+    // project's with the manifest, the home's lazily (ensure_index_config_)
+    // -- and one shared member let the later load overwrite the earlier.
+    std::vector<ArtifactBase> globalIndexBases_;
+    std::vector<ArtifactBase> projectIndexBases_;
     // xim.index-repo (region-resolved via xim.mirrors.index-repo). Written by
     // `xlings self install` since it shipped and, until now, read by nothing --
     // default_global_index_repos_ carried its own copy of the URL. Empty means
@@ -364,7 +368,38 @@ private:
 
     void load_project_config_();
 
-    void load_global_versions_from_json_(const nlohmann::json& json);
+    // The three lazily-loaded layers of home state.
+    //
+    // The constructor parses only the CHEAP part of the home config -- a
+    // capture that stops before `versions` (~90% of the bytes on a real
+    // home) -- plus the project manifest. Everything else loads on first
+    // use, so a shim dispatch that finds its answer in the shim-view cache
+    // never pays for any of it:
+    //
+    //   globalVersions_   from <home>/data/versions.json when the home has
+    //                     one, else the home config's `versions` field --
+    //                     load_versions_json owns that choice and the
+    //                     fallback.
+    //   globalWorkspace_  from the global subos's .xlings.json (unchanged
+    //                     reader, deferred).
+    //   index config      xim/index repos/resource servers, from a capture
+    //                     that skips `versions` (they need `xim`, which
+    //                     sorts after it).
+    //
+    // `reload_state_` drops the flags; the next accessor re-reads whatever
+    // the file now says.
+    bool globalVersionsLoaded_ { false };
+    bool globalWorkspaceLoaded_ { false };
+    bool indexConfigLoaded_ { false };
+    void ensure_global_versions_();
+    void ensure_global_workspace_();
+    void ensure_index_config_();
+
+    // merge_versions_into_ restricted to ONE target: the same overlay
+    // (project wins per version, type/filename filled from global) without
+    // materializing the other ~3969 entries. This is what shim dispatch
+    // reads; `versions()` remains the whole-DB answer for the CLI.
+    [[nodiscard]] std::optional<xvm::VInfo> find_vinfo_(const std::string& target);
 
     void load_global_workspace_();
 
@@ -530,6 +565,12 @@ public:
     [[nodiscard]] static xvm::VersionDB versions();
     [[nodiscard]] static xvm::VersionDB& versions_mut();
     [[nodiscard]] static const xvm::VersionDB& global_versions();
+
+    // The ONE target's entry, project layer merged over global exactly as
+    // merged_versions() would merge it. What a shim dispatch actually needs
+    // -- match_version, get_vdata, recorded_owner are all target-scoped --
+    // at the cost of one VInfo instead of the whole database.
+    [[nodiscard]] static std::optional<xvm::VInfo> find_vinfo(const std::string& target);
 
     // The workspace of the GLOBALLY active subos, regardless of whether a
     // project is in scope. `workspace()` answers for the current scope --

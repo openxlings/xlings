@@ -65,6 +65,23 @@ require_fixture_index() {
   [[ -d "$FIXTURE_INDEX_DIR/pkgs" ]] || fail "fixture index repo not found at $FIXTURE_INDEX_DIR"
 }
 
+# Drop the derived versions-DB copy (<home>/data/versions.json).
+#
+# The versions database lives in TWO files during the dual-write window:
+# the DB file readers prefer, and the home config's `versions` field every
+# writer keeps for older clients. Tests that simulate a broken or
+# hand-edited database edit the CONFIG field; without dropping the derived
+# copy first the tamper is invisible -- readers answer from the intact DB
+# file (measured on CI, 2026-10-04: xvm_group_switch S5 "use succeeded
+# despite a missing member", self_doctor S10b, version_key_namespace S5,
+# xvm_metadata_reset, doctor_cross_subos I9). Call it right after every
+# hand-edit of `<home>/.xlings.json`'s versions state; the next
+# install/use re-creates the copy from the edited field, which is the
+# migration working as designed.
+drop_versions_db_copy() {
+  rm -f "$1/data/versions.json"
+}
+
 # Where a test's isolated XLINGS_HOME lives.
 #
 # NOT under $ROOT_DIR by default. Four home-related defects in the 2026-08-06

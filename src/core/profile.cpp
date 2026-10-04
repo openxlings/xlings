@@ -8,6 +8,7 @@ module xlings.core.profile;
 import std;
 import xlings.core.destructive_log;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -240,24 +241,19 @@ std::expected<std::set<std::string>, std::string>
 collect_subos_references_(const fs::path& xlingsHome) {
     std::set<std::string> referenced;
 
-    // Load global versions DB
+    // Load global versions DB -- from the versions DB file when the home
+    // has one, else the home config's `versions` field (load_versions_json
+    // owns that choice). This collector REFUSES when neither source is
+    // readable: "could not read" is not "references nothing", and an empty
+    // answer here would list live payloads for removal.
     auto configPath = xlingsHome / ".xlings.json";
     xvm::VersionDB globalDB;
-    if (fs::exists(configPath)) {
-        nlohmann::json json;
-        try {
-            json = nlohmann::json::parse(
-                platform::read_file_to_string(configPath.string()), nullptr, false);
-        } catch (...) {
-            json = nlohmann::json::value_t::discarded;
-        }
-        if (json.is_discarded() || !json.is_object()) {
-            return std::unexpected(std::format(
-                "{} could not be read, so which packages are in use is unknown",
-                configPath.string()));
-        }
-        if (json.contains("versions"))
-            globalDB = xvm::versions_from_json(json["versions"]);
+    if (auto versionsRoot = load_versions_json(xlingsHome)) {
+        globalDB = xvm::versions_from_json(*versionsRoot);
+    } else {
+        return std::unexpected(std::format(
+            "{} could not be read, so which packages are in use is unknown",
+            configPath.string()));
     }
 
     // Build a map: xpkg_dir_name/version -> key, from versions DB paths
