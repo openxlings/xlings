@@ -235,7 +235,7 @@ status = "planned"
 
 [ISO-CAPS-CACHE]
 text = "capabilities are cached per kernel/boot/provider/version"
-status = "planned"
+status = "required"
 
 [ISO-MUST-SHOULD]
 text = "a missing must-item refuses (125); a missing should-item degrades and says so"
@@ -365,7 +365,7 @@ status = "planned"
 
 [OBS-TRACE]
 text = "XLINGS_TRACE=<categories> prints the decision trace"
-status = "planned"
+status = "required"
 
 # ── home and deployment (design §3–§6) ─────────────────────────────
 
@@ -401,7 +401,7 @@ status = "required"
 
 [PLAT-HINT]
 text = "an unsupported item prints the shared hint format on every platform"
-status = "planned"
+status = "required"
 
 [PLAT-STATUS-MATRIX]
 text = "subos status prints the probed capability matrix"

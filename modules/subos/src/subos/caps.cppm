@@ -50,7 +50,8 @@ struct Caps {
 inline constexpr std::string_view kRootOwnedBwrap = "/usr/lib/xlings/bwrap";
 
 // Every bwrap found, in that order, each probed. The doctor reports them all.
-std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports);
+// `fresh` probes every one again (the doctor's view) and refreshes the cache.
+std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, bool fresh = false);
 // The first usable one; otherwise the first found (with its probe output).
 std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports);
 // The payload only (what `xlings install bwrap` put there).

@@ -39,3 +39,42 @@ XTEST(IsolationDoctor, ReportsEveryBackendItFoundAndWhatTheProbeSaid,
     // No setuid anywhere in what it chose or offered.
     EXPECT_EQ(r.out.find("chmod 4755"), std::string::npos);
 }
+
+XTEST(IsolationDoctor, ProbesAreCachedPerBootAndTraced,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-CAPS-CACHE", "OBS-TRACE"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    auto home = tk::Home::isolated("caps-cache");
+    home.seed_sandbox_backend();
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    auto first = home.xlings({"subos", "exec", "box", "--sandbox", "--", "true"}, {{"XLINGS_TRACE", "caps"}});
+    auto second = home.xlings({"subos", "exec", "box", "--sandbox", "--", "true"}, {{"XLINGS_TRACE", "caps,spec"}});
+    EXPECT_NE(first.err.find("[trace:caps]"), std::string::npos) << first.transcript();
+    EXPECT_NE(first.err.find("probed"), std::string::npos) << first.transcript();
+    EXPECT_NE(second.err.find("cached"), std::string::npos) << second.transcript();
+    EXPECT_EQ(second.err.find("probed"), std::string::npos) << second.transcript();
+    EXPECT_NE(second.err.find("[trace:spec]"), std::string::npos);
+    EXPECT_TRUE(fs::exists(home.dir() / "state" / "isolation-caps.json"));
+}
+
+XTEST(IsolationDoctor, APlatformWithoutTheIsolationSaysSoInOneFormat,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"PLAT-HINT"},
+      .requires_ = {"xlings-bin"}) {
+    if (tk::probe("linux")) {   // a reason it is not Linux: macOS or Windows
+        auto home = tk::Home::isolated("plat-hint");
+        ASSERT_EQ(home.xlings({"self", "init"}, {}, std::chrono::minutes(3)).exit_code, 0);
+        ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+        auto r = home.xlings({"subos", "exec", "box", "--sandbox=private", "--", "true"});
+        EXPECT_EQ(r.exit_code, 125) << r.transcript();
+        EXPECT_NE(r.transcript().find("not implemented on this platform yet"), std::string::npos)
+            << r.transcript();
+        return;
+    }
+    // Linux: the same shared format, for a requirement this host cannot meet.
+    auto home = tk::Home::isolated("plat-hint");
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    tk::write_file(home.dir() / "data" / "xpkgs" / "xim-x-proot" / "0" / "bin" / "proot", "#!/bin/sh\nexit 0\n");
+    fs::permissions(home.dir() / "data" / "xpkgs" / "xim-x-proot" / "0" / "bin" / "proot", fs::perms::owner_all);
+    auto r = home.xlings({"subos", "exec", "box", "--sandbox", "proot", "--sandbox=locked", "--", "true"});
+    EXPECT_EQ(r.exit_code, 125) << r.transcript();
+    EXPECT_NE(r.transcript().find("cannot enter"), std::string::npos) << r.transcript();
+}

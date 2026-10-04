@@ -231,6 +231,7 @@ bool write_atomic(const fs::path& path, const std::string& text) {
 void audit(const HomeView& home, std::string_view instance, nlohmann::json fields,
            observe::Kind kind = observe::Kind::Lifecycle) {
     fields["instance"] = std::string(instance);
+    observe::trace(kind == observe::Kind::Perm ? "broker" : "session", fields.dump());
     observe::append(home.logs_dir(instance) / "events.ndjson",
                     observe::Event{ .kind = kind, .fields = std::move(fields) });
 }

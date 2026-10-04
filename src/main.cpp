@@ -8,6 +8,7 @@ import xlings.core.xvm.shim;
 import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
+import xlings.observe;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
@@ -145,6 +146,9 @@ int main(int argc, char* argv[]) {
         bool refused = false;
         if (is_cli) {
             const auto& ctx = xlings::Config::home_context();
+            xlings::observe::trace("home", std::format("{} source={} mode={}{} layout={}", ctx.home.string(),
+                xlings::home::to_string(ctx.source), xlings::home::to_string(ctx.mode),
+                ctx.modeDeclared ? "" : " (inferred)", ctx.layout));
             if (!ctx.writable()) {
                 std::vector<std::string_view> rest(argv + 1, argv + argc);
                 if (!xlings::home::is_read_only_command(rest)) {

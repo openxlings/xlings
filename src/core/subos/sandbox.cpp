@@ -50,6 +50,7 @@ import xlings.subos.session;
 import xlings.subos.broker;
 import xlings.core.elfread;
 import xlings.core.confirm;
+import xlings.observe;
 import xlings.core.subos.ports;
 
 namespace xlings::subos::sandbox {
@@ -692,6 +693,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         return kFail;
     }
     const auto& sb = *compiled;
+    observe::trace("spec", sb.describe().dump());
     if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
     if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
         log::warn("using the host's proot ({}) -- no proot payload in {}. "
@@ -769,6 +771,11 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(launched, seccomp_fd)
                                                    : provider::proot_argv(launched);
 
+    if (observe::trace_enabled("provider")) {
+        std::string line;
+        for (auto& a : argv) line += " " + a;
+        observe::trace("provider", line);
+    }
     std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
     pass.insert(pass.end(), pol.env_pass.begin(), pol.env_pass.end());
     // The supervisor hosts the session: the sandbox's owner stays outside it,
@@ -820,6 +827,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                   "Windows");
 #endif
     }
+    if (pol.preset != policy::Preset::Legacy) report_degraded_(*compiled);
     payload["backend"] = "home-redirect";
 #if defined(__APPLE__)
     payload["shell"] = platform::resolve_shell();
@@ -885,7 +893,7 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
         {"kernel.unprivileged_userns_clone", read_sysctl("/proc/sys/kernel/unprivileged_userns_clone")},
         {"user.max_user_namespaces", read_sysctl("/proc/sys/user/max_user_namespaces")},
     };
-    auto candidates = caps::bwrap_candidates(home, ports);
+    auto candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
     report["bwrap"] = nlohmann::json::array();
     for (auto& b : candidates) {
         auto first = b.probe_output.substr(0, b.probe_output.find('\n'));
