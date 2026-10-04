@@ -170,34 +170,7 @@ export bool is_mounted_(const fs::path& path);
 // Unmount an image file.
 export int unmount_image_(const fs::path& mountpoint);
 
-// ── Unified bind list (shared by proot + bwrap) ──────────────────────
-//
-// Both backends use the SAME set of host-RO paths and sandbox-private
-// overrides. This ensures identical security profile (same info exposed,
-// same paths isolated) regardless of backend. Only the CLI syntax
-// differs: proot uses `--bind=src:dst`, bwrap uses `--ro-bind src dst`
-// or `--bind src dst`.
-//
-// Design principle: MINIMAL host exposure. Only bind paths that are
-// functionally required. Everything else stays invisible (proot: maps
-// to empty <subos>/<path>; bwrap: not bound at all).
-//
-// See .agents/docs/sandbox-v5-dual-backend-design.md for rationale.
-
-struct SandboxBind {
-    std::string src;
-    std::string dst;
-    bool readonly;   // true = host RO; false = sandbox RW override
-};
-
-// ── Backend detection + auto-install ─────────────────────────────────
-
-enum class SandboxBackend { Bwrap, Proot };
-
-struct BackendInfo {
-    SandboxBackend type;
-    fs::path binary;
-};
+// ── Backend auto-install ─────────────────────────────────────────────
 
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream);
 

@@ -15,6 +15,13 @@ module;
 #include <cstring>
 #include <unistd.h>
 #include <sys/wait.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#define XLINGS_ENVIRON (*_NSGetEnviron())
+#else
+extern char** environ;
+#define XLINGS_ENVIRON environ
+#endif
 #endif
 
 module xlings.core.subos.sandbox;
@@ -30,6 +37,13 @@ import xlings.core.xim.commands;
 import xlings.core.xim.compatibility;
 import xlings.subos.gpu;
 import xlings.core.xvm.shim;
+import xlings.subos.home_view;
+import xlings.subos.ports;
+import xlings.subos.policy;
+import xlings.subos.caps;
+import xlings.subos.spec;
+import xlings.subos.provider;
+import xlings.core.subos.ports;
 
 namespace xlings::subos::sandbox {
 
@@ -225,250 +239,6 @@ int unmount_image_(const fs::path& mountpoint) {
 // ─────────────────────────────────────────────────────────────────────
 
 
-// Probe order for the proot binary:
-//   1. <home>/data/xpkgs/xim-x-proot/<ver>/bin/proot   the PAYLOAD
-//   2. <home>/runtimedir/proot                         auto-fetch cache
-//   3. /usr/bin/proot, /usr/local/bin/proot            the HOST (reported)
-//
-// PATH is deliberately absent -- see (3) below. The same rule, in the same
-// shape, as libxpkg's elfpatch tool lookup: payload, then a named fallback
-// that says so. Both implement R6 (internal consumers bind the payload, not
-// the view), .agents/docs/2026-08-06-subos-architecture-proposal.md §1.5.
-//
-// Returns the path to a usable proot, or unexpected with a hint string.
-std::expected<fs::path, std::string>
-locate_proot_(const fs::path& home_dir) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-
-    // (1) xpkg-managed (look at versions DB)
-    //
-    // Iterating with explicit directory_iterator + sentinel comparison
-    // (not range-for over a wrapper) sidesteps a libstdc++ copy-ctor
-    // visibility issue we hit on gcc 15.1.0 musl-cross when this header
-    // is exposed via BMI: the range-for path required `directory_iterator
-    // (directory_iterator const&)` to be visible at the inline expansion
-    // site inside another module's TU, and the cross-toolchain link
-    // surfaced it as "undefined reference to __cxx11::directory_iterator
-    // ctor" in capabilities.cppm. Using sentinel `{}` comparison avoids
-    // the copy entirely.
-    auto xpkgs_dir = home_dir / "data" / "xpkgs";
-    auto xpkg_proot_root = xpkgs_dir / "xim-x-proot";
-    if (fs::is_directory(xpkg_proot_root, ec)) {
-        // Sentinel form (`it != default_sentinel`) instead of comparing
-        // two directory_iterators directly. Clang/libc++ only provides
-        // the sentinel comparison in C++20+; comparing two
-        // directory_iterators yields "invalid operands to binary
-        // expression" on macOS clang. Sentinel form works on both
-        // libstdc++ (Linux gcc) and libc++ (macOS clang).
-        std::error_code it_ec;
-        for (auto it = fs::directory_iterator(xpkg_proot_root, it_ec);
-             !it_ec && it != std::default_sentinel;
-             it.increment(it_ec))
-        {
-            auto candidate = it->path() / "bin" / "proot";
-            if (fs::is_regular_file(candidate, ec)) return candidate;
-        }
-    }
-
-    // (2) auto-fetch cache
-    auto runtime_proot = home_dir / "runtimedir" / "proot";
-    if (fs::is_regular_file(runtime_proot, ec)) return runtime_proot;
-
-    // (3) The host's proot, at the two paths a distribution puts it.
-    //
-    // There is no PATH step. An earlier version walked PATH and rejected the
-    // candidates that turned out to be xlings shims; that fixed the symptom
-    // and left the cause. By R6 the whole step is wrong for internal use: PATH
-    // is a *view*, it is what the user selected, and letting it decide which
-    // proot runs makes the sandbox's own identity depend on the environment
-    // the sandbox was launched from. A shim on PATH is the worst case -- it
-    // re-enters xlings, anchors to the home that owns it, and re-exports
-    // XLINGS_HOME to match, so an isolated home with no backend installed
-    // would silently run against the developer's real home, and every
-    // measurement taken inside would be of the wrong home while looking
-    // exactly like a measurement of the right one.
-    //
-    // These two paths are different in kind: they are the host's, they are
-    // named here rather than discovered, and using one is reported. Per §2.8
-    // of the architecture proposal, depending on the host is allowed when it
-    // is DECLARED -- what is not allowed is depending on it by accident.
-    for (const auto* p : {"/usr/bin/proot", "/usr/local/bin/proot"}) {
-        auto candidate = fs::path(p);
-        if (!fs::is_regular_file(candidate, ec)) continue;
-        // Defensive: a home that installed itself under /usr/local would put
-        // a shim on one of these paths, and it is still a shim.
-        if (auto owner = xvm::resolve_owner_home(candidate)) {
-            log::debug("skipping {}: an xlings shim owned by {}, not the "
-                       "host's proot", candidate.string(), owner->string());
-            continue;
-        }
-        log::warn("using the host's proot ({}) -- no proot payload in {}. "
-                  "Run `xlings install proot` to make this deterministic.",
-                  candidate.string(), home_dir.string());
-        return candidate;
-    }
-
-    // Naming the home rather than "~/.xlings": with an isolated XLINGS_HOME
-    // the tilde form points somewhere the caller is not using, and a
-    // reader who follows it lands on the very home this search excluded.
-    return std::unexpected(std::format(
-        "proot not found in {}. Run `xlings install proot`, or place a proot "
-        "binary at {}/runtimedir/proot. The host's proot at /usr/bin/proot is "
-        "used when present (`sudo apt install proot`), but PATH is not "
-        "searched: a `proot` on PATH may be an xlings shim, and running it "
-        "would move the whole session to whichever home owns it.",
-        home_dir.string(), home_dir.string()));
-}
-
-std::vector<SandboxBind>
-sandbox_binds_(const fs::path& subos_dir,
-               const fs::path& host_xlings_home,
-               const std::string& user,
-               StorageMode storage = StorageMode::Shared,
-               const fs::path& mountpoint = {})
-{
-    auto etc = subos_dir / "etc";
-    auto user_home = "/home/" + user;
-
-    std::error_code ec;
-
-    auto try_ro = [&](std::vector<SandboxBind>& v,
-                      const char* src, const char* dst) {
-        if (fs::exists(src, ec))
-            v.push_back({src, dst, true});
-    };
-
-    std::vector<SandboxBind> binds;
-
-    // ── Host RO: POSIX userland (tools + libs + loader) ──
-    try_ro(binds, "/usr", "/usr");
-    try_ro(binds, "/bin", "/bin");
-    try_ro(binds, "/usr/lib", "/lib");
-    try_ro(binds, "/usr/lib64", "/lib64");
-
-    // ── Host RO: /etc (by-need) ──
-    try_ro(binds, "/etc/resolv.conf", "/etc/resolv.conf");
-    try_ro(binds, "/etc/ld.so.cache", "/etc/ld.so.cache");
-    try_ro(binds, "/etc/ssl", "/etc/ssl");
-    try_ro(binds, "/etc/pki", "/etc/pki");
-    try_ro(binds, "/etc/alternatives", "/etc/alternatives");
-    try_ro(binds, "/etc/localtime", "/etc/localtime");
-
-    // ── Sandbox RW: private overrides (storage-dependent) ──
-    if (storage == StorageMode::Shared) {
-        binds.push_back({(subos_dir / "home").string(), "/home", false});
-        binds.push_back({(subos_dir / "tmp").string(), "/tmp", false});
-    } else if (storage == StorageMode::Image) {
-        // home from mounted image; tmp uses bwrap --tmpfs (added in argv)
-        binds.push_back({mountpoint.string(), "/home", false});
-    }
-    // tmpfs: home and tmp handled by bwrap --tmpfs (no bind needed)
-
-    // xlings shared — always bound regardless of storage mode, and always
-    // at its OWN absolute path.
-    //
-    // xvm alias targets, RPATH and INTERP are absolute host paths baked at
-    // install time, and nothing rewrites them on the way in; the home has
-    // to answer to the same spelling in here that it does outside. Mapping
-    // it to <user_home>/.xlings instead strands all of them, and mapping it
-    // to both makes one directory reachable by two real paths — which a
-    // bind mount does not collapse, so canonicalising does not save you and
-    // a shim ends up reporting a conflict with itself. For the default home
-    // this bind IS <user_home>/.xlings; that coincidence is the only reason
-    // the remapped form ever appeared to work.
-    binds.push_back({host_xlings_home.string(), host_xlings_home.string(), false});
-
-    // ── Sandbox: NSS templates ──
-    binds.push_back({(etc / "passwd").string(), "/etc/passwd", false});
-    binds.push_back({(etc / "group").string(), "/etc/group", false});
-    binds.push_back({(etc / "hosts").string(), "/etc/hosts", false});
-    binds.push_back({(etc / "nsswitch.conf").string(), "/etc/nsswitch.conf", false});
-
-    return binds;
-}
-
-// Build proot argv from unified bind list. When `cmd` is non-empty, ends
-// in `<shell> -c <cmd>` for non-interactive single-command exec (M3);
-// otherwise just `<shell>` for the standard interactive entry.
-std::vector<std::string>
-build_proot_argv_(const fs::path& proot_bin,
-                  const fs::path& subos_dir,
-                  const fs::path& host_xlings_home,
-                  const std::string& user,
-                  const std::string& shell_path,
-                  const std::string& cmd = "")
-{
-    auto user_home = "/home/" + user;
-    // Use sandbox-root/ as the chroot root instead of subos_dir itself.
-    // This avoids the proot detranslate_path bug where host paths under
-    // subos_dir (e.g. subos/<name>/usr) get mis-translated to /usr when
-    // the rootfs prefix is stripped. See init_sandbox_dirs_ for details.
-    auto proot_root = subos_dir / "sandbox-root";
-    std::vector<std::string> argv = {
-        proot_bin.string(),
-        "-r", proot_root.string(),
-        "--bind=/proc:/proc",
-        "--bind=/sys:/sys",
-        "--bind=/dev:/dev",
-    };
-
-    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user)) {
-        argv.push_back(std::format("--bind={}:{}", b.src, b.dst));
-    }
-
-    argv.push_back(std::format("--cwd={}", user_home));
-    argv.push_back(shell_path);
-    if (!cmd.empty()) {
-        argv.push_back("-c");
-        argv.push_back(cmd);
-    }
-    return argv;
-}
-
-// ── bwrap backend (V5) ────────────────────────────────────────────────
-
-// Locate bwrap binary — only searches xim:bwrap pool.
-// System-installed bwrap (/usr/bin/bwrap) is intentionally skipped:
-// distro packages lack setuid, and AppArmor/kernel restrictions on
-// unprivileged user namespaces make system binaries unreliable on
-// Ubuntu 24+, Fedora, etc. xim:bwrap is built with
-// `-Dsupport_setuid=true` (xlings-res/bwrap mirror) and its install
-// hook sets the binary setuid root (chmod 4755) — that combination is
-// what makes the xim-managed binary work across distros where unpriv
-// userns is restricted.
-std::expected<fs::path, std::string>
-locate_bwrap_(const fs::path& home_dir) {
-    std::error_code ec;
-
-    auto xpkg_root = home_dir / "data" / "xpkgs" / "xim-x-bwrap";
-    if (fs::is_directory(xpkg_root, ec)) {
-        std::error_code it_ec;
-        for (auto it = fs::directory_iterator(xpkg_root, it_ec);
-             !it_ec && it != std::default_sentinel;
-             it.increment(it_ec))
-        {
-            auto candidate = it->path() / "bin" / "bwrap";
-            if (fs::is_regular_file(candidate, ec)) return candidate;
-        }
-    }
-
-    return std::unexpected(
-        "bwrap not installed, run: xlings install bwrap");
-}
-
-// Probe whether a bwrap binary can actually create a sandbox.
-// Returns {ok, output}. `output` captures stdout+stderr (the platform
-// helper appends `2>&1` internally) so callers can classify the
-// failure cause — see classify_bwrap_probe_error_ for the known modes.
-std::pair<bool, std::string>
-probe_bwrap_(const fs::path& bwrap_bin) {
-    auto cmd = platform::shell_quote(bwrap_bin.string())
-             + " --ro-bind / / -- /bin/true";
-    auto [status, output] = platform::run_command_capture(cmd);
-    return { status == 0, std::move(output) };
-}
-
 // Translate a failed bwrap probe's captured output into an actionable
 // hint. Three known modes; anything else falls through to "show the
 // raw stderr" so users always see the truth instead of a stale
@@ -509,103 +279,6 @@ std::string classify_bwrap_probe_error_(const std::string& output,
            (trimmed.back() == '\n' || trimmed.back() == '\r'))
         trimmed.pop_back();
     return "bwrap probe failed; raw output:\n  " + trimmed;
-}
-
-// Build bwrap argv from unified bind list. Uses targeted --ro-bind
-// instead of `--ro-bind / /` to match proot's security profile
-// (same host paths exposed, same sandbox-private paths).
-// When `cmd` is non-empty, ends with `<shell> -c <cmd>` for non-
-// interactive single-command exec (M3); otherwise interactive shell.
-std::vector<std::string>
-build_bwrap_argv_(const fs::path& bwrap_bin,
-                  const fs::path& subos_dir,
-                  const fs::path& host_xlings_home,
-                  const std::string& user,
-                  const std::string& shell_path,
-                  bool interactive_shell,
-                  StorageMode storage = StorageMode::Shared,
-                  const fs::path& mountpoint = {},
-                  bool gpu = false,
-                  const std::string& cmd = "")
-{
-    auto user_home = "/home/" + user;
-    std::vector<std::string> argv = {
-        bwrap_bin.string(),
-        "--dev", "/dev",
-        "--proc", "/proc",
-    };
-
-    for (auto& b : sandbox_binds_(subos_dir, host_xlings_home, user,
-                                   storage, mountpoint)) {
-        if (b.readonly) {
-            argv.insert(argv.end(), {"--ro-bind", b.src, b.dst});
-        } else {
-            argv.insert(argv.end(), {"--bind", b.src, b.dst});
-        }
-    }
-
-    // GPU passthrough: must come after `--dev /dev` (which creates the
-    // empty tmpfs we'll mount nodes onto). Each --dev-bind is host-path
-    // → sandbox-path; missing nodes are silently skipped by gpu.cppm.
-    if (gpu) {
-        auto extra = xlings::subos::gpu::passthrough_args();
-        argv.insert(argv.end(), extra.begin(), extra.end());
-    }
-
-    // tmpfs mode: home and tmp are pure memory (exit = gone)
-    if (storage == StorageMode::Tmpfs) {
-        argv.insert(argv.end(), {"--tmpfs", user_home});
-        argv.insert(argv.end(), {"--tmpfs", "/tmp"});
-    }
-    // image mode: tmp uses tmpfs (home is bind-mounted from .mountpoint)
-    if (storage == StorageMode::Image) {
-        argv.insert(argv.end(), {"--tmpfs", "/tmp"});
-    }
-
-    argv.insert(argv.end(), {"--chdir", user_home, "--", shell_path});
-    if (!cmd.empty()) {
-        // Non-interactive single-command exec: shell -c <cmd>. The -i
-        // flag would print prompts/job-control warnings to captured
-        // stdout, so we omit it even if interactive_shell=true.
-        argv.push_back("-c");
-        argv.push_back(cmd);
-    } else if (interactive_shell) {
-        argv.push_back("-i");
-    }
-    return argv;
-}
-
-// Show bwrap hint — only on first sandbox use of a subos (detected by
-// whether <subos>/home/ exists; init_sandbox_dirs_ creates it, so if
-// it's missing, this is the first --sandbox entry for this subos).
-void maybe_show_bwrap_hint_(const fs::path& subos_dir) {
-    std::error_code ec;
-    if (fs::is_directory(subos_dir / "home", ec)) return;
-
-    log::info("bwrap not installed or namespace probe failed");
-    log::info("  to enable bwrap (recommended): xlings install bwrap");
-    log::info("  using proot fallback for now");
-}
-
-std::optional<BackendInfo>
-detect_backend_(const fs::path& home_dir,
-                const fs::path& subos_dir = {}) {
-    // 1. bwrap (xim pool) — preferred for native compat
-    if (auto bin = locate_bwrap_(home_dir)) {
-        if (probe_bwrap_(*bin).first)
-            return BackendInfo{ SandboxBackend::Bwrap, *bin };
-    }
-
-    // bwrap found but probe failed → show hint (first use only)
-    if (locate_bwrap_(home_dir) && !subos_dir.empty()) {
-        maybe_show_bwrap_hint_(subos_dir);
-    }
-
-    // 2. proot — zero-privilege fallback
-    if (auto bin = locate_proot_(home_dir))
-        return BackendInfo{ SandboxBackend::Proot, *bin };
-
-    return std::nullopt;
 }
 
 // Should we even try to fetch a sandbox backend for this host? Answered from
@@ -655,22 +328,59 @@ std::optional<std::string> backend_target_unavailable_() {
         "E_UNSUPPORTED_TARGET: no sandbox backend has a {} artifact", target);
 }
 
+
 int auto_install_backend_(const fs::path& home_dir, EventStream& stream) {
-    // Try bwrap first (build from source, config hook sets setuid)
+    // bwrap first; when it installs but its probe fails (user namespaces
+    // restricted), proot is the fallback.
     log::info("installing sandbox backend...");
-    {
-        std::vector<std::string> t = {"xim:bwrap"};
-        xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
-        auto bin = locate_bwrap_(home_dir);
-        if (bin && probe_bwrap_(*bin).first) return 0;
+    auto home = subos::home_view();
+    auto ports = subos::make_ports(stream);
+    (void)home_dir;
+    if (ports.install_backend("bwrap")) {
+        if (auto b = caps::locate_bwrap(home)) {
+            caps::probe_bwrap(*b);
+            if (b->usable) return 0;
+        }
     }
-
-    // bwrap installed but namespace restricted → proot fallback
-    // (hint already shown by detect_backend_ on first use)
-
-    std::vector<std::string> t = {"xim:proot"};
-    return xim::cmd_install(t, /*yes=*/true, /*noDeps=*/false, stream);
+    return ports.install_backend("proot") ? 0 : 1;
 }
+
+namespace {
+
+spec::Storage to_spec_storage_(StorageMode m) {
+    switch (m) {
+    case StorageMode::Image: return spec::Storage::Image;
+    case StorageMode::Tmpfs: return spec::Storage::Tmpfs;
+    default:                 return spec::Storage::Shared;
+    }
+}
+
+std::map<std::string, std::string> current_env_() {
+    std::map<std::string, std::string> env;
+#if !defined(_WIN32)
+    for (char** e = XLINGS_ENVIRON; e && *e; ++e) {
+        std::string_view kv(*e);
+        auto eq = kv.find('=');
+        if (eq != std::string_view::npos)
+            env[std::string(kv.substr(0, eq))] = std::string(kv.substr(eq + 1));
+    }
+#endif
+    return env;
+}
+
+// The refusal as the one ErrorEvent the entry reports. Wording kept from the
+// code this replaced; the remedy is the compiler's.
+void emit_refusal_(EventStream& stream, const spec::Refusal& refusal) {
+    const auto& u = refusal.missing.front();
+    stream.emit(ErrorEvent{
+        .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
+        .message = u.reason,
+        .recoverable = false,
+        .hint = u.fix.empty() ? std::string{} : "run: " + u.fix,
+    });
+}
+
+}  // namespace
 
 int enter(const std::string& name, EventStream& stream, const std::string& preferred_backend, bool gpu, const std::string& cmd) {
 
@@ -687,53 +397,52 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
 
     auto& p = Config::paths();
     auto subos_dir = p.homeDir / "subos" / name;
-
-    // ── Storage mode (V6) ──
     auto storage = read_storage_mode_(subos_dir);
 
-    // ── Resolve user ──
 #if defined(_WIN32)
     auto user = utils::get_env_or_default("USERNAME");
-    if (user.empty()) user = "user";
 #else
     auto user = utils::get_env_or_default("USER");
-    if (user.empty()) user = "user";
 #endif
+    if (user.empty()) user = "user";
 
-    auto sandbox_home = (subos_dir / "home" / user).string();
-    auto sandbox_tmp = (subos_dir / "tmp").string();
-
-    // Image mountpoint (populated in the Linux block below if image mode)
     fs::path image_mountpoint;
-    if (storage == StorageMode::Image)
-        image_mountpoint = subos_dir / ".mountpoint";
+    if (storage == StorageMode::Image) image_mountpoint = subos_dir / ".mountpoint";
 
-    // ── Lazy init sandbox dirs (shared mode only) ──
     if (storage == StorageMode::Shared) {
         fs::create_directories(subos_dir / "home" / user);
         fs::create_directories(subos_dir / "tmp");
     }
-
 #if defined(__linux__) || defined(__APPLE__)
-    // Seed shell rc files so profile is sourced (prompt pill + PATH).
-    // For image mode, rc files go into the mounted image (deferred until
-    // after mount in the Linux block below). For shared/tmpfs, seed now.
-    if (storage == StorageMode::Shared) {
-        auto user_home_dir = subos_dir / "home" / user;
-        fs::create_directories(user_home_dir);
-        write_sandbox_rc_(user_home_dir);
-    }
+    if (storage == StorageMode::Shared) write_sandbox_rc_(subos_dir / "home" / user);
+#endif
+#if defined(_WIN32)
+    fs::create_directories(subos_dir / "home" / user / "AppData" / "Roaming");
+    fs::create_directories(subos_dir / "home" / user / "AppData" / "Local");
 #endif
 
-    // ── Common env (all platforms) ──
-    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
-    platform::set_env_variable("XLINGS_SUBOS_MODE", "sandbox");
-    // E2a, same declaration as the non-sandbox path. Declared here too and
-    // not only there: a contract that holds in one of the two ways users
-    // enter a subos is a contract consumers cannot rely on, and the sandbox
-    // is the mode the graphics acceptance tooling runs in.
-    platform::set_env_variable("XLINGS_SUBOS_LIB",
-                               (subos_dir / "lib").string());
+    const auto home = subos::home_view();
+    const auto ports = subos::make_ports(stream);
+
+    spec::Request request{
+        .instance = name,
+        .instance_dir = subos_dir,
+        .user = user,
+        .storage = to_spec_storage_(storage),
+        .image_mountpoint = image_mountpoint,
+        .host_env = current_env_(),
+    };
+    {
+        auto shell = utils::get_env_or_default("SHELL");
+        request.shell = shell.empty() ? "/bin/sh" : shell;
+    }
+    if (preferred_backend == "bwrap") request.preferred = spec::Backend::Bwrap;
+    if (preferred_backend == "proot") request.preferred = spec::Backend::Proot;
+    if (gpu) request.grants.insert("gpu");
+#if !defined(_WIN32)
+    request.interactive = ::isatty(STDIN_FILENO) == 1;
+#endif
+    if (!cmd.empty()) request.argv = {request.shell, "-c", cmd};
 
     nlohmann::json payload;
     payload["name"] = name;
@@ -743,13 +452,8 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     std::cerr.flush();
 
 #if defined(__linux__)
-    // ═══════════════════════════════════════════════════════════════
-    // Linux L3: FS view isolation via bwrap/proot
-    // ═══════════════════════════════════════════════════════════════
-
     // image/tmpfs storage requires bwrap (mount namespace needed)
-    if (storage != StorageMode::Shared && !preferred_backend.empty()
-        && preferred_backend == "proot") {
+    if (storage != StorageMode::Shared && preferred_backend == "proot") {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = "image/tmpfs storage requires bwrap sandbox backend",
@@ -759,7 +463,6 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
         return 1;
     }
 
-    // ── Image mode: mount image before sandbox entry ──
     if (storage == StorageMode::Image) {
         auto img = subos_dir / "home.img";
         if (!fs::exists(img)) {
@@ -770,8 +473,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             });
             return 1;
         }
-        auto rc = mount_image_(img, image_mountpoint, user);
-        if (rc != 0) {
+        if (mount_image_(img, image_mountpoint, user) != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Internal,
                 .message = "failed to mount home.img",
@@ -782,181 +484,113 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
         }
     }
 
-    // /etc templates for Linux sandbox (NSS)
-    {
-        auto uid = ::getuid();
-        auto gid = ::getgid();
-        init_sandbox_dirs_(subos_dir, user, uid, gid);
-        // For image mode, init home and seed shell rc files inside the mount
-        if (storage == StorageMode::Image) {
-            auto mp_home = image_mountpoint / user;
-            fs::create_directories(mp_home);
-            write_sandbox_rc_(mp_home);
-        }
+    init_sandbox_dirs_(subos_dir, user, ::getuid(), ::getgid());
+    if (storage == StorageMode::Image) {
+        auto mp_home = image_mountpoint / user;
+        fs::create_directories(mp_home);
+        write_sandbox_rc_(mp_home);
     }
 
-    // Backend selection (the using-declarations that stood here named
-    // sandbox_detail_:: and are redundant now that this IS that namespace)
-    std::optional<BackendInfo> backend;
+    auto host_caps = caps::probe(home, ports);
+    // First sandbox use with a bwrap that does not work: say so once.
+    if (host_caps.bwrap && !host_caps.bwrap->usable && !request.preferred
+        && !fs::is_directory(subos_dir / "home" / user / ".config")) {
+        log::info("bwrap not installed or namespace probe failed");
+        log::info("  to enable bwrap (recommended): xlings install bwrap");
+        log::info("  using proot fallback for now");
+    }
+    auto compiled = spec::compile(policy::legacy(), home, host_caps, request);
 
-    if (preferred_backend == "bwrap") {
-        auto bin = locate_bwrap_(p.homeDir);
-        if (!bin) {
+    // Nothing usable and nothing asked for: fetch a backend, once.
+    if (!compiled && !request.preferred && compiled.error().missing.front().dimension == "backend") {
+        // Ask the index whether it ships a backend for this target before
+        // touching the network, so an unsupported host gets one causal error
+        // and zero download requests.
+        if (auto unavailable = backend_target_unavailable_(); unavailable) {
             stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "bwrap not installed",
+                .code = ErrorCode::InvalidInput,
+                .message = *unavailable,
                 .recoverable = false,
-                .hint = "run: xlings install bwrap",
+                .hint = "use shell isolation, install your distribution's "
+                        "bubblewrap package, or `xlings install bwrap` to "
+                        "try anyway",
             });
+            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
             return 1;
         }
-        if (auto probe = probe_bwrap_(*bin); !probe.first) {
+        if (auto_install_backend_(p.homeDir, stream) != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::NotFound,
-                .message = "bwrap probe failed",
+                .message = "failed to install sandbox backend",
                 .recoverable = false,
-                .hint = classify_bwrap_probe_error_(
-                            probe.second, *bin),
+                .hint = "manually: xlings install bwrap (or: xlings install proot)",
             });
+            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
             return 1;
         }
-        backend = BackendInfo{ SandboxBackend::Bwrap, *bin };
-    } else if (preferred_backend == "proot") {
-        auto bin = locate_proot_(p.homeDir);
-        if (!bin) {
+        host_caps = caps::probe(home, ports);
+        compiled = spec::compile(policy::legacy(), home, host_caps, request);
+        if (!compiled && compiled.error().missing.front().dimension == "backend") {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::NotFound,
-                .message = std::move(bin).error(),
+                .message = "no sandbox backend available after install attempt",
                 .recoverable = false,
-                .hint = "run: xlings install proot",
             });
+            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
             return 1;
-        }
-        backend = BackendInfo{ SandboxBackend::Proot, *bin };
-    } else {
-        backend = detect_backend_(p.homeDir, subos_dir);
-        if (!backend) {
-            // Ask the index whether it ships a backend for this target before
-            // touching the network, so an unsupported host gets one causal
-            // error and zero download requests.
-            //
-            // This used to be `#if defined(__aarch64__)`, which is a claim
-            // about the package index frozen into the binary at compile time:
-            // the day xim-pkgindex publishes an aarch64 bwrap, every client
-            // already in the field would still refuse. Reading the on-disk
-            // index costs nothing and is right both before and after that day.
-            if (auto unavailable = backend_target_unavailable_(); unavailable) {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::InvalidInput,
-                    .message = *unavailable,
-                    .recoverable = false,
-                    .hint = "use shell isolation, install your distribution's "
-                            "bubblewrap package, or `xlings install bwrap` to "
-                            "try anyway",
-                });
-                return 1;
-            }
-            auto rc = auto_install_backend_(p.homeDir, stream);
-            if (rc != 0) {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::NotFound,
-                    .message = "failed to install sandbox backend",
-                    .recoverable = false,
-                    .hint = "manually: xlings install bwrap (or: xlings install proot)",
-                });
-                return 1;
-            }
-            backend = detect_backend_(p.homeDir, subos_dir);
-            if (!backend) {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::NotFound,
-                    .message = "no sandbox backend available after install attempt",
-                    .recoverable = false,
-                });
-                return 1;
-            }
         }
     }
-
-    // image/tmpfs requires bwrap — reject proot after auto-detect
-    if (storage != StorageMode::Shared
-        && backend->type != SandboxBackend::Bwrap) {
-        // If bwrap is actually installed but probe failed (the common
-        // case that triggers the proot fallback), surface the real
-        // probe error rather than the misleading "xlings install bwrap"
-        // suggestion that won't help.
-        std::string hint = "run: xlings install bwrap";
-        if (auto bin = locate_bwrap_(p.homeDir)) {
-            if (auto probe = probe_bwrap_(*bin);
-                !probe.first)
-            {
-                hint = classify_bwrap_probe_error_(
-                            probe.second, *bin);
-            }
+    if (!compiled) {
+        auto refusal = compiled.error();
+        // A bwrap that is installed and fails its probe: the probe's own
+        // words, classified, instead of a generic "install bwrap".
+        if (host_caps.bwrap && !host_caps.bwrap->usable
+            && (refusal.missing.front().dimension == "storage"
+                || request.preferred == spec::Backend::Bwrap)) {
+            auto& u = refusal.missing.front();
+            if (request.preferred == spec::Backend::Bwrap) u.reason = "bwrap probe failed";
+            u.fix.clear();
+            stream.emit(ErrorEvent{
+                .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
+                .message = u.reason,
+                .recoverable = false,
+                .hint = classify_bwrap_probe_error_(host_caps.bwrap->probe_output,
+                                                    host_caps.bwrap->bin),
+            });
+        } else {
+            emit_refusal_(stream, refusal);
         }
-        stream.emit(ErrorEvent{
-            .code = ErrorCode::InvalidInput,
-            .message = storage_to_string_(storage)
-                       + " storage requires bwrap (proot does not support mount namespace)",
-            .recoverable = false,
-            .hint = std::move(hint),
-        });
-        if (storage == StorageMode::Image)
-            unmount_image_(image_mountpoint);
+        if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
         return 1;
     }
+    const auto& sb = *compiled;
+    if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
+        log::warn("using the host's proot ({}) -- no proot payload in {}. "
+                  "Run `xlings install proot` to make this deterministic.",
+                  sb.backend_bin.string(), p.homeDir.string());
+    }
 
-    auto backend_name = (backend->type == SandboxBackend::Bwrap) ? "bwrap" : "proot";
-    log::debug("sandbox backend: {} storage: {}", backend_name,
-               storage_to_string_(storage));
-
-    auto user_home = "/home/" + user;
-    auto shell = utils::get_env_or_default("SHELL");
-    if (shell.empty()) shell = "/bin/sh";
-
+    const auto backend_name = std::string(spec::to_string(sb.backend));
+    log::debug("sandbox backend: {} storage: {}", backend_name, storage_to_string_(storage));
     payload["backend"] = backend_name;
-    payload["shell"] = shell;
+    payload["shell"] = request.shell;
     payload["storage"] = storage_to_string_(storage);
     stream.emit(DataEvent{"subos_entering", payload.dump()});
 
-    platform::set_env_variable("HOME", user_home);
-    // Pin the home explicitly rather than relying on inheritance: it is
-    // reachable at its own absolute path in here (see sandbox_binds_), and
-    // every path baked at install time — xvm targets, RPATH, INTERP —
-    // assumes exactly that spelling.
-    platform::set_env_variable("XLINGS_HOME", p.homeDir.string());
-    // Same spelling as XLINGS_HOME above. A shim decides which home owns it
-    // by comparing the path it was invoked through against XLINGS_HOME as
-    // strings; spelling the home two ways here makes it warn about a
-    // conflict with itself.
-    platform::set_env_variable("PATH", std::format(
-        "{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
-        p.homeDir.string(), name));
-    // bwrap `sh -i` prints prompts/job-control warnings into piped CI
-    // commands; keep `-i` only for real terminal sessions.
-    const bool interactive_shell = ::isatty(STDIN_FILENO) == 1;
-
-    std::vector<std::string> argv;
-    if (backend->type == SandboxBackend::Bwrap) {
-        argv = build_bwrap_argv_(
-            backend->binary, subos_dir, p.homeDir, user, shell,
-            interactive_shell, storage, image_mountpoint, gpu, cmd);
-    } else {
-        // proot already exposes the full host /dev and /sys via
-        // `--bind=/dev:/dev --bind=/sys:/sys`, so GPU devices are
-        // visible for free. --gpu is a no-op here.
-        argv = build_proot_argv_(
-            backend->binary, subos_dir, p.homeDir, user, shell, cmd);
-        platform::set_env_variable("PROOT_NO_SECCOMP", "1");
-    }
-
+    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(sb)
+                                                   : provider::proot_argv(sb);
+    auto env = provider::process_env(sb, request.host_env);
+    std::vector<std::string> env_strings;
+    for (auto& [k, v] : env) env_strings.push_back(k + "=" + v);
+    std::vector<char*> c_env;
+    for (auto& e : env_strings) c_env.push_back(e.data());
+    c_env.push_back(nullptr);
     std::vector<char*> c_argv;
-    c_argv.reserve(argv.size() + 1);
-    for (auto& s : argv) c_argv.push_back(const_cast<char*>(s.c_str()));
+    for (auto& a : argv) c_argv.push_back(a.data());
     c_argv.push_back(nullptr);
 
     // Image mode: fork+exec+wait so we can unmount after sandbox exits.
-    // Shared/tmpfs: execvp replaces the process (no cleanup needed).
+    // Shared/tmpfs: the backend replaces this process.
     if (storage == StorageMode::Image) {
         auto pid = ::fork();
         if (pid < 0) {
@@ -965,32 +599,29 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             return 1;
         }
         if (pid == 0) {
-            // Child: enter sandbox
-            ::execvp(c_argv[0], c_argv.data());
+            ::execve(c_argv[0], c_argv.data(), c_env.data());
             log::error("failed to exec {}: {}", backend_name, std::strerror(errno));
             ::_exit(127);
         }
-        // Parent: wait then unmount
         int status = 0;
         ::waitpid(pid, &status, 0);
         unmount_image_(image_mountpoint);
         return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
     }
 
-    ::execvp(c_argv[0], c_argv.data());
-    log::error("failed to exec {} '{}': {}", backend_name,
-               backend->binary.string(), std::strerror(errno));
+    ::execve(c_argv[0], c_argv.data(), c_env.data());
+    log::error("failed to exec {} '{}': {}", backend_name, sb.backend_bin.string(),
+               std::strerror(errno));
     return 127;
 
-#elif defined(__APPLE__)
-    // ═══════════════════════════════════════════════════════════════
-    // macOS L2: HOME redirect (dotfile isolation)
-    // ═══════════════════════════════════════════════════════════════
-
-    // Ask the same resolver the launch is about to use. Deriving the reported
-    // shell here independently is how `subos_entering` came to announce
-    // `/bin/zsh` while the process that started was `/bin/sh`: two fallbacks
-    // for the same question, in two places, that only agree when SHELL is set.
+#else
+    // macOS / Windows: home redirect (dotfile isolation).
+    auto host_caps = caps::probe(home, ports);
+    auto compiled = spec::compile(policy::legacy(), home, host_caps, request);
+    if (!compiled) {
+        emit_refusal_(stream, compiled.error());
+        return 1;
+    }
     // Say it where the person is, not only in the README. A user who reaches
     // for `--sandbox` to run something they do not trust is exactly the user
     // who did not read the isolation matrix, and on these two platforms this
@@ -1002,57 +633,18 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
         log::warn("sandbox on {} redirects the home directory only -- "
                   "it does not contain the filesystem, network or processes. "
                   "Use an OS sandbox or a VM for untrusted code.",
+#if defined(__APPLE__)
                   "macOS");
-    }
-
-    payload["backend"] = "home-redirect";
-    payload["shell"] = platform::resolve_shell();
-    stream.emit(DataEvent{"subos_entering", payload.dump()});
-
-    platform::set_env_variable("HOME", sandbox_home);
-    platform::set_env_variable("TMPDIR", sandbox_tmp);
-    platform::set_env_variable("XDG_CONFIG_HOME", sandbox_home + "/.config");
-    platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "/.local/share");
-    platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "/.cache");
-    platform::set_env_variable("XDG_STATE_HOME", sandbox_home + "/.local/state");
-
-    return platform::run_shell(cmd, cmd.empty());
-
-#elif defined(_WIN32)
-    // ═══════════════════════════════════════════════════════════════
-    // Windows L2: USERPROFILE redirect (dotfile isolation)
-    // ═══════════════════════════════════════════════════════════════
-
-    // Pre-create AppData structure
-    fs::create_directories(fs::path(sandbox_home) / "AppData" / "Roaming");
-    fs::create_directories(fs::path(sandbox_home) / "AppData" / "Local");
-
-    // Say it where the person is, not only in the README. A user who reaches
-    // for `--sandbox` to run something they do not trust is exactly the user
-    // who did not read the isolation matrix, and on these two platforms this
-    // is a dotfile redirect -- no filesystem, network or process boundary.
-    //
-    // Only on interactive entry: a `--cmd` run is a script, and a warning it
-    // emits on every invocation is noise nobody reads. `--quiet` silences it.
-    if (cmd.empty()) {
-        log::warn("sandbox on {} redirects the home directory only -- "
-                  "it does not contain the filesystem, network or processes. "
-                  "Use an OS sandbox or a VM for untrusted code.",
+#else
                   "Windows");
+#endif
     }
-
     payload["backend"] = "home-redirect";
+#if defined(__APPLE__)
+    payload["shell"] = platform::resolve_shell();
+#endif
     stream.emit(DataEvent{"subos_entering", payload.dump()});
-
-    platform::set_env_variable("USERPROFILE", sandbox_home);
-    platform::set_env_variable("APPDATA", sandbox_home + "\\AppData\\Roaming");
-    platform::set_env_variable("LOCALAPPDATA", sandbox_home + "\\AppData\\Local");
-    platform::set_env_variable("TEMP", sandbox_tmp);
-    platform::set_env_variable("TMP", sandbox_tmp);
-    platform::set_env_variable("XDG_CONFIG_HOME", sandbox_home + "\\.config");
-    platform::set_env_variable("XDG_DATA_HOME", sandbox_home + "\\.local\\share");
-    platform::set_env_variable("XDG_CACHE_HOME", sandbox_home + "\\.cache");
-
+    for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
     return platform::run_shell(cmd, cmd.empty());
 #endif
 }

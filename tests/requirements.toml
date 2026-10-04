@@ -227,7 +227,7 @@ status = "planned"
 
 [ISO-SPEC-GOLDEN]
 text = "Policy + Caps compile to a SandboxSpec that has golden tests"
-status = "planned"
+status = "required"
 
 [ISO-PROBE-SAME-SPEC]
 text = "the probe runs the same spec with /bin/true"
@@ -397,7 +397,7 @@ status = "planned"
 
 [COMPAT-UNDECLARED]
 text = "an instance with no policy keeps its behaviour apart from the S0 fixes"
-status = "planned"
+status = "required"
 
 [PLAT-HINT]
 text = "an unsupported item prints the shared hint format on every platform"
