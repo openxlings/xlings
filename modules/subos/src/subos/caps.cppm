@@ -37,12 +37,24 @@ struct Caps {
     std::string kernel;                   // uname release, for the cache key
 };
 
-// Where the backends are looked for, in order (unchanged from the sandbox
-// code this replaces; design §20 reorders it in the doctor checkpoint):
-//   bwrap  <home>/data/xpkgs/xim-x-bwrap/*/bin/bwrap
+// Where the backends are looked for, in order (design §20, #640 F10):
+//   bwrap  1. /usr/lib/xlings/bwrap, root-owned and not writable by others --
+//             what `self doctor --isolation --fix` installs, with a narrow
+//             AppArmor profile that grants it user namespaces;
+//          2. the system's /usr/bin/bwrap, /usr/local/bin/bwrap (not a shim),
+//             when its probe passes -- used, and reported as the host's;
+//          3. <home>/data/xpkgs/xim-x-bwrap/*/bin/bwrap.
+//          No setuid: xlings neither makes one nor relies on one.
 //   proot  <home>/data/xpkgs/xim-x-proot/*/bin/proot, <home>/runtimedir/proot,
 //          then /usr/bin/proot, /usr/local/bin/proot when not a shim
-std::optional<Backend> locate_bwrap(const HomeView& home);
+inline constexpr std::string_view kRootOwnedBwrap = "/usr/lib/xlings/bwrap";
+
+// Every bwrap found, in that order, each probed. The doctor reports them all.
+std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports);
+// The first usable one; otherwise the first found (with its probe output).
+std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports);
+// The payload only (what `xlings install bwrap` put there).
+std::optional<Backend> payload_bwrap(const HomeView& home);
 std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports);
 
 // pasta (from passt) for net=nat: the payload, then the host's at the two

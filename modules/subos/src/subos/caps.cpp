@@ -1,6 +1,7 @@
 module;
 
 #if defined(__linux__)
+#include <sys/stat.h>
 #include <sys/utsname.h>
 #endif
 
@@ -43,9 +44,38 @@ std::optional<fs::path> first_payload_bin(const fs::path& root, std::string_view
 
 }  // namespace
 
-std::optional<Backend> locate_bwrap(const HomeView& home) {
+std::optional<Backend> payload_bwrap(const HomeView& home) {
     if (auto bin = first_payload_bin(home.home / "data" / "xpkgs" / "xim-x-bwrap", "bwrap"))
         return Backend{ .name = "bwrap", .bin = *bin, .source = "payload" };
+    return std::nullopt;
+}
+
+std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports) {
+    std::vector<Backend> out;
+    std::error_code ec;
+#if defined(__linux__)
+    {
+        const fs::path p(kRootOwnedBwrap);
+        struct stat st{};
+        if (::stat(p.c_str(), &st) == 0 && st.st_uid == 0 && !(st.st_mode & (S_IWGRP | S_IWOTH)))
+            out.push_back(Backend{ .name = "bwrap", .bin = p, .source = "root-owned" });
+    }
+#endif
+    for (const auto* p : {"/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
+        fs::path candidate(p);
+        if (!fs::is_regular_file(candidate, ec)) continue;
+        if (ports.shim_owner && ports.shim_owner(candidate)) continue;
+        out.push_back(Backend{ .name = "bwrap", .bin = candidate, .source = "system" });
+    }
+    if (auto b = payload_bwrap(home)) out.push_back(*b);
+    for (auto& b : out) probe_bwrap(b);
+    return out;
+}
+
+std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports) {
+    auto all = bwrap_candidates(home, ports);
+    for (auto& b : all) if (b.usable) return b;
+    if (!all.empty()) return all.front();
     return std::nullopt;
 }
 
@@ -102,10 +132,7 @@ Caps probe(const HomeView& home, const Ports& ports) {
     Caps c;
     c.platform = std::string(platform_name());
 #if defined(__linux__)
-    if (auto b = locate_bwrap(home)) {
-        probe_bwrap(*b);
-        c.bwrap = std::move(b);
-    }
+    c.bwrap = locate_bwrap(home, ports);
     c.proot = locate_proot(home, ports);
     c.userns = c.bwrap && c.bwrap->usable;
     c.pasta = locate_pasta(home, ports, c.pasta_missing);

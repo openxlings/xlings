@@ -216,6 +216,9 @@ export int enter(const std::string& name, EventStream& stream, const EnterOption
 // `subos status` and the interface. Nothing is created or mounted.
 export nlohmann::json preview(const std::string& name, const policy::Policy& pol, EventStream& stream);
 
+// `xlings self doctor --isolation [--fix] [--json]`.
+export int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream);
+
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
                       bool gpu = false,

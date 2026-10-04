@@ -190,7 +190,7 @@ Migrate old layout
 
 Verify installation
 
-Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--subos <NAME>` — Check/repair one specific subos instead of the active one; `--fix` — Repair (implies --deep; walks every subos that owns a finding); `--dry-run` — Preview repairs without changing detection depth; `--show-ok` — Show all findings, including non-defects; `--all` — Deprecated alias for --show-ok; `--reset-metadata` — Discard unreadable metadata
+Options: `--deep` — Audit package payloads and runtime functionality; `--scope <PACKAGE[@VERSION]>` — Limit deep payload/runtime audit to one local package coordinate; `--subos <NAME>` — Check/repair one specific subos instead of the active one; `--fix` — Repair (implies --deep; walks every subos that owns a finding); `--dry-run` — Preview repairs without changing detection depth; `--show-ok` — Show all findings, including non-defects; `--all` — Deprecated alias for --show-ok; `--reset-metadata` — Discard unreadable metadata; `--isolation` — Check what this host can isolate SubOS sandboxes with; with --fix, install a root-owned bwrap and its AppArmor profile; `--json` — Machine-readable output (with --isolation)
 
 ## `xlings script <script-file> [args]...`
 

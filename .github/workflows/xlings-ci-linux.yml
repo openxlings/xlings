@@ -492,9 +492,56 @@ jobs:
           path: target/xdev/
           if-no-files-found: ignore
 
+  # The root repair for AppArmor-restricted user namespaces, on a runner
+  # left exactly as the image ships it (#640's comment). It installs
+  # /usr/lib/xlings/bwrap and an AppArmor profile with sudo, which is why it
+  # has a runner of its own.
+  isolation-fix:
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-isolation-fix
+      XDEV_LANE_CAPS: linux,xlings-bin,sudo,network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          echo "XLINGS_BIN=$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: self doctor --isolation --fix
+        run: |
+          "$XDEV" test --no-mcpp --suite isolation-fix --out target/xdev/linux-isolation-fix
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-isolation-fix
+          path: target/xdev/
+          if-no-files-found: ignore
+
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [build-and-test, e2e]
+    needs: [build-and-test, e2e, isolation-fix]
     if: always()
     runs-on: ubuntu-24.04
     steps:

@@ -354,6 +354,7 @@ ORPHAN_EXEMPT=(
     "bootstrap_home_test.sh"                # linux-e2e / macos / windows
     "mcpp_build_xlings_test.sh"             # xlings-ci-linux.yml (unit-asan, on push)
     "root_usability_test.sh"                # xlings-ci-linux-root.yml
+    "isolation_doctor_fix_test.sh"          # xlings-ci-linux.yml (isolation-fix, uses sudo)
     # Sub-tests invoked by project_e2e_test.sh (E2E-05), not standalone.
     "project_global_fallback_test.sh"
     "project_home_test.sh"

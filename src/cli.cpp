@@ -24,6 +24,7 @@ import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
 import xlings.subos.broker;
+import xlings.core.subos.sandbox;
 import xlings.capabilities;
 import xlings.agent;
 import xlings.agent.text_renderer;
@@ -1932,6 +1933,22 @@ int dispatch_(int argc, char* argv[]) {
             }
         }
         if (cmd == "subos") return subos::run(fargc, fargv.data(), stream);
+        // `self doctor --isolation`: what this host can isolate with, and the
+        // one root repair (design §20). Answered by the SubOS adapter.
+        if (cmd == "self" && fargc >= 3 && std::string_view(fargv[2]) == "doctor") {
+            bool isolation = false, fix = false, yes = false, json = false;
+            for (int i = 3; i < fargc; ++i) {
+                std::string_view a{fargv[i]};
+                if (a == "--isolation") isolation = true;
+                else if (a == "--fix") fix = true;
+                else if (a == "--json") json = true;
+            }
+            for (int i = 1; i < argc; ++i) {
+                std::string_view a{argv[i]};
+                if (a == "-y" || a == "--yes") yes = true;
+            }
+            if (isolation) return subos::sandbox::doctor_isolation(fix, yes, json, stream);
+        }
         if (cmd == "self") return xself::run(fargc, fargv.data(), stream);
         if (cmd == "profile") return run_profile_(fargc, fargv.data(), stream);
         if (cmd == "script") {

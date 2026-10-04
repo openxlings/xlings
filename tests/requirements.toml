@@ -91,7 +91,7 @@ status = "required"
 
 [F10]
 text = "backend lookup: root-owned bwrap, then a system bwrap that probes, then the payload; no setuid"
-status = "planned"
+status = "required"
 
 [F11]
 text = "--keep / --ttl mean session idle time (the keeper is replaced by the session)"
@@ -409,7 +409,7 @@ status = "required"
 
 [DOC-ISOLATION]
 text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
-status = "planned"
+status = "required"
 
 [PERF-SHIM]
 text = "shim dispatch inside a sandbox does not go through the broker"

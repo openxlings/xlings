@@ -138,6 +138,9 @@ int run(int argc, char* argv[], EventStream& stream) {
         for (std::size_t i = 0; i < args.size(); ++i) {
             const auto& arg = args[i];
             if (arg == "--fix") fix = true;
+            // Spelled here for the parser; `--isolation` is answered before
+            // this (cli.cpp), and --json only shapes that report.
+            else if (arg == "--json" || arg == "--isolation") {}
             // Discards unreadable binding metadata, so it is opt-in on top
             // of --fix rather than part of it.
             else if (arg == "--reset-metadata") resetMetadata = true;
