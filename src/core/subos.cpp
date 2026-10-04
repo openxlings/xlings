@@ -59,6 +59,8 @@ import xlings.subos.userdata;
 import xlings.subos.model;
 import xlings.core.subos.ports;
 import xlings.subos.session;
+import xlings.subos.policy;
+import xlings.subos.policy_store;
 import xlings.observe;
 import xlings.core.home;
 
@@ -1339,8 +1341,12 @@ std::map<std::string, std::string> declared_env_(const std::string& name) {
     return env;
 }
 
-int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, const std::string& sandbox_backend, bool gpu, const std::string& cmd)
+int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, const std::string& sandbox_backend, bool gpu, const std::string& cmd,
+                    std::optional<policy::Preset> preset, const policy::Overrides& overrides)
 {
+    // A declared instance is entered under its policy however it is entered
+    // (design §10: the secure default belongs to the instance, not the flag).
+    if (!sandbox && (preset || policy_store::has_file(home_view(), name))) sandbox = true;
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
     // fallback) or use the explicitly requested one.
@@ -1365,7 +1371,8 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
         return sandbox::enter(name, stream, sandbox::EnterOptions{
-            .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name) });
+            .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name),
+            .preset = preset, .overrides = overrides });
     }
     warn_storage_dormant_on_shell_(name);
 
@@ -1769,24 +1776,78 @@ std::optional<std::pair<std::string, std::string>> split_env_(std::string_view k
     return std::pair{std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1))};
 }
 
-// `--sandbox`, `--sandbox=bwrap|proot`, `--sandbox bwrap|proot`.
-bool parse_sandbox_flag_(std::string_view a, int& i, int argc, char* argv[],
-                         bool& sandbox, std::string& backend) {
+// The isolation flags every entry shares (design §10): `--sandbox`,
+// `--sandbox=<dev|private|locked>`, `--sandbox[=| ]<bwrap|proot>` (a backend),
+// and the tighten-only overrides `--net`, `--fetch`, `--allow`, `--no-degrade`.
+struct IsolationArgs {
+    bool sandbox { false };
+    std::string backend;
+    std::optional<policy::Preset> preset;
+    policy::Overrides overrides;
+};
+
+// 1 = consumed, 0 = not ours, -1 = malformed (`err` says why).
+int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
+                          IsolationArgs& x, std::string& err) {
+    auto value = [&](std::string_view flag) -> std::optional<std::string> {
+        if (a.starts_with(std::string(flag) + "=")) return std::string(a.substr(flag.size() + 1));
+        if (a == flag && i + 1 < argc) return std::string(argv[++i]);
+        return std::nullopt;
+    };
     if (a == "--sandbox") {
-        sandbox = true;
+        x.sandbox = true;
         if (i + 1 < argc) {
             std::string_view next = argv[i + 1];
-            if (next == "bwrap" || next == "proot") { backend = next; ++i; }
+            if (next == "bwrap" || next == "proot") { x.backend = next; ++i; }
         }
-        return true;
+        return 1;
     }
     if (a.starts_with("--sandbox=")) {
-        sandbox = true;
+        x.sandbox = true;
         auto v = a.substr(10);
-        if (v == "bwrap" || v == "proot") backend = v;
-        return true;
+        if (v == "bwrap" || v == "proot") { x.backend = v; return 1; }
+        auto p = policy::preset_from_string(v);
+        if (!p || *p == policy::Preset::Legacy) {
+            err = std::format("--sandbox={}: expected dev, private or locked (or a backend: bwrap, proot)", v);
+            return -1;
+        }
+        x.preset = *p;
+        return 1;
     }
-    return false;
+    if (a == "--net" || a.starts_with("--net=")) {
+        auto v = value("--net");
+        auto n = v ? policy::net_from_string(*v) : std::nullopt;
+        if (!n) { err = "--net expects host, nat, none or proxy"; return -1; }
+        x.overrides.net = *n;
+        x.sandbox = true;
+        return 1;
+    }
+    if (a == "--fetch" || a.starts_with("--fetch=")) {
+        auto v = value("--fetch");
+        auto f = v ? policy::fetch_from_string(*v) : std::nullopt;
+        if (!f) { err = "--fetch expects auto, ask, layer or deny"; return -1; }
+        x.overrides.fetch = *f;
+        return 1;
+    }
+    if (a == "--allow" || a.starts_with("--allow=")) {
+        auto v = value("--allow");
+        if (!v) { err = "--allow expects a grant"; return -1; }
+        std::string_view list(*v);
+        while (!list.empty()) {
+            auto comma = list.find(',');
+            x.overrides.allow.insert(std::string(list.substr(0, comma)));
+            if (comma == std::string_view::npos) break;
+            list.remove_prefix(comma + 1);
+        }
+        x.sandbox = true;
+        return 1;
+    }
+    if (a == "--no-degrade") {
+        x.overrides.no_degrade = true;
+        x.sandbox = true;
+        return 1;
+    }
+    return 0;
 }
 
 #if !defined(_WIN32)
@@ -1831,10 +1892,11 @@ int run_argv_with_timeout_(const std::vector<std::string>& argv, std::chrono::mi
 // (with --sandbox) or runs it with the instance's environment. Exit codes are
 // the command's own, 125 when it never started, 126/127, 124, 128+n.
 int run_exec_(int argc, char* argv[], EventStream& stream) {
-    std::string name, cwd, from, backend;
+    std::string name, cwd, from;
     std::map<std::string, std::string> env;
     std::optional<std::chrono::milliseconds> timeout;
-    bool sandbox = false, json = false, temp = false;
+    bool json = false, temp = false;
+    IsolationArgs iso;
     std::vector<std::string> command;
     auto fail = [&](std::string message, std::string hint = {}) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = std::move(message),
@@ -1846,7 +1908,9 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--") { command.assign(argv + i + 1, argv + argc); break; }
-        if (parse_sandbox_flag_(a, i, argc, argv, sandbox, backend)) continue;
+        std::string err;
+        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) continue;
+        else if (r < 0) return fail(err);
         if (a == "--json") json = true;
         else if (a == "--temp") temp = true;
         else if (a == "--from" && i + 1 < argc) from = argv[++i];
@@ -1895,7 +1959,8 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     const auto started = std::chrono::steady_clock::now();
     int rc = 0;
     std::string mode;
-    if (sandbox || session::find(home_view(), name)) {
+    if (iso.sandbox || iso.preset || session::find(home_view(), name)
+        || policy_store::has_file(home_view(), name)) {
         mode = "sandbox";
         use_detail_::apply_subos_env_(name);
         auto declared = declared_env_(name);
@@ -1904,8 +1969,9 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         EventStream quiet;
         EventStream& out = json ? static_cast<EventStream&>(quiet) : stream;
         rc = sandbox::enter(name, out, sandbox::EnterOptions{
-            .backend = backend, .argv = command, .cwd = cwd, .env = std::move(declared),
-            .timeout = timeout, .exec_codes = true, .announce = false });
+            .backend = iso.backend, .argv = command, .cwd = cwd, .env = std::move(declared),
+            .timeout = timeout, .exec_codes = true, .announce = false,
+            .preset = iso.preset, .overrides = iso.overrides });
     } else {
         // An instance without a sandbox: its environment, this process's
         // stdio, no supervisor (design §16, "没有沙箱的实例").
@@ -1966,12 +2032,14 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
 // without a terminal, for a series of `subos exec` (design §12.1).
 int run_start_(int argc, char* argv[], EventStream& stream,
                const std::function<void(std::string_view)>& usageError) {
-    std::string name, backend;
-    bool sandbox = true;   // a session is a sandbox
+    std::string name;
+    IsolationArgs iso;     // a session is a sandbox, whatever was said
     int ttl = 0;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
-        if (parse_sandbox_flag_(a, i, argc, argv, sandbox, backend)) continue;
+        std::string err;
+        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) continue;
+        else if (r < 0) { usageError(err); return 1; }
         if (a == "--ttl" && i + 1 < argc) {
             auto d = model::parse_duration(argv[++i]);
             if (!d) { usageError("--ttl expects seconds or 30s / 10m / 2h"); return 1; }
@@ -1991,7 +2059,8 @@ int run_start_(int argc, char* argv[], EventStream& stream,
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
     use_detail_::apply_subos_env_(name);
     auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
-        .backend = backend, .env = declared_env_(name), .ttl = ttl, .detached = true });
+        .backend = iso.backend, .env = declared_env_(name), .ttl = ttl, .detached = true,
+        .preset = iso.preset, .overrides = iso.overrides });
     if (rc != 0) return rc;
     if (auto live = session::find(home_view(), name)) {
         log::info("started session {} for '{}'{}", live->id, name,
@@ -2060,6 +2129,235 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
         .kind = observe::Kind::Fs,
         .fields = {{"event", "cp"}, {"instance", resolved.selected},
                    {"direction", src ? "out" : "in"}, {"path", inst.second}}});
+    return 0;
+}
+
+// `subos config <name> [changes]`: the owner's declaration of what the
+// instance may do (design §7). Written outside the instance; every change is
+// audited with its diff. No change prints the policy in force.
+int run_config_(int argc, char* argv[], EventStream& stream,
+                const std::function<void(std::string_view)>& usageError) {
+    std::string name;
+    bool json = false, reset = false;
+    std::optional<policy::Preset> preset;
+    std::optional<policy::Net> net;
+    std::optional<policy::Fetch> fetch, index_update;
+    std::optional<policy::Observe> observe;
+    std::optional<bool> no_degrade;
+    std::set<std::string> allow, disallow, env_pass;
+    std::optional<std::set<std::string>> grants_allowed;
+    bool changed = false;
+    auto value_of = [&](int& i, std::string_view a, std::string_view flag) -> std::optional<std::string> {
+        if (a.starts_with(std::string(flag) + "=")) return std::string(a.substr(flag.size() + 1));
+        if (a == flag && i + 1 < argc) return std::string(argv[++i]);
+        return std::nullopt;
+    };
+    auto split = [](std::string_view list) {
+        std::set<std::string> out;
+        while (!list.empty()) {
+            auto c = list.find(',');
+            if (auto item = list.substr(0, c); !item.empty()) out.insert(std::string(item));
+            if (c == std::string_view::npos) break;
+            list.remove_prefix(c + 1);
+        }
+        return out;
+    };
+    for (int i = 3; i < argc; ++i) {
+        std::string_view a = argv[i];
+        std::optional<std::string> v;
+        if (a == "--json") json = true;
+        else if (a == "--reset") { reset = true; changed = true; }
+        else if ((v = value_of(i, a, "--sandbox"))) {
+            preset = policy::preset_from_string(*v);
+            if (!preset || *preset == policy::Preset::Legacy) { usageError("--sandbox expects dev, private or locked"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--net"))) {
+            net = policy::net_from_string(*v);
+            if (!net) { usageError("--net expects host, nat, none or proxy"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--fetch"))) {
+            fetch = policy::fetch_from_string(*v);
+            if (!fetch) { usageError("--fetch expects auto, ask, layer or deny"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--index-update"))) {
+            index_update = policy::fetch_from_string(*v);
+            if (!index_update) { usageError("--index-update expects auto, ask or deny"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--observe"))) {
+            observe = policy::observe_from_string(*v);
+            if (!observe) { usageError("--observe expects off, basic, standard or full"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--allow"))) { auto g = split(*v); allow.insert(g.begin(), g.end()); changed = true; }
+        else if ((v = value_of(i, a, "--disallow"))) { auto g = split(*v); disallow.insert(g.begin(), g.end()); changed = true; }
+        else if ((v = value_of(i, a, "--grants-allowed"))) { grants_allowed = split(*v); changed = true; }
+        else if ((v = value_of(i, a, "--env-pass"))) { auto e = split(*v); env_pass.insert(e.begin(), e.end()); changed = true; }
+        else if (a == "--no-degrade") { no_degrade = true; changed = true; }
+        else if (a == "--degrade") { no_degrade = false; changed = true; }
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
+        else { usageError("unknown option for `xlings subos config`: " + std::string(a)); return 1; }
+    }
+    if (name.empty()) { usageError("missing <name> for: xlings subos config"); return 1; }
+    auto resolved = resolve_use_name_(name, stream);
+    if (resolved.selected.empty()) return resolved.exitCode;
+    name = resolved.selected;
+    const auto home = home_view();
+
+    auto current = policy_store::read(home, name);
+    if (!current) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = current.error(),
+                                .recoverable = true, .hint = "fix the file, or: xlings subos config " + name + " --reset" });
+        if (!reset) return 1;
+    }
+    const policy::Policy before = current && *current ? **current : policy::legacy();
+
+    if (!changed) {
+        auto doc = policy::to_json(before);
+        doc["source"] = current && *current ? "file" : "default";
+        std::println("{}", json ? doc.dump() : doc.dump(2));
+        return 0;
+    }
+
+    // Only the owner, outside the sandbox (design §8.1): the instance does not
+    // get to rewrite what it is allowed.
+    const bool inside = utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox";
+    auto decision = policy::decide(before, {.kind = "policy_change", .from_inside = inside, .instance = name});
+    if (decision.action != policy::Action::Allow) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::Permission,
+            .message = "E_PERMISSION: " + decision.reason, .recoverable = false,
+            .hint = "outside the sandbox: " + decision.owner_command });
+        return 13;
+    }
+
+    if (reset) {
+        std::error_code ec;
+        fs::remove(home.policy_file(name), ec);
+        observe::append(home.logs_dir(name) / "events.ndjson", observe::Event{
+            .kind = observe::Kind::Lifecycle,
+            .fields = {{"event", "policy-reset"}, {"instance", name}}});
+        log::info("'{}' has no policy file now (an undeclared instance)", name);
+        return 0;
+    }
+
+    policy::Policy after = preset ? policy::preset(*preset) : before;
+    if (!preset && before.preset == policy::Preset::Legacy) {
+        // The first declaration of an undeclared instance starts from dev.
+        after = policy::preset(policy::Preset::Dev);
+    }
+    if (net) after.net = *net;
+    if (fetch) after.fetch = *fetch;
+    if (index_update) after.index_update = *index_update;
+    if (observe) after.observe = *observe;
+    if (no_degrade) after.no_degrade = *no_degrade;
+    if (grants_allowed) {
+        after.grants_allowed.clear();
+        for (auto& g : *grants_allowed) after.grants_allowed.insert(g);
+    }
+    for (auto& g : allow) {
+        if (std::ranges::find(policy::kGrants, std::string_view(g)) == policy::kGrants.end()) {
+            usageError("--allow " + g + ": not a grant"); return 1;
+        }
+        after.grants.insert(g);
+    }
+    for (auto& g : disallow) { after.grants.erase(g); after.grants_allowed.erase(g); }
+    for (auto& e : env_pass)
+        if (std::ranges::find(after.env_pass, e) == after.env_pass.end()) after.env_pass.push_back(e);
+
+    if (auto w = policy_store::write(home, name, after); !w) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = w.error(), .recoverable = true });
+        return 1;
+    }
+    auto changes = policy::diff(before, after);
+    observe::append(home.logs_dir(name) / "events.ndjson", observe::Event{
+        .kind = observe::Kind::Lifecycle,
+        .fields = {{"event", "policy-change"}, {"instance", name}, {"diff", changes}}});
+    if (json) {
+        std::println("{}", nlohmann::json{{"instance", name}, {"diff", changes},
+                                          {"policy", policy::to_json(after)}}.dump());
+    } else {
+        log::info("'{}' policy ({}):", name, policy::to_string(after.preset));
+        for (auto& c : changes) log::info("  {}", c);
+        if (session::find(home, name))
+            log::info("the running session keeps its isolation until `xlings subos stop {}`", name);
+    }
+    return 0;
+}
+
+// `subos status <name>`: what the instance asks for, what this host gives it,
+// and why not when it does not (design §14).
+int run_status_(int argc, char* argv[], EventStream& stream,
+                const std::function<void(std::string_view)>& usageError) {
+    std::string name;
+    bool json = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
+        else { usageError("unknown option for `xlings subos status`: " + std::string(a)); return 1; }
+    }
+    if (name.empty()) {
+        int rc = 0;
+        name = pick_subos_or_fail_("status", stream, usageError, &rc);
+        if (name.empty()) return rc;
+    }
+    auto resolved = resolve_use_name_(name, stream);
+    if (resolved.selected.empty()) return resolved.exitCode;
+    name = resolved.selected;
+    const auto home = home_view();
+    auto file = policy_store::read(home, name);
+    nlohmann::json out{{"instance", name}};
+    policy::Policy pol = policy::legacy();
+    if (!file) {
+        out["policy_error"] = file.error();
+    } else if (*file) {
+        pol = **file;
+        out["policy_source"] = "file";
+    } else {
+        out["policy_source"] = "default";
+    }
+    out["requested"] = policy::to_json(pol);
+    EventStream quiet;
+    out["effective"] = sandbox::preview(name, pol, quiet);
+    if (auto live = session::find(home, name)) out["session"] = session::to_json(*live);
+    if (json) {
+        std::println("{}", out.dump());
+        return 0;
+    }
+    const auto& eff = out["effective"];
+    std::println("subos {}  ({})", name, out.value("policy_source", "invalid policy"));
+    if (out.contains("policy_error")) std::println("  policy: {}", out["policy_error"].get<std::string>());
+    std::println("  requested  preset={} net={} fetch={} observe={} identity={}",
+                 policy::to_string(pol.preset), policy::to_string(pol.net),
+                 policy::to_string(pol.fetch), policy::to_string(pol.observe),
+                 pol.identity == policy::Identity::Neutral ? "neutral" : "host");
+    if (eff.value("enters", false)) {
+        const auto& sp = eff["spec"];
+        std::println("  effective  backend={} pid={} net={} hostname={}", sp.value("backend", "?"),
+                     sp["unshare"].value("pid", false) ? "private" : "host",
+                     sp["unshare"].value("net", false) ? "private" : "host",
+                     sp.value("hostname", "host"));
+        for (auto& d : sp["degraded"])
+            std::println("  ! {} not in effect: {}", d.value("dimension", ""), d.value("reason", ""));
+    } else {
+        std::println("  cannot enter on this host:");
+        for (auto& m : eff["missing"])
+            std::println("  \u2717 {}: {}{}", m.value("dimension", ""), m.value("reason", ""),
+                         m.value("fix", "").empty() ? "" : "  (" + m.value("fix", "") + ")");
+    }
+    std::println("  platform:");
+    for (auto& g : eff["gates"]) {
+        std::println("    {:<14} {:<9} {}{}", g.value("gate", ""),
+                     g.value("supported", false) ? g.value("enforced", "") : "no",
+                     g.value("reason", ""),
+                     g.value("route", "").empty() || g.value("supported", false) ? "" : "  -> " + g.value("route", ""));
+    }
+    if (out.contains("session"))
+        std::println("  session    {} ({})", out["session"].value("id", ""),
+                     out["session"].value("detached", false) ? "detached" : "attached");
     return 0;
 }
 
@@ -2278,6 +2576,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         std::string shell_kind = "sh";
         bool sandbox = false;
         std::string sandbox_backend;       // "" = auto, "bwrap", "proot"
+        IsolationArgs iso;                 // --sandbox=<preset>, --net, --allow, ...
         // M3: --cmd <string> runs a single command non-interactively
         // and exits with the command's exit code. Works in both shell-
         // level and sandbox modes. Internally routed to `sh -c <cmd>`
@@ -2312,16 +2611,14 @@ int run(int argc, char* argv[], EventStream& stream) {
                 mode = "shell";
                 shell_kind = a.substr(8);
             }
-            else if (a == "--sandbox") {
-                sandbox = true;
-                // Optional backend argument: --sandbox bwrap | --sandbox proot
-                if (i + 1 < argc) {
-                    std::string next = argv[i + 1];
-                    if (next == "bwrap" || next == "proot") {
-                        sandbox_backend = next;
-                        ++i;
-                    }
-                }
+            else if (std::string err;
+                     a.starts_with("--sandbox") || a.starts_with("--net") || a.starts_with("--allow")
+                     || a.starts_with("--fetch") || a == "--no-degrade") {
+                auto r = parse_isolation_flag_(a, i, argc, argv, iso, err);
+                if (r < 0) { usageError(err); return 1; }
+                if (r == 0) { usageError("unknown option for `xlings subos use`: " + a); return 1; }
+                sandbox = sandbox || iso.sandbox;
+                if (!iso.backend.empty()) sandbox_backend = iso.backend;
             }
             else if (a == "--cmd" && i + 1 < argc) {
                 cmd = argv[++i];
@@ -2425,10 +2722,12 @@ int run(int argc, char* argv[], EventStream& stream) {
             use_detail_::apply_subos_env_(name);
             auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
                 .backend = sandbox_backend, .gpu = gpu, .env = declared_env_(name),
-                .ttl = keep_forever ? 0 : ttl_sec, .detached = true });
+                .ttl = keep_forever ? 0 : ttl_sec, .detached = true,
+                .preset = iso.preset, .overrides = iso.overrides });
             if (rc != 0) return rc;
         }
-        return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd);
+        return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
+                               iso.preset, iso.overrides);
     }
     if (sub == "list")   return run_list_(stream);
     if (sub == "remove") {
@@ -2467,6 +2766,8 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "ps") return run_ps_(argc, argv, stream);
     if (sub == "exec") return run_exec_(argc, argv, stream);
+    if (sub == "config") return run_config_(argc, argv, stream, usageError);
+    if (sub == "status") return run_status_(argc, argv, stream, usageError);
     if (sub == "start") return run_start_(argc, argv, stream, usageError);
     if (sub == "cp") return run_cp_(argc, argv, stream, usageError);
     if (sub == "log") return run_log_(argc, argv, stream, usageError);

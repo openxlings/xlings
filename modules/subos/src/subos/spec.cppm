@@ -79,6 +79,7 @@ struct SandboxSpec {
     bool unshare_ipc { false };
     bool unshare_uts { false };
     bool unshare_net { false };
+    bool net_nat { false };                   // a private network, egress through pasta
     bool disable_userns { false };
     bool die_with_parent { false };
     bool new_session { false };

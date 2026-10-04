@@ -40,9 +40,11 @@ import xlings.core.xvm.shim;
 import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.subos.policy;
+import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.spec;
 import xlings.subos.provider;
+import xlings.subos.gates;
 import xlings.subos.seccomp;
 import xlings.subos.session;
 import xlings.core.elfread;
@@ -117,12 +119,13 @@ std::string make_etc_group_(const std::string& user, gid_t gid) {
 // repeated `subos use --sandbox` is cheap.
 void init_sandbox_dirs_(const fs::path& subos_dir,
                         const std::string& user,
-                        uid_t uid, gid_t gid)
+                        uid_t uid, gid_t gid,
+                        std::string_view etc_name = "etc")
 {
     auto user_home = subos_dir / "home" / user;
     fs::create_directories(user_home);
     fs::create_directories(subos_dir / "tmp");
-    auto etc = subos_dir / "etc";
+    auto etc = subos_dir / std::string(etc_name);
     fs::create_directories(etc);
 
     // Empty `subos/` marker dir at sandbox root. xlings's project
@@ -381,12 +384,32 @@ std::map<std::string, std::string> current_env_() {
 // code this replaced; the remedy is the compiler's.
 void emit_refusal_(EventStream& stream, const spec::Refusal& refusal) {
     const auto& u = refusal.missing.front();
-    stream.emit(ErrorEvent{
-        .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
-        .message = u.reason,
-        .recoverable = false,
-        .hint = u.fix.empty() ? std::string{} : "run: " + u.fix,
-    });
+    if (refusal.missing.size() == 1 && (u.dimension == "backend" || u.dimension == "storage")) {
+        stream.emit(ErrorEvent{
+            .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
+            .message = u.reason,
+            .recoverable = false,
+            .hint = u.fix.empty() ? std::string{} : "run: " + u.fix,
+        });
+        return;
+    }
+    // The shared format for a requirement the host cannot meet (design §10):
+    // one line per missing item, and what to do about each.
+    std::string message = "cannot enter: the policy requires what this host cannot provide";
+    std::string hint;
+    for (const auto& m : refusal.missing) {
+        message += std::format("\n  \u2717 {}: {}", m.dimension, m.reason);
+        if (!m.fix.empty()) hint += (hint.empty() ? "" : "; ") + m.fix;
+    }
+    stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = message,
+                            .recoverable = false, .hint = hint });
+}
+
+// `! <dimension> not in effect: <reason>` -- entered, with less than asked.
+void report_degraded_(const spec::SandboxSpec& sb) {
+    for (const auto& d : sb.degraded)
+        log::warn("! {} not in effect: {}{}", d.dimension, d.reason,
+                  d.fix.empty() ? std::string{} : " (" + d.fix + ")");
 }
 
 
@@ -486,6 +509,17 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
 
+    // What this instance may do: its policy file, a stricter preset named on
+    // this call, this call's (tighten-only) overrides. A policy that does not
+    // parse, or names what this version cannot enforce, refuses entry.
+    auto effective = policy_store::effective(home, name, opts.preset, opts.overrides);
+    if (!effective) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = effective.error(),
+                                .recoverable = false });
+        return kFail;
+    }
+    const auto pol = std::move(*effective);
+
     spec::Request request{
         .instance = name,
         .instance_dir = subos_dir,
@@ -551,6 +585,9 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     }
 
     init_sandbox_dirs_(subos_dir, user, ::getuid(), ::getgid());
+    // A neutral identity's user and its passwd/group (spec: etc-neutral/).
+    if (pol.identity == policy::Identity::Neutral)
+        init_sandbox_dirs_(subos_dir, "user", ::getuid(), ::getgid(), "etc-neutral");
     if (storage == StorageMode::Image) {
         auto mp_home = image_mountpoint / user;
         fs::create_directories(mp_home);
@@ -565,7 +602,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         log::info("  to enable bwrap (recommended): xlings install bwrap");
         log::info("  using proot fallback for now");
     }
-    auto compiled = spec::compile(policy::legacy(), home, host_caps, request);
+    auto compiled = spec::compile(pol, home, host_caps, request);
 
     // Nothing usable and nothing asked for: fetch a backend, once.
     if (!compiled && !request.preferred && compiled.error().missing.front().dimension == "backend") {
@@ -595,7 +632,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             return kFail;
         }
         host_caps = caps::probe(home, ports);
-        compiled = spec::compile(policy::legacy(), home, host_caps, request);
+        compiled = spec::compile(pol, home, host_caps, request);
         if (!compiled && compiled.error().missing.front().dimension == "backend") {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::NotFound,
@@ -630,6 +667,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         return kFail;
     }
     const auto& sb = *compiled;
+    if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
     if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
         log::warn("using the host's proot ({}) -- no proot payload in {}. "
                   "Run `xlings install proot` to make this deterministic.",
@@ -702,10 +740,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                                                    : provider::proot_argv(launched);
 
     std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
-    {
-        auto legacy = policy::legacy();
-        pass.insert(pass.end(), legacy.env_pass.begin(), legacy.env_pass.end());
-    }
+    pass.insert(pass.end(), pol.env_pass.begin(), pol.env_pass.end());
     // The supervisor hosts the session: the sandbox's owner stays outside it,
     // watching, and the audit is written where the sandbox cannot reach (F15).
     const int rc = session::host(home, session::Launch{
@@ -729,7 +764,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 #else
     // macOS / Windows: home redirect (dotfile isolation).
     auto host_caps = caps::probe(home, ports);
-    auto compiled = spec::compile(policy::legacy(), home, host_caps, request);
+    auto compiled = spec::compile(pol, home, host_caps, request);
     if (!compiled) {
         emit_refusal_(stream, compiled.error());
         return kFail;
@@ -759,6 +794,34 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
     return platform::run_shell(cmd, cmd.empty());
 #endif
+}
+
+nlohmann::json preview(const std::string& name, const policy::Policy& pol, EventStream& stream) {
+    const auto home = subos::home_view();
+    const auto ports = subos::make_ports(stream);
+    auto user = utils::get_env_or_default(platform::OS_NAME == "windows" ? "USERNAME" : "USER");
+    if (user.empty()) user = "user";
+    const auto dir = Config::paths().homeDir / "subos" / name;
+    spec::Request request{ .instance = name, .instance_dir = dir, .user = user,
+                           .storage = to_spec_storage_(read_storage_mode_(dir)) };
+    const auto host_caps = caps::probe(home, ports);
+    nlohmann::json out;
+    auto compiled = spec::compile(pol, home, host_caps, request);
+    if (compiled) {
+        out["enters"] = true;
+        out["spec"] = compiled->describe();
+    } else {
+        out["enters"] = false;
+        out["missing"] = nlohmann::json::array();
+        for (auto& m : compiled.error().missing)
+            out["missing"].push_back({{"dimension", m.dimension}, {"reason", m.reason}, {"fix", m.fix}});
+    }
+    out["gates"] = nlohmann::json::array();
+    for (auto& g : gates::probe(host_caps))
+        out["gates"].push_back({{"gate", g.gate}, {"supported", g.supported},
+                                {"enforced", std::string(gates::to_string(g.enforced))},
+                                {"reason", g.reason}, {"route", g.route}});
+    return out;
 }
 
 }

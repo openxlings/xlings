@@ -56,7 +56,7 @@ bool exists(const Request& r, std::string_view p) {
 
 // The host userland every POSIX sandbox needs read-only, and nothing else
 // of /etc: the loader cache, DNS, certificates, the zone file.
-void host_userland(std::vector<MountOp>& m, const Request& r) {
+void host_userland(std::vector<MountOp>& m, const Request& r, bool host_time = true) {
     auto try_ro = [&](const char* src, const char* dst) {
         if (exists(r, src)) m.push_back({MountKind::RoBind, src, dst});
     };
@@ -69,7 +69,7 @@ void host_userland(std::vector<MountOp>& m, const Request& r) {
     try_ro("/etc/ssl", "/etc/ssl");
     try_ro("/etc/pki", "/etc/pki");
     try_ro("/etc/alternatives", "/etc/alternatives");
-    try_ro("/etc/localtime", "/etc/localtime");
+    if (host_time) try_ro("/etc/localtime", "/etc/localtime");
 }
 
 // The instance's own files at the places a POSIX userland looks for them.
@@ -77,7 +77,8 @@ void host_userland(std::vector<MountOp>& m, const Request& r) {
 // (the goldens run on Windows too).
 std::string posix(const fs::path& p) { return p.generic_string(); }
 
-void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request& r) {
+void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request& r,
+                    const fs::path& etc) {
     const auto dir = r.instance_dir;
     if (r.storage == Storage::Shared) {
         m.push_back({MountKind::Bind, posix(dir / "home"), "/home"});
@@ -88,7 +89,6 @@ void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request
     // The xlings home at its own absolute path: xvm alias targets, RPATH and
     // INTERP are absolute host paths baked at install time.
     m.push_back({MountKind::Bind, posix(home.home), posix(home.home)});
-    auto etc = dir / "etc";
     for (auto f : {"passwd", "group", "hosts", "nsswitch.conf"})
         m.push_back({MountKind::Bind, posix(etc / f), std::string("/etc/") + f});
 }
@@ -143,7 +143,13 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
                                             const caps::Caps& caps,
                                             const Request& r) {
     SandboxSpec s;
-    const auto user_home = "/home/" + r.user;
+    // A neutral identity (private, locked) is the same for every host: the
+    // user is `user`, the host name is the instance's, the clock is UTC and
+    // the locale C.UTF-8 (#640 F7). Its passwd/group live in etc-neutral/.
+    const bool neutral = policy.identity == policy::Identity::Neutral;
+    const auto user = neutral ? std::string("user") : r.user;
+    const auto etc_dir = r.instance_dir / (neutral ? "etc-neutral" : "etc");
+    const auto user_home = "/home/" + user;
     const auto name = r.instance;
     const auto dir = r.instance_dir;
     const bool gpu = r.grants.contains("gpu") || policy.grants.contains("gpu");
@@ -191,8 +197,8 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     if (s.backend == Backend::Bwrap || s.backend == Backend::Fake) {
         s.mounts.push_back({MountKind::Dev, "", "/dev"});
         s.mounts.push_back({MountKind::Proc, "", "/proc"});
-        host_userland(s.mounts, r);
-        instance_files(s.mounts, home, r);
+        host_userland(s.mounts, r, !neutral);
+        instance_files(s.mounts, home, r, etc_dir);
         if (gpu) {
             auto g = gpu_mounts(r);
             s.mounts.insert(s.mounts.end(), g.begin(), g.end());
@@ -209,8 +215,8 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.mounts.push_back({MountKind::Bind, "/dev", "/dev"});
         Request shared = r;
         shared.storage = Storage::Shared;
-        host_userland(s.mounts, shared);
-        instance_files(s.mounts, home, shared);
+        host_userland(s.mounts, shared, !neutral);
+        instance_files(s.mounts, home, shared, etc_dir);
         s.proot_root = dir / "sandbox-root";
     }
 
@@ -231,6 +237,64 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             s.degraded.push_back({dim, "proot has no namespaces", "xlings self doctor --isolation",
                                   policy::Need::Should});
     }
+
+    // ── network, identity, nested namespaces (design §19) ────────────
+    // What the policy asks for and this backend cannot give is collected;
+    // Must-items refuse below, Should-items degrade with a reason.
+    std::vector<Unmet> unmet;
+    auto need_of = [&](std::string_view dim) {
+        if (policy.no_degrade) return policy::Need::Must;
+        auto it = policy.needs.find(dim);
+        return it == policy.needs.end() ? policy::Need::Should : it->second;
+    };
+    const bool kernel = s.backend == Backend::Bwrap || s.backend == Backend::Fake;
+    if (policy.net == policy::Net::None) {
+        if (kernel) s.unshare_net = true;
+        else unmet.push_back({"net", std::string(to_string(s.backend)) + " cannot isolate the network",
+                              "xlings self doctor --isolation", need_of("net")});
+    } else if (policy.net == policy::Net::Nat || policy.net == policy::Net::Proxy) {
+        if (kernel && policy.net == policy::Net::Nat && caps.pasta) {
+            s.unshare_net = true;
+            s.net_nat = true;
+        } else if (!kernel) {
+            unmet.push_back({"net", std::string(to_string(s.backend)) + " cannot isolate the network",
+                             "xlings self doctor --isolation", need_of("net")});
+        } else if (policy.net == policy::Net::Nat) {
+            unmet.push_back({"net", "net=nat needs pasta (passt), which is not installed",
+                             "xlings install passt   (or --net none for no network)", need_of("net")});
+        } else {
+            unmet.push_back({"net", "net=proxy is not implemented yet",
+                             "--net nat or --net none", need_of("net")});
+        }
+    }
+    if (neutral) {
+        if (kernel) s.hostname = name;
+        else unmet.push_back({"identity", "the host name cannot be changed without namespaces", "",
+                              need_of("identity")});
+    }
+    if (policy.disable_userns) {
+        if (s.backend == Backend::Bwrap || s.backend == Backend::Fake) {
+            s.unshare_user = true;
+            s.disable_userns = true;
+        } else {
+            unmet.push_back({"userns", "nested user namespaces cannot be forbidden here", "",
+                             need_of("userns")});
+        }
+    }
+    if (!kernel) {
+        for (auto& d : s.degraded) d.need = need_of(d.dimension);
+        for (auto& d : s.degraded) unmet.push_back(d);
+        s.degraded.clear();
+        if (s.backend == Backend::HomeRedirect)
+            unmet.push_back({"fs", "this platform redirects the home directory only (advisory)",
+                             "not implemented on this platform yet", need_of("fs")});
+    }
+    Refusal refusal;
+    for (auto& u : unmet) {
+        if (u.need == policy::Need::Must) refusal.missing.push_back(u);
+        else s.degraded.push_back(u);
+    }
+    if (!refusal.missing.empty()) return std::unexpected(std::move(refusal));
 
     // ── environment ──────────────────────────────────────────────────
     s.clear_env = !policy.env_inherit;
@@ -271,14 +335,19 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         return s;
     }
 
+    if (neutral) {
+        s.env["TZ"] = policy.tz.empty() ? "UTC" : policy.tz;
+        s.env["LANG"] = "C.UTF-8";
+        std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_"); });
+    }
     s.env["HOME"] = user_home;
     s.env["XLINGS_HOME"] = posix(home.home);
     s.env["PATH"] = std::format("{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
                                 posix(home.home), name);
     if (s.backend == Backend::Proot) s.env["PROOT_NO_SECCOMP"] = "1";
     if (s.clear_env) {
-        s.env["USER"] = r.user;
-        s.env["LOGNAME"] = r.user;
+        s.env["USER"] = user;
+        s.env["LOGNAME"] = user;
         s.env["SHELL"] = r.shell;
     }
 

@@ -72,7 +72,7 @@ status = "required"
 [F5]
 text = "net=nat/none hides the host's network identity (ARP, interfaces)"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F6]
 text = "other instances' trees are invisible"
@@ -82,7 +82,7 @@ status = "planned"
 [F7]
 text = "hostname, timezone and locale are neutral under private/locked"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F8]
 text = "terminal injection (TIOCSTI) is blocked"
@@ -160,7 +160,7 @@ status = "required"
 
 [EXIT-13]
 text = "a denied permission exits 13 (E_PERMISSION)"
-status = "planned"
+status = "required"
 
 [EXIT-75]
 text = "a request waiting for approval exits 75"
@@ -192,15 +192,15 @@ status = "required"
 
 [POL-PRESETS]
 text = "presets dev / private / locked compile to their documented specs"
-status = "planned"
+status = "required"
 
 [POL-SANDBOX-ALIAS]
 text = "--sandbox alone means the dev preset; --sandbox=<preset> selects one"
-status = "planned"
+status = "required"
 
 [POL-UNKNOWN-REFUSED]
 text = "an unknown security-relevant policy field refuses entry"
-status = "planned"
+status = "required"
 
 [POL-OUTSIDE-INSTANCE]
 text = "the policy file lives outside the instance and is read-only inside"
@@ -209,11 +209,11 @@ status = "planned"
 
 [POL-DECIDE]
 text = "one decide() answers for the client and the broker"
-status = "planned"
+status = "required"
 
 [POL-RULES]
 text = "ordered rules: first match wins"
-status = "planned"
+status = "required"
 
 [POL-PACK]
 text = "a policy package supplies a policy by reference"
@@ -221,7 +221,7 @@ status = "planned"
 
 [POL-CONFIG-STATUS]
 text = "subos config edits the policy; subos status shows requested vs effective"
-status = "planned"
+status = "required"
 
 # ── isolation spec and capabilities (design §16–§18) ───────────────
 
@@ -239,11 +239,11 @@ status = "planned"
 
 [ISO-MUST-SHOULD]
 text = "a missing must-item refuses (125); a missing should-item degrades and says so"
-status = "planned"
+status = "required"
 
 [ISO-NO-DEGRADE]
 text = "--no-degrade turns any missing item into a refusal"
-status = "planned"
+status = "required"
 
 [ISO-LANDLOCK]
 text = "the Landlock provider restricts writes without namespaces"
@@ -262,7 +262,7 @@ status = "planned"
 [ISO-NET-NONE]
 text = "net=none leaves only loopback"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [ISO-NET-NAT]
 text = "net=nat gives egress through pasta with a private namespace"
@@ -277,7 +277,7 @@ why = "needs the in-sandbox forwarder and the supervisor bridge; nothing else de
 [ISO-DISABLE-USERNS]
 text = "private / locked forbid nested user namespaces"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [ISO-ROOTFS]
 text = "an instance can run on its own rootfs"
@@ -405,7 +405,7 @@ status = "planned"
 
 [PLAT-STATUS-MATRIX]
 text = "subos status prints the probed capability matrix"
-status = "planned"
+status = "required"
 
 [DOC-ISOLATION]
 text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"

@@ -39,6 +39,7 @@ import xlings.subos.gpu;
 import xlings.subos.graphics;
 import xlings.core.subos.sandbox;
 import xlings.subos.manifest;
+import xlings.subos.policy;
 // Leaf module (std + json only). Same source for "is this a global option"
 // that the CLI validator uses, so the two cannot disagree about `--yes`.
 import xlings.cli.spec;
@@ -496,7 +497,9 @@ int use_spawn_shell(const std::string& name, EventStream& stream,
                     bool sandbox = false,
                     const std::string& sandbox_backend = "",
                     bool gpu = false,
-                    const std::string& cmd = "");
+                    const std::string& cmd = "",
+                    std::optional<policy::Preset> preset = std::nullopt,
+                    const policy::Overrides& overrides = {});
 
 // Back-compat single-arg entry point: keeps existing callers (anyone who
 // imports xlings::subos::use directly) on the legacy global behavior.

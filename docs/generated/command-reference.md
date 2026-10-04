@@ -74,7 +74,7 @@ Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` �
 
 Enter a SubOS
 
-Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap or proot on Linux); `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only)
+Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap or proot on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--fetch <ACTION>` — This call only: auto, ask, layer or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to enter when anything asked for is missing; `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only)
 
 ## `xlings subos list`
 
@@ -96,17 +96,29 @@ Stop a SubOS's running session
 
 Run a command in a SubOS from outside it
 
-Options: `--sandbox [BACKEND]` — Run in the SubOS's sandbox (bwrap or proot on Linux); `--cwd <DIR>` — Working directory inside; `--env <K=V>` — Set a variable; repeatable; `--timeout <DURATION>` — End the command after DURATION (90, 30s, 10m, 2h); exits 124; `--json` — Print the result as JSON on stderr when the command ends; `--temp` — Use a throwaway SubOS, removed afterwards (its audit is kept); `--from <SOURCE>` — With --temp: fork it from this SubOS or package
+Options: `--sandbox [BACKEND]` — Run in the SubOS's sandbox (bwrap or proot on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--fetch <ACTION>` — This call only: auto, ask, layer or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to run when anything asked for is missing; `--cwd <DIR>` — Working directory inside; `--env <K=V>` — Set a variable; repeatable; `--timeout <DURATION>` — End the command after DURATION (90, 30s, 10m, 2h); exits 124; `--json` — Print the result as JSON on stderr when the command ends; `--temp` — Use a throwaway SubOS, removed afterwards (its audit is kept); `--from <SOURCE>` — With --temp: fork it from this SubOS or package
 
 ## `xlings subos start <name>`
 
 Start a SubOS session that runs without a terminal
 
-Options: `--sandbox [BACKEND]` — Sandbox backend (bwrap or proot); `--ttl <DURATION>` — End after DURATION idle (90, 30s, 10m, 2h); default: until stop
+Options: `--sandbox [BACKEND]` — Sandbox backend (bwrap or proot); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — host, nat, none or proxy (may only tighten); `--allow <GRANT>` — Grant from the policy's grants_allowed; `--no-degrade` — Refuse to start when anything asked for is missing; `--ttl <DURATION>` — End after DURATION idle (90, 30s, 10m, 2h); default: until stop
 
 ## `xlings subos cp <src> <dst>`
 
 Copy files into or out of a SubOS
+
+## `xlings subos config <name>`
+
+Show or change what a SubOS may do (its policy)
+
+Options: `--sandbox <PRESET>` — Start from a preset: dev, private or locked; `--net <MODE>` — host, nat, none or proxy; `--fetch <ACTION>` — Installing a missing package from inside: auto, ask, layer or deny; `--index-update <ACTION>` — Updating the index from inside: auto, ask or deny; `--observe <LEVEL>` — off, basic, standard or full; `--allow <GRANT>` — Grant display, audio, camera, gpu, ssh-agent, dbus or host-loopback; `--disallow <GRANT>` — Withdraw a grant; `--grants-allowed <LIST>` — Grants a single call may add; `--env-pass <NAME>` — Let this host variable in; NAME* for a prefix; `--no-degrade` — Refuse to enter when anything asked for is missing; `--degrade` — Enter and report what is missing; `--reset` — Remove the policy file; `--json` — Machine-readable output
+
+## `xlings subos status [name]`
+
+Show what a SubOS asks for and what this host gives it
+
+Options: `--json` — Machine-readable output
 
 ## `xlings subos ps`
 

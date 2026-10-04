@@ -1,6 +1,7 @@
 export module xlings.subos.policy;
 
 import std;
+import xlings.libs.json;
 
 // The policy model (design §7): what an instance is allowed, as data.
 //
@@ -65,6 +66,16 @@ struct Policy {
 
     bool disable_userns { false };           // forbid nested user namespaces
     bool no_degrade { false };
+    bool mounts_ro_default { false };        // locked: --mount defaults to ro
+    // Ordered fetch rules (design §7.3): the first that matches decides.
+    struct Rule {
+        std::string match { "*" };           // package glob, e.g. "xim:*"
+        std::string index;                   // only packages from this index
+        std::uint64_t size_gt { 0 };         // only packages larger than this
+        Fetch action { Fetch::Ask };
+    };
+    std::vector<Rule> fetch_rules;
+    std::string extends;                     // what the file said it extends
 };
 
 std::string_view to_string(Preset p);
@@ -98,7 +109,78 @@ inline constexpr std::array<std::string_view, 17> kDevEnvPass{
 // namespaces, no terminal injection).
 Policy legacy();
 
+// Shell-style wildcard match: `*` and `?`.
+bool glob_match(std::string_view pattern, std::string_view text);
+
+// "2GB", "512MB", "100KB", "123" -> bytes; nullopt otherwise.
+std::optional<std::uint64_t> parse_size(std::string_view text);
+
 // Whether `name` matches an env_pass entry (exact, or `PREFIX*`).
 bool env_name_matches(std::string_view name, std::span<const std::string> patterns);
+
+// ── Presets (design §10) ─────────────────────────────────────────────
+//
+//   dev      host files and other instances invisible, xlings tamper-proof,
+//            network as usual; what this host cannot do is reported, not fatal
+//   private  + network (nat), desktop and identity isolation; the isolation
+//            it promises is required -- missing, it does not enter
+//   locked   + no network, mounts read-only by default, fetch denied, every
+//            execution observed
+Policy preset(Preset p);
+
+// ── The policy file (design §7.2) ────────────────────────────────────
+//
+// <home>/config/subos/<name>/policy.json -- outside the instance, read-only
+// inside it. Parsing FAILS CLOSED: a field this version does not know, or a
+// value it does not know (`"net": "vpn"`), is an error and the instance is
+// not entered -- never ignored, because ignoring a stricter setting is
+// loosening it. Writers keep keys they do not know (design §25); executors
+// refuse them. Keys starting with "x-" and "comment" are free text.
+std::expected<Policy, std::string> from_json(const nlohmann::json& doc);
+nlohmann::json to_json(const Policy& p);
+
+// ── Per-call overrides (design §7.3) ─────────────────────────────────
+//
+// A single call may only TIGHTEN what the policy allows, or grant from
+// `grants_allowed`. Anything else is refused with the reason.
+struct Overrides {
+    std::optional<Net> net;
+    std::optional<Fetch> fetch;
+    std::optional<Observe> observe;
+    std::set<std::string, std::less<>> allow;    // --allow <grant>
+    std::vector<Mount> mounts;                   // --mount
+    bool no_degrade { false };
+};
+
+std::expected<Policy, std::string> apply(Policy p, const Overrides& o);
+
+// Field-by-field differences, for the audit of a policy change.
+std::vector<std::string> diff(const Policy& before, const Policy& after);
+
+// ── The one decision (design §9) ─────────────────────────────────────
+
+enum class Action { Allow, Ask, Deny };
+std::string_view to_string(Action a);
+
+struct Op {
+    // fetch | index_update | grant | policy_change | instance_admin
+    std::string kind;
+    std::string target;          // a package spec, a grant name
+    std::string index;           // for fetch: the index it comes from
+    std::uint64_t size { 0 };    // for fetch: bytes, when known
+    bool from_inside { false };  // asked by the xlings inside the sandbox
+    std::string instance;        // for the owner command in a refusal
+};
+
+struct Decision {
+    Action action { Action::Deny };
+    std::string reason;
+    // The command a person outside runs to do it anyway, when there is one.
+    std::string owner_command;
+};
+
+// The client inside (for an early, friendly answer) and the broker outside
+// (for the answer that counts) call THIS, with the same policy file.
+Decision decide(const Policy& p, const Op& op);
 
 }  // namespace xlings::subos::policy

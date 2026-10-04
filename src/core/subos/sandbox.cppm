@@ -26,6 +26,8 @@ import xlings.platform;
 import xlings.runtime;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.subos.gpu;
+import xlings.subos.policy;
+import xlings.libs.json;
 import xlings.core.xvm.shim;   // resolve_owner_home: reject another home's shim
 
 // Runtime isolation for a subos: proot/bwrap backends, storage images, GPU
@@ -200,9 +202,18 @@ export struct EnterOptions {
     // Report "entering <subos>". A command run from outside (`exec`) is not
     // someone entering anything; its own output is the whole story.
     bool announce { true };
+    // A preset named on this call (--sandbox=dev|private|locked) and its
+    // overrides; both may only tighten the instance's own policy.
+    std::optional<policy::Preset> preset;
+    policy::Overrides overrides;
 };
 
 export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);
+
+// What entering `name` under `pol` would give on this host, without entering:
+// the compiled spec (or the refusal), and the platform matrix. For
+// `subos status` and the interface. Nothing is created or mounted.
+export nlohmann::json preview(const std::string& name, const policy::Policy& pol, EventStream& stream);
 
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
