@@ -168,25 +168,25 @@ status = "planned"
 
 [EXIT-2-CONFIRM]
 text = "agent mode without -y refuses a confirmation with exit 2"
-status = "planned"
+status = "required"
 
 # ── agent contract (design §13) ────────────────────────────────────
 
 [AGENT-NO-PROMPT]
 text = "in agent mode no command waits for input"
-status = "planned"
+status = "required"
 
 [AGENT-CANDIDATES]
 text = "a choice without a default is an error with structured candidates"
-status = "planned"
+status = "required"
 
 [AGENT-DECLARED]
 text = "the audience is declared (--agent, XLINGS_AGENT_MODE=1/0), never inferred"
-status = "planned"
+status = "required"
 
 [AGENT-ENV-PROPAGATES]
 text = "XLINGS_AGENT_MODE reaches the xlings running inside a sandbox"
-status = "planned"
+status = "required"
 
 # ── policy (design §7, §9) ─────────────────────────────────────────
 

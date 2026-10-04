@@ -1561,7 +1561,15 @@ int dispatch_(int argc, char* argv[]) {
 
     // Scan for global flags (--verbose, -v, --quiet, -q, --agent) anywhere
     // in argv so they work regardless of position.
-    bool agent_mode = false;
+    // The audience is DECLARED, never inferred from a terminal (design §13):
+    // `--agent` for one command, XLINGS_AGENT_MODE=1 for a whole process tree
+    // (0 declares a human). Exported below so every xlings this one starts --
+    // including the one inside a sandbox, where the variable is allow-listed
+    // -- keeps the same contract.
+    bool agent_mode = [] {
+        const char* v = std::getenv("XLINGS_AGENT_MODE");
+        return v != nullptr && std::string_view(v) == "1";
+    }();
     std::string uiModeFlag;
     for (int i = 1; i < argc; ++i) {
         std::string_view a { argv[i] };
@@ -1648,6 +1656,7 @@ int dispatch_(int argc, char* argv[]) {
     // Unlike interface mode, we do NOT set tui_mode(true) — log output should
     // still reach the terminal, just without ANSI decoration.
     if (agent_mode) {
+        platform::set_env_variable("XLINGS_AGENT_MODE", "1");
         stream.set_enabled(tui_listener, false);
         log::enable_color(false);
         // One switch for every writer, not just log's own prefixes.
@@ -1870,6 +1879,34 @@ int dispatch_(int argc, char* argv[]) {
             }
         }
 
+        // The agent contract (design §13.3): nothing waits for input. An
+        // interactive shell is the one subos entry that does by design, so an
+        // agent is pointed at the form that does not -- decided here, at the
+        // interaction surface, never inside the core.
+        if (cmd == "subos" && agent_mode && fargc >= 4
+            && std::string_view(fargv[2]) == "use") {
+            bool non_interactive = false;
+            for (int i = 3; i < fargc; ++i) {
+                std::string_view a{fargv[i]};
+                if (a == "--cmd" || a.starts_with("--cmd=") || a == "--shell"
+                    || a.starts_with("--shell=") || a == "--global")
+                    non_interactive = true;
+            }
+            if (!non_interactive) {
+                std::string name;
+                for (int i = 3; i < fargc && name.empty(); ++i)
+                    if (fargv[i][0] != '-') name = fargv[i];
+                diag::emit({
+                    .code    = "subos.interactive_in_agent_mode",
+                    .summary = "`subos use` without --cmd opens an interactive shell, "
+                               "and in agent mode nothing waits for input",
+                    .actions = { { "run a command", std::format("xlings subos exec {} -- <command...>",
+                                                                name.empty() ? "<name>" : name) },
+                                 { "keep a session", std::format("xlings subos start {}", name.empty() ? "<name>" : name) } },
+                });
+                return 2;
+            }
+        }
         if (cmd == "subos") return subos::run(fargc, fargv.data(), stream);
         if (cmd == "self") return xself::run(fargc, fargv.data(), stream);
         if (cmd == "profile") return run_profile_(fargc, fargv.data(), stream);
