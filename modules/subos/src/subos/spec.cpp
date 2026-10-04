@@ -121,6 +121,26 @@ std::vector<MountOp> gpu_mounts(const Request& r) {
     return m;
 }
 
+// A host path a mount may not use (design §11): the system's own trees, the
+// sandbox's machinery, and the xlings home or anything above it.
+std::optional<std::string> mount_refusal(const std::string& src, const std::string& dst,
+                                         const HomeView& home) {
+    auto norm = [](const std::string& p) { return fs::path(p).lexically_normal().generic_string(); };
+    const auto s = norm(src), d = norm(dst);
+    const auto h = posix(home.home.lexically_normal());
+    if (s.empty() || s.front() != '/') return "the host path must be absolute";
+    if (d.empty() || d.front() != '/') return "the path inside must be absolute";
+    if (h == s || h.starts_with(s.ends_with('/') ? s : s + "/"))
+        return "the xlings home, or a directory above it, cannot be mapped";
+    for (std::string_view sys : {"/", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/proc",
+                                 "/dev", "/sys", "/run", "/run/xlings", "/boot"}) {
+        if (d == sys) return std::format("{} is the sandbox's own; map below it or elsewhere", sys);
+    }
+    if (d.starts_with("/run/xlings/") || d.starts_with("/proc/") || d.starts_with("/sys/"))
+        return "that path inside is the sandbox's own";
+    return std::nullopt;
+}
+
 std::string probe_fix(const caps::Backend& b) {
     (void)b;
     return "xlings self doctor --isolation";
@@ -317,6 +337,103 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             unmet.push_back({"fs", "this platform redirects the home directory only (advisory)",
                              "not implemented on this platform yet", need_of("fs")});
     }
+    // ── mounts (design §11) and named grants (§21.2) ─────────────────
+    // Each grant opens exactly one thing: a socket file bound in, its
+    // variable pointed at it -- never the host's whole runtime directory.
+    std::map<std::string, std::string> grant_env;
+    for (const auto& m : policy.mounts) {
+        const auto dst = m.dst.empty() ? m.src : m.dst;
+        if (auto why = mount_refusal(m.src, dst, home)) {
+            unmet.push_back({"mount", m.src + ": " + *why, "", policy::Need::Must});
+            continue;
+        }
+        if (!exists(r, m.src)) {
+            unmet.push_back({"mount", m.src + ": does not exist on the host", "", policy::Need::Must});
+            continue;
+        }
+        if (!m.rw && !kernel)
+            unmet.push_back({"mount", m.src + ": read-only needs bwrap; mapped read-write",
+                             "xlings self doctor --isolation", need_of("fs")});
+        s.mounts.push_back({m.rw ? MountKind::Bind : MountKind::RoBind, posix(m.src), posix(dst)});
+    }
+    {
+        std::set<std::string, std::less<>> grants = policy.grants;
+        grants.insert(r.grants.begin(), r.grants.end());
+        auto host_env = [&](std::string_view k) -> std::string {
+            auto it = r.host_env.find(std::string(k));
+            return it == r.host_env.end() ? std::string{} : it->second;
+        };
+        const std::string runtime = "/tmp/.xlings-runtime";
+        bool used_runtime = false;
+        auto bind_socket = [&](const std::string& src, const std::string& dst) {
+            s.mounts.push_back({MountKind::Bind, src, dst});
+        };
+        if (grants.contains("display")) {
+            bool any = false;
+            if (auto d = host_env("DISPLAY"); !d.empty() && exists(r, "/tmp/.X11-unix")) {
+                bind_socket("/tmp/.X11-unix", "/tmp/.X11-unix");
+                grant_env["DISPLAY"] = d;
+                if (auto xa = host_env("XAUTHORITY"); !xa.empty() && exists(r, xa)) {
+                    s.mounts.push_back({MountKind::RoBind, xa, "/tmp/.xlings-xauthority"});
+                    grant_env["XAUTHORITY"] = "/tmp/.xlings-xauthority";
+                }
+                any = true;
+            }
+            if (auto w = host_env("WAYLAND_DISPLAY"), xdg = host_env("XDG_RUNTIME_DIR");
+                !w.empty() && !xdg.empty() && exists(r, xdg + "/" + w)) {
+                bind_socket(xdg + "/" + w, runtime + "/" + w);
+                grant_env["WAYLAND_DISPLAY"] = w;
+                used_runtime = true;
+                any = true;
+            }
+            if (!any) unmet.push_back({"display", "no X11 or Wayland display on this host", "", policy::Need::Should});
+        }
+        if (grants.contains("audio")) {
+            bool any = false;
+            const auto xdg = host_env("XDG_RUNTIME_DIR");
+            if (!xdg.empty() && exists(r, xdg + "/pulse/native")) {
+                bind_socket(xdg + "/pulse/native", runtime + "/pulse/native");
+                grant_env["PULSE_SERVER"] = "unix:" + runtime + "/pulse/native";
+                used_runtime = any = true;
+            }
+            if (!xdg.empty() && exists(r, xdg + "/pipewire-0")) {
+                bind_socket(xdg + "/pipewire-0", runtime + "/pipewire-0");
+                used_runtime = any = true;
+            }
+            if (!any) unmet.push_back({"audio", "no PulseAudio or PipeWire socket on this host", "", policy::Need::Should});
+        }
+        if (grants.contains("camera")) {
+            bool any = false;
+            for (int i = 0; i < 10; ++i) {
+                auto dev = std::format("/dev/video{}", i);
+                if (exists(r, dev)) { s.mounts.push_back({MountKind::DevBind, dev, dev}); any = true; }
+            }
+            if (!any) unmet.push_back({"camera", "no /dev/video* on this host", "", policy::Need::Should});
+        }
+        if (grants.contains("ssh-agent")) {
+            if (auto sock = host_env("SSH_AUTH_SOCK"); !sock.empty() && exists(r, sock)) {
+                bind_socket(sock, "/tmp/.xlings-ssh-agent");
+                grant_env["SSH_AUTH_SOCK"] = "/tmp/.xlings-ssh-agent";
+            } else {
+                unmet.push_back({"ssh-agent", "SSH_AUTH_SOCK is not set to a socket on this host", "",
+                                 policy::Need::Should});
+            }
+        }
+        if (grants.contains("dbus")) {
+            auto addr = host_env("DBUS_SESSION_BUS_ADDRESS");
+            auto path = addr.starts_with("unix:path=") ? addr.substr(10, addr.find(',') - 10) : std::string{};
+            if (!path.empty() && exists(r, path)) {
+                bind_socket(path, "/tmp/.xlings-dbus");
+                grant_env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/tmp/.xlings-dbus";
+            } else {
+                unmet.push_back({"dbus", addr.empty() ? "no session bus on this host"
+                                                      : "the session bus is not a socket file (abstract address)",
+                                 "", policy::Need::Should});
+            }
+        }
+        if (used_runtime) grant_env["XDG_RUNTIME_DIR"] = runtime;
+    }
+
     Refusal refusal;
     for (auto& u : unmet) {
         if (u.need == policy::Need::Must) refusal.missing.push_back(u);
@@ -368,6 +485,7 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.env["LANG"] = "C.UTF-8";
         std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_"); });
     }
+    for (auto& [k, v] : grant_env) s.env[k] = v;
     s.env["HOME"] = user_home;
     s.env["XLINGS_HOME"] = posix(home.home);
     // /run/xlings last: the client that hosts the session, there whatever the

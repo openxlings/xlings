@@ -35,7 +35,14 @@ struct Mount {
     std::string src;     // host path, `~` expanded by the caller
     std::string dst;     // path inside; empty = same as src
     bool rw { true };
+    bool mode_given { false };   // `:ro` / `:rw` was written; otherwise the policy's default
 };
+
+// `--mount <host>[:<inside>][:ro|rw]` (design §11, docker -v): a second segment
+// that is exactly `ro` or `rw` is the mode (`~/.gitconfig:ro`). `home` expands
+// a leading `~`; a relative host path is taken from `cwd`.
+std::expected<Mount, std::string> parse_mount(std::string_view spec, std::string_view home,
+                                              std::string_view cwd);
 
 // Named grants (design §21.2): each opens exactly one capability.
 inline constexpr std::array<std::string_view, 7> kGrants{

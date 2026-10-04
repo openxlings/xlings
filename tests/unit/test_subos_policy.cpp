@@ -201,3 +201,64 @@ XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
     ASSERT_TRUE(d.has_value());
     EXPECT_TRUE(std::ranges::any_of(d->degraded, [](auto& u) { return u.dimension == "publish"; }));
 }
+
+XTEST(SubosPolicy, MountSpecsParseLikeDockerV,
+      .area = "subos", .covers = {"ISO-MOUNT"}) {
+    auto a = pol::parse_mount("~/.gitconfig:ro", "/home/alice", "/w");
+    ASSERT_TRUE(a);
+    EXPECT_EQ(a->src, "/home/alice/.gitconfig");
+    EXPECT_TRUE(a->dst.empty());
+    EXPECT_FALSE(a->rw);
+    auto b = pol::parse_mount("proj:/work:rw", "/home/alice", "/w");
+    ASSERT_TRUE(b);
+    EXPECT_EQ(b->src, "/w/proj");
+    EXPECT_EQ(b->dst, "/work");
+    EXPECT_TRUE(b->rw);
+    auto c = pol::parse_mount("/data", "/h", "/w");
+    ASSERT_TRUE(c);
+    EXPECT_TRUE(c->rw);
+    EXPECT_FALSE(c->mode_given);
+    EXPECT_FALSE(pol::parse_mount("/a:/b:rx", "/h", "/w"));
+    EXPECT_FALSE(pol::parse_mount("", "/h", "/w"));
+    // locked maps read-only unless told otherwise -- and refuses `rw`.
+    auto locked = pol::preset(pol::Preset::Locked);
+    auto applied = pol::apply(locked, {.mounts = {*c}});
+    ASSERT_TRUE(applied);
+    EXPECT_FALSE(applied->mounts.back().rw);
+    EXPECT_FALSE(pol::apply(locked, {.mounts = {*b}}));
+}
+
+XTEST(SubosPolicy, AMountMayNotReachTheHomeOrTheSystem,
+      .area = "subos", .covers = {"ISO-MOUNT"}) {
+    auto refused = [&](std::string src, std::string dst) {
+        auto p = pol::preset(pol::Preset::Dev);
+        p.mounts.push_back({.src = src, .dst = dst});
+        return !sp::compile(p, HomeView{"/h/.xlings"}, bwrap_host(), req()).has_value();
+    };
+    EXPECT_TRUE(refused("/h/.xlings", ""));          // the home itself
+    EXPECT_TRUE(refused("/h", "/x"));                // above it
+    EXPECT_TRUE(refused("/data", "/usr"));           // over the system
+    EXPECT_TRUE(refused("/data", "/run/xlings/x"));  // over the sandbox's machinery
+    EXPECT_FALSE(refused("/data", "/work"));
+}
+
+XTEST(SubosPolicy, AGrantOpensOneSocketAndPointsItsVariableAtIt,
+      .area = "subos", .covers = {"ISO-GRANTS"}) {
+    auto r = req();
+    r.host_env = {{"SSH_AUTH_SOCK", "/run/user/1/ssh"}, {"DISPLAY", ":0"},
+                  {"DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus"}};
+    r.grants = {"ssh-agent", "display", "dbus"};
+    auto s = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), r);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(s->env.at("SSH_AUTH_SOCK"), "/tmp/.xlings-ssh-agent");
+    EXPECT_EQ(s->env.at("DISPLAY"), ":0");
+    EXPECT_EQ(s->env.at("DBUS_SESSION_BUS_ADDRESS"), "unix:path=/tmp/.xlings-dbus");
+    auto has_bind = [&](std::string src, std::string dst) {
+        return std::ranges::any_of(s->mounts, [&](const sp::MountOp& m) { return m.src == src && m.dst == dst; });
+    };
+    EXPECT_TRUE(has_bind("/run/user/1/ssh", "/tmp/.xlings-ssh-agent"));
+    EXPECT_TRUE(has_bind("/tmp/.X11-unix", "/tmp/.X11-unix"));
+    // Ungranted, none of it is there.
+    auto none = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), req());
+    EXPECT_FALSE(none->env.contains("SSH_AUTH_SOCK"));
+}

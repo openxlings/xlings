@@ -253,11 +253,11 @@ status = "planned"
 [ISO-MOUNT]
 text = "--mount src:dst[:ro|rw] maps a host path into the instance"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [ISO-GRANTS]
 text = "--allow <grant> opens exactly one named capability"
-status = "planned"
+status = "required"
 
 [ISO-NET-NONE]
 text = "net=none leaves only loopback"

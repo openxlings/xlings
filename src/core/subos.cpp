@@ -1845,6 +1845,17 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
         x.sandbox = true;
         return 1;
     }
+    if (a == "--mount" || a.starts_with("--mount=")) {
+        auto v = value("--mount");
+        if (!v) { err = "--mount expects <host>[:<inside>][:ro|rw]"; return -1; }
+        std::error_code ec;
+        auto m = policy::parse_mount(*v, utils::get_env_or_default("HOME"),
+                                     fs::current_path(ec).generic_string());
+        if (!m) { err = m.error(); return -1; }
+        x.overrides.mounts.push_back(std::move(*m));
+        x.sandbox = true;
+        return 1;
+    }
     if (a == "--publish" || a.starts_with("--publish=")) {
         auto v = value("--publish");
         if (!v || v->find(':') == std::string::npos) { err = "--publish expects HOST:SANDBOX ports, e.g. 8080:80"; return -1; }
@@ -2156,6 +2167,8 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     std::optional<bool> no_degrade;
     std::set<std::string> allow, disallow, env_pass;
     std::optional<std::set<std::string>> grants_allowed;
+    std::vector<policy::Mount> mounts;
+    std::set<std::string> unmounts;
     bool changed = false;
     auto value_of = [&](int& i, std::string_view a, std::string_view flag) -> std::optional<std::string> {
         if (a.starts_with(std::string(flag) + "=")) return std::string(a.substr(flag.size() + 1));
@@ -2206,6 +2219,15 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         else if ((v = value_of(i, a, "--disallow"))) { auto g = split(*v); disallow.insert(g.begin(), g.end()); changed = true; }
         else if ((v = value_of(i, a, "--grants-allowed"))) { grants_allowed = split(*v); changed = true; }
         else if ((v = value_of(i, a, "--env-pass"))) { auto e = split(*v); env_pass.insert(e.begin(), e.end()); changed = true; }
+        else if ((v = value_of(i, a, "--mount"))) {
+            std::error_code ec;
+            auto m = policy::parse_mount(*v, utils::get_env_or_default("HOME"),
+                                         fs::current_path(ec).generic_string());
+            if (!m) { usageError(m.error()); return 1; }
+            mounts.push_back(std::move(*m));
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--unmount"))) { unmounts.insert(*v); changed = true; }
         else if (a == "--no-degrade") { no_degrade = true; changed = true; }
         else if (a == "--degrade") { no_degrade = false; changed = true; }
         else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
@@ -2276,6 +2298,14 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     for (auto& g : disallow) { after.grants.erase(g); after.grants_allowed.erase(g); }
     for (auto& e : env_pass)
         if (std::ranges::find(after.env_pass, e) == after.env_pass.end()) after.env_pass.push_back(e);
+    std::erase_if(after.mounts, [&](const policy::Mount& m) {
+        return unmounts.contains(m.src) || unmounts.contains(m.dst);
+    });
+    for (auto m : mounts) {
+        if (!m.mode_given && after.mounts_ro_default) m.rw = false;
+        std::erase_if(after.mounts, [&](const policy::Mount& x) { return x.src == m.src; });
+        after.mounts.push_back(std::move(m));
+    }
 
     if (auto w = policy_store::write(home, name, after); !w) {
         stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = w.error(), .recoverable = true });
@@ -2695,7 +2725,8 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
             else if (std::string err;
                      a.starts_with("--sandbox") || a.starts_with("--net") || a.starts_with("--allow")
-                     || a.starts_with("--fetch") || a.starts_with("--publish") || a == "--no-degrade") {
+                     || a.starts_with("--fetch") || a.starts_with("--publish") || a.starts_with("--mount")
+                     || a == "--no-degrade") {
                 auto r = parse_isolation_flag_(a, i, argc, argv, iso, err);
                 if (r < 0) { usageError(err); return 1; }
                 if (r == 0) { usageError("unknown option for `xlings subos use`: " + a); return 1; }

@@ -164,3 +164,36 @@ XTEST(SubosPolicyE2E, NatGivesAPrivateNetworkThroughPasta,
     EXPECT_NE(line.find("lo,"), std::string::npos) << r.out;
     EXPECT_EQ(std::ranges::count(line.substr(0, line.find('\n')), ','), 2) << r.out;
 }
+
+XTEST(SubosPolicyE2E, MountsMapHostPathsReadWriteOrReadOnly,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-MOUNT", "ISO-GRANTS"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    Box box;
+    auto work = box.home.root() / "work";
+    auto ref = box.home.root() / "ref";
+    fs::create_directories(work);
+    fs::create_directories(ref);
+    tk::write_file(ref / "README", "read me");
+    tk::write_file(box.home.root() / "agent.sock", "");
+    auto r = box.home.xlings({"subos", "exec", "box", "--sandbox",
+        "--mount", work.string() + ":/work",
+        "--mount", ref.string() + ":/ref:ro",
+        "--allow", "ssh-agent", "--",
+        "/bin/sh", "-c",
+        "echo made > /work/out && echo WROTE-WORK; "
+        "cat /ref/README; echo; touch /ref/x 2>/dev/null && echo WROTE-REF || echo REF-RO; "
+        "echo sock=$SSH_AUTH_SOCK; test -e $SSH_AUTH_SOCK && echo SOCK-THERE"},
+        {{"SSH_AUTH_SOCK", (box.home.root() / "agent.sock").string()}});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(r.out.find("WROTE-WORK"), std::string::npos) << r.out;
+    EXPECT_EQ(tk::read_file(work / "out"), "made\n");
+    EXPECT_NE(r.out.find("read me"), std::string::npos) << r.out;
+    EXPECT_NE(r.out.find("REF-RO"), std::string::npos) << r.out;
+    EXPECT_NE(r.out.find("sock=/tmp/.xlings-ssh-agent"), std::string::npos) << r.out;
+    EXPECT_NE(r.out.find("SOCK-THERE"), std::string::npos) << r.out;
+
+    auto home = box.home.xlings({"subos", "exec", "box", "--sandbox", "--mount",
+                                 box.home.dir().string() + ":/x", "--", "true"});
+    EXPECT_EQ(home.exit_code, 125) << home.transcript();
+}

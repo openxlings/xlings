@@ -440,7 +440,8 @@ std::expected<Policy, std::string> apply(Policy p, const Overrides& o) {
                                                "granting it (grants_allowed)", g));
         p.grants.insert(g);
     }
-    for (const auto& m : o.mounts) {
+    for (auto m : o.mounts) {
+        if (!m.mode_given && p.mounts_ro_default) m.rw = false;
         if (m.rw && p.mounts_ro_default && p.preset == Preset::Locked)
             return std::unexpected(std::format("--mount {}: a locked instance maps read-only", m.src));
         p.mounts.push_back(m);
@@ -512,6 +513,44 @@ Decision decide(const Policy& p, const Op& op) {
         return to_decision(p.fetch, std::format("fetch = {}", to_string(p.fetch)));
     }
     return {Action::Deny, "unknown operation '" + op.kind + "'"};
+}
+
+}  // namespace xlings::subos::policy
+
+namespace xlings::subos::policy {
+
+std::expected<Mount, std::string> parse_mount(std::string_view spec, std::string_view home,
+                                              std::string_view cwd) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= spec.size()) {
+        auto c = spec.find(':', start);
+        if (c == std::string_view::npos) c = spec.size();
+        parts.emplace_back(spec.substr(start, c - start));
+        start = c + 1;
+    }
+    if (parts.empty() || parts[0].empty() || parts.size() > 3)
+        return std::unexpected(std::format("--mount {}: expected <host>[:<inside>][:ro|rw]", spec));
+    Mount m;
+    auto is_mode = [](const std::string& x) { return x == "ro" || x == "rw"; };
+    m.src = parts[0];
+    if (parts.size() == 2 && is_mode(parts[1])) {
+        m.rw = parts[1] == "rw";
+        m.mode_given = true;
+    } else if (parts.size() >= 2) {
+        m.dst = parts[1];
+        if (parts.size() == 3) {
+            if (!is_mode(parts[2]))
+                return std::unexpected(std::format("--mount {}: the mode is ro or rw", spec));
+            m.rw = parts[2] == "rw";
+            m.mode_given = true;
+        }
+    }
+    if (m.src == "~" || m.src.starts_with("~/")) m.src = std::string(home) + m.src.substr(1);
+    else if (m.src.front() != '/') m.src = std::string(cwd) + "/" + m.src;
+    m.src = std::filesystem::path(m.src).lexically_normal().generic_string();
+    if (m.dst.starts_with("~/")) m.dst.clear();   // inside, ~ is not the host's home
+    return m;
 }
 
 }  // namespace xlings::subos::policy
