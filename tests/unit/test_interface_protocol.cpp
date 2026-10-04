@@ -87,9 +87,14 @@ std::pair<std::string, int> run_xlings_(
         // would override the `cd <neutral_cwd>` isolation below by
         // forcing the spawned binary to use the leaked project root.
         _putenv_s("XLINGS_PROJECT_DIR", "");
+        // Same leak, one level down: a shell inside a subos exports which
+        // subos it is in, and the spawned binary obeys it over the test
+        // home's own choice.
+        _putenv_s("XLINGS_ACTIVE_SUBOS", "");
 #else
         ::setenv("XLINGS_HOME", xlings_home.c_str(), 1);
         ::unsetenv("XLINGS_PROJECT_DIR");
+        ::unsetenv("XLINGS_ACTIVE_SUBOS");
 #endif
     }
 

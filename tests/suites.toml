@@ -1,0 +1,39 @@
+# Legacy test suites, run by `xdev test --suite <name>` (design §24.3).
+#
+# These are the shell and Python scripts that predate the C++ test library.
+# They run unchanged through xdev's adapter: one record per command, its exit
+# code, its duration and the tail of its log, in the same report as the C++
+# tests. New tests are written in C++ (tests/**/test_*.cpp with XTEST); a
+# script leaves this file when it is ported.
+#
+# Placeholders: {xlings} is the binary under test, {tarball} is --tarball.
+
+# Contracts that need only a built binary: no home, no network.
+[contract-scripts]
+platforms = ["linux"]
+commands = [
+  "bash tests/scripts/test_quick_install.sh",
+  "python3 tests/scripts/test_release_candidate_gate.py",
+  "python3 tests/scripts/test_index_pointer_history.py",
+  "python3 tests/scripts/test_version_consistency.py",
+  "python3 tests/scripts/test_windows_header_hygiene.py",
+  "python3 tests/scripts/test_selector_contrast.py",
+  "python3 tests/scripts/test_docs_examples.py --xlings {xlings}",
+  "python3 tests/scripts/test_generated_command_reference.py --xlings {xlings}",
+  "python3 tests/scripts/test_cli_spec_parity.py --xlings {xlings}",
+  "XLINGS_BIN={xlings} python3 tests/scripts/test_i18n_coverage.py",
+]
+
+# Repository rules checked without a build.
+[lint]
+commands = [
+  "bash tests/fresh-install/no_xlings_version_pin_check.sh",
+  "bash tools/lint_subos_remove_all.sh",
+]
+
+# The end-to-end shell suite against a release tarball.
+[e2e-shell]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/run_all.sh {tarball}",
+]

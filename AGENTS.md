@@ -70,10 +70,19 @@ xlings use gcc@16.1.0       # switch to glibc-linked dev toolchain
 mcpp build                   # dev binary → target/<triple>/<fingerprint>/bin/xlings
 
 # Test:
-mcpp test                    # unit tests
+mcpp test                    # unit tests + C++ e2e tests (tests/**/test_*.cpp)
 XLINGS_BIN=$(find target -path '*/bin/xlings' -type f | head -1) \
-  bash tests/e2e/<test>.sh                             # e2e tests
+  bash tests/e2e/<test>.sh                             # legacy e2e scripts
+
+# xdev (dev tool, not shipped): one report for C++ tests and legacy suites
+mcpp build -p xdev
+XDEV=$(find target -path '*/bin/xdev/xdev' | head -1)
+$XDEV doctor                 # which capabilities this machine can test
+$XDEV test [pattern] [--suite contract-scripts|lint|e2e-shell]
 ```
+
+New tests are C++ with `modules/testkit` (`XTEST`, `Home::isolated`); see
+`tests/README.md`.
 
 For release packaging (static binary):
 - Linux: `tools/linux_release.sh` (musl-gcc static)

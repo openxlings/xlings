@@ -19,6 +19,13 @@ module;
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#define XTEST_ENVIRON (*_NSGetEnviron())
+#else
+extern char** environ;
+#define XTEST_ENVIRON environ
+#endif
 #endif
 
 module xlings.testkit;
@@ -577,6 +584,36 @@ RunResult run(const RunOptions& o) {
 }
 
 #endif
+
+std::map<std::string, std::string> inherited_env() {
+    std::map<std::string, std::string> e;
+#if defined(_WIN32)
+    wchar_t* block = ::GetEnvironmentStringsW();
+    for (wchar_t* p = block; p && *p; p += std::wcslen(p) + 1) {
+        std::wstring w(p);
+        auto eq = w.find(L'=', 1);   // "=C:=C:\" entries start with '='
+        if (eq == std::wstring::npos) continue;
+        auto narrow = [](const std::wstring& ws) {
+            int n = ::WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
+                                          nullptr, 0, nullptr, nullptr);
+            std::string out(static_cast<std::size_t>(n), '\0');
+            ::WideCharToMultiByte(CP_UTF8, 0, ws.data(), static_cast<int>(ws.size()),
+                                  out.data(), n, nullptr, nullptr);
+            return out;
+        };
+        e[narrow(w.substr(0, eq))] = narrow(w.substr(eq + 1));
+    }
+    if (block) ::FreeEnvironmentStringsW(block);
+#else
+    for (char** p = XTEST_ENVIRON; p && *p; ++p) {
+        std::string_view kv(*p);
+        auto eq = kv.find('=');
+        if (eq == std::string_view::npos) continue;
+        e[std::string(kv.substr(0, eq))] = std::string(kv.substr(eq + 1));
+    }
+#endif
+    return e;
+}
 
 fs::path xlings_binary() {
     static const fs::path cached = [] {

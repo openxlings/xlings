@@ -103,6 +103,10 @@ RunResult run(const RunOptions& options);
 // The binary under test. Empty when there is none (the caller decides).
 fs::path xlings_binary();
 
+// This process's own environment, for tools (xdev) that run commands the way
+// a developer would. Tests use Home::env() instead.
+std::map<std::string, std::string> inherited_env();
+
 // ── Homes ────────────────────────────────────────────────────────────
 
 class Home {

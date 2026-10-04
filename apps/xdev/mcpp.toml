@@ -1,0 +1,27 @@
+# xdev -- the project's development tool (design §24.3).
+#
+# One entry point for what a contributor and CI do around the product: run the
+# tests (C++ through `mcpp test`, the legacy shell/python scripts through an
+# adapter), render one report from all of them, check the requirement map,
+# plan the CI matrix, and say what this machine can test.
+#
+# Its own package, never linked into xlings: `mcpp build` at the root does not
+# build it, so the product's build time and binary are unchanged. Build it with
+# `mcpp build -p xdev`. It depends on testkit (the process runner and the
+# capability probes) and JSON, and on nothing of xlings -- the tool that
+# measures the product must not share its failure modes.
+[package]
+namespace = "xlings"
+name      = "xdev"
+version   = "0.1.0"
+
+[targets.xdev]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+json    = { path = "../../modules/json" }
+testkit = { path = "../../modules/testkit" }
+
+[build]
+include_dirs = ["../../modules/json/src/json"]

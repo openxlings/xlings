@@ -26,6 +26,7 @@ members = [
     "modules/theme",
     "modules/testkit",
     "apps/gui",
+    "apps/xdev",
 ]
 
 [package]
