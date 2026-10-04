@@ -540,6 +540,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 #endif
     if (!cmd.empty()) request.argv = {request.shell, "-c", cmd};
     else if (!opts.argv.empty()) request.argv = opts.argv;
+    request.publish = opts.publish;
     request.explicit_env = opts.env;
     request.cwd = opts.cwd;
     if (opts.detached) request.interactive = false;
@@ -757,6 +758,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         .ttl = opts.ttl,
         .detached = opts.detached,
         .timeout = opts.timeout,
+        .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
     });
     if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
     return rc;

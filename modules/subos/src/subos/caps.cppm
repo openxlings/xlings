@@ -31,7 +31,8 @@ struct Caps {
     std::optional<Backend> proot;
     bool userns { false };                // unprivileged user namespaces work
     int landlock_abi { 0 };               // 0 = no Landlock
-    std::optional<fs::path> pasta;        // for net=nat
+    std::optional<fs::path> pasta;        // for net=nat (only when /dev/net/tun exists)
+    std::string pasta_missing;            // why not, when it is not there
     bool seccomp { false };
     std::string kernel;                   // uname release, for the cache key
 };
@@ -43,6 +44,10 @@ struct Caps {
 //          then /usr/bin/proot, /usr/local/bin/proot when not a shim
 std::optional<Backend> locate_bwrap(const HomeView& home);
 std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports);
+
+// pasta (from passt) for net=nat: the payload, then the host's at the two
+// usual paths when it is not a shim. Usable only with /dev/net/tun.
+std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, std::string& why_not);
 
 // `bwrap --ro-bind / / -- /bin/true`; fills usable / probe_output.
 void probe_bwrap(Backend& b);

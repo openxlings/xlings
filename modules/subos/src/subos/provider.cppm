@@ -25,4 +25,8 @@ std::vector<std::string> proot_argv(const spec::SandboxSpec& s);
 std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
                                                const std::map<std::string, std::string>& inherited);
 
+// `pasta --config-net ... ` without its target PID (session::host appends
+// it): the nat options the spec asks for.
+std::vector<std::string> pasta_args(const spec::SandboxSpec& s);
+
 }  // namespace xlings::subos::provider

@@ -96,13 +96,13 @@ Stop a SubOS's running session
 
 Run a command in a SubOS from outside it
 
-Options: `--sandbox [BACKEND]` — Run in the SubOS's sandbox (bwrap or proot on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--fetch <ACTION>` — This call only: auto, ask, layer or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to run when anything asked for is missing; `--cwd <DIR>` — Working directory inside; `--env <K=V>` — Set a variable; repeatable; `--timeout <DURATION>` — End the command after DURATION (90, 30s, 10m, 2h); exits 124; `--json` — Print the result as JSON on stderr when the command ends; `--temp` — Use a throwaway SubOS, removed afterwards (its audit is kept); `--from <SOURCE>` — With --temp: fork it from this SubOS or package
+Options: `--sandbox [BACKEND]` — Run in the SubOS's sandbox (bwrap or proot on Linux); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — This call only: host, nat, none or proxy (may only tighten); `--fetch <ACTION>` — This call only: auto, ask, layer or deny (may only tighten); `--allow <GRANT>` — This call only: grant from the policy's grants_allowed; `--no-degrade` — Refuse to run when anything asked for is missing; `--publish <HOST:SANDBOX>` — With net=nat: publish a TCP port; repeatable; `--cwd <DIR>` — Working directory inside; `--env <K=V>` — Set a variable; repeatable; `--timeout <DURATION>` — End the command after DURATION (90, 30s, 10m, 2h); exits 124; `--json` — Print the result as JSON on stderr when the command ends; `--temp` — Use a throwaway SubOS, removed afterwards (its audit is kept); `--from <SOURCE>` — With --temp: fork it from this SubOS or package
 
 ## `xlings subos start <name>`
 
 Start a SubOS session that runs without a terminal
 
-Options: `--sandbox [BACKEND]` — Sandbox backend (bwrap or proot); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — host, nat, none or proxy (may only tighten); `--allow <GRANT>` — Grant from the policy's grants_allowed; `--no-degrade` — Refuse to start when anything asked for is missing; `--ttl <DURATION>` — End after DURATION idle (90, 30s, 10m, 2h); default: until stop
+Options: `--sandbox [BACKEND]` — Sandbox backend (bwrap or proot); --sandbox=dev|private|locked picks a preset; `--net <MODE>` — host, nat, none or proxy (may only tighten); `--allow <GRANT>` — Grant from the policy's grants_allowed; `--no-degrade` — Refuse to start when anything asked for is missing; `--publish <HOST:SANDBOX>` — With net=nat: publish a TCP port; repeatable; `--ttl <DURATION>` — End after DURATION idle (90, 30s, 10m, 2h); default: until stop
 
 ## `xlings subos cp <src> <dst>`
 

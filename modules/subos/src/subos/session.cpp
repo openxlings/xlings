@@ -8,6 +8,7 @@ module;
 #if defined(__linux__)
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -408,6 +409,17 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     auto argv = L.argv;
     auto av = c_array(argv);
 
+    // net=nat handshake: the child makes its namespaces and says so; pasta
+    // attaches; the child is told to go on (1) or to give up (0).
+    const bool nat = !L.pasta.empty();
+    int ready_pipe[2] = {-1, -1}, go_pipe[2] = {-1, -1};
+    if (nat && (::pipe2(ready_pipe, O_CLOEXEC) != 0 || ::pipe2(go_pipe, O_CLOEXEC) != 0)) {
+        std::fprintf(stderr, "[xlings:subos] pipe failed: %s\n", std::strerror(errno));
+        return kExitSetup;
+    }
+    const auto uid = ::getuid();
+    const auto gid = ::getgid();
+
     pid_t pid = ::fork();
     if (pid < 0) {
         std::fprintf(stderr, "[xlings:subos] fork failed: %s\n", std::strerror(errno));
@@ -417,6 +429,26 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         reset_signals_for_child();
         ::close(listen_fd);
         ::close(ctl[0]);
+        if (nat) {
+            // A user namespace mapping this user to itself (not to root), and
+            // a network namespace it owns. Ours, and dumpable: pasta can join
+            // it, which it cannot do for one bwrap made.
+            if (::unshare(CLONE_NEWUSER | CLONE_NEWNET) != 0) ::_exit(kExitSetup);
+            auto put = [](const char* path, const std::string& text) {
+                int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+                if (fd < 0) return false;
+                bool ok = ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
+                ::close(fd);
+                return ok;
+            };
+            put("/proc/self/setgroups", "deny");
+            if (!put("/proc/self/uid_map", std::format("{} {} 1\n", uid, uid))
+                || !put("/proc/self/gid_map", std::format("{} {} 1\n", gid, gid)))
+                ::_exit(kExitSetup);
+            char b = 1;
+            (void)::write(ready_pipe[1], &b, 1);
+            if (::read(go_pipe[0], &b, 1) != 1 || b != 1) ::_exit(kExitSetup);
+        }
         // The control socket and the caller's descriptors (a seccomp filter)
         // cross exec; nothing else of the supervisor's does.
         ::fcntl(ctl[1], F_SETFD, 0);
@@ -427,6 +459,48 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     }
     ::close(ctl[1]);
     for (int fd : L.keep_fds) ::close(fd);
+
+    const auto pasta_pidfile = home.run_dir(L.instance) / "pasta.pid";
+    if (nat) {
+        ::close(ready_pipe[1]);
+        ::close(go_pipe[0]);
+        pollfd rp{ready_pipe[0], POLLIN, 0};
+        char b = 0;
+        bool ready = ::poll(&rp, 1, 10000) > 0 && ::read(ready_pipe[0], &b, 1) == 1;
+        int pasta_rc = -1;
+        if (ready) {
+            auto pargv = L.pasta;
+            pargv.insert(pargv.end(), {"--pid", pasta_pidfile.string(), std::to_string(pid)});
+            auto pav = c_array(pargv);
+            pid_t pp = ::fork();
+            if (pp == 0) {
+                reset_signals_for_child();
+                int devnull = ::open("/dev/null", O_RDWR);
+                ::dup2(devnull, 0);
+                ::execv(pav[0], pav.data());
+                ::_exit(127);
+            }
+            int st = 0;
+            if (pp > 0 && ::waitpid(pp, &st, 0) == pp) pasta_rc = status_to_code(st);
+        }
+        char go = (ready && pasta_rc == 0) ? 1 : 0;
+        (void)::write(go_pipe[1], &go, 1);
+        ::close(go_pipe[1]);
+        ::close(ready_pipe[0]);
+        if (!go) {
+            std::fprintf(stderr, "[xlings:subos] net=nat: pasta could not set up the network (%s)\n",
+                         ready ? std::format("pasta exited {}", pasta_rc).c_str()
+                               : "the namespace was not created");
+            audit(home, L.instance, {{"event", "session-setup-failed"}, {"session", info.id},
+                                     {"reason", "pasta"}, {"exit", pasta_rc}});
+            ::waitpid(pid, nullptr, 0);
+            std::error_code rec;
+            fs::remove(sock_path(home, L.instance), rec);
+            ::close(listen_fd);
+            ::close(ctl[0]);
+            return kExitSetup;
+        }
+    }
 
     const auto started = std::chrono::steady_clock::now();
     info.sandbox_pid = pid;
@@ -599,6 +673,13 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         ::close(c.fd);
     }
     std::error_code ec;
+    if (nat) {
+        // pasta outlives nothing it served.
+        std::ifstream pf(pasta_pidfile);
+        int ppid = 0;
+        if (pf >> ppid && ppid > 0) ::kill(ppid, SIGTERM);
+        fs::remove(pasta_pidfile, ec);
+    }
     fs::remove(sock_path(home, L.instance), ec);
     fs::remove(info_path(home, L.instance), ec);
     ::close(listen_fd);

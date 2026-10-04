@@ -299,10 +299,10 @@ jobs:
       # itself -- what a user does about it is `xlings self doctor --isolation`.
       - name: Lane capabilities (user namespaces, bwrap)
         run: |
-          sudo apt-get install -y -qq bubblewrap
+          sudo apt-get install -y -qq bubblewrap passt
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           echo "XDEV_LANE=linux-unit" >> "$GITHUB_ENV"
-          echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox" >> "$GITHUB_ENV"
+          echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox,pasta" >> "$GITHUB_ENV"
 
       - name: Build and run unit tests
         run: |

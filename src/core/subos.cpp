@@ -1784,6 +1784,7 @@ struct IsolationArgs {
     std::string backend;
     std::optional<policy::Preset> preset;
     policy::Overrides overrides;
+    std::vector<std::string> publish;    // --publish HOST:SANDBOX
 };
 
 // 1 = consumed, 0 = not ours, -1 = malformed (`err` says why).
@@ -1839,6 +1840,13 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
             if (comma == std::string_view::npos) break;
             list.remove_prefix(comma + 1);
         }
+        x.sandbox = true;
+        return 1;
+    }
+    if (a == "--publish" || a.starts_with("--publish=")) {
+        auto v = value("--publish");
+        if (!v || v->find(':') == std::string::npos) { err = "--publish expects HOST:SANDBOX ports, e.g. 8080:80"; return -1; }
+        x.publish.push_back(*v);
         x.sandbox = true;
         return 1;
     }
@@ -1971,7 +1979,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         rc = sandbox::enter(name, out, sandbox::EnterOptions{
             .backend = iso.backend, .argv = command, .cwd = cwd, .env = std::move(declared),
             .timeout = timeout, .exec_codes = true, .announce = false,
-            .preset = iso.preset, .overrides = iso.overrides });
+            .preset = iso.preset, .overrides = iso.overrides, .publish = iso.publish });
     } else {
         // An instance without a sandbox: its environment, this process's
         // stdio, no supervisor (design §16, "没有沙箱的实例").
@@ -2060,7 +2068,7 @@ int run_start_(int argc, char* argv[], EventStream& stream,
     use_detail_::apply_subos_env_(name);
     auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
         .backend = iso.backend, .env = declared_env_(name), .ttl = ttl, .detached = true,
-        .preset = iso.preset, .overrides = iso.overrides });
+        .preset = iso.preset, .overrides = iso.overrides, .publish = iso.publish });
     if (rc != 0) return rc;
     if (auto live = session::find(home_view(), name)) {
         log::info("started session {} for '{}'{}", live->id, name,
@@ -2613,7 +2621,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
             else if (std::string err;
                      a.starts_with("--sandbox") || a.starts_with("--net") || a.starts_with("--allow")
-                     || a.starts_with("--fetch") || a == "--no-degrade") {
+                     || a.starts_with("--fetch") || a.starts_with("--publish") || a == "--no-degrade") {
                 auto r = parse_isolation_flag_(a, i, argc, argv, iso, err);
                 if (r < 0) { usageError(err); return 1; }
                 if (r == 0) { usageError("unknown option for `xlings subos use`: " + a); return 1; }

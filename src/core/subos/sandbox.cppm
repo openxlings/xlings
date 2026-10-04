@@ -206,6 +206,7 @@ export struct EnterOptions {
     // overrides; both may only tighten the instance's own policy.
     std::optional<policy::Preset> preset;
     policy::Overrides overrides;
+    std::vector<std::string> publish;             // --publish HOST:SANDBOX (net=nat)
 };
 
 export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);

@@ -68,6 +68,29 @@ std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports) {
     return std::nullopt;
 }
 
+std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, std::string& why_not) {
+    std::error_code ec;
+    std::optional<fs::path> found = first_payload_bin(home.home / "data" / "xpkgs" / "xim-x-passt", "pasta");
+    if (!found) {
+        for (const auto* p : {"/usr/bin/pasta", "/usr/local/bin/pasta"}) {
+            fs::path candidate(p);
+            if (!fs::exists(candidate, ec)) continue;
+            if (ports.shim_owner && ports.shim_owner(candidate)) continue;
+            found = candidate;
+            break;
+        }
+    }
+    if (!found) {
+        why_not = "pasta (passt) is not installed";
+        return std::nullopt;
+    }
+    if (!fs::exists("/dev/net/tun", ec)) {
+        why_not = "/dev/net/tun is missing on this host";
+        return std::nullopt;
+    }
+    return found;
+}
+
 void probe_bwrap(Backend& b) {
     auto cmd = platform::shell_quote(b.bin.string()) + " --ro-bind / / -- /bin/true";
     auto [status, output] = platform::run_command_capture(cmd);
@@ -85,6 +108,7 @@ Caps probe(const HomeView& home, const Ports& ports) {
     }
     c.proot = locate_proot(home, ports);
     c.userns = c.bwrap && c.bwrap->usable;
+    c.pasta = locate_pasta(home, ports, c.pasta_missing);
     c.seccomp = true;
     struct utsname u{};
     if (::uname(&u) == 0) c.kernel = u.release;

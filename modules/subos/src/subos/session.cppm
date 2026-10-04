@@ -73,6 +73,9 @@ struct Launch {
     bool detached { false };
     // Attached only: end the session after this long and return 124.
     std::optional<std::chrono::milliseconds> timeout;
+    // net=nat: pasta's argv without its target. The backend then starts in a
+    // user + network namespace made for it, which pasta has configured.
+    std::vector<std::string> pasta;
 };
 
 // The environment variables session-init reads its control socket and its

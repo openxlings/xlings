@@ -57,7 +57,7 @@ status = "planned"
 [F2]
 text = "X11 is unreachable unless granted (no host abstract sockets)"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F3]
 text = "only allow-listed environment variables enter the sandbox"
@@ -267,7 +267,7 @@ status = "required"
 [ISO-NET-NAT]
 text = "net=nat gives egress through pasta with a private namespace"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [ISO-NET-PROXY]
 text = "net=proxy: egress only through the declared proxy"

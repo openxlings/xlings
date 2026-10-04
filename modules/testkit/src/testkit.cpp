@@ -120,7 +120,7 @@ const std::map<std::string, Meta, std::less<>>& registry() { return registry_mut
 
 namespace {
 
-constexpr std::array<std::string_view, 12> kCapabilities {
+constexpr std::array<std::string_view, 13> kCapabilities {
     "linux", "macos", "windows", "posix",
     "xlings-bin",   // a built binary to drive
     "pty",          // pseudo-terminals (agent contract scan)
@@ -130,6 +130,7 @@ constexpr std::array<std::string_view, 12> kCapabilities {
     "network",      // the lane allows network access (opt-in)
     "root",
     "sudo",         // non-interactive sudo
+    "pasta",        // pasta (passt) and /dev/net/tun: net=nat can run
 };
 
 #if !defined(_WIN32)
@@ -217,6 +218,17 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
         return "no bwrap that can create a sandbox on this host";
 #else
         return "bwrap is Linux-only";
+#endif
+    }
+    if (cap == "pasta") {
+#if defined(__linux__)
+        std::error_code ec;
+        if (!fs::exists("/dev/net/tun", ec)) return "/dev/net/tun is missing";
+        for (auto p : {"/usr/bin/pasta", "/usr/local/bin/pasta"})
+            if (fs::exists(p, ec)) return std::nullopt;
+        return "pasta (passt) is not installed";
+#else
+        return "pasta is Linux-only";
 #endif
     }
     if (cap == "sandbox") {

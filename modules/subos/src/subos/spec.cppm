@@ -66,6 +66,7 @@ struct Request {
     // the policy (Policy::env_explicit_any).
     std::map<std::string, std::string> explicit_env;
     std::string cwd;                          // inside; empty = the user's home
+    std::vector<std::string> publish;         // --publish HOST:SANDBOX (net=nat)
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
 };
@@ -80,6 +81,9 @@ struct SandboxSpec {
     bool unshare_uts { false };
     bool unshare_net { false };
     bool net_nat { false };                   // a private network, egress through pasta
+    fs::path pasta_bin;
+    bool host_loopback { false };             // grant: reach the host's own services
+    std::vector<std::string> publish;         // "8080:80" host:sandbox TCP ports
     bool disable_userns { false };
     bool die_with_parent { false };
     bool new_session { false };

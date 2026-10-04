@@ -112,3 +112,55 @@ XTEST(SubosPolicyE2E, OnlyTheOwnerOutsideChangesThePolicy,
     EXPECT_NE(r.transcript().find("E_PERMISSION"), std::string::npos);
     EXPECT_FALSE(fs::exists(box.policy_file()));
 }
+
+namespace {
+// A unix socket in the abstract namespace -- what an X server listens on
+// (@/tmp/.X11-unix/X0) and what a mount namespace does not hide (#640 F2).
+const char* kAbstractProbe =
+    "import socket,sys\n"
+    "s=socket.socket(socket.AF_UNIX)\n"
+    "try:\n s.connect('\\0' + sys.argv[1]); print('REACHED')\n"
+    "except OSError as e: print('BLOCKED', e.errno)\n";
+}
+
+XTEST(SubosPolicyE2E, TheHostsAbstractSocketsAreOutOfReachWithAPrivateNetwork,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"F2"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    Box box;
+    // The host listens on an abstract socket, as an X server does.
+    const auto name = std::format("xlings-f2-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    tk::RunOptions server;
+    server.argv = {"/usr/bin/python3", "-c",
+                   "import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\n"
+                   "s.bind('\\0'+sys.argv[1]); s.listen(); time.sleep(20)", name};
+    server.env = {{"PATH", "/usr/bin:/bin"}};
+    server.timeout = std::chrono::seconds(25);
+    std::thread t([&] { (void)tk::run(server); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    auto dev = box.run({"subos", "exec", "box", "--sandbox", "--", "python3", "-c", kAbstractProbe, name});
+    auto locked = box.run({"subos", "exec", "box", "--sandbox=locked", "--", "python3", "-c",
+                           kAbstractProbe, name});
+    t.detach();
+    if (dev.out.find("No such file") != std::string::npos) GTEST_SKIP() << "no python3";
+    // dev shares the host's network namespace and says so in the design: only
+    // a private network hides the abstract namespace.
+    EXPECT_NE(dev.out.find("REACHED"), std::string::npos) << dev.transcript();
+    EXPECT_NE(locked.out.find("BLOCKED"), std::string::npos) << locked.transcript();
+}
+
+XTEST(SubosPolicyE2E, NatGivesAPrivateNetworkThroughPasta,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-NAT", "F5"},
+      .requires_ = {"linux", "xlings-bin", "sandbox", "pasta"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    Box box;
+    auto r = box.run({"subos", "exec", "box", "--sandbox=private", "--", "/bin/sh", "-c",
+        "echo ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\\n' ,); "
+        "echo host=$(hostname)"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(r.out.find("host=box"), std::string::npos) << r.out;
+    // lo and pasta's tap: a network of its own, not the host's interfaces.
+    auto line = r.out.substr(r.out.find("ifaces="));
+    EXPECT_NE(line.find("lo,"), std::string::npos) << r.out;
+    EXPECT_EQ(std::ranges::count(line.substr(0, line.find('\n')), ','), 2) << r.out;
+}

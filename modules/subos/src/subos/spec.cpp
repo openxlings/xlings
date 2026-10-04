@@ -122,6 +122,7 @@ nlohmann::json SandboxSpec::describe() const {
     j["unshare"] = {{"user", unshare_user}, {"pid", unshare_pid}, {"ipc", unshare_ipc},
                     {"uts", unshare_uts}, {"net", unshare_net}};
     j["disable_userns"] = disable_userns;
+    if (net_nat) j["net"] = {{"mode", "nat"}, {"host_loopback", host_loopback}, {"publish", publish}};
     j["die_with_parent"] = die_with_parent;
     j["new_session"] = new_session;
     j["block_tiocsti"] = block_tiocsti;
@@ -256,17 +257,25 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         if (kernel && policy.net == policy::Net::Nat && caps.pasta) {
             s.unshare_net = true;
             s.net_nat = true;
+            s.pasta_bin = *caps.pasta;
+            s.host_loopback = policy.grants.contains("host-loopback") || r.grants.contains("host-loopback");
+            s.publish = r.publish;
         } else if (!kernel) {
             unmet.push_back({"net", std::string(to_string(s.backend)) + " cannot isolate the network",
                              "xlings self doctor --isolation", need_of("net")});
         } else if (policy.net == policy::Net::Nat) {
-            unmet.push_back({"net", "net=nat needs pasta (passt), which is not installed",
-                             "xlings install passt   (or --net none for no network)", need_of("net")});
+            unmet.push_back({"net", "net=nat needs pasta: " + (caps.pasta_missing.empty()
+                                 ? std::string("pasta (passt) is not installed") : caps.pasta_missing),
+                             "install passt (e.g. apt install passt), or --net none for no network",
+                             need_of("net")});
         } else {
             unmet.push_back({"net", "net=proxy is not implemented yet",
                              "--net nat or --net none", need_of("net")});
         }
     }
+    if (!r.publish.empty() && !s.net_nat)
+        unmet.push_back({"publish", "--publish needs net=nat (a private network to publish from)",
+                         "--net nat", need_of("publish")});
     if (neutral) {
         if (kernel) s.hostname = name;
         else unmet.push_back({"identity", "the host name cannot be changed without namespaces", "",

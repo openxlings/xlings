@@ -14,7 +14,9 @@ std::vector<std::string> bwrap_argv(const spec::SandboxSpec& s, std::optional<in
     if (s.unshare_pid) a.push_back("--unshare-pid");
     if (s.unshare_ipc) a.push_back("--unshare-ipc");
     if (s.unshare_uts) a.push_back("--unshare-uts");
-    if (s.unshare_net) a.push_back("--unshare-net");
+    // nat: the network namespace already exists, pasta attached to it before
+    // bwrap starts (session::host); bwrap runs inside it, it does not make one.
+    if (s.unshare_net && !s.net_nat) a.push_back("--unshare-net");
     if (!s.hostname.empty()) a.insert(a.end(), {"--hostname", s.hostname});
     if (s.die_with_parent) a.push_back("--die-with-parent");
     if (s.new_session) a.push_back("--new-session");
@@ -52,6 +54,21 @@ std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
     if (!s.clear_env) env = inherited;
     for (const auto& [k, v] : s.env) env[k] = v;
     return env;
+}
+
+}  // namespace xlings::subos::provider
+
+namespace xlings::subos::provider {
+
+std::vector<std::string> pasta_args(const spec::SandboxSpec& s) {
+    std::vector<std::string> a{ s.pasta_bin.string(), "--config-net", "--quiet" };
+    // Nothing in, unless published; nothing from the sandbox to the host's
+    // own loopback, unless granted (design §19, §21.2).
+    if (s.publish.empty()) a.insert(a.end(), {"-t", "none"});
+    for (const auto& p : s.publish) a.insert(a.end(), {"-t", p});
+    a.insert(a.end(), {"-u", "none"});
+    if (!s.host_loopback) a.insert(a.end(), {"-T", "none", "-U", "none", "--no-map-gw"});
+    return a;
 }
 
 }  // namespace xlings::subos::provider

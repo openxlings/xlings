@@ -170,3 +170,34 @@ XTEST(SubosPolicy, AMustThisHostCannotMeetRefusesAndAShouldDegrades,
     strict.no_degrade = true;
     EXPECT_FALSE(sp::compile(strict, HomeView{"/h"}, proot, req()));
 }
+
+XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
+      .area = "subos", .covers = {"ISO-NET-NAT", "ISO-GRANTS"}) {
+    auto r = req();
+    auto s = sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_TRUE(s->net_nat);
+    auto a = xlings::subos::provider::pasta_args(*s);
+    auto has = [&](std::vector<std::string> seq) {
+        return std::ranges::search(a, seq).begin() != a.end();
+    };
+    EXPECT_TRUE(has({"-t", "none"}));
+    EXPECT_TRUE(has({"-T", "none"}));
+    EXPECT_TRUE(has({"--no-map-gw"}));
+    // bwrap must not make a second network namespace: it runs in pasta's.
+    auto b = xlings::subos::provider::bwrap_argv(*s);
+    EXPECT_EQ(std::ranges::find(b, "--unshare-net"), b.end());
+
+    r.publish = {"18080:80"};
+    r.grants = {"host-loopback"};
+    auto p = sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
+    ASSERT_TRUE(p.has_value());
+    auto pa = xlings::subos::provider::pasta_args(*p);
+    EXPECT_NE(std::ranges::search(pa, std::vector<std::string>{"-t", "18080:80"}).begin(), pa.end());
+    EXPECT_EQ(std::ranges::find(pa, "--no-map-gw"), pa.end());
+
+    // --publish without nat is a degradation dev reports, not silence.
+    auto d = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(true), r);
+    ASSERT_TRUE(d.has_value());
+    EXPECT_TRUE(std::ranges::any_of(d->degraded, [](auto& u) { return u.dimension == "publish"; }));
+}
