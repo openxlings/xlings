@@ -6,6 +6,7 @@ import xlings.libs.json;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.home;
 
 namespace xlings {
 
@@ -124,6 +125,9 @@ public:
         std::filesystem::path libDir;       // $subosDir/lib
         std::string           activeSubos;  // effective active subos name
         bool                  selfContained = false;
+        // How homeDir was chosen; the rest of "what kind of home is this"
+        // (mode, layout) is home_context().
+        home::Source          homeSource = home::Source::Default;
     };
 
     // Owner-anchored shim dispatch (0.4.48; see
@@ -453,6 +457,10 @@ public:
     static void reload_state();
 
     [[nodiscard]] static const PathInfo& paths();
+
+    // Which home, in which deployment mode, at which layout (design §5):
+    // the one answer. Read from `.xlings-home` once per process.
+    [[nodiscard]] static const home::HomeContext& home_context();
 
     // Render a path for a human: anything under the xlings home shows as
     // `@xlings/...` instead of its absolute form.

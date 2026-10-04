@@ -371,19 +371,19 @@ status = "planned"
 
 [HOME-CONTEXT]
 text = "one HomeContext answers which home and which mode"
-status = "planned"
+status = "required"
 
 [HOME-MODE-DECLARED]
 text = ".xlings-home declares mode and layout"
-status = "planned"
+status = "required"
 
 [HOME-LAYOUT-READONLY]
 text = "a higher layout than this client knows is read, never written"
-status = "planned"
+status = "required"
 
 [HOME-KEEP-UNKNOWN-KEYS]
 text = "writers keep keys they do not know"
-status = "planned"
+status = "required"
 
 [HOME-SYSTEM-MODE]
 text = "a system install (mode S) and the system layer read path"

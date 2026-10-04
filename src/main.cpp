@@ -6,6 +6,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.core.xvm.shim;
 import xlings.core.home_identity;
+import xlings.core.home;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
@@ -125,6 +126,37 @@ int main(int argc, char* argv[]) {
         // recognised by its layout.
         if (is_cli) xlings::home_identity::adopt_legacy_home(p.homeDir);
 
+        // What kind of home this is (xlings.core.home). A home a NEWER client
+        // moved to a layout this one does not know is read, never written:
+        // writing would undo what this client cannot see. Otherwise the mode
+        // is declared once (inferred from where the home is, for a marker that
+        // predates modes) and the layout raised to this client's -- layout 2
+        // only adds directories, so an older client is unaffected. Commands
+        // only, for the same reason as the marker above.
+        bool refused = false;
+        if (is_cli) {
+            const auto& ctx = xlings::Config::home_context();
+            if (!ctx.writable()) {
+                std::vector<std::string_view> rest(argv + 1, argv + argc);
+                if (!xlings::home::is_read_only_command(rest)) {
+                    xlings::log::error(
+                        "{} is at home layout {}, written by a newer xlings; this "
+                        "client knows layout {} and only reads it. Run the home's "
+                        "own client: {}",
+                        p.homeDir.string(), ctx.layout, xlings::home::kLayout,
+                        (p.homeDir / "bin" / "xlings").string());
+                    rc = 1;
+                    refused = true;
+                }
+            } else if (xlings::home_identity::has_marker(p.homeDir)
+                       && (!ctx.modeDeclared || ctx.layout < xlings::home::kLayout)) {
+                (void)xlings::home::declare(
+                    p.homeDir,
+                    ctx.modeDeclared ? std::nullopt : std::optional(ctx.mode),
+                    xlings::home::kLayout);
+            }
+        }
+
         // What this process calls itself when another one has to wait for its
         // state lock. Set here because this is the only place that has argv and
         // is not itself a command; see xvm/lock.cppm.
@@ -142,7 +174,9 @@ int main(int argc, char* argv[]) {
             xlings::xvm::set_lock_command_hint(std::move(command));
         }
 
-        if (is_cli) {
+        if (refused) {
+            // rc set above; fall through to the platform exit path.
+        } else if (is_cli) {
             rc = xlings::cli::run(argc, argv);
         } else {
             rc = xlings::xvm::shim_dispatch(program_name, argc, argv);

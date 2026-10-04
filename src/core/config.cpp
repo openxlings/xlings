@@ -8,6 +8,7 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.core.utils;
+import xlings.core.home;
 import xlings.libs.tinyhttps;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
@@ -578,8 +579,10 @@ Config::Config() {
         // Owner-anchored shim dispatch: the dispatch home was chosen
         // before Config construction (main.cpp → resolve_dispatch_home).
         paths_.homeDir = *anchored;
+        paths_.homeSource = home::Source::Anchored;
     } else if (!envHome.empty()) {
         paths_.homeDir = envHome;
+        paths_.homeSource = home::Source::Env;
     } else {
         auto exePath   = platform::get_executable_path();
         auto exeParent = exePath.parent_path();
@@ -612,6 +615,7 @@ Config::Config() {
         if (isSelfContained) {
             paths_.homeDir       = candidate;
             paths_.selfContained = true;
+            paths_.homeSource    = home::Source::SelfContained;
         } else {
             paths_.homeDir = fs::path(platform::get_home_dir()) / ".xlings";
         }
@@ -1030,6 +1034,12 @@ void Config::reload_state_() {
 void Config::reload_state() { instance_().reload_state_(); }
 
 [[nodiscard]] const Config::PathInfo& Config::paths() { return instance_().paths_; }
+
+[[nodiscard]] const home::HomeContext& Config::home_context() {
+    static const home::HomeContext ctx =
+        home::describe(paths().homeDir, paths().homeSource);
+    return ctx;
+}
 
 [[nodiscard]] std::string Config::display_path(
             const std::filesystem::path& p) {

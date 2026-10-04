@@ -1,0 +1,117 @@
+// xlings.core.home (C5): which home, in which mode, at which layout.
+#include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
+
+import std;
+import xlings.core.home;
+import xlings.core.home_identity;
+import xlings.libs.json;
+
+namespace h = xlings::home;
+namespace fs = std::filesystem;
+namespace tk = xlings::testkit;
+
+namespace {
+fs::path fresh_home(std::string_view name) {
+    auto d = fs::temp_directory_path() / std::format("xlings-home-ctx-{}-{}", name,
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    fs::create_directories(d);
+    return d;
+}
+}  // namespace
+
+XTEST(HomeContext, DeclaredModeAndLayoutComeFromTheMarker,
+      .area = "home", .covers = {"HOME-CONTEXT", "HOME-MODE-DECLARED"}) {
+    auto home = fresh_home("declared");
+    tk::write_file(home / ".xlings-home",
+                   R"({"schema":1,"id":"abc","mode":"system","layout":2,"future":{"k":1}})");
+    auto ctx = h::describe(home, h::Source::Env);
+    EXPECT_EQ(ctx.mode, h::Mode::System);
+    EXPECT_TRUE(ctx.modeDeclared);
+    EXPECT_EQ(ctx.layout, 2);
+    EXPECT_EQ(ctx.id, "abc");
+    EXPECT_TRUE(ctx.writable());
+    fs::remove_all(home);
+}
+
+XTEST(HomeContext, AMarkerWithoutAModeIsInferredAndSaysSo,
+      .area = "home", .covers = {"HOME-CONTEXT"}) {
+    auto home = fresh_home("inferred");
+    tk::write_file(home / ".xlings-home", R"({"schema":1,"id":"abc"})");
+    auto env = h::describe(home, h::Source::Env);
+    EXPECT_EQ(env.mode, h::Mode::Custom);
+    EXPECT_FALSE(env.modeDeclared);
+    EXPECT_EQ(env.layout, 1);
+    EXPECT_EQ(h::describe(home, h::Source::SelfContained).mode, h::Mode::Portable);
+    fs::remove_all(home);
+}
+
+XTEST(HomeContext, DeclareKeepsUnknownKeysAndOnlyRaisesTheLayout,
+      .area = "home", .covers = {"HOME-KEEP-UNKNOWN-KEYS", "HOME-MODE-DECLARED"}) {
+    auto home = fresh_home("declare");
+    tk::write_file(home / ".xlings-home", R"({"schema":1,"id":"abc","layout":5,"future":true})");
+    ASSERT_TRUE(h::declare(home, h::Mode::User, 2).has_value());
+    auto j = nlohmann::json::parse(tk::read_file(home / ".xlings-home"));
+    EXPECT_EQ(j["mode"], "user");
+    EXPECT_EQ(j["layout"], 5);          // never lowered
+    EXPECT_EQ(j["future"], true);       // kept
+    EXPECT_EQ(j["id"], "abc");
+    fs::remove_all(home);
+}
+
+XTEST(HomeContext, AHigherLayoutAllowsOnlyReadOnlyCommands,
+      .area = "home", .covers = {"HOME-LAYOUT-READONLY"}) {
+    using v = std::vector<std::string_view>;
+    auto ro = [](v a) { return h::is_read_only_command(a); };
+    EXPECT_TRUE(ro({"list"}));
+    EXPECT_TRUE(ro({"--version"}));
+    EXPECT_TRUE(ro({"subos", "list"}));
+    EXPECT_TRUE(ro({"subos", "status", "x"}));
+    EXPECT_TRUE(ro({"self", "doctor"}));
+    EXPECT_FALSE(ro({"self", "doctor", "--fix"}));
+    EXPECT_FALSE(ro({"install", "gcc"}));
+    EXPECT_FALSE(ro({"subos", "new", "x"}));
+    EXPECT_FALSE(ro({"self", "update"}));
+
+    h::HomeContext newer{ .layout = h::kLayout + 1 };
+    EXPECT_FALSE(newer.writable());
+}
+
+XTEST(HomeContext, ACommandDeclaresTheModeAndLayoutOnce,
+      .area = "home", .cost = tk::Cost::Medium,
+      .covers = {"HOME-MODE-DECLARED"}, .requires_ = {"xlings-bin"}) {
+    // A home from before the marker: the first command adopts it (writes the
+    // marker) and declares what it is. No network, no `self init`.
+    auto home = tk::Home::isolated("home-ctx");
+    fs::create_directories(home.dir() / "subos" / "default");
+    auto r = home.xlings({"subos", "list"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    auto j = nlohmann::json::parse(tk::read_file(home.dir() / ".xlings-home"));
+    // Home::isolated is HOME=<root>, XLINGS_HOME=<root>/.xlings: a user's
+    // default home, so "user" -- declared now, no longer inferred.
+    EXPECT_EQ(j.value("mode", ""), "user");
+    EXPECT_EQ(j.value("layout", 0), h::kLayout);
+}
+
+XTEST(HomeContext, ANewerLayoutIsReadNeverWritten,
+      .area = "home", .cost = tk::Cost::Medium,
+      .covers = {"HOME-LAYOUT-READONLY"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("home-newer");
+    fs::create_directories(home.dir() / "subos" / "default");
+    ASSERT_EQ(home.xlings({"subos", "list"}).exit_code, 0);
+    auto marker = home.dir() / ".xlings-home";
+    auto j = nlohmann::json::parse(tk::read_file(marker));
+    j["layout"] = h::kLayout + 7;
+    tk::write_file(marker, j.dump());
+
+    auto write = home.xlings({"subos", "new", "box"});
+    EXPECT_EQ(write.exit_code, 1) << write.transcript();
+    EXPECT_NE(write.transcript().find("only reads it"), std::string::npos) << write.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "subos" / "box"));
+
+    auto read = home.xlings({"subos", "list"});
+    EXPECT_EQ(read.exit_code, 0) << read.transcript();
+    // and the marker was not lowered by anyone
+    EXPECT_EQ(nlohmann::json::parse(tk::read_file(marker))["layout"], h::kLayout + 7);
+}

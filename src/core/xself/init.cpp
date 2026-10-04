@@ -19,6 +19,7 @@ import xlings.core.xvm.shim_identity;
 import xlings.core.xvm.lock;
 import xlings.core.entry_binary;
 import xlings.core.home_identity;
+import xlings.core.home;
 
 namespace xlings::xself {
 
@@ -446,6 +447,19 @@ bool ensure_home_layout(const fs::path& home_dir) {
         if (auto w = home_identity::write_marker(home_dir); !w)
             log::warn("[xlings:self]: {} -- the home is recognised by its layout "
                       "until the marker can be written", w.error());
+    }
+    // Declared at creation (xlings.core.home): the deployment mode this home
+    // was set up in, and the layout it is at. Inference is for markers that
+    // predate modes; a home created now says what it is.
+    {
+        const auto source = home_dir == Config::paths().homeDir
+            ? Config::paths().homeSource : home::Source::Default;
+        const auto ctx = home::describe(home_dir, source);
+        if (ctx.writable() && home_identity::has_marker(home_dir)) {
+            (void)home::declare(home_dir,
+                                ctx.modeDeclared ? std::nullopt : std::optional(ctx.mode),
+                                home::kLayout);
+        }
     }
 
     // Not write_if_missing_: every home that predates `subos_info` already has
