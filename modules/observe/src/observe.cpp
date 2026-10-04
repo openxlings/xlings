@@ -56,9 +56,11 @@ nlohmann::json Event::to_json() const {
 
 namespace {
 
+// Never destroyed: a record written during static destruction (an atexit
+// path) must not find its mutex already gone.
 std::mutex& journal_mutex() {
-    static std::mutex m;
-    return m;
+    static auto* m = new std::mutex();
+    return *m;
 }
 
 void rotate(const fs::path& file, int keep) {

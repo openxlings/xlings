@@ -23,7 +23,7 @@ module;
 #include <crt_externs.h>
 #define XTEST_ENVIRON (*_NSGetEnviron())
 #else
-extern char** environ;
+// glibc and musl declare environ in <unistd.h> under _GNU_SOURCE
 #define XTEST_ENVIRON environ
 #endif
 #endif
@@ -57,17 +57,20 @@ std::vector<std::string> split_csv(std::string_view s) {
     return out;
 }
 
+// Never destroyed: the meta writer runs during static destruction, and on
+// libc++ a function-local static destroyed before it turns the last write into
+// `mutex lock failed: Invalid argument` (macOS).
 std::map<std::string, Meta, std::less<>>& registry_mut() {
-    static std::map<std::string, Meta, std::less<>> r;
-    return r;
+    static auto* r = new std::map<std::string, Meta, std::less<>>();
+    return *r;
 }
 
 FailureProbe g_failed = nullptr;
 NameProbe g_name = nullptr;
 
 std::mutex& out_mutex() {
-    static std::mutex m;
-    return m;
+    static auto* m = new std::mutex();
+    return *m;
 }
 
 void append_line(const std::string& path, const std::string& line) {
