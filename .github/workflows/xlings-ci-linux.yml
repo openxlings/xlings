@@ -504,7 +504,10 @@ jobs:
           chmod +x "$xdev"
           args=()
           for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
-          "$xdev" report "${args[@]}" --summary
+          # --fail-uncovered: a `required` ID in tests/requirements.toml with
+          # no test, or a test naming an ID the file does not declare, fails.
+          "$xdev" report "${args[@]}" --summary \
+            --requirements tests/requirements.toml --fail-uncovered
 
   unit-asan:
     # Off the PR critical path (design §24.5): it is the slowest job (~27 min,

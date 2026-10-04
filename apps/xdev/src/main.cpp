@@ -276,7 +276,9 @@ std::string first_lines(const std::string& s, std::size_t n) {
 struct Requirement {
     std::string id;
     std::string text;
-    std::string kind;   // flow | isolation
+    std::string kind;     // flow | isolation
+    std::string status;   // required | planned | deferred
+    std::string why;
 };
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
@@ -397,6 +399,17 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             if (auto it = t.find("text"); it != t.end() && it->second.str()) r.text = *it->second.str();
             r.kind = "flow";
             if (auto it = t.find("kind"); it != t.end() && it->second.str()) r.kind = *it->second.str();
+            r.status = "required";
+            if (auto it = t.find("status"); it != t.end() && it->second.str()) r.status = *it->second.str();
+            if (auto it = t.find("why"); it != t.end() && it->second.str()) r.why = *it->second.str();
+            if (r.status != "required" && r.status != "planned" && r.status != "deferred") {
+                std::println(stderr, "xdev: {}: unknown status '{}'", r.id, r.status);
+                return 2;
+            }
+            if (r.kind != "flow" && r.kind != "isolation") {
+                std::println(stderr, "xdev: {}: unknown kind '{}'", r.id, r.kind);
+                return 2;
+            }
             reqs.push_back(std::move(r));
         }
         std::map<std::string, std::vector<std::string>> covered_by;   // id -> tests
@@ -410,14 +423,33 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
                 covered_by[sid].push_back(test);
             }
         }
-        std::vector<const Requirement*> uncovered;
-        for (auto& r : reqs) if (!covered_by.contains(r.id)) uncovered.push_back(&r);
-        md += std::format("\n### Requirements\n\n{} declared, {} covered, {} uncovered, {} unknown IDs in tests\n",
-                          reqs.size(), reqs.size() - uncovered.size(), uncovered.size(), unknown.size());
+        std::vector<const Requirement*> uncovered, planned, deferred;
+        std::size_t required = 0;
+        for (auto& r : reqs) {
+            if (r.status == "planned") { planned.push_back(&r); continue; }
+            if (r.status == "deferred") { deferred.push_back(&r); continue; }
+            ++required;
+            if (!covered_by.contains(r.id)) uncovered.push_back(&r);
+        }
+        md += std::format("\n### Requirements\n\n{} required: {} covered, {} uncovered · "
+                          "{} planned · {} deferred · {} unknown IDs in tests\n",
+                          required, required - uncovered.size(), uncovered.size(),
+                          planned.size(), deferred.size(), unknown.size());
         if (!uncovered.empty()) {
-            md += "\nUncovered:\n\n";
+            md += "\nUncovered (required):\n\n";
             for (auto* r : uncovered)
                 md += std::format("- `{}` ({}) {}\n", r->id, r->kind, r->text);
+        }
+        if (!planned.empty()) {
+            md += "\n<details><summary>Planned</summary>\n\n";
+            for (auto* r : planned)
+                md += std::format("- `{}` {}{}\n", r->id, r->text,
+                                  covered_by.contains(r->id) ? " — **covered: flip to required**" : "");
+            md += "\n</details>\n";
+        }
+        if (!deferred.empty()) {
+            md += "\nDeferred:\n\n";
+            for (auto* r : deferred) md += std::format("- `{}` {} — {}\n", r->id, r->text, r->why);
         }
         if (!unknown.empty()) {
             md += "\nTests naming an ID that tests/requirements.toml does not declare:\n\n";

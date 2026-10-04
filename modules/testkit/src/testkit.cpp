@@ -251,13 +251,22 @@ bool lane_declares(std::string_view capability) {
 }
 
 std::optional<Verdict> check_requirements(const Meta& meta) {
+    static const auto caps = split_csv(env_or("XDEV_LANE_CAPS"));
+    return check_requirements(meta, caps);
+}
+
+std::optional<Verdict> check_requirements(const Meta& meta,
+                                          std::span<const std::string> lane_caps) {
+    auto declared = [&](std::string_view cap) {
+        return std::ranges::find(lane_caps, cap) != lane_caps.end();
+    };
     for (const auto& cap : meta.requires_) {
         if (std::ranges::find(kCapabilities, std::string_view(cap)) == kCapabilities.end()) {
             return Verdict{ .fail = true,
                             .reason = "unknown capability '" + cap + "' in requires" };
         }
         if (auto why = probe(cap)) {
-            if (lane_declares(cap)) {
+            if (declared(cap)) {
                 return Verdict{ .fail = true,
                                 .reason = "this lane declares '" + cap
                                           + "' (XDEV_LANE_CAPS) but it is missing: " + *why };

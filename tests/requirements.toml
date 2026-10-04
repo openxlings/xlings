@@ -1,0 +1,416 @@
+# Requirement IDs and their status (design §24.4).
+#
+# Every ID here names a behaviour the SubOS design (or a finding it fixes)
+# promises. Tests claim IDs with `covers = {...}` in their XTEST metadata;
+# `xdev report --requirements tests/requirements.toml --fail-uncovered`
+# fails when
+#   - a `required` ID has no test, or
+#   - a test names an ID this file does not declare (a typo would otherwise
+#     cover nothing and look like coverage).
+#
+# kind   = "flow"       any test covers it
+#        = "isolation"  only a test with `proves = "isolation"` (one that runs
+#                       a real sandbox) covers it; the fake provider proves
+#                       that the path is wired, not that anything is isolated
+# status = "required"   built; must be covered
+#        = "planned"    designed, its checkpoint has not landed yet; the
+#                       commit that lands it flips the status
+#        = "deferred"   not in this PR; `why` says so
+
+# ── testkit (T1) ────────────────────────────────────────────────────
+
+[TK-RUN]
+text = "the runner reports exit code, stdout and stderr"
+status = "required"
+
+[TK-HERMETIC]
+text = "a run starts from the environment the test names, nothing inherited"
+status = "required"
+
+[TK-TIMEOUT]
+text = "a timed-out run is killed with its process group"
+status = "required"
+
+[TK-PTY]
+text = "a pty with nothing typed exposes a program that waits for input"
+status = "required"
+
+[TK-HOME]
+text = "an isolated home lives outside the user's home and is removed"
+status = "required"
+
+[TK-CAPS]
+text = "an unknown capability fails; network is opt-in"
+status = "required"
+
+[TK-META]
+text = "XTEST metadata is registered before tests run"
+status = "required"
+
+# ── findings (design §1) ────────────────────────────────────────────
+
+[F1]
+text = "inside a sandbox the xlings home is read-only except the instance's own tree"
+kind = "isolation"
+status = "planned"
+
+[F2]
+text = "X11 is unreachable unless granted (no host abstract sockets)"
+kind = "isolation"
+status = "planned"
+
+[F3]
+text = "only allow-listed environment variables enter the sandbox"
+kind = "isolation"
+status = "planned"
+
+[F4]
+text = "host processes are invisible (pid namespace)"
+kind = "isolation"
+status = "planned"
+
+[F5]
+text = "net=nat/none hides the host's network identity (ARP, interfaces)"
+kind = "isolation"
+status = "planned"
+
+[F6]
+text = "other instances' trees are invisible"
+kind = "isolation"
+status = "planned"
+
+[F7]
+text = "hostname, timezone and locale are neutral under private/locked"
+kind = "isolation"
+status = "planned"
+
+[F8]
+text = "terminal injection (TIOCSTI) is blocked"
+kind = "isolation"
+status = "planned"
+
+[F10]
+text = "backend lookup: root-owned bwrap, then a system bwrap that probes, then the payload; no setuid"
+status = "planned"
+
+[F11]
+text = "--keep / --ttl mean session idle time (the keeper is replaced by the session)"
+status = "planned"
+
+[F12]
+text = "a failed probe reports the raw error and least-privilege fixes, never a global sysctl"
+status = "planned"
+
+[F13]
+text = "a lane that declares a capability fails when it is missing"
+status = "required"
+
+[F14]
+text = "a system install's shared config is not world-writable"
+status = "planned"
+
+[F15]
+text = "a supervisor outside the sandbox writes the audit; the sandbox cannot reach it"
+kind = "isolation"
+status = "planned"
+
+[F16]
+text = "subos exec runs argv without a shell, from outside the instance"
+status = "planned"
+
+# ── subos use --cmd (existing contract, T1) ────────────────────────
+
+[SUBOS-CMD-EXIT]
+text = "--cmd returns the command's exit code"
+status = "required"
+
+[SUBOS-CMD-HOME]
+text = "--cmd runs with the sandbox's home"
+status = "required"
+
+[SUBOS-CMD-WIN-QUOTING]
+text = "Windows: cmd.exe quoting is not rewritten by the PowerShell path"
+status = "required"
+
+# ── exit codes (design §12.2, §13.3) ───────────────────────────────
+
+[EXIT-CMD]
+text = "exec returns the command's own exit code"
+status = "planned"
+
+[EXIT-125]
+text = "a failure before the command starts exits 125 with phase=setup"
+status = "planned"
+
+[EXIT-126]
+text = "a command that cannot be executed exits 126"
+status = "planned"
+
+[EXIT-127]
+text = "a command that is not found exits 127"
+status = "planned"
+
+[EXIT-124]
+text = "--timeout exits 124"
+status = "planned"
+
+[EXIT-SIGNAL]
+text = "a command killed by signal n exits 128+n"
+status = "planned"
+
+[EXIT-13]
+text = "a denied permission exits 13 (E_PERMISSION)"
+status = "planned"
+
+[EXIT-75]
+text = "a request waiting for approval exits 75"
+status = "planned"
+
+[EXIT-2-CONFIRM]
+text = "agent mode without -y refuses a confirmation with exit 2"
+status = "planned"
+
+# ── agent contract (design §13) ────────────────────────────────────
+
+[AGENT-NO-PROMPT]
+text = "in agent mode no command waits for input"
+status = "planned"
+
+[AGENT-CANDIDATES]
+text = "a choice without a default is an error with structured candidates"
+status = "planned"
+
+[AGENT-DECLARED]
+text = "the audience is declared (--agent, XLINGS_AGENT_MODE=1/0), never inferred"
+status = "planned"
+
+[AGENT-ENV-PROPAGATES]
+text = "XLINGS_AGENT_MODE reaches the xlings running inside a sandbox"
+status = "planned"
+
+# ── policy (design §7, §9) ─────────────────────────────────────────
+
+[POL-PRESETS]
+text = "presets dev / private / locked compile to their documented specs"
+status = "planned"
+
+[POL-SANDBOX-ALIAS]
+text = "--sandbox alone means the dev preset; --sandbox=<preset> selects one"
+status = "planned"
+
+[POL-UNKNOWN-REFUSED]
+text = "an unknown security-relevant policy field refuses entry"
+status = "planned"
+
+[POL-OUTSIDE-INSTANCE]
+text = "the policy file lives outside the instance and is read-only inside"
+kind = "isolation"
+status = "planned"
+
+[POL-DECIDE]
+text = "one decide() answers for the client and the broker"
+status = "planned"
+
+[POL-RULES]
+text = "ordered rules: first match wins"
+status = "planned"
+
+[POL-PACK]
+text = "a policy package supplies a policy by reference"
+status = "planned"
+
+[POL-CONFIG-STATUS]
+text = "subos config edits the policy; subos status shows requested vs effective"
+status = "planned"
+
+# ── isolation spec and capabilities (design §16–§18) ───────────────
+
+[ISO-SPEC-GOLDEN]
+text = "Policy + Caps compile to a SandboxSpec that has golden tests"
+status = "planned"
+
+[ISO-PROBE-SAME-SPEC]
+text = "the probe runs the same spec with /bin/true"
+status = "planned"
+
+[ISO-CAPS-CACHE]
+text = "capabilities are cached per kernel/boot/provider/version"
+status = "planned"
+
+[ISO-MUST-SHOULD]
+text = "a missing must-item refuses (125); a missing should-item degrades and says so"
+status = "planned"
+
+[ISO-NO-DEGRADE]
+text = "--no-degrade turns any missing item into a refusal"
+status = "planned"
+
+[ISO-LANDLOCK]
+text = "the Landlock provider restricts writes without namespaces"
+kind = "isolation"
+status = "planned"
+
+[ISO-MOUNT]
+text = "--mount src:dst[:ro|rw] maps a host path into the instance"
+kind = "isolation"
+status = "planned"
+
+[ISO-GRANTS]
+text = "--allow <grant> opens exactly one named capability"
+status = "planned"
+
+[ISO-NET-NONE]
+text = "net=none leaves only loopback"
+kind = "isolation"
+status = "planned"
+
+[ISO-NET-NAT]
+text = "net=nat gives egress through pasta with a private namespace"
+kind = "isolation"
+status = "planned"
+
+[ISO-NET-PROXY]
+text = "net=proxy: egress only through the declared proxy"
+status = "deferred"
+why = "needs the in-sandbox forwarder and the supervisor bridge; nothing else depends on it (plan §4)"
+
+[ISO-DISABLE-USERNS]
+text = "private / locked forbid nested user namespaces"
+kind = "isolation"
+status = "planned"
+
+[ISO-ROOTFS]
+text = "an instance can run on its own rootfs"
+status = "deferred"
+why = "C27 is the maintainer's decision (plan §4)"
+
+# ── sessions (design §12, §16) ─────────────────────────────────────
+
+[SES-SUPERVISOR]
+text = "entering forks and supervises instead of exec-replacing xlings"
+status = "planned"
+
+[SES-JOIN]
+text = "use / exec join a running session of the same instance"
+status = "planned"
+
+[SES-START-STOP]
+text = "subos start / stop manage a detached session with an idle TTL"
+status = "planned"
+
+[SES-TEMP]
+text = "exec --temp runs in a throwaway instance whose audit survives it"
+status = "planned"
+
+[SES-CP]
+text = "subos cp copies files in and out"
+status = "planned"
+
+[SES-SIGNALS]
+text = "SIGTERM/SIGHUP reach the session; the supervisor ignores SIGINT while waiting"
+status = "planned"
+
+# ── broker and permissions (design §8, §9) ─────────────────────────
+
+[PERM-FETCH-AUTO]
+text = "fetch=auto installs a missing package from inside the sandbox"
+status = "planned"
+
+[PERM-FETCH-ASK]
+text = "fetch=ask queues a request; approve runs it"
+status = "planned"
+
+[PERM-FETCH-DENY]
+text = "fetch=deny refuses with E_PERMISSION"
+status = "planned"
+
+[PERM-INSTALL-SUBOS]
+text = "install --subos <s> installs into that instance from outside"
+status = "planned"
+
+# ── observability (design §22) ─────────────────────────────────────
+
+[OBS-LIFECYCLE]
+text = "session start/end events with the isolation snapshot"
+status = "planned"
+
+[OBS-OPS]
+text = "every xlings command run for an instance is recorded"
+status = "planned"
+
+[OBS-EXEC]
+text = "every program executed in a locked sandbox is recorded"
+kind = "isolation"
+status = "planned"
+
+[OBS-PERM]
+text = "permission decisions are recorded"
+status = "planned"
+
+[OBS-FS]
+text = "files changed in rw mounts are listed at session end"
+status = "planned"
+
+[OBS-REDACT]
+text = "audit lines carry variable names, never values"
+status = "planned"
+
+[OBS-LOG]
+text = "subos log / ps / report read the audit"
+status = "planned"
+
+[OBS-IFACE-EVENTS]
+text = "the interface exposes subos_events"
+status = "planned"
+
+[OBS-TRACE]
+text = "XLINGS_TRACE=<categories> prints the decision trace"
+status = "planned"
+
+# ── home and deployment (design §3–§6) ─────────────────────────────
+
+[HOME-CONTEXT]
+text = "one HomeContext answers which home and which mode"
+status = "planned"
+
+[HOME-MODE-DECLARED]
+text = ".xlings-home declares mode and layout"
+status = "planned"
+
+[HOME-LAYOUT-READONLY]
+text = "a higher layout than this client knows is read, never written"
+status = "planned"
+
+[HOME-KEEP-UNKNOWN-KEYS]
+text = "writers keep keys they do not know"
+status = "planned"
+
+[HOME-SYSTEM-MODE]
+text = "a system install (mode S) and the system layer read path"
+status = "planned"
+
+# ── compatibility and platforms ────────────────────────────────────
+
+[COMPAT-ALIASES]
+text = "--gpu, --cmd, --keep, --ttl keep working"
+status = "planned"
+
+[COMPAT-UNDECLARED]
+text = "an instance with no policy keeps its behaviour apart from the S0 fixes"
+status = "planned"
+
+[PLAT-HINT]
+text = "an unsupported item prints the shared hint format on every platform"
+status = "planned"
+
+[PLAT-STATUS-MATRIX]
+text = "subos status prints the probed capability matrix"
+status = "planned"
+
+[DOC-ISOLATION]
+text = "self doctor --isolation diagnoses; --fix installs the root-owned backend"
+status = "planned"
+
+[PERF-SHIM]
+text = "shim dispatch inside a sandbox does not go through the broker"
+status = "planned"

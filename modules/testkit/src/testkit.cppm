@@ -67,8 +67,11 @@ struct Verdict {
     std::string reason;
 };
 
-// nullopt = run the test.
+// nullopt = run the test. The lane's declarations come from XDEV_LANE_CAPS;
+// the second form takes them explicitly (the rule itself is tested that way).
 std::optional<Verdict> check_requirements(const Meta& meta);
+std::optional<Verdict> check_requirements(const Meta& meta,
+                                          std::span<const std::string> lane_caps);
 
 // ── Processes ────────────────────────────────────────────────────────
 

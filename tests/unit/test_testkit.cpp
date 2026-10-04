@@ -99,3 +99,27 @@ XTEST(Testkit, MetadataIsRegisteredBeforeAnyTestRuns,
     EXPECT_EQ(it->second.area, "testkit");
     EXPECT_EQ(it->second.covers, std::vector<std::string>{"TK-RUN"});
 }
+
+XTEST(Testkit, ALaneThatDeclaresACapabilityFailsWhenItIsMissing,
+      .area = "testkit", .covers = {"F13"}) {
+    // The rule that replaces "skip when the backend is missing" (F13): a skip
+    // on a developer machine, a failure on the lane that promised it.
+    const tk::Meta needs_other_os{ .requires_ = {
+#if defined(_WIN32)
+        "linux"
+#else
+        "windows"
+#endif
+    } };
+    const std::vector<std::string> nothing;
+    const std::vector<std::string> promised{"linux", "windows", "macos"};
+
+    auto dev = tk::check_requirements(needs_other_os, nothing);
+    ASSERT_TRUE(dev.has_value());
+    EXPECT_FALSE(dev->fail) << dev->reason;
+
+    auto lane = tk::check_requirements(needs_other_os, promised);
+    ASSERT_TRUE(lane.has_value());
+    EXPECT_TRUE(lane->fail);
+    EXPECT_NE(lane->reason.find("declares"), std::string::npos) << lane->reason;
+}
