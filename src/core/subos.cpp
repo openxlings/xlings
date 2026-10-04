@@ -29,6 +29,7 @@ module;
 #include <cerrno>
 #include <cstring>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/wait.h>
 #endif
 
@@ -2227,7 +2228,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     if (!changed) {
         auto doc = policy::to_json(before);
         doc["source"] = current && *current ? "file" : "default";
-        std::println("{}", json ? doc.dump() : doc.dump(2));
+        std::println(stdout, "{}", json ? doc.dump() : doc.dump(2));
         return 0;
     }
 
@@ -2285,7 +2286,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         .kind = observe::Kind::Lifecycle,
         .fields = {{"event", "policy-change"}, {"instance", name}, {"diff", changes}}});
     if (json) {
-        std::println("{}", nlohmann::json{{"instance", name}, {"diff", changes},
+        std::println(stdout, "{}", nlohmann::json{{"instance", name}, {"diff", changes},
                                           {"policy", policy::to_json(after)}}.dump());
     } else {
         log::info("'{}' policy ({}):", name, policy::to_string(after.preset));
@@ -2333,39 +2334,39 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     out["effective"] = sandbox::preview(name, pol, quiet);
     if (auto live = session::find(home, name)) out["session"] = session::to_json(*live);
     if (json) {
-        std::println("{}", out.dump());
+        std::println(stdout, "{}", out.dump());
         return 0;
     }
     const auto& eff = out["effective"];
-    std::println("subos {}  ({})", name, out.value("policy_source", "invalid policy"));
-    if (out.contains("policy_error")) std::println("  policy: {}", out["policy_error"].get<std::string>());
-    std::println("  requested  preset={} net={} fetch={} observe={} identity={}",
+    std::println(stdout, "subos {}  ({})", name, out.value("policy_source", "invalid policy"));
+    if (out.contains("policy_error")) std::println(stdout, "  policy: {}", out["policy_error"].get<std::string>());
+    std::println(stdout, "  requested  preset={} net={} fetch={} observe={} identity={}",
                  policy::to_string(pol.preset), policy::to_string(pol.net),
                  policy::to_string(pol.fetch), policy::to_string(pol.observe),
                  pol.identity == policy::Identity::Neutral ? "neutral" : "host");
     if (eff.value("enters", false)) {
         const auto& sp = eff["spec"];
-        std::println("  effective  backend={} pid={} net={} hostname={}", sp.value("backend", "?"),
+        std::println(stdout, "  effective  backend={} pid={} net={} hostname={}", sp.value("backend", "?"),
                      sp["unshare"].value("pid", false) ? "private" : "host",
                      sp["unshare"].value("net", false) ? "private" : "host",
                      sp.value("hostname", "host"));
         for (auto& d : sp["degraded"])
-            std::println("  ! {} not in effect: {}", d.value("dimension", ""), d.value("reason", ""));
+            std::println(stdout, "  ! {} not in effect: {}", d.value("dimension", ""), d.value("reason", ""));
     } else {
-        std::println("  cannot enter on this host:");
+        std::println(stdout, "  cannot enter on this host:");
         for (auto& m : eff["missing"])
-            std::println("  \u2717 {}: {}{}", m.value("dimension", ""), m.value("reason", ""),
+            std::println(stdout, "  \u2717 {}: {}{}", m.value("dimension", ""), m.value("reason", ""),
                          m.value("fix", "").empty() ? "" : "  (" + m.value("fix", "") + ")");
     }
-    std::println("  platform:");
+    std::println(stdout, "  platform:");
     for (auto& g : eff["gates"]) {
-        std::println("    {:<14} {:<9} {}{}", g.value("gate", ""),
+        std::println(stdout, "    {:<14} {:<9} {}{}", g.value("gate", ""),
                      g.value("supported", false) ? g.value("enforced", "") : "no",
                      g.value("reason", ""),
                      g.value("route", "").empty() || g.value("supported", false) ? "" : "  -> " + g.value("route", ""));
     }
     if (out.contains("session"))
-        std::println("  session    {} ({})", out["session"].value("id", ""),
+        std::println(stdout, "  session    {} ({})", out["session"].value("id", ""),
                      out["session"].value("detached", false) ? "detached" : "attached");
     return 0;
 }
@@ -2401,7 +2402,7 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
         auto reqs = subos::broker::pending(home, name);
         if (json) {
             for (auto& r : reqs)
-                std::println("{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
+                std::println(stdout, "{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
                                                   {"reason", r.reason}}.dump());
             return 0;
         }
@@ -2409,7 +2410,7 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
         for (auto& r : reqs) {
             std::string line;
             for (auto& a : r.argv) line += " " + a;
-            std::println("{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
+            std::println(stdout, "{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
         }
         return 0;
     }
@@ -2448,7 +2449,7 @@ int run_ps_(int argc, char* argv[], EventStream& stream) {
     for (int i = 3; i < argc; ++i) if (std::string_view(argv[i]) == "--json") json = true;
     auto sessions = session::list(home_view());
     if (json) {
-        for (auto& i : sessions) std::println("{}", session::to_json(i).dump());
+        for (auto& i : sessions) std::println(stdout, "{}", session::to_json(i).dump());
         return 0;
     }
     if (sessions.empty()) {
@@ -2502,13 +2503,13 @@ int run_log_(int argc, char* argv[], EventStream& stream,
         return true;
     };
     auto print = [&](const nlohmann::json& e) {
-        if (json) { std::println("{}", e.dump()); return; }
+        if (json) { std::println(stdout, "{}", e.dump()); return; }
         std::string detail;
-        for (auto k : {"program", "exit", "signal", "backend", "error", "ms"}) {
+        for (std::string k : {"program", "exit", "signal", "backend", "error", "ms"}) {
             if (!e.contains(k)) continue;
             detail += std::format(" {}={}", k, e[k].is_string() ? e[k].get<std::string>() : e[k].dump());
         }
-        std::println("{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
+        std::println(stdout, "{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
                      e.value("event", ""), e.value("session", ""), detail);
     };
     auto events = observe::read(file);
