@@ -18,6 +18,9 @@ import xlings.core.xself;
 import xlings.platform;
 import xlings.runtime.cancellation;
 import xlings.core.utf8;
+import xlings.observe;
+import xlings.subos.home_view;
+import xlings.core.subos.ports;
 
 namespace xlings::capabilities {
 
@@ -45,6 +48,10 @@ capability::Registry build_registry() {
     reg.register_capability(std::make_unique<CreateSubos>());
     reg.register_capability(std::make_unique<SwitchSubos>());
     reg.register_capability(std::make_unique<RemoveSubos>());
+    reg.register_capability(std::make_unique<SubosExec>());
+    reg.register_capability(std::make_unique<SubosStart>());
+    reg.register_capability(std::make_unique<SubosStop>());
+    reg.register_capability(std::make_unique<SubosEvents>());
     reg.register_capability(std::make_unique<Env>());
     // Index repo management (added 2026-04-26 per interface-api-v1-eval P1)
     reg.register_capability(std::make_unique<ListRepos>());
@@ -634,3 +641,132 @@ auto Env::execute(Params, EventStream& stream) -> Result {
 }
 
 } // namespace xlings::capabilities
+
+
+// ── sub-OS sessions over the interface ─────────────────────────
+
+namespace xlings::capabilities {
+
+namespace {
+
+// `xlings subos ...` as a child of this process, its stdout and stderr
+// captured. The interface's own stdout is the NDJSON channel: a command's
+// output must never reach it unframed, so it runs in a process of its own and
+// comes back as events.
+int run_subos_child_(std::vector<std::string> args, EventStream& stream, std::string_view kind) {
+    auto self = platform::get_executable_path().string();
+#if defined(_WIN32)
+    std::string cmd = platform::shell_quote(self);
+    for (auto& a : args) cmd += " " + platform::shell_quote(a);
+    auto [status, output] = platform::run_command_capture(cmd);
+    if (!output.empty())
+        stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "stdout"}, {"data", output}}.dump()});
+    return status;
+#else
+    std::string cmd = platform::shell_quote(self);
+    for (auto& a : args) cmd += " " + platform::shell_quote(a);
+    cmd += " </dev/null";
+    auto [status, output] = platform::run_command_capture(cmd);
+    if (!output.empty())
+        stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "output"}, {"data", output}}.dump()});
+    // A wait status, not an exit code: decode it the way a shell does.
+    if (status < 0) return 125;
+    if ((status & 0x7f) != 0) return 128 + (status & 0x7f);
+    return (status >> 8) & 0xff;
+#endif
+}
+
+}  // namespace
+
+auto SubosExec::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_exec",
+        .description = "Run one command in a sub-OS from outside it, as argv (no shell quoting). Joins the sub-OS's running session when there is one. Output arrives as subos_exec_output data events; exitCode is the command's own, 125 when it never started, 126/127 when it cannot run / is not found, 124 on timeout, 128+n for signal n",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string","description":"Sub-OS name; omit with temp"},"argv":{"type":"array","items":{"type":"string"},"description":"The command and its arguments"},"sandbox":{"type":"boolean","description":"Run in the sub-OS's sandbox"},"cwd":{"type":"string"},"env":{"type":"object","additionalProperties":{"type":"string"}},"timeout":{"type":"string","description":"90, 30s, 10m, 2h"},"temp":{"type":"boolean","description":"A throwaway sub-OS, removed afterwards; its audit is kept"},"from":{"type":"string","description":"With temp: fork it from this sub-OS or package"}},"required":["argv"]})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = true,
+    };
+}
+
+auto SubosExec::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    std::vector<std::string> args{"subos", "exec"};
+    if (json.value("temp", false)) args.push_back("--temp");
+    else args.push_back(json.value("name", ""));
+    if (json.value("sandbox", false)) args.push_back("--sandbox");
+    if (auto v = json.value("cwd", ""); !v.empty()) args.insert(args.end(), {"--cwd", v});
+    if (auto v = json.value("timeout", ""); !v.empty()) args.insert(args.end(), {"--timeout", v});
+    if (auto v = json.value("from", ""); !v.empty()) args.insert(args.end(), {"--from", v});
+    if (auto env = json.value("env", nlohmann::json::object()); env.is_object()) {
+        for (auto it = env.begin(); it != env.end(); ++it)
+            if (it.value().is_string()) args.insert(args.end(), {"--env", it.key() + "=" + it.value().get<std::string>()});
+    }
+    args.push_back("--");
+    for (auto& a : json.value("argv", nlohmann::json::array()))
+        if (a.is_string()) args.push_back(a.get<std::string>());
+    return exit_result(run_subos_child_(std::move(args), stream, "subos_exec_output"));
+}
+
+auto SubosStart::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_start",
+        .description = "Start a sub-OS session that runs without a terminal, for a series of subos_exec calls. ttl ends it after that long idle",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"},"ttl":{"type":"string","description":"90, 30s, 10m, 2h; omit to run until subos_stop"}},"required":["name"]})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = false,
+    };
+}
+
+auto SubosStart::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    std::vector<std::string> args{"subos", "start", json.value("name", "")};
+    if (auto v = json.value("ttl", ""); !v.empty()) args.insert(args.end(), {"--ttl", v});
+    return exit_result(run_subos_child_(std::move(args), stream, "subos_start_output"));
+}
+
+auto SubosStop::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_stop",
+        .description = "End a sub-OS's running session. Succeeds when none is running",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"}}})",
+        .destructive = false,
+    };
+}
+
+auto SubosStop::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    return exit_result(run_subos_child_({"subos", "stop", json.value("name", "")}, stream,
+                                        "subos_stop_output"));
+}
+
+auto SubosEvents::spec() const -> CapabilitySpec {
+    return {
+        .name = "subos_events",
+        .description = "A sub-OS's audit events (sessions, commands, permission decisions), recorded outside its sandbox. Each event is a subos_event data event; variable values are never recorded, only names",
+        .inputSchema = R"({"type":"object","properties":{"name":{"type":"string"},"kind":{"type":"string","description":"ops, lifecycle, perm, exec, net or fs"},"session":{"type":"string"},"limit":{"type":"integer","description":"The last N events; default 200"}},"required":["name"]})",
+        .outputSchema = R"({"type":"object","properties":{"exitCode":{"type":"integer"},"count":{"type":"integer"}}})",
+        .destructive = false,
+    };
+}
+
+auto SubosEvents::execute(Params params, EventStream& stream) -> Result {
+    auto json = nlohmann::json::parse(params, nullptr, false);
+    const auto name = json.value("name", "");
+    const auto kind = json.value("kind", "");
+    const auto session = json.value("session", "");
+    const auto limit = static_cast<std::size_t>(std::max(1, json.value("limit", 200)));
+    auto events = observe::read(subos::home_view().logs_dir(name) / "events.ndjson");
+    std::vector<nlohmann::json> shown;
+    for (auto& e : events) {
+        if (!kind.empty() && e.value("kind", "") != kind) continue;
+        if (!session.empty() && e.value("session", "") != session) continue;
+        shown.push_back(std::move(e));
+    }
+    const auto from = shown.size() > limit ? shown.size() - limit : 0;
+    for (auto i = from; i < shown.size(); ++i)
+        stream.emit(DataEvent{"subos_event", shown[i].dump()});
+    return nlohmann::json({{"exitCode", 0}, {"count", shown.size() - from}}).dump();
+}
+
+}  // namespace xlings::capabilities

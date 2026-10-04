@@ -437,6 +437,48 @@ int run_shell_command(std::string_view command, bool interactive) {
 #endif
     }
 
+int run_argv(const std::vector<std::string>& argv) {
+        if (argv.empty()) return 127;
+        std::cout.flush();
+        std::cerr.flush();
+#if defined(_WIN32)
+        std::string commandLine;
+        for (const auto& arg : argv) {
+            if (!commandLine.empty()) commandLine += ' ';
+            commandLine += shell_quote(arg);
+        }
+        STARTUPINFOA startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!::CreateProcessA(nullptr, commandLine.data(), nullptr, nullptr,
+                              TRUE, 0, nullptr, nullptr, &startup, &process)) {
+            auto err = ::GetLastError();
+            return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 127 : 126;
+        }
+        ::WaitForSingleObject(process.hProcess, INFINITE);
+        DWORD exitCode = 127;
+        ::GetExitCodeProcess(process.hProcess, &exitCode);
+        ::CloseHandle(process.hThread);
+        ::CloseHandle(process.hProcess);
+        return static_cast<int>(exitCode);
+#else
+        std::vector<char*> raw;
+        for (const auto& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
+        raw.push_back(nullptr);
+        const auto pid = ::fork();
+        if (pid < 0) return 126;
+        if (pid == 0) {
+            ::execvp(raw[0], raw.data());
+            ::_exit(errno == ENOENT ? 127 : 126);
+        }
+        int status = 0;
+        if (::waitpid(pid, &status, 0) < 0) return 126;
+        if (WIFEXITED(status)) return WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+        return 126;
+#endif
+    }
+
 int run_shell(std::string_view command, bool interactive) {
 #if !defined(_WIN32)
         if (interactive) return exec_replace_interactive_shell();

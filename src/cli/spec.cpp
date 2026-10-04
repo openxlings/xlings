@@ -46,6 +46,22 @@ const CommandSpec& root() {
                 {"remove", "Remove a SubOS", {"rm"}, {{"name", "SubOS name", true}}, {}, {}},
                 {"info", "Show SubOS details", {"i"}, {{"name", "Optional SubOS", false}}, {}, {}},
                 {"stop", "Stop a SubOS's running session", {}, {{"name", "SubOS name", true}}, {}, {}},
+                {"exec", "Run a command in a SubOS from outside it", {},
+                    {{"name", "SubOS name (omit with --temp)", false},
+                     {"command", "The command and its arguments, after --", false, true}},
+                    {{"--sandbox [BACKEND]", "Run in the SubOS's sandbox (bwrap or proot on Linux)"},
+                     {"--cwd <DIR>", "Working directory inside"},
+                     {"--env <K=V>", "Set a variable; repeatable"},
+                     {"--timeout <DURATION>", "End the command after DURATION (90, 30s, 10m, 2h); exits 124"},
+                     {"--json", "Print the result as JSON on stderr when the command ends"},
+                     {"--temp", "Use a throwaway SubOS, removed afterwards (its audit is kept)"},
+                     {"--from <SOURCE>", "With --temp: fork it from this SubOS or package"}}, {}},
+                {"start", "Start a SubOS session that runs without a terminal", {},
+                    {{"name", "SubOS name", true}},
+                    {{"--sandbox [BACKEND]", "Sandbox backend (bwrap or proot)"},
+                     {"--ttl <DURATION>", "End after DURATION idle (90, 30s, 10m, 2h); default: until stop"}}, {}},
+                {"cp", "Copy files into or out of a SubOS", {},
+                    {{"src", "Host path, or <name>:<path>", true}, {"dst", "Host path, or <name>:<path>", true}}, {}, {}},
                 {"ps", "List running SubOS sessions", {}, {}, {{"--json", "One JSON object per session"}}, {}},
                 {"log", "Show a SubOS's audit events", {}, {{"name", "SubOS name", false}},
                     {{"--kind <KIND>", "Only this kind (ops, lifecycle, perm, exec, net, fs); repeatable"},
@@ -168,6 +184,12 @@ std::expected<ParsedManualArgs, CliError> validate_(
     ParsedManualArgs parsed;
     for (std::size_t i = 0; i < argv.size(); ++i) {
         const auto token = argv[i];
+        // `--` ends the options: what follows is a command line of its own
+        // (`subos exec <s> -- sh -c ...`), taken verbatim.
+        if (token == "--") {
+            for (++i; i < argv.size(); ++i) parsed.positional.emplace_back(argv[i]);
+            break;
+        }
         if (!token.starts_with('-')) {
             parsed.positional.emplace_back(token);
             continue;

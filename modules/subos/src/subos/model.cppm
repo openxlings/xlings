@@ -30,6 +30,17 @@ std::vector<std::string> suggestions(std::string_view query,
 // "not_found" with suggestions.
 NameResolution resolve_name(std::string_view query, std::span<const std::string> names);
 
+// Where a path INSIDE an instance's sandbox lives on the host, for `subos cp`.
+// Only the instance's own trees qualify: /home/<user> (also `~`, and any
+// relative path, taken from there) and /tmp. Anything else is the host's own
+// read-only userland or not there at all, and is refused.
+std::optional<std::filesystem::path> inside_to_host(const std::filesystem::path& instance_dir,
+                                                    std::string_view user,
+                                                    std::string_view inside);
+
+// "90", "90s", "10m", "2h" -> seconds; nullopt for anything else.
+std::optional<long long> parse_duration(std::string_view text);
+
 }  // namespace xlings::subos::model
 
 namespace xlings::subos::model {
@@ -115,6 +126,39 @@ NameResolution resolve_name(std::string_view query, std::span<const std::string>
     if (matches.size() > 1) return {.reason = "ambiguous", .matches = std::move(matches)};
 
     return {.reason = "not_found", .matches = suggestions(query, names)};
+}
+
+std::optional<std::filesystem::path> inside_to_host(const std::filesystem::path& instance_dir,
+                                                    std::string_view user,
+                                                    std::string_view inside) {
+    namespace fs = std::filesystem;
+    const auto home = "/home/" + std::string(user);
+    std::string p(inside);
+    if (p == "~" || p.starts_with("~/")) p = home + p.substr(1);
+    else if (p.empty() || p.front() != '/') p = home + "/" + p;
+    auto norm = fs::path(p).lexically_normal().generic_string();
+    while (norm.size() > 1 && norm.back() == '/') norm.pop_back();
+    auto under = [&](std::string_view root) {
+        return norm == root || norm.starts_with(std::string(root) + "/");
+    };
+    if (under(home)) return instance_dir / "home" / std::string(user) / fs::path(norm.substr(home.size())).relative_path();
+    if (under("/tmp")) return instance_dir / "tmp" / fs::path(norm.substr(4)).relative_path();
+    return std::nullopt;
+}
+
+std::optional<long long> parse_duration(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    long long mult = 1;
+    switch (text.back()) {
+    case 's': mult = 1; text.remove_suffix(1); break;
+    case 'm': mult = 60; text.remove_suffix(1); break;
+    case 'h': mult = 3600; text.remove_suffix(1); break;
+    default: break;
+    }
+    long long n = 0;
+    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
+    if (ec != std::errc{} || ptr != text.data() + text.size() || n < 0) return std::nullopt;
+    return n * mult;
 }
 
 }  // namespace xlings::subos::model

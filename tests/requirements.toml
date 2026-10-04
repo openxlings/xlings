@@ -116,7 +116,7 @@ status = "planned"
 
 [F16]
 text = "subos exec runs argv without a shell, from outside the instance"
-status = "planned"
+status = "required"
 
 # ── subos use --cmd (existing contract, T1) ────────────────────────
 
@@ -136,27 +136,27 @@ status = "required"
 
 [EXIT-CMD]
 text = "exec returns the command's own exit code"
-status = "planned"
+status = "required"
 
 [EXIT-125]
 text = "a failure before the command starts exits 125 with phase=setup"
-status = "planned"
+status = "required"
 
 [EXIT-126]
 text = "a command that cannot be executed exits 126"
-status = "planned"
+status = "required"
 
 [EXIT-127]
 text = "a command that is not found exits 127"
-status = "planned"
+status = "required"
 
 [EXIT-124]
 text = "--timeout exits 124"
-status = "planned"
+status = "required"
 
 [EXIT-SIGNAL]
 text = "a command killed by signal n exits 128+n"
-status = "planned"
+status = "required"
 
 [EXIT-13]
 text = "a denied permission exits 13 (E_PERMISSION)"
@@ -296,15 +296,15 @@ status = "required"
 
 [SES-START-STOP]
 text = "subos start / stop manage a detached session with an idle TTL"
-status = "planned"
+status = "required"
 
 [SES-TEMP]
 text = "exec --temp runs in a throwaway instance whose audit survives it"
-status = "planned"
+status = "required"
 
 [SES-CP]
 text = "subos cp copies files in and out"
-status = "planned"
+status = "required"
 
 [SES-SIGNALS]
 text = "SIGTERM/SIGHUP reach the session; the supervisor ignores SIGINT while waiting"

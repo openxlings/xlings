@@ -71,6 +71,8 @@ struct Launch {
     std::string default_cwd;                     // inside
     int ttl { 0 };
     bool detached { false };
+    // Attached only: end the session after this long and return 124.
+    std::optional<std::chrono::milliseconds> timeout;
 };
 
 // The environment variables session-init reads its control socket and its

@@ -181,6 +181,29 @@ int auto_install_backend_(const fs::path& home_dir, EventStream& stream);
 // force one via `--sandbox bwrap` or `--sandbox proot`.
 //
 // See .agents/docs/sandbox-v5-dual-backend-design.md for full design.
+// How an instance is entered (design §12). One entry for every surface: the
+// legacy `--cmd` string (run as `sh -c`), an argv (`subos exec -- ...`), an
+// interactive shell (neither), and a detached session (`subos start`).
+export struct EnterOptions {
+    std::string backend;                          // "" | "bwrap" | "proot"
+    bool gpu { false };
+    std::string cmd;                              // legacy --cmd
+    std::vector<std::string> argv;                // exec form
+    std::string cwd;                              // inside
+    std::map<std::string, std::string> env;       // --env K=V
+    std::optional<std::chrono::milliseconds> timeout;
+    int ttl { 0 };                                // idle seconds (detached / --keep)
+    bool detached { false };                      // `subos start`
+    // `subos exec`: a failure before the command starts exits 125 (and the
+    // command's own code otherwise), instead of the CLI's usual 1.
+    bool exec_codes { false };
+    // Report "entering <subos>". A command run from outside (`exec`) is not
+    // someone entering anything; its own output is the whole story.
+    bool announce { true };
+};
+
+export int enter(const std::string& name, EventStream& stream, const EnterOptions& options);
+
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",
                       bool gpu = false,

@@ -445,6 +445,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     int status = 0;
     bool reaped = false;
     bool ctl_open = true;
+    bool timed_out = false;
+    std::optional<std::chrono::steady_clock::time_point> kill_at;
+    const auto deadline = L.timeout ? std::optional(started + *L.timeout) : std::nullopt;
 
     auto finish_client = [&](Client& c, nlohmann::json reply) {
         if (c.timed_out) reply = {{"exit", kExitTimeout}, {"timeout", true}};
@@ -481,6 +484,16 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         ::poll(pfds.data(), pfds.size(), 200);
 
         const auto now = std::chrono::steady_clock::now();
+        if (deadline && !timed_out && !reaped && now >= *deadline) {
+            timed_out = true;
+            ::kill(pid, SIGTERM);
+            kill_at = now + std::chrono::seconds(2);
+            audit(home, L.instance, {{"event", "session-timeout"}, {"session", info.id}});
+        }
+        if (kill_at && !reaped && now >= *kill_at) {
+            ::kill(pid, SIGKILL);
+            kill_at.reset();
+        }
         for (auto& c : clients) {
             if (c.fd >= 0 && c.exec_id && c.deadline && !c.timed_out && now >= *c.deadline) {
                 c.timed_out = true;
@@ -590,7 +603,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     fs::remove(info_path(home, L.instance), ec);
     ::close(listen_fd);
     if (ctl_open) ::close(ctl[0]);
-    const int code = status_to_code(status);
+    const int code = timed_out ? kExitTimeout : status_to_code(status);
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - started).count();
     audit(home, L.instance, {{"event", "session-end"}, {"session", info.id}, {"exit", code},

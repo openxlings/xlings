@@ -1326,6 +1326,19 @@ int use_emit_shell(const std::string& name,
     return 0;
 }
 
+// The subos's DECLARED variables, as they stand after apply_subos_env_, for
+// a sandbox's environment. The sandbox passes an allow-list, and a variable
+// the instance itself declares (LIBGL_DRIVERS_PATH for its GL stack, #352)
+// is the instance's, not the host's: it enters by name.
+std::map<std::string, std::string> declared_env_(const std::string& name) {
+    std::map<std::string, std::string> env;
+    for (const auto& v : use_detail_::subos_env_for_(name)) {
+        if (v.unresolved) continue;
+        if (auto value = utils::get_env_or_default(v.var); !value.empty()) env[v.var] = value;
+    }
+    return env;
+}
+
 int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, const std::string& sandbox_backend, bool gpu, const std::string& cmd)
 {
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
@@ -1351,7 +1364,8 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
         if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
         use_detail_::apply_subos_env_(name);
         warn_sandbox_without_gpu_(name, gpu, stream);
-        return sandbox::enter(name, stream, sandbox_backend, gpu, cmd);
+        return sandbox::enter(name, stream, sandbox::EnterOptions{
+            .backend = sandbox_backend, .gpu = gpu, .cmd = cmd, .env = declared_env_(name) });
     }
     warn_storage_dormant_on_shell_(name);
 
@@ -1746,6 +1760,309 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
     return {};
 }
 
+namespace {
+
+// "K=V" -> {K, V}; nullopt without '='.
+std::optional<std::pair<std::string, std::string>> split_env_(std::string_view kv) {
+    auto eq = kv.find('=');
+    if (eq == std::string_view::npos || eq == 0) return std::nullopt;
+    return std::pair{std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1))};
+}
+
+// `--sandbox`, `--sandbox=bwrap|proot`, `--sandbox bwrap|proot`.
+bool parse_sandbox_flag_(std::string_view a, int& i, int argc, char* argv[],
+                         bool& sandbox, std::string& backend) {
+    if (a == "--sandbox") {
+        sandbox = true;
+        if (i + 1 < argc) {
+            std::string_view next = argv[i + 1];
+            if (next == "bwrap" || next == "proot") { backend = next; ++i; }
+        }
+        return true;
+    }
+    if (a.starts_with("--sandbox=")) {
+        sandbox = true;
+        auto v = a.substr(10);
+        if (v == "bwrap" || v == "proot") backend = v;
+        return true;
+    }
+    return false;
+}
+
+#if !defined(_WIN32)
+// argv with a deadline, outside any sandbox: a process group so the whole
+// command goes when it times out.
+int run_argv_with_timeout_(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
+    std::cout.flush();
+    std::cerr.flush();
+    pid_t pid = ::fork();
+    if (pid < 0) return session::kExitCannotRun;
+    if (pid == 0) {
+        ::setpgid(0, 0);
+        std::vector<char*> raw;
+        for (auto& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
+        raw.push_back(nullptr);
+        ::execvp(raw[0], raw.data());
+        ::_exit(errno == ENOENT ? session::kExitNotFound : session::kExitCannotRun);
+    }
+    auto deadline = std::chrono::steady_clock::now() + limit;
+    int status = 0;
+    while (::waitpid(pid, &status, WNOHANG) == 0) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            ::kill(-pid, SIGTERM);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            ::kill(-pid, SIGKILL);
+            ::waitpid(pid, &status, 0);
+            return session::kExitTimeout;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return session::kExitCannotRun;
+}
+#endif
+
+}  // namespace
+
+// `subos exec <name> [options] -- <argv...>` (design §12): one command in an
+// instance from outside it, as argv (nothing to shell-escape). Joins the
+// running session when there is one; otherwise starts one for the command
+// (with --sandbox) or runs it with the instance's environment. Exit codes are
+// the command's own, 125 when it never started, 126/127, 124, 128+n.
+int run_exec_(int argc, char* argv[], EventStream& stream) {
+    std::string name, cwd, from, backend;
+    std::map<std::string, std::string> env;
+    std::optional<std::chrono::milliseconds> timeout;
+    bool sandbox = false, json = false, temp = false;
+    std::vector<std::string> command;
+    auto fail = [&](std::string message, std::string hint = {}) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = std::move(message),
+                                .recoverable = false, .hint = std::move(hint) });
+        if (json) std::println(stderr, "{}", nlohmann::json{{"exit", session::kExitSetup},
+                                                            {"phase", "setup"}}.dump());
+        return session::kExitSetup;
+    };
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--") { command.assign(argv + i + 1, argv + argc); break; }
+        if (parse_sandbox_flag_(a, i, argc, argv, sandbox, backend)) continue;
+        if (a == "--json") json = true;
+        else if (a == "--temp") temp = true;
+        else if (a == "--from" && i + 1 < argc) from = argv[++i];
+        else if (a == "--cwd" && i + 1 < argc) cwd = argv[++i];
+        else if (a == "--env" && i + 1 < argc) {
+            auto kv = split_env_(argv[++i]);
+            if (!kv) return fail("--env expects K=V");
+            env[kv->first] = kv->second;
+        }
+        else if (a == "--timeout" && i + 1 < argc) {
+            auto d = model::parse_duration(argv[++i]);
+            if (!d) return fail("--timeout expects seconds or 30s / 10m / 2h");
+            timeout = std::chrono::seconds(*d);
+        }
+        else if (!a.empty() && a[0] != '-' && name.empty() && !temp) name = std::move(a);
+        else return fail("unknown option for `xlings subos exec`: " + a,
+                         "usage: xlings subos exec <name> [--sandbox] [--cwd D] [--env K=V] "
+                         "[--timeout T] [--json] -- <command...>");
+    }
+    if (command.empty()) return fail("missing the command: xlings subos exec <name> -- <command...>");
+    if (!from.empty() && !temp) return fail("--from needs --temp");
+
+    // --temp: a throwaway instance, removed afterwards; its audit stays.
+    std::string tempName;
+    if (temp) {
+        if (!name.empty()) return fail("--temp takes no name");
+        std::random_device rd;
+        tempName = std::format("tmp-{:06x}", rd() & 0xffffff);
+        name = tempName;
+        EventStream quiet;
+        int rc = from.empty()
+            ? create(name, {}, sandbox::StorageMode::Shared, "50G", "", /*yes=*/true, "--temp", quiet)
+            : new_from(name, {}, sandbox::StorageMode::Shared, "50G", from, "", /*yes=*/true, quiet);
+        if (rc != 0) return fail("could not create a temporary instance" +
+                                 (from.empty() ? std::string{} : " from " + from));
+    } else if (name.empty()) {
+        return fail("missing <name> for: xlings subos exec (or --temp)");
+    } else {
+        auto resolved = resolve_candidate_(name);
+        if (resolved.selected.empty() || resolved.autoSelected) {
+            emit_candidates_(stream, resolved, name);
+            return fail("no SubOS named '" + name + "'", "xlings subos list");
+        }
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    int rc = 0;
+    std::string mode;
+    if (sandbox || session::find(home_view(), name)) {
+        mode = "sandbox";
+        use_detail_::apply_subos_env_(name);
+        auto declared = declared_env_(name);
+        declared.insert(env.begin(), env.end());
+        for (auto& [k, v] : env) declared[k] = v;
+        EventStream quiet;
+        EventStream& out = json ? static_cast<EventStream&>(quiet) : stream;
+        rc = sandbox::enter(name, out, sandbox::EnterOptions{
+            .backend = backend, .argv = command, .cwd = cwd, .env = std::move(declared),
+            .timeout = timeout, .exec_codes = true, .announce = false });
+    } else {
+        // An instance without a sandbox: its environment, this process's
+        // stdio, no supervisor (design §16, "没有沙箱的实例").
+        mode = "shell";
+        if (!cwd.empty()) {
+            std::error_code ec;
+            fs::current_path(cwd, ec);
+            if (ec) return fail("--cwd: " + cwd + ": " + ec.message());
+        }
+        auto& p = Config::paths();
+        auto bin_dir = p.homeDir / "subos" / name / "bin";
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+        platform::set_env_variable("XLINGS_BIN", bin_dir.string());
+        platform::set_env_variable("XLINGS_SUBOS_LIB", (p.homeDir / "subos" / name / "lib").string());
+        platform::set_env_variable("PATH", use_detail_::rebuild_path_for_subos_(
+            utils::get_env_or_default("PATH"), p.homeDir, bin_dir));
+        use_detail_::apply_subos_env_(name);
+        for (auto& [k, v] : env) platform::set_env_variable(k, v);
+        observe::append(home_view().logs_dir(name) / "events.ndjson", observe::Event{
+            .kind = observe::Kind::Ops,
+            .fields = {{"event", "exec"}, {"instance", name}, {"mode", "shell"},
+                       {"program", command[0]}, {"argc", command.size()}}});
+#if !defined(_WIN32)
+        rc = timeout ? run_argv_with_timeout_(command, *timeout) : platform::run_argv(command);
+#else
+        if (timeout) log::warn("--timeout needs --sandbox on Windows; running without it");
+        rc = platform::run_argv(command);
+#endif
+        observe::append(home_view().logs_dir(name) / "events.ndjson", observe::Event{
+            .kind = observe::Kind::Ops,
+            .fields = {{"event", "exec-end"}, {"instance", name}, {"mode", "shell"},
+                       {"program", command[0]}, {"exit", rc}}});
+    }
+
+    if (!tempName.empty()) {
+        // The instance this command created, removed by the same command: the
+        // user asked for a throwaway with --temp, which is the confirmation.
+        // `remove` with the --temp spelling as its yes: the one deletion
+        // entry point, the registry entry, and a destructive-log line that
+        // says how it was confirmed.
+        EventStream quiet;
+        if (remove(name, /*yes=*/true, "--temp", quiet) != 0)
+            log::warn("could not remove the temporary instance {}", name);
+    }
+    if (json) {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - started).count();
+        nlohmann::json result{{"instance", name}, {"exit", rc}, {"mode", mode}, {"ms", ms},
+                              {"temp", temp}};
+        if (rc == session::kExitSetup) result["phase"] = "setup";
+        if (rc == session::kExitTimeout && timeout) result["timeout"] = true;
+        std::println(stderr, "{}", result.dump());
+    }
+    return rc;
+}
+
+// `subos start <name> [--sandbox[=backend]] [--ttl 30m]`: a session that runs
+// without a terminal, for a series of `subos exec` (design §12.1).
+int run_start_(int argc, char* argv[], EventStream& stream,
+               const std::function<void(std::string_view)>& usageError) {
+    std::string name, backend;
+    bool sandbox = true;   // a session is a sandbox
+    int ttl = 0;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (parse_sandbox_flag_(a, i, argc, argv, sandbox, backend)) continue;
+        if (a == "--ttl" && i + 1 < argc) {
+            auto d = model::parse_duration(argv[++i]);
+            if (!d) { usageError("--ttl expects seconds or 30s / 10m / 2h"); return 1; }
+            ttl = static_cast<int>(*d);
+        }
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::move(a);
+        else { usageError("unknown option for `xlings subos start`: " + a); return 1; }
+    }
+    if (name.empty()) { usageError("missing <name> for: xlings subos start"); return 1; }
+    auto resolved = resolve_use_name_(name, stream);
+    if (resolved.selected.empty()) return resolved.exitCode;
+    name = resolved.selected;
+    if (auto live = session::find(home_view(), name)) {
+        log::info("'{}' is already running (session {})", name, live->id);
+        return 0;
+    }
+    if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    use_detail_::apply_subos_env_(name);
+    auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
+        .backend = backend, .env = declared_env_(name), .ttl = ttl, .detached = true });
+    if (rc != 0) return rc;
+    if (auto live = session::find(home_view(), name)) {
+        log::info("started session {} for '{}'{}", live->id, name,
+                  ttl > 0 ? std::format(" (ends after {}s idle)", ttl) : std::string(" (until `subos stop`)"));
+        return 0;
+    }
+    return 1;
+}
+
+// `subos cp <src> <dst>`, one side `<name>:<path>` (design §12.1). Paths
+// inside are the instance's own: its home and its /tmp.
+int run_cp_(int argc, char* argv[], EventStream& stream,
+            const std::function<void(std::string_view)>& usageError) {
+    std::vector<std::string> paths;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (!a.empty() && a[0] == '-') { usageError("unknown option for `xlings subos cp`: " + a); return 1; }
+        paths.push_back(std::move(a));
+    }
+    if (paths.size() != 2) { usageError("usage: xlings subos cp <src> <name>:<dst>  |  <name>:<src> <dst>"); return 1; }
+    auto split = [](const std::string& p) -> std::optional<std::pair<std::string, std::string>> {
+        auto colon = p.find(':');
+        // A Windows drive letter (C:\x) is a host path, not an instance.
+        if (colon == std::string::npos || colon < 2) return std::nullopt;
+        return std::pair{p.substr(0, colon), p.substr(colon + 1)};
+    };
+    auto src = split(paths[0]);
+    auto dst = split(paths[1]);
+    if (static_cast<bool>(src) == static_cast<bool>(dst)) {
+        usageError("exactly one side of `subos cp` names an instance as <name>:<path>");
+        return 1;
+    }
+    const auto& inst = src ? *src : *dst;
+    auto resolved = resolve_use_name_(inst.first, stream);
+    if (resolved.selected.empty()) return resolved.exitCode;
+#if defined(_WIN32)
+    auto user = utils::get_env_or_default("USERNAME");
+#else
+    auto user = utils::get_env_or_default("USER");
+#endif
+    if (user.empty()) user = "user";
+    auto mapped = model::inside_to_host(Config::subos_dir(resolved.selected), user, inst.second);
+    if (!mapped) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+            .message = inst.second + " is not the instance's own (only /home/" + user + " and /tmp are)",
+            .recoverable = false });
+        return 1;
+    }
+    fs::path from = src ? *mapped : fs::path(paths[0]);
+    fs::path to = src ? fs::path(paths[1]) : *mapped;
+    std::error_code ec;
+    if (!fs::exists(from, ec)) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = from.string() + ": not found",
+                                .recoverable = false });
+        return 1;
+    }
+    if (fs::is_directory(to, ec) && !fs::is_directory(from, ec)) to /= from.filename();
+    if (to.has_parent_path()) fs::create_directories(to.parent_path(), ec);
+    fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::Internal,
+            .message = "copy failed: " + ec.message(), .recoverable = false });
+        return 1;
+    }
+    observe::append(home_view().logs_dir(resolved.selected) / "events.ndjson", observe::Event{
+        .kind = observe::Kind::Fs,
+        .fields = {{"event", "cp"}, {"instance", resolved.selected},
+                   {"direction", src ? "out" : "in"}, {"path", inst.second}}});
+    return 0;
+}
+
 // `subos ps`: the running sessions (design §22).
 int run_ps_(int argc, char* argv[], EventStream& stream) {
     bool json = false;
@@ -2099,6 +2416,18 @@ int run(int argc, char* argv[], EventStream& stream) {
             }
             return use_emit_shell(name, shell_kind, stream);
         }
+        // --keep / --ttl: the session outlives this shell (design §16, the
+        // keeper's replacement). Start it detached, then join it like any
+        // later command would.
+        if (sandbox && !no_keep && (keep_forever || ttl_sec > 0)
+            && !session::find(home_view(), name)) {
+            if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+            use_detail_::apply_subos_env_(name);
+            auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
+                .backend = sandbox_backend, .gpu = gpu, .env = declared_env_(name),
+                .ttl = keep_forever ? 0 : ttl_sec, .detached = true });
+            if (rc != 0) return rc;
+        }
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd);
     }
     if (sub == "list")   return run_list_(stream);
@@ -2137,6 +2466,9 @@ int run(int argc, char* argv[], EventStream& stream) {
         return 0;
     }
     if (sub == "ps") return run_ps_(argc, argv, stream);
+    if (sub == "exec") return run_exec_(argc, argv, stream);
+    if (sub == "start") return run_start_(argc, argv, stream, usageError);
+    if (sub == "cp") return run_cp_(argc, argv, stream, usageError);
     if (sub == "log") return run_log_(argc, argv, stream, usageError);
 
     // xlings subos runtime <binding> [name]

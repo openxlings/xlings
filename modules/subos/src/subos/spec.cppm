@@ -62,6 +62,10 @@ struct Request {
     std::optional<Backend> preferred;         // `--sandbox bwrap|proot`
     std::set<std::string, std::less<>> grants;  // per-call --allow (and legacy --gpu)
     std::map<std::string, std::string> host_env;
+    // `--env K=V`: set explicitly by the caller, not inherited. Bounded by
+    // the policy (Policy::env_explicit_any).
+    std::map<std::string, std::string> explicit_env;
+    std::string cwd;                          // inside; empty = the user's home
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
 };

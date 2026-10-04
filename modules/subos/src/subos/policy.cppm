@@ -56,6 +56,8 @@ struct Policy {
     // Environment variables that may enter, by name or `PREFIX*`.
     std::vector<std::string> env_pass;
     bool env_inherit { false };              // Legacy: pass everything (pre-#640)
+    // Whether `--env K=V` may name any variable, or only env_pass ones.
+    bool env_explicit_any { true };
 
     std::vector<Mount> mounts;
     std::set<std::string, std::less<>> grants;          // granted now

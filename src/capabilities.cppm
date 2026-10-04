@@ -122,6 +122,33 @@ public:
     auto execute(Params params, EventStream& stream) -> Result override;
 };
 
+// Running commands in a sub-OS from outside it (design §12.3). The agent's
+// way in: argv, no shell quoting, the command's output streamed as events,
+// the exit code as the result.
+class SubosExec : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+class SubosStart : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+class SubosStop : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
+class SubosEvents : public Capability {
+public:
+    auto spec() const -> CapabilitySpec override;
+    auto execute(Params params, EventStream& stream) -> Result override;
+};
+
 // ─── Index repos ────────────────────────────────────────────
 
 class ListRepos : public Capability {

@@ -436,6 +436,15 @@ std::vector<spec::MountOp> self_exe_mounts_() {
 }  // namespace
 
 int enter(const std::string& name, EventStream& stream, const std::string& preferred_backend, bool gpu, const std::string& cmd) {
+    return enter(name, stream, EnterOptions{ .backend = preferred_backend, .gpu = gpu, .cmd = cmd });
+}
+
+int enter(const std::string& name, EventStream& stream, const EnterOptions& opts) {
+    const auto& preferred_backend = opts.backend;
+    const bool gpu = opts.gpu;
+    const auto& cmd = opts.cmd;
+    // `subos exec` reports a failure before the command started as 125.
+    const int kFail = opts.exec_codes ? session::kExitSetup : 1;
 
     // Refuse nested sandbox entry.
     if (utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox") {
@@ -445,7 +454,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             .recoverable = true,
             .hint = "type 'exit' first to leave the current one",
         });
-        return 1;
+        return kFail;
     }
 
     auto& p = Config::paths();
@@ -496,6 +505,10 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     request.interactive = ::isatty(STDIN_FILENO) == 1;
 #endif
     if (!cmd.empty()) request.argv = {request.shell, "-c", cmd};
+    else if (!opts.argv.empty()) request.argv = opts.argv;
+    request.explicit_env = opts.env;
+    request.cwd = opts.cwd;
+    if (opts.detached) request.interactive = false;
 
     nlohmann::json payload;
     payload["name"] = name;
@@ -513,7 +526,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             .recoverable = false,
             .hint = "run: xlings install bwrap",
         });
-        return 1;
+        return kFail;
     }
 
     if (storage == StorageMode::Image) {
@@ -524,7 +537,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
                 .message = "home.img not found — was this subos created with --storage image?",
                 .recoverable = false,
             });
-            return 1;
+            return kFail;
         }
         if (mount_image_(img, image_mountpoint, user) != 0) {
             stream.emit(ErrorEvent{
@@ -533,7 +546,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
                 .recoverable = false,
                 .hint = "ensure you have sudo permission for mount",
             });
-            return 1;
+            return kFail;
         }
     }
 
@@ -569,7 +582,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
                         "try anyway",
             });
             if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-            return 1;
+            return kFail;
         }
         if (auto_install_backend_(p.homeDir, stream) != 0) {
             stream.emit(ErrorEvent{
@@ -579,7 +592,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
                 .hint = "manually: xlings install bwrap (or: xlings install proot)",
             });
             if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-            return 1;
+            return kFail;
         }
         host_caps = caps::probe(home, ports);
         compiled = spec::compile(policy::legacy(), home, host_caps, request);
@@ -590,7 +603,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
                 .recoverable = false,
             });
             if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-            return 1;
+            return kFail;
         }
     }
     if (!compiled) {
@@ -614,7 +627,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             emit_refusal_(stream, refusal);
         }
         if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-        return 1;
+        return kFail;
     }
     const auto& sb = *compiled;
     if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
@@ -643,7 +656,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
         }
         payload["backend"] = backend_name;
         payload["joined"] = live->id;
-        stream.emit(DataEvent{"subos_entering", payload.dump()});
+        if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
         if (request.interactive && cmd.empty())
             log::info("joined the running session of '{}' (job control stays with the "
                       "terminal that started it)", name);
@@ -657,7 +670,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     payload["backend"] = backend_name;
     payload["shell"] = request.shell;
     payload["storage"] = storage_to_string_(storage);
-    stream.emit(DataEvent{"subos_entering", payload.dump()});
+    if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
 
     // The terminal-injection filter travels to bwrap on an inherited pipe
     // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
@@ -678,8 +691,13 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     // dynamically linked build brings its loader and library directories.
     auto launched = sb;
     for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
-    launched.argv = {std::string(kSessionInitPath), "__session-init", "--"};
-    launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
+    launched.argv = {std::string(kSessionInitPath), "__session-init"};
+    if (!opts.detached) {
+        // A detached session has no main command: it idles until its TTL or
+        // `subos stop`, and everything in it joins.
+        launched.argv.push_back("--");
+        launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
+    }
     auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(launched, seccomp_fd)
                                                    : provider::proot_argv(launched);
 
@@ -701,6 +719,9 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
         .exec_env = sb.env,
         .env_pass = std::move(pass),
         .default_cwd = sb.cwd.string(),
+        .ttl = opts.ttl,
+        .detached = opts.detached,
+        .timeout = opts.timeout,
     });
     if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
     return rc;
@@ -711,7 +732,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     auto compiled = spec::compile(policy::legacy(), home, host_caps, request);
     if (!compiled) {
         emit_refusal_(stream, compiled.error());
-        return 1;
+        return kFail;
     }
     // Say it where the person is, not only in the README. A user who reaches
     // for `--sandbox` to run something they do not trust is exactly the user
@@ -734,7 +755,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
 #if defined(__APPLE__)
     payload["shell"] = platform::resolve_shell();
 #endif
-    stream.emit(DataEvent{"subos_entering", payload.dump()});
+    if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
     for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
     return platform::run_shell(cmd, cmd.empty());
 #endif

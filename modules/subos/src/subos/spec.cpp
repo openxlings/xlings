@@ -73,20 +73,24 @@ void host_userland(std::vector<MountOp>& m, const Request& r) {
 }
 
 // The instance's own files at the places a POSIX userland looks for them.
+// A POSIX sandbox's paths are POSIX paths, whichever host compiled the spec
+// (the goldens run on Windows too).
+std::string posix(const fs::path& p) { return p.generic_string(); }
+
 void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request& r) {
     const auto dir = r.instance_dir;
     if (r.storage == Storage::Shared) {
-        m.push_back({MountKind::Bind, (dir / "home").string(), "/home"});
-        m.push_back({MountKind::Bind, (dir / "tmp").string(), "/tmp"});
+        m.push_back({MountKind::Bind, posix(dir / "home"), "/home"});
+        m.push_back({MountKind::Bind, posix(dir / "tmp"), "/tmp"});
     } else if (r.storage == Storage::Image) {
-        m.push_back({MountKind::Bind, r.image_mountpoint.string(), "/home"});
+        m.push_back({MountKind::Bind, posix(r.image_mountpoint), "/home"});
     }
     // The xlings home at its own absolute path: xvm alias targets, RPATH and
     // INTERP are absolute host paths baked at install time.
-    m.push_back({MountKind::Bind, home.home.string(), home.home.string()});
+    m.push_back({MountKind::Bind, posix(home.home), posix(home.home)});
     auto etc = dir / "etc";
     for (auto f : {"passwd", "group", "hosts", "nsswitch.conf"})
-        m.push_back({MountKind::Bind, (etc / f).string(), std::string("/etc/") + f});
+        m.push_back({MountKind::Bind, posix(etc / f), std::string("/etc/") + f});
 }
 
 std::vector<MountOp> gpu_mounts(const Request& r) {
@@ -238,11 +242,13 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     }
     s.env["XLINGS_ACTIVE_SUBOS"] = name;
     s.env["XLINGS_SUBOS_MODE"] = "sandbox";
-    s.env["XLINGS_SUBOS_LIB"] = (dir / "lib").string();
+    const bool windows = caps.platform == "windows";
+    auto native = [&](const fs::path& p) { return windows ? p.string() : posix(p); };
+    s.env["XLINGS_SUBOS_LIB"] = native(dir / "lib");
 
     if (s.backend == Backend::HomeRedirect) {
-        const auto sandbox_home = (dir / "home" / r.user).string();
-        const auto sandbox_tmp = (dir / "tmp").string();
+        const auto sandbox_home = native(dir / "home" / r.user);
+        const auto sandbox_tmp = native(dir / "tmp");
         if (caps.platform == "windows") {
             s.env["USERPROFILE"] = sandbox_home;
             s.env["APPDATA"] = sandbox_home + "\\AppData\\Roaming";
@@ -266,9 +272,9 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     }
 
     s.env["HOME"] = user_home;
-    s.env["XLINGS_HOME"] = home.home.string();
+    s.env["XLINGS_HOME"] = posix(home.home);
     s.env["PATH"] = std::format("{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
-                                home.home.string(), name);
+                                posix(home.home), name);
     if (s.backend == Backend::Proot) s.env["PROOT_NO_SECCOMP"] = "1";
     if (s.clear_env) {
         s.env["USER"] = r.user;
@@ -276,8 +282,19 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.env["SHELL"] = r.shell;
     }
 
+    {
+        std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
+        pass.insert(pass.end(), policy.env_pass.begin(), policy.env_pass.end());
+        for (auto& [k, v] : r.explicit_env) {
+            if (policy.env_explicit_any || policy::env_name_matches(k, pass)) s.env[k] = v;
+            else s.degraded.push_back({"env", "--env " + k + " is not in the policy's env_pass",
+                                       "xlings subos config <name> --env-pass " + k,
+                                       policy::Need::Should});
+        }
+    }
+
     // ── command ──────────────────────────────────────────────────────
-    s.cwd = user_home;
+    s.cwd = r.cwd.empty() ? fs::path(user_home) : fs::path(r.cwd);
     if (r.argv.empty()) {
         s.argv = {r.shell};
         // `sh -i` prints prompts and job-control warnings into a pipe; -i only

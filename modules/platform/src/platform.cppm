@@ -234,6 +234,12 @@ namespace platform {
     // POSIX, everything else spawns and waits.
     export int run_shell(std::string_view command, bool interactive);
 
+    // Run an argv -- no shell, nothing to quote for one -- with this process's
+    // stdio and environment, and return its exit code: 127 when the program
+    // is not found, 126 when it cannot be executed, 128+n for signal n (the
+    // `subos exec` exit-code table, design §12.2).
+    export int run_argv(const std::vector<std::string>& argv);
+
     // Escape a single argument for safe embedding in a shell command string.
     export [[nodiscard]] std::string shell_quote(const std::string& arg);
 
