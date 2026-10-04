@@ -8,7 +8,7 @@ import xlings.core.config;
 import xlings.core.xself.compat;
 // Generated at build time from config/shell/*.{sh,fish,ps1}; see mcpp.toml.
 import xlings.core.xself.profile_resources;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 // The routing table's decision layer. Imported by the INTERFACE because the
 // three writer functions below name its types; the pure/testable half stays
 // in xvm, this module is only its binding to a home.

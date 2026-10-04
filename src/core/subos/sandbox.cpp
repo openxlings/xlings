@@ -28,7 +28,7 @@ import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xim.commands;
 import xlings.core.xim.compatibility;
-import xlings.core.subos.gpu;
+import xlings.subos.gpu;
 import xlings.core.xvm.shim;
 
 namespace xlings::subos::sandbox {

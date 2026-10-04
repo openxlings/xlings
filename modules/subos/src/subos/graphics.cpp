@@ -60,7 +60,7 @@
 //                  new place.
 //
 // Refs: .agents/docs/2026-08-10-graphics-stack-architecture-review-and-plan.md
-module xlings.core.subos.graphics;
+module xlings.subos.graphics;
 
 import std;
 

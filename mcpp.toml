@@ -6,6 +6,7 @@
 #   theme         leaf, std + the JSON header
 #   guard         leaf, std only: UserConfirmed + the Asker port
 #   observe       -> json: event model, journal, redaction, trace
+#   subos         -> json, platform, guard, observe: the SubOS core
 #   testkit       -> json: end-to-end test library (dev-dependency only)
 #   apps/gui      the GUI binary's library half
 #   apps/xdev     the development tool (never linked into xlings)
@@ -30,6 +31,7 @@ members = [
     "modules/theme",
     "modules/guard",
     "modules/observe",
+    "modules/subos",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -138,6 +140,7 @@ sha256       = { path = "modules/sha256" }
 xhttp        = { path = "modules/tinyhttps" }
 guard        = { path = "modules/guard" }
 observe      = { path = "modules/observe" }
+subos        = { path = "modules/subos" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"

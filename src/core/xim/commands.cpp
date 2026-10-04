@@ -30,7 +30,7 @@ import xlings.core.xim.overlay;
 // subos's own declaration here closes no cycle. The alternative was a second
 // manifest reader living in xim, and this repo has paid for "the same decision
 // derived in two places" often enough to not add another.
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.xvm.errors;

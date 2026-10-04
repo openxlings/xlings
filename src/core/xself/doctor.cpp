@@ -39,7 +39,7 @@ import xlings.core.xim.payload;
 import xlings.core.xim.install_state;
 import xlings.core.xim.commands;
 import xlings.core.profile;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.xim.repo;
 import xlings.core.destructive_log;
 import xlings.core.home_config;

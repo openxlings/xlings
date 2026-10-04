@@ -25,7 +25,7 @@ import xlings.core.config;
 import xlings.platform;
 import xlings.runtime;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
-import xlings.core.subos.gpu;
+import xlings.subos.gpu;
 import xlings.core.xvm.shim;   // resolve_owner_home: reject another home's shim
 
 // Runtime isolation for a subos: proot/bwrap backends, storage images, GPU

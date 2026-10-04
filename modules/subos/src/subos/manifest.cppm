@@ -1,4 +1,4 @@
-export module xlings.core.subos.manifest;
+export module xlings.subos.manifest;
 
 import std;
 

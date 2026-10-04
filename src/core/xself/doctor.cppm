@@ -33,7 +33,7 @@ import xlings.core.xim.catalog;
 import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.xim.install_state;
 import xlings.core.profile;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.platform.target;   // platform::host().arch for the runtime family
 
 namespace xlings::xself {

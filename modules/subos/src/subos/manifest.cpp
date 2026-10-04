@@ -1,4 +1,4 @@
-module xlings.core.subos.manifest;
+module xlings.subos.manifest;
 
 import std;
 import xlings.libs.json;

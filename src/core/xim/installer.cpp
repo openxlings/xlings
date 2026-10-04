@@ -30,7 +30,7 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.profile;
 import xlings.core.xvm.commands;
 import xlings.core.xvm.shim;

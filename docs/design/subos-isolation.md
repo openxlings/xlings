@@ -173,4 +173,4 @@ xlings subos use mygpu --sandbox --gpu
 - `--gpu` 必须与 `--sandbox` 同时使用，否则解析期报错
 - proot 后端默认即 `--bind /dev` + `--bind /sys` 全透传，`--gpu` 在 proot 模式下静默无视
 
-实现位于 `src/core/subos/gpu.cppm`，独立于 `subos.cppm`，方便后续扩展 AMD ROCm (`/dev/kfd`) 等。设计文档：`.agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md`。
+实现位于 `modules/subos/src/subos/gpu.cppm`，独立于 `subos.cppm`，方便后续扩展 AMD ROCm (`/dev/kfd`) 等。设计文档：`.agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md`。

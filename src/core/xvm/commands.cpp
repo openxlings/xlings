@@ -6,7 +6,7 @@ import xlings.core.log;
 import xlings.core.diag;
 import xlings.core.version_order;
 import xlings.core.palette;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.platform;
 import xlings.runtime;
 import xlings.libs.json;

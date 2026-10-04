@@ -3,7 +3,7 @@ export module xlings.core.xvm.commands;
 import std;
 
 import xlings.core.config;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.runtime;
 import xlings.core.semver;
 import xlings.core.entry_binary;

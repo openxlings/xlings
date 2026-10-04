@@ -9,7 +9,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.core.xself.compat;
 import xlings.core.xself.profile_resources;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 import xlings.core.xim.commands;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;

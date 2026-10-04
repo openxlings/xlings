@@ -35,10 +35,10 @@ import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
 import xlings.core.subos.keeper;
-import xlings.core.subos.gpu;
-import xlings.core.subos.graphics;
+import xlings.subos.gpu;
+import xlings.subos.graphics;
 import xlings.core.subos.sandbox;
-import xlings.core.subos.manifest;
+import xlings.subos.manifest;
 // Leaf module (std + json only). Same source for "is this a global option"
 // that the CLI validator uses, so the two cannot disagree about `--yes`.
 import xlings.cli.spec;

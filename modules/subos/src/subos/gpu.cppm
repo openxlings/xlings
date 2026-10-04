@@ -19,7 +19,7 @@ module;
 
 #include <cctype>
 
-export module xlings.core.subos.gpu;
+export module xlings.subos.gpu;
 
 import std;
 
