@@ -305,6 +305,9 @@ home_config_capture(const std::filesystem::path& configPath,
             return it->second.capture;
         }
     }
+    // A capture that read to the end (not truncated) IS the SkipVersions
+    // capture of the same bytes; it is stored under both keys below, so an
+    // unproven home pays one lex per process, not one per mode.
 
     // Read, then re-stat the SAME content's file: if the file changed under
     // us the capture is still what a single read would have produced (the
@@ -343,6 +346,12 @@ home_config_capture(const std::filesystem::path& configPath,
         capture->mtime = after->second;
         std::scoped_lock lock(capture_memo_mutex());
         capture_memo()[key] = {after->first, after->second, capture};
+        if (capture->ok && !capture->truncated) {
+            capture_memo()[capture_memo_key(configPath, HomeCaptureMode::SkipVersions)] =
+                {after->first, after->second, capture};
+            capture_memo()[capture_memo_key(configPath, HomeCaptureMode::AbortAtVersions)] =
+                {after->first, after->second, capture};
+        }
     }
     return capture;
 }

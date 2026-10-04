@@ -115,4 +115,27 @@ cfg_size="$(wc -c < "$HOME_DIR/.xlings.json" | tr -d ' ')"
   || fail "S5: a matching DB was not re-stamped (before=$before after=$after cfg=$cfg_size)"
 log "S5: matching DB re-stamped by a non-versions write: ok"
 
+# ── S6: every other home-config writer carries the stamp too ─────────
+# `self init` rewrites the home config directly (not through an RMW
+# helper). A writer that forgot the stamp would not lose data -- readers
+# fall back -- but would drop the home off the shim fast path until the
+# next install.
+sleep 1.1
+before="$(stamp_of_db)"
+run_xlings "$HOME_DIR" "$ROOT_DIR" self init >/dev/null 2>&1 || fail "self init failed"
+after="$(stamp_of_db)"
+# The write always moves the config's mtime, so a carried-forward stamp
+# always changes; an unchanged one is a stale one (equal size alone would
+# not show it: init can rewrite identical bytes).
+[[ "$after" != "$before" ]] || fail "S6: self init left the versions DB stamp stale ($after)"
+cfg_size="$(wc -c < "$HOME_DIR/.xlings.json" | tr -d ' ')"
+python3 - "$HOME_DIR" "$after" <<'PY2' || fail "S6: self init left the versions DB stamp stale ($after)"
+import os, sys
+home, stamp = sys.argv[1], sys.argv[2]
+st = os.stat(os.path.join(home, ".xlings.json"))
+size, ticks = stamp.split(":")
+assert int(size) == st.st_size, (size, st.st_size)
+PY2
+log "S6: self init keeps the versions DB stamped: ok"
+
 log "PASS: dual_write_restamp (stale DB never re-trusted, fresh DB carried forward)"

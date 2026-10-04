@@ -526,6 +526,15 @@ reload_state_ 现在直接置 `globalWorkspaceLoaded_ = true`(一次读);view ct
 | F6 P3 | 双写 e2e 模拟失真、S4 空断言 | 旧客户端不再改 `dbIndex`;S4 保留 shim 并真正分发 | E2E-129 |
 | F7 P3 | 过时注释 / 每次 shim 的 warn / dbIndex 空条目 | doctor 注释改为 stamp 语义(并把被插入隔开的 `detect_entry_binary_` 注释移回原处);`load_versions_json` warn→debug;`program_index_to_json` 跳过无版本条目 | — |
 
+**综合 review 追加(同日)**:
+- **绕过 RMW 的 home 配置写入者也要带 stamp**:`register_known_project`(项目 scope 的 install
+  在 save_versions **之后**调用，每项目每天一次)、`self init`、`self install` 的 mirror/version
+  写入都直接写文件，不经两个 RMW 出口——每次都让 DB stamp 失配，home 掉出 shim 快路径直到下次
+  install(读者回退 config,只慢不错)。四处都补 `restamp_versions_db_if_equal`;E2E-130 S6 覆盖
+  `self init`。
+- **未截断的捕获两个 mode 共用 memo**:F2 之后，无证明的 home 上 AbortAtVersions 本身就读完全文，
+  它与 SkipVersions 的结果相同;memo 同时登记两个 key,避免 `ensure_index_config_` 再 lex 一遍。
+
 **性能(F1+F2 后)**:dev 构建，同一个 2.6 MB / 4000 条目、DB stamp 匹配的 home,shim 稳态
 中位数 9.5 ms(`0157beb`)→ 9.7 ms(修复后),早退在已迁移 home 上照常生效。stamp 不匹配的
 home(旧客户端刚写过 / 手改)走全量 lex,与"legacy home"同一档，任意一次新客户端写入即恢复。

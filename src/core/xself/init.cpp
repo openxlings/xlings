@@ -3,6 +3,7 @@ module xlings.core.xself.init;
 
 import std;
 import xlings.core.config;
+import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -401,6 +402,9 @@ void ensure_home_config_defaults_(const fs::path& home_dir) {
 
     ensure_parent_dirs_(config_path);
     platform::write_string_to_file(config_path.string(), json.dump(2));
+    // Every home-config writer carries the versions DB stamp forward when
+    // the DB still mirrors it; see restamp_versions_db_if_equal.
+    restamp_versions_db_if_equal(home_dir, json);
 }
 
 bool ensure_home_layout(const fs::path& home_dir) {

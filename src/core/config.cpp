@@ -1827,6 +1827,10 @@ void Config::register_known_project(const std::filesystem::path& dir) {
     projects[key.string()] = nlohmann::json{{"lastSeen", stamp}};
 
     platform::write_string_to_file(configPath.string(), json.dump(2));
+    // This runs right after save_versions in a project-scope install; keep
+    // the versions DB trusted rather than demoting every reader until the
+    // next install (no-op unless the DB mirrors what was just written).
+    xlings::restamp_versions_db_if_equal(self.paths_.homeDir, json);
     if (const auto after = file_stat_(configPath)) {
         self.remember_known_projects_(json, after->first, after->second);
     }
