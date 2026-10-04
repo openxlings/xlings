@@ -6,6 +6,12 @@ on:
       - 'config/aur/**'
       - '.github/workflows/xlings-ci-archlinux.yml'
 
+# A newer push to the same PR supersedes the run in flight; main and release
+# branches keep every run (each one is a commit that landed).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
 
   archlinux-test:
