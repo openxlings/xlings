@@ -41,8 +41,8 @@ std::vector<Status> probe(const caps::Caps& c) {
             bwrap ? "minimal /dev, named grants" : "needs bwrap");
         add("IdentityShim", bwrap, bwrap ? Enforced::Kernel : Enforced::Advisory,
             bwrap ? "uts namespace + passwd template" : "environment only");
-        add("ExecTracer", false, Enforced::None, "not implemented yet",
-            "seccomp user notification (design §22)");
+        add("ExecTracer", bwrap && c.seccomp, bwrap ? Enforced::Kernel : Enforced::None,
+            bwrap ? "seccomp user notification (observe=full)" : "needs bwrap");
         add("SessionHost", true, Enforced::Kernel,
             "supervisor + session-init, fork + unix socket + SCM_RIGHTS");
         add("RootfsRuntime", false, Enforced::None, "not in this release",

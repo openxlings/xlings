@@ -341,7 +341,7 @@ status = "required"
 [OBS-EXEC]
 text = "every program executed in a locked sandbox is recorded"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [OBS-PERM]
 text = "permission decisions are recorded"
@@ -349,19 +349,19 @@ status = "required"
 
 [OBS-FS]
 text = "files changed in rw mounts are listed at session end"
-status = "planned"
+status = "required"
 
 [OBS-REDACT]
 text = "audit lines carry variable names, never values"
-status = "planned"
+status = "required"
 
 [OBS-LOG]
 text = "subos log / ps / report read the audit"
-status = "planned"
+status = "required"
 
 [OBS-IFACE-EVENTS]
 text = "the interface exposes subos_events"
-status = "planned"
+status = "required"
 
 [OBS-TRACE]
 text = "XLINGS_TRACE=<categories> prints the decision trace"

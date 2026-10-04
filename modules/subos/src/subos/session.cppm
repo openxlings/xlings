@@ -83,6 +83,12 @@ struct Launch {
     std::optional<policy::Policy> broker_policy;
     std::vector<std::string> broker_exe;
     std::map<std::string, std::string> broker_env;
+    // observe=full (design §22): every program executed in the sandbox is
+    // recorded, through a seccomp user-notification filter on execve.
+    bool trace_exec { false };
+    // observe>=standard: host paths mapped read-write; what changed in them
+    // during the session is listed when it ends.
+    std::vector<std::string> rw_paths;
 };
 
 // The environment variables session-init reads its control socket and its

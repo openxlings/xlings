@@ -13,6 +13,9 @@ module;
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -393,6 +396,94 @@ std::vector<Info> list(const HomeView& home) {
 
 namespace {
 
+
+// ── exec tracing (design §22) ─────────────────────────────────────────
+//
+// A seccomp filter that turns execve / execveat into a user notification,
+// installed in the child before it execs the backend, inherited by every
+// process in the sandbox. Its listener fd goes back to the supervisor, which
+// reads the path from the caller's memory, records it and lets the call
+// continue. Every other system call costs one BPF comparison.
+//
+// The kernel ABI is written out here (as in xlings.subos.seccomp): the static
+// musl toolchains are not guaranteed to ship <linux/seccomp.h>.
+struct SeccompData { std::int32_t nr; std::uint32_t arch; std::uint64_t ip; std::uint64_t args[6]; };
+struct SeccompNotif { std::uint64_t id; std::uint32_t pid; std::uint32_t flags; SeccompData data; };
+struct SeccompNotifResp { std::uint64_t id; std::int64_t val; std::int32_t error; std::uint32_t flags; };
+constexpr unsigned long kNotifRecv = 0xC0502100UL;      // _IOWR('!', 0, seccomp_notif)
+constexpr unsigned long kNotifSend = 0xC0182101UL;      // _IOWR('!', 1, seccomp_notif_resp)
+constexpr unsigned long kNotifIdValid = 0x40082102UL;   // _IOW('!', 2, __u64)
+constexpr std::uint32_t kRetUserNotif = 0x7fc00000U, kRetAllow = 0x7fff0000U;
+constexpr unsigned kSetModeFilter = 1, kFlagNewListener = 1U << 3;
+constexpr std::uint32_t kUserNotifContinue = 1;
+
+#if defined(__x86_64__)
+constexpr std::uint32_t kArch = 0xC000003EU, kExecve = 59, kExecveat = 322;
+#elif defined(__aarch64__)
+constexpr std::uint32_t kArch = 0xC00000B7U, kExecve = 221, kExecveat = 281;
+#else
+constexpr std::uint32_t kArch = 0, kExecve = 0, kExecveat = 0;
+#endif
+
+struct Insn { std::uint16_t code; std::uint8_t jt, jf; std::uint32_t k; };
+struct Prog { unsigned short len; Insn* filter; };
+
+// In the child, before exec: returns the listener, or -1 (tracing then
+// simply does not happen -- the session runs, and the lifecycle says so).
+int install_exec_filter() {
+    if (kArch == 0) return -1;
+    Insn prog[] = {
+        {0x20, 0, 0, 4},                    // ld [arch]
+        {0x15, 1, 0, kArch},                // jeq arch, +1
+        {0x06, 0, 0, kRetAllow},            // foreign ABI: allow
+        {0x20, 0, 0, 0},                    // ld [nr]
+        {0x15, 2, 0, kExecve},              // jeq execve -> notify
+        {0x15, 1, 0, kExecveat},            // jeq execveat -> notify
+        {0x06, 0, 0, kRetAllow},
+        {0x06, 0, 0, kRetUserNotif},
+    };
+    Prog p{ static_cast<unsigned short>(sizeof(prog) / sizeof(prog[0])), prog };
+    if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
+    long fd = ::syscall(SYS_seccomp, kSetModeFilter, kFlagNewListener, &p);
+    return fd < 0 ? -1 : static_cast<int>(fd);
+}
+
+// Read a NUL-terminated string from another process's memory.
+std::string read_remote_string(pid_t pid, std::uint64_t addr) {
+    std::string out;
+    char buf[256];
+    for (int chunk = 0; chunk < 16 && addr; ++chunk) {
+        iovec local{buf, sizeof(buf)};
+        iovec remote{reinterpret_cast<void*>(addr + chunk * sizeof(buf)), sizeof(buf)};
+        auto n = ::process_vm_readv(pid, &local, 1, &remote, 1, 0);
+        if (n <= 0) break;
+        auto len = ::strnlen(buf, static_cast<std::size_t>(n));
+        out.append(buf, len);
+        if (len < static_cast<std::size_t>(n)) break;
+    }
+    return out;
+}
+
+// Files changed under `root` since `since`, relative, at most `limit`.
+std::pair<std::vector<std::string>, bool> changed_since(const fs::path& root,
+                                                        fs::file_time_type since,
+                                                        std::size_t limit) {
+    std::vector<std::string> out;
+    bool truncated = false;
+    std::error_code ec;
+    std::size_t visited = 0;
+    for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != std::default_sentinel; it.increment(ec)) {
+        if (++visited > 200000) { truncated = true; break; }
+        std::error_code e2;
+        if (!it->is_regular_file(e2)) continue;
+        if (it->last_write_time(e2) < since) continue;
+        if (out.size() >= limit) { truncated = true; break; }
+        out.push_back(it->path().lexically_relative(root).generic_string());
+    }
+    return {out, truncated};
+}
+
 struct BrokerClient {
     int fd { -1 };
     pid_t pid { -1 };
@@ -524,12 +615,19 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         }
     }
 
+    // observe=full: session-init installs the exec filter inside and sends its
+    // listener over the control socket (handled in the loop below). Inside,
+    // so bwrap itself never runs under no_new_privs -- which would keep an
+    // AppArmor profile (self doctor --isolation --fix) from applying to it.
+    int notify_fd = -1;
+    const auto fs_since = fs::file_time_type::clock::now();
+
     const auto started = std::chrono::steady_clock::now();
     info.sandbox_pid = pid;
     write_atomic(info_path(home, L.instance), to_json(info).dump(2));
     audit(home, L.instance, {{"event", "session-start"}, {"session", info.id},
                              {"backend", L.backend}, {"detached", L.detached}, {"ttl", L.ttl},
-                             {"spec", L.spec}});
+                             {"exec_trace", L.trace_exec}, {"spec", L.spec}});
     if (ready_fd >= 0) {
         char ok = '1';
         (void)::write(ready_fd, &ok, 1);
@@ -577,6 +675,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         std::vector<pollfd> pfds{{listen_fd, POLLIN, 0}, {g_sig_pipe[0], POLLIN, 0}};
         if (ctl_open) pfds.push_back({ctl[0], POLLIN, 0});
         if (broker_fd >= 0) pfds.push_back({broker_fd, POLLIN, 0});
+        if (notify_fd >= 0) pfds.push_back({notify_fd, POLLIN, 0});
         for (auto& b : brokered) if (b.fd >= 0 && b.pid < 0) pfds.push_back({b.fd, POLLIN, 0});
         for (auto& c : clients) if (c.fd >= 0) pfds.push_back({c.fd, POLLIN, 0});
         ::poll(pfds.data(), pfds.size(), 200);
@@ -616,6 +715,22 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
 
         for (auto& p : pfds) {
             if (!(p.revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            if (notify_fd >= 0 && p.fd == notify_fd) {
+                if (p.revents & (POLLHUP | POLLERR)) { ::close(notify_fd); notify_fd = -1; continue; }
+                SeccompNotif req{};
+                if (::ioctl(notify_fd, kNotifRecv, &req) != 0) continue;
+                const auto addr = req.data.nr == static_cast<std::int32_t>(kExecveat) ? req.data.args[1]
+                                                                                    : req.data.args[0];
+                auto path = read_remote_string(static_cast<pid_t>(req.pid), addr);
+                // The read is only trusted while the request is still live.
+                if (::ioctl(notify_fd, kNotifIdValid, &req.id) != 0) path.clear();
+                SeccompNotifResp resp{ .id = req.id, .val = 0, .error = 0, .flags = kUserNotifContinue };
+                (void)::ioctl(notify_fd, kNotifSend, &resp);
+                audit(home, L.instance, {{"event", "exec"}, {"session", info.id},
+                                         {"path", path.empty() ? std::string("?") : path},
+                                         {"pid", req.pid}}, observe::Kind::Exec);
+                continue;
+            }
             if (broker_fd >= 0 && p.fd == broker_fd) {
                 int c = ::accept4(broker_fd, nullptr, nullptr, SOCK_CLOEXEC);
                 if (c >= 0) brokered.push_back({.fd = c});
@@ -702,6 +817,17 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
                     ctl_open = false;
                     continue;
                 }
+                if (m->json.value("op", "") == "exec-listener") {
+                    if (!m->fds.empty() && notify_fd < 0) {
+                        notify_fd = m->fds.front();
+                        m->fds.erase(m->fds.begin());
+                    } else if (m->fds.empty()) {
+                        audit(home, L.instance, {{"event", "exec-trace-unavailable"}, {"session", info.id},
+                                                 {"reason", m->json.value("reason", "")}});
+                    }
+                    close_all(m->fds);
+                    continue;
+                }
                 close_all(m->fds);
                 auto id = m->json.value("id", std::int64_t{0});
                 auto it = std::ranges::find_if(clients, [&](const Client& c) {
@@ -785,6 +911,15 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         if (c.exec_id) send_msg(c.fd, {{"error", "the session ended"}, {"phase", "setup"}});
         ::close(c.fd);
     }
+    if (notify_fd >= 0) ::close(notify_fd);
+    // What changed in the host paths mapped read-write (design §22, fs).
+    for (const auto& root : L.rw_paths) {
+        auto [files, truncated] = changed_since(root, fs_since, 200);
+        if (files.empty()) continue;
+        audit(home, L.instance, {{"event", "changed"}, {"session", info.id}, {"mount", root},
+                                 {"count", files.size()}, {"truncated", truncated}, {"files", files}},
+              observe::Kind::Fs);
+    }
     std::error_code ec;
     if (nat) {
         // pasta outlives nothing it served.
@@ -836,6 +971,7 @@ int host(const HomeView& home, Launch L) {
     }
     L.env[std::string(kControlFdEnv)] = std::to_string(ctl[1]);
     L.env[std::string(kTtlEnv)] = std::to_string(L.ttl);
+    if (L.trace_exec) L.env["XLINGS_SESSION_TRACE"] = "1";
 
     Info info{ .instance = L.instance, .id = new_id(), .supervisor_pid = ::getpid(),
                .started = observe::utc_now(), .backend = L.backend, .digest = L.digest,
@@ -951,6 +1087,20 @@ int session_init(std::span<const std::string> args) {
     // Neither variable means anything to the commands that run here.
     ::unsetenv(std::string(kControlFdEnv).c_str());
     ::unsetenv(std::string(kTtlEnv).c_str());
+
+    // observe=full: the exec filter, before anything is started, its listener
+    // to the supervisor. Everything this process starts inherits the filter.
+    if (const char* t = std::getenv("XLINGS_SESSION_TRACE"); t && std::string_view(t) == "1") {
+        ::unsetenv("XLINGS_SESSION_TRACE");
+        int listener = install_exec_filter();
+        if (listener >= 0 && ctl >= 0) {
+            const int one[1] = {listener};
+            send_msg(ctl, {{"op", "exec-listener"}}, one);
+            ::close(listener);
+        } else if (ctl >= 0) {
+            send_msg(ctl, {{"op", "exec-listener"}, {"reason", std::strerror(errno)}});
+        }
+    }
 
     std::vector<std::string> main_argv;
     if (auto it = std::ranges::find(args, std::string("--")); it != args.end())

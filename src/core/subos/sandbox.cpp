@@ -428,6 +428,15 @@ std::string spec_digest_(const spec::SandboxSpec& sb) {
 }
 
 
+// observe >= standard: the host paths a sandbox can write, to list what
+// changed in them when the session ends.
+std::vector<std::string> rw_mount_sources_(const policy::Policy& pol) {
+    std::vector<std::string> out;
+    if (pol.observe == policy::Observe::Off || pol.observe == policy::Observe::Basic) return out;
+    for (auto& m : pol.mounts) if (m.rw) out.push_back(m.src);
+    return out;
+}
+
 // This binary on the host: the broker runs what it allows with it.
 std::string host_exe_() {
     std::error_code ec;
@@ -798,6 +807,8 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         .broker_policy = brokered ? std::optional(pol) : std::nullopt,
         .broker_exe = { host_exe_() },
         .broker_env = broker_env_(request.host_env, p.homeDir, name),
+        .trace_exec = pol.observe == policy::Observe::Full && sb.backend == spec::Backend::Bwrap,
+        .rw_paths = rw_mount_sources_(pol),
     });
     if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
     return rc;

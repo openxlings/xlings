@@ -2473,6 +2473,117 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
     return rc;
 }
 
+// `subos report <name> [--session ID] [--json]`: the audit, summarised
+// (design §22) -- what an agent did in an instance, in one screen.
+int run_report_(int argc, char* argv[], EventStream& stream,
+                const std::function<void(std::string_view)>& usageError) {
+    std::string name, only;
+    bool json = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (a == "--session" && i + 1 < argc) only = argv[++i];
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
+        else { usageError("unknown option for `xlings subos report`: " + std::string(a)); return 1; }
+    }
+    if (name.empty()) {
+        int rc = 0;
+        name = pick_subos_or_fail_("report", stream, usageError, &rc);
+        if (name.empty()) return rc;
+    }
+    struct Session {
+        std::string id, started, backend;
+        long long ms = -1;
+        std::optional<int> exit;
+        bool trace = false;
+        std::map<std::string, int> programs;
+        int execs = 0, commands = 0;
+        std::map<std::string, int> perm;
+        std::vector<std::string> denied, changed;
+    };
+    std::map<std::string, Session> sessions;
+    std::vector<std::string> order, policy_changes;
+    for (auto& e : observe::read(home_view().logs_dir(name) / "events.ndjson")) {
+        const auto ev = e.value("event", "");
+        if (ev == "policy-change" || ev == "policy-reset") {
+            policy_changes.push_back(e.value("ts", "") + " " + ev);
+            continue;
+        }
+        const auto id = e.value("session", "");
+        if (id.empty() || (!only.empty() && id != only)) continue;
+        if (!sessions.contains(id)) order.push_back(id);
+        auto& s = sessions[id];
+        s.id = id;
+        const auto kind = e.value("kind", "");
+        if (ev == "session-start") {
+            s.started = e.value("ts", "");
+            s.backend = e.value("backend", "");
+            s.trace = e.value("exec_trace", false);
+        } else if (ev == "session-end") {
+            s.ms = e.value("ms", -1LL);
+            s.exit = e.value("exit", 0);
+        } else if (kind == "exec") {
+            ++s.execs;
+            ++s.programs[e.value("path", "?")];
+        } else if (kind == "ops" && ev == "exec") {
+            ++s.commands;
+        } else if (kind == "perm" && ev == "decision") {
+            auto action = e.value("action", "");
+            ++s.perm[action];
+            if (action == "deny") s.denied.push_back(e.value("program", "") + ": " + e.value("reason", ""));
+        } else if (kind == "fs") {
+            for (auto& f : e.value("files", nlohmann::json::array()))
+                s.changed.push_back(e.value("mount", "") + "/" + f.get<std::string>());
+        }
+    }
+    if (json) {
+        nlohmann::json out{{"instance", name}, {"sessions", nlohmann::json::array()},
+                           {"policy_changes", policy_changes}};
+        for (auto& id : order) {
+            auto& s = sessions[id];
+            nlohmann::json top = nlohmann::json::object();
+            for (auto& [p, n] : s.programs) top[p] = n;
+            out["sessions"].push_back({{"id", s.id}, {"started", s.started}, {"backend", s.backend},
+                                       {"ms", s.ms}, {"exit", s.exit ? nlohmann::json(*s.exit) : nlohmann::json(nullptr)},
+                                       {"exec_traced", s.trace}, {"executions", s.execs}, {"programs", top},
+                                       {"commands", s.commands}, {"permissions", s.perm},
+                                       {"denied", s.denied}, {"changed", s.changed}});
+        }
+        std::println(stdout, "{}", out.dump());
+        return 0;
+    }
+    std::println(stdout, "subos {}: {} session(s)", name, order.size());
+    for (auto& id : order) {
+        auto& s = sessions[id];
+        std::println(stdout, "\n  session {}  {}  {}  {}", s.id, s.started, s.backend,
+                     s.exit ? std::format("exit {} after {} ms", *s.exit, s.ms) : std::string("running"));
+        std::println(stdout, "    commands joined: {}", s.commands);
+        if (s.trace) {
+            std::vector<std::pair<int, std::string>> top;
+            for (auto& [p, n] : s.programs) top.emplace_back(n, p);
+            std::ranges::sort(top, std::greater<>{});
+            std::println(stdout, "    programs executed: {}", s.execs);
+            for (std::size_t i = 0; i < std::min<std::size_t>(10, top.size()); ++i)
+                std::println(stdout, "      {:>5}  {}", top[i].first, top[i].second);
+        } else {
+            std::println(stdout, "    programs executed: not traced (observe < full)");
+        }
+        if (!s.perm.empty()) {
+            std::string line;
+            for (auto& [a, n] : s.perm) line += std::format(" {}={}", a, n);
+            std::println(stdout, "    permission decisions:{}", line);
+            for (auto& d : s.denied) std::println(stdout, "      denied  {}", d);
+        }
+        if (!s.changed.empty()) {
+            std::println(stdout, "    files changed in rw mounts: {}", s.changed.size());
+            for (std::size_t i = 0; i < std::min<std::size_t>(20, s.changed.size()); ++i)
+                std::println(stdout, "      {}", s.changed[i]);
+        }
+    }
+    for (auto& c : policy_changes) std::println(stdout, "\n  policy  {}", c);
+    return 0;
+}
+
 // `subos ps`: the running sessions (design §22).
 int run_ps_(int argc, char* argv[], EventStream& stream) {
     bool json = false;
@@ -2535,7 +2646,7 @@ int run_log_(int argc, char* argv[], EventStream& stream,
     auto print = [&](const nlohmann::json& e) {
         if (json) { std::println(stdout, "{}", e.dump()); return; }
         std::string detail;
-        for (std::string k : {"program", "exit", "signal", "backend", "error", "ms"}) {
+        for (std::string k : {"program", "path", "exit", "signal", "backend", "error", "count", "ms"}) {
             if (!e.contains(k)) continue;
             detail += std::format(" {}={}", k, e[k].is_string() ? e[k].get<std::string>() : e[k].dump());
         }
@@ -2879,6 +2990,7 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "ps") return run_ps_(argc, argv, stream);
     if (sub == "exec") return run_exec_(argc, argv, stream);
+    if (sub == "report") return run_report_(argc, argv, stream, usageError);
     if (sub == "requests" || sub == "approve" || sub == "deny")
         return run_requests_(sub, argc, argv, stream, usageError);
     if (sub == "config") return run_config_(argc, argv, stream, usageError);

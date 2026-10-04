@@ -134,6 +134,12 @@ Run a request a SubOS's sandbox is waiting on
 
 Refuse a request a SubOS's sandbox is waiting on
 
+## `xlings subos report [name]`
+
+Summarise what happened in a SubOS: sessions, programs, permissions, files
+
+Options: `--session <ID>` — Only this session; `--json` — Machine-readable output
+
 ## `xlings subos ps`
 
 List running SubOS sessions
