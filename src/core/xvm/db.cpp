@@ -1144,6 +1144,9 @@ VersionDB versions_from_json(const nlohmann::json& j) {
 nlohmann::json program_index_to_json(const VersionDB& db) {
     nlohmann::json j = nlohmann::json::object();
     for (auto it = db.begin(); it != db.end(); ++it) {
+        // Same rule as home_knows_program's slow path: an entry with no
+        // versions does not make the home "know" the program.
+        if (it->second.versions.empty()) continue;
         // The stem, because the shim file's name is what PATH dispatches on
         // and the DB key may differ from it (VInfo::filename); home
         // lookup falls back to that same stem comparison.

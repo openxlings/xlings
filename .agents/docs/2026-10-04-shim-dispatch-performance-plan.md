@@ -501,8 +501,38 @@ reload_state_ 现在直接置 `globalWorkspaceLoaded_ = true`(一次读);view ct
    出口在写完 config 后**重戳 wrapper 的 stamp**(持锁、原子、best-effort——失败只损失
    加速)。strace 定位:写序 config(105B)→ DB(stamp=105)→ config(136B),老 stamp 被留在文件里。
    RMW 不改 versions,所以重戳不会掩盖真实分歧(内容比较仍会发现)。
+   **〔第二轮 review 更正，见 §15 F1〕这句是错的**:RMW 不改 versions 只说明"本次写入没有
+   制造分歧",不说明写入**之前** DB 是新鲜的。旧客户端改过 config 后的任一 RMW 都会把过期
+   DB 重新扶正，下一次 save_versions 再把它写回 config——旧客户端的记录两份都丢。已复现，已修。
 
 ### 顺带修正的 review 陈述
 
 - §1 表中"mcpp 3000 版本命中 19ms(视图 1.5MB)":视图文件按 per-program 存,大的是**那个程序自己的版本表**,这正是 dispatch 匹配所需的数据集;线性于该程序的版本数、与 home 总规模无关(3000 条的总库命中仍 3ms——review 自己的数据也支持这点)。
 - §5"release 测 dev 发 dist":见上,e2e job 跑的就是 dist 产物。
+
+---
+
+## 15. 第二轮 review 修复记录(2026-10-04)
+
+方案:`2026-10-04-pr639-review-fix-plan.md`。逐条处置(全部采纳):
+
+| # | 问题 | 修法 | 回归测试 |
+|---|---|---|---|
+| F1 P0 | RMW 无条件重戳，过期 DB 被重新信任，下一次 save_versions 抹掉旧客户端记录 | `restamp_versions_db_if_equal`:只在 DB.versions 与刚写出的 config.versions **内容相等**时重戳;stamp 格式化收敛为 `versions_db_stamp` 一处 | 单测 3 例;E2E-130 `dual_write_restamp_test.sh`(在 `0157beb` 上 S3 失败，修复后全过) |
+| F2 P1 | `AbortAtVersions` 丢弃 `versions` 之后的键(手改/脚本追加的 `mirror`/`lang`) | 早退必须有**证明**:config 当前 stat == DB stamp(只有 xlings 的有序 dump 会被打 stamp);否则按 SkipVersions 读完。stamp 只读 DB 前 4 KiB,SAX 在 `versions` 键处停 | 单测 `AppendedKeyAfterVersionsIsCaptured` / `AbortOnlyWithMatchingStamp`;`interface env` 复测为 `CN/zh` |
+| F3 P1 | 惰性 index 配置让全局 `xim.index-base` 覆盖项目值 | `globalIndexBases_` / `projectIndexBases_` 分层,`index_bases()` 项目优先 | E2E-131 `index_base_precedence_test.sh`(带对照组;在 `0157beb` 上失败) |
+| F4 P2 | `save_workspace` 全局分支不自 ensure | 加 `ensure_global_workspace_()` | — (防御性，行为不变) |
+| F5 P2 | Windows 按 `FullName` 选 exe | 按 `LastWriteTime` 取最新并打印路径与大小 | CI 日志 |
+| F6 P3 | 双写 e2e 模拟失真、S4 空断言 | 旧客户端不再改 `dbIndex`;S4 保留 shim 并真正分发 | E2E-129 |
+| F7 P3 | 过时注释 / 每次 shim 的 warn / dbIndex 空条目 | doctor 注释改为 stamp 语义(并把被插入隔开的 `detect_entry_binary_` 注释移回原处);`load_versions_json` warn→debug;`program_index_to_json` 跳过无版本条目 | — |
+
+**性能(F1+F2 后)**:dev 构建，同一个 2.6 MB / 4000 条目、DB stamp 匹配的 home,shim 稳态
+中位数 9.5 ms(`0157beb`)→ 9.7 ms(修复后),早退在已迁移 home 上照常生效。stamp 不匹配的
+home(旧客户端刚写过 / 手改)走全量 lex,与"legacy home"同一档，任意一次新客户端写入即恢复。
+
+**本地 e2e**(`XLINGS_TEST_MIRROR=CN`,清空调用方 `XLINGS_*` 环境):E2E-129/130/131 +
+doctor / project / shim / subos_xpkg / xvm 相关 22 个用例通过。
+
+**一个本地踩坑记下来**:在一个 subos shell 里直接跑 e2e,`XLINGS_ACTIVE_SUBOS` 会漏进被测
+shim(报 "not installed in this subos (<你的 subos>)"),看起来像回归。跑本地 e2e 前先
+`env -u XLINGS_ACTIVE_SUBOS -u XLINGS_HOME -u XLINGS_BIN ...`。

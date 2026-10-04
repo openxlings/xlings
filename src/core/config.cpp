@@ -717,7 +717,7 @@ void Config::load_project_config_from_dir_(const std::filesystem::path& dir) {
             projectIndexRepos_ = parse_index_repos_json(json, mirror_);
             load_resource_servers_from_json_(json, projectResourceServers_);
             if (auto v = resolve_index_base_(json, mirror_); !v.empty())
-                indexBases_ = std::move(v);   // project overrides global
+                projectIndexBases_ = std::move(v);   // project overrides global
             projectSubosName_ = load_project_subos_name_(json);
 
             auto projectStatePath = project_state_path_();
@@ -905,7 +905,7 @@ void Config::ensure_index_config_() {
     defaultIndexRepoUrl_ = resolve_default_index_repo_(json, mirror_);
     globalIndexRepos_ = parse_index_repos_json(json, mirror_);
     load_resource_servers_from_json_(json, globalResourceServers_);
-    if (auto v = resolve_index_base_(json, mirror_); !v.empty()) indexBases_ = std::move(v);
+    globalIndexBases_ = resolve_index_base_(json, mirror_);
 
     if (globalIndexRepos_.empty()) {
         globalIndexRepos_ = default_global_index_repos_(mirror_, defaultIndexRepoUrl_);
@@ -1143,8 +1143,11 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
 }
 
 [[nodiscard]] std::vector<ArtifactBase> Config::index_bases() {
-    instance_().ensure_index_config_();
-    return instance_().indexBases_;
+    auto& self = instance_();
+    if (self.hasProjectConfig_ && !self.projectIndexBases_.empty())
+        return self.projectIndexBases_;
+    self.ensure_index_config_();
+    return self.globalIndexBases_;
 }
 
 [[nodiscard]] xvm::VersionDB Config::versions() {
@@ -1509,10 +1512,8 @@ void Config::save_versions() {
         if (const auto stamp = file_stat_(configPath)) {
             nlohmann::json wrapper = nlohmann::json::object();
             wrapper["format"] = 1;
-            wrapper["stamp"] = std::format(
-                "{}:{}", static_cast<std::int64_t>(stamp->first),
-                static_cast<std::int64_t>(
-                    stamp->second.time_since_epoch().count()));
+            wrapper["stamp"] =
+                xlings::versions_db_stamp(stamp->first, stamp->second);
             wrapper["versions"] = xvm::versions_to_json(versions);
             try {
                 platform::write_file_atomic(dbPath.string(), wrapper.dump(2));
@@ -1613,49 +1614,10 @@ std::expected<void, std::string> rmw_home_config_locked_(
         return std::unexpected(e.what());
     }
 
-    // The config write just invalidated the versions DB file's freshness
-    // stamp (it records the config's size+mtime). This RMW edited ONE
-    // non-versions key under the state lock, so the versions map did not
-    // change -- re-stamp the wrapper so the DB file stays trusted instead
-    // of demoting every reader to the config field until the next
-    // install. Best-effort by design: a failed re-stamp leaves the stamp
-    // stale, which costs a fallback read, never a wrong answer; and when
-    // the DB file does not exist there is nothing to re-stamp (the next
-    // save_versions creates it with a fresh stamp).
-    {
-        const auto dbPath = xlings::versions_db_path(homeDir);
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(dbPath, ec) && !ec) {
-            try {
-                std::error_code sec, tec;
-                const auto size = std::filesystem::file_size(configPath, sec);
-                const auto mtime =
-                    std::filesystem::last_write_time(configPath, tec);
-                if (!sec && !tec) {
-                    auto content = platform::read_file_to_string(
-                        dbPath.string());
-                    auto wrapper = nlohmann::json::parse(content, nullptr,
-                                                         false);
-                    const auto newStamp = std::format(
-                        "{}:{}",
-                        static_cast<std::int64_t>(size),
-                        static_cast<std::int64_t>(
-                            mtime.time_since_epoch().count()));
-                    if (!wrapper.is_discarded() && wrapper.is_object()
-                        && wrapper.value("format", 0) == 1
-                        && wrapper.contains("stamp")
-                        && wrapper["stamp"].is_string()
-                        && wrapper["stamp"].get<std::string>() != newStamp) {
-                        wrapper["stamp"] = newStamp;
-                        platform::write_file_atomic(dbPath.string(),
-                                                    wrapper.dump(2));
-                    }
-                }
-            } catch (...) {
-                // Stamp stays stale; readers fall back to the config field.
-            }
-        }
-    }
+    // The config write just invalidated the versions DB file's stamp; carry
+    // it forward only if the DB still mirrors the `versions` just written
+    // (see restamp_versions_db_if_equal for why write order is not proof).
+    xlings::restamp_versions_db_if_equal(homeDir, json);
     return {};
 }
 
@@ -1982,6 +1944,9 @@ void Config::save_workspace() {
         // workspace through with no installed[] info.
         sws.active = self.projectWorkspace_;
     } else {
+        // Lazily loaded: never write "not loaded yet" back as an empty
+        // workspace over the subos's real one.
+        self.ensure_global_workspace_();
         sws.active = self.globalWorkspace_;
         sws.installed = self.globalInstalled_;
         sws.configured = self.globalConfigured_;

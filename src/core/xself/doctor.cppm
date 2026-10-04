@@ -271,11 +271,11 @@ enum class FindingKind {
     // forever. See xim/install_state.cppm.
     IncompletePayload,
     // The versions DB file (<home>/data/versions.json) and the home config's
-    // `versions` field disagree. Writers emit both in one dump, so xlings
-    // cannot produce this -- a hand-edited config can. Readers prefer the
-    // file, so the divergence means hand-edits are invisible to every shim
-    // dispatch. A Warning, not an Error: dispatch still resolves, it just
-    // resolves from the older of the two copies.
+    // `versions` field disagree. Writers emit both in one dump, so a current
+    // xlings cannot produce this -- an older client or a hand edit can.
+    // Readers trust the file only while its stamp matches the config, so
+    // dispatch still resolves from the config; the derived copy is merely
+    // stale. A Warning, not an Error.
     VersionsDbDivergence,
     // A payload whose top level carries the fingerprint of mcpp-community/mcpp#636: a
     // download-cache sidecar, or another package's archive, that a hookless

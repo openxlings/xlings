@@ -45,12 +45,18 @@ if ($env:MCPP_TARGET) { $mcppArgs += @("--target", $env:MCPP_TARGET) }
 & $MCPP_BIN @mcppArgs
 if ($LASTEXITCODE -ne 0) { Fail "mcpp build failed" }
 
+# NEWEST by mtime, not first by path: the fingerprint directory name is a
+# hash, and a job that ran `mcpp build` (dev) before this script has two
+# xlings.exe under target\ -- sorting by path packages whichever hash sorts
+# first (the same defect tools/macos_release.sh records). The dist build
+# above is the most recent write.
 $BIN_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "xlings.exe" |
   Where-Object { $_.FullName -match "[\\/]+bin[\\/]+xlings\.exe$" } |
-  Sort-Object FullName |
+  Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
 if (-not $BIN_FILE) { Fail "C++ binary not found under target\*\bin\xlings.exe" }
 $BIN_SRC = $BIN_FILE.FullName
+Info "Packaging $BIN_SRC ($($BIN_FILE.Length) bytes)"
 
 # dist-profile gate, checked on the artifact rather than the build command: a
 # dev build (-O0 -g) passes every functional check below -- it just unpacks,

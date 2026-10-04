@@ -67,8 +67,9 @@ log "S1: install writes a stamped DB wrapper: ok"
 # ── S2: OLD client installs another package (config-only write) ──────
 #
 # Every client ≤2026.9.30.1 does exactly this: read the config, add to
-# `versions` + `dbIndex` AND to the subos's workspace (an install also
-# activates), write both files. The DB file is left with a stamp that no
+# `versions` AND to the subos's workspace (an install also activates), write
+# both files. It does NOT touch `dbIndex` -- it has never heard of it, and
+# carries the key through untouched, now stale. The DB file is left with a stamp that no
 # longer matches. The workspace entry is what makes the package real for
 # dispatch; the versions entry is what find_vinfo must resolve it against.
 python3 - "$HOME_DIR" <<'PY'
@@ -80,7 +81,6 @@ d.setdefault("versions", {})["oldpkg"] = {
     "type": "program", "filename": "oldpkg",
     "versions": {"1.0": {"path": str(home / "data" / "xpkgs" / "xim-x-oldpkg" / "1.0" / "bin"),
                           "kind": "program"}}}
-d.setdefault("dbIndex", {})["oldpkg"] = "oldpkg"
 p.write_text(json.dumps(d, indent=2))
 ws = home / "subos" / "default" / ".xlings.json"
 w = json.loads(ws.read_text())
@@ -120,16 +120,15 @@ log "S3: dispatch sees the old client's active entry (stamp bypass works): ok"
 
 # ── S4: old client REMOVES → new client must not run a dead payload ──
 #
-# An old client's remove edits the config (versions + dbIndex + workspace)
-# and leaves the DB file naming py-demo. The new client's dispatch must
-# agree with the config: py-demo is gone.
+# An old client's remove edits the config (versions + workspace) and leaves
+# both the DB file and the config's own `dbIndex` naming py-demo. The new
+# client's dispatch must agree with the config: py-demo is gone.
 python3 - "$HOME_DIR" <<'PY'
 import json, pathlib, sys
 home = pathlib.Path(sys.argv[1])
 p = home / ".xlings.json"
 d = json.loads(p.read_text())
 d["versions"].pop("py-demo", None)
-d.get("dbIndex", {}).pop("py-demo", None)
 p.write_text(json.dumps(d, indent=2))
 ws = home / "subos" / "default" / ".xlings.json"
 w = json.loads(ws.read_text())
@@ -137,26 +136,23 @@ w.get("workspace", {}).pop("py-demo", None)
 w.get("installed", {}).pop("py-demo", None)
 ws.write_text(json.dumps(w, indent=2))
 PY
-# A real remove also deletes the shim files; do the same for the entries
-# install created.
-rm -f "$HOME_DIR/subos/default/bin/py-demo"
 python3 -c "
 import json
 db = json.load(open('$HOME_DIR/data/versions.json'))['versions']
 assert 'py-demo' in db, 'py-demo should still be in the (stale) DB file'
-cfg = json.load(open('$HOME_DIR/.xlings.json')).get('versions', {})
-assert 'py-demo' not in cfg, 'py-demo should be gone from the config'
+cfg = json.load(open('$HOME_DIR/.xlings.json'))
+assert 'py-demo' not in cfg.get('versions', {}), 'py-demo should be gone from the config'
+assert 'py-demo' in cfg.get('dbIndex', {}), 'an old client leaves dbIndex stale'
 "
-# The shim file is gone (a real remove deletes it), so dispatch never runs:
-# bash's ENOENT IS the pass condition -- the error names the SHIM path, not
-# a dispatch diagnostic. A fail would be xlings dispatching anyway and
-# exec'ing the payload the stale DB file still names.
-OUT=$( ("$HOME_DIR/subos/default/bin/py-demo" --version 2>&1 || true) )
-if echo "$OUT" | grep -qE "No such file or directory"; then
-  log "S4: shim gone, nothing dispatched (as a real remove leaves it): ok"
-elif [[ -n "$OUT" ]]; then
-  fail "dispatch still ran py-demo after the old client removed it; got:\n$OUT"
-else
-  fail "py-demo shim silently succeeded after removal; expected the file to be gone"
-fi
+# Keep a shim for the removed name and DISPATCH it: the stale DB file and the
+# stale dbIndex both still name py-demo, and neither may make it runnable.
+# The new client must agree with the config: nothing is active, so the
+# dispatch fails (a "not installed" diagnostic, or the name handed back to
+# PATH where nothing provides it) -- it must never resolve a payload.
+ln -sf xlings "$HOME_DIR/subos/default/bin/py-demo"
+rc=0
+OUT=$("$HOME_DIR/subos/default/bin/py-demo" --version 2>&1) || rc=$?
+[[ $rc -ne 0 ]] \
+  || fail "dispatch still succeeded for py-demo after the old client removed it; got:\n$OUT"
+log "S4: removed name does not dispatch (rc=$rc): ok"
 log "PASS: dual_write_window (old-client writes stay visible to new-client reads)"

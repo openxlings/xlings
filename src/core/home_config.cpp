@@ -26,13 +26,13 @@ constexpr std::string_view kVersionsKey = "versions";
 // builds nothing under it -- for the CLI, which needs `xim` (sorting after
 // `versions`) but not `versions` itself once the DB has its own file.
 //
-// The abort is guarded by a sortedness check, and that guard is what makes
-// it safe rather than merely fast: `versions` sorts near the end of the key
-// order nlohmann's std::map-backed dump always produces, so the moment a
-// SORTED stream reaches `versions`, every key the consumer needs has either
-// been seen or genuinely does not exist. A hand-edited file whose order is
-// not sorted (a key went backwards) never aborts -- it degrades to
-// SkipVersions, which is slower and misses nothing.
+// What makes the abort safe is decided by the CALLER (home_config_capture):
+// it is only requested for bytes proven to be xlings's own sorted dump. A
+// stream that is sorted SO FAR proves nothing about what follows `versions`
+// -- a hand edit appended after it is the common shape -- so the checks
+// below (sorted so far, `activeSubos` seen) are defense in depth, not the
+// proof. A stream failing them degrades to SkipVersions, which is slower
+// and misses nothing.
 class SelectiveCaptureSax {
 public:
     SelectiveCaptureSax(nlohmann::json& out, bool abortAtVersions)
@@ -214,6 +214,70 @@ std::shared_ptr<HomeConfigCapture> capture_from_content(
     return capture;
 }
 
+// Reads `format` and `stamp` from the head of the versions DB file and stops
+// at its `versions` key. save_versions dumps the wrapper sorted, so both
+// sit in the first few dozen bytes; the 2.4 MB map behind them is never
+// read, let alone parsed.
+class DbStampSax {
+public:
+    std::optional<std::string> stamp;
+    std::optional<std::int64_t> format;
+
+    bool null() { return true; }
+    bool boolean(bool) { return true; }
+    bool number_integer(nlohmann::json::number_integer_t v) {
+        if (depth_ == 1 && key_ == "format") format = v;
+        return true;
+    }
+    bool number_unsigned(nlohmann::json::number_unsigned_t v) {
+        if (depth_ == 1 && key_ == "format")
+            format = static_cast<std::int64_t>(v);
+        return true;
+    }
+    bool number_float(double, const std::string&) { return true; }
+    bool string(std::string& v) {
+        if (depth_ == 1 && key_ == "stamp") stamp = std::move(v);
+        return true;
+    }
+    bool binary(nlohmann::json::binary_t&) { return true; }
+    bool start_object(std::size_t) { ++depth_; return true; }
+    bool start_array(std::size_t) { ++depth_; return true; }
+    bool end_object() { --depth_; return true; }
+    bool end_array() { --depth_; return true; }
+    bool key(std::string& k) {
+        if (depth_ == 1) {
+            if (k == "versions") return false;  // everything needed is behind us
+            key_ = std::move(k);
+        }
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string&,
+                     const nlohmann::json::exception&) {
+        return false;
+    }
+
+private:
+    int depth_ { 0 };
+    std::string key_;
+};
+
+std::optional<std::string> read_versions_db_stamp_prefix(
+        const std::filesystem::path& dbPath) {
+    constexpr std::size_t kPrefix = 4096;
+    std::ifstream in(dbPath, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::string head(kPrefix, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(head.size()));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+    try {
+        DbStampSax sax;
+        nlohmann::json::sax_parse(head, &sax);
+        if (sax.format && *sax.format == 1 && sax.stamp) return sax.stamp;
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::shared_ptr<const HomeConfigCapture>
@@ -247,10 +311,30 @@ home_config_capture(const std::filesystem::path& configPath,
     // behavior of every pre-existing reader), but it must not be memoized --
     // a later caller validating against the NEW stat would receive a capture
     // of the OLD bytes.
+    const auto statBefore = stat_now(configPath);
     auto content = platform::read_file_to_string(configPath.string());
     const auto after = stat_now(configPath);
 
-    auto capture = capture_from_content(content, mode == HomeCaptureMode::AbortAtVersions);
+    // Stopping at `versions` is safe only for bytes xlings itself dumped
+    // (sorted, so nothing that sorts before `versions` can follow it). A
+    // hand edit or a script may append `"mirror": "CN"` after it, and an
+    // early stop would silently drop that key. The proof is the versions DB
+    // stamp: only xlings's writers stamp it, only with the stat of a config
+    // they just dumped, and only while the DB mirrors it. Without a matching
+    // stamp, lex the whole file (SkipVersions) -- slower, misses nothing.
+    // The proof is about these bytes, so it holds for the memo entry as
+    // long as the config's stat does.
+    bool abortAtVersions = false;
+    if (mode == HomeCaptureMode::AbortAtVersions && statBefore && after
+        && statBefore->first == after->first
+        && statBefore->second == after->second) {
+        const auto stamp = read_versions_db_stamp_prefix(
+            versions_db_path(configPath.parent_path()));
+        abortAtVersions =
+            stamp && *stamp == versions_db_stamp(after->first, after->second);
+    }
+
+    auto capture = capture_from_content(content, abortAtVersions);
 
     if (const auto before = stat_now(configPath);
         before && after && before->first == after->first
@@ -267,6 +351,16 @@ std::filesystem::path versions_db_path(const std::filesystem::path& home) {
     return home / "data" / "versions.json";
 }
 
+std::string versions_db_stamp(const std::uintmax_t size,
+                              const std::filesystem::file_time_type mtime) {
+    // file_clock's rep is __int128 on libc++; ticks fit int64 for every
+    // file that exists, and the value is only compared against another one.
+    return std::format("{}:{}",
+                       static_cast<std::int64_t>(size),
+                       static_cast<std::int64_t>(
+                           mtime.time_since_epoch().count()));
+}
+
 namespace {
 
 // The DB file's wrapper: format, the freshness stamp of the home config it
@@ -280,16 +374,6 @@ constexpr std::string_view kDbFormatKey = "format";
 constexpr std::string_view kDbStampKey = "stamp";
 constexpr std::string_view kDbVersionsKey = "versions";
 constexpr int kDbFormat = 1;
-
-std::string db_stat_to_json(const std::uintmax_t size,
-                            const std::filesystem::file_time_type mtime) {
-    // file_clock's rep is __int128 on libc++; ticks fit int64 for every
-    // file that exists, and the value is only compared against another one.
-    return std::format("{}:{}",
-                       static_cast<std::int64_t>(size),
-                       static_cast<std::int64_t>(
-                           mtime.time_since_epoch().count()));
-}
 
 // The memo: one versions read per process, keyed by both files' identities.
 // home_knows_program's existence check and Config's version load hit the
@@ -372,18 +456,21 @@ std::optional<nlohmann::json> load_versions_json(const std::filesystem::path& ho
                 // the config since, and the config is the fresher copy.
                 if (configStat) {
                     const auto expected = json[kDbStampKey].get<std::string>();
-                    if (expected == db_stat_to_json(configStat->first,
+                    if (expected == versions_db_stamp(configStat->first,
                                                     configStat->second)) {
                         result = json[kDbVersionsKey];
                         stampedConfig = configStat;
                     }
                 }
             } else {
-                log::warn("{} is malformed; falling back to the versions in {}",
+                // debug, not warn: a shim runs this once per tool invocation,
+                // and a warning here would land in every wrapped tool's
+                // stderr. `self doctor` is where a broken DB is reported.
+                log::debug("{} is malformed; falling back to the versions in {}",
                           dbPath.string(), configPath.string());
             }
         } catch (const std::exception& e) {
-            log::warn("could not read {} ({}); falling back to the versions in {}",
+            log::debug("could not read {} ({}); falling back to the versions in {}",
                       dbPath.string(), e.what(), configPath.string());
         }
     }
@@ -442,6 +529,53 @@ nlohmann::json read_home_config(const std::filesystem::path& home) {
     }
 }
 
+void restamp_versions_db_if_equal(const std::filesystem::path& home,
+                                  const nlohmann::json& written) {
+    namespace fs = std::filesystem;
+    const auto dbPath = versions_db_path(home);
+    std::error_code ec;
+    if (!fs::is_regular_file(dbPath, ec) || ec) return;  // nothing to carry
+    try {
+        // The config must carry a versions map for the DB to mirror; one
+        // without it is not something a stamp may vouch for.
+        auto field = written.find(kVersionsKey);
+        if (field == written.end() || !field->is_object()) return;
+
+        const auto cfgPath = home_config_path(home);
+        std::error_code sec, tec;
+        const auto size = fs::file_size(cfgPath, sec);
+        const auto mtime = fs::last_write_time(cfgPath, tec);
+        if (sec || tec) return;
+
+        auto wrapper = nlohmann::json::parse(
+            platform::read_file_to_string(dbPath.string()), nullptr, false);
+        if (wrapper.is_discarded() || !wrapper.is_object()
+            || wrapper.value(kDbFormatKey, 0) != kDbFormat
+            || !wrapper.contains(kDbStampKey)
+            || !wrapper[kDbStampKey].is_string()) {
+            return;
+        }
+        auto dbVersions = wrapper.find(kDbVersionsKey);
+        if (dbVersions == wrapper.end() || !dbVersions->is_object()) return;
+
+        // The proof. A DB that went stale before this write (an older
+        // client edited `versions` since the last save_versions) stays
+        // stale: its stamp keeps mismatching and readers keep falling back.
+        if (*dbVersions != *field) {
+            log::debug("{} differs from the versions in {}; leaving its stamp "
+                       "stale", dbPath.string(), cfgPath.string());
+            return;
+        }
+
+        const auto newStamp = versions_db_stamp(size, mtime);
+        if (wrapper[kDbStampKey].get<std::string>() == newStamp) return;
+        wrapper[kDbStampKey] = newStamp;
+        platform::write_file_atomic(dbPath.string(), wrapper.dump(2));
+    } catch (...) {
+        // Stamp stays stale; readers fall back to the config field.
+    }
+}
+
 std::expected<bool, std::string> update_home_config(const std::filesystem::path& home, const std::function<bool(nlohmann::json&)>& mutate, std::chrono::milliseconds timeout) {
     auto lock = xvm::acquire_state_lock(home, timeout);
     if (!lock) return std::unexpected(lock.error());
@@ -458,38 +592,9 @@ std::expected<bool, std::string> update_home_config(const std::filesystem::path&
             home_config_path(home).string(), e.what()));
     }
 
-    // The config write just invalidated the versions DB file's freshness
-    // stamp. Re-stamping here mirrors rmw_home_config_locked_ (config.cpp),
-    // which does the same for its callers -- the two are the only writers
-    // of this file. Same contract: best-effort, a stale stamp costs a
-    // fallback read, never a wrong answer; no DB file means nothing to
-    // re-stamp.
-    const auto dbPath = versions_db_path(home);
-    std::error_code ec;
-    if (std::filesystem::is_regular_file(dbPath, ec) && !ec) {
-        try {
-            std::error_code sec, tec;
-            const auto cfgPath = home_config_path(home);
-            const auto size = std::filesystem::file_size(cfgPath, sec);
-            const auto mtime = std::filesystem::last_write_time(cfgPath, tec);
-            if (!sec && !tec) {
-                auto content = platform::read_file_to_string(dbPath.string());
-                auto wrapper = nlohmann::json::parse(content, nullptr, false);
-                const auto newStamp = db_stat_to_json(size, mtime);
-                if (!wrapper.is_discarded() && wrapper.is_object()
-                    && wrapper.value(kDbFormatKey, 0) == kDbFormat
-                    && wrapper.contains(kDbStampKey)
-                    && wrapper[kDbStampKey].is_string()
-                    && wrapper[kDbStampKey].get<std::string>() != newStamp) {
-                    wrapper[kDbStampKey] = newStamp;
-                    platform::write_file_atomic(dbPath.string(),
-                                                wrapper.dump(2));
-                }
-            }
-        } catch (...) {
-            // Stamp stays stale; readers fall back to the config field.
-        }
-    }
+    // The config write just invalidated the versions DB file's stamp; carry
+    // it forward only if the DB still mirrors what was written.
+    restamp_versions_db_if_equal(home, json);
     return true;
 }
 

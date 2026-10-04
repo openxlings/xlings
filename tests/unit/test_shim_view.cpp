@@ -109,6 +109,9 @@ protected:
 
 TEST_F(ShimViewTest, AbortCaptureStopsAtVersionsAndKeepsTheRest) {
     writeHomeConfig(kHomeConfig);
+    // The proof the early stop needs: a DB stamp naming this config's stat,
+    // which only xlings's own writers produce.
+    writeVersionsDbWrapper(R"({})");
     auto cap = xlings::home_config_capture(
         home_ / ".xlings.json", xlings::HomeCaptureMode::AbortAtVersions);
     ASSERT_NE(cap, nullptr);
@@ -179,6 +182,42 @@ TEST_F(ShimViewTest, UnsortedFileDegradesToFullLexInsteadOfAbort) {
     EXPECT_EQ(cap->json.value("activeSubos", ""), "default");
     EXPECT_TRUE(cap->json.contains("xim"));
     EXPECT_FALSE(cap->json.contains("versions"));
+}
+
+// A key appended AFTER `versions` (a hand edit, a script's json.dump) is
+// invisible to "sorted so far". Without a stamp proving the bytes are
+// xlings's own sorted dump, the capture must lex on and keep it. Measured
+// before this guard: `mirror`/`lang` read as empty where 2026.9.30.1 read
+// CN/zh.
+TEST_F(ShimViewTest, AppendedKeyAfterVersionsIsCaptured) {
+    writeHomeConfig(R"({
+      "activeSubos": "default",
+      "versions": {"x": {"type": "program", "versions": {"1": {}}}},
+      "mirror": "CN",
+      "lang": "zh"
+    })");
+    auto cap = xlings::home_config_capture(
+        home_ / ".xlings.json", xlings::HomeCaptureMode::AbortAtVersions);
+    ASSERT_NE(cap, nullptr);
+    EXPECT_TRUE(cap->ok);
+    EXPECT_FALSE(cap->truncated);
+    EXPECT_EQ(cap->json.value("mirror", ""), "CN");
+    EXPECT_EQ(cap->json.value("lang", ""), "zh");
+    EXPECT_FALSE(cap->json.contains("versions"));
+}
+
+// The stamp is the proof, so a stale one (the config changed since xlings
+// last dumped it) must not license the early stop.
+TEST_F(ShimViewTest, AbortOnlyWithMatchingStamp) {
+    writeHomeConfig(kHomeConfig);
+    writeVersionsDbWrapper(R"({})", "999999:1");
+    auto cap = xlings::home_config_capture(
+        home_ / ".xlings.json", xlings::HomeCaptureMode::AbortAtVersions);
+    ASSERT_NE(cap, nullptr);
+    EXPECT_TRUE(cap->ok);
+    EXPECT_FALSE(cap->truncated);
+    EXPECT_TRUE(cap->json.contains("xim"));
+    EXPECT_EQ(cap->json.value("mirror", ""), "CN");
 }
 
 TEST_F(ShimViewTest, MalformedConfigIsNotOkAndNotAnException) {
@@ -458,3 +497,53 @@ TEST_F(ShimViewTest, FingerprintAbsentMarkRoundTrips) {
 }
 
 }  // namespace
+
+// ── Re-stamp after a non-versions RMW ───────────────────────────────
+
+// An older client edited the config's `versions` after the last
+// save_versions; the DB is stale. A later RMW of some OTHER key must not
+// re-stamp it -- reproduced: it did, the next save_versions loaded the
+// stale copy and wrote it back, and the older client's record vanished from
+// both files.
+TEST_F(ShimViewTest, RestampSkipsWhenVersionsDiffer) {
+    writeHomeConfig(kHomeConfig);
+    writeVersionsDbWrapper(R"({"solo": {"type": "program", "versions": {"2.0": {}}}})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    auto written = nlohmann::json::parse(kHomeConfig);
+    written["lang"] = "en";
+    writeHomeConfig(written.dump(2));
+    const auto before = nlohmann::json::parse(readVersionsDb())["stamp"];
+
+    xlings::restamp_versions_db_if_equal(home_, written);
+
+    EXPECT_EQ(nlohmann::json::parse(readVersionsDb())["stamp"], before);
+    auto root = xlings::load_versions_json(home_);
+    ASSERT_NE(root, std::nullopt);
+    EXPECT_TRUE(root->contains("mcpp"));   // the config, not the stale DB
+    EXPECT_FALSE(root->contains("solo"));
+}
+
+TEST_F(ShimViewTest, RestampAppliesWhenVersionsEqual) {
+    writeHomeConfig(kHomeConfig);
+    auto written = nlohmann::json::parse(kHomeConfig);
+    writeVersionsDbWrapper(written["versions"].dump());
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    written["lang"] = "en";
+    writeHomeConfig(written.dump(2));
+
+    xlings::restamp_versions_db_if_equal(home_, written);
+
+    std::error_code sec, tec;
+    const auto cfg = home_ / ".xlings.json";
+    EXPECT_EQ(nlohmann::json::parse(readVersionsDb())["stamp"].get<std::string>(),
+              xlings::versions_db_stamp(fs::file_size(cfg, sec),
+                                        fs::last_write_time(cfg, tec)));
+}
+
+TEST_F(ShimViewTest, RestampLeavesCorruptDbAlone) {
+    writeHomeConfig(kHomeConfig);
+    writeVersionsDb("{not json");
+    auto written = nlohmann::json::parse(kHomeConfig);
+    xlings::restamp_versions_db_if_equal(home_, written);
+    EXPECT_EQ(readVersionsDb(), "{not json");
+}

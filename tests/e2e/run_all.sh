@@ -316,6 +316,13 @@ TESTS=(
     # edits only the home config, and the derived copy must not shadow it
     # on the next new-client dispatch (PR #639 review P0).
     "E2E-129|dual_write_window_test.sh||"
+    # A non-versions config write once re-stamped a STALE versions DB, and
+    # the next save_versions wrote it back over an older client's records
+    # (PR #639 second review, F1).
+    "E2E-130|dual_write_restamp_test.sh||"
+    # A project's xim.index-base must win over the home's; the lazy home
+    # load once overwrote it (PR #639 second review, F3).
+    "E2E-131|index_base_precedence_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──

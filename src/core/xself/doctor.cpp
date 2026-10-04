@@ -722,37 +722,18 @@ std::string dangling_payload_key_(const fs::path& target,
 }
 
 
-// Is the file every shim dispatches through the xlings this home says it runs?
-//
-// TWO SHAPES, ONE FINDING. Reported separately because the user's next move
-// differs, and because each is evidence the other cannot supply:
-//
-//   * the active binding names a version, the FILE reports another. Provable
-//     divergence -- the writer is `use`/`install` of the xlings package, so
-//     the only ways to reach this state are a hand-copied binary or a failed
-//     replacement. Live on a real home while this was written: the binding
-//     said `local:0.4.51` and the file was 2026.8.11.1.
-//   * the file is behind a version this home already has on disk. Directional
-//     on purpose -- "not equal" would fire on every deliberately pinned entry,
-//     and the half that bites is only ever "the entry is older".
-//
-// The version comes from RUNNING the binary (entry_binary::version_of), not
-// from a record. Checking a record against another record is what let the
-// original divergence stand: `.xlings.json` and the versions DB agreed with
-// each other and neither described the file. ~60ms, measured, once per run.
-//
-// An unreadable entry produces NOTHING. No observation is not a verdict --
-// the same rule `registered`/`kRegisteredUnrecorded` follows one module over.
 // The versions DB file (<home>/data/versions.json) and the home config's
 // `versions` field disagree.
 //
-// save_versions writes both in one dump, so xlings cannot produce this --
-// a hand-edited home config can. Readers prefer the file (load_versions_json),
-// so the divergence means edits to the config are invisible to every shim
-// dispatch while the stale copy stands. Compared by exact dump, not by
-// entry count: "same count, different content" is precisely the divergence
-// that matters. Unreadable on either side is NO finding -- readers fall
-// back to the other source, and a corrupt file has its own reporting.
+// save_versions writes both in one dump, so a current xlings cannot produce
+// this; an older client's write or a hand edit can. Readers trust the file
+// only while its stamp names the config's current stat (load_versions_json),
+// so such an edit is NOT hidden -- readers fall back to the config -- but
+// the derived copy is stale until the next save_versions rewrites it.
+// Compared by exact dump, not by entry count: "same count, different
+// content" is precisely the divergence that matters. Unreadable on either
+// side is NO finding -- readers fall back to the other source, and a
+// corrupt file has its own reporting.
 std::vector<Finding> detect_versions_sources_() {
     std::vector<Finding> out;
     auto& p = Config::paths();
@@ -801,6 +782,27 @@ std::vector<Finding> detect_versions_sources_() {
     return out;
 }
 
+// Is the file every shim dispatches through the xlings this home says it runs?
+//
+// TWO SHAPES, ONE FINDING. Reported separately because the user's next move
+// differs, and because each is evidence the other cannot supply:
+//
+//   * the active binding names a version, the FILE reports another. Provable
+//     divergence -- the writer is `use`/`install` of the xlings package, so
+//     the only ways to reach this state are a hand-copied binary or a failed
+//     replacement. Live on a real home while this was written: the binding
+//     said `local:0.4.51` and the file was 2026.8.11.1.
+//   * the file is behind a version this home already has on disk. Directional
+//     on purpose -- "not equal" would fire on every deliberately pinned entry,
+//     and the half that bites is only ever "the entry is older".
+//
+// The version comes from RUNNING the binary (entry_binary::version_of), not
+// from a record. Checking a record against another record is what let the
+// original divergence stand: `.xlings.json` and the versions DB agreed with
+// each other and neither described the file. ~60ms, measured, once per run.
+//
+// An unreadable entry produces NOTHING. No observation is not a verdict --
+// the same rule `registered`/`kRegisteredUnrecorded` follows one module over.
 std::vector<Finding> detect_entry_binary_(const DoctorState& st) {
     std::vector<Finding> out;
     auto& p = Config::paths();

@@ -73,6 +73,12 @@ enum class HomeCaptureMode {
     // key that sorts before it -- `activeSubos`, `subos`, `mirror`, `lang`,
     // `dbIndex`, the UI prefs -- and lexes only that far. What a shim
     // dispatch needs, and nothing more.
+    //
+    // Only when the stop is PROVEN safe: the versions DB file's stamp names
+    // the config's current stat, i.e. these bytes are a sorted dump xlings
+    // wrote. Otherwise (a hand edit, a script, an older client, no DB file)
+    // it lexes on like SkipVersions, so a key appended after `versions` is
+    // still captured; `truncated` says which happened.
     AbortAtVersions,
     // Lex the whole file but never materialize `versions`. Captures
     // everything else, including `xim` which sorts after `versions`. What
@@ -152,6 +158,31 @@ std::filesystem::path versions_db_path(const std::filesystem::path& home);
 // Config's version load share one parse.
 [[nodiscard]] std::optional<nlohmann::json>
 load_versions_json(const std::filesystem::path& home);
+
+// The DB wrapper's stamp for a home config of this size+mtime. The ONE
+// formatter: save_versions writes it, load_versions_json compares against
+// it, restamp_versions_db_if_equal rewrites it.
+[[nodiscard]] std::string versions_db_stamp(std::uintmax_t size,
+                                            std::filesystem::file_time_type mtime);
+
+// After a write of the home config that did not come from save_versions
+// (an RMW of some other key), carry the DB file's stamp forward -- but ONLY
+// when the DB's versions map EQUALS the `versions` field just written.
+//
+// A stamp asserts "while the config has this stat, the DB file is a
+// faithful copy of its `versions`". An RMW does not change `versions`, but
+// that proves nothing about whether the DB matched BEFORE it: a client that
+// has never heard of the DB file (≤2026.9.30.1) may have edited the config
+// since, and re-stamping then would make that stale copy trusted again --
+// after which the next save_versions loads it and writes it back over the
+// config, deleting that client's records from both copies. Content, not
+// write order, is the proof; any mismatch leaves the stamp stale, which
+// costs readers a fallback read, never a wrong answer.
+//
+// `written` is the document the caller just wrote. Call under the state
+// lock. Best-effort: never throws.
+void restamp_versions_db_if_equal(const std::filesystem::path& home,
+                                  const nlohmann::json& written);
 
 // Apply `mutate` to a freshly-read `<home>/.xlings.json` while holding the
 // home-wide state lock, then write it back.

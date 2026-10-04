@@ -157,8 +157,12 @@ private:
     PathInfo paths_;
     std::string mirror_;
     // xim.index-base override, as a preference chain (#598); empty = default
-    // xlings-res.
-    std::vector<ArtifactBase> indexBases_;
+    // xlings-res. Two layers, read by index_bases(): the project's wins when
+    // it sets one. Kept apart because they load at different times -- the
+    // project's with the manifest, the home's lazily (ensure_index_config_)
+    // -- and one shared member let the later load overwrite the earlier.
+    std::vector<ArtifactBase> globalIndexBases_;
+    std::vector<ArtifactBase> projectIndexBases_;
     // xim.index-repo (region-resolved via xim.mirrors.index-repo). Written by
     // `xlings self install` since it shipped and, until now, read by nothing --
     // default_global_index_repos_ carried its own copy of the URL. Empty means
