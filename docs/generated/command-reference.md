@@ -16,7 +16,7 @@ Options: `-h, --help` — Show help for the selected command; `--version` — Sh
 
 Install packages
 
-Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran
+Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one
 
 ## `xlings remove <package> [version]`
 
@@ -119,6 +119,20 @@ Options: `--sandbox <PRESET>` — Start from a preset: dev, private or locked; `
 Show what a SubOS asks for and what this host gives it
 
 Options: `--json` — Machine-readable output
+
+## `xlings subos requests <name>`
+
+List what a SubOS's sandbox asked for and is waiting on
+
+Options: `--json` — One JSON object per request
+
+## `xlings subos approve <name> <id>`
+
+Run a request a SubOS's sandbox is waiting on
+
+## `xlings subos deny <name> <id>`
+
+Refuse a request a SubOS's sandbox is waiting on
 
 ## `xlings subos ps`
 

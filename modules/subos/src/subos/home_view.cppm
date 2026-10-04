@@ -32,6 +32,9 @@ struct HomeView {
     fs::path run_dir(std::string_view name) const { return home / "run" / "subos" / name; }
     fs::path state_dir() const { return home / "state"; }
     fs::path caps_cache() const { return state_dir() / "isolation-caps.json"; }
+    // Requests waiting for the owner's approval (design §8.2), hidden inside.
+    fs::path requests_dir(std::string_view name) const { return state_dir() / "subos" / name / "requests"; }
+    fs::path broker_socket(std::string_view name) const { return run_dir(name) / "broker.sock"; }
 };
 
 }  // namespace xlings::subos

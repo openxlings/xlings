@@ -23,6 +23,7 @@ import xlings.runtime;
 import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
+import xlings.subos.broker;
 import xlings.capabilities;
 import xlings.agent;
 import xlings.agent.text_renderer;
@@ -1749,6 +1750,29 @@ int dispatch_(int argc, char* argv[]) {
         // family is that a machine reads its output.
         if (cmd == "agent") return agent::run(fargc, fargv.data());
 
+        // Inside a SubOS sandbox the home is read-only (design §8): what would
+        // change it goes to the broker, which decides with the instance's
+        // policy and runs it outside; what only the owner may do is refused
+        // here, with the command that does it outside.
+        if (subos::broker::available()) {
+            std::vector<std::string> rest;
+            for (int i = 1; i < fargc; ++i) rest.emplace_back(fargv[i]);
+            const char* active = std::getenv("XLINGS_ACTIVE_SUBOS");
+            const std::string instance = active ? active : "";
+            const auto cls = subos::broker::classify(rest, instance);
+            if (cls.route == subos::broker::Route::Owner) {
+                std::string line;
+                for (auto& a : rest) line += " " + a;
+                diag::emit({
+                    .code    = "subos.owner_only",
+                    .summary = "E_PERMISSION: only the owner, outside the sandbox, can do this",
+                    .actions = { { "outside the sandbox", "xlings" + line } },
+                });
+                return subos::broker::kExitPermission;
+            }
+            if (cls.route == subos::broker::Route::Broker) return subos::broker::forward(rest);
+        }
+
         // Intercept subcommand help: xlings <cmd> -h/--help
         bool wantsHelp = false;
         for (int i = 2; i < fargc; ++i) {
@@ -1977,6 +2001,7 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("global").short_name('g').help("Install to global scope (not project-local subos)"))
             .option(cmdline::Option("use").short_name('u').help("Activate the installed version even if another version is currently active"))
             .option(cmdline::Option("reconfig").help("Run the configuration step again, even for packages already configured here"))
+            .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Install into this subos instead of the current one"))
             .arg("packages").help("Package names with optional version")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
@@ -2004,6 +2029,19 @@ int dispatch_(int argc, char* argv[]) {
                 }
 
                 const bool reconfig = args.is_flag_set("reconfig");
+                // --subos <name> (design §9; remove already had it): act on
+                // that subos, set the way `subos runtime` does -- the override
+                // recomputes the cached paths, the variable is what the
+                // activation path re-reads.
+                if (auto named = args.value("subos")) {
+                    const std::string name(*named);
+                    if (name.empty() || !std::filesystem::is_directory(Config::subos_dir(name))) {
+                        log::error("no subos named '{}' (xlings subos list)", name);
+                        return 1;
+                    }
+                    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+                    (void)Config::set_active_subos_override(name);
+                }
                 if (targets.empty()) return install_from_project_config_(stream, reconfig);
 
                 bool yes = args.is_flag_set("yes");

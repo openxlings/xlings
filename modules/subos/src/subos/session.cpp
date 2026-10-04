@@ -26,6 +26,8 @@ import std;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.subos.home_view;
+import xlings.subos.policy;
+import xlings.subos.broker;
 
 namespace xlings::subos::session {
 
@@ -389,6 +391,12 @@ std::vector<Info> list(const HomeView& home) {
 
 namespace {
 
+struct BrokerClient {
+    int fd { -1 };
+    pid_t pid { -1 };
+    std::string program;
+};
+
 struct Client {
     int fd { -1 };
     std::optional<std::int64_t> exec_id;
@@ -408,6 +416,17 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     auto envp = c_array(envs);
     auto argv = L.argv;
     auto av = c_array(argv);
+
+    // The broker's socket exists before the backend starts: bwrap binds it
+    // into the sandbox at /run/xlings/broker.sock.
+    std::vector<BrokerClient> brokered;
+    int broker_fd = -1;
+    if (L.broker_policy) {
+        broker_fd = listen_unix(home.broker_socket(L.instance));
+        if (broker_fd < 0)
+            std::fprintf(stderr, "[xlings:subos] the broker could not listen (%s); changes from "
+                                 "inside will be refused\n", std::strerror(errno));
+    }
 
     // net=nat handshake: the child makes its namespaces and says so; pasta
     // attaches; the child is told to go on (1) or to give up (0).
@@ -429,6 +448,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
         reset_signals_for_child();
         ::close(listen_fd);
         ::close(ctl[0]);
+        if (broker_fd >= 0) ::close(broker_fd);
         if (nat) {
             // A user namespace mapping this user to itself (not to root), and
             // a network namespace it owns. Ours, and dumpable: pasta can join
@@ -554,6 +574,8 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
 
         std::vector<pollfd> pfds{{listen_fd, POLLIN, 0}, {g_sig_pipe[0], POLLIN, 0}};
         if (ctl_open) pfds.push_back({ctl[0], POLLIN, 0});
+        if (broker_fd >= 0) pfds.push_back({broker_fd, POLLIN, 0});
+        for (auto& b : brokered) if (b.fd >= 0 && b.pid < 0) pfds.push_back({b.fd, POLLIN, 0});
         for (auto& c : clients) if (c.fd >= 0) pfds.push_back({c.fd, POLLIN, 0});
         ::poll(pfds.data(), pfds.size(), 200);
 
@@ -575,8 +597,97 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
             }
         }
 
+        // Brokered commands that finished: their exit goes back to the caller.
+        for (auto& b : brokered) {
+            if (b.pid <= 0) continue;
+            int st = 0;
+            if (::waitpid(b.pid, &st, WNOHANG) != b.pid) continue;
+            const int code = status_to_code(st);
+            send_msg(b.fd, {{"exit", code}});
+            audit(home, L.instance, {{"event", "broker-done"}, {"session", info.id},
+                                     {"program", b.program}, {"exit", code}}, observe::Kind::Perm);
+            ::close(b.fd);
+            b.fd = -1;
+            b.pid = 0;
+        }
+        std::erase_if(brokered, [](const BrokerClient& b) { return b.fd < 0; });
+
         for (auto& p : pfds) {
             if (!(p.revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            if (broker_fd >= 0 && p.fd == broker_fd) {
+                int c = ::accept4(broker_fd, nullptr, nullptr, SOCK_CLOEXEC);
+                if (c >= 0) brokered.push_back({.fd = c});
+                continue;
+            }
+            if (auto bit = std::ranges::find(brokered, p.fd, &BrokerClient::fd); bit != brokered.end()) {
+                auto m = recv_msg(bit->fd);
+                if (!m) { ::close(bit->fd); bit->fd = -1; continue; }
+                std::vector<std::string> argv;
+                for (auto& a : m->json.value("argv", nlohmann::json::array()))
+                    if (a.is_string()) argv.push_back(a.get<std::string>());
+                if (argv.empty() || m->fds.size() != 3) {
+                    send_msg(bit->fd, {{"exit", broker::kExitPermission}, {"error", "malformed request"}});
+                    close_all(m->fds);
+                    ::close(bit->fd); bit->fd = -1;
+                    continue;
+                }
+                // The decision that counts: the same function the client ran,
+                // with the policy file as the supervisor read it at start.
+                auto cls = broker::classify(argv, L.instance);
+                auto d = broker::decide(*L.broker_policy, cls);
+                nlohmann::json ev{{"event", "decision"}, {"session", info.id}, {"program", argv[0]},
+                                  {"argc", argv.size()},
+                                  {"action", std::string(policy::to_string(d.action))},
+                                  {"reason", d.reason}};
+                if (cls.route == broker::Route::Owner) d.action = policy::Action::Deny;
+                if (d.action == policy::Action::Deny) {
+                    audit(home, L.instance, ev, observe::Kind::Perm);
+                    send_msg(bit->fd, {{"exit", broker::kExitPermission},
+                                       {"error", "E_PERMISSION: " + d.reason},
+                                       {"hint", d.owner_command.empty() ? std::string{}
+                                                : "outside the sandbox: " + d.owner_command}});
+                    close_all(m->fds);
+                    ::close(bit->fd); bit->fd = -1;
+                    continue;
+                }
+                if (d.action == policy::Action::Ask) {
+                    auto id = broker::enqueue(home, L.instance, argv, d.reason);
+                    ev["request"] = id;
+                    audit(home, L.instance, ev, observe::Kind::Perm);
+                    send_msg(bit->fd, {{"exit", broker::kExitPending},
+                                       {"error", "waiting for the owner's approval: request " + id},
+                                       {"hint", std::format("outside the sandbox: xlings subos approve {} {}",
+                                                            L.instance, id)},
+                                       {"request", id}});
+                    close_all(m->fds);
+                    ::close(bit->fd); bit->fd = -1;
+                    continue;
+                }
+                audit(home, L.instance, ev, observe::Kind::Perm);
+                auto full = L.broker_exe;
+                full.insert(full.end(), argv.begin(), argv.end());
+                if (std::ranges::find(full, std::string("-y")) == full.end()) full.push_back("-y");
+                auto envs = env_strings(L.broker_env);
+                auto envp2 = c_array(envs);
+                auto av2 = c_array(full);
+                pid_t bp = ::fork();
+                if (bp == 0) {
+                    reset_signals_for_child();
+                    for (int i = 0; i < 3; ++i) ::dup2(m->fds[static_cast<std::size_t>(i)], i);
+                    ::execve(av2[0], av2.data(), envp2.data());
+                    ::_exit(kExitCannotRun);
+                }
+                close_all(m->fds);
+                bit->pid = bp > 0 ? bp : 0;
+                bit->program = argv[0];
+                if (bp <= 0) {
+                    send_msg(bit->fd, {{"exit", kExitSetup}, {"error", "the broker could not start it"}});
+                    ::close(bit->fd); bit->fd = -1;
+                } else {
+                    send_msg(bit->fd, {{"started", true}});
+                }
+                continue;
+            }
             if (p.fd == listen_fd) {
                 int c = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
                 if (c >= 0) clients.push_back({.fd = c});
@@ -682,6 +793,14 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     }
     fs::remove(sock_path(home, L.instance), ec);
     fs::remove(info_path(home, L.instance), ec);
+    if (broker_fd >= 0) {
+        for (auto& b : brokered) {
+            if (b.pid > 0) ::waitpid(b.pid, nullptr, 0);
+            if (b.fd >= 0) ::close(b.fd);
+        }
+        ::close(broker_fd);
+        fs::remove(home.broker_socket(L.instance), ec);
+    }
     ::close(listen_fd);
     if (ctl_open) ::close(ctl[0]);
     const int code = timed_out ? kExitTimeout : status_to_code(status);

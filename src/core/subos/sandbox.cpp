@@ -47,6 +47,7 @@ import xlings.subos.provider;
 import xlings.subos.gates;
 import xlings.subos.seccomp;
 import xlings.subos.session;
+import xlings.subos.broker;
 import xlings.core.elfread;
 import xlings.core.subos.ports;
 
@@ -424,6 +425,25 @@ std::string spec_digest_(const spec::SandboxSpec& sb) {
     return std::format("{:016x}", std::hash<std::string>{}(j.dump()));
 }
 
+
+// This binary on the host: the broker runs what it allows with it.
+std::string host_exe_() {
+    std::error_code ec;
+    auto exe = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string("xlings") : exe.string();
+}
+
+// What a brokered command runs with: this host environment, acting on this
+// instance. Not the sandbox's markers -- it runs outside.
+std::map<std::string, std::string> broker_env_(std::map<std::string, std::string> env,
+                                               const fs::path& home, const std::string& name) {
+    for (auto k : {"XLINGS_SUBOS_MODE", "XLINGS_PROJECT_DIR", "XLINGS_SESSION_FD"}) env.erase(k);
+    env["XLINGS_HOME"] = home.string();
+    env["XLINGS_ACTIVE_SUBOS"] = name;
+    env["XLINGS_NON_INTERACTIVE"] = "1";
+    return env;
+}
+
 #if defined(__linux__)
 // This binary at kSessionInitPath, plus -- for a dynamically linked build --
 // its ELF interpreter's directory and its RUNPATH, read-only at their own
@@ -586,6 +606,9 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     }
 
     init_sandbox_dirs_(subos_dir, user, ::getuid(), ::getgid());
+    // The read-only home's tmpfs mount points must exist on the host: bwrap
+    // cannot create a directory inside a read-only bind.
+    for (auto dir : {"logs", "run", "state", "subos"}) fs::create_directories(p.homeDir / dir);
     // A neutral identity's user and its passwd/group (spec: etc-neutral/).
     if (pol.identity == policy::Identity::Neutral)
         init_sandbox_dirs_(subos_dir, "user", ::getuid(), ::getgid(), "etc-neutral");
@@ -730,6 +753,11 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // dynamically linked build brings its loader and library directories.
     auto launched = sb;
     for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
+    // The broker's socket, made by the supervisor before the backend starts.
+    const bool brokered = sb.backend == spec::Backend::Bwrap;
+    if (brokered)
+        launched.mounts.push_back({spec::MountKind::Bind, home.broker_socket(name).string(),
+                                   std::string(broker::kSocketInside)});
     launched.argv = {std::string(kSessionInitPath), "__session-init"};
     if (!opts.detached) {
         // A detached session has no main command: it idles until its TTL or
@@ -759,6 +787,9 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         .detached = opts.detached,
         .timeout = opts.timeout,
         .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
+        .broker_policy = brokered ? std::optional(pol) : std::nullopt,
+        .broker_exe = { host_exe_() },
+        .broker_env = broker_env_(request.host_env, p.homeDir, name),
     });
     if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
     return rc;

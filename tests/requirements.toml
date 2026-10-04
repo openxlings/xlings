@@ -52,7 +52,7 @@ status = "required"
 [F1]
 text = "inside a sandbox the xlings home is read-only except the instance's own tree"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F2]
 text = "X11 is unreachable unless granted (no host abstract sockets)"
@@ -77,7 +77,7 @@ status = "required"
 [F6]
 text = "other instances' trees are invisible"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F7]
 text = "hostname, timezone and locale are neutral under private/locked"
@@ -112,7 +112,7 @@ status = "planned"
 [F15]
 text = "a supervisor outside the sandbox writes the audit; the sandbox cannot reach it"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [F16]
 text = "subos exec runs argv without a shell, from outside the instance"
@@ -164,7 +164,7 @@ status = "required"
 
 [EXIT-75]
 text = "a request waiting for approval exits 75"
-status = "planned"
+status = "required"
 
 [EXIT-2-CONFIRM]
 text = "agent mode without -y refuses a confirmation with exit 2"
@@ -205,7 +205,7 @@ status = "required"
 [POL-OUTSIDE-INSTANCE]
 text = "the policy file lives outside the instance and is read-only inside"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [POL-DECIDE]
 text = "one decide() answers for the client and the broker"
@@ -314,19 +314,19 @@ status = "planned"
 
 [PERM-FETCH-AUTO]
 text = "fetch=auto installs a missing package from inside the sandbox"
-status = "planned"
+status = "required"
 
 [PERM-FETCH-ASK]
 text = "fetch=ask queues a request; approve runs it"
-status = "planned"
+status = "required"
 
 [PERM-FETCH-DENY]
 text = "fetch=deny refuses with E_PERMISSION"
-status = "planned"
+status = "required"
 
 [PERM-INSTALL-SUBOS]
 text = "install --subos <s> installs into that instance from outside"
-status = "planned"
+status = "required"
 
 # ── observability (design §22) ─────────────────────────────────────
 
@@ -345,7 +345,7 @@ status = "planned"
 
 [OBS-PERM]
 text = "permission decisions are recorded"
-status = "planned"
+status = "required"
 
 [OBS-FS]
 text = "files changed in rw mounts are listed at session end"

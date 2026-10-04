@@ -3,6 +3,7 @@ export module xlings.subos.session;
 import std;
 import xlings.libs.json;
 import xlings.subos.home_view;
+import xlings.subos.policy;
 
 // Sessions (design §12, §16): one running sandbox per instance, hosted by a
 // supervisor outside it.
@@ -76,6 +77,12 @@ struct Launch {
     // net=nat: pasta's argv without its target. The backend then starts in a
     // user + network namespace made for it, which pasta has configured.
     std::vector<std::string> pasta;
+    // The broker (xlings.subos.broker): set, the supervisor listens on
+    // HomeView::broker_socket and runs what the policy allows with `exe`
+    // (this client, on the host) in `broker_env`.
+    std::optional<policy::Policy> broker_policy;
+    std::vector<std::string> broker_exe;
+    std::map<std::string, std::string> broker_env;
 };
 
 // The environment variables session-init reads its control socket and its

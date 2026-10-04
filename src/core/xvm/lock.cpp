@@ -143,6 +143,21 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
     };
 
     const auto path = state_lock_path(home);
+    // A lock file that cannot even be opened for writing is not one another
+    // process holds: waiting for it would wait out the whole timeout for
+    // nothing. Inside a SubOS sandbox the home is read-only by design, and the
+    // xlings there sends what changes it to the broker instead.
+    {
+        std::ofstream probe(path, std::ios::app);
+        if (!probe) {
+            const bool inside = utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox";
+            return std::unexpected(std::format(
+                "{} cannot be written{}", path.string(),
+                inside ? " -- inside a SubOS sandbox the xlings home is read-only; run this "
+                         "outside it, or through the broker (`xlings install` does that)"
+                       : ": the home is read-only or not yours"));
+        }
+    }
     std::string error;
     if (!lock.lock_.acquire(path, timeout, {}, error, onWait)) {
         return std::unexpected(std::format(

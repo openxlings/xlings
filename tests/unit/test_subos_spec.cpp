@@ -87,7 +87,14 @@ XTEST(SubosSpec, LegacyBwrapArgvIsTheOldOnePlusTheS0Fixes,
         kLegacyBinds,
         {"--bind", "/h/subos/box/home", "/home",
          "--bind", "/h/subos/box/tmp", "/tmp",
-         "--bind", "/h", "/h",
+         // S0 (#640 F1, F6): the home read-only, only this instance writable,
+         // other instances, the audit, sockets and host facts covered.
+         "--ro-bind", "/h", "/h",
+         "--tmpfs", "/h/subos",
+         "--bind", "/h/subos/box", "/h/subos/box",
+         "--tmpfs", "/h/logs",
+         "--tmpfs", "/h/run",
+         "--tmpfs", "/h/state",
          "--bind", "/h/subos/box/etc/passwd", "/etc/passwd",
          "--bind", "/h/subos/box/etc/group", "/etc/group",
          "--bind", "/h/subos/box/etc/hosts", "/etc/hosts",
@@ -97,7 +104,7 @@ XTEST(SubosSpec, LegacyBwrapArgvIsTheOldOnePlusTheS0Fixes,
     EXPECT_EQ(pv::bwrap_argv(*spec), expected);
     EXPECT_TRUE(spec->clear_env);       // S0: an allow-list, not inheritance
     EXPECT_EQ(spec->env.at("HOME"), "/home/u");
-    EXPECT_EQ(spec->env.at("PATH"), "/h/subos/box/bin:/h/bin:/usr/local/bin:/usr/bin:/bin");
+    EXPECT_EQ(spec->env.at("PATH"), "/h/subos/box/bin:/h/bin:/usr/local/bin:/usr/bin:/bin:/run/xlings");
     EXPECT_EQ(spec->env.at("XLINGS_SUBOS_MODE"), "sandbox");
 }
 

@@ -77,8 +77,27 @@ void host_userland(std::vector<MountOp>& m, const Request& r, bool host_time = t
 // (the goldens run on Windows too).
 std::string posix(const fs::path& p) { return p.generic_string(); }
 
+// The xlings home as a sandbox sees it (#640 F1, F6; design §16).
+//
+// At its own absolute path -- xvm alias targets, RPATH and INTERP are
+// absolute host paths baked at install time -- and READ-ONLY: the shims, the
+// profile, the payloads and the home config are code the host runs, and a
+// sandbox that can write them has escaped. Writable inside it is only this
+// instance's own tree. Other instances, the audit (logs/), the sockets
+// (run/) and the host facts (state/) are covered by empty tmpfs; config/
+// stays readable, so the xlings inside can read its own policy and cannot
+// change it.
+void home_view_ro(std::vector<MountOp>& m, const HomeView& home, const Request& r) {
+    const auto h = posix(home.home);
+    m.push_back({MountKind::RoBind, h, h});
+    m.push_back({MountKind::Tmpfs, "", posix(home.subos_root())});
+    m.push_back({MountKind::Bind, posix(r.instance_dir), posix(home.instance(r.instance))});
+    for (auto dir : {"logs", "run", "state"})
+        m.push_back({MountKind::Tmpfs, "", posix(home.home / dir)});
+}
+
 void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request& r,
-                    const fs::path& etc) {
+                    const fs::path& etc, bool read_only_home) {
     const auto dir = r.instance_dir;
     if (r.storage == Storage::Shared) {
         m.push_back({MountKind::Bind, posix(dir / "home"), "/home"});
@@ -86,9 +105,8 @@ void instance_files(std::vector<MountOp>& m, const HomeView& home, const Request
     } else if (r.storage == Storage::Image) {
         m.push_back({MountKind::Bind, posix(r.image_mountpoint), "/home"});
     }
-    // The xlings home at its own absolute path: xvm alias targets, RPATH and
-    // INTERP are absolute host paths baked at install time.
-    m.push_back({MountKind::Bind, posix(home.home), posix(home.home)});
+    if (read_only_home) home_view_ro(m, home, r);
+    else m.push_back({MountKind::Bind, posix(home.home), posix(home.home)});
     for (auto f : {"passwd", "group", "hosts", "nsswitch.conf"})
         m.push_back({MountKind::Bind, posix(etc / f), std::string("/etc/") + f});
 }
@@ -199,7 +217,7 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.mounts.push_back({MountKind::Dev, "", "/dev"});
         s.mounts.push_back({MountKind::Proc, "", "/proc"});
         host_userland(s.mounts, r, !neutral);
-        instance_files(s.mounts, home, r, etc_dir);
+        instance_files(s.mounts, home, r, etc_dir, /*read_only_home=*/true);
         if (gpu) {
             auto g = gpu_mounts(r);
             s.mounts.insert(s.mounts.end(), g.begin(), g.end());
@@ -217,7 +235,8 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         Request shared = r;
         shared.storage = Storage::Shared;
         host_userland(s.mounts, shared, !neutral);
-        instance_files(s.mounts, home, shared, etc_dir);
+        // proot binds read-write only: the home stays writable, and says so.
+        instance_files(s.mounts, home, shared, etc_dir, /*read_only_home=*/false);
         s.proot_root = dir / "sandbox-root";
     }
 
@@ -234,7 +253,7 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         if (r.interactive) s.block_tiocsti = true;
         else s.new_session = true;
     } else if (s.backend == Backend::Proot) {
-        for (auto dim : {"pid", "ipc", "terminal"})
+        for (auto dim : {"fs", "pid", "ipc", "terminal"})
             s.degraded.push_back({dim, "proot has no namespaces", "xlings self doctor --isolation",
                                   policy::Need::Should});
     }
@@ -351,7 +370,10 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     }
     s.env["HOME"] = user_home;
     s.env["XLINGS_HOME"] = posix(home.home);
-    s.env["PATH"] = std::format("{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
+    // /run/xlings last: the client that hosts the session, there whatever the
+    // home holds -- every instance has an xlings (design §8). The home's own
+    // entry comes first and stays the authority on what dispatches.
+    s.env["PATH"] = std::format("{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin:/run/xlings",
                                 posix(home.home), name);
     if (s.backend == Backend::Proot) s.env["PROOT_NO_SECCOMP"] = "1";
     if (s.clear_env) {

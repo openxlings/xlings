@@ -61,6 +61,7 @@ import xlings.core.subos.ports;
 import xlings.subos.session;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
+import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
 
@@ -2369,6 +2370,78 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     return 0;
 }
 
+// `subos requests / approve / deny <name> [id]`: what a sandbox asked for
+// under fetch=ask (design §8.2). Only from outside -- the sandbox cannot see
+// the queue, and approval never travels through a channel it can forge.
+int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& stream,
+                  const std::function<void(std::string_view)>& usageError) {
+    std::vector<std::string> pos;
+    bool json = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (!a.empty() && a[0] != '-') pos.emplace_back(a);
+        else { usageError(std::format("unknown option for `xlings subos {}`: {}", sub, a)); return 1; }
+    }
+    const std::size_t want = sub == "requests" ? 1 : 2;
+    if (pos.size() != want) {
+        usageError(sub == "requests" ? "usage: xlings subos requests <name>"
+                                     : std::format("usage: xlings subos {} <name> <id>", sub));
+        return 1;
+    }
+    if (utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox") {
+        stream.emit(ErrorEvent{ .code = ErrorCode::Permission,
+            .message = "E_PERMISSION: requests are answered by the owner, outside the sandbox",
+            .recoverable = false });
+        return 13;
+    }
+    const auto home = home_view();
+    const auto& name = pos[0];
+    if (sub == "requests") {
+        auto reqs = subos::broker::pending(home, name);
+        if (json) {
+            for (auto& r : reqs)
+                std::println("{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
+                                                  {"reason", r.reason}}.dump());
+            return 0;
+        }
+        if (reqs.empty()) { log::info("'{}' has no pending requests", name); return 0; }
+        for (auto& r : reqs) {
+            std::string line;
+            for (auto& a : r.argv) line += " " + a;
+            std::println("{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
+        }
+        return 0;
+    }
+    auto r = subos::broker::take(home, name, pos[1]);
+    if (!r) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
+            .message = std::format("no pending request {} for '{}'", pos[1], name),
+            .recoverable = false, .hint = "xlings subos requests " + name });
+        return 1;
+    }
+    const auto logfile = home.logs_dir(name) / "events.ndjson";
+    if (sub == "deny") {
+        observe::append(logfile, observe::Event{ .kind = observe::Kind::Perm,
+            .fields = {{"event", "request-denied"}, {"instance", name}, {"request", r->id},
+                       {"program", r->argv.empty() ? "" : r->argv[0]}}});
+        log::info("denied {}", r->id);
+        return 0;
+    }
+    // Approved: run it for that instance, as the broker would have.
+    observe::append(logfile, observe::Event{ .kind = observe::Kind::Perm,
+        .fields = {{"event", "request-approved"}, {"instance", name}, {"request", r->id},
+                   {"program", r->argv.empty() ? "" : r->argv[0]}}});
+    std::vector<std::string> full{ platform::get_executable_path().string() };
+    full.insert(full.end(), r->argv.begin(), r->argv.end());
+    if (std::ranges::find(full, std::string("-y")) == full.end()) full.push_back("-y");
+    platform::set_env_variable("XLINGS_ACTIVE_SUBOS", name);
+    const int rc = platform::run_argv(full);
+    observe::append(logfile, observe::Event{ .kind = observe::Kind::Perm,
+        .fields = {{"event", "request-done"}, {"instance", name}, {"request", r->id}, {"exit", rc}}});
+    return rc;
+}
+
 // `subos ps`: the running sessions (design §22).
 int run_ps_(int argc, char* argv[], EventStream& stream) {
     bool json = false;
@@ -2774,6 +2847,8 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "ps") return run_ps_(argc, argv, stream);
     if (sub == "exec") return run_exec_(argc, argv, stream);
+    if (sub == "requests" || sub == "approve" || sub == "deny")
+        return run_requests_(sub, argc, argv, stream, usageError);
     if (sub == "config") return run_config_(argc, argv, stream, usageError);
     if (sub == "status") return run_status_(argc, argv, stream, usageError);
     if (sub == "start") return run_start_(argc, argv, stream, usageError);
