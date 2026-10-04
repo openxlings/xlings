@@ -277,7 +277,8 @@ jobs:
         run: |
           mcpp build
           mcpp build -p xdev
-          xdev="$(find target -path '*/bin/xdev/xdev' -type f | head -1)"
+          xdev="$(find target -name xdev -type f -perm -111 | head -1)"
+          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev under target/"; find target -maxdepth 4 -name 'xdev*'; exit 1; }
           "$xdev" test --out target/xdev/macos-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"

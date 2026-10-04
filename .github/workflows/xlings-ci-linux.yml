@@ -314,7 +314,9 @@ jobs:
           # (musl) so the e2e and report jobs can run this same binary: a glibc
           # dev build's loader lives in this runner's mcpp registry.
           mcpp build -p xdev --target x86_64-linux-musl
-          xdev="$GITHUB_WORKSPACE/$(find target/x86_64-linux-musl -path '*/bin/xdev/xdev' -type f | head -1)"
+          xdev="$(find target/x86_64-linux-musl -name xdev -type f -perm -111 | head -1)"
+          [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev under target/"; exit 1; }
+          xdev="$GITHUB_WORKSPACE/$xdev"
           echo "XDEV=$xdev" >> "$GITHUB_ENV"
           "$xdev" test --out target/xdev/linux-unit || {
             status=$?
