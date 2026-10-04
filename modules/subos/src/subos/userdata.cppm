@@ -1,8 +1,9 @@
-export module xlings.core.subos.userdata;
+export module xlings.subos.userdata;
 
 import std;
-import xlings.core.confirm;
-import xlings.core.destructive_log;
+import xlings.guard;
+import xlings.observe;
+import xlings.subos.home_view;
 
 // SubOS user data.
 //
@@ -11,7 +12,7 @@ import xlings.core.destructive_log;
 // every other file in it that xlings cannot prove it owns only a deletion the
 // USER initiated may remove, and only after they confirmed (a terminal answer,
 // `-y`, or `"yes": true`). The one deletion entry point below takes a
-// confirm::UserConfirmed, which nothing but confirm::ask() can produce.
+// guard::UserConfirmed, which nothing but guard::ask() can produce.
 //
 // Its own module because two sides need it that cannot import each other:
 // `subos remove` (xlings.core.subos) and `self install` / `self uninstall`
@@ -19,7 +20,7 @@ import xlings.core.destructive_log;
 export namespace xlings::subos::userdata {
 
 struct Census {
-    destructive_log::Size home;       // home/ and a home.img
+    observe::destructive::Size home;       // home/ and a home.img
     std::uintmax_t otherFiles { 0 };  // regular files outside them, not links into packages
 };
 
@@ -34,8 +35,8 @@ struct Census {
 // and on Linux while anything is mounted under it. Recorded in the
 // destructive log with how it was confirmed.
 [[nodiscard]] std::expected<void, std::string>
-delete_subos(const std::filesystem::path& dir, std::string_view op,
-             const confirm::UserConfirmed& confirmed);
+delete_subos(const HomeView& home, const std::filesystem::path& dir, std::string_view op,
+             const guard::UserConfirmed& confirmed);
 
 // The mount point under `dir` (or `dir` itself) in a /proc/self/mountinfo
 // text, octal escapes decoded. Split out so the parsing is testable without a

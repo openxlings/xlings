@@ -6,7 +6,8 @@ import xlings.core.log;
 import xlings.core.xself.shell_profile;
 import xlings.platform;
 import xlings.core.destructive_log;
-import xlings.core.subos.userdata;
+import xlings.subos.userdata;
+import xlings.core.subos.ports;
 
 namespace xlings::xself {
 

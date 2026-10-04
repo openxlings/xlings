@@ -55,7 +55,8 @@ import xlings.cli.spec;
 import xlings.i18n;
 import xlings.core.confirm;
 import xlings.core.destructive_log;
-import xlings.core.subos.userdata;
+import xlings.subos.userdata;
+import xlings.core.subos.ports;
 
 namespace xlings::subos {
 
@@ -1597,7 +1598,7 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
             }
         }
 #endif
-        if (auto removed = userdata::delete_subos(dir, "subos-remove", *asked.token);
+        if (auto removed = userdata::delete_subos(home_view(), dir, "subos-remove", *asked.token);
             !removed) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Permission,

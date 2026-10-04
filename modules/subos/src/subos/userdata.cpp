@@ -1,9 +1,9 @@
-module xlings.core.subos.userdata;
+module xlings.subos.userdata;
 
 import std;
-import xlings.core.config;
-import xlings.core.confirm;
-import xlings.core.destructive_log;
+import xlings.guard;
+import xlings.observe;
+import xlings.subos.home_view;
 
 namespace fs = std::filesystem;
 
@@ -15,8 +15,8 @@ namespace xlings::subos::userdata {
 // shim) sits in a SubOS, and it is not the user's.
 Census census(const fs::path& dir) {
     Census c;
-    c.home = destructive_log::measure(dir / "home");
-    const auto image = destructive_log::measure(dir / "home.img");
+    c.home = observe::destructive::measure(dir / "home");
+    const auto image = observe::destructive::measure(dir / "home.img");
     c.home.bytes += image.bytes;
     c.home.files += image.files;
 
@@ -45,7 +45,7 @@ Census census(const fs::path& dir) {
 
 std::string describe(const Census& c) {
     std::string out = std::format("home {} in {} file(s)",
-                                  destructive_log::human_bytes(c.home.bytes),
+                                  observe::destructive::human_bytes(c.home.bytes),
                                   c.home.files);
     if (c.otherFiles > 0) {
         out += std::format(", plus {} other file(s) outside home/", c.otherFiles);
@@ -91,17 +91,17 @@ std::optional<fs::path> mount_under(const fs::path& dir) {
 #endif
 
 // The one way a whole SubOS directory is deleted. It takes a UserConfirmed,
-// which only confirm::ask() can produce -- so a repair, an upgrade or a
+// which only guard::ask() can produce -- so a repair, an upgrade or a
 // rollback cannot reach it.
 std::expected<void, std::string>
-delete_subos(const fs::path& dir, std::string_view op,
-             const confirm::UserConfirmed& confirmed) {
+delete_subos(const HomeView& home, const fs::path& dir, std::string_view op,
+             const guard::UserConfirmed& confirmed) {
     std::error_code ec;
     if (fs::is_symlink(dir, ec)) {
         return std::unexpected(std::format(
             "{} is a symbolic link; refusing to delete through it", dir.string()));
     }
-    const auto root = fs::weakly_canonical(Config::paths().homeDir / "subos", ec);
+    const auto root = fs::weakly_canonical(home.subos_root(), ec);
     const auto target = fs::weakly_canonical(dir, ec);
     const auto name = target.filename().string();
     if (target.parent_path() != root || name.empty() || name == "current") {
@@ -118,9 +118,9 @@ delete_subos(const fs::path& dir, std::string_view op,
             dir.string(), mount->string(), name));
     }
 #endif
-    const auto size = destructive_log::measure(target);
+    const auto size = observe::destructive::measure(target);
     fs::remove_all(target, ec);  // subos-remove-all-ok: THE deletion entry point; caller holds UserConfirmed
-    destructive_log::record({
+    observe::destructive::record(home.home, {
         .op = std::string(op),
         .path = target,
         .bytes = size.bytes,

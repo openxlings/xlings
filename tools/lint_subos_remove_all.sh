@@ -3,16 +3,17 @@
 #
 # SubOS homes hold user data that nothing can put back (see AGENTS.md, "SubOS
 # user data"). The only function allowed to delete a whole subos is
-# subos::userdata::delete_subos, which takes a confirm::UserConfirmed -- a value
+# subos::userdata::delete_subos, which takes a guard::UserConfirmed -- a value
 # only an explicit user answer produces. A raw `remove_all` on a subos path
 # anywhere else is a second, unconfirmed way in, which is exactly how an
 # empty name once deleted every subos in a home (#611).
 #
 # Two rules:
-#   1. in the files that manage subos lifecycles, EVERY `remove_all(` needs a
+#   1. in the files that manage subos lifecycles -- including all of
+#      modules/subos, the SubOS core -- EVERY `remove_all(` needs a
 #      `subos-remove-all-ok: <why>` marker on its line;
-#   2. anywhere under src/, a `remove_all(` on a line that mentions "subos"
-#      needs the same marker.
+#   2. anywhere under src/ or modules/, a `remove_all(` on a line that
+#      mentions "subos" needs the same marker.
 # A marker is a claim a reviewer can check, one line from the call it covers.
 set -euo pipefail
 
@@ -28,7 +29,7 @@ lifecycle_files=(
   src/core/xself/uninstall.cpp
 )
 while IFS= read -r f; do lifecycle_files+=("$f"); done \
-  < <(find src/core/subos -name '*.cpp' | sort)
+  < <(find src/core/subos modules/subos -name '*.cpp' -o -name '*.cppm' | sort)
 
 for f in "${lifecycle_files[@]}"; do
   [ -f "$f" ] || continue
@@ -45,7 +46,7 @@ while IFS= read -r hit; do
     echo "::error::remove_all on a subos path outside the deletion entry point: $hit"
     bad=$((bad + 1)) ;;
   esac
-done < <(grep -rn --include='*.cpp' --include='*.cppm' 'remove_all(' src \
+done < <(grep -rn --include='*.cpp' --include='*.cppm' 'remove_all(' src modules \
            | awk '{ code = $0; sub(/^[^:]*:[0-9]+:/, "", code)
                     if (code ~ /^[ \t]*\/\//) next
                     if (tolower(code) ~ /subos/) print }' || true)

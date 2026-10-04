@@ -16,7 +16,8 @@ import xlings.core.utils;
 import xlings.core.version_order;
 import xlings.core.confirm;
 import xlings.core.destructive_log;
-import xlings.core.subos.userdata;
+import xlings.subos.userdata;
+import xlings.core.subos.ports;
 
 namespace xlings::xself {
 
@@ -826,7 +827,8 @@ int cmd_install(EventStream& stream) {
                     std::error_code e;
                     if (it->is_symlink(e) || !it->is_directory(e)) continue;
                     if (auto removed = subos::userdata::delete_subos(
-                            it->path(), "self-install-overwrite", *overwriteConfirmed);
+                            subos::home_view(), it->path(), "self-install-overwrite",
+                            *overwriteConfirmed);
                         !removed) {
                         log::error("[xlings:self] {}", removed.error());
                         return 1;
