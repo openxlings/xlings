@@ -457,6 +457,39 @@ std::expected<bool, std::string> update_home_config(const std::filesystem::path&
             "failed to write {}: {}",
             home_config_path(home).string(), e.what()));
     }
+
+    // The config write just invalidated the versions DB file's freshness
+    // stamp. Re-stamping here mirrors rmw_home_config_locked_ (config.cpp),
+    // which does the same for its callers -- the two are the only writers
+    // of this file. Same contract: best-effort, a stale stamp costs a
+    // fallback read, never a wrong answer; no DB file means nothing to
+    // re-stamp.
+    const auto dbPath = versions_db_path(home);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(dbPath, ec) && !ec) {
+        try {
+            std::error_code sec, tec;
+            const auto cfgPath = home_config_path(home);
+            const auto size = std::filesystem::file_size(cfgPath, sec);
+            const auto mtime = std::filesystem::last_write_time(cfgPath, tec);
+            if (!sec && !tec) {
+                auto content = platform::read_file_to_string(dbPath.string());
+                auto wrapper = nlohmann::json::parse(content, nullptr, false);
+                const auto newStamp = db_stat_to_json(size, mtime);
+                if (!wrapper.is_discarded() && wrapper.is_object()
+                    && wrapper.value(kDbFormatKey, 0) == kDbFormat
+                    && wrapper.contains(kDbStampKey)
+                    && wrapper[kDbStampKey].is_string()
+                    && wrapper[kDbStampKey].get<std::string>() != newStamp) {
+                    wrapper[kDbStampKey] = newStamp;
+                    platform::write_file_atomic(dbPath.string(),
+                                                wrapper.dump(2));
+                }
+            }
+        } catch (...) {
+            // Stamp stays stale; readers fall back to the config field.
+        }
+    }
     return true;
 }
 

@@ -489,6 +489,19 @@ reload_state_ 现在直接置 `globalWorkspaceLoaded_ = true`(一次读);view ct
 - **"P2:release 测 dev 发 dist"**——不成立:CI 的 `xlings-ci-linux-e2e.yml` 就是先 `linux_release.sh`(dist)再用产物跑全套 e2e;单测跑 dev 是 asan/快速反馈的常规分工。
 - **"P3:R4 拆独立 PR"**——用户明确要求单 PR 全部实现;R4 的失效面由"miss 只变慢"纪律 + 本轮加固兜住。
 
+### CI 抓到的两个后续缺陷(修复 P0 的当天)
+
+1. **doctor 的 drift 检测没适配包装格式**:detect/repair 两处拿 DB **wrapper 全文**和 config
+   的裸 `versions` 字段做 dump 比较——包装后永远不会相等,**每个健康的 home 都会被报
+   drift**,而且它把 honest-verdict 场景的 "N registration(s) dropped" 总结挤出 verdict
+   分支(warnings>0 走 else),E2E-98 当场抓住。修:比较 `wrapper["versions"]` 与字段。
+2. **RMW 写 config 后 DB stamp 过期**:doctor --fix 尾部的 `record_verified_version` 等
+   RMW(以及 hints 记忆等所有 `rmw_home_config_locked_` / `update_home_config` 调用方)
+   只改非 versions 键,却让 stamp 失配,读者回退 config 直到下次 install。修:两个 RMW
+   出口在写完 config 后**重戳 wrapper 的 stamp**(持锁、原子、best-effort——失败只损失
+   加速)。strace 定位:写序 config(105B)→ DB(stamp=105)→ config(136B),老 stamp 被留在文件里。
+   RMW 不改 versions,所以重戳不会掩盖真实分歧(内容比较仍会发现)。
+
 ### 顺带修正的 review 陈述
 
 - §1 表中"mcpp 3000 版本命中 19ms(视图 1.5MB)":视图文件按 per-program 存,大的是**那个程序自己的版本表**,这正是 dispatch 匹配所需的数据集;线性于该程序的版本数、与 home 总规模无关(3000 条的总库命中仍 3ms——review 自己的数据也支持这点)。

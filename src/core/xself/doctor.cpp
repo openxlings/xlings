@@ -776,14 +776,22 @@ std::vector<Finding> detect_versions_sources_() {
     auto field = doc.find("versions");
     if (field == doc.end() || !field->is_object()) return out;
 
-    if (dbRoot.dump() == field->dump()) return out;
+    // The DB file is the WRAPPER save_versions writes ({format, stamp,
+    // versions}); its `versions` member is what the home config's field
+    // must equal. Comparing the wrapper against the bare field reported a
+    // divergence on every healthy home -- measured locally, immediately
+    // after the wrapper format landed: same bytes, wrong tree.
+    auto wrapped = dbRoot.find("versions");
+    if (wrapped == dbRoot.end() || !wrapped->is_object()) return out;
+    if (wrapped->dump() == field->dump()) return out;
     out.push_back({
         .kind    = FindingKind::VersionsDbDivergence,
         .level   = FindingLevel::Warning,
         .target  = "versions",
         .detail  = std::format(
             "{} and the `versions` field in {} disagree; dispatch reads the "
-            "file, so the config's versions are not what tools see",
+            "file when its stamp matches the config, and falls back to the "
+            "config while it does not -- the two copies are not the same",
             Config::display_path(dbPath),
             Config::display_path(p.homeDir / ".xlings.json")),
         .remedy  = "xlings self doctor --fix",
@@ -3237,8 +3245,11 @@ void repair_state_(RepairReport& out) {
             }
             auto doc = read_home_config(Config::paths().homeDir);
             auto field = doc.find("versions");
-            if (dbRoot.is_object() && field != doc.end() && field->is_object()
-                && dbRoot.dump() != field->dump()) {
+            auto wrapped = dbRoot.is_object() ? dbRoot.find("versions")
+                                              : dbRoot.end();
+            if (dbRoot.is_object() && wrapped != dbRoot.end()
+                && wrapped->is_object() && field != doc.end()
+                && field->is_object() && wrapped->dump() != field->dump()) {
                 std::error_code rmEc;
                 if (fs::remove(dbPath, rmEc) && !rmEc) {
                     note(glyph::mark(glyph::bullet, "versions file"),
