@@ -60,8 +60,13 @@ XTEST(SubosIsolation, HostProcessesAreInvisible,
     Box box;
     auto r = box.run("ls /proc | grep -c '^[0-9][0-9]*$'");
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    // bwrap's init, the shell, ls and grep -- not the host's hundreds.
-    EXPECT_LT(std::stoi(trim(r.out)), 10) << r.out;
+    // bwrap's init, the shell, ls and grep -- not the host's hundreds. The
+    // count is the last line; what xlings itself said comes before it.
+    auto out = trim(r.out);
+    auto last = out.substr(out.rfind('\n') == std::string::npos ? 0 : out.rfind('\n') + 1);
+    ASSERT_FALSE(last.empty()) << r.transcript();
+    ASSERT_TRUE(std::isdigit(static_cast<unsigned char>(last[0]))) << r.transcript();
+    EXPECT_LT(std::stoi(last), 10) << r.out;
 }
 
 XTEST(SubosIsolation, ANonInteractiveCommandHasNoControllingTerminal,
