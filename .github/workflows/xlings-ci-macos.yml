@@ -270,9 +270,15 @@ jobs:
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
       - name: Build and run unit tests
+        env:
+          XDEV_LANE: macos-unit
+          XDEV_LANE_CAPS: macos,posix,pty,xlings-bin,sandbox
+          XDEV_SUMMARY: "1"
         run: |
           mcpp build
-          mcpp test || {
+          mcpp build -p xdev
+          xdev="$(find target -path '*/bin/xdev/xdev' -type f | head -1)"
+          "$xdev" test --out target/xdev/macos-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"
 

@@ -146,6 +146,8 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
         return 2;
     }
     fs::create_directories(out / "logs");
+    // A suite that reports per test (run_all.sh) appends here too.
+    set_env("XDEV_RECORDS", (out / "scripts.ndjson").string());
     int failed = 0;
     const auto bin = tk::xlings_binary().string();
     for (const auto& suite : a.suites) {

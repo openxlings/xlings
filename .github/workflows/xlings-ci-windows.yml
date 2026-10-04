@@ -267,10 +267,17 @@ jobs:
         id: unit
         continue-on-error: true
         shell: pwsh
+        env:
+          XDEV_LANE: windows-unit
+          XDEV_LANE_CAPS: windows,xlings-bin,sandbox
+          XDEV_SUMMARY: "1"
         run: |
           mcpp build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          mcpp test
+          mcpp build -p xdev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $xdev = Get-ChildItem target -Recurse -Filter xdev.exe | Where-Object FullName -Like '*\bin\xdev\xdev.exe' | Select-Object -First 1
+          & $xdev.FullName test --out target/xdev/windows-unit
           if ($LASTEXITCODE -ne 0) {
             $status = $LASTEXITCODE
             Write-Host "::group::mcpp build diagnostics"

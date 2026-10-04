@@ -285,6 +285,19 @@ jobs:
 
       # ── Phase 1.5: Unit Tests ────────────────────────────────────
 
+      # The capabilities this lane promises (tests/README.md). A test that
+      # needs one of them and finds it missing FAILS here instead of skipping:
+      # an isolation test that quietly skips on the one machine that runs it is
+      # F13 in the SubOS design. GitHub's ubuntu-24.04 image restricts
+      # unprivileged user namespaces through AppArmor; the lane lifts that for
+      # itself -- what a user does about it is `xlings self doctor --isolation`.
+      - name: Lane capabilities (user namespaces, bwrap)
+        run: |
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          echo "XDEV_LANE=linux-unit" >> "$GITHUB_ENV"
+          echo "XDEV_LANE_CAPS=linux,posix,pty,xlings-bin,userns,bwrap,sandbox" >> "$GITHUB_ENV"
+
       - name: Build and run unit tests
         run: |
           # `mcpp build` can transiently fail with "dependency '...': index
@@ -296,7 +309,14 @@ jobs:
             echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
             mcpp build
           }
-          mcpp test || {
+          # xdev runs `mcpp test` and renders the report; the step summary is
+          # rendered once, by the report job, from every lane. Built static
+          # (musl) so the e2e and report jobs can run this same binary: a glibc
+          # dev build's loader lives in this runner's mcpp registry.
+          mcpp build -p xdev --target x86_64-linux-musl
+          xdev="$GITHUB_WORKSPACE/$(find target/x86_64-linux-musl -path '*/bin/xdev/xdev' -type f | head -1)"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+          "$xdev" test --out target/xdev/linux-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"
 
@@ -356,23 +376,16 @@ jobs:
           xlings --version 2>&1 | head -2 || true
 
       - name: Multiplatform contract scripts
+        env:
+          XDEV_LANE: linux-contracts
         run: |
-          bash tests/scripts/test_quick_install.sh
-          python3 tests/scripts/test_release_candidate_gate.py
-          python3 tests/scripts/test_index_pointer_history.py
-          python3 tests/scripts/test_version_consistency.py
-          python3 tests/scripts/test_windows_header_hygiene.py
-          python3 tests/scripts/test_selector_contrast.py
-          bin=$(find target -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)
-          python3 tests/scripts/test_docs_examples.py --xlings "$bin"
-          python3 tests/scripts/test_generated_command_reference.py --xlings "$bin"
-          python3 tests/scripts/test_cli_spec_parity.py --xlings "$bin"
-          XLINGS_BIN="$bin" python3 tests/scripts/test_i18n_coverage.py
+          "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
 
       # ── Phase 2: Build via Release Script ───────────────────────
-      # NOTE: the E2E suite (E2E-00..E2E-28) moved to xlings-ci-linux-e2e.yml
-      # so it runs in parallel with this build+unit job. This job keeps the
-      # release build + artifact upload.
+      # The ONE release build of this commit on Linux x86_64. The e2e job
+      # below takes this artifact instead of building its own (it used to be a
+      # separate workflow with a second source build and a third release
+      # build of the same commit).
 
       - name: Build (linux_release)
         run: |
@@ -396,9 +409,111 @@ jobs:
         if: success()
         with:
           name: xlings-linux-x86_64
-          path: build/release.tar.gz
+          path: |
+            build/release.tar.gz
+            build/xlings-*-linux-x86_64.tar.gz
+
+      - name: Attach xdev and its runs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-build
+          path: |
+            ${{ env.XDEV }}
+            target/xdev/
+          if-no-files-found: ignore
+
+  # The shell e2e suite, against the artifact built above.
+  e2e:
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-e2e
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl git build-essential
+
+      - name: Fetch the release artifact and xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Prepare fixture index repo
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          bin="$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)"
+          [[ -x "$bin" ]] || { echo "::error::no bin/xlings in the release artifact"; exit 1; }
+          echo "XLINGS_BIN=$bin" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: "E2E-01: Bootstrap Home (portable + installed)"
+        run: |
+          bash tests/e2e/bootstrap_home_test.sh
+
+      - name: "E2E suite (E2E-02..E2E-42, timed)"
+        run: |
+          "$XDEV" test --no-mcpp --suite e2e-shell --tarball build/release.tar.gz \
+            --out target/xdev/linux-e2e
+
+      - name: Attach the e2e run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-e2e
+          path: target/xdev/
+          if-no-files-found: ignore
+
+  # One report for the Linux lanes, in the step summary.
+  report:
+    needs: [build-and-test, e2e]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the runs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: xdev-linux-*
+          path: runs
+
+      - name: Report
+        run: |
+          xdev="$(find runs -name xdev -type f | head -1)"
+          [[ -n "$xdev" ]] || { echo "no xdev binary: the build job failed before building it"; exit 1; }
+          chmod +x "$xdev"
+          args=()
+          for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
+          "$xdev" report "${args[@]}" --summary
 
   unit-asan:
+    # Off the PR critical path (design §24.5): it is the slowest job (~27 min,
+    # most of it the instrumented build) and gates nothing a PR changes more
+    # often than main does. It runs on every push to main and release/**,
+    # and on a PR that carries the `ci:asan` label. A failure on main is a
+    # regression to revert or fix at once.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:asan')
+    #
     # Sanitizer profile for the unit suite (mcpp.toml `[profile.asan]`,
     # issue #433: a use-after-free reached three releases undetected because
     # nothing ever ran the tests instrumented). Measured locally 2026-09-12:
@@ -580,6 +695,16 @@ jobs:
           mcpp --version 2>&1 | head -2 || true
           mcpp self version 2>&1 | head -3 || true
           xlings --version 2>&1 | head -2 || true
+
+      # E2E-00: a fresh mcpp home builds xlings for the musl target. It
+      # used to run on every PR in the e2e workflow; the PR build job and the
+      # release build above already prove the same build with the same mcpp,
+      # so it now runs where the instrumented build runs: on main.
+      - name: "E2E-00: mcpp builds xlings from source (fresh mcpp home)"
+        if: github.event_name == 'push'
+        run: |
+          bash tests/e2e/prepare_fixture_index.sh
+          bash tests/e2e/mcpp_build_xlings_test.sh
 
       - name: Sanitizer verdict
         if: always()

@@ -352,7 +352,7 @@ ORPHAN_EXEMPT=(
     # Run by a dedicated workflow.
     "aarch64_compat_contract_test.sh"       # xlings-ci-aarch64.yml
     "bootstrap_home_test.sh"                # linux-e2e / macos / windows
-    "mcpp_build_xlings_test.sh"             # xlings-ci-linux-e2e.yml
+    "mcpp_build_xlings_test.sh"             # xlings-ci-linux.yml (unit-asan, on push)
     "root_usability_test.sh"                # xlings-ci-linux-root.yml
     # Sub-tests invoked by project_e2e_test.sh (E2E-05), not standalone.
     "project_global_fallback_test.sh"
@@ -406,13 +406,24 @@ for entry in "${TESTS[@]}"; do
     if [[ $rc -eq 0 ]]; then
         echo "PASS: $label ($script, $d)"
         ((PASS++))
+        _status=pass
     elif [[ "$flags" == *allowfail* ]]; then
         echo "SOFT-FAIL: $label ($script, exit $rc, $d) — tolerated (e.g. network/rate-limit)"
         ((SOFTFAIL++))
+        _status=skip
     else
         echo "FAIL: $label ($script, exit $rc, $d)"
         ((FAIL++))
         FAILED_TESTS+=("$label ($script, exit $rc)")
+        _status=fail
+    fi
+    # One record per test for `xdev report` (tests/README.md). Labels and
+    # script names are [A-Za-z0-9_.-], so they need no JSON escaping.
+    if [[ -n "${XDEV_RECORDS:-}" ]]; then
+        printf '{"test":"e2e-shell: %s %s","status":"%s","ms":%d,"exit_code":%d%s}\n' \
+            "$label" "$script" "$_status" "$_dur" "$rc" \
+            "$([[ $_status == skip ]] && printf ',"message":"soft-fail (exit %d), tolerated"' "$rc")" \
+            >> "$XDEV_RECORDS"
     fi
 done
 
