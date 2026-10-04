@@ -288,11 +288,11 @@ why = "C27 is the maintainer's decision (plan §4)"
 
 [SES-SUPERVISOR]
 text = "entering forks and supervises instead of exec-replacing xlings"
-status = "planned"
+status = "required"
 
 [SES-JOIN]
 text = "use / exec join a running session of the same instance"
-status = "planned"
+status = "required"
 
 [SES-START-STOP]
 text = "subos start / stop manage a detached session with an idle TTL"
@@ -332,11 +332,11 @@ status = "planned"
 
 [OBS-LIFECYCLE]
 text = "session start/end events with the isolation snapshot"
-status = "planned"
+status = "required"
 
 [OBS-OPS]
 text = "every xlings command run for an instance is recorded"
-status = "planned"
+status = "required"
 
 [OBS-EXEC]
 text = "every program executed in a locked sandbox is recorded"

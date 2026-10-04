@@ -74,7 +74,7 @@ Options: `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` �
 
 Enter a SubOS
 
-Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap or proot on Linux); `--cmd <COMMAND>` — Run one command; `--keep` — Keep the namespace keeper; `--no-keep` — Disable the namespace keeper; `--ttl <SECONDS>` — Keeper idle timeout; `--gpu` — Expose GPU devices (bwrap only)
+Options: `--global` — Persist the active SubOS; `--shell [KIND]` — Emit shell activation code; `--sandbox [BACKEND]` — Enable sandbox (bwrap or proot on Linux); `--cmd <COMMAND>` — Run one command; `--keep` — Keep the session after the shell exits; `--no-keep` — End the session with the shell; `--ttl <SECONDS>` — Session idle timeout; `--gpu` — Expose GPU devices (bwrap only)
 
 ## `xlings subos list`
 
@@ -90,7 +90,19 @@ Show SubOS details
 
 ## `xlings subos stop <name>`
 
-Stop a SubOS keeper
+Stop a SubOS's running session
+
+## `xlings subos ps`
+
+List running SubOS sessions
+
+Options: `--json` — One JSON object per session
+
+## `xlings subos log [name]`
+
+Show a SubOS's audit events
+
+Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs); repeatable; `--session <ID>` — Only this session; `-n, --lines <N>` — Show the last N events (default 50); `-f, --follow` — Keep printing new events; `--json` — One JSON object per event
 
 ## `xlings subos runtime <binding> [name]`
 

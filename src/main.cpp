@@ -7,6 +7,7 @@ import xlings.platform;
 import xlings.core.xvm.shim;
 import xlings.core.home_identity;
 import xlings.core.home;
+import xlings.subos.session;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
 // Cross-version compat shims (alias migrations, profile auto-upgrade).
@@ -27,6 +28,14 @@ import xlings.core.xself.compat;
 #endif
 
 int main(int argc, char* argv[]) {
+    // The first process inside a SubOS sandbox (xlings.subos.session). Before
+    // everything: it must not read, adopt or write any home -- inside, the
+    // home is the sandbox's view of it -- and it is not a shim.
+    if (argc >= 2 && std::string_view(argv[1]) == "__session-init") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::subos::session::session_init(args);
+    }
+
     // Shim handoff (#615), before anything else runs -- in particular before
     // any path is narrowed to the ANSI code page, which is where a stale
     // client dies silently in a directory outside it (mcpp#693).

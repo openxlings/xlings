@@ -43,8 +43,8 @@ std::vector<Status> probe(const caps::Caps& c) {
             bwrap ? "uts namespace + passwd template" : "environment only");
         add("ExecTracer", false, Enforced::None, "not implemented yet",
             "seccomp user notification (design §22)");
-        add("SessionHost", false, Enforced::None, "not implemented yet",
-            "fork + unix socket + SCM_RIGHTS (design §16)");
+        add("SessionHost", true, Enforced::Kernel,
+            "supervisor + session-init, fork + unix socket + SCM_RIGHTS");
         add("RootfsRuntime", false, Enforced::None, "not in this release",
             "bwrap userns with uid 0 mapping (design §20)");
         return out;

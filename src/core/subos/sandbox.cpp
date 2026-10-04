@@ -19,7 +19,7 @@ module;
 #include <crt_externs.h>
 #define XLINGS_ENVIRON (*_NSGetEnviron())
 #else
-extern char** environ;
+// glibc and musl declare environ in <unistd.h> under _GNU_SOURCE
 #define XLINGS_ENVIRON environ
 #endif
 #endif
@@ -44,6 +44,8 @@ import xlings.subos.caps;
 import xlings.subos.spec;
 import xlings.subos.provider;
 import xlings.subos.seccomp;
+import xlings.subos.session;
+import xlings.core.elfread;
 import xlings.core.subos.ports;
 
 namespace xlings::subos::sandbox {
@@ -387,6 +389,50 @@ void emit_refusal_(EventStream& stream, const spec::Refusal& refusal) {
     });
 }
 
+
+// Where session-init (this binary) lives inside every sandbox.
+constexpr std::string_view kSessionInitPath = "/run/xlings/xlings";
+
+// What a sandbox must be compared on to decide whether a call may join the
+// running session: everything that isolates, nothing that varies per call.
+std::string spec_digest_(const spec::SandboxSpec& sb) {
+    auto j = sb.describe();
+    for (auto k : {"argv", "env", "cwd", "degraded"}) j.erase(k);
+    return std::format("{:016x}", std::hash<std::string>{}(j.dump()));
+}
+
+#if defined(__linux__)
+// This binary at kSessionInitPath, plus -- for a dynamically linked build --
+// its ELF interpreter's directory and its RUNPATH, read-only at their own
+// paths. A static release binary needs neither.
+std::vector<spec::MountOp> self_exe_mounts_() {
+    std::vector<spec::MountOp> out;
+    std::error_code ec;
+    auto exe = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) return out;
+    out.push_back({spec::MountKind::RoBind, exe.string(), std::string(kSessionInitPath)});
+    auto info = elfread::read(exe);
+    if (!info) return out;
+    std::set<std::string> dirs;
+    if (!info->interpreter.empty()) dirs.insert(fs::path(info->interpreter).parent_path().string());
+    for (auto p : info->searchPaths) {
+        if (auto pos = p.find("$ORIGIN"); pos != std::string::npos)
+            p.replace(pos, 7, exe.parent_path().string());
+        dirs.insert(p);
+    }
+    auto covered = [](const std::string& d) {
+        for (auto root : {"/usr", "/bin", "/lib", "/lib64"})
+            if (d == root || d.starts_with(std::string(root) + "/")) return true;
+        return false;
+    };
+    for (const auto& d : dirs) {
+        if (d.empty() || covered(d) || !fs::is_directory(d, ec)) continue;
+        out.push_back({spec::MountKind::RoBind, d, d});
+    }
+    return out;
+}
+#endif
+
 }  // namespace
 
 int enter(const std::string& name, EventStream& stream, const std::string& preferred_backend, bool gpu, const std::string& cmd) {
@@ -579,6 +625,35 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
 
     const auto backend_name = std::string(spec::to_string(sb.backend));
     log::debug("sandbox backend: {} storage: {}", backend_name, storage_to_string_(storage));
+    const auto digest = spec_digest_(sb);
+
+    // One session per instance (design §12.1): a running one is JOINED --
+    // same /tmp, processes and network as the terminal that started it.
+    if (auto live = session::find(home, name)) {
+        if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+        if (live->digest != digest) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = std::format("'{}' is running with a different isolation; this "
+                                       "call would not get what it asked for", name),
+                .recoverable = true,
+                .hint = std::format("xlings subos stop {}", name),
+            });
+            return session::kExitSetup;
+        }
+        payload["backend"] = backend_name;
+        payload["joined"] = live->id;
+        stream.emit(DataEvent{"subos_entering", payload.dump()});
+        if (request.interactive && cmd.empty())
+            log::info("joined the running session of '{}' (job control stays with the "
+                      "terminal that started it)", name);
+        auto r = session::join(home, name, session::ExecRequest{
+            .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
+        if (!r.phase.empty() && r.phase == "setup")
+            log::error("{}", r.error);
+        return r.exit_code;
+    }
+
     payload["backend"] = backend_name;
     payload["shell"] = request.shell;
     payload["storage"] = storage_to_string_(storage);
@@ -586,6 +661,7 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
 
     // The terminal-injection filter travels to bwrap on an inherited pipe
     // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
+    std::vector<int> keep_fds;
     std::optional<int> seccomp_fd;
     if (sb.backend == spec::Backend::Bwrap && sb.block_tiocsti) {
         auto program = seccomp::block_terminal_injection();
@@ -594,44 +670,40 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
             (void)::write(fds[1], program.data(), program.size());
             ::close(fds[1]);
             seccomp_fd = fds[0];
+            keep_fds.push_back(fds[0]);
         }
     }
-    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(sb, seccomp_fd)
-                                                   : provider::proot_argv(sb);
-    auto env = provider::process_env(sb, request.host_env);
-    std::vector<std::string> env_strings;
-    for (auto& [k, v] : env) env_strings.push_back(k + "=" + v);
-    std::vector<char*> c_env;
-    for (auto& e : env_strings) c_env.push_back(e.data());
-    c_env.push_back(nullptr);
-    std::vector<char*> c_argv;
-    for (auto& a : argv) c_argv.push_back(a.data());
-    c_argv.push_back(nullptr);
 
-    // Image mode: fork+exec+wait so we can unmount after sandbox exits.
-    // Shared/tmpfs: the backend replaces this process.
-    if (storage == StorageMode::Image) {
-        auto pid = ::fork();
-        if (pid < 0) {
-            log::error("fork failed: {}", std::strerror(errno));
-            unmount_image_(image_mountpoint);
-            return 1;
-        }
-        if (pid == 0) {
-            ::execve(c_argv[0], c_argv.data(), c_env.data());
-            log::error("failed to exec {}: {}", backend_name, std::strerror(errno));
-            ::_exit(127);
-        }
-        int status = 0;
-        ::waitpid(pid, &status, 0);
-        unmount_image_(image_mountpoint);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    // session-init is this very binary, read-only at a fixed path inside; a
+    // dynamically linked build brings its loader and library directories.
+    auto launched = sb;
+    for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
+    launched.argv = {std::string(kSessionInitPath), "__session-init", "--"};
+    launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
+    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(launched, seccomp_fd)
+                                                   : provider::proot_argv(launched);
+
+    std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
+    {
+        auto legacy = policy::legacy();
+        pass.insert(pass.end(), legacy.env_pass.begin(), legacy.env_pass.end());
     }
-
-    ::execve(c_argv[0], c_argv.data(), c_env.data());
-    log::error("failed to exec {} '{}': {}", backend_name, sb.backend_bin.string(),
-               std::strerror(errno));
-    return 127;
+    // The supervisor hosts the session: the sandbox's owner stays outside it,
+    // watching, and the audit is written where the sandbox cannot reach (F15).
+    const int rc = session::host(home, session::Launch{
+        .instance = name,
+        .argv = std::move(argv),
+        .env = provider::process_env(sb, request.host_env),
+        .keep_fds = keep_fds,
+        .backend = backend_name,
+        .digest = digest,
+        .spec = sb.describe(),
+        .exec_env = sb.env,
+        .env_pass = std::move(pass),
+        .default_cwd = sb.cwd.string(),
+    });
+    if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+    return rc;
 
 #else
     // macOS / Windows: home redirect (dotfile isolation).

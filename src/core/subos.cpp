@@ -58,6 +58,8 @@ import xlings.core.destructive_log;
 import xlings.subos.userdata;
 import xlings.subos.model;
 import xlings.core.subos.ports;
+import xlings.subos.session;
+import xlings.observe;
 import xlings.core.home;
 
 namespace xlings::subos {
@@ -1744,6 +1746,100 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
     return {};
 }
 
+// `subos ps`: the running sessions (design §22).
+int run_ps_(int argc, char* argv[], EventStream& stream) {
+    bool json = false;
+    for (int i = 3; i < argc; ++i) if (std::string_view(argv[i]) == "--json") json = true;
+    auto sessions = session::list(home_view());
+    if (json) {
+        for (auto& i : sessions) std::println("{}", session::to_json(i).dump());
+        return 0;
+    }
+    if (sessions.empty()) {
+        log::info("no running sessions");
+        return 0;
+    }
+    nlohmann::json table;
+    table["headers"] = {"SUBOS", "SESSION", "BACKEND", "STARTED", "PID", "MODE"};
+    table["rows"] = nlohmann::json::array();
+    for (auto& i : sessions) {
+        table["rows"].push_back({i.instance, i.id, i.backend, i.started,
+                                 std::to_string(i.supervisor_pid),
+                                 i.detached ? std::format("detached, ttl {}s", i.ttl)
+                                            : std::string("attached")});
+    }
+    stream.emit(DataEvent{"table", table.dump()});
+    return 0;
+}
+
+// `subos log <name>`: the instance's audit, read from outside the sandbox
+// where the supervisor wrote it (design §22).
+int run_log_(int argc, char* argv[], EventStream& stream,
+             const std::function<void(std::string_view)>& usageError) {
+    std::string name;
+    std::set<std::string> kinds;
+    std::string sessionId;
+    std::size_t limit = 50;
+    bool json = false, follow = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--json") json = true;
+        else if (a == "-f" || a == "--follow") follow = true;
+        else if (a == "--kind" && i + 1 < argc) kinds.insert(argv[++i]);
+        else if (a == "--session" && i + 1 < argc) sessionId = argv[++i];
+        else if ((a == "-n" || a == "--lines") && i + 1 < argc) {
+            try { limit = static_cast<std::size_t>(std::stoul(argv[++i])); }
+            catch (...) { usageError("-n expects a number"); return 1; }
+        }
+        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::move(a);
+        else { usageError("unknown option for `xlings subos log`: " + a); return 1; }
+    }
+    if (name.empty()) {
+        int rc = 0;
+        name = pick_subos_or_fail_("log", stream, usageError, &rc);
+        if (name.empty()) return rc;
+    }
+    const auto file = home_view().logs_dir(name) / "events.ndjson";
+    auto keep = [&](const nlohmann::json& e) {
+        if (!kinds.empty() && !kinds.contains(e.value("kind", ""))) return false;
+        if (!sessionId.empty() && e.value("session", "") != sessionId) return false;
+        return true;
+    };
+    auto print = [&](const nlohmann::json& e) {
+        if (json) { std::println("{}", e.dump()); return; }
+        std::string detail;
+        for (auto k : {"program", "exit", "signal", "backend", "error", "ms"}) {
+            if (!e.contains(k)) continue;
+            detail += std::format(" {}={}", k, e[k].is_string() ? e[k].get<std::string>() : e[k].dump());
+        }
+        std::println("{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
+                     e.value("event", ""), e.value("session", ""), detail);
+    };
+    auto events = observe::read(file);
+    std::vector<nlohmann::json> shown;
+    for (auto& e : events) if (keep(e)) shown.push_back(std::move(e));
+    const auto from = shown.size() > limit ? shown.size() - limit : 0;
+    for (auto i = from; i < shown.size(); ++i) print(shown[i]);
+    if (!follow) return 0;
+    // -f: keep reading what the supervisor appends.
+    std::error_code ec;
+    auto offset = fs::exists(file, ec) ? fs::file_size(file, ec) : 0;
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        auto size = fs::exists(file, ec) ? fs::file_size(file, ec) : 0;
+        if (size < offset) offset = 0;      // rotated
+        if (size == offset) continue;
+        std::ifstream in(file, std::ios::binary);
+        in.seekg(static_cast<std::streamoff>(offset));
+        std::string line;
+        while (std::getline(in, line)) {
+            auto e = nlohmann::json::parse(line, nullptr, false);
+            if (!e.is_discarded() && e.is_object() && keep(e)) print(e);
+        }
+        offset = size;
+    }
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -2017,16 +2113,31 @@ int run(int argc, char* argv[], EventStream& stream) {
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
     if (sub == "stop") {
-        // M4/D9: stop the auto-keeper for a sandboxed subos.
-        // Safe to invoke even when no keeper is running — it's a no-op.
+        // Ends the instance's session (design §12.1). Safe when none runs.
+        // The pre-session keeper's files are cleared too, for homes that
+        // still carry them.
         std::string target = argc > 3 ? argv[3] : std::string{};
         if (target.empty()) {
             int rc = 0;
             target = pick_subos_or_fail_("stop", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
-        return keeper::stop_keeper(target);
+        const bool had = session::find(home_view(), target).has_value();
+        if (had && !session::stop(home_view(), target)) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "the session of '" + target + "' did not stop",
+                .recoverable = true,
+            });
+            return 1;
+        }
+        (void)keeper::stop_keeper(target);
+        if (had) log::info("stopped the session of '{}'", target);
+        else log::info("'{}' has no running session", target);
+        return 0;
     }
+    if (sub == "ps") return run_ps_(argc, argv, stream);
+    if (sub == "log") return run_log_(argc, argv, stream, usageError);
 
     // xlings subos runtime <binding> [name]
     //
