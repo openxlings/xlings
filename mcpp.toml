@@ -24,6 +24,7 @@ members = [
     "modules/i18n",
     "modules/tinyhttps",
     "modules/theme",
+    "modules/testkit",
     "apps/gui",
 ]
 
@@ -35,7 +36,9 @@ license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
 
 [build]
-include_dirs = ["modules/json/src/json"]
+# modules/testkit/include holds xtest.hpp (the XTEST macro). Only test sources
+# include it; it is here because test TUs are compiled with the root's flags.
+include_dirs = ["modules/json/src/json", "modules/testkit/include"]
 # Minimum supported macOS for produced binaries (mcpp 0.0.50+ honors
 # this; the MACOSX_DEPLOYMENT_TARGET env in CI/release remains as the
 # second line of assurance and covers older bootstrap mcpp versions).
@@ -135,6 +138,9 @@ libarchive = "3.8.7"
 cmdline = "0.0.2"
 xpkg = "0.0.60"
 capi.lua = "0.0.3"
+
+[dev-dependencies]
+testkit = { path = "modules/testkit" }
 
 [dev-dependencies.compat]
 gtest = "1.15.2"

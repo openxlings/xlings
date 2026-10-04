@@ -363,9 +363,6 @@ jobs:
           chmod +x ./tools/macos_release.sh
           SKIP_NETWORK_VERIFY=1 ./tools/macos_release.sh
 
-      - name: SubOS sandbox command contract
-        run: bash tests/e2e/subos_cmd_contract_test.sh
-
       - name: Platform core contract
         # 2026-09-12 robustness/usability round: bash e2e contracts that
         # don't need a whole subos rebuild to be meaningful on macOS.

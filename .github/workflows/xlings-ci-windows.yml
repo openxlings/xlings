@@ -324,10 +324,6 @@ jobs:
         shell: pwsh
         run: '& "$env:GITHUB_WORKSPACE\tests\e2e\ansi_code_page_directory_test.ps1"'
 
-      - name: SubOS sandbox command contract
-        shell: pwsh
-        run: '& "$env:GITHUB_WORKSPACE\tests\e2e\subos_cmd_contract_test.ps1"'
-
       - name: Fresh XLINGS_HOME first install
         shell: pwsh
         run: '& "$env:GITHUB_WORKSPACE\tests\e2e\fresh_xlings_home_install_test.ps1"'
