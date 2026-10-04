@@ -1,37 +1,37 @@
 module xlings.core.confirm;
 
 import std;
+import xlings.guard;
 import xlings.runtime;
 
 namespace xlings::confirm {
 
-Asked ask(EventStream& stream, std::string id, std::string question,
-          bool autoYes, std::string_view yesSpelling) {
-    if (autoYes) {
-        return { .outcome = Outcome::Confirmed,
-                 .token = UserConfirmed(std::string(yesSpelling)) };
-    }
+guard::Reply StreamAsker::ask(const guard::Question& q) {
     PromptEvent req;
-    req.id = std::move(id);
-    req.question = std::move(question);
-    req.options = {"y", "n"};
-    req.defaultValue = "n";
+    req.id = q.id;
+    req.question = q.question;
+    req.options = q.options;
+    req.defaultValue = q.defaultValue;
     req.kind = PromptEvent::Kind::Confirm;
     return std::visit(EventStream::on{
-        [](EventStream::Chosen&& c) -> Asked {
-            if (c.value == "y") {
-                return { .outcome = Outcome::Confirmed,
-                         .token = UserConfirmed("terminal") };
-            }
-            return { .outcome = Outcome::Declined };
+        [](EventStream::Chosen&& c) -> guard::Reply {
+            return { .kind = guard::Reply::Kind::Chosen, .value = std::move(c.value) };
         },
-        [](EventStream::Cancelled&&) -> Asked {
-            return { .outcome = Outcome::Declined };
+        [](EventStream::Cancelled&&) -> guard::Reply {
+            return { .kind = guard::Reply::Kind::Cancelled };
         },
-        [](EventStream::NobodyToAsk&&) -> Asked {
-            return { .outcome = Outcome::NobodyToAsk };
+        [](EventStream::NobodyToAsk&&) -> guard::Reply {
+            return { .kind = guard::Reply::Kind::NobodyToAsk };
         },
-    }, stream.prompt(std::move(req)));
+    }, stream_.prompt(std::move(req)));
+}
+
+Asked ask(EventStream& stream, std::string id, std::string question,
+          bool autoYes, std::string_view yesSpelling) {
+    StreamAsker asker(stream);
+    return guard::ask(asker, guard::Question{ .id = std::move(id),
+                                              .question = std::move(question) },
+                      autoYes, yesSpelling);
 }
 
 }  // namespace xlings::confirm

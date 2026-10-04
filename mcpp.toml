@@ -4,7 +4,11 @@
 #   cancellation  leaf, std only
 #   platform      -> cancellation      (81 of 211 TUs import it)
 #   theme         leaf, std + the JSON header
+#   guard         leaf, std only: UserConfirmed + the Asker port
+#   observe       -> json: event model, journal, redaction, trace
+#   testkit       -> json: end-to-end test library (dev-dependency only)
 #   apps/gui      the GUI binary's library half
+#   apps/xdev     the development tool (never linked into xlings)
 #
 # `apps/` holds what becomes a binary; `modules/` holds what gets linked into
 # one. `src/` is what has not been separated yet -- core, cli, ui, runtime --
@@ -24,6 +28,8 @@ members = [
     "modules/i18n",
     "modules/tinyhttps",
     "modules/theme",
+    "modules/guard",
+    "modules/observe",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -130,6 +136,8 @@ sha256       = { path = "modules/sha256" }
 # member wraps. mcpp resolves dependency names in one namespace, so a member
 # that wraps a registry package cannot share its bare name.
 xhttp        = { path = "modules/tinyhttps" }
+guard        = { path = "modules/guard" }
+observe      = { path = "modules/observe" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"

@@ -1,0 +1,27 @@
+# What happened, as its own package (design §22, §23).
+#
+# One event model and one way to write it down, shared by the xlings core
+# (the destructive-operation record) and the SubOS core (sessions, permission
+# decisions, executions). The supervisor writes a SubOS's audit from OUTSIDE
+# the sandbox with this module; nothing here knows what a sandbox is.
+#
+# Rules carried by the code, not by convention:
+#   - writing never fails the operation it describes: a journal that cannot be
+#     written loses a line, it does not refuse a deletion;
+#   - lines carry names, never values, for anything that can hold a secret
+#     (`redact_env`): an audit log is the first file people paste into an issue;
+#   - a journal rotates by size, so an agent running for a week cannot fill the
+#     disk with its own audit.
+[package]
+namespace = "xlings"
+name      = "observe"
+version   = "0.1.0"
+
+[targets.observe]
+kind = "lib"
+
+[dependencies]
+json = { path = "../json" }
+
+[build]
+include_dirs = ["../json/src/json"]
