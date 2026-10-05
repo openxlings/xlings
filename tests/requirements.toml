@@ -389,6 +389,11 @@ status = "required"
 text = "a system install (mode S): the entry left to its package manager, /etc/xlings/config.json as defaults, the system layer found and reported"
 status = "required"
 
+[PERM-FETCH-LAYER]
+text = "fetch=layer installs into the instance's own package layer"
+status = "deferred"
+why = "the same layered payload lookup as HOME-LAYER-RESOLVE; until then `layer` is refused wherever it appears (tested), never granted as a shared-home install"
+
 [HOME-LAYER-RESOLVE]
 text = "packages in the system layer (M) resolve and activate in a user's home without a copy"
 status = "deferred"

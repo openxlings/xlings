@@ -2403,6 +2403,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         after.mounts.push_back(std::move(m));
     }
 
+    if (auto why = policy::not_enforced(after)) { usageError(*why); return 1; }
     if (auto w = policy_store::write(home, name, after); !w) {
         stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = w.error(), .recoverable = true });
         return 1;

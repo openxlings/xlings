@@ -296,3 +296,20 @@ XTEST(SubosPolicy, APackageExtendsAPresetNeverAnotherPackage,
     // A field this version cannot enforce is refused in a package as anywhere.
     EXPECT_FALSE(p::from_package(nlohmann::json{{"isolation", {{"net", "vpn"}}}}, "xim:a@1", {"xim:a@1.0.0", "00"}));
 }
+
+// C24 is not implemented: `layer` parses, and is refused wherever it appears
+// rather than quietly installing into the shared home.
+XTEST(SubosPolicy, FetchLayerIsRefusedUntilItIsImplemented,
+      .area = "subos", .covers = {"PERM-FETCH-LAYER", "POL-UNKNOWN-REFUSED"}) {
+    namespace p = xlings::subos::policy;
+    EXPECT_TRUE(p::fetch_from_string("layer"));
+    auto file = p::from_json(nlohmann::json{{"extends", "dev"}, {"permissions", {{"fetch", "layer"}}}});
+    ASSERT_FALSE(file);
+    EXPECT_NE(file.error().find("layer"), std::string::npos);
+    EXPECT_FALSE(p::from_json(nlohmann::json{{"permissions", {{"index_update", "layer"}}}}));
+    EXPECT_FALSE(p::from_json(nlohmann::json{{"permissions", {{"fetch", {{"rules",
+        nlohmann::json::array({{{"match", "*"}, {"action", "layer"}}})}}}}}}));
+    p::Overrides call;
+    call.fetch = p::Fetch::Layer;
+    EXPECT_FALSE(p::apply(p::preset(p::Preset::Dev), call));
+}

@@ -179,6 +179,12 @@ struct Overrides {
 
 std::expected<Policy, std::string> apply(Policy p, const Overrides& o);
 
+// A value this version parses but does not enforce yet, named; nullopt when
+// there is none. `fetch = layer` (an instance-private package layer) is one:
+// granting it would install into the shared home instead, which is not what
+// it says. Refused wherever it appears (fail closed, design §7.3).
+std::optional<std::string> not_enforced(const Policy& p);
+
 // Field-by-field differences, for the audit of a policy change.
 std::vector<std::string> diff(const Policy& before, const Policy& after);
 
