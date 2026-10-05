@@ -43,6 +43,21 @@ Classified classify(std::span<const std::string> argv, std::string_view instance
             return c;
         }
     }
+    // xlings itself is the home's, not the instance's: activating a version
+    // of it rewrites the entry every shim in the home runs (AGENTS.md), the
+    // owner's included. Only the owner installs, switches or removes it.
+    auto names_xlings = [](std::string_view t) {
+        if (auto at = t.find('@'); at != std::string_view::npos) t = t.substr(0, at);
+        if (auto colon = t.rfind(':'); colon != std::string_view::npos) t = t.substr(colon + 1);
+        return t == "xlings";
+    };
+    if ((cmd == "install" || cmd == "update" || cmd == "remove" || cmd == "use")
+        && std::ranges::any_of(positional, names_xlings)
+        && !(cmd == "use" && positional.size() < 2)) {
+        c.route = Route::Owner;
+        c.ops.push_back(op("instance_admin", "xlings"));
+        return c;
+    }
     if (cmd == "install") {
         c.route = Route::Broker;
         if (positional.empty()) c.ops.push_back(op("fetch", "*"));

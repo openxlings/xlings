@@ -36,6 +36,16 @@ TEST(SubosBroker, TheOwnersThingsAreRefusedInside) {
     EXPECT_EQ(b::classify(V{"install", "x", "--subos", "box"}, "box").route, b::Route::Broker);
 }
 
+// Activating a version of xlings rewrites the home's entry -- the binary
+// every shim in the home runs, the owner's too. Not the instance's to do.
+TEST(SubosBroker, XlingsItselfIsTheOwners) {
+    for (V argv : {V{"install", "xlings@2026.9.30.1"}, V{"install", "gcc", "xim:xlings"},
+                   V{"use", "xlings", "2026.9.30.1"}, V{"update", "xlings"}, V{"remove", "xlings"}})
+        EXPECT_EQ(b::classify(argv, "box").route, b::Route::Owner) << argv[0] << " " << argv[1];
+    EXPECT_EQ(b::classify(V{"use", "xlings"}, "box").route, b::Route::Local) << "listing versions";
+    EXPECT_EQ(b::classify(V{"install", "xlings-tools"}, "box").route, b::Route::Broker);
+}
+
 TEST(SubosBroker, TheStrictestTargetDecides) {
     auto p = pol::preset(pol::Preset::Dev);
     p.fetch_rules.push_back({.match = "evil*", .action = pol::Fetch::Deny});
