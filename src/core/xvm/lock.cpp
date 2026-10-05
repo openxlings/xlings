@@ -147,6 +147,9 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
     // process holds: waiting for it would wait out the whole timeout for
     // nothing. Inside a SubOS sandbox the home is read-only by design, and the
     // xlings there sends what changes it to the broker instead.
+    // Not on Windows: there the holder opens the file without sharing it, so
+    // "cannot open" is exactly what a held lock looks like.
+#if !defined(_WIN32)
     {
         std::ofstream probe(path, std::ios::app);
         if (!probe) {
@@ -158,6 +161,7 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
                        : ": the home is read-only or not yours"));
         }
     }
+#endif
     std::string error;
     if (!lock.lock_.acquire(path, timeout, {}, error, onWait)) {
         return std::unexpected(std::format(

@@ -114,6 +114,13 @@ XTEST(SubosIsolation, AFailedProbeQuotesBwrapAndNeverAdvisesASysctl,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"F12"},
       .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("probe-text");
+    // A root-owned or system bwrap is tried before the payload, so the fake
+    // below is only reached on a host where none of those works.
+    for (const char* host : {"/usr/lib/xlings/bwrap", "/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
+        if (!fs::exists(host)) continue;
+        if (tk::run({.argv = {host, "--ro-bind", "/", "/", "--", "/bin/true"}}).exit_code == 0)
+            GTEST_SKIP() << host << " works here; the isolation-fix lane covers the failing case";
+    }
     // A bwrap that fails the way Ubuntu 24.04's AppArmor makes it fail.
     auto bin = home.dir() / "data" / "xpkgs" / "xim-x-bwrap" / "0.0.0" / "bin" / "bwrap";
     tk::write_file(bin, "#!/bin/sh\necho 'bwrap: setting up uid map: Permission denied' >&2\nexit 1\n");

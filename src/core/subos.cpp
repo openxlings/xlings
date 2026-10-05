@@ -2940,6 +2940,9 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --keep / --ttl: the session outlives this shell (design §16, the
         // keeper's replacement). Start it detached, then join it like any
         // later command would.
+        // Linux only, like the keeper it replaces: elsewhere --keep / --ttl
+        // change nothing and the shell below is the whole entry.
+#if defined(__linux__)
         if (sandbox && !no_keep && (keep_forever || ttl_sec > 0)
             && !session::find(home_view(), name)) {
             if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
@@ -2950,6 +2953,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 .preset = iso.preset, .overrides = iso.overrides });
             if (rc != 0) return rc;
         }
+#endif
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
                                iso.preset, iso.overrides);
     }

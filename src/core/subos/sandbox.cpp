@@ -500,6 +500,21 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // `subos exec` reports a failure before the command started as 125.
     const int kFail = opts.exec_codes ? session::kExitSetup : 1;
 
+#if !defined(__linux__)
+    // A session that outlives its shell is a supervisor holding namespaces
+    // (design §16): Linux only. Elsewhere the entry below is an interactive
+    // shell, which is the opposite of detached and waits for input.
+    if (opts.detached) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "a detached session (subos start) needs Linux",
+            .recoverable = false,
+            .hint = std::format("run commands with `xlings subos exec {} -- <cmd>`", name),
+        });
+        return session::kExitSetup;
+    }
+#endif
+
     // Refuse nested sandbox entry.
     if (utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox") {
         stream.emit(ErrorEvent{
@@ -731,6 +746,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         payload["backend"] = backend_name;
         payload["joined"] = live->id;
         if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
+        std::fflush(nullptr);
         if (request.interactive && cmd.empty())
             log::info("joined the running session of '{}' (job control stays with the "
                       "terminal that started it)", name);
@@ -745,6 +761,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     payload["shell"] = request.shell;
     payload["storage"] = storage_to_string_(storage);
     if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
+    std::fflush(nullptr);
 
     // The terminal-injection filter travels to bwrap on an inherited pipe
     // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
@@ -844,6 +861,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     payload["shell"] = platform::resolve_shell();
 #endif
     if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
+    std::fflush(nullptr);
     for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
     return platform::run_shell(cmd, cmd.empty());
 #endif

@@ -532,6 +532,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
     const auto uid = ::getuid();
     const auto gid = ::getgid();
 
+    // Buffered output (the "entering" line) goes out before the child's,
+    // and is not written twice by a child that exits through exit().
+    std::fflush(nullptr);
     pid_t pid = ::fork();
     if (pid < 0) {
         std::fprintf(stderr, "[xlings:subos] fork failed: %s\n", std::strerror(errno));
@@ -983,6 +986,7 @@ int host(const HomeView& home, Launch L) {
     // on a pipe; EOF without it means the session never started.
     int ready[2];
     if (::pipe(ready) != 0) return kExitSetup;
+    std::fflush(nullptr);
     pid_t first = ::fork();
     if (first < 0) return kExitSetup;
     if (first == 0) {
@@ -1110,6 +1114,7 @@ int session_init(std::span<const std::string> args) {
     int main_status = 0;
     bool main_done = main_argv.empty();
     if (!main_argv.empty()) {
+        std::fflush(nullptr);
         main_pid = ::fork();
         if (main_pid == 0) {
             if (ctl >= 0) ::close(ctl);
