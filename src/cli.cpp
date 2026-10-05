@@ -91,7 +91,7 @@ std::vector<completion::Candidate> completion_live_values_(
         } else if (option == "--net") {
             for (auto value : {"host", "nat", "none", "proxy"}) add(value);
         } else if (option == "--fetch") {
-            for (auto value : {"auto", "ask", "layer", "deny"}) add(value);
+            for (auto value : {"auto", "ask", "deny"}) add(value);
         } else if (option == "--index-update") {
             for (auto value : {"auto", "ask", "deny"}) add(value);
         } else if (option == "--observe") {

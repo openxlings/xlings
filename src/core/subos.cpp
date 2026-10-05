@@ -1792,7 +1792,7 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
     if (a == "--fetch" || a.starts_with("--fetch=")) {
         auto v = value("--fetch");
         auto f = v ? policy::fetch_from_string(*v) : std::nullopt;
-        if (!f) { err = "--fetch expects auto, ask, layer or deny"; return -1; }
+        if (!f) { err = "--fetch expects auto, ask or deny"; return -1; }
         x.overrides.fetch = *f;
         return 1;
     }
@@ -2229,7 +2229,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         }
         else if ((v = value_of(i, a, "--fetch"))) {
             fetch = policy::fetch_from_string(*v);
-            if (!fetch) { usageError("--fetch expects auto, ask, layer or deny"); return 1; }
+            if (!fetch) { usageError("--fetch expects auto, ask or deny"); return 1; }
             changed = true;
         }
         else if ((v = value_of(i, a, "--index-update"))) {
