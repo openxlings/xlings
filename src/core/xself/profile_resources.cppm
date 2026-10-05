@@ -31,6 +31,13 @@
 // `xlings subos use <name>`), the profile decorates the user's prompt
 // with `[xsubos:<name>] ` so it's visually obvious which subos the shell is
 // in. Idempotent — re-sourcing the profile won't double the marker.
+//
+// Tab completion (v12): the profile registers a shell hook that calls the
+// hidden `xlings __complete` command on Tab. The candidate set is resolved
+// from the live command spec at that moment, so it follows new commands and
+// options without any per-release profile edit; installed tools and subos
+// names come from the running home. bash, zsh, fish and PowerShell 7+ are
+// covered (Windows PowerShell 5.1 has no native completer).
 export module xlings.core.xself.profile_resources;
 
 import std;
@@ -68,10 +75,14 @@ namespace xlings::xself::profile_resources {
 //       it for -rpath-link, and mcpp reads it to know what to strip at
 //       pack time. `XLINGS_BIN` + "/../lib" would work today, which is
 //       exactly the problem — it is true by layout, not by promise.
-export inline constexpr std::string_view kVersion = "11";
+//  12 — registers shell tab completion (`xlings __complete`). bash/zsh,
+//       fish and pwsh (7+) each get a hook that asks the CLI, so the
+//       candidate set is the live command spec plus installed tools and
+//       subos names rather than a snapshot frozen at install time.
+export inline constexpr std::string_view kVersion = "12";
 
 export inline constexpr std::string_view bash_sh =
-R"XPROFILE(# xlings-profile-version: 11
+R"XPROFILE(# xlings-profile-version: 12
 # Xlings Shell Profile (bash/zsh)
 
 _xlings_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
@@ -138,10 +149,82 @@ if [ -n "${XLINGS_ACTIVE_SUBOS-}" ] && [ -n "${PS1-}" ]; then
             ;;
     esac
 fi
+
+# Tab completion: `xlings <TAB>` asks the CLI for candidates. The CLI owns the
+# command list, options, installed tools and subos names, so nothing here goes
+# stale when a command is added.
+#
+#   * bash  — complete -F reading `xlings __complete`.
+#   * zsh   — the same file is sourced by zsh, where bash's `complete` does not
+#             exist; a compdef wrapper is registered instead. Guarded on
+#             compdef so a zsh without `compinit` is left untouched.
+#
+# Only POSIX syntax below, bash- and zsh-only parameter forms included: this
+# file is also read by sh (a subos's ~/.profile chains to it), and a dash or
+# busybox ash that cannot PARSE a line stops sourcing the file -- and a
+# non-interactive one exits -- even though the branch never runs there.
+#
+# `xlings` must be on PATH for this to answer; the profile put it there, and a
+# failure is silenced rather than printed on every Tab.
+if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
+    _xlings_complete() {
+        # The words up to the cursor, split on blanks only. bash's COMP_WORDS
+        # also breaks at `:` and `=` (xim:gcc, --lang=en) and holds the words
+        # after the cursor too.
+        local line cur strip value tab i noglob
+        line="${COMP_LINE:0:COMP_POINT}"
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        tab="$(printf '\t')"
+        case "$-" in *f*) noglob=1 ;; esac
+        set -f
+        set -- $line
+        [ -n "$noglob" ] || set +f
+        shift
+        case "$line" in
+            *" "|*"$tab") set -- "$@" "" ;;
+        esac
+        # bash replaces only its own current word: drop what of the full
+        # token lies before it (`xim:` of `xim:gcc`, `--lang=` of `--lang=en`).
+        eval "strip=\"\${$#}\""
+        strip="${strip%"$cur"}"
+        unset COMPREPLY
+        i=0
+        while IFS= read -r value; do
+            value="${value%%"$tab"*}"
+            [ -n "$value" ] || continue
+            case "$value" in
+                "$strip"*) COMPREPLY[i]="${value#"$strip"}"; i=$((i + 1)) ;;
+            esac
+        done <<_XLINGS_COMPLETE_
+$(xlings __complete "$@" 2>/dev/null)
+_XLINGS_COMPLETE_
+    }
+    # `default` keeps filename completion as the fallback for arguments that
+    # are paths (e.g. `xlings script <file>`).
+    complete -o default -F _xlings_complete xlings
+elif [ -n "${ZSH_VERSION-}" ] && typeset -f compdef >/dev/null 2>&1; then
+    _xlings_complete() {
+        local value tab i
+        tab="$(printf '\t')"
+        set --
+        i=2
+        while [ "$i" -le "$CURRENT" ]; do
+            set -- "$@" "${words[i]}"
+            i=$((i + 1))
+        done
+        while IFS= read -r value; do
+            value="${value%%"$tab"*}"
+            [ -n "$value" ] && compadd -- "$value"
+        done <<_XLINGS_COMPLETE_
+$(xlings __complete "$@" 2>/dev/null)
+_XLINGS_COMPLETE_
+    }
+    compdef _xlings_complete xlings
+fi
 )XPROFILE";
 
 export inline constexpr std::string_view fish =
-R"XPROFILE(# xlings-profile-version: 11
+R"XPROFILE(# xlings-profile-version: 12
 # Xlings Shell Profile (fish)
 
 set -l _script_dir (dirname (status filename))
@@ -194,10 +277,30 @@ if set -q XLINGS_ACTIVE_SUBOS
         _xlings_orig_fish_prompt
     end
 end
+
+# Tab completion: hand the CLI the words before the cursor and let it answer
+# from the live command spec (plus installed tools and subos names). A
+# `value<TAB>description` line is fish's own convention, so descriptions show
+# up beside the value. Paths are offered only when the CLI has nothing, as
+# bash's `complete -o default` does; otherwise every subcommand list would be
+# mixed with the files in the current directory.
+# The current token goes through a variable: a quoted variable is exactly one
+# argument in fish, so an empty token still arrives (a command substitution
+# inside double quotes is literal text, not a substitution).
+function __xlings_complete
+    set -l current (commandline -ct)
+    set -l found (xlings __complete (commandline -opc) "$current" 2>/dev/null)
+    if set -q found[1]
+        printf '%s\n' $found
+    else
+        __fish_complete_path "$current"
+    end
+end
+complete -c xlings -f -a '(__xlings_complete)'
 )XPROFILE";
 
 export inline constexpr std::string_view pwsh =
-R"XPROFILE(# xlings-profile-version: 11
+R"XPROFILE(# xlings-profile-version: 12
 # Xlings Shell Profile (PowerShell)
 
 $env:XLINGS_HOME = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -238,6 +341,31 @@ if ($env:XLINGS_ACTIVE_SUBOS) {
             Write-Host -NoNewline "$lb`xsubos:$($env:XLINGS_ACTIVE_SUBOS)$rb "
         }
         & $function:_xlings_orig_prompt
+    }
+}
+
+# Tab completion: register a native argument completer that asks the CLI for
+# candidates, so the set follows the live command spec. `-Native` needs
+# PowerShell 7+; Windows PowerShell 5.1 has no native completion hook, so it
+# is skipped rather than registered and silently doing nothing.
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    Register-ArgumentCompleter -Native -CommandName xlings -ScriptBlock {
+        param($wordToComplete, $commandAst, $cursorPosition)
+        # Only the words before the cursor; the ones after it are not context.
+        $words = @($commandAst.CommandElements |
+            Select-Object -Skip 1 |
+            Where-Object { $_.Extent.StartOffset -lt $cursorPosition } |
+            ForEach-Object { $_.Extent.Text })
+        if ($words.Count -eq 0 -or $words[-1] -ne $wordToComplete) {
+            $words += $wordToComplete
+        }
+        foreach ($line in (& xlings __complete @words 2>$null)) {
+            $parts = $line -split "`t", 2
+            $value = $parts[0]
+            $tooltip = if ($parts.Count -gt 1) { $parts[1] } else { $value }
+            [System.Management.Automation.CompletionResult]::new(
+                $value, $value, 'ParameterValue', $tooltip)
+        }
     }
 }
 )XPROFILE";

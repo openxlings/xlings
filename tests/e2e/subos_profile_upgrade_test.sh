@@ -45,6 +45,21 @@ grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xl
 grep -q "^# xlings-profile-version: $PROFILE_VERSION" "$HOME_DIR/config/shell/xlings-profile.ps1" \
     || fail "S1: pwsh profile missing version marker"
 
+# Tab completion is registered by the profile (v12+), so a home that inits
+# gets it without any extra step. Asserting the hook is present is what makes
+# "the profile lost its completion block" fail instead of silently regressing.
+grep -q '__complete' "$HOME_DIR/config/shell/xlings-profile.sh" \
+    || fail "S1: bash profile missing completion hook"
+grep -q '__complete' "$HOME_DIR/config/shell/xlings-profile.fish" \
+    || fail "S1: fish profile missing completion hook"
+grep -q 'Register-ArgumentCompleter' "$HOME_DIR/config/shell/xlings-profile.ps1" \
+    || fail "S1: pwsh profile missing completion hook"
+# The sh profile is also read by POSIX sh (a subos's ~/.profile chains to it):
+# a line dash cannot parse stops the file there, and a non-interactive shell
+# exits on it.
+sh -n "$HOME_DIR/config/shell/xlings-profile.sh" \
+    || fail "S1: sh cannot parse the bash/zsh profile"
+
 # ── 2. Legacy profile (no marker) gets upgraded ───────────────────────
 log "Scenario 2: legacy v1 profile (no marker) is upgraded to v2"
 cat > "$HOME_DIR/config/shell/xlings-profile.sh" <<'EOF'
