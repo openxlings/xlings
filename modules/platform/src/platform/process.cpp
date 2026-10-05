@@ -142,7 +142,7 @@ int route_signals(std::initializer_list<int> forward, std::initializer_list<int>
     }
     struct sigaction sa{};
     sa.sa_handler = on_routed_signal;
-    ::sigemptyset(&sa.sa_mask);
+    sigemptyset(&sa.sa_mask);
     for (int s : forward) ::sigaction(s, &sa, nullptr);
     ignore_signals(ignore);
     return g_signal_pipe[0];
@@ -164,7 +164,7 @@ void ignore_signals(std::initializer_list<int> signals) {
 void reset_signals() {
     for (int s : {SIGINT, SIGQUIT, SIGTERM, SIGHUP, SIGPIPE, SIGCHLD}) ::signal(s, SIG_DFL);
     sigset_t none;
-    ::sigemptyset(&none);
+    sigemptyset(&none);
     ::sigprocmask(SIG_SETMASK, &none, nullptr);
 }
 
