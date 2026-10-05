@@ -283,6 +283,9 @@ XTEST(SubosPolicyE2E, APolicyPackageIsSelectedLockedAndUpgradedByTheOwner,
     EXPECT_NE(chained.exit_code, 0) << chained.transcript();
     EXPECT_EQ(nlohmann::json::parse(tk::read_file(box.policy_file()))["resolved"]["from"],
               "local:policy-ci@1.1.0") << "a refused upgrade leaves the policy alone";
+
+    // The parts of a reference are names, never paths.
+    EXPECT_EQ(box.run({"subos", "config", "box", "--sandbox", "local:../../etc@1"}).exit_code, 2);
 }
 
 XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,

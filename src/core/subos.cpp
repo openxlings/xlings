@@ -2176,7 +2176,12 @@ select_policy_package_(const std::string& ref, bool upgrade) {
     const auto ns = ref.substr(0, colon);
     const auto name = ref.substr(colon + 1, at == std::string::npos ? std::string::npos : at - colon - 1);
     const auto want = at == std::string::npos ? std::string{} : ref.substr(at + 1);
-    if (ns.empty() || name.empty())
+    // Each part becomes a path component under data/xpkgs: names only.
+    auto plain = [](std::string_view v) {
+        return v.find('/') == std::string_view::npos && v.find('\\') == std::string_view::npos
+            && v != "." && v != ".." && v.find("..") == std::string_view::npos;
+    };
+    if (ns.empty() || name.empty() || !plain(ns) || !plain(name) || !plain(want))
         return std::unexpected(std::pair{2, std::format("'{}': a policy package is ns:name[@version]", ref)});
     const auto root = Config::paths().homeDir / "data" / "xpkgs" / (ns + "-x-" + name);
 
