@@ -262,3 +262,37 @@ XTEST(SubosPolicy, AGrantOpensOneSocketAndPointsItsVariableAtIt,
     auto none = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), req());
     EXPECT_FALSE(none->env.contains("SSH_AUTH_SOCK"));
 }
+
+XTEST(SubosPolicy, APackageReferenceNeedsItsResolutionAndKeepsIt,
+      .area = "subos", .covers = {"POL-PACK", "POL-UNKNOWN-REFUSED"}) {
+    namespace p = xlings::subos::policy;
+    EXPECT_TRUE(p::is_package_ref("xim:policy-ci-strict@1"));
+    EXPECT_FALSE(p::is_package_ref("private"));
+    // Named but never selected through `subos config`: refused, not guessed.
+    EXPECT_FALSE(p::from_json(nlohmann::json{{"extends", "xim:policy-ci@1"}}));
+    auto doc = nlohmann::json{{"extends", "xim:policy-ci@1"},
+                              {"resolved", {{"from", "xim:policy-ci@1.2.0"}, {"sha256", "ab"}, {"base", "locked"}}}};
+    auto pol = p::from_json(doc);
+    ASSERT_TRUE(pol) << pol.error();
+    EXPECT_EQ(pol->preset, p::Preset::Locked);
+    ASSERT_TRUE(pol->package);
+    EXPECT_EQ(pol->package->from, "xim:policy-ci@1.2.0");
+    auto back = p::to_json(*pol);
+    EXPECT_EQ(back["extends"], "xim:policy-ci@1");
+    EXPECT_EQ(back["resolved"]["base"], "locked");
+    EXPECT_EQ(back["resolved"]["sha256"], "ab");
+}
+
+XTEST(SubosPolicy, APackageExtendsAPresetNeverAnotherPackage,
+      .area = "subos", .covers = {"POL-PACK"}) {
+    namespace p = xlings::subos::policy;
+    auto ok = p::from_package(nlohmann::json{{"extends", "private"}, {"isolation", {{"net", "none"}}}},
+                              "xim:a@1", {"xim:a@1.0.0", "00"});
+    ASSERT_TRUE(ok) << ok.error();
+    EXPECT_EQ(ok->net, p::Net::None);
+    EXPECT_EQ(ok->extends, "xim:a@1");
+    EXPECT_FALSE(p::from_package(nlohmann::json{{"extends", "xim:b@1"}}, "xim:a@1", {"xim:a@1.0.0", "00"}));
+    EXPECT_FALSE(p::from_package(nlohmann::json{{"resolved", {{"from", "x"}}}}, "xim:a@1", {"xim:a@1.0.0", "00"}));
+    // A field this version cannot enforce is refused in a package as anywhere.
+    EXPECT_FALSE(p::from_package(nlohmann::json{{"isolation", {{"net", "vpn"}}}}, "xim:a@1", {"xim:a@1.0.0", "00"}));
+}

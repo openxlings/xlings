@@ -65,6 +65,8 @@ import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
+import xlings.libs.sha256;
+import xlings.core.version_order;
 
 namespace xlings::subos {
 
@@ -2152,11 +2154,75 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
 // `subos config <name> [changes]`: the owner's declaration of what the
 // instance may do (design §7). Written outside the instance; every change is
 // audited with its diff. No change prints the policy in force.
+// A policy package (design §7.3): `ns:name[@version]`, an xpkg whose payload
+// carries policy.json. Installed when absent (always, for an upgrade), then
+// read from the newest matching version and locked by sha256. On a system
+// install, /etc/xlings/config.json's `subos_policy_sources` (globs) limits
+// which packages an owner may select.
+std::expected<policy::Policy, std::pair<int, std::string>>
+select_policy_package_(const std::string& ref, bool upgrade) {
+    const auto sys = home::read_system_config();
+    if (auto it = sys.find("subos_policy_sources"); it != sys.end() && it->is_array()) {
+        bool allowed = false;
+        for (auto& g : *it)
+            if (g.is_string() && policy::glob_match(g.get<std::string>(), ref)) allowed = true;
+        if (!allowed)
+            return std::unexpected(std::pair{13, std::format(
+                "E_PERMISSION: {} is not among the policy packages {} allows ({})",
+                ref, home::system_config_path().string(), it->dump())});
+    }
+    const auto colon = ref.find(':');
+    const auto at = ref.find('@', colon);
+    const auto ns = ref.substr(0, colon);
+    const auto name = ref.substr(colon + 1, at == std::string::npos ? std::string::npos : at - colon - 1);
+    const auto want = at == std::string::npos ? std::string{} : ref.substr(at + 1);
+    if (ns.empty() || name.empty())
+        return std::unexpected(std::pair{2, std::format("'{}': a policy package is ns:name[@version]", ref)});
+    const auto root = Config::paths().homeDir / "data" / "xpkgs" / (ns + "-x-" + name);
+
+    auto newest = [&]() -> std::optional<fs::path> {
+        std::optional<fs::path> best;
+        std::error_code ec;
+        if (!fs::is_directory(root, ec)) return best;
+        for (auto& e : platform::dir_entries(root)) {
+            const auto v = e.path().filename().string();
+            if (!want.empty() && v != want && !v.starts_with(want + ".")) continue;
+            if (!fs::is_regular_file(e.path() / "policy.json", ec)) continue;
+            if (!best || version_order::compare(v, best->filename().string()) > 0) best = e.path();
+        }
+        return best;
+    };
+    auto dir = newest();
+    if (!dir || upgrade) {
+        log::info("installing the policy package {}...", ref);
+        const auto rc = platform::run_argv({platform::get_executable_path().string(),
+                                            "install", ref, "-y"});
+        if (rc != 0)
+            return std::unexpected(std::pair{rc, std::format("could not install {} (exit {})", ref, rc)});
+        dir = newest();
+    }
+    if (!dir)
+        return std::unexpected(std::pair{2, std::format(
+            "{} has no policy.json in its payload: not a subos-policy package", ref)});
+    const auto file = *dir / "policy.json";
+    const auto sha = sha256::hex_file(file);
+    std::ifstream in(file, std::ios::binary);
+    auto doc = nlohmann::json::parse(in, nullptr, false);
+    if (!sha || doc.is_discarded())
+        return std::unexpected(std::pair{2, std::format("{}: not readable JSON", file.string())});
+    const auto from = std::format("{}:{}@{}", ns, name, dir->filename().string());
+    auto p = policy::from_package(doc, ref, {from, *sha});
+    if (!p) return std::unexpected(std::pair{2, std::format("{}: {}", from, p.error())});
+    return std::move(*p);
+}
+
 int run_config_(int argc, char* argv[], EventStream& stream,
                 const std::function<void(std::string_view)>& usageError) {
     std::string name;
     bool json = false, reset = false;
     std::optional<policy::Preset> preset;
+    std::optional<std::string> package;          // --sandbox ns:name[@version]
+    bool upgrade = false;                        // --policy-upgrade
     std::optional<policy::Net> net;
     std::optional<policy::Fetch> fetch, index_update;
     std::optional<policy::Observe> observe;
@@ -2187,10 +2253,17 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         if (a == "--json") json = true;
         else if (a == "--reset") { reset = true; changed = true; }
         else if ((v = value_of(i, a, "--sandbox"))) {
-            preset = policy::preset_from_string(*v);
-            if (!preset || *preset == policy::Preset::Legacy) { usageError("--sandbox expects dev, private or locked"); return 1; }
+            if (policy::is_package_ref(*v)) package = *v;
+            else {
+                preset = policy::preset_from_string(*v);
+                if (!preset || *preset == policy::Preset::Legacy) {
+                    usageError("--sandbox expects dev, private, locked or a policy package (ns:name[@version])");
+                    return 1;
+                }
+            }
             changed = true;
         }
+        else if (a == "--policy-upgrade") { upgrade = true; changed = true; }
         else if ((v = value_of(i, a, "--net"))) {
             net = policy::net_from_string(*v);
             if (!net) { usageError("--net expects host, nat, none or proxy"); return 1; }
@@ -2271,8 +2344,35 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         return 0;
     }
 
-    policy::Policy after = preset ? policy::preset(*preset) : before;
-    if (!preset && before.preset == policy::Preset::Legacy) {
+    if (upgrade && !package) {
+        if (!before.package) {
+            usageError(std::format("'{}' does not use a policy package", name));
+            return 1;
+        }
+        package = before.extends;
+    }
+    std::optional<policy::Policy> selected;
+    if (package) {
+        auto p = select_policy_package_(*package, upgrade);
+        if (!p) {
+            stream.emit(ErrorEvent{ .code = p.error().first == 13 ? ErrorCode::Permission : ErrorCode::InvalidInput,
+                                    .message = p.error().second, .recoverable = false });
+            return p.error().first;
+        }
+        selected = std::move(*p);
+        // What the owner is choosing, against the preset it builds on: a
+        // package can loosen as well as tighten, and that is shown, not hidden.
+        if (!json) {
+            const auto base = policy::preset(selected->preset);
+            log::info("{} ({}), compared with the built-in {}:", *package,
+                      selected->package->from, policy::to_string(selected->preset));
+            for (auto& c : policy::diff(base, *selected))
+                if (!c.starts_with("/extends") && !c.starts_with("/resolved")) log::info("  {}", c);
+        }
+    }
+
+    policy::Policy after = selected ? *selected : preset ? policy::preset(*preset) : before;
+    if (!selected && !preset && before.preset == policy::Preset::Legacy) {
         // The first declaration of an undeclared instance starts from dev.
         after = policy::preset(policy::Preset::Dev);
     }

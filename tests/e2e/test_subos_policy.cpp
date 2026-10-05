@@ -197,3 +197,90 @@ XTEST(SubosPolicyE2E, MountsMapHostPathsReadWriteOrReadOnly,
                                  box.home.dir().string() + ":/x", "--", "true"});
     EXPECT_EQ(home.exit_code, 125) << home.transcript();
 }
+
+namespace {
+// A subos-policy package as a local recipe: no download, the install hook
+// writes the payload's policy.json.
+// `versions` is what the index offers, the last one newest.
+std::string policy_recipe(std::vector<std::string> versions, std::string_view policy_json) {
+    std::string offered = std::format(R"(["latest"] = {{ ref = "{}" }})", versions.back());
+    for (auto& v : versions) offered += std::format(R"(, ["{}"] = {{}})", v);
+    return std::format(R"LUA(package = {{
+    spec = "1",
+    name = "policy-ci",
+    description = "a SubOS policy package (test fixture)",
+    type = "subos-policy",
+    archs = {{"x86_64", "aarch64"}},
+    status = "dev",
+    xpm = {{
+        linux   = {{ {0} }},
+        macosx  = {{ {0} }},
+        windows = {{ {0} }},
+    }},
+}}
+import("xim.libxpkg.pkginfo")
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(dir)
+    local f = io.open(path.join(dir, "policy.json"), "w")
+    if not f then return false end
+    f:write('{1}')
+    f:close()
+    return true
+end
+)LUA", offered, policy_json);
+}
+}  // namespace
+
+XTEST(SubosPolicyE2E, APolicyPackageIsSelectedLockedAndUpgradedByTheOwner,
+      .area = "subos", .cost = tk::Cost::Slow, .covers = {"POL-PACK"},
+      .requires_ = {"xlings-bin", "network"}) {   // install syncs the index first
+    Box box;
+    const auto recipe = box.home.root() / "policy-ci.lua";
+    tk::write_file(recipe, policy_recipe({"1.0.0"},
+        R"({"extends":"private","isolation":{"net":"none"},"permissions":{"fetch":{"default":"deny"}}})"));
+    ASSERT_EQ(box.run({"config", "--add-xpkg", recipe.string()}).exit_code, 0);
+
+    auto select = box.run({"subos", "config", "box", "--sandbox", "local:policy-ci@1"});
+    ASSERT_EQ(select.exit_code, 0) << select.transcript();
+    // The owner is shown what the package changes against the preset it builds on.
+    EXPECT_NE(select.transcript().find("compared with the built-in private"), std::string::npos)
+        << select.transcript();
+    auto doc = nlohmann::json::parse(tk::read_file(box.policy_file()));
+    EXPECT_EQ(doc["extends"], "local:policy-ci@1");
+    EXPECT_EQ(doc["resolved"]["from"], "local:policy-ci@1.0.0");
+    EXPECT_EQ(doc["resolved"]["sha256"].get<std::string>().size(), 64u);
+    EXPECT_EQ(doc["isolation"]["net"], "none");
+    EXPECT_EQ(doc["permissions"]["fetch"]["default"], "deny");
+
+    // A newer package changes nothing until the owner asks.
+    tk::write_file(recipe, policy_recipe({"1.0.0", "1.1.0"},
+        R"({"extends":"private","isolation":{"net":"none"},"observe":{"level":"full"}})"));
+    ASSERT_EQ(box.run({"config", "--add-xpkg", recipe.string()}).exit_code, 0);
+    auto status = box.run({"subos", "status", "box", "--json"});
+    auto s = nlohmann::json::parse(status.out, nullptr, false);
+    ASSERT_FALSE(s.is_discarded()) << status.transcript();
+    EXPECT_EQ(s["requested"]["resolved"]["from"], "local:policy-ci@1.0.0");
+
+    auto upgrade = box.run({"subos", "config", "box", "--policy-upgrade"});
+    ASSERT_EQ(upgrade.exit_code, 0) << upgrade.transcript();
+    EXPECT_NE(upgrade.transcript().find("local:policy-ci@1.1.0"), std::string::npos) << upgrade.transcript();
+    doc = nlohmann::json::parse(tk::read_file(box.policy_file()));
+    EXPECT_EQ(doc["resolved"]["from"], "local:policy-ci@1.1.0");
+    EXPECT_EQ(doc["observe"]["level"], "full");
+
+    // A system install may limit where packages come from.
+    const auto sys = box.home.root() / "etc-xlings.json";
+    tk::write_file(sys, R"({"subos_policy_sources":["xim:*"]})");
+    auto refused = box.home.xlings({"subos", "config", "box", "--sandbox", "local:policy-ci"},
+                                   {{"XLINGS_SYSTEM_CONFIG", sys.string()}});
+    EXPECT_EQ(refused.exit_code, 13) << refused.transcript();
+
+    // A package extending another package is not a policy this version takes.
+    tk::write_file(recipe, policy_recipe({"1.0.0", "1.1.0", "1.2.0"}, R"({"extends":"xim:other@1"})"));
+    ASSERT_EQ(box.run({"config", "--add-xpkg", recipe.string()}).exit_code, 0);
+    auto chained = box.run({"subos", "config", "box", "--policy-upgrade"});
+    EXPECT_NE(chained.exit_code, 0) << chained.transcript();
+    EXPECT_EQ(nlohmann::json::parse(tk::read_file(box.policy_file()))["resolved"]["from"],
+              "local:policy-ci@1.1.0") << "a refused upgrade leaves the policy alone";
+}

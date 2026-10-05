@@ -217,7 +217,7 @@ status = "required"
 
 [POL-PACK]
 text = "a policy package supplies a policy by reference"
-status = "planned"
+status = "required"
 
 [POL-CONFIG-STATUS]
 text = "subos config edits the policy; subos status shows requested vs effective"

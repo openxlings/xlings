@@ -83,7 +83,25 @@ struct Policy {
     };
     std::vector<Rule> fetch_rules;
     std::string extends;                     // what the file said it extends
+    // A policy package (design §7.3) the owner selected: the payload's file
+    // the instance's copy was made from, locked by sha256. The instance file
+    // carries the whole policy, so a package update changes nothing until
+    // the owner asks (`subos config <s> --policy-upgrade`).
+    struct Package {
+        std::string from;                    // ns:name@version, as resolved
+        std::string sha256;                  // of the payload's policy.json
+    };
+    std::optional<Package> package;
 };
+
+// `ns:name[@version]`: a policy package, where a preset is one word.
+bool is_package_ref(std::string_view extends);
+
+// A policy package's own file (the payload's policy.json) as the policy an
+// instance selecting it gets. A package extends a built-in preset or
+// nothing; one extending another package is refused.
+std::expected<Policy, std::string> from_package(const nlohmann::json& doc, std::string_view ref,
+                                                Policy::Package resolved);
 
 std::string_view to_string(Preset p);
 std::string_view to_string(Net n);

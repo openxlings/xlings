@@ -224,9 +224,25 @@ std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
     Policy p = preset(Preset::Dev);
     if (auto it = doc.find("extends"); it != doc.end()) {
         if (!it->is_string()) return std::unexpected("policy: extends must be a string");
-        auto base = preset_from_string(it->get<std::string>());
-        if (!base || *base == Preset::Legacy) return bad("extends", it->get<std::string>());
-        p = preset(*base);
+        const auto ext = it->get<std::string>();
+        if (is_package_ref(ext)) {
+            // Selected from a package: the copy below is the policy; `resolved`
+            // says where it came from and which preset that package built on.
+            auto r = doc.find("resolved");
+            if (r == doc.end() || !r->is_object() || !r->contains("from") || !r->contains("sha256"))
+                return std::unexpected(std::format(
+                    "policy: extends = '{}' without `resolved` -- select the package with "
+                    "`xlings subos config <name> --sandbox {}`", ext, ext));
+            auto base = preset_from_string(r->value("base", "dev"));
+            if (!base || *base == Preset::Legacy) return bad("resolved.base", r->value("base", ""));
+            p = preset(*base);
+            p.extends = ext;
+            p.package = Policy::Package{ r->value("from", ""), r->value("sha256", "") };
+        } else {
+            auto base = preset_from_string(ext);
+            if (!base || *base == Preset::Legacy) return bad("extends", ext);
+            p = preset(*base);
+        }
     }
     for (auto it = doc.begin(); it != doc.end(); ++it) {
         const auto& key = it.key();
@@ -377,9 +393,32 @@ std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
     return p;
 }
 
+bool is_package_ref(std::string_view extends) {
+    return extends.find(':') != std::string_view::npos;
+}
+
+std::expected<Policy, std::string> from_package(const nlohmann::json& doc, std::string_view ref,
+                                                Policy::Package resolved) {
+    if (!doc.is_object()) return std::unexpected("not a JSON object");
+    if (doc.contains("resolved")) return std::unexpected("a package's policy carries no `resolved`");
+    if (auto it = doc.find("extends"); it != doc.end() && it->is_string()
+        && is_package_ref(it->get<std::string>()))
+        return std::unexpected(std::format(
+            "it extends another package ({}); a package extends a built-in preset or nothing",
+            it->get<std::string>()));
+    auto p = from_json(doc);
+    if (!p) return p;
+    p->extends = std::string(ref);
+    p->package = std::move(resolved);
+    return p;
+}
+
 nlohmann::json to_json(const Policy& p) {
     nlohmann::json j;
     j["extends"] = p.extends.empty() ? std::string(to_string(p.preset)) : p.extends;
+    if (p.package)
+        j["resolved"] = {{"from", p.package->from}, {"sha256", p.package->sha256},
+                         {"base", std::string(to_string(p.preset))}};
     nlohmann::json iso;
     iso["net"] = std::string(to_string(p.net));
     if (!p.proxy.empty()) iso["proxy"] = p.proxy;
