@@ -149,8 +149,7 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
     // xlings there sends what changes it to the broker instead.
     // Not on Windows: there the holder opens the file without sharing it, so
     // "cannot open" is exactly what a held lock looks like.
-#if !defined(_WIN32)
-    {
+    if constexpr (platform::is_posix) {
         std::ofstream probe(path, std::ios::app);
         if (!probe) {
             const bool inside = utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox";
@@ -161,7 +160,6 @@ std::expected<StateLock, std::string> acquire_state_lock(const std::filesystem::
                        : ": the home is read-only or not yours"));
         }
     }
-#endif
     std::string error;
     if (!lock.lock_.acquire(path, timeout, {}, error, onWait)) {
         return std::unexpected(std::format(

@@ -133,7 +133,6 @@ constexpr std::array<std::string_view, 13> kCapabilities {
     "pasta",        // pasta (passt) and /dev/net/tun: net=nat can run
 };
 
-#if !defined(_WIN32)
 // Run a probe command quietly; true when it exits 0.
 bool quiet_ok(const std::vector<std::string>& argv) {
     RunOptions o;
@@ -143,36 +142,23 @@ bool quiet_ok(const std::vector<std::string>& argv) {
     auto r = run(o);
     return r.exit_code == 0;
 }
-#endif
 
 std::optional<std::string> probe_uncached(std::string_view cap) {
     if (cap == "linux") {
-#if defined(__linux__)
-        return std::nullopt;
-#else
-        return "not Linux";
-#endif
+        if constexpr (is_linux) return std::nullopt;
+        else return "not Linux";
     }
     if (cap == "macos") {
-#if defined(__APPLE__)
-        return std::nullopt;
-#else
-        return "not macOS";
-#endif
+        if constexpr (is_macos) return std::nullopt;
+        else return "not macOS";
     }
     if (cap == "windows") {
-#if defined(_WIN32)
-        return std::nullopt;
-#else
-        return "not Windows";
-#endif
+        if constexpr (is_windows) return std::nullopt;
+        else return "not Windows";
     }
     if (cap == "posix" || cap == "pty") {
-#if defined(_WIN32)
-        return "not POSIX";
-#else
-        return std::nullopt;
-#endif
+        if constexpr (is_posix) return std::nullopt;
+        else return "not POSIX";
     }
     if (cap == "xlings-bin") {
         if (xlings_binary().empty())
@@ -196,17 +182,14 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
         return "no non-interactive sudo";
     }
     if (cap == "userns") {
-#if defined(__linux__)
+        if constexpr (!is_linux) return "user namespaces are Linux-only";
         if (quiet_ok({"unshare", "-Ur", "true"})) return std::nullopt;
         return "unprivileged user namespaces are not available "
                "(kernel.apparmor_restrict_unprivileged_userns or "
                "kernel.unprivileged_userns_clone)";
-#else
-        return "user namespaces are Linux-only";
-#endif
     }
     if (cap == "bwrap") {
-#if defined(__linux__)
+        if constexpr (!is_linux) return "bwrap is Linux-only";
         for (const auto& candidate : {env_or("XDEV_BWRAP"),
                                       std::string("/usr/lib/xlings/bwrap"),
                                       std::string("/usr/bin/bwrap"),
@@ -216,28 +199,19 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
                 return std::nullopt;
         }
         return "no bwrap that can create a sandbox on this host";
-#else
-        return "bwrap is Linux-only";
-#endif
     }
     if (cap == "pasta") {
-#if defined(__linux__)
+        if constexpr (!is_linux) return "pasta is Linux-only";
         std::error_code ec;
         if (!fs::exists("/dev/net/tun", ec)) return "/dev/net/tun is missing";
         for (auto p : {"/usr/bin/pasta", "/usr/local/bin/pasta"})
             if (fs::exists(p, ec)) return std::nullopt;
         return "pasta (passt) is not installed";
-#else
-        return "pasta is Linux-only";
-#endif
     }
     if (cap == "sandbox") {
-#if defined(__linux__)
-        if (auto why = probe("bwrap")) return why;
-        return std::nullopt;
-#else
-        return std::nullopt;   // home-redirect is always available
-#endif
+        // Elsewhere home-redirect is always available.
+        if constexpr (is_linux) return probe("bwrap");
+        else return std::nullopt;
     }
     return "unknown capability";
 #endif
@@ -651,11 +625,7 @@ fs::path xlings_binary() {
                 return ec ? fs::path(e) : abs;
             }
         }
-#if defined(_WIN32)
-        const fs::path exe = "xlings.exe";
-#else
-        const fs::path exe = "xlings";
-#endif
+        const fs::path exe = is_windows ? "xlings.exe" : "xlings";
         fs::path newest;
         fs::file_time_type newest_time{};
         std::error_code ec;
@@ -759,27 +729,27 @@ Home::~Home() {
 std::map<std::string, std::string> Home::env() const {
     std::map<std::string, std::string> e;
     e["XLINGS_HOME"] = dir_.string();
-#if defined(_WIN32)
-    // Windows cannot start much without these; none of them names a home.
-    for (auto name : {"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
-                      "PATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
-                      "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData",
-                      "CommonProgramFiles", "PSModulePath", "ALLUSERSPROFILE", "PUBLIC"}) {
-        if (auto v = env_or(name); !v.empty()) e[name] = v;
+    if constexpr (is_windows) {
+        // Windows cannot start much without these; none of them names a home.
+        for (auto name : {"SystemRoot", "SystemDrive", "WINDIR", "COMSPEC", "PATHEXT",
+                          "PATH", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
+                          "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData",
+                          "CommonProgramFiles", "PSModulePath", "ALLUSERSPROFILE", "PUBLIC"}) {
+            if (auto v = env_or(name); !v.empty()) e[name] = v;
+        }
+        e["USERPROFILE"] = root_.string();
+        e["USERNAME"] = current_user();
+        e["TEMP"] = (root_ / "tmp").string();
+        e["TMP"] = (root_ / "tmp").string();
+    } else {
+        e["HOME"] = root_.string();
+        e["USER"] = current_user();
+        e["LOGNAME"] = current_user();
+        e["PATH"] = "/usr/local/bin:/usr/bin:/bin";
+        e["SHELL"] = "/bin/sh";
+        e["LANG"] = "C.UTF-8";
+        e["TMPDIR"] = (root_ / "tmp").string();
     }
-    e["USERPROFILE"] = root_.string();
-    e["USERNAME"] = current_user();
-    e["TEMP"] = (root_ / "tmp").string();
-    e["TMP"] = (root_ / "tmp").string();
-#else
-    e["HOME"] = root_.string();
-    e["USER"] = current_user();
-    e["LOGNAME"] = current_user();
-    e["PATH"] = "/usr/local/bin:/usr/bin:/bin";
-    e["SHELL"] = "/bin/sh";
-    e["LANG"] = "C.UTF-8";
-    e["TMPDIR"] = (root_ / "tmp").string();
-#endif
     // The lane's mirror and network choices pass through; nothing else does.
     for (auto name : {"XLINGS_RELEASE_MIRROR", "XLINGS_TEST_MIRROR"}) {
         if (auto v = env_or(name); !v.empty()) e[name] = v;
@@ -808,7 +778,8 @@ RunResult Home::xlings(RunOptions o) const {
 }
 
 bool Home::seed_sandbox_backend() const {
-#if defined(__linux__)
+    // Elsewhere the sandbox is home-redirect and needs no binary.
+    if constexpr (!is_linux) return true;
     for (const auto& candidate : {env_or("XDEV_BWRAP"),
                                   std::string("/usr/lib/xlings/bwrap"),
                                   std::string("/usr/bin/bwrap"),
@@ -821,9 +792,6 @@ bool Home::seed_sandbox_backend() const {
         if (!ec) return true;
     }
     return false;
-#else
-    return true;
-#endif
 }
 
 // ── Failure capture and results ──────────────────────────────────────

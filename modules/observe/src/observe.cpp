@@ -186,6 +186,13 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// observe depends on nothing of xlings, xlings.platform included.
+#if defined(__linux__)
+constexpr bool kLinux = true;
+#else
+constexpr bool kLinux = false;
+#endif
+
 struct Identity {
     std::string version;
     std::string command;
@@ -200,7 +207,7 @@ Identity& identity() {
 // a shell script or a person looks identical in argv; the parent's name is
 // the cheapest fact that tells them apart.
 std::string parent_name() {
-#if defined(__linux__)
+    if constexpr (!kLinux) return {};
     // Streamed, not read by size: every /proc file reports a size of 0.
     const auto slurp = [](const char* path) {
         std::ifstream in(path);
@@ -218,9 +225,6 @@ std::string parent_name() {
     auto comm = slurp(("/proc/" + ppid + "/comm").c_str());
     while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
     return comm;
-#else
-    return {};
-#endif
 }
 
 }  // namespace

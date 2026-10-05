@@ -500,11 +500,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // `subos exec` reports a failure before the command started as 125.
     const int kFail = opts.exec_codes ? session::kExitSetup : 1;
 
-#if !defined(__linux__)
     // A session that outlives its shell is a supervisor holding namespaces
     // (design §16): Linux only. Elsewhere the entry below is an interactive
     // shell, which is the opposite of detached and waits for input.
-    if (opts.detached) {
+    if (!platform::is_linux && opts.detached) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
             .message = "a detached session (subos start) needs Linux",
@@ -513,7 +512,6 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         });
         return session::kExitSetup;
     }
-#endif
 
     // Refuse nested sandbox entry.
     if (utils::get_env_or_default("XLINGS_SUBOS_MODE") == "sandbox") {
@@ -547,10 +545,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 #if defined(__linux__) || defined(__APPLE__)
     if (storage == StorageMode::Shared) write_sandbox_rc_(subos_dir / "home" / user);
 #endif
-#if defined(_WIN32)
-    fs::create_directories(subos_dir / "home" / user / "AppData" / "Roaming");
-    fs::create_directories(subos_dir / "home" / user / "AppData" / "Local");
-#endif
+    if constexpr (platform::is_windows) {
+        fs::create_directories(subos_dir / "home" / user / "AppData" / "Roaming");
+        fs::create_directories(subos_dir / "home" / user / "AppData" / "Local");
+    }
 
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
@@ -849,17 +847,11 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         log::warn("sandbox on {} redirects the home directory only -- "
                   "it does not contain the filesystem, network or processes. "
                   "Use an OS sandbox or a VM for untrusted code.",
-#if defined(__APPLE__)
-                  "macOS");
-#else
-                  "Windows");
-#endif
+                  platform::is_macos ? "macOS" : "Windows");
     }
     if (pol.preset != policy::Preset::Legacy) report_degraded_(*compiled);
     payload["backend"] = "home-redirect";
-#if defined(__APPLE__)
-    payload["shell"] = platform::resolve_shell();
-#endif
+    if constexpr (platform::is_macos) payload["shell"] = platform::resolve_shell();
     if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
     std::fflush(nullptr);
     for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);

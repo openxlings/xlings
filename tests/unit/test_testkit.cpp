@@ -104,13 +104,7 @@ XTEST(Testkit, ALaneThatDeclaresACapabilityFailsWhenItIsMissing,
       .area = "testkit", .covers = {"F13"}) {
     // The rule that replaces "skip when the backend is missing" (F13): a skip
     // on a developer machine, a failure on the lane that promised it.
-    const tk::Meta needs_other_os{ .requires_ = {
-#if defined(_WIN32)
-        "linux"
-#else
-        "windows"
-#endif
-    } };
+    const tk::Meta needs_other_os{ .requires_ = {tk::is_windows ? "linux" : "windows"} };
     const std::vector<std::string> nothing;
     const std::vector<std::string> promised{"linux", "windows", "macos"};
 

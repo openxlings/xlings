@@ -17,13 +17,9 @@ import xlings.observe;
 namespace xlings::subos::caps {
 
 std::string_view platform_name() {
-#if defined(_WIN32)
-    return "windows";
-#elif defined(__APPLE__)
-    return "macos";
-#else
-    return "linux";
-#endif
+    if constexpr (platform::is_windows) return "windows";
+    else if constexpr (platform::is_macos) return "macos";
+    else return "linux";
 }
 
 namespace {

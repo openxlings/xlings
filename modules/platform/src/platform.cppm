@@ -25,6 +25,26 @@ export import :unix;
 namespace xlings {
 namespace platform {
 
+    // The platform this binary was built for, as constants: `if constexpr`
+    // rather than `#if` wherever both branches compile on every platform.
+    // `#if` stays for what only exists on one (headers, system calls).
+#if defined(_WIN32)
+    export inline constexpr bool is_windows = true;
+#else
+    export inline constexpr bool is_windows = false;
+#endif
+#if defined(__APPLE__)
+    export inline constexpr bool is_macos = true;
+#else
+    export inline constexpr bool is_macos = false;
+#endif
+#if defined(__linux__)
+    export inline constexpr bool is_linux = true;
+#else
+    export inline constexpr bool is_linux = false;
+#endif
+    export inline constexpr bool is_posix = !is_windows;
+
     export using platform_impl::PATH_SEPARATOR;
     export using platform_impl::OS_NAME;
     export using platform_impl::clear_console;

@@ -23,6 +23,26 @@ export namespace xlings::testkit {
 
 namespace fs = std::filesystem;
 
+// The platform, as constants for `if constexpr`. Spelled like
+// xlings::platform's, and not imported from it: the tool that measures the
+// product does not share its modules.
+#if defined(_WIN32)
+inline constexpr bool is_windows = true;
+#else
+inline constexpr bool is_windows = false;
+#endif
+#if defined(__APPLE__)
+inline constexpr bool is_macos = true;
+#else
+inline constexpr bool is_macos = false;
+#endif
+#if defined(__linux__)
+inline constexpr bool is_linux = true;
+#else
+inline constexpr bool is_linux = false;
+#endif
+inline constexpr bool is_posix = !is_windows;
+
 // ── Metadata ─────────────────────────────────────────────────────────
 
 enum class Cost { Fast, Medium, Slow };

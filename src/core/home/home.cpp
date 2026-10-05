@@ -56,13 +56,13 @@ Mode infer_mode(const fs::path& home, Source source) {
     if (source == Source::SelfContained) return Mode::Portable;
     auto user_default = fs::path(platform::get_home_dir()) / ".xlings";
     if (home.lexically_normal() == user_default.lexically_normal()) return Mode::User;
-#if !defined(_WIN32)
     // Where distributions install shared software. A home there that this
     // user cannot write is a system install whatever it was called.
-    for (auto prefix : {"/usr", "/opt", "/var/lib"}) {
-        if (path_is_under(home, prefix)) return Mode::System;
+    if constexpr (platform::is_posix) {
+        for (auto prefix : {"/usr", "/opt", "/var/lib"}) {
+            if (path_is_under(home, prefix)) return Mode::System;
+        }
     }
-#endif
     return Mode::Custom;
 }
 

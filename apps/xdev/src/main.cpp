@@ -44,21 +44,16 @@ void set_env(const std::string& k, const std::string& v) {
 }
 
 std::string platform_name() {
-#if defined(_WIN32)
-    return "windows";
-#elif defined(__APPLE__)
-    return "macos";
-#else
-    return "linux";
-#endif
+    if constexpr (tk::is_windows) return "windows";
+    else if constexpr (tk::is_macos) return "macos";
+    else return "linux";
 }
 
 // Runs through the platform shell, output to `log`. Returns the exit code.
 int shell(const std::string& command, const fs::path& log) {
-    std::string full = "(" + command + ") > \"" + log.string() + "\" 2>&1";
-#if defined(_WIN32)
-    full = command + " > \"" + log.string() + "\" 2>&1";
-#endif
+    const std::string full = tk::is_windows
+        ? command + " > \"" + log.string() + "\" 2>&1"
+        : "(" + command + ") > \"" + log.string() + "\" 2>&1";
     std::fflush(stdout);
     int rc = std::system(full.c_str());
 #if defined(_WIN32)
@@ -224,12 +219,8 @@ int cmd_test(const TestArgs& a) {
         if (!a.pattern.empty()) command += " " + a.pattern;
         std::println("xdev: {}", command);
         std::fflush(stdout);
-#if defined(_WIN32)
-        auto full = command + " > \"" + (out / "mcpp.ndjson").string() + "\"";
-#else
-        auto full = "cd \"" + root.string() + "\" && " + command + " > \""
-                    + (out / "mcpp.ndjson").string() + "\"";
-#endif
+        auto full = (tk::is_windows ? std::string{} : "cd \"" + root.string() + "\" && ")
+                    + command + " > \"" + (out / "mcpp.ndjson").string() + "\"";
         mcpp_rc = std::system(full.c_str());
     }
     int script_failures = run_suites(a, out, root);

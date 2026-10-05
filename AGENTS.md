@@ -103,6 +103,17 @@ for (int i = 3; i < argc; ++i) {
 }
 ```
 
+### Platform branches: `if constexpr` first, `#if` for what does not exist
+
+`xlings::platform::is_windows` / `is_macos` / `is_linux` / `is_posix` are
+constants. Where both branches compile on every platform -- a string, a path,
+a portable call -- branch with `if constexpr (platform::is_linux)`: every
+build then compiles every branch, so the Linux CI catches a typo in the macOS
+one. `#if` stays for what only exists on one platform: headers, system calls,
+`WIFEXITED`, Win32 types. Modules that do not import `xlings.platform` on
+purpose (`testkit` and through it `xdev`, `observe`) carry their own constants
+under the same names.
+
 ### Core and interaction surfaces are separate (2026.10, #640)
 
 Who is reading the output (a person or an agent) and how it is drawn (cli,

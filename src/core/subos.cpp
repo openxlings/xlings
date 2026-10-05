@@ -2117,11 +2117,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     const auto& inst = src ? *src : *dst;
     auto resolved = resolve_use_name_(inst.first, stream);
     if (resolved.selected.empty()) return resolved.exitCode;
-#if defined(_WIN32)
-    auto user = utils::get_env_or_default("USERNAME");
-#else
-    auto user = utils::get_env_or_default("USER");
-#endif
+    auto user = utils::get_env_or_default(platform::is_windows ? "USERNAME" : "USER");
     if (user.empty()) user = "user";
     auto mapped = model::inside_to_host(Config::subos_dir(resolved.selected), user, inst.second);
     if (!mapped) {
@@ -2942,8 +2938,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // later command would.
         // Linux only, like the keeper it replaces: elsewhere --keep / --ttl
         // change nothing and the shell below is the whole entry.
-#if defined(__linux__)
-        if (sandbox && !no_keep && (keep_forever || ttl_sec > 0)
+        if (platform::is_linux && sandbox && !no_keep && (keep_forever || ttl_sec > 0)
             && !session::find(home_view(), name)) {
             if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
             use_detail_::apply_subos_env_(name);
@@ -2953,7 +2948,6 @@ int run(int argc, char* argv[], EventStream& stream) {
                 .preset = iso.preset, .overrides = iso.overrides });
             if (rc != 0) return rc;
         }
-#endif
         return use_spawn_shell(name, stream, sandbox, sandbox_backend, gpu, cmd,
                                iso.preset, iso.overrides);
     }
