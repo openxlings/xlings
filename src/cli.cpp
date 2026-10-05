@@ -24,6 +24,7 @@ import xlings.ui;
 import xlings.i18n;
 import xlings.platform;
 import xlings.subos.broker;
+import xlings.subos.policy;
 import xlings.core.subos.sandbox;
 import xlings.capabilities;
 import xlings.agent;
@@ -80,7 +81,23 @@ std::vector<completion::Candidate> completion_live_values_(
         } else if (option == "--storage") {
             for (auto value : {"shared", "tmpfs", "image"}) add(value);
         } else if (option == "--sandbox") {
-            for (auto value : {"bwrap", "proot"}) add(value);
+            // `subos config` takes a preset; everywhere else the word after
+            // `--sandbox` is a backend (a preset there is `--sandbox=<preset>`).
+            if (request.command == "subos config") {
+                for (auto value : {"dev", "private", "locked"}) add(value);
+            } else {
+                for (auto value : {"bwrap", "proot"}) add(value);
+            }
+        } else if (option == "--net") {
+            for (auto value : {"host", "nat", "none", "proxy"}) add(value);
+        } else if (option == "--fetch") {
+            for (auto value : {"auto", "ask", "layer", "deny"}) add(value);
+        } else if (option == "--index-update") {
+            for (auto value : {"auto", "ask", "deny"}) add(value);
+        } else if (option == "--observe") {
+            for (auto value : {"off", "basic", "standard", "full"}) add(value);
+        } else if (option == "--allow" || option == "--disallow") {
+            for (auto value : subos::policy::kGrants) add(std::string(value));
         } else if (option == "--shell") {
             // Kept in step with what xvm::parse_shell accepts; aliases are
             // cheap to offer and the parser is the authority.
