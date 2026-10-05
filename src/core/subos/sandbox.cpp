@@ -867,6 +867,13 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
     std::fflush(nullptr);
     for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
+    // `subos exec -- argv`: the argv, not a shell (which, with no command,
+    // is an interactive one -- and waits for input).
+    if (!opts.argv.empty()) {
+        std::error_code ec;
+        fs::current_path(opts.cwd.empty() ? compiled->cwd : fs::path(opts.cwd), ec);
+        return platform::run_argv(opts.argv);
+    }
     return platform::run_shell(cmd, cmd.empty());
 #endif
 }

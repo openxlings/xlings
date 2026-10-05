@@ -56,6 +56,13 @@ XTEST(SubosCmdContract, ExitCodeAndHomeOnMacos,
     auto expected = sandbox_home(home, "probe");
     EXPECT_EQ(fs::path(tk::read_file(expected / "marker")).lexically_normal(),
               expected.lexically_normal());
+
+    // `exec -- argv` runs the argv with the same home, not a shell.
+    auto e = home.xlings({"subos", "exec", "probe", "--sandbox", "--", "/bin/sh", "-c",
+                          R"(printf "%s" "$HOME" > "$HOME/exec-marker"; exit 38)"});
+    EXPECT_EQ(e.exit_code, 38) << e.transcript();
+    EXPECT_EQ(fs::path(tk::read_file(expected / "exec-marker")).lexically_normal(),
+              expected.lexically_normal());
 }
 
 XTEST(SubosCmdContract, ExitCodeHomeAndCmdQuotingOnWindows,
@@ -71,6 +78,11 @@ XTEST(SubosCmdContract, ExitCodeHomeAndCmdQuotingOnWindows,
     EXPECT_EQ(r.exit_code, 37) << r.transcript();
     auto expected = sandbox_home(home, "probe");
     EXPECT_EQ(fs::path(tk::read_file(expected / "marker")), expected);
+
+    // `exec -- argv` runs the argv -- not an interactive shell -- and returns
+    // its exit code.
+    auto e = home.xlings({"subos", "exec", "probe", "--sandbox", "--", "cmd", "/c", "exit", "38"});
+    EXPECT_EQ(e.exit_code, 38) << e.transcript();
 
     // cmd.exe has its own quote / metacharacter grammar; the CRT quoting used
     // for PowerShell must not leak into what follows `cmd /s /c`.

@@ -309,7 +309,9 @@ XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,
     EXPECT_EQ(level["broken"]["enters"], "error") << "entry refuses while the policy cannot be read";
     // The probe is the entry: the same spec, run with `true`.
     if (tk::probe("sandbox") == std::nullopt) {
-        EXPECT_EQ(level["box"]["enters"], "ok") << r.out;
+        // ok, or warn where what the platform cannot give is listed (macOS,
+        // Windows: home redirection only) -- entered either way.
+        EXPECT_NE(level["box"]["enters"], "error") << r.out;
         EXPECT_NE(r.out.find("entered"), std::string::npos) << r.out;
     }
 
