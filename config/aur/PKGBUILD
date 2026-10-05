@@ -26,11 +26,12 @@ package() {
   install -d "$pkgdir/usr/share/$pkgname"
   cp -r . "$pkgdir/usr/share/$pkgname"
 
-  chmod 766 "$pkgdir/usr/share/$pkgname/.xlings.json"
-
-  # Set permissions for files
-  # find "$pkgdir/usr/share/$pkgname" -type f -exec chmod 644 {} +
-  # find "$pkgdir/usr/share/$pkgname" -type d -exec chmod 755 {} +
+  # Read-only for every user (#640 F14): each user runs with a home of their
+  # own (~/.xlings), and a shared file anyone can write is a file anyone can
+  # use against everyone else who reads it.
+  find "$pkgdir/usr/share/$pkgname" -type f -exec chmod 644 {} +
+  find "$pkgdir/usr/share/$pkgname" -type d -exec chmod 755 {} +
+  chmod 755 "$pkgdir/usr/share/$pkgname/bin/xlings"
 
   # Add hooks
   install -Dm644 ../xlings-remove.hook "$pkgdir/usr/share/libalpm/hooks/xlings-remove.hook"

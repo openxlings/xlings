@@ -621,6 +621,16 @@ Config::Config() {
         }
     }
 
+    // A system install's defaults (/etc/xlings/config.json, design §4): read
+    // first, so this home's own file overrides every key it sets.
+    {
+        const auto sys = home::read_system_config();
+        if (auto it = sys.find("mirror"); it != sys.end() && it->is_string())
+            mirror_ = it->get<std::string>();
+        if (auto it = sys.find("lang"); it != sys.end() && it->is_string())
+            lang_ = it->get<std::string>();
+    }
+
     auto configPath = paths_.homeDir / ".xlings.json";
     // The cheap capture, not a full parse: it stops before `versions`,
     // which is ~90% of the bytes on a real home and which nothing here

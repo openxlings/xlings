@@ -67,6 +67,34 @@ std::expected<void, std::string> declare(const fs::path& home,
 // The mode a home without a declaration is taken to have.
 Mode infer_mode(const fs::path& home, Source source);
 
+// ── What a system install provides (design §4, deployment S and M) ──
+//
+// S: the entry is a system package's (/usr/bin/xlings, root-owned). Each user
+//    still has a home of their own; the system adds root-owned components and
+//    a configuration file, and updates the entry through its package manager.
+// M: S plus a root-owned system LAYER, a home a package manager maintains for
+//    every user (/opt/xlings), declared `"mode": "multi"` in its .xlings-home.
+//    Read here; resolving packages from it is not implemented yet.
+
+struct Entry {
+    fs::path path;               // the binary this process is
+    bool system { false };       // root-owned, outside the home, not writable here
+};
+
+// The running binary as a deployment: is it the home's own, or a system
+// package's that `self update` must not try to replace?
+Entry describe_entry(const fs::path& exe, const fs::path& home);
+
+// /etc/xlings/config.json (%ProgramData%\xlings\config.json): defaults a
+// home's own .xlings.json overrides. XLINGS_SYSTEM_CONFIG names another file.
+fs::path system_config_path();
+// The file as an object; missing or unreadable is empty, never an error.
+nlohmann::json read_system_config();
+
+// The system layer when one is installed: /opt/xlings (%ProgramData%\xlings\home)
+// or XLINGS_SYSTEM_LAYER, and only if its marker declares mode "multi".
+std::optional<fs::path> system_layer();
+
 // For read-only commands only: the commands an unknown-layout home allows.
 bool is_read_only_command(std::span<const std::string_view> argv);
 

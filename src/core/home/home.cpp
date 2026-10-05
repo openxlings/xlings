@@ -1,3 +1,9 @@
+module;
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 module xlings.core.home;
 
 import std;
@@ -64,6 +70,68 @@ Mode infer_mode(const fs::path& home, Source source) {
         }
     }
     return Mode::Custom;
+}
+
+Entry describe_entry(const fs::path& exe, const fs::path& home) {
+    Entry e{ .path = exe };
+    std::error_code ec;
+    auto h = fs::weakly_canonical(home, ec);
+    if (ec) h = home;
+    if (exe.empty() || path_is_under(exe, h.lexically_normal().generic_string())) return e;
+    // Root's file where packages install, outside the home, is a package's
+    // whoever runs it: its package manager replaces it, and nothing else
+    // should. Both conditions: root's own build in a work tree is not one.
+#if !defined(_WIN32)
+    const bool packaged = std::ranges::any_of(
+        std::array{"/usr", "/opt", "/bin", "/sbin", "/snap"},
+        [&](const char* prefix) { return path_is_under(exe, prefix); });
+    struct stat st{};
+    e.system = packaged && ::stat(exe.c_str(), &st) == 0 && st.st_uid == 0;
+#endif
+    return e;
+}
+
+namespace {
+
+std::string env_or_empty(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string{};
+}
+
+fs::path program_data() {
+    auto v = env_or_empty("ProgramData");
+    return v.empty() ? fs::path("C:/ProgramData") : fs::path(v);
+}
+
+}  // namespace
+
+fs::path system_config_path() {
+    if (auto v = env_or_empty("XLINGS_SYSTEM_CONFIG"); !v.empty()) return v;
+    if constexpr (platform::is_windows) return program_data() / "xlings" / "config.json";
+    else return "/etc/xlings/config.json";
+}
+
+nlohmann::json read_system_config() {
+    std::error_code ec;
+    const auto path = system_config_path();
+    if (!fs::is_regular_file(path, ec)) return nlohmann::json::object();
+    std::ifstream in(path, std::ios::binary);
+    auto j = nlohmann::json::parse(in, nullptr, false);
+    return j.is_object() ? j : nlohmann::json::object();
+}
+
+std::optional<fs::path> system_layer() {
+    fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
+    if (layer.empty()) {
+        if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";
+        else layer = "/opt/xlings";
+    }
+    auto marker = read_marker(layer);
+    if (!marker) return std::nullopt;
+    auto it = marker->find("mode");
+    if (it == marker->end() || !it->is_string() || it->get<std::string>() != to_string(Mode::Multi))
+        return std::nullopt;
+    return layer;
 }
 
 HomeContext describe(const fs::path& home, Source source) {

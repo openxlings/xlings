@@ -114,7 +114,7 @@ const CommandSpec& root() {
                 {"install", "Install xlings", {}, {}, {}, {}},
                 {"uninstall", "Uninstall xlings", {}, {}, {{"-y, --yes", "Skip confirmation"}, {"--keep-data", "Keep data"}, {"--dry-run", "Preview"}}, {}},
                 {"init", "Initialize directories", {}, {}, {}, {}},
-                {"update", "Update xlings", {}, {}, {}, {}},
+                {"update", "Update xlings", {}, {}, {{"--user", "Install into this home even when xlings is a system package's"}}, {}},
                 {"config", "Show configuration", {}, {}, {}, {}},
                 {"clean", "Clean cache", {}, {}, {{"--dry-run", "Preview"}}, {}},
                 {"migrate", "Migrate old layout", {}, {}, {}, {}},

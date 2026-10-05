@@ -38,9 +38,11 @@ commands = [
   "bash tests/e2e/run_all.sh {tarball}",
 ]
 
-# The root repair on a stock Ubuntu 24.04 (CI-only: it uses sudo).
+# What needs root on a stock Ubuntu 24.04 (CI-only: it uses sudo): the
+# isolation repair, and a system package's entry (deployment S).
 [isolation-fix]
 platforms = ["linux"]
 commands = [
   "bash tests/e2e/isolation_doctor_fix_test.sh",
+  "bash tests/e2e/system_install_test.sh",
 ]

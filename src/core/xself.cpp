@@ -48,7 +48,7 @@ int cmd_help(EventStream& stream) {
         {{"name", "install"},   {"desc", "Install xlings from release package"}},
         {{"name", "uninstall"}, {"desc", "Remove this xlings install entirely (-y / --keep-data / --dry-run)"}},
         {{"name", "init"},      {"desc", "Create home/data/subos dirs"}},
-        {{"name", "update"},    {"desc", "Update index + install latest xlings"}},
+        {{"name", "update"},    {"desc", "Update index + install latest xlings (--user: into this home, beside a system package's xlings)"}},
         {{"name", "config"},    {"desc", "Show configuration details"}},
         {{"name", "clean"},     {"desc", "Remove cache + gc orphaned packages (--dry-run)"}},
         {{"name", "migrate"},   {"desc", "Migrate old layout to subos/default"}},
@@ -108,8 +108,12 @@ int run(int argc, char* argv[], EventStream& stream) {
         return cmd_init();
     }
     if (action == "update") {
-        if (auto rc = reject_surplus(action); rc != 0) return rc;
-        return cmd_update();
+        bool user = false;
+        for (const auto& a : args) {
+            if (a == "--user") user = true;
+            else return reject("update", a);
+        }
+        return cmd_update(user);
     }
     if (action == "config") {
         if (auto rc = reject_surplus(action); rc != 0) return rc;

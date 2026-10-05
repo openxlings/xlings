@@ -20,6 +20,7 @@ import xlings.core.utils;
 import xlings.runtime;
 import xlings.core.elf_same_source;
 import xlings.core.entry_binary;
+import xlings.core.home;
 import xlings.core.version_order;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
@@ -5502,6 +5503,24 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
     // directories are immutable, so their scan results are cacheable by path
     // and mtime -- which is a separate change with its own risk surface.
     // See .agents/docs/2026-08-10-doctor-fix-hang-and-537.md (D2 vs D3).
+    // What a system install contributes (design §4), said once at the top:
+    // which binary is answering, and the system files it reads.
+    {
+        const auto entry = home::describe_entry(platform::get_executable_path(),
+                                                Config::paths().homeDir);
+        if (entry.system)
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "entry: {} (a system package's; its package manager updates it)",
+                entry.path.string())});
+        std::error_code ec;
+        if (const auto cfg = home::system_config_path(); fs::is_regular_file(cfg, ec))
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "system config: {} (defaults this home's .xlings.json overrides)", cfg.string())});
+        if (const auto layer = home::system_layer())
+            stream.emit(LogEvent{LogLevel::info, std::format(
+                "system layer: {} (found; packages are not resolved from it yet)", layer->string())});
+    }
+
     const bool deepAudit = deep || fix;
     if (scope && !deepAudit) {
         stream.emit(ErrorEvent{

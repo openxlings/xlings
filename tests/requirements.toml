@@ -107,7 +107,7 @@ status = "required"
 
 [F14]
 text = "a system install's shared config is not world-writable"
-status = "planned"
+status = "required"
 
 [F15]
 text = "a supervisor outside the sandbox writes the audit; the sandbox cannot reach it"
@@ -386,8 +386,13 @@ text = "writers keep keys they do not know"
 status = "required"
 
 [HOME-SYSTEM-MODE]
-text = "a system install (mode S) and the system layer read path"
-status = "planned"
+text = "a system install (mode S): the entry left to its package manager, /etc/xlings/config.json as defaults, the system layer found and reported"
+status = "required"
+
+[HOME-LAYER-RESOLVE]
+text = "packages in the system layer (M) resolve and activate in a user's home without a copy"
+status = "deferred"
+why = "the layer is found and reported; resolving from it touches xvm's version DB and the installer's payload lookup, a change of its own"
 
 # ── compatibility and platforms ────────────────────────────────────
 

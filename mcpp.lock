@@ -59,17 +59,17 @@ version = "1.5.7"
 source  = "index+compat@1.5.7"
 hash    = "fnv1a:cc855914d41f9bfb"
 
+[package."mcpplibs.capi.lua"]
+namespace = "mcpplibs.capi"
+version = "0.0.3"
+source  = "index+mcpplibs.capi@0.0.3"
+hash    = "fnv1a:f3031630d0b22d94"
+
 [package."mcpplibs.cmdline"]
 namespace = "mcpplibs"
 version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:aad61299abc2c4b7"
-
-[package."tinyhttps"]
-namespace = "mcpplibs"
-version = "0.2.9"
-source  = "index+mcpplibs@0.2.9"
-hash    = "fnv1a:a01132893163f775"
 
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
@@ -77,9 +77,9 @@ version = "0.0.60"
 source  = "index+mcpplibs@0.0.60"
 hash    = "fnv1a:86ae98702bf16787"
 
-[package."mcpplibs.capi.lua"]
-namespace = "mcpplibs.capi"
-version = "0.0.3"
-source  = "index+mcpplibs.capi@0.0.3"
-hash    = "fnv1a:f3031630d0b22d94"
+[package."tinyhttps"]
+namespace = "mcpplibs"
+version = "0.2.9"
+source  = "index+mcpplibs@0.2.9"
+hash    = "fnv1a:a01132893163f775"
 
