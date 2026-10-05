@@ -1,4 +1,4 @@
-// modules/guard and modules/observe (C1): the confirmation token, the Asker
+// xlings.guard and xlings.observe (modules/runtime, C1): the confirmation token, the Asker
 // port, the journal and redaction. Both were lifted out of src/core with
 // their behaviour unchanged; these pin that behaviour at the new seam.
 #include <gtest/gtest.h>

@@ -20,8 +20,8 @@ kind = "bin"
 main = "src/main.cpp"
 
 [dependencies]
-json    = { path = "../../modules/json" }
+libs    = { path = "../../modules/libs" }
 testkit = { path = "../../modules/testkit" }
 
 [build]
-include_dirs = ["../../modules/json/src/json"]
+include_dirs = ["../../modules/libs/src/json"]

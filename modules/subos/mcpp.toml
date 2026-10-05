@@ -23,10 +23,9 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-json     = { path = "../json" }
+libs     = { path = "../libs" }
 platform = { path = "../platform" }
-guard    = { path = "../guard" }
-observe  = { path = "../observe" }
+runtime  = { path = "../runtime" }   # guard, observe
 
 [build]
-include_dirs = ["../json/src/json"]
+include_dirs = ["../libs/src/json"]

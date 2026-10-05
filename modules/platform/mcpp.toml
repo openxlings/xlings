@@ -36,4 +36,4 @@ version   = "0.1.0"
 kind = "lib"
 
 [dependencies]
-cancellation = { path = "../cancellation" }
+runtime = { path = "../runtime" }   # cancellation

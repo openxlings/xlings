@@ -13,7 +13,7 @@ export import xlings.observe;
 // one ran, when, from where, or how it was confirmed -- so the loss could not
 // be attributed to any of them. The next one can.
 //
-// The record itself moved to `modules/observe` (xlings.observe.destructive),
+// The record itself moved to xlings.observe.destructive (`modules/runtime`),
 // where the SubOS audit is written with the same journal. This module binds
 // it to THIS home and keeps the names every caller uses.
 //

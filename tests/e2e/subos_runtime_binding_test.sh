@@ -36,7 +36,7 @@ set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
 EXPECTED_DEFAULT="$(sed -n 's/.*DEFAULT_RUNTIME_FALLBACK = "\(.*\)".*/\1/p' \
-    "$ROOT_DIR/modules/subos/src/subos/manifest.cppm" | head -1)"
+    "$ROOT_DIR/modules/subos/src/manifest.cppm" | head -1)"
 # Guarded, because an empty expectation does not fail -- it makes S1a compare
 # "" against a subos that also recorded nothing, and passes. A constant renamed
 # out from under this sed would then be reported as the feature working.

@@ -7,7 +7,7 @@ import xlings.runtime;
 // Asking a person before doing something that cannot be undone, and carrying
 // the fact that they said yes.
 //
-// The token and the asking moved to `modules/guard` (xlings.guard), shared
+// The token and the asking moved to xlings.guard (`modules/runtime`), shared
 // with the SubOS core; this module keeps the names every caller already uses
 // and adapts the EventStream -- the interaction surface the CLI, the TUI and
 // the interface all implement -- to guard's `Asker` port.

@@ -85,7 +85,7 @@ if "Manage SubOS environments" not in en:
 # Counted from the catalogue rather than the output: the output only shows one
 # command at a time, and the point is that the whole surface is covered.
 zh = (pathlib.Path(__file__).resolve().parents[2]
-      / "modules/i18n/src/i18n/zh.cppm").read_text()
+      / "modules/ui/src/i18n/zh.cppm").read_text()
 entries = len(re.findall(r'^\s*\{\s*"', zh, re.M))
 FLOOR = 100
 if entries < FLOOR:
