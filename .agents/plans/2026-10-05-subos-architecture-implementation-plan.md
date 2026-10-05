@@ -111,6 +111,17 @@ Recorded here so the PR description and the final report say the same thing:
   forwarder plus the supervisor bridge, and nothing else depends on it.
   Selecting it reports the shared "not implemented on this platform yet" hint
   and, under `--no-degrade`, refuses. `nat` and `none` ship.
+- **`fetch=layer`** (C24) and **resolving packages from the system layer
+  (M)** are one mechanism -- a layered payload lookup in xvm's version DB and
+  the installer -- and both follow the PR (`PERM-FETCH-LAYER`,
+  `HOME-LAYER-RESOLVE`, deferred with that reason). Until then `layer` is
+  refused wherever it appears; before this change it was granted and
+  installed into the shared home. The system layer is found and reported.
+- **Policy packages** are selected per instance (`subos config --sandbox
+  ns:name`); a pack named on a single call is not taken (a call tightens
+  presets and overrides only).
+- **Landlock** ships as an explicit backend (`--sandbox landlock`), never an
+  automatic stand-in for bwrap: it fences writes and hides nothing.
 - **T6** (`xdev lint` / `xdev release`) follows the PR, as the design allows.
 - **macOS / Windows** keep home-redirect; every interface reports
   `unsupported` with the reason, which is what `subos status` prints.
@@ -119,7 +130,7 @@ Recorded here so the PR description and the final report say the same thing:
 
 ## 5. Release
 
-Version `2026.10.5.1` (or the date the PR lands, `.1`). After `release.yml`
+Version: the date the PR lands, `.1` (`2026.10.6.1`). After `release.yml`
 publishes the assets: top up GitCode with the local `gtc` immediately (do not
 wait for the release workflow's mirror step), bump `xim-pkgindex/pkgs/x/xlings.lua`,
 then verify the ecosystem on a real home: quick install, `self update`,

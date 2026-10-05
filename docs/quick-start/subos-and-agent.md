@@ -53,11 +53,38 @@ claude
 codex
 ```
 
-直接执行命令：
+直接执行命令（返回命令自己的退出码）：
 
 ```bash
-xlings subos use dev-agent --sandbox --cmd "claude --task 'fix lint errors'"
+xlings subos exec dev-agent --sandbox -- claude --task 'fix lint errors'
 ```
+
+### 声明隔离程度
+
+隔离程度声明在实例上，之后无论怎样进入都按它执行。只有 owner 能在沙箱外修改：
+
+```bash
+xlings subos config dev-agent --sandbox=private   # 私有网络（nat）、中性身份、获取包需批准
+xlings subos config dev-agent --sandbox=locked    # 无网络、映射默认只读、不能获取包
+xlings subos config dev-agent --mount ~/proj:/work --allow ssh-agent
+xlings subos status dev-agent                     # 要求的 vs 本机实际给的
+```
+
+沙箱里的 xlings 照常可用：home 只读，`install` 交给宿主侧的 broker，按实例的策略判定；
+`fetch=ask` 时请求排队（exit 75），在外面用 `xlings subos requests / approve / deny` 处理。
+
+### 会话：一个实例，多条命令
+
+```bash
+xlings subos start dev-agent --ttl 30m            # 后台会话
+xlings subos exec dev-agent -- make test          # 加入它：同一个 /tmp、同一组进程
+xlings subos log dev-agent                        # 审计（写在沙箱看不到的地方）
+xlings subos report dev-agent                     # 执行过的程序、改动过的文件
+xlings subos stop dev-agent
+```
+
+Agent 声明自己的身份：`XLINGS_AGENT_MODE=1`。agent 模式下任何命令都不会等待输入，
+交互式 `subos use` 会被拒绝（exit 2）并提示改用 `subos exec`。
 
 ```mermaid
 graph LR
@@ -175,7 +202,9 @@ sequenceDiagram
 |------|------|
 | `xlings subos new <name>` | 创建 SubOS |
 | `xlings subos use <name> --sandbox` | 进入沙箱环境 |
-| `xlings subos use <name> --cmd "..."` | 在 SubOS 中执行命令 |
-| `xlings subos stop <name>` | 释放 keeper 进程 |
+| `xlings subos exec <name> [--sandbox] -- <cmd>` | 在 SubOS 中执行一条命令 |
+| `xlings subos config <name> --sandbox=private` | 声明隔离程度（dev / private / locked，或策略包） |
+| `xlings subos start` / `stop <name>` | 启动 / 结束后台会话 |
+| `xlings subos status` / `doctor` | 查看实际生效的隔离；检查每个实例 |
 | `xlings subos remove <name>` | 删除 SubOS（连同 home，先确认；无终端时需 `-y`） |
 | `xlings interface` | 启动 NDJSON 程序化接口 |

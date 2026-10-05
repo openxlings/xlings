@@ -31,7 +31,7 @@ can actually give you.
 
 | Platform | xlings release | Package coverage | `subos --sandbox` isolates |
 |---|---|---|---|
-| Linux x86_64 | ✅ published | full | the filesystem (bwrap / proot) |
+| Linux x86_64 | ✅ published | full | filesystem, processes, network, identity (bwrap); writes only (landlock) |
 | Linux aarch64 | ✅ published | partial — many recipes only publish an x86_64 artifact | the filesystem, once a backend is available for the arch |
 | macOS 14+ arm64 | ✅ published | partial — some recipes ship x86_64 only | **only `$HOME`** |
 | Windows x86_64 | ✅ published | partial | **only `%USERPROFILE%`** |
@@ -138,8 +138,9 @@ code; use an OS sandbox or VM when that boundary is required.
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest
+xlings subos config agent-ws --sandbox=private            # declare: private network, neutral identity
 xlings subos use agent-ws --sandbox                       # enter the isolated world
-xlings subos use agent-ws --sandbox --cmd "python run.py" # or one-shot exec
+xlings subos exec agent-ws -- python run.py               # or one command, its own exit code
 ```
 
 → [SubOS & Agent guide](docs/quick-start/subos-and-agent.md)

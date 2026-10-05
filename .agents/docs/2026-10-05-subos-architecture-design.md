@@ -814,3 +814,26 @@ plan ──► build（每个 OS × profile 只构建一次；mcpp 全局缓存�
 | R25 | `xdev` 自身出问题会拖垮整个 CI | xdev 有自己的 L1 测试，并且在 build job 里构建；`mcpp test` 仍然可以直接运行（xdev 只是在它上面增加选择和报告） |
 | R26 | 本节的耗时数据来自最近的少量运行（每个 workflow 最多 9 次成功运行的中位数） | 15 min 的目标需要在 T3 之后实测确认；`xdev report --trend` 持续跟踪 |
 | R27 | 环境变量命名 | 统一为 `XLINGS_AGENT_MODE`（取值 `1` / `0`），与 `--agent` 等价；`XDEV_*` 只用于开发工具，不进入产品 |
+
+---
+
+## 实施记录（2026-10-06，PR #641）
+
+实现与本文有出入的地方，以实现为准，并在这里说明原因：
+
+| 本文 | 实现 | 原因 |
+|---|---|---|
+| 审计按 kind 分文件 | 每个实例一个 `logs/subos/<s>/events.ndjson`，事件带 `kind`，`subos log --kind` 过滤 | 一次追加、一个轮转点；读者按 kind 过滤即可 |
+| exec 审计的过滤器由 supervisor 安装 | 由 session-init 在沙箱内安装，listener 经 ctl socket 传给 supervisor | 在 bwrap 之前设置 no_new_privs 会触发 AppArmor 对 bwrap 的限制 |
+| `net=nat`：pasta 接入 bwrap 的 netns | 子进程先 unshare user+net，pasta 按 pid 接入，再 exec bwrap | 非特权的 pasta 无法加入 bwrap 创建的 netns |
+| interface `subos_exec` 流式输出 | 结束后返回输出与退出码 | 流式需要 interface 协议的增量事件，留到下一版 |
+| broker 执行安装时 hook 也在沙箱里 | hook 在宿主侧按 owner 权限运行 | 需要一个能写 payload 的 hook 沙箱，单独做 |
+| 加入会话的交互 shell 有作业控制 | 加入时提示作业控制留在第一个 shell | 终端只能属于一个会话首进程 |
+| Landlock 作为 bwrap 不可用时的回退 | 只在 `--sandbox landlock` 时使用 | 它只限制写入、不隐藏文件，自动替换会悄悄降低隔离 |
+| `fetch=layer`、系统层（M）解析包 | 识别系统层并报告；`layer` 在任何位置都拒绝 | 两者是同一个分层 payload 查找机制，单独实现（`PERM-FETCH-LAYER`、`HOME-LAYER-RESOLVE`） |
+| `net=proxy`、独立 rootfs（C27） | 拒绝 / 不在本 PR | 见计划 §4 |
+| 单次调用 `--sandbox=xim:pack` | 只在 `subos config` 上选择策略包 | 单次调用只能收紧，策略包可能放宽 |
+| `self install --user` | `self update --user` | 系统包的 `/usr/bin/xlings` 不是发布包目录，`self install` 无从安装；`self update --user` 走现有的安装路径 |
+
+需求与测试的对应关系在 `tests/requirements.toml`，`xdev report --requirements --fail-uncovered` 在 CI 中校验。
+

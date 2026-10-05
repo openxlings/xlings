@@ -29,7 +29,7 @@
 
 | 平台 | xlings 发布产物 | 包生态覆盖 | `subos --sandbox` 隔离的是 |
 |---|---|---|---|
-| Linux x86_64 | ✅ 有 | 完整 | 文件系统（bwrap / proot） |
+| Linux x86_64 | ✅ 有 | 完整 | 文件系统、进程、网络、身份（bwrap）；仅写入（landlock） |
 | Linux aarch64 | ✅ 有 | 部分 —— 不少配方只发布 x86_64 产物 | 文件系统，前提是该架构有可用后端 |
 | macOS 14+ arm64 | ✅ 有 | 部分 —— 部分配方只发布 x86_64 | **仅 `$HOME`** |
 | Windows x86_64 | ✅ 有 | 部分 | **仅 `%USERPROFILE%`** |
@@ -133,8 +133,9 @@ Linux 可在 rootless 文件系统隔离的 SubOS 中运行 Agent。macOS 和 Wi
 
 ```bash
 xlings subos new agent-ws --from subos:dev-env@latest
+xlings subos config agent-ws --sandbox=private            # 声明：私有网络、中性身份
 xlings subos use agent-ws --sandbox                       # 进入隔离世界
-xlings subos use agent-ws --sandbox --cmd "python run.py" # 或一次性执行
+xlings subos exec agent-ws -- python run.py               # 或执行一条命令，返回它自己的退出码
 ```
 
 → [SubOS 与 Agent](docs/quick-start/subos-and-agent.md)
