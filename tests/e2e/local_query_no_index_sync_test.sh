@@ -128,7 +128,9 @@ run_local "interface list_packages" '"kind":"result"' \
 # On Linux the implicit sandbox-backend decision consults the catalog before
 # it considers acquisition.  Both local fixtures exclude this host, so the
 # lookup must return the causal local diagnostic without reaching install.
-if [[ "$(uname -s)" == Linux ]]; then
+if [[ "$(uname -s)" == Linux ]] && host_has_usable_bwrap; then
+  log "skip the sandbox backend lookup: this host's own bwrap works, nothing is fetched"
+elif [[ "$(uname -s)" == Linux ]]; then
   log "sandbox backend lookup"
   run_local "sandbox backend lookup" \
     'E_UNSUPPORTED_TARGET.*no sandbox backend' \

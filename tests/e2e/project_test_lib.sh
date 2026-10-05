@@ -238,3 +238,14 @@ assert_contains() {
   local message="$3"
   echo "$haystack" | strip_ansi | grep -F "$needle" >/dev/null || fail "$message"
 }
+
+# A bwrap on this host that can make a sandbox: root-owned, then the system's
+# (what entry tries before an index payload, design §20). With one, no
+# backend has to be fetched and a "no backend" scenario does not arise.
+host_has_usable_bwrap() {
+  local b
+  for b in /usr/lib/xlings/bwrap /usr/bin/bwrap /usr/local/bin/bwrap; do
+    [[ -x "$b" ]] && "$b" --ro-bind / / -- /bin/true >/dev/null 2>&1 && return 0
+  done
+  return 1
+}

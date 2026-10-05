@@ -116,7 +116,9 @@ grep -q "E_UNSUPPORTED_TARGET.*$host_arch" <<<"$strong" \
 # weak signal is enough HERE and not enough above, and the difference is who
 # asked. Both halves are asserted in this file so the asymmetry is deliberate
 # rather than an accident of two tests that never met.
-if [[ "$(uname -s)" == Linux ]]; then
+if [[ "$(uname -s)" == Linux ]] && host_has_usable_bwrap; then
+  log "skip the backend refusal: this host's own bwrap works, nothing is fetched"
+elif [[ "$(uname -s)" == Linux ]]; then
   for backend in bwrap proot; do
     cat > "$index/pkgs/${backend:0:1}/${backend}.lua" <<LUA
 package = { spec="1", name="$backend", type="package",
