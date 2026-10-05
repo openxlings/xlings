@@ -1,11 +1,3 @@
-module;
-
-#include <cstdlib>
-
-#if defined(__linux__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-
 module xlings.core.xvm.shim;
 
 import std;
@@ -599,23 +591,20 @@ void report_passthrough_(const std::string& program_name,
 int exec_host_program_(const std::filesystem::path& host,
                        int argc, char* argv[]) {
     auto hostStr = host.string();
-    std::vector<const char*> newArgv;
-    newArgv.push_back(hostStr.c_str());
-    for (int i = 1; i < argc; ++i) newArgv.push_back(argv[i]);
-    newArgv.push_back(nullptr);
-
-#if defined(__linux__) || defined(__APPLE__)
-    execvp(hostStr.c_str(), const_cast<char* const*>(newArgv.data()));
-    log::error("xlings: failed to exec '{}'", hostStr);
-    return 127;
-#else
-    std::string cmd = platform::shell_quote(hostStr);
-    for (int i = 1; i < argc; ++i) {
-        cmd += " ";
-        cmd += platform::shell_quote(argv[i]);
+    if constexpr (platform::is_posix) {
+        std::vector<std::string> args{hostStr};
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        (void)platform::exec_program(args, platform::environment());
+        log::error("xlings: failed to exec '{}'", hostStr);
+        return 127;
+    } else {
+        std::string cmd = platform::shell_quote(hostStr);
+        for (int i = 1; i < argc; ++i) {
+            cmd += " ";
+            cmd += platform::shell_quote(argv[i]);
+        }
+        return platform::exec(cmd);
     }
-    return platform::exec(cmd);
-#endif
 }
 
 // ── `ldd` answers in the file's world, not this subos's ──────────────
@@ -1240,33 +1229,25 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         return 1;
     }
 
-    // Build argv for execvp
-    auto exe_str = exe_path.string();
-    std::vector<const char*> new_argv;
-    new_argv.push_back(exe_str.c_str());
-    for (int i = 1; i < argc; ++i) {
-        new_argv.push_back(argv[i]);
-    }
-    new_argv.push_back(nullptr);
-
     // Increment shim depth before exec so child processes see it
     platform::set_env_variable("XLINGS_SHIM_DEPTH", std::to_string(depth + 1));
 
-#if defined(__linux__) || defined(__APPLE__)
-    execvp(exe_path.c_str(), const_cast<char* const*>(new_argv.data()));
-    // If execvp returns, it failed
-    log::error("xlings: failed to exec '{}'",
-               Config::display_path(exe_path));
-    return 1;
-#else
-    // Fallback for platforms without execvp
-    std::string cmd = platform::shell_quote(exe_path.string());
-    for (int i = 1; i < argc; ++i) {
-        cmd += " ";
-        cmd += platform::shell_quote(argv[i]);
+    if constexpr (platform::is_posix) {
+        std::vector<std::string> args{exe_path.string()};
+        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+        (void)platform::exec_program(args, platform::environment());
+        // Returned: the exec failed.
+        log::error("xlings: failed to exec '{}'",
+                   Config::display_path(exe_path));
+        return 1;
+    } else {
+        std::string cmd = platform::shell_quote(exe_path.string());
+        for (int i = 1; i < argc; ++i) {
+            cmd += " ";
+            cmd += platform::shell_quote(argv[i]);
+        }
+        return platform::exec(cmd);
     }
-    return platform::exec(cmd);
-#endif
 }
 
 }

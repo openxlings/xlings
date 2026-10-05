@@ -1,29 +1,3 @@
-module;
-
-// System headers used by the sandbox backends only. `import std;` does not
-// pull these in, and the named-module purview forbids including them there.
-#include <cstdio>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-// See src/core/subos.cppm: windows.h's min/max macros break std::min({...}).
-// Not yet triggered here, and that is exactly why it is worth closing --
-// the failure only appears on Windows, and only once someone writes the call.
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
-#if defined(__APPLE__)
-#include <crt_externs.h>
-#define XLINGS_ENVIRON (*_NSGetEnviron())
-#else
-// glibc and musl declare environ in <unistd.h> under _GNU_SOURCE
-#define XLINGS_ENVIRON environ
-#endif
-#endif
-
 module xlings.core.subos.sandbox;
 
 import std;
@@ -45,7 +19,6 @@ import xlings.subos.caps;
 import xlings.subos.spec;
 import xlings.subos.provider;
 import xlings.subos.gates;
-import xlings.subos.seccomp;
 import xlings.subos.session;
 import xlings.subos.broker;
 import xlings.core.elfread;
@@ -79,14 +52,12 @@ StorageMode read_storage_mode_(const fs::path& subos_dir) {
 // the only caller (use_sandbox_mode_) is also Linux-guarded, so we
 // guard these helpers too rather than fight the type system with
 // platform-portable substitutes.
-#if defined(__linux__) || defined(__APPLE__)
-
 // We write per-user passwd/group at sandbox init time so getpwuid
 // (real_uid) inside the sandbox returns the real user's home
 // (= /home/<user>) and shell — most CLI tools depend on this. Root
 // is also included so anything that does getpwuid(0) (scripts that
 // assume "root must exist") doesn't bail.
-std::string make_etc_passwd_(const std::string& user, uid_t uid, gid_t gid) {
+std::string make_etc_passwd_(const std::string& user, unsigned uid, unsigned gid) {
     auto home = "/home/" + user;
     // When running as root (uid 0), emit a SINGLE uid-0 entry whose home is
     // the sandbox home (/home/<user>), so getpwuid(0)->pw_dir agrees with
@@ -104,7 +75,7 @@ std::string make_etc_passwd_(const std::string& user, uid_t uid, gid_t gid) {
         user, uid, gid, user, home);
 }
 
-std::string make_etc_group_(const std::string& user, gid_t gid) {
+std::string make_etc_group_(const std::string& user, unsigned gid) {
     // Mirror passwd: a single gid-0 entry when running as root avoids a
     // duplicate group-0 record (root + <user> both gid 0).
     if (gid == 0) {
@@ -122,7 +93,7 @@ std::string make_etc_group_(const std::string& user, gid_t gid) {
 // repeated `subos use --sandbox` is cheap.
 void init_sandbox_dirs_(const fs::path& subos_dir,
                         const std::string& user,
-                        uid_t uid, gid_t gid,
+                        unsigned uid, unsigned gid,
                         std::string_view etc_name = "etc")
 {
     auto user_home = subos_dir / "home" / user;
@@ -186,8 +157,6 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
     fs::create_directories(fish_config_dir);
     try_write(fish_config_dir / "config.fish", kSandboxFishConfig);
 }
-
-#endif // __linux__ / __APPLE__
 
 int init_image_(const fs::path& img, const std::string& size) {
     if (fs::exists(img)) return 0;
@@ -371,16 +340,7 @@ spec::Storage to_spec_storage_(StorageMode m) {
 }
 
 std::map<std::string, std::string> current_env_() {
-    std::map<std::string, std::string> env;
-#if !defined(_WIN32)
-    for (char** e = XLINGS_ENVIRON; e && *e; ++e) {
-        std::string_view kv(*e);
-        auto eq = kv.find('=');
-        if (eq != std::string_view::npos)
-            env[std::string(kv.substr(0, eq))] = std::string(kv.substr(eq + 1));
-    }
-#endif
-    return env;
+    return platform::environment();
 }
 
 // The refusal as the one ErrorEvent the entry reports. Wording kept from the
@@ -457,12 +417,12 @@ std::map<std::string, std::string> broker_env_(std::map<std::string, std::string
     return env;
 }
 
-#if defined(__linux__)
 // This binary at kSessionInitPath, plus -- for a dynamically linked build --
 // its ELF interpreter's directory and its RUNPATH, read-only at their own
 // paths. A static release binary needs neither.
 std::vector<spec::MountOp> self_exe_mounts_() {
     std::vector<spec::MountOp> out;
+    if constexpr (!platform::is_linux) return out;
     std::error_code ec;
     auto exe = fs::read_symlink("/proc/self/exe", ec);
     if (ec) return out;
@@ -487,7 +447,6 @@ std::vector<spec::MountOp> self_exe_mounts_() {
     }
     return out;
 }
-#endif
 
 }  // namespace
 
@@ -530,11 +489,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     auto subos_dir = p.homeDir / "subos" / name;
     auto storage = read_storage_mode_(subos_dir);
 
-#if defined(_WIN32)
-    auto user = utils::get_env_or_default("USERNAME");
-#else
-    auto user = utils::get_env_or_default("USER");
-#endif
+    auto user = utils::get_env_or_default(platform::is_windows ? "USERNAME" : "USER");
     if (user.empty()) user = "user";
 
     fs::path image_mountpoint;
@@ -544,9 +499,8 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         fs::create_directories(subos_dir / "home" / user);
         fs::create_directories(subos_dir / "tmp");
     }
-#if defined(__linux__) || defined(__APPLE__)
-    if (storage == StorageMode::Shared) write_sandbox_rc_(subos_dir / "home" / user);
-#endif
+    if constexpr (platform::is_posix)
+        if (storage == StorageMode::Shared) write_sandbox_rc_(subos_dir / "home" / user);
     if constexpr (platform::is_windows) {
         fs::create_directories(subos_dir / "home" / user / "AppData" / "Roaming");
         fs::create_directories(subos_dir / "home" / user / "AppData" / "Local");
@@ -582,9 +536,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     if (preferred_backend == "proot") request.preferred = spec::Backend::Proot;
     if (preferred_backend == "landlock") request.preferred = spec::Backend::Landlock;
     if (gpu) request.grants.insert("gpu");
-#if !defined(_WIN32)
-    request.interactive = ::isatty(STDIN_FILENO) == 1;
-#endif
+    if constexpr (platform::is_posix) request.interactive = platform::stdin_is_terminal();
     if (!cmd.empty()) request.argv = {request.shell, "-c", cmd};
     else if (!opts.argv.empty()) request.argv = opts.argv;
     request.publish = opts.publish;
@@ -599,287 +551,286 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     std::cout.flush();
     std::cerr.flush();
 
-#if defined(__linux__)
-    // image/tmpfs storage requires bwrap (mount namespace needed)
-    if (storage != StorageMode::Shared && preferred_backend == "proot") {
-        stream.emit(ErrorEvent{
-            .code = ErrorCode::InvalidInput,
-            .message = "image/tmpfs storage requires bwrap sandbox backend",
-            .recoverable = false,
-            .hint = "run: xlings install bwrap",
-        });
-        return kFail;
-    }
-
-    if (storage == StorageMode::Image) {
-        auto img = subos_dir / "home.img";
-        if (!fs::exists(img)) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "home.img not found — was this subos created with --storage image?",
-                .recoverable = false,
-            });
-            return kFail;
-        }
-        if (mount_image_(img, image_mountpoint, user) != 0) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::Internal,
-                .message = "failed to mount home.img",
-                .recoverable = false,
-                .hint = "ensure you have sudo permission for mount",
-            });
-            return kFail;
-        }
-    }
-
-    init_sandbox_dirs_(subos_dir, user, ::getuid(), ::getgid());
-    // The read-only home's tmpfs mount points must exist on the host: bwrap
-    // cannot create a directory inside a read-only bind.
-    for (auto dir : {"logs", "run", "state", "subos"}) fs::create_directories(p.homeDir / dir);
-    // A neutral identity's user and its passwd/group (spec: etc-neutral/).
-    if (pol.identity == policy::Identity::Neutral)
-        init_sandbox_dirs_(subos_dir, "user", ::getuid(), ::getgid(), "etc-neutral");
-    if (storage == StorageMode::Image) {
-        auto mp_home = image_mountpoint / user;
-        fs::create_directories(mp_home);
-        write_sandbox_rc_(mp_home);
-    }
-
-    auto host_caps = caps::probe(home, ports);
-    auto compiled = spec::compile(pol, home, host_caps, request);
-
-    // Nothing usable and nothing asked for: fetch a backend, once.
-    if (!compiled && !request.preferred && compiled.error().missing.front().dimension == "backend") {
-        // Ask the index whether it ships a backend for this target before
-        // touching the network, so an unsupported host gets one causal error
-        // and zero download requests.
-        if (auto unavailable = backend_target_unavailable_(); unavailable) {
+    if constexpr (platform::is_linux) {
+        // image/tmpfs storage requires bwrap (mount namespace needed)
+        if (storage != StorageMode::Shared && preferred_backend == "proot") {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::InvalidInput,
-                .message = *unavailable,
+                .message = "image/tmpfs storage requires bwrap sandbox backend",
                 .recoverable = false,
-                .hint = "use shell isolation, install your distribution's "
-                        "bubblewrap package, or `xlings install bwrap` to "
-                        "try anyway",
+                .hint = "run: xlings install bwrap",
             });
-            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
             return kFail;
         }
-        if (auto_install_backend_(p.homeDir, stream) != 0) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "failed to install sandbox backend",
-                .recoverable = false,
-                .hint = "manually: xlings install bwrap (or: xlings install proot)",
-            });
-            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-            return kFail;
-        }
-        host_caps = caps::probe(home, ports);
-        compiled = spec::compile(pol, home, host_caps, request);
-        if (!compiled && compiled.error().missing.front().dimension == "backend") {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "no sandbox backend available after install attempt",
-                .recoverable = false,
-            });
-            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-            return kFail;
-        }
-    }
-    if (!compiled) {
-        auto refusal = compiled.error();
-        // A bwrap that is installed and fails its probe: the probe's own
-        // words, classified, instead of a generic "install bwrap".
-        if (host_caps.bwrap && !host_caps.bwrap->usable
-            && (refusal.missing.front().dimension == "storage"
-                || request.preferred == spec::Backend::Bwrap)) {
-            auto& u = refusal.missing.front();
-            if (request.preferred == spec::Backend::Bwrap) u.reason = "bwrap probe failed";
-            u.fix.clear();
-            stream.emit(ErrorEvent{
-                .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
-                .message = u.reason,
-                .recoverable = false,
-                .hint = classify_bwrap_probe_error_(host_caps.bwrap->probe_output,
-                                                    host_caps.bwrap->bin),
-            });
-        } else {
-            emit_refusal_(stream, refusal);
-        }
-        if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-        return kFail;
-    }
-    const auto& sb = *compiled;
-    observe::trace("spec", sb.describe().dump());
-    if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
-    // proot because bwrap is there and cannot make a sandbox (Ubuntu 24.04's
-    // AppArmor restriction, most often): never silently. Asked for by name,
-    // it is the user's choice and goes unremarked.
-    if (sb.backend == spec::Backend::Proot && !request.preferred && host_caps.bwrap
-        && !host_caps.bwrap->usable) {
-        auto why = host_caps.bwrap->probe_output;
-        if (auto nl = why.find('\n'); nl != std::string::npos) why.resize(nl);
-        log::warn("bwrap cannot make a sandbox here ({}); entering with proot -- a view, "
-                  "not a security boundary. A real sandbox: xlings self doctor --isolation --fix",
-                  why.empty() ? "probe failed" : why);
-    }
-    if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
-        log::warn("using the host's proot ({}) -- no proot payload in {}. "
-                  "Run `xlings install proot` to make this deterministic.",
-                  sb.backend_bin.string(), p.homeDir.string());
-    }
 
-    const auto backend_name = std::string(spec::to_string(sb.backend));
-    log::debug("sandbox backend: {} storage: {}", backend_name, storage_to_string_(storage));
-    const auto digest = spec_digest_(sb);
-
-    // One session per instance (design §12.1): a running one is JOINED --
-    // same /tmp, processes and network as the terminal that started it.
-    if (auto live = session::find(home, name)) {
-        if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-        if (live->digest != digest) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::InvalidInput,
-                .message = std::format("'{}' is running with a different isolation; this "
-                                       "call would not get what it asked for", name),
-                .recoverable = true,
-                .hint = std::format("xlings subos stop {}", name),
-            });
-            return session::kExitSetup;
+        if (storage == StorageMode::Image) {
+            auto img = subos_dir / "home.img";
+            if (!fs::exists(img)) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = "home.img not found — was this subos created with --storage image?",
+                    .recoverable = false,
+                });
+                return kFail;
+            }
+            if (mount_image_(img, image_mountpoint, user) != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::Internal,
+                    .message = "failed to mount home.img",
+                    .recoverable = false,
+                    .hint = "ensure you have sudo permission for mount",
+                });
+                return kFail;
+            }
         }
+
+        init_sandbox_dirs_(subos_dir, user, platform::user_ids().uid, platform::user_ids().gid);
+        // The read-only home's tmpfs mount points must exist on the host: bwrap
+        // cannot create a directory inside a read-only bind.
+        for (auto dir : {"logs", "run", "state", "subos"}) fs::create_directories(p.homeDir / dir);
+        // A neutral identity's user and its passwd/group (spec: etc-neutral/).
+        if (pol.identity == policy::Identity::Neutral)
+            init_sandbox_dirs_(subos_dir, "user", platform::user_ids().uid, platform::user_ids().gid, "etc-neutral");
+        if (storage == StorageMode::Image) {
+            auto mp_home = image_mountpoint / user;
+            fs::create_directories(mp_home);
+            write_sandbox_rc_(mp_home);
+        }
+
+        auto host_caps = caps::probe(home, ports);
+        auto compiled = spec::compile(pol, home, host_caps, request);
+
+        // Nothing usable and nothing asked for: fetch a backend, once.
+        if (!compiled && !request.preferred && compiled.error().missing.front().dimension == "backend") {
+            // Ask the index whether it ships a backend for this target before
+            // touching the network, so an unsupported host gets one causal error
+            // and zero download requests.
+            if (auto unavailable = backend_target_unavailable_(); unavailable) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = *unavailable,
+                    .recoverable = false,
+                    .hint = "use shell isolation, install your distribution's "
+                            "bubblewrap package, or `xlings install bwrap` to "
+                            "try anyway",
+                });
+                if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+                return kFail;
+            }
+            if (auto_install_backend_(p.homeDir, stream) != 0) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = "failed to install sandbox backend",
+                    .recoverable = false,
+                    .hint = "manually: xlings install bwrap (or: xlings install proot)",
+                });
+                if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+                return kFail;
+            }
+            host_caps = caps::probe(home, ports);
+            compiled = spec::compile(pol, home, host_caps, request);
+            if (!compiled && compiled.error().missing.front().dimension == "backend") {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::NotFound,
+                    .message = "no sandbox backend available after install attempt",
+                    .recoverable = false,
+                });
+                if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+                return kFail;
+            }
+        }
+        if (!compiled) {
+            auto refusal = compiled.error();
+            // A bwrap that is installed and fails its probe: the probe's own
+            // words, classified, instead of a generic "install bwrap".
+            if (host_caps.bwrap && !host_caps.bwrap->usable
+                && (refusal.missing.front().dimension == "storage"
+                    || request.preferred == spec::Backend::Bwrap)) {
+                auto& u = refusal.missing.front();
+                if (request.preferred == spec::Backend::Bwrap) u.reason = "bwrap probe failed";
+                u.fix.clear();
+                stream.emit(ErrorEvent{
+                    .code = u.dimension == "storage" ? ErrorCode::InvalidInput : ErrorCode::NotFound,
+                    .message = u.reason,
+                    .recoverable = false,
+                    .hint = classify_bwrap_probe_error_(host_caps.bwrap->probe_output,
+                                                        host_caps.bwrap->bin),
+                });
+            } else {
+                emit_refusal_(stream, refusal);
+            }
+            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+            return kFail;
+        }
+        const auto& sb = *compiled;
+        observe::trace("spec", sb.describe().dump());
+        if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
+        // proot because bwrap is there and cannot make a sandbox (Ubuntu 24.04's
+        // AppArmor restriction, most often): never silently. Asked for by name,
+        // it is the user's choice and goes unremarked.
+        if (sb.backend == spec::Backend::Proot && !request.preferred && host_caps.bwrap
+            && !host_caps.bwrap->usable) {
+            auto why = host_caps.bwrap->probe_output;
+            if (auto nl = why.find('\n'); nl != std::string::npos) why.resize(nl);
+            log::warn("bwrap cannot make a sandbox here ({}); entering with proot -- a view, "
+                      "not a security boundary. A real sandbox: xlings self doctor --isolation --fix",
+                      why.empty() ? "probe failed" : why);
+        }
+        if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
+            log::warn("using the host's proot ({}) -- no proot payload in {}. "
+                      "Run `xlings install proot` to make this deterministic.",
+                      sb.backend_bin.string(), p.homeDir.string());
+        }
+
+        const auto backend_name = std::string(spec::to_string(sb.backend));
+        log::debug("sandbox backend: {} storage: {}", backend_name, storage_to_string_(storage));
+        const auto digest = spec_digest_(sb);
+
+        // One session per instance (design §12.1): a running one is JOINED --
+        // same /tmp, processes and network as the terminal that started it.
+        if (auto live = session::find(home, name)) {
+            if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+            if (live->digest != digest) {
+                stream.emit(ErrorEvent{
+                    .code = ErrorCode::InvalidInput,
+                    .message = std::format("'{}' is running with a different isolation; this "
+                                           "call would not get what it asked for", name),
+                    .recoverable = true,
+                    .hint = std::format("xlings subos stop {}", name),
+                });
+                return session::kExitSetup;
+            }
+            payload["backend"] = backend_name;
+            payload["joined"] = live->id;
+            if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
+            std::fflush(nullptr);
+            if (request.interactive && cmd.empty())
+                log::info("joined the running session of '{}' (job control stays with the "
+                          "terminal that started it)", name);
+            auto r = session::join(home, name, session::ExecRequest{
+                .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
+            if (!r.phase.empty() && r.phase == "setup")
+                log::error("{}", r.error);
+            return r.exit_code;
+        }
+
         payload["backend"] = backend_name;
-        payload["joined"] = live->id;
+        payload["shell"] = request.shell;
+        payload["storage"] = storage_to_string_(storage);
         if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
         std::fflush(nullptr);
-        if (request.interactive && cmd.empty())
-            log::info("joined the running session of '{}' (job control stays with the "
-                      "terminal that started it)", name);
-        auto r = session::join(home, name, session::ExecRequest{
-            .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
-        if (!r.phase.empty() && r.phase == "setup")
-            log::error("{}", r.error);
-        return r.exit_code;
-    }
 
-    payload["backend"] = backend_name;
-    payload["shell"] = request.shell;
-    payload["storage"] = storage_to_string_(storage);
-    if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
-    std::fflush(nullptr);
-
-    // The terminal-injection filter travels to bwrap on an inherited pipe
-    // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
-    std::vector<int> keep_fds;
-    std::optional<int> seccomp_fd;
-    if (sb.backend == spec::Backend::Bwrap && sb.block_tiocsti) {
-        auto program = seccomp::block_terminal_injection();
-        int fds[2];
-        if (!program.empty() && ::pipe(fds) == 0) {
-            (void)::write(fds[1], program.data(), program.size());
-            ::close(fds[1]);
-            seccomp_fd = fds[0];
-            keep_fds.push_back(fds[0]);
+        // The terminal-injection filter travels to bwrap on an inherited pipe
+        // (`--seccomp <fd>`); bwrap reads it and installs it for the command.
+        std::vector<int> keep_fds;
+        std::optional<int> seccomp_fd;
+        if (sb.backend == spec::Backend::Bwrap && sb.block_tiocsti) {
+            auto program = platform::seccomp::block_terminal_injection();
+            if (auto fds = platform::make_pipe(); !program.empty() && fds) {
+                (void)platform::write_fd((*fds)[1], std::string_view(
+                    reinterpret_cast<const char*>(program.data()), program.size()));
+                platform::close_fd((*fds)[1]);
+                seccomp_fd = (*fds)[0];
+                keep_fds.push_back((*fds)[0]);
+            }
         }
-    }
 
-    // session-init is this very binary, read-only at a fixed path inside; a
-    // dynamically linked build brings its loader and library directories.
-    auto launched = sb;
-    for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
-    // The broker's socket, made by the supervisor before the backend starts.
-    const bool brokered = sb.backend == spec::Backend::Bwrap || sb.backend == spec::Backend::Landlock;
-    if (sb.backend == spec::Backend::Bwrap)
-        launched.mounts.push_back({spec::MountKind::Bind, home.broker_socket(name).string(),
-                                   std::string(broker::kSocketInside)});
-    launched.argv = {std::string(kSessionInitPath), "__session-init"};
-    if (!opts.detached) {
-        // A detached session has no main command: it idles until its TTL or
-        // `subos stop`, and everything in it joins.
-        launched.argv.push_back("--");
-        launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
-    }
-    std::vector<std::string> argv;
-    if (sb.backend == spec::Backend::Bwrap) {
-        argv = provider::bwrap_argv(launched, seccomp_fd);
-    } else if (sb.backend == spec::Backend::Landlock) {
-        // No view to mount it into: session-init is this binary where it is,
-        // and fences itself before it starts anything (landlock::kRwEnv).
-        argv = launched.argv;
-        argv[0] = host_exe_();
+        // session-init is this very binary, read-only at a fixed path inside; a
+        // dynamically linked build brings its loader and library directories.
+        auto launched = sb;
+        for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
+        // The broker's socket, made by the supervisor before the backend starts.
+        const bool brokered = sb.backend == spec::Backend::Bwrap || sb.backend == spec::Backend::Landlock;
+        if (sb.backend == spec::Backend::Bwrap)
+            launched.mounts.push_back({spec::MountKind::Bind, home.broker_socket(name).string(),
+                                       std::string(broker::kSocketInside)});
+        launched.argv = {std::string(kSessionInitPath), "__session-init"};
+        if (!opts.detached) {
+            // A detached session has no main command: it idles until its TTL or
+            // `subos stop`, and everything in it joins.
+            launched.argv.push_back("--");
+            launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
+        }
+        std::vector<std::string> argv;
+        if (sb.backend == spec::Backend::Bwrap) {
+            argv = provider::bwrap_argv(launched, seccomp_fd);
+        } else if (sb.backend == spec::Backend::Landlock) {
+            // No view to mount it into: session-init is this binary where it is,
+            // and fences itself before it starts anything (session::kLandlockRwEnv).
+            argv = launched.argv;
+            argv[0] = host_exe_();
+        } else {
+            argv = provider::proot_argv(launched);
+        }
+
+        if (observe::trace_enabled("provider")) {
+            std::string line;
+            for (auto& a : argv) line += " " + a;
+            observe::trace("provider", line);
+        }
+        std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
+        pass.insert(pass.end(), pol.env_pass.begin(), pol.env_pass.end());
+        // The supervisor hosts the session: the sandbox's owner stays outside it,
+        // watching, and the audit is written where the sandbox cannot reach (F15).
+        const int rc = session::host(home, session::Launch{
+            .instance = name,
+            .argv = std::move(argv),
+            .env = provider::process_env(sb, request.host_env),
+            .keep_fds = keep_fds,
+            .backend = backend_name,
+            .digest = digest,
+            .spec = sb.describe(),
+            .exec_env = sb.env,
+            .env_pass = std::move(pass),
+            .default_cwd = sb.cwd.string(),
+            .ttl = opts.ttl,
+            .detached = opts.detached,
+            .timeout = opts.timeout,
+            .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
+            .broker_policy = brokered ? std::optional(pol) : std::nullopt,
+            .broker_exe = { host_exe_() },
+            .broker_env = broker_env_(request.host_env, p.homeDir, name),
+            .trace_exec = pol.observe == policy::Observe::Full && sb.backend == spec::Backend::Bwrap,
+            .rw_paths = rw_mount_sources_(pol),
+        });
+        if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
+        return rc;
     } else {
-        argv = provider::proot_argv(launched);
+        // macOS / Windows: home redirect (dotfile isolation).
+        auto host_caps = caps::probe(home, ports);
+        auto compiled = spec::compile(pol, home, host_caps, request);
+        if (!compiled) {
+            emit_refusal_(stream, compiled.error());
+            return kFail;
+        }
+        // Say it where the person is, not only in the README. A user who reaches
+        // for `--sandbox` to run something they do not trust is exactly the user
+        // who did not read the isolation matrix, and on these two platforms this
+        // is a dotfile redirect -- no filesystem, network or process boundary.
+        //
+        // Only on interactive entry: a `--cmd` run is a script, and a warning it
+        // emits on every invocation is noise nobody reads. `--quiet` silences it.
+        if (cmd.empty()) {
+            log::warn("sandbox on {} redirects the home directory only -- "
+                      "it does not contain the filesystem, network or processes. "
+                      "Use an OS sandbox or a VM for untrusted code.",
+                      platform::is_macos ? "macOS" : "Windows");
+        }
+        if (pol.preset != policy::Preset::Legacy) report_degraded_(*compiled);
+        payload["backend"] = "home-redirect";
+        if constexpr (platform::is_macos) payload["shell"] = platform::resolve_shell();
+        if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
+        std::fflush(nullptr);
+        for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
+        // `subos exec -- argv`: the argv, not a shell (which, with no command,
+        // is an interactive one -- and waits for input).
+        if (!opts.argv.empty()) {
+            std::error_code ec;
+            fs::current_path(opts.cwd.empty() ? compiled->cwd : fs::path(opts.cwd), ec);
+            return platform::run_argv(opts.argv);
+        }
+        return platform::run_shell(cmd, cmd.empty());
     }
-
-    if (observe::trace_enabled("provider")) {
-        std::string line;
-        for (auto& a : argv) line += " " + a;
-        observe::trace("provider", line);
-    }
-    std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
-    pass.insert(pass.end(), pol.env_pass.begin(), pol.env_pass.end());
-    // The supervisor hosts the session: the sandbox's owner stays outside it,
-    // watching, and the audit is written where the sandbox cannot reach (F15).
-    const int rc = session::host(home, session::Launch{
-        .instance = name,
-        .argv = std::move(argv),
-        .env = provider::process_env(sb, request.host_env),
-        .keep_fds = keep_fds,
-        .backend = backend_name,
-        .digest = digest,
-        .spec = sb.describe(),
-        .exec_env = sb.env,
-        .env_pass = std::move(pass),
-        .default_cwd = sb.cwd.string(),
-        .ttl = opts.ttl,
-        .detached = opts.detached,
-        .timeout = opts.timeout,
-        .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
-        .broker_policy = brokered ? std::optional(pol) : std::nullopt,
-        .broker_exe = { host_exe_() },
-        .broker_env = broker_env_(request.host_env, p.homeDir, name),
-        .trace_exec = pol.observe == policy::Observe::Full && sb.backend == spec::Backend::Bwrap,
-        .rw_paths = rw_mount_sources_(pol),
-    });
-    if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
-    return rc;
-
-#else
-    // macOS / Windows: home redirect (dotfile isolation).
-    auto host_caps = caps::probe(home, ports);
-    auto compiled = spec::compile(pol, home, host_caps, request);
-    if (!compiled) {
-        emit_refusal_(stream, compiled.error());
-        return kFail;
-    }
-    // Say it where the person is, not only in the README. A user who reaches
-    // for `--sandbox` to run something they do not trust is exactly the user
-    // who did not read the isolation matrix, and on these two platforms this
-    // is a dotfile redirect -- no filesystem, network or process boundary.
-    //
-    // Only on interactive entry: a `--cmd` run is a script, and a warning it
-    // emits on every invocation is noise nobody reads. `--quiet` silences it.
-    if (cmd.empty()) {
-        log::warn("sandbox on {} redirects the home directory only -- "
-                  "it does not contain the filesystem, network or processes. "
-                  "Use an OS sandbox or a VM for untrusted code.",
-                  platform::is_macos ? "macOS" : "Windows");
-    }
-    if (pol.preset != policy::Preset::Legacy) report_degraded_(*compiled);
-    payload["backend"] = "home-redirect";
-    if constexpr (platform::is_macos) payload["shell"] = platform::resolve_shell();
-    if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
-    std::fflush(nullptr);
-    for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
-    // `subos exec -- argv`: the argv, not a shell (which, with no command,
-    // is an interactive one -- and waits for input).
-    if (!opts.argv.empty()) {
-        std::error_code ec;
-        fs::current_path(opts.cwd.empty() ? compiled->cwd : fs::path(opts.cwd), ec);
-        return platform::run_argv(opts.argv);
-    }
-    return platform::run_shell(cmd, cmd.empty());
-#endif
 }
 
 nlohmann::json preview(const std::string& name, const policy::Policy& pol, EventStream& stream) {
@@ -930,21 +881,22 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     };
     nlohmann::json report;
     report["platform"] = std::string(caps::platform_name());
-#if defined(__linux__)
-    report["sysctl"] = {
-        {"kernel.apparmor_restrict_unprivileged_userns",
-         read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")},
-        {"kernel.unprivileged_userns_clone", read_sysctl("/proc/sys/kernel/unprivileged_userns_clone")},
-        {"user.max_user_namespaces", read_sysctl("/proc/sys/user/max_user_namespaces")},
-    };
-    auto candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
-    report["bwrap"] = nlohmann::json::array();
-    for (auto& b : candidates) {
-        auto first = b.probe_output.substr(0, b.probe_output.find('\n'));
-        report["bwrap"].push_back({{"path", b.bin.string()}, {"source", b.source}, {"usable", b.usable},
-                                   {"probe", b.usable ? std::string("ok") : first}});
+    std::vector<caps::Backend> candidates;
+    if constexpr (platform::is_linux) {
+        report["sysctl"] = {
+            {"kernel.apparmor_restrict_unprivileged_userns",
+             read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")},
+            {"kernel.unprivileged_userns_clone", read_sysctl("/proc/sys/kernel/unprivileged_userns_clone")},
+            {"user.max_user_namespaces", read_sysctl("/proc/sys/user/max_user_namespaces")},
+        };
+        candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
+        report["bwrap"] = nlohmann::json::array();
+        for (auto& b : candidates) {
+            auto first = b.probe_output.substr(0, b.probe_output.find('\n'));
+            report["bwrap"].push_back({{"path", b.bin.string()}, {"source", b.source}, {"usable", b.usable},
+                                       {"probe", b.usable ? std::string("ok") : first}});
+        }
     }
-#endif
     auto host_caps = caps::probe(home, ports);
     report["backend"] = host_caps.bwrap && host_caps.bwrap->usable
         ? nlohmann::json{{"name", "bwrap"}, {"path", host_caps.bwrap->bin.string()}, {"source", host_caps.bwrap->source}}
@@ -960,113 +912,113 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     report["ok"] = ok;
 
     auto print = [&] {
-        if (json) { std::println(stdout, "{}", report.dump()); return; }
-        std::println(stdout, "isolation on this host ({})", report["platform"].get<std::string>());
+        if (json) { std::println(std::cout, "{}", report.dump()); return; }
+        std::println(std::cout, "isolation on this host ({})", report["platform"].get<std::string>());
         if (report.contains("sysctl"))
             for (auto it = report["sysctl"].begin(); it != report["sysctl"].end(); ++it)
-                std::println(stdout, "  {:<46} {}", it.key(), it.value().get<std::string>());
+                std::println(std::cout, "  {:<46} {}", it.key(), it.value().get<std::string>());
         if (report.contains("bwrap")) {
-            if (report["bwrap"].empty()) std::println(stdout, "  bwrap: none found");
+            if (report["bwrap"].empty()) std::println(std::cout, "  bwrap: none found");
             for (auto& b : report["bwrap"])
-                std::println(stdout, "  bwrap {:<10} {} -- {}", b["source"].get<std::string>(),
+                std::println(std::cout, "  bwrap {:<10} {} -- {}", b["source"].get<std::string>(),
                              b["path"].get<std::string>(), b["probe"].get<std::string>());
         }
-        std::println(stdout, "  backend: {}", report["backend"].is_null() ? std::string("none")
+        std::println(std::cout, "  backend: {}", report["backend"].is_null() ? std::string("none")
             : report["backend"]["name"].get<std::string>() + " " + report["backend"]["path"].get<std::string>());
-        std::println(stdout, "  pasta (net=nat): {}", report["pasta"].get<std::string>());
+        std::println(std::cout, "  pasta (net=nat): {}", report["pasta"].get<std::string>());
         for (auto& g : report["gates"])
-            std::println(stdout, "    {:<14} {}", g["gate"].get<std::string>(),
+            std::println(std::cout, "    {:<14} {}", g["gate"].get<std::string>(),
                          g["supported"].get<bool>() ? g["enforced"].get<std::string>() : "no -- " + g["reason"].get<std::string>());
     };
     print();
     if (ok || !fix) {
         if (!ok && !json)
-            std::println(stdout, "\n  fix: xlings self doctor --isolation --fix   "
+            std::println(std::cout, "\n  fix: xlings self doctor --isolation --fix   "
                                  "(one sudo: a root-owned bwrap with a narrow AppArmor profile)");
         return ok ? 0 : 1;
     }
 
-#if defined(__linux__)
-    // The repair: only for the case it fixes -- AppArmor restricting
-    // unprivileged user namespaces for unconfined programs.
-    if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
-        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-            .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
-                       "changes would help",
-            .recoverable = false,
-            .hint = "the kernel disables them outright (see the sysctl values above); "
-                    "--sandbox proot works without them" });
-        return 1;
-    }
-    std::optional<fs::path> source;
-    for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
-    if (!source) {
-        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
-            .message = "no bwrap to install", .recoverable = true,
-            .hint = "xlings install bwrap, then run this again" });
-        return 1;
-    }
-    const std::string profile =
-        "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
-        "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
-        "abi <abi/4.0>,\n"
-        "include <tunables/global>\n\n"
-        "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
-        "  userns,\n\n"
-        "  include if exists <local/xlings-bwrap>\n"
-        "}\n";
-    const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", ::getpid());
-    platform::write_string_to_file(tmp.string(), profile);
-    const auto sudo = platform::priv_prefix();
-    const std::vector<std::string> steps{
-        std::format("{}install -D -o root -g root -m 0755 {} {}", sudo,
-                    platform::shell_quote(source->string()), caps::kRootOwnedBwrap),
-        std::format("{}install -D -o root -g root -m 0644 {} /etc/apparmor.d/xlings-bwrap", sudo,
-                    platform::shell_quote(tmp.string())),
-        std::format("{}apparmor_parser -r /etc/apparmor.d/xlings-bwrap", sudo),
-    };
-    std::string plan = "this runs, as root:";
-    for (auto& c : steps) plan += "\n    " + c;
-    log::info("{}", plan);
-    auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
-                              "install the root-owned bwrap and its AppArmor profile?", yes, "-y");
-    if (asked.outcome != confirm::Outcome::Confirmed) {
-        std::error_code ec;
-        fs::remove(tmp, ec);
-        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
-            log::error("nothing changed: this needs confirmation -- re-run with -y");
-            return 2;
-        }
-        log::info("nothing changed");
-        return 1;
-    }
-    for (auto& c : steps) {
-        log::info("$ {}", c);
-        if (std::system(c.c_str()) != 0) {
-            std::error_code ec;
-            fs::remove(tmp, ec);
-            log::error("failed: {}", c);
+    if constexpr (platform::is_linux) {
+        // The repair: only for the case it fixes -- AppArmor restricting
+        // unprivileged user namespaces for unconfined programs.
+        if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
+                           "changes would help",
+                .recoverable = false,
+                .hint = "the kernel disables them outright (see the sysctl values above); "
+                        "--sandbox proot works without them" });
             return 1;
         }
+        std::optional<fs::path> source;
+        for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
+        if (!source) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
+                .message = "no bwrap to install", .recoverable = true,
+                .hint = "xlings install bwrap, then run this again" });
+            return 1;
+        }
+        const std::string profile =
+            "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
+            "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
+            "abi <abi/4.0>,\n"
+            "include <tunables/global>\n\n"
+            "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
+            "  userns,\n\n"
+            "  include if exists <local/xlings-bwrap>\n"
+            "}\n";
+        const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
+        platform::write_string_to_file(tmp.string(), profile);
+        const auto sudo = platform::priv_prefix();
+        const std::vector<std::string> steps{
+            std::format("{}install -D -o root -g root -m 0755 {} {}", sudo,
+                        platform::shell_quote(source->string()), caps::kRootOwnedBwrap),
+            std::format("{}install -D -o root -g root -m 0644 {} /etc/apparmor.d/xlings-bwrap", sudo,
+                        platform::shell_quote(tmp.string())),
+            std::format("{}apparmor_parser -r /etc/apparmor.d/xlings-bwrap", sudo),
+        };
+        std::string plan = "this runs, as root:";
+        for (auto& c : steps) plan += "\n    " + c;
+        log::info("{}", plan);
+        auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
+                                  "install the root-owned bwrap and its AppArmor profile?", yes, "-y");
+        if (asked.outcome != confirm::Outcome::Confirmed) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+                log::error("nothing changed: this needs confirmation -- re-run with -y");
+                return 2;
+            }
+            log::info("nothing changed");
+            return 1;
+        }
+        for (auto& c : steps) {
+            log::info("$ {}", c);
+            if (std::system(c.c_str()) != 0) {
+                std::error_code ec;
+                fs::remove(tmp, ec);
+                log::error("failed: {}", c);
+                return 1;
+            }
+        }
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        auto after = caps::locate_bwrap(home, ports);
+        if (after && after->usable && after->source == "root-owned") {
+            log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
+                      after->bin.string());
+            return 0;
+        }
+        log::error("installed, but the probe still fails: {}",
+                   after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
+        return 1;
+    } else {
+        (void)yes;
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+            .message = "this platform's isolation is not implemented yet; there is nothing to repair",
+            .recoverable = false });
+        return 1;
     }
-    std::error_code ec;
-    fs::remove(tmp, ec);
-    auto after = caps::locate_bwrap(home, ports);
-    if (after && after->usable && after->source == "root-owned") {
-        log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
-                  after->bin.string());
-        return 0;
-    }
-    log::error("installed, but the probe still fails: {}",
-               after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
-    return 1;
-#else
-    (void)yes;
-    stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-        .message = "this platform's isolation is not implemented yet; there is nothing to repair",
-        .recoverable = false });
-    return 1;
-#endif
 }
 
 }

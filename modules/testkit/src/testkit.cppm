@@ -79,6 +79,13 @@ std::span<const std::string_view> capability_names();
 // nullopt = present; otherwise the reason it is missing.
 std::optional<std::string> probe(std::string_view capability);
 
+// For the tools around the tests (xdev): this process's environment, and
+// what std::system's return value means, without their own system headers.
+void set_env(const std::string& name, const std::string& value);
+// The command's exit code, or 128 + the signal that ended it; -1 when the
+// shell itself could not run.
+int system_exit_code(int raw);
+
 // The capabilities this lane promised, from XDEV_LANE_CAPS (comma separated).
 bool lane_declares(std::string_view capability);
 

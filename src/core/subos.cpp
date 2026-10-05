@@ -1,38 +1,3 @@
-module;
-
-// System headers used by use_spawn_shell only. `import std;` doesn't
-// pull these in, and we want execl/errno (POSIX) or CreateProcess
-// (Win32) without #include in the named-module purview (which the
-// standard forbids for headers that aren't importable units).
-#include <cstdio>
-
-// stdout / stderr as FILE*, for std::println.
-//
-// EVERY std::println here names its stream, and that is load-bearing rather
-// than tidy: without one, clang deduces the format string itself as the first
-// ARGUMENT and instantiates formatter<basic_format_string<...>>, which is
-// deleted. gcc accepts the same code. Whether it trips is decided by what
-// else the translation unit imports, so it cannot be predicted from this
-// file -- adding one unrelated import to this TU is exactly what surfaced it.
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-// windows.h defines `min`/`max` as function-like macros, which turns any
-// `std::min({a, b, c})` in this module into "too many arguments provided to
-// function-like macro invocation" -- an error that names the call site and
-// says nothing about where the macro came from. Every other module here that
-// includes windows.h already defines this (platform.cppm, platform/windows.cppm,
-// platform/target.cppm); this one was the exception, and it cost four
-// consecutive red Windows runs.
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <unistd.h>
-#include <signal.h>
-#include <sys/wait.h>
-#endif
-
 module xlings.core.subos;
 
 import std;
@@ -47,7 +12,6 @@ import xlings.core.xself;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xim.commands;
-import xlings.core.subos.keeper;
 import xlings.subos.gpu;
 import xlings.subos.graphics;
 import xlings.core.subos.sandbox;
@@ -65,7 +29,6 @@ import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
-import xlings.subos.copy;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
@@ -909,15 +872,15 @@ int copy_tree_(const fs::path& src, const fs::path& dst,
     // full copy when the FS doesn't support it. Skip the bin/ subtree
     // here — shims are regenerated below.
     std::string copy_cmd;
-#if defined(__linux__)
-    // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
-    // COW where available (btrfs/xfs) and full copy otherwise.
-    copy_cmd = std::format(
-        "cp -a --reflink=auto '{}/.' '{}/'", src.string(), dst.string());
-#elif defined(__APPLE__)
-    // APFS clonefile via /bin/cp -c
-    copy_cmd = std::format("cp -ac '{}/.' '{}/'", src.string(), dst.string());
-#endif
+    if constexpr (platform::is_linux) {
+        // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
+        // COW where available (btrfs/xfs) and full copy otherwise.
+        copy_cmd = std::format(
+            "cp -a --reflink=auto '{}/.' '{}/'", src.string(), dst.string());
+    } else if constexpr (platform::is_macos) {
+        // APFS clonefile via /bin/cp -c
+        copy_cmd = std::format("cp -ac '{}/.' '{}/'", src.string(), dst.string());
+    }
 
     if (!copy_cmd.empty()) {
         auto rc = std::system(copy_cmd.c_str());
@@ -1233,7 +1196,7 @@ void warn_storage_dormant_on_shell_(const std::string& name) {
     // on every shell-level entry for image/tmpfs subos, becoming noise
     // once the user already knows the layout. Revisit with a clearer
     // one-time / opt-in form before re-enabling.
-    // std::println(stderr,
+    // std::println(std::cerr,
     //              "[xlings] storage={} is sandbox-only; entering "
     //              "shell-level (use --sandbox to activate)",
     //              sandbox::storage_to_string_(storage));
@@ -1265,11 +1228,11 @@ int use_emit_shell(const std::string& name,
     use_detail_::report_injected_env_(name, envVars);
 
     if (is_fish) {
-        std::println(stdout, R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
-        std::println(stdout, R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
+        std::println(std::cout, R"(set -gx XLINGS_ACTIVE_SUBOS "{}";)", name);
+        std::println(std::cout, R"(set -gx XLINGS_BIN "{}";)", bin_dir.string());
         // Strip any old subos bin segments from PATH, then prepend the new
         // bin. fish's $PATH is a list, so we use string match -v.
-        std::println(stdout, R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
+        std::println(std::cout, R"(set -gx PATH "{}" (string match -v -r "^{}/subos/[^/]+/bin$" -- $PATH);)",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
@@ -1277,34 +1240,34 @@ int use_emit_shell(const std::string& name,
             // plain R"(...)" literal early -- and the truncation compiles,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(stdout, 
+                std::println(std::cout, 
                     R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
                     v.var, v.value);
             } else {
-                std::println(stdout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
+                std::println(std::cout, R"SH(if not set -q {0}; set -gx {0} "{1}"; end;)SH",
                              v.var, v.value);
             }
         }
         return 0;
     }
     if (is_pwsh) {
-        std::println(stdout, R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
-        std::println(stdout, R"($env:XLINGS_BIN = '{}')", bin_dir.string());
-        std::println(stdout, R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
+        std::println(std::cout, R"($env:XLINGS_ACTIVE_SUBOS = '{}')", name);
+        std::println(std::cout, R"($env:XLINGS_BIN = '{}')", bin_dir.string());
+        std::println(std::cout, R"($env:Path = '{}' + ';' + (($env:Path -split ';') -notmatch '^{}\\subos\\[^\\]+\\bin$' -join ';'))",
                      bin_dir.string(), p.homeDir.string());
         for (const auto& v : envVars) {
             if (v.unresolved) continue;
             // ';' rather than ':' -- these are path lists, and on Windows the
             // separator is the one the platform's own tools split on.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(stdout, 
+                std::println(std::cout, 
                     R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
                     v.var, v.value);
             } else {
                 // `$null -eq`, not `-not`: PowerShell's `-not` is true for an
                 // empty string too, which would overwrite a value the user
                 // deliberately set to "".
-                std::println(stdout, R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
+                std::println(std::cout, R"(if ($null -eq $env:{0}) {{ $env:{0} = '{1}' }})",
                              v.var, v.value);
             }
         }
@@ -1314,20 +1277,20 @@ int use_emit_shell(const std::string& name,
     auto orig_path = utils::get_env_or_default("PATH");
     auto new_path  = use_detail_::rebuild_path_for_subos_(
         orig_path, p.homeDir, bin_dir);
-    std::println(stdout, R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
-    std::println(stdout, R"(export XLINGS_BIN="{}";)", bin_dir.string());
-    std::println(stdout, R"(export PATH="{}";)", new_path);
+    std::println(std::cout, R"(export XLINGS_ACTIVE_SUBOS="{}";)", name);
+    std::println(std::cout, R"(export XLINGS_BIN="{}";)", bin_dir.string());
+    std::println(std::cout, R"(export PATH="{}";)", new_path);
     for (const auto& v : envVars) {
         if (v.unresolved) continue;
         if (v.op == manifest::OP_PREPEND) {
             // ${VAR:+:$VAR} appends the separator only when VAR is non-empty,
             // so an unset variable does not become a trailing ':' -- which an
             // empty PATH-list element reads as "the current directory".
-            std::println(stdout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
+            std::println(std::cout, R"(export {0}="{1}${{{0}:+:${0}}}";)", v.var, v.value);
         } else {
             // `${VAR=v}`, NOT `${VAR:=v}`. The colon form also assigns when VAR
             // is set-but-empty, which would overwrite a value the user chose.
-            std::println(stdout, R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
+            std::println(std::cout, R"(: "${{{0}={1}}}"; export {0};)", v.var, v.value);
         }
     }
     return 0;
@@ -1531,9 +1494,8 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
         // a half-cleaned tree behind, or (b) silently recurse into the
         // live mount and erase the image's contents before EBUSY surfaces.
         // Detect and umount first.
-#if defined(__linux__)
         auto mountpoint = dir / ".mountpoint";
-        if (fs::exists(mountpoint)
+        if (platform::is_linux && fs::exists(mountpoint)
             && sandbox::is_mounted_(mountpoint))
         {
             if (sandbox::unmount_image_(mountpoint) != 0) {
@@ -1551,7 +1513,6 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
                 return 1;
             }
         }
-#endif
         if (auto removed = userdata::delete_subos(home_view(), dir, "subos-remove", *asked.token);
             !removed) {
             stream.emit(ErrorEvent{
@@ -1874,39 +1835,6 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
     return 0;
 }
 
-#if !defined(_WIN32)
-// argv with a deadline, outside any sandbox: a process group so the whole
-// command goes when it times out.
-int run_argv_with_timeout_(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
-    std::cout.flush();
-    std::cerr.flush();
-    pid_t pid = ::fork();
-    if (pid < 0) return session::kExitCannotRun;
-    if (pid == 0) {
-        ::setpgid(0, 0);
-        std::vector<char*> raw;
-        for (auto& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
-        raw.push_back(nullptr);
-        ::execvp(raw[0], raw.data());
-        ::_exit(errno == ENOENT ? session::kExitNotFound : session::kExitCannotRun);
-    }
-    auto deadline = std::chrono::steady_clock::now() + limit;
-    int status = 0;
-    while (::waitpid(pid, &status, WNOHANG) == 0) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            ::kill(-pid, SIGTERM);
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            ::kill(-pid, SIGKILL);
-            ::waitpid(pid, &status, 0);
-            return session::kExitTimeout;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return session::kExitCannotRun;
-}
-#endif
 
 }  // namespace
 
@@ -1925,7 +1853,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     auto fail = [&](std::string message, std::string hint = {}) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = std::move(message),
                                 .recoverable = false, .hint = std::move(hint) });
-        if (json) std::println(stderr, "{}", nlohmann::json{{"exit", session::kExitSetup},
+        if (json) std::println(std::cerr, "{}", nlohmann::json{{"exit", session::kExitSetup},
                                                             {"phase", "setup"}}.dump());
         return session::kExitSetup;
     };
@@ -2018,12 +1946,10 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
             .kind = observe::Kind::Ops,
             .fields = {{"event", "exec"}, {"instance", name}, {"mode", "shell"},
                        {"program", command[0]}, {"argc", command.size()}}});
-#if !defined(_WIN32)
-        rc = timeout ? run_argv_with_timeout_(command, *timeout) : platform::run_argv(command);
-#else
-        if (timeout) log::warn("--timeout needs --sandbox on Windows; running without it");
-        rc = platform::run_argv(command);
-#endif
+        if (timeout && platform::is_windows)
+            log::warn("--timeout needs --sandbox on Windows; running without it");
+        rc = timeout && platform::is_posix ? platform::run_argv_with_timeout(command, *timeout)
+                                           : platform::run_argv(command);
         observe::append(home_view().logs_dir(name) / "events.ndjson", observe::Event{
             .kind = observe::Kind::Ops,
             .fields = {{"event", "exec-end"}, {"instance", name}, {"mode", "shell"},
@@ -2047,7 +1973,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
                               {"temp", temp}};
         if (rc == session::kExitSetup) result["phase"] = "setup";
         if (rc == session::kExitTimeout && timeout) result["timeout"] = true;
-        std::println(stderr, "{}", result.dump());
+        std::println(std::cerr, "{}", result.dump());
     }
     return rc;
 }
@@ -2096,6 +2022,24 @@ int run_start_(int argc, char* argv[], EventStream& stream,
 
 // `subos cp <src> <dst>`, one side `<name>:<path>` (design §12.1). Paths
 // inside are the instance's own: its home and its /tmp.
+// A keeper process an xlings before 2026.10 left behind (sessions replaced
+// it): `subos stop` still ends it. COMPAT: drop in 2027.4.
+void stop_legacy_keeper_(const std::string& name) {
+    const auto pid_file = Config::paths().homeDir / "subos" / name / ".keeper.pid";
+    std::error_code ec;
+    if (!fs::exists(pid_file, ec)) return;
+    int pid = 0;
+    std::ifstream(pid_file) >> pid;
+    if (pid > 0 && platform::is_process_alive(pid)) {
+        platform::send_signal(pid, platform::sig::terminate);
+        for (int i = 0; i < 20 && platform::is_process_alive(pid); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (platform::is_process_alive(pid)) platform::send_signal(pid, platform::sig::kill);
+    }
+    fs::remove(pid_file, ec);
+    fs::remove(pid_file.parent_path() / ".keeper.lastused", ec);
+}
+
 int run_cp_(int argc, char* argv[], EventStream& stream,
             const std::function<void(std::string_view)>& usageError) {
     std::vector<std::string> paths;
@@ -2130,7 +2074,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
         return 1;
     }
     // Paths inside are resolved beneath the instance's root and never
-    // through a link it made (xlings.subos.copy).
+    // through a link it made (platform::copy_into_beneath).
     const auto root = Config::subos_dir(resolved.selected);
     const auto rel = mapped->lexically_relative(root);
     std::expected<void, std::string> done;
@@ -2138,7 +2082,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
         fs::path to = paths[1];
         std::error_code ec;
         if (fs::is_directory(to, ec)) to /= rel.filename();
-        done = subos::copy::out_of(root, rel, to);
+        done = platform::copy_out_of_beneath(root, rel, to);
     } else {
         std::error_code ec;
         if (!fs::exists(fs::symlink_status(paths[0], ec))) {
@@ -2146,7 +2090,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
                                     .recoverable = false });
             return 1;
         }
-        done = subos::copy::into(paths[0], root, rel);
+        done = platform::copy_into_beneath(paths[0], root, rel);
     }
     if (!done) {
         stream.emit(ErrorEvent{ .code = ErrorCode::Internal,
@@ -2333,7 +2277,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     if (!changed) {
         auto doc = policy::to_json(before);
         doc["source"] = current && *current ? "file" : "default";
-        std::println(stdout, "{}", json ? doc.dump() : doc.dump(2));
+        std::println(std::cout, "{}", json ? doc.dump() : doc.dump(2));
         return 0;
     }
 
@@ -2427,7 +2371,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         .kind = observe::Kind::Lifecycle,
         .fields = {{"event", "policy-change"}, {"instance", name}, {"diff", changes}}});
     if (json) {
-        std::println(stdout, "{}", nlohmann::json{{"instance", name}, {"diff", changes},
+        std::println(std::cout, "{}", nlohmann::json{{"instance", name}, {"diff", changes},
                                           {"policy", policy::to_json(after)}}.dump());
     } else {
         log::info("'{}' policy ({}):", name, policy::to_string(after.preset));
@@ -2569,19 +2513,19 @@ int run_doctor_(int argc, char* argv[], EventStream& stream,
     }
     report["errors"] = errors;
     if (json) {
-        std::println(stdout, "{}", report.dump());
+        std::println(std::cout, "{}", report.dump());
         return errors ? 1 : 0;
     }
-    std::println(stdout, "this host:");
+    std::println(std::cout, "this host:");
     for (auto& g : report["gates"])
-        std::println(stdout, "  {:<14} {:<9} {}", g.value("gate", ""),
+        std::println(std::cout, "  {:<14} {:<9} {}", g.value("gate", ""),
                      g.value("supported", false) ? g.value("enforced", "") : "no", g.value("reason", ""));
     for (auto& inst : report["instances"]) {
-        std::println(stdout, "subos {}", inst.value("instance", ""));
+        std::println(std::cout, "subos {}", inst.value("instance", ""));
         for (auto& f : inst["findings"]) {
             const auto level = f.value("level", "");
             const char* mark = level == "ok" ? "✓" : level == "warn" ? "!" : "✗";
-            std::println(stdout, "  {} {:<9} {}{}", mark, f.value("check", ""), f.value("detail", ""),
+            std::println(std::cout, "  {} {:<9} {}{}", mark, f.value("check", ""), f.value("detail", ""),
                          f.value("fix", "").empty() ? "" : "\n              -> " + f.value("fix", ""));
         }
     }
@@ -2623,39 +2567,39 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     out["effective"] = sandbox::preview(name, pol, quiet);
     if (auto live = session::find(home, name)) out["session"] = session::to_json(*live);
     if (json) {
-        std::println(stdout, "{}", out.dump());
+        std::println(std::cout, "{}", out.dump());
         return 0;
     }
     const auto& eff = out["effective"];
-    std::println(stdout, "subos {}  ({})", name, out.value("policy_source", "invalid policy"));
-    if (out.contains("policy_error")) std::println(stdout, "  policy: {}", out["policy_error"].get<std::string>());
-    std::println(stdout, "  requested  preset={} net={} fetch={} observe={} identity={}",
+    std::println(std::cout, "subos {}  ({})", name, out.value("policy_source", "invalid policy"));
+    if (out.contains("policy_error")) std::println(std::cout, "  policy: {}", out["policy_error"].get<std::string>());
+    std::println(std::cout, "  requested  preset={} net={} fetch={} observe={} identity={}",
                  policy::to_string(pol.preset), policy::to_string(pol.net),
                  policy::to_string(pol.fetch), policy::to_string(pol.observe),
                  pol.identity == policy::Identity::Neutral ? "neutral" : "host");
     if (eff.value("enters", false)) {
         const auto& sp = eff["spec"];
-        std::println(stdout, "  effective  backend={} pid={} net={} hostname={}", sp.value("backend", "?"),
+        std::println(std::cout, "  effective  backend={} pid={} net={} hostname={}", sp.value("backend", "?"),
                      sp["unshare"].value("pid", false) ? "private" : "host",
                      sp["unshare"].value("net", false) ? "private" : "host",
                      sp.value("hostname", "host"));
         for (auto& d : sp["degraded"])
-            std::println(stdout, "  ! {} not in effect: {}", d.value("dimension", ""), d.value("reason", ""));
+            std::println(std::cout, "  ! {} not in effect: {}", d.value("dimension", ""), d.value("reason", ""));
     } else {
-        std::println(stdout, "  cannot enter on this host:");
+        std::println(std::cout, "  cannot enter on this host:");
         for (auto& m : eff["missing"])
-            std::println(stdout, "  \u2717 {}: {}{}", m.value("dimension", ""), m.value("reason", ""),
+            std::println(std::cout, "  \u2717 {}: {}{}", m.value("dimension", ""), m.value("reason", ""),
                          m.value("fix", "").empty() ? "" : "  (" + m.value("fix", "") + ")");
     }
-    std::println(stdout, "  platform:");
+    std::println(std::cout, "  platform:");
     for (auto& g : eff["gates"]) {
-        std::println(stdout, "    {:<14} {:<9} {}{}", g.value("gate", ""),
+        std::println(std::cout, "    {:<14} {:<9} {}{}", g.value("gate", ""),
                      g.value("supported", false) ? g.value("enforced", "") : "no",
                      g.value("reason", ""),
                      g.value("route", "").empty() || g.value("supported", false) ? "" : "  -> " + g.value("route", ""));
     }
     if (out.contains("session"))
-        std::println(stdout, "  session    {} ({})", out["session"].value("id", ""),
+        std::println(std::cout, "  session    {} ({})", out["session"].value("id", ""),
                      out["session"].value("detached", false) ? "detached" : "attached");
     return 0;
 }
@@ -2691,7 +2635,7 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
         auto reqs = subos::broker::pending(home, name);
         if (json) {
             for (auto& r : reqs)
-                std::println(stdout, "{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
+                std::println(std::cout, "{}", nlohmann::json{{"id", r.id}, {"argv", r.argv}, {"created", r.created},
                                                   {"reason", r.reason}}.dump());
             return 0;
         }
@@ -2699,7 +2643,7 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
         for (auto& r : reqs) {
             std::string line;
             for (auto& a : r.argv) line += " " + a;
-            std::println(stdout, "{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
+            std::println(std::cout, "{}  {}  xlings{}   ({})", r.id, r.created, line, r.reason);
         }
         return 0;
     }
@@ -2808,38 +2752,38 @@ int run_report_(int argc, char* argv[], EventStream& stream,
                                        {"commands", s.commands}, {"permissions", s.perm},
                                        {"denied", s.denied}, {"changed", s.changed}});
         }
-        std::println(stdout, "{}", out.dump());
+        std::println(std::cout, "{}", out.dump());
         return 0;
     }
-    std::println(stdout, "subos {}: {} session(s)", name, order.size());
+    std::println(std::cout, "subos {}: {} session(s)", name, order.size());
     for (auto& id : order) {
         auto& s = sessions[id];
-        std::println(stdout, "\n  session {}  {}  {}  {}", s.id, s.started, s.backend,
+        std::println(std::cout, "\n  session {}  {}  {}  {}", s.id, s.started, s.backend,
                      s.exit ? std::format("exit {} after {} ms", *s.exit, s.ms) : std::string("running"));
-        std::println(stdout, "    commands joined: {}", s.commands);
+        std::println(std::cout, "    commands joined: {}", s.commands);
         if (s.trace) {
             std::vector<std::pair<int, std::string>> top;
             for (auto& [p, n] : s.programs) top.emplace_back(n, p);
             std::ranges::sort(top, std::greater<>{});
-            std::println(stdout, "    programs executed: {}", s.execs);
+            std::println(std::cout, "    programs executed: {}", s.execs);
             for (std::size_t i = 0; i < std::min<std::size_t>(10, top.size()); ++i)
-                std::println(stdout, "      {:>5}  {}", top[i].first, top[i].second);
+                std::println(std::cout, "      {:>5}  {}", top[i].first, top[i].second);
         } else {
-            std::println(stdout, "    programs executed: not traced (observe < full)");
+            std::println(std::cout, "    programs executed: not traced (observe < full)");
         }
         if (!s.perm.empty()) {
             std::string line;
             for (auto& [a, n] : s.perm) line += std::format(" {}={}", a, n);
-            std::println(stdout, "    permission decisions:{}", line);
-            for (auto& d : s.denied) std::println(stdout, "      denied  {}", d);
+            std::println(std::cout, "    permission decisions:{}", line);
+            for (auto& d : s.denied) std::println(std::cout, "      denied  {}", d);
         }
         if (!s.changed.empty()) {
-            std::println(stdout, "    files changed in rw mounts: {}", s.changed.size());
+            std::println(std::cout, "    files changed in rw mounts: {}", s.changed.size());
             for (std::size_t i = 0; i < std::min<std::size_t>(20, s.changed.size()); ++i)
-                std::println(stdout, "      {}", s.changed[i]);
+                std::println(std::cout, "      {}", s.changed[i]);
         }
     }
-    for (auto& c : policy_changes) std::println(stdout, "\n  policy  {}", c);
+    for (auto& c : policy_changes) std::println(std::cout, "\n  policy  {}", c);
     return 0;
 }
 
@@ -2849,7 +2793,7 @@ int run_ps_(int argc, char* argv[], EventStream& stream) {
     for (int i = 3; i < argc; ++i) if (std::string_view(argv[i]) == "--json") json = true;
     auto sessions = session::list(home_view());
     if (json) {
-        for (auto& i : sessions) std::println(stdout, "{}", session::to_json(i).dump());
+        for (auto& i : sessions) std::println(std::cout, "{}", session::to_json(i).dump());
         return 0;
     }
     if (sessions.empty()) {
@@ -2903,13 +2847,13 @@ int run_log_(int argc, char* argv[], EventStream& stream,
         return true;
     };
     auto print = [&](const nlohmann::json& e) {
-        if (json) { std::println(stdout, "{}", e.dump()); return; }
+        if (json) { std::println(std::cout, "{}", e.dump()); return; }
         std::string detail;
         for (std::string k : {"program", "path", "exit", "signal", "backend", "error", "count", "ms"}) {
             if (!e.contains(k)) continue;
             detail += std::format(" {}={}", k, e[k].is_string() ? e[k].get<std::string>() : e[k].dump());
         }
-        std::println(stdout, "{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
+        std::println(std::cout, "{} {:<9} {:<14} {}{}", e.value("ts", ""), e.value("kind", ""),
                      e.value("event", ""), e.value("session", ""), detail);
     };
     auto events = observe::read(file);
@@ -3064,13 +3008,10 @@ int run(int argc, char* argv[], EventStream& stream) {
         // level and sandbox modes. Internally routed to `sh -c <cmd>`
         // (POSIX) or `pwsh -Command <cmd>` / `cmd /c <cmd>` (Windows).
         std::string cmd;
-        // M5: explicit keeper policy overrides (D9). The runtime auto-
-        // default (storage=image|tmpfs + sandbox + Linux → keeper on,
-        // TTL=5min) is encoded in keeper::should_auto_keeper. These
-        // flags let the user override per call:
-        //   --no-keep      force disable (one-shot, even if auto would)
-        //   --keep         never-expiring (use until `subos stop`)
-        //   --ttl <sec>    custom idle TTL
+        // The session's lifetime (design §16, the keeper's replacement):
+        //   --no-keep      the session ends with the shell
+        //   --keep         it stays until `subos stop`
+        //   --ttl <sec>    it ends after this long idle
         bool no_keep = false;
         bool keep_forever = false;
         int  ttl_sec = 0;                  // 0 = use default
@@ -3246,7 +3187,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             });
             return 1;
         }
-        (void)keeper::stop_keeper(target);
+        stop_legacy_keeper_(target);
         if (had) log::info("stopped the session of '{}'", target);
         else log::info("'{}' has no running session", target);
         return 0;

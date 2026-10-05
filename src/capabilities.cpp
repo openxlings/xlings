@@ -655,25 +655,23 @@ namespace {
 // comes back as events.
 int run_subos_child_(std::vector<std::string> args, EventStream& stream, std::string_view kind) {
     auto self = platform::get_executable_path().string();
-#if defined(_WIN32)
     std::string cmd = platform::shell_quote(self);
     for (auto& a : args) cmd += " " + platform::shell_quote(a);
-    auto [status, output] = platform::run_command_capture(cmd);
-    if (!output.empty())
-        stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "stdout"}, {"data", output}}.dump()});
-    return status;
-#else
-    std::string cmd = platform::shell_quote(self);
-    for (auto& a : args) cmd += " " + platform::shell_quote(a);
-    cmd += " </dev/null";
-    auto [status, output] = platform::run_command_capture(cmd);
-    if (!output.empty())
-        stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "output"}, {"data", output}}.dump()});
-    // A wait status, not an exit code: decode it the way a shell does.
-    if (status < 0) return 125;
-    if ((status & 0x7f) != 0) return 128 + (status & 0x7f);
-    return (status >> 8) & 0xff;
-#endif
+    if constexpr (platform::is_windows) {
+        auto [status, output] = platform::run_command_capture(cmd);
+        if (!output.empty())
+            stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "stdout"}, {"data", output}}.dump()});
+        return status;
+    } else {
+        cmd += " </dev/null";
+        auto [status, output] = platform::run_command_capture(cmd);
+        if (!output.empty())
+            stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "output"}, {"data", output}}.dump()});
+        // A wait status, not an exit code: decode it the way a shell does.
+        if (status < 0) return 125;
+        if ((status & 0x7f) != 0) return 128 + (status & 0x7f);
+        return (status >> 8) & 0xff;
+    }
 }
 
 }  // namespace

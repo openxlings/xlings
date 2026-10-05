@@ -1,11 +1,3 @@
-module;
-
-// The NSS cell needs the caller's effective uid. `import std;` does not pull
-// POSIX in, and a named module's purview forbids including it there, so it
-// goes in the global module fragment -- same arrangement as subos/sandbox.cppm.
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
 export module xlings.core.xself.doctor;
 
 import std;
@@ -34,6 +26,7 @@ import xlings.core.xim.payload;   // classify_payload_platform
 import xlings.core.xim.install_state;
 import xlings.core.profile;
 import xlings.subos.manifest;
+import xlings.platform;
 import xlings.platform.target;   // platform::host().arch for the runtime family
 
 namespace xlings::xself {
@@ -439,11 +432,7 @@ struct DoctorState {
     std::optional<xvm::HomeRelocation> relocation;
 };
 
-#ifdef _WIN32
-constexpr std::string_view shim_ext_ = ".exe";
-#else
-constexpr std::string_view shim_ext_ = "";
-#endif
+constexpr std::string_view shim_ext_ = platform::is_windows ? ".exe" : "";
 
 
 // ── detection ────────────────────────────────────────────────────────

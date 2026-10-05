@@ -7,12 +7,6 @@
 // It provides a single entry point (`interface::run`) that the cli layer
 // hooks up to its `interface` subcommand action.
 
-module;
-
-#ifdef __unix__
-#include <poll.h>
-#endif
-
 module xlings.interface;
 
 import std;
@@ -434,23 +428,24 @@ void InterfaceSession::heartbeat_loop_(std::stop_token st) {
 }
 
 void InterfaceSession::stdin_loop_(std::stop_token st) {
-#ifdef __unix__
-    while (!st.stop_requested()) {
-        ::pollfd pfd{0, POLLIN, 0};
-        int rc = ::poll(&pfd, 1, 100);
-        if (rc <= 0) continue;
-        if (pfd.revents & (POLLHUP | POLLERR)) return;
-        if (!(pfd.revents & POLLIN)) continue;
+    if constexpr (platform::is_linux) {
+        // Polled, so a stop request is seen within 100 ms rather than at
+        // the next line.
+        while (!st.stop_requested()) {
+            platform::PollFd in{ 0 };
+            if (platform::poll_fds(std::span(&in, 1), 100) <= 0) continue;
+            if (in.closed && !in.readable) return;
+            if (!in.readable) continue;
+            std::string line;
+            if (!std::getline(std::cin, line)) return;
+            handle_stdin_line_(line);
+        }
+    } else {
         std::string line;
-        if (!std::getline(std::cin, line)) return;
-        handle_stdin_line_(line);
+        while (!st.stop_requested() && std::getline(std::cin, line)) {
+            handle_stdin_line_(line);
+        }
     }
-#else
-    std::string line;
-    while (!st.stop_requested() && std::getline(std::cin, line)) {
-        handle_stdin_line_(line);
-    }
-#endif
 }
 
 void InterfaceSession::handle_stdin_line_(std::string_view line) {

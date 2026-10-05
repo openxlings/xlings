@@ -1,28 +1,3 @@
-module;
-
-// System headers used by use_spawn_shell only. `import std;` doesn't
-// pull these in, and we want execl/errno (POSIX) or CreateProcess
-// (Win32) without #include in the named-module purview (which the
-// standard forbids for headers that aren't importable units).
-#include <cstdio>  // stderr (used by std::println(stderr, ...))
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-// windows.h defines `min`/`max` as function-like macros, which turns any
-// `std::min({a, b, c})` in this module into "too many arguments provided to
-// function-like macro invocation" -- an error that names the call site and
-// says nothing about where the macro came from. Every other module here that
-// includes windows.h already defines this (platform.cppm, platform/windows.cppm,
-// platform/target.cppm); this one was the exception, and it cost four
-// consecutive red Windows runs.
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
-#endif
-
 export module xlings.core.subos;
 
 import std;
@@ -34,7 +9,6 @@ import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
 import xlings.core.xim.commands;  // auto_install_backend_ needs cmd_install
-import xlings.core.subos.keeper;
 import xlings.subos.gpu;
 import xlings.subos.graphics;
 import xlings.core.subos.sandbox;
@@ -218,11 +192,7 @@ inline int validate_subos_(const std::string& name, EventStream& stream) {
 inline std::string rebuild_path_for_subos_(const std::string& orig_path,
                                           const fs::path& home_dir,
                                           const fs::path& new_bin) {
-#if defined(_WIN32)
-    constexpr char SEP = ';';
-#else
-    constexpr char SEP = ':';
-#endif
+    constexpr char SEP = platform::PATH_SEPARATOR;
     auto subos_root = (home_dir / "subos").string();
     std::string out;
     out.reserve(orig_path.size() + new_bin.string().size() + 1);
@@ -378,7 +348,7 @@ inline void drop_loader_coupled_dirs_(std::vector<manifest::Resolved>& vars) {
             v.value += k;
         }
         for (const auto& d : dropped) {
-            std::println(stderr,
+            std::println(std::cerr,
                 "[xlings]   {} — dropped {} (declared by {}): it holds a libc, "
                 "and this variable is inherited by host binaries running under "
                 "the host loader",
@@ -423,14 +393,14 @@ inline void report_injected_env_(const std::string& subosName,
     for (const auto& v : vars)
         providers.insert(v.providers.begin(), v.providers.end());
 
-    std::println(stderr, "[xlings] subos {}: {} env var(s) from {} package(s)",
+    std::println(std::cerr, "[xlings] subos {}: {} env var(s) from {} package(s)",
                  subosName, vars.size(), providers.size());
     for (const auto& v : vars) {
         if (v.unresolved) {
-            std::println(stderr, "[xlings]   {} — unresolved path, skipped "
+            std::println(std::cerr, "[xlings]   {} — unresolved path, skipped "
                                  "(run `xlings self doctor`)", v.var);
         } else if (v.conflicted) {
-            std::println(stderr, "[xlings]   {} — declared by {} packages, "
+            std::println(std::cerr, "[xlings]   {} — declared by {} packages, "
                                  "conflicting", v.var, v.providers.size());
         }
     }

@@ -1,8 +1,3 @@
-module;
-
-#include <ctime>
-#include <time.h>
-
 module xlings.observe;
 
 import std;
@@ -35,16 +30,8 @@ std::optional<Kind> kind_from_string(std::string_view s) {
 }
 
 std::string utc_now() {
-    const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::tm tm{};
-#if defined(_WIN32)
-    ::gmtime_s(&tm, &now);
-#else
-    ::gmtime_r(&now, &tm);
-#endif
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return buf;
+    const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", now);
 }
 
 nlohmann::json Event::to_json() const {

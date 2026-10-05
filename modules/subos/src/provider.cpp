@@ -2,7 +2,7 @@ module xlings.subos.provider;
 
 import std;
 import xlings.subos.spec;
-import xlings.subos.landlock;
+import xlings.subos.session;
 
 namespace xlings::subos::provider {
 
@@ -57,7 +57,7 @@ std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
     if (s.backend == spec::Backend::Landlock) {
         std::string rw;
         for (const auto& p : s.landlock_rw) rw += p.generic_string() + "\n";
-        env[std::string(landlock::kRwEnv)] = rw;
+        env[std::string(session::kLandlockRwEnv)] = rw;
     }
     return env;
 }

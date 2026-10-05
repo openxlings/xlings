@@ -10,12 +10,6 @@
 // and renders one report. Locally and in CI it is the same command producing
 // the same report; CI only adds `--summary` (GitHub step summary) and merges
 // the lanes' run directories with `report --in`.
-#include <cstdio>
-#include <cstdlib>
-#if !defined(_WIN32)
-#include <sys/wait.h>
-#endif
-
 import std;
 import xlings.libs.json;
 import xlings.testkit;
@@ -35,14 +29,6 @@ std::string env_or(const char* name, std::string fallback = {}) {
     return fallback;
 }
 
-void set_env(const std::string& k, const std::string& v) {
-#if defined(_WIN32)
-    ::_putenv_s(k.c_str(), v.c_str());
-#else
-    ::setenv(k.c_str(), v.c_str(), 1);
-#endif
-}
-
 std::string platform_name() {
     if constexpr (tk::is_windows) return "windows";
     else if constexpr (tk::is_macos) return "macos";
@@ -54,15 +40,8 @@ int shell(const std::string& command, const fs::path& log) {
     const std::string full = tk::is_windows
         ? command + " > \"" + log.string() + "\" 2>&1"
         : "(" + command + ") > \"" + log.string() + "\" 2>&1";
-    std::fflush(stdout);
-    int rc = std::system(full.c_str());
-#if defined(_WIN32)
-    return rc;
-#else
-    if (rc == -1) return -1;
-    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
-    return 128 + (WIFSIGNALED(rc) ? WTERMSIG(rc) : 0);
-#endif
+    std::cout.flush();
+    return tk::system_exit_code(std::system(full.c_str()));
 }
 
 std::string tail_lines(const std::string& text, std::size_t n) {
@@ -137,18 +116,18 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
     if (a.suites.empty()) return 0;
     auto doc = toml::parse_file(root / "tests" / "suites.toml");
     if (!doc) {
-        std::println(stderr, "xdev: {}", doc.error());
+        std::println(std::cerr, "xdev: {}", doc.error());
         return 2;
     }
     fs::create_directories(out / "logs");
     // A suite that reports per test (run_all.sh) appends here too.
-    set_env("XDEV_RECORDS", (out / "scripts.ndjson").string());
+    tk::set_env("XDEV_RECORDS", (out / "scripts.ndjson").string());
     int failed = 0;
     const auto bin = tk::xlings_binary().string();
     for (const auto& suite : a.suites) {
         auto it = doc->tables.find(suite);
         if (it == doc->tables.end()) {
-            std::println(stderr, "xdev: no suite '{}' in tests/suites.toml", suite);
+            std::println(std::cerr, "xdev: no suite '{}' in tests/suites.toml", suite);
             return 2;
         }
         const auto& t = it->second;
@@ -163,7 +142,7 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
         }
         auto c = t.find("commands");
         if (c == t.end() || !c->second.list()) {
-            std::println(stderr, "xdev: suite '{}' has no commands", suite);
+            std::println(std::cerr, "xdev: suite '{}' has no commands", suite);
             return 2;
         }
         int index = 0;
@@ -211,14 +190,14 @@ int cmd_test(const TestArgs& a) {
 
     int mcpp_rc = 0;
     if (a.mcpp) {
-        set_env("XTEST_META_OUT", (out / "meta.ndjson").string());
-        set_env("XTEST_RESULTS_OUT", (out / "cases.ndjson").string());
-        set_env("XTEST_ARTIFACTS", (out / "artifacts").string());
+        tk::set_env("XTEST_META_OUT", (out / "meta.ndjson").string());
+        tk::set_env("XTEST_RESULTS_OUT", (out / "cases.ndjson").string());
+        tk::set_env("XTEST_ARTIFACTS", (out / "artifacts").string());
         std::string command = "mcpp test --message-format json";
         for (auto& x : a.mcpp_args) command += " " + x;
         if (!a.pattern.empty()) command += " " + a.pattern;
         std::println("xdev: {}", command);
-        std::fflush(stdout);
+        std::cout.flush();
         auto full = (tk::is_windows ? std::string{} : "cd \"" + root.string() + "\" && ")
                     + command + " > \"" + (out / "mcpp.ndjson").string() + "\"";
         mcpp_rc = std::system(full.c_str());
@@ -231,7 +210,7 @@ int cmd_test(const TestArgs& a) {
                              {}, false, out);
     if (mcpp_rc != 0 && rc == 0) {
         // mcpp itself failed before reporting a test (resolution, build).
-        std::println(stderr, "xdev: `mcpp test` failed without a failing test record");
+        std::println(std::cerr, "xdev: `mcpp test` failed without a failing test record");
         return 1;
     }
     return rc;
@@ -379,7 +358,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
     if (!requirements.empty()) {
         auto doc = toml::parse_file(requirements);
         if (!doc) {
-            std::println(stderr, "xdev: {}", doc.error());
+            std::println(std::cerr, "xdev: {}", doc.error());
             return 2;
         }
         std::vector<Requirement> reqs;
@@ -394,11 +373,11 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             if (auto it = t.find("status"); it != t.end() && it->second.str()) r.status = *it->second.str();
             if (auto it = t.find("why"); it != t.end() && it->second.str()) r.why = *it->second.str();
             if (r.status != "required" && r.status != "planned" && r.status != "deferred") {
-                std::println(stderr, "xdev: {}: unknown status '{}'", r.id, r.status);
+                std::println(std::cerr, "xdev: {}: unknown status '{}'", r.id, r.status);
                 return 2;
             }
             if (r.kind != "flow" && r.kind != "isolation") {
-                std::println(stderr, "xdev: {}: unknown kind '{}'", r.id, r.kind);
+                std::println(std::cerr, "xdev: {}: unknown kind '{}'", r.id, r.kind);
                 return 2;
             }
             reqs.push_back(std::move(r));
@@ -486,7 +465,7 @@ int cmd_doctor() {
 }
 
 int usage() {
-    std::println(stderr,
+    std::println(std::cerr,
         "usage: xdev <command>\n"
         "  test   [pattern] [--suite NAME]... [--no-mcpp] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
         "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered]\n"
@@ -512,7 +491,7 @@ int main(int argc, char** argv) {
             else if (x == "--tarball" && i + 1 < args.size()) a.tarball = args[++i];
             else if (x == "--") { a.mcpp_args.assign(args.begin() + static_cast<long>(i) + 1, args.end()); break; }
             else if (!x.empty() && x[0] != '-' && a.pattern.empty()) a.pattern = x;
-            else { std::println(stderr, "xdev test: unknown option {}", x); return 2; }
+            else { std::println(std::cerr, "xdev test: unknown option {}", x); return 2; }
         }
         return cmd_test(a);
     }
@@ -527,7 +506,7 @@ int main(int argc, char** argv) {
             else if (x == "--requirements" && i + 1 < args.size()) requirements = args[++i];
             else if (x == "--fail-uncovered") fail_uncovered = true;
             else if (x == "--write" && i + 1 < args.size()) write_to = args[++i];
-            else { std::println(stderr, "xdev report: unknown option {}", x); return 2; }
+            else { std::println(std::cerr, "xdev report: unknown option {}", x); return 2; }
         }
         if (dirs.empty()) dirs.push_back(repo_root() / "target" / "xdev" / "run");
         return cmd_report_dirs(dirs, summary, requirements, fail_uncovered, write_to);

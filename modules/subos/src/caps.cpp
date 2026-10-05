@@ -1,10 +1,3 @@
-module;
-
-#if defined(__linux__)
-#include <sys/stat.h>
-#include <sys/utsname.h>
-#endif
-
 module xlings.subos.caps;
 
 import std;
@@ -13,7 +6,6 @@ import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.libs.json;
 import xlings.observe;
-import xlings.subos.landlock;
 
 namespace xlings::subos::caps {
 
@@ -66,11 +58,8 @@ std::string cache_key(const Backend& b) {
     std::error_code ec;
     auto size = fs::file_size(b.bin, ec);
     auto mtime = fs::last_write_time(b.bin, ec).time_since_epoch().count();
-    unsigned mode = 0, uid = 0;
-#if defined(__linux__)
-    struct stat st{};
-    if (::stat(b.bin.c_str(), &st) == 0) { mode = st.st_mode; uid = st.st_uid; }
-#endif
+    const auto own = platform::file_ownership(b.bin).value_or(platform::FileOwnership{});
+    const unsigned mode = own.mode, uid = own.uid;
     return std::format("{}|{}|{}|{:o}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
                        read_line("/proc/sys/kernel/osrelease"),
                        read_line("/proc/sys/kernel/random/boot_id"),
@@ -117,14 +106,12 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
 std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, bool fresh) {
     std::vector<Backend> out;
     std::error_code ec;
-#if defined(__linux__)
-    {
+    if constexpr (platform::is_linux) {
+        // Root's, and writable by nobody else (group/other write bits clear).
         const fs::path p(kRootOwnedBwrap);
-        struct stat st{};
-        if (::stat(p.c_str(), &st) == 0 && st.st_uid == 0 && !(st.st_mode & (S_IWGRP | S_IWOTH)))
+        if (auto own = platform::file_ownership(p); own && own->uid == 0 && !(own->mode & 022))
             out.push_back(Backend{ .name = "bwrap", .bin = p, .source = "root-owned" });
     }
-#endif
     for (const auto* p : {"/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
         fs::path candidate(p);
         if (!fs::is_regular_file(candidate, ec)) continue;
@@ -195,19 +182,15 @@ void probe_bwrap(Backend& b) {
 Caps probe(const HomeView& home, const Ports& ports) {
     Caps c;
     c.platform = std::string(platform_name());
-#if defined(__linux__)
-    c.bwrap = locate_bwrap(home, ports);
-    c.proot = locate_proot(home, ports);
-    c.userns = c.bwrap && c.bwrap->usable;
-    c.pasta = locate_pasta(home, ports, c.pasta_missing);
-    c.seccomp = true;
-    c.landlock_abi = landlock::abi();
-    struct utsname u{};
-    if (::uname(&u) == 0) c.kernel = u.release;
-#else
-    (void)home;
-    (void)ports;
-#endif
+    if constexpr (platform::is_linux) {
+        c.bwrap = locate_bwrap(home, ports);
+        c.proot = locate_proot(home, ports);
+        c.userns = c.bwrap && c.bwrap->usable;
+        c.pasta = locate_pasta(home, ports, c.pasta_missing);
+        c.seccomp = true;
+        c.landlock_abi = platform::landlock::abi();
+        c.kernel = platform::kernel_release();
+    }
     return c;
 }
 

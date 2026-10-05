@@ -14,47 +14,37 @@ Core capabilities:
 ## Repository Structure
 
 ```
-src/
-├── main.cpp                         # Entry point
-├── cli.cppm                         # CLI dispatch (positional + flag parsing)
-├── interface.cppm                   # NDJSON programmatic interface (protocol v1.1)
-├── core/
-│   ├── config.cppm                  # 3-layer config (global → subos → project)
-│   ├── subos.cppm                   # SubOS lifecycle (create/use/fork/remove/stop)
-│   ├── subos/keeper.cppm            # Auto-keeper primitives (Linux namespace reuse)
-│   ├── xself.cppm                   # Self-install/update
-│   ├── xself/                       # Self-management submodules
-│   ├── xim/                         # Package management subsystem
-│   │   ├── installer.cppm           # Install orchestration (type dispatch)
-│   │   ├── resolver.cppm            # DAG dependency resolution
-│   │   ├── downloader.cppm          # Parallel download + SHA256
-│   │   ├── index.cppm               # Package index + cache
-│   │   ├── catalog.cppm             # Multi-repo catalog loading
-│   │   └── libxpkg/types/           # Per-type handlers:
-│   │       ├── type.cppm            #   PlanNode, enums, shared types
-│   │       ├── script.cppm          #   type="script" default hooks
-│   │       └── subos.cppm           #   type="subos" default hooks
-│   └── xvm/                         # Version management
-│       ├── db.cppm                  # VersionDB CRUD + JSON
-│       ├── shim.cppm                # Multicall shim dispatch
-│       └── commands.cppm            # xvm commands (use, list, register)
-├── platform.cppm                    # Cross-platform abstractions
-├── platform/                        # Platform implementations
-├── libs/                            # Vendored libs (json, tinyhttps)
-└── ui/                              # TUI (ftxui-based)
+modules/                             # packages linked into xlings, one per responsibility
+├── libs/       json, sha256, tinyhttps        nothing of xlings
+├── runtime/    cancellation, guard, observe   shared by core and SubOS core
+├── platform/   the OS boundary: every system header and call
+│   └── src/platform/  linux, macos, windows, unix, target,
+│                      process (fork/exec/signals/sockets), isolation (ns/Landlock/seccomp)
+├── ui/         theme, i18n
+├── subos/      the SubOS core: model, policy, spec, providers, caps, gates,
+│               session (supervisor + session-init), broker, manifest, userdata
+└── testkit/    C++ e2e test library (dev-dependency)
+apps/
+├── gui/        GUI library half
+└── xdev/       dev tool: tests, report, requirement map (not shipped)
+src/                                 # not yet separated: core, cli, ui, runtime
+├── main.cpp                         # entry point
+├── cli.cpp, cli/spec.cpp            # CLI dispatch and the command spec
+├── interface.cpp                    # NDJSON programmatic interface
+└── core/
+    ├── config.cppm                  # 3-layer config (global -> subos -> project)
+    ├── home/                        # HomeContext: deployment mode, layout, system config
+    ├── subos.cpp                    # `subos` commands (new/use/exec/start/config/...)
+    ├── subos/sandbox.cpp            # adapter: policy + caps -> spec -> session
+    ├── xself/                       # self install/update/doctor
+    ├── xim/                         # package management (installer, resolver, index...)
+    └── xvm/                         # version management, shims
 
 tests/
-├── e2e/                             # End-to-end shell tests
-│   ├── project_test_lib.sh          # Shared helpers (find_xlings_bin, run_xlings)
-│   ├── fixtures/                    # Test fixture packages
-│   └── subos_xpkg_*.sh             # SubOS-as-xpkg e2e tests
-└── (unit tests via `mcpp test`)
-
-.agents/
-├── docs/                            # Agent working docs (see .agents/docs/README.md)
-├── skills/                          # Agent skills (this section)
-├── plans/                           # Implementation plans
-└── tasks/                           # Task tracking
+├── unit/, e2e/                      # C++ tests (`mcpp test`, XTEST + testkit)
+├── e2e/*.sh                         # legacy shell e2e (tests/suites.toml)
+├── requirements.toml                # requirement IDs every test `covers`
+└── suites.toml                      # legacy suites run through xdev
 ```
 
 ## Build System
@@ -103,16 +93,22 @@ for (int i = 3; i < argc; ++i) {
 }
 ```
 
-### Platform branches: `if constexpr` first, `#if` for what does not exist
+### Platform code lives in `xlings.platform`
 
-`xlings::platform::is_windows` / `is_macos` / `is_linux` / `is_posix` are
-constants. Where both branches compile on every platform -- a string, a path,
-a portable call -- branch with `if constexpr (platform::is_linux)`: every
-build then compiles every branch, so the Linux CI catches a typo in the macOS
-one. `#if` stays for what only exists on one platform: headers, system calls,
-`WIFEXITED`, Win32 types. Modules that do not import `xlings.platform` on
-purpose (`testkit` and through it `xdev`, `observe`) carry their own constants
-under the same names.
+**System headers and system calls are in `modules/platform` and nowhere
+else** (`tools/lint_platform_headers.sh`, in the lint suite). What another
+module needs from the OS -- a fork, a socket that carries descriptors, a
+Landlock fence, a file's owner -- is a function there, declared on every
+platform and reporting "unavailable" where it does not exist; the caller
+holds the logic and no `#include`. Two exceptions, both outside the
+product: `modules/testkit` (the harness does not share the product's failure
+modes) and `tests/` (a test may call the kernel to check what it does).
+
+Branch on the platform with `if constexpr (platform::is_linux)` (also
+`is_windows`, `is_macos`, `is_posix`): every build then compiles every branch,
+so the Linux CI catches a typo in the macOS one. `#if` is for inside
+`modules/platform`, where the headers are. testkit, which does not import
+the product, carries the same constants under the same names.
 
 ### Core and interaction surfaces are separate (2026.10, #640)
 

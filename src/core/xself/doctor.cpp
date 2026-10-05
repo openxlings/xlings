@@ -1,11 +1,3 @@
-module;
-
-// The NSS cell needs the caller's effective uid. `import std;` does not pull
-// POSIX in, and a named module's purview forbids including it there, so it
-// goes in the global module fragment -- same arrangement as subos/sandbox.cppm.
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
 module xlings.core.xself.doctor;
 
 import std;
@@ -48,12 +40,6 @@ import xlings.platform.target;
 import xlings.core.home_identity;
 
 namespace xlings::xself {
-
-#ifdef _WIN32
-
-#else
-
-#endif
 
 // First `limit` names, comma-joined, with a count for the rest.
 //
@@ -111,11 +97,7 @@ DoctorState load_state_() {
         st.otherSnapshots.push_back(std::move(snapshot));
     }
 
-#ifdef _WIN32
-    st.xlingsBin = p.homeDir / "bin" / "xlings.exe";
-#else
-    st.xlingsBin = p.homeDir / "bin" / "xlings";
-#endif
+    st.xlingsBin = p.homeDir / "bin" / (platform::is_windows ? "xlings.exe" : "xlings");
     if (!fs::exists(st.xlingsBin)) st.xlingsBin = p.homeDir / "xlings";
 
     // Was this database written for another root?
@@ -171,18 +153,18 @@ bool payload_has_any_executable_(const fs::path& dir) {
         for (auto& e : platform::dir_entries(d)) {
             std::error_code fec;
             if (!e.is_regular_file(fec) && !e.is_symlink(fec)) continue;
-#if defined(_WIN32)
-            auto ext = e.path().extension().string();
-            if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
-#else
-            auto st = fs::status(e.path(), fec);
-            if (!fec && (st.permissions() & (fs::perms::owner_exec
-                                             | fs::perms::group_exec
-                                             | fs::perms::others_exec))
-                        != fs::perms::none) {
-                return true;
+            if constexpr (platform::is_windows) {
+                auto ext = e.path().extension().string();
+                if (ext == ".exe" || ext == ".bat" || ext == ".cmd") return true;
+            } else {
+                auto st = fs::status(e.path(), fec);
+                if (!fec && (st.permissions() & (fs::perms::owner_exec
+                                                 | fs::perms::group_exec
+                                                 | fs::perms::others_exec))
+                            != fs::perms::none) {
+                    return true;
+                }
             }
-#endif
         }
         return false;
     };
@@ -2272,93 +2254,93 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
         // Notice, not Error, when it works: this is the cell that is supposed
         // to be boring. When it fails it is an Error, because a home whose
         // packages resolve no users is broken in a way nothing else reports.
-#ifdef __linux__
-        for (const auto& root : payloadAuditRoots) {
-            const auto& storeName = root.storeName;
-            // `<ns>-x-glibc`, any namespace.
-            if (!storeName.ends_with("-x-glibc")) continue;
-            std::error_code sec;
-            const auto lib64  = root.path / "lib64";
-            const auto loader = lib64 / "ld-linux-x86-64.so.2";
-            const auto getent = root.path / "bin" / "getent";
-            if (!fs::is_regular_file(loader, sec)) continue;
-            if (!fs::is_regular_file(getent, sec)) continue;
+        if constexpr (platform::is_linux) {
+            for (const auto& root : payloadAuditRoots) {
+                const auto& storeName = root.storeName;
+                // `<ns>-x-glibc`, any namespace.
+                if (!storeName.ends_with("-x-glibc")) continue;
+                std::error_code sec;
+                const auto lib64  = root.path / "lib64";
+                const auto loader = lib64 / "ld-linux-x86-64.so.2";
+                const auto getent = root.path / "bin" / "getent";
+                if (!fs::is_regular_file(loader, sec)) continue;
+                if (!fs::is_regular_file(getent, sec)) continue;
 
-            const auto& version = root.version;
-            const auto cmd = std::format(
-                "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
-                loader.string(), lib64.string(), getent.string(),
-                ::geteuid());
-            auto [rc, out] = platform::run_command_capture(cmd);
+                const auto& version = root.version;
+                const auto cmd = std::format(
+                    "\"{}\" --library-path \"{}\" \"{}\" passwd {} 2>/dev/null",
+                    loader.string(), lib64.string(), getent.string(),
+                    platform::user_ids().euid);
+                auto [rc, out] = platform::run_command_capture(cmd);
 
-            if (rc == 0 && !out.empty()) {
-                add({
-                    .kind    = FindingKind::NssResolution,
-                    .level   = FindingLevel::Notice,
-                    .target  = storeName,
-                    .version = version,
-                    .detail  = std::format(
-                        "glibc {}: resolves the current user "
-                        "(getent passwd {} under our loader)",
-                        version, ::geteuid()),
-                });
-                continue;
-            }
+                if (rc == 0 && !out.empty()) {
+                    add({
+                        .kind    = FindingKind::NssResolution,
+                        .level   = FindingLevel::Notice,
+                        .target  = storeName,
+                        .version = version,
+                        .detail  = std::format(
+                            "glibc {}: resolves the current user "
+                            "(getent passwd {} under our loader)",
+                            version, platform::user_ids().euid),
+                    });
+                    continue;
+                }
 
-            // Which backends this host asks for that we do not ship. Part of
-            // the finding, not a separate check: it is the only actionable
-            // thing about the failure.
-            std::string missing;
-            {
-                std::ifstream nss("/etc/nsswitch.conf");
-                std::set<std::string> seen;
-                for (std::string line; std::getline(nss, line);) {
-                    if (auto h = line.find('#'); h != std::string::npos)
-                        line.resize(h);
-                    auto colon = line.find(':');
-                    if (colon == std::string::npos) continue;
-                    auto rest = line.substr(colon + 1);
-                    // `[NOTFOUND=return]` is control flow, not a module.
-                    while (true) {
-                        auto ob = rest.find('[');
-                        if (ob == std::string::npos) break;
-                        auto cb = rest.find(']', ob);
-                        if (cb == std::string::npos) {
-                            rest.resize(ob);
-                            break;
+                // Which backends this host asks for that we do not ship. Part of
+                // the finding, not a separate check: it is the only actionable
+                // thing about the failure.
+                std::string missing;
+                {
+                    std::ifstream nss("/etc/nsswitch.conf");
+                    std::set<std::string> seen;
+                    for (std::string line; std::getline(nss, line);) {
+                        if (auto h = line.find('#'); h != std::string::npos)
+                            line.resize(h);
+                        auto colon = line.find(':');
+                        if (colon == std::string::npos) continue;
+                        auto rest = line.substr(colon + 1);
+                        // `[NOTFOUND=return]` is control flow, not a module.
+                        while (true) {
+                            auto ob = rest.find('[');
+                            if (ob == std::string::npos) break;
+                            auto cb = rest.find(']', ob);
+                            if (cb == std::string::npos) {
+                                rest.resize(ob);
+                                break;
+                            }
+                            rest.erase(ob, cb - ob + 1);
                         }
-                        rest.erase(ob, cb - ob + 1);
-                    }
-                    std::istringstream toks(rest);
-                    for (std::string mod; toks >> mod;) {
-                        if (!seen.insert(mod).second) continue;
-                        if (!fs::is_regular_file(
-                                lib64 / ("libnss_" + mod + ".so.2"), sec)) {
-                            if (!missing.empty()) missing += ", ";
-                            missing += mod;
+                        std::istringstream toks(rest);
+                        for (std::string mod; toks >> mod;) {
+                            if (!seen.insert(mod).second) continue;
+                            if (!fs::is_regular_file(
+                                    lib64 / ("libnss_" + mod + ".so.2"), sec)) {
+                                if (!missing.empty()) missing += ", ";
+                                missing += mod;
+                            }
                         }
                     }
                 }
-            }
 
-            add({
-                .kind    = FindingKind::NssResolution,
-                .level   = FindingLevel::Error,
-                .target  = storeName,
-                .version = version,
-                .detail  = std::format(
-                    "glibc {}: does NOT resolve the current user under our "
-                    "loader{}. Any package switched to this interpreter will "
-                    "see no user, silently.",
-                    version,
-                    missing.empty()
-                        ? std::string{}
-                        : std::format(
-                            " -- /etc/nsswitch.conf names backend(s) this "
-                            "payload does not ship: {}", missing)),
-            });
+                add({
+                    .kind    = FindingKind::NssResolution,
+                    .level   = FindingLevel::Error,
+                    .target  = storeName,
+                    .version = version,
+                    .detail  = std::format(
+                        "glibc {}: does NOT resolve the current user under our "
+                        "loader{}. Any package switched to this interpreter will "
+                        "see no user, silently.",
+                        version,
+                        missing.empty()
+                            ? std::string{}
+                            : std::format(
+                                " -- /etc/nsswitch.conf names backend(s) this "
+                                "payload does not ship: {}", missing)),
+                });
+            }
         }
-#endif
 
         // The whole subos tree, not four directories one level deep.
         //

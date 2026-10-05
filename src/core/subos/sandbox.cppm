@@ -1,22 +1,3 @@
-module;
-
-// System headers used by the sandbox backends only. `import std;` does not
-// pull these in, and the named-module purview forbids including them there.
-#include <cstdio>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-// See src/core/subos.cppm: windows.h's min/max macros break std::min({...}).
-// Not yet triggered here, and that is exactly why it is worth closing --
-// the failure only appears on Windows, and only once someone writes the call.
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <cerrno>
-#include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
-#endif
-
 export module xlings.core.subos.sandbox;
 
 import std;
@@ -88,7 +69,6 @@ export StorageMode read_storage_mode_(const fs::path& subos_dir);
 // the only caller (use_sandbox_mode_) is also Linux-guarded, so we
 // guard these helpers too rather than fight the type system with
 // platform-portable substitutes.
-#if defined(__linux__) || defined(__APPLE__)
 
 inline constexpr std::string_view kEtcHosts =
     "127.0.0.1 localhost\n::1 localhost\n";
@@ -159,7 +139,6 @@ inline void write_sandbox_rc_(const fs::path& home_dir) {
     try_write(fish_dir / "config.fish", kSandboxFishConfig);
 }
 
-#endif // __linux__ / __APPLE__
 
 // ── Image storage helpers (V6) ────────────────────────────────────
 

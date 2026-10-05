@@ -7,12 +7,6 @@
 // It provides a single entry point (`interface::run`) that the cli layer
 // hooks up to its `interface` subcommand action.
 
-module;
-
-#ifdef __unix__
-#include <poll.h>
-#endif
-
 export module xlings.interface;
 
 import std;

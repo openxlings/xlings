@@ -1,18 +1,3 @@
-module;
-
-#include <cerrno>
-#include <cstddef>
-#include <cstdio>
-#include <csignal>
-#include <cstdlib>
-#include <cstring>
-#if defined(__linux__)
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
-
 module xlings.subos.broker;
 
 import std;
@@ -20,6 +5,7 @@ import xlings.libs.json;
 import xlings.observe;
 import xlings.subos.home_view;
 import xlings.subos.policy;
+import xlings.platform;
 
 namespace xlings::subos::broker {
 
@@ -145,80 +131,49 @@ std::optional<Request> take(const HomeView& home, std::string_view instance, std
 
 // ── client ───────────────────────────────────────────────────────────
 
-#if !defined(__linux__)
-
-bool available() { return false; }
-int forward(std::span<const std::string>) { return kExitPermission; }
-
-#else
-
 namespace {
 std::string socket_path() {
-    const char* p = std::getenv(std::string(kSocketEnv).c_str());
-    return p && *p ? std::string(p) : std::string(kSocketInside);
+    const auto env = platform::environment();
+    auto it = env.find(std::string(kSocketEnv));
+    return it != env.end() && !it->second.empty() ? it->second : std::string(kSocketInside);
 }
 }  // namespace
 
 bool available() {
-    const char* mode = std::getenv("XLINGS_SUBOS_MODE");
-    if (!mode || std::string_view(mode) != "sandbox") return false;
+    if constexpr (!platform::is_linux) return false;
+    const auto env = platform::environment();
+    auto mode = env.find("XLINGS_SUBOS_MODE");
+    if (mode == env.end() || mode->second != "sandbox") return false;
     std::error_code ec;
     return fs::exists(socket_path(), ec);
 }
 
 int forward(std::span<const std::string> argv) {
-    int fd = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
-    if (fd < 0) return kExitPermission;
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
     const auto path = socket_path();
-    if (path.size() >= sizeof(addr.sun_path)) {
-        std::fprintf(stderr, "xlings: the broker's socket path is too long (%s)\n", path.c_str());
-        ::close(fd);
-        return kExitPermission;
-    }
-    std::memcpy(addr.sun_path, path.data(), path.size());
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr),
-                  static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1)) != 0) {
-        std::fprintf(stderr, "xlings: the broker is not reachable (%s)\n", std::strerror(errno));
-        ::close(fd);
+    const int fd = platform::unix_connect(path);
+    if (fd < 0) {
+        std::println(std::cerr, "xlings: the broker is not reachable at {} ({})", path,
+                     platform::error_text(platform::last_error()));
         return kExitPermission;
     }
     nlohmann::json req{{"op", "run"}, {"argv", std::vector<std::string>(argv.begin(), argv.end())}};
-    auto text = req.dump();
-    iovec iov{text.data(), text.size()};
     const int stdio[3] = {0, 1, 2};
-    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(stdio))];
-    msghdr msg{};
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = control;
-    msg.msg_controllen = sizeof(control);
-    cmsghdr* cm = CMSG_FIRSTHDR(&msg);
-    cm->cmsg_level = SOL_SOCKET;
-    cm->cmsg_type = SCM_RIGHTS;
-    cm->cmsg_len = CMSG_LEN(sizeof(stdio));
-    std::memcpy(CMSG_DATA(cm), stdio, sizeof(stdio));
-    if (::sendmsg(fd, &msg, MSG_NOSIGNAL) < 0) { ::close(fd); return kExitPermission; }
-
-    std::vector<char> buf(1 << 16);
+    if (!platform::send_message(fd, req.dump(), stdio)) {
+        platform::close_fd(fd);
+        return kExitPermission;
+    }
     int code = kExitPermission;
-    while (true) {
-        auto n = ::recv(fd, buf.data(), buf.size(), 0);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
-        auto j = nlohmann::json::parse(std::string_view(buf.data(), static_cast<std::size_t>(n)), nullptr, false);
-        if (j.is_discarded()) continue;
-        if (j.contains("started")) continue;
+    while (auto m = platform::receive_message(fd, 1 << 16)) {
+        platform::close_fds(m->fds);
+        auto j = nlohmann::json::parse(m->data, nullptr, false);
+        if (j.is_discarded() || j.contains("started")) continue;
         code = j.value("exit", kExitPermission);
-        if (auto e = j.value("error", ""); !e.empty()) std::fprintf(stderr, "[xlings] %s\n", e.c_str());
-        if (auto h = j.value("hint", ""); !h.empty()) std::fprintf(stderr, "[xlings] %s\n", h.c_str());
+        if (auto e = j.value("error", ""); !e.empty()) std::println(std::cerr, "[xlings] {}", e);
+        if (auto h = j.value("hint", ""); !h.empty()) std::println(std::cerr, "[xlings] {}", h);
         break;
     }
-    ::close(fd);
+    platform::close_fd(fd);
     return code;
 }
-
-#endif
 
 }  // namespace xlings::subos::broker

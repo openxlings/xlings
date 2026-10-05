@@ -15,18 +15,6 @@ import xlings.core.destructive_log;
 // See compact/xself.cppm — each compat lives in its own version sub-namespace.
 import xlings.core.xself.compat;
 
-#ifdef _WIN32
-#include <io.h>
-#define isatty _isatty
-#define STDOUT_FD 1
-#else
-#include <unistd.h>
-#define STDOUT_FD STDOUT_FILENO
-#endif
-
-#ifdef __APPLE__
-#include <cstdlib>  // std::_Exit
-#endif
 
 int main(int argc, char* argv[]) {
     // The first process inside a SubOS sandbox (xlings.subos.session). Before
@@ -67,7 +55,7 @@ int main(int argc, char* argv[]) {
     // Restore terminal cursor visibility on exit (safety net for TUI download progress)
     // Only emit when stdout is a TTY to avoid polluting captured output
     std::atexit([]() {
-        if (isatty(STDOUT_FD)) {
+        if (xlings::platform::stdout_is_terminal()) {
             std::cout << "\033[?25h" << std::flush;
         }
     });
@@ -202,14 +190,13 @@ int main(int argc, char* argv[]) {
         rc = 1;
     }
 
-#ifdef __APPLE__
-    // On macOS, static libc++ linked with dynamic libc++abi causes SIGABRT
-    // during static destruction. Skip destructors — CLI tool needs no cleanup.
-    // _Exit skips atexit handlers, so restore cursor explicitly here.
-    if (isatty(STDOUT_FD)) std::cout << "\033[?25h" << std::flush;
-    std::cerr.flush();
-    std::_Exit(rc);
-#else
+    if constexpr (xlings::platform::is_macos) {
+        // On macOS, static libc++ linked with dynamic libc++abi causes SIGABRT
+        // during static destruction. Skip destructors — CLI tool needs no cleanup.
+        // _Exit skips atexit handlers, so restore cursor explicitly here.
+        if (xlings::platform::stdout_is_terminal()) std::cout << "\033[?25h" << std::flush;
+        std::cerr.flush();
+        std::_Exit(rc);
+    }
     return rc;
-#endif
 }

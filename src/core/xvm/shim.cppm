@@ -1,11 +1,3 @@
-module;
-
-#include <cstdlib>
-
-#if defined(__linux__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-
 export module xlings.core.xvm.shim;
 
 import std;

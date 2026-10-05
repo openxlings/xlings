@@ -13,14 +13,14 @@
 #endif
 
 import std;
-import xlings.subos.seccomp;
+import xlings.platform;
 
 TEST(SubosSeccomp, TheProgramIsNonEmptyOnSupportedArchitectures) {
-    auto p = xlings::subos::seccomp::block_terminal_injection();
+    auto p = xlings::platform::seccomp::block_terminal_injection();
 #if defined(__x86_64__) || defined(__aarch64__)
     ASSERT_FALSE(p.empty());
     EXPECT_EQ(p.size() % 8, 0u);
-    EXPECT_LT(xlings::subos::seccomp::instruction_count(p), 64u);
+    EXPECT_LT(xlings::platform::seccomp::instruction_count(p), 64u);
 #else
     EXPECT_TRUE(p.empty());
 #endif
@@ -30,7 +30,7 @@ TEST(SubosSeccomp, TheProgramIsNonEmptyOnSupportedArchitectures) {
 TEST(SubosSeccomp, AProcessCarryingTheFilterCannotInjectIntoATerminal) {
     // In a child: install the filter, then try TIOCSTI (and the 64-bit
     // spelling with a high bit set) on stdin, and an unrelated ioctl.
-    auto program = xlings::subos::seccomp::block_terminal_injection();
+    auto program = xlings::platform::seccomp::block_terminal_injection();
     pid_t pid = ::fork();
     ASSERT_GE(pid, 0);
     if (pid == 0) {

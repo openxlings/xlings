@@ -1,9 +1,3 @@
-module;
-
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#endif
-
 module xlings.core.home;
 
 import std;
@@ -81,13 +75,13 @@ Entry describe_entry(const fs::path& exe, const fs::path& home) {
     // Root's file where packages install, outside the home, is a package's
     // whoever runs it: its package manager replaces it, and nothing else
     // should. Both conditions: root's own build in a work tree is not one.
-#if !defined(_WIN32)
-    const bool packaged = std::ranges::any_of(
-        std::array{"/usr", "/opt", "/bin", "/sbin", "/snap"},
-        [&](const char* prefix) { return path_is_under(exe, prefix); });
-    struct stat st{};
-    e.system = packaged && ::stat(exe.c_str(), &st) == 0 && st.st_uid == 0;
-#endif
+    if constexpr (platform::is_posix) {
+        const bool packaged = std::ranges::any_of(
+            std::array{"/usr", "/opt", "/bin", "/sbin", "/snap"},
+            [&](const char* prefix) { return path_is_under(exe, prefix); });
+        const auto own = platform::file_ownership(exe);
+        e.system = packaged && own && own->uid == 0;
+    }
     return e;
 }
 

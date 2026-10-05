@@ -21,6 +21,10 @@ export import :macos;
 export import :windows;
 // Shared POSIX implementations (linux + macos). Empty TU on Windows.
 export import :unix;
+// Processes, signals, descriptors and local sockets (a supervisor's needs).
+export import :process;
+// The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
+export import :isolation;
 
 namespace xlings {
 namespace platform {

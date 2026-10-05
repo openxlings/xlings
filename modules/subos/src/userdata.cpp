@@ -1,6 +1,7 @@
 module xlings.subos.userdata;
 
 import std;
+import xlings.platform;
 import xlings.guard;
 import xlings.observe;
 import xlings.subos.home_view;
@@ -79,7 +80,6 @@ mount_under_in(std::string_view mountinfo, const std::filesystem::path& dir) {
     return std::nullopt;
 }
 
-#if defined(__linux__)
 namespace {
 // A live mount anywhere under `dir`. Deleting through one erases the mounted
 // filesystem's contents, not this tree's.
@@ -88,7 +88,6 @@ std::optional<fs::path> mount_under(const fs::path& dir) {
     return mount_under_in(std::string(std::istreambuf_iterator<char>(in), {}), dir);
 }
 }  // namespace
-#endif
 
 // The one way a whole SubOS directory is deleted. It takes a UserConfirmed,
 // which only guard::ask() can produce -- so a repair, an upgrade or a
@@ -109,15 +108,13 @@ delete_subos(const HomeView& home, const fs::path& dir, std::string_view op,
             "refusing to delete {}: it is not a subos directory under {}",
             dir.string(), root.string()));
     }
-#if defined(__linux__)
-    if (auto mount = mount_under(target)) {
+    if (auto mount = platform::is_linux ? mount_under(target) : std::nullopt) {
         return std::unexpected(std::format(
             "refusing to delete {}: {} is a live mount, and deleting through it "
             "would erase the mounted filesystem -- stop what is using it "
             "(`xlings subos stop {}`) or unmount it first",
             dir.string(), mount->string(), name));
     }
-#endif
     const auto size = observe::destructive::measure(target);
     fs::remove_all(target, ec);  // subos-remove-all-ok: THE deletion entry point; caller holds UserConfirmed
     observe::destructive::record(home.home, {

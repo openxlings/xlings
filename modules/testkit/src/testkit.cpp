@@ -846,3 +846,25 @@ void write_file(const fs::path& path, std::string_view content) {
 }
 
 }  // namespace xlings::testkit
+
+namespace xlings::testkit {
+
+void set_env(const std::string& name, const std::string& value) {
+#if defined(_WIN32)
+    ::_putenv_s(name.c_str(), value.c_str());
+#else
+    ::setenv(name.c_str(), value.c_str(), 1);
+#endif
+}
+
+int system_exit_code(int raw) {
+#if defined(_WIN32)
+    return raw;
+#else
+    if (raw == -1) return -1;
+    if (WIFEXITED(raw)) return WEXITSTATUS(raw);
+    return 128 + (WIFSIGNALED(raw) ? WTERMSIG(raw) : 0);
+#endif
+}
+
+}  // namespace xlings::testkit

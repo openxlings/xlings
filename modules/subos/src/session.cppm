@@ -95,6 +95,9 @@ struct Launch {
 // idle TTL from. `host` sets both; the caller does not.
 inline constexpr std::string_view kControlFdEnv = "XLINGS_SESSION_FD";
 inline constexpr std::string_view kTtlEnv = "XLINGS_SESSION_TTL";
+// --sandbox landlock: the writable paths, one per line; session-init fences
+// itself with them before it starts anything.
+inline constexpr std::string_view kLandlockRwEnv = "XLINGS_SESSION_LANDLOCK_RW";
 
 // Run the session to its end. Attached: returns the main command's exit code
 // (128+n for a signal). Detached: forks a supervisor that outlives this
