@@ -489,6 +489,54 @@ export int remove(const std::string& name, bool yes, std::string_view yesSpellin
 
 export std::optional<SubosInfo> info(const std::string& name);
 
+// ── Shared by this module's implementation units ─────────────────────
+//
+// src/core/subos.cpp       lifecycle (new / use / list / info / remove) and `run`
+// src/core/subos/run.cpp       exec, start, cp, and the isolation flags
+// src/core/subos/configure.cpp config, status, doctor, policy packages
+// src/core/subos/audit.cpp     requests / approve / deny, report, ps, log
+//
+// Not exported: they are the module's own.
+
+CandidateResolution_ resolve_candidate_(std::string_view query);
+void emit_candidates_(EventStream& stream, const CandidateResolution_& resolution,
+                      std::string_view query, std::string_view hint = {});
+UseNameResolution_ resolve_use_name_(std::string_view query, EventStream& stream);
+std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
+                                const std::function<void(const std::string&)>& report, int* rc);
+// The instance's declared environment (its packages' env), for an entry.
+std::map<std::string, std::string> declared_env_(const std::string& name);
+
+// The isolation flags every entry shares (design §10): `--sandbox`,
+// `--sandbox=<dev|private|locked>`, `--sandbox[=| ]<bwrap|proot|landlock>`,
+// and the tighten-only overrides `--net`, `--fetch`, `--allow`, `--no-degrade`.
+struct IsolationArgs {
+    bool sandbox { false };
+    std::string backend;
+    std::optional<policy::Preset> preset;
+    policy::Overrides overrides;
+    std::vector<std::string> publish;    // --publish HOST:SANDBOX
+};
+// 1 = consumed, 0 = not ours, -1 = malformed (`err` says why).
+int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
+                          IsolationArgs& x, std::string& err);
+// "K=V" -> {K, V}; nullopt without '='.
+std::optional<std::pair<std::string, std::string>> split_env_(std::string_view kv);
+void stop_legacy_keeper_(const std::string& name);
+
+using UsageError = std::function<void(std::string_view)>;
+int run_exec_(int argc, char* argv[], EventStream& stream);
+int run_start_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_cp_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_config_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_doctor_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_status_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& stream,
+                  const UsageError& usageError);
+int run_report_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_ps_(int argc, char* argv[], EventStream& stream);
+int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+
 export int run(int argc, char* argv[], EventStream& stream);
 
 } // namespace xlings::subos
