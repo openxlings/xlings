@@ -44,14 +44,18 @@ grep -q 'apparmor_restrict_unprivileged_userns *1' <<<"$before" || fail "restric
 grep -q 'self doctor --isolation --fix' <<<"$before" || fail "the fix was not offered"
 ! grep -q 'sysctl -w' <<<"$before" || fail "a global sysctl was advised"
 
-log "1b. before: entering a sandbox quotes bwrap and offers the same fix (F12)"
+log "1b. before: entering falls back to proot, never silently (F12)"
 set +e
 entry="$(X subos exec box --sandbox -- true 2>&1)"; rc=$?
 set -e
 printf '%s\n' "$entry" | sed 's/^/      | /'
-[[ $rc -ne 0 ]] || fail "a sandbox was entered before the fix"
-grep -q 'self doctor --isolation --fix' <<<"$entry" || fail "the entry failure did not offer the fix"
-! grep -q 'sysctl -w' <<<"$entry" || fail "the entry failure advised a global sysctl"
+if [[ $rc -eq 0 ]]; then
+    # proot made it in: the user is told what they got and how to get more.
+    grep -q 'not a security boundary' <<<"$entry" || fail "the proot fallback was silent"
+    grep -q 'uid map' <<<"$entry" || fail "bwrap's own words were not quoted"
+fi
+grep -q 'self doctor --isolation --fix' <<<"$entry" || fail "the fix was not offered"
+! grep -q 'sysctl -w' <<<"$entry" || fail "a global sysctl was advised"
 
 log "2. --fix -y"
 X self doctor --isolation --fix -y

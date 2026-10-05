@@ -646,13 +646,6 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     }
 
     auto host_caps = caps::probe(home, ports);
-    // First sandbox use with a bwrap that does not work: say so once.
-    if (host_caps.bwrap && !host_caps.bwrap->usable && !request.preferred
-        && !fs::is_directory(subos_dir / "home" / user / ".config")) {
-        log::info("bwrap not installed or namespace probe failed");
-        log::info("  to enable bwrap (recommended): xlings install bwrap");
-        log::info("  using proot fallback for now");
-    }
     auto compiled = spec::compile(pol, home, host_caps, request);
 
     // Nothing usable and nothing asked for: fetch a backend, once.
@@ -720,6 +713,17 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     const auto& sb = *compiled;
     observe::trace("spec", sb.describe().dump());
     if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
+    // proot because bwrap is there and cannot make a sandbox (Ubuntu 24.04's
+    // AppArmor restriction, most often): never silently. Asked for by name,
+    // it is the user's choice and goes unremarked.
+    if (sb.backend == spec::Backend::Proot && !request.preferred && host_caps.bwrap
+        && !host_caps.bwrap->usable) {
+        auto why = host_caps.bwrap->probe_output;
+        if (auto nl = why.find('\n'); nl != std::string::npos) why.resize(nl);
+        log::warn("bwrap cannot make a sandbox here ({}); entering with proot -- a view, "
+                  "not a security boundary. A real sandbox: xlings self doctor --isolation --fix",
+                  why.empty() ? "probe failed" : why);
+    }
     if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
         log::warn("using the host's proot ({}) -- no proot payload in {}. "
                   "Run `xlings install proot` to make this deterministic.",
