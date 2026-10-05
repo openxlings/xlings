@@ -231,7 +231,7 @@ status = "required"
 
 [ISO-PROBE-SAME-SPEC]
 text = "the probe runs the same spec with /bin/true"
-status = "planned"
+status = "required"
 
 [ISO-CAPS-CACHE]
 text = "capabilities are cached per kernel/boot/provider/version"

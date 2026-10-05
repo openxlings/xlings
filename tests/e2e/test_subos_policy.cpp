@@ -289,7 +289,7 @@ XTEST(SubosPolicyE2E, APolicyPackageIsSelectedLockedAndUpgradedByTheOwner,
 }
 
 XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,
-      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SUBOS-DOCTOR"},
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SUBOS-DOCTOR", "ISO-PROBE-SAME-SPEC"},
       .requires_ = {"xlings-bin"}) {
     Box box;
     ASSERT_EQ(box.run({"subos", "new", "broken"}).exit_code, 0);
@@ -307,6 +307,11 @@ XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,
     EXPECT_EQ(level["box"]["policy"], "ok");
     EXPECT_EQ(level["broken"]["policy"], "error");
     EXPECT_EQ(level["broken"]["enters"], "error") << "entry refuses while the policy cannot be read";
+    // The probe is the entry: the same spec, run with `true`.
+    if (tk::probe("sandbox") == std::nullopt) {
+        EXPECT_EQ(level["box"]["enters"], "ok") << r.out;
+        EXPECT_NE(r.out.find("entered"), std::string::npos) << r.out;
+    }
 
     // One instance, and a healthy one is exit 0.
     auto one = box.run({"subos", "doctor", "box"});

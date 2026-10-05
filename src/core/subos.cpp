@@ -2506,9 +2506,23 @@ int run_doctor_(int argc, char* argv[], EventStream& stream,
             std::string degraded;
             for (auto& d : eff["spec"]["degraded"])
                 degraded += (degraded.empty() ? "" : "; ") + d.value("dimension", "") + ": " + d.value("reason", "");
-            add("enters", degraded.empty() ? "ok" : "warn",
-                std::format("backend {}{}", eff["spec"].value("backend", "?"),
-                            degraded.empty() ? std::string{} : " -- not in effect: " + degraded));
+            // The probe is the entry itself (design §18): the same spec, the
+            // same supervisor, with `true` for the command.
+            std::string cmd = platform::shell_quote(platform::get_executable_path().string());
+            for (const auto* a : {"subos", "exec", name.c_str(), "--sandbox", "--"})
+                cmd += " " + platform::shell_quote(a);
+            cmd += platform::is_windows ? " cmd /c exit 0" : " true";
+            auto [status, output] = platform::run_command_capture(cmd + " 2>&1");
+            if (status != 0) {
+                while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) output.pop_back();
+                add("enters", "error", std::format("backend {} -- entering failed: {}",
+                    eff["spec"].value("backend", "?"), output.empty() ? std::format("status {}", status) : output),
+                    "xlings self doctor --isolation");
+            } else {
+                add("enters", degraded.empty() ? "ok" : "warn",
+                    std::format("backend {}, entered{}", eff["spec"].value("backend", "?"),
+                                degraded.empty() ? std::string{} : " -- not in effect: " + degraded));
+            }
         } else {
             std::string why, fixes;
             for (auto& m : eff["missing"]) {
