@@ -19,6 +19,9 @@ export namespace xlings::subos::broker {
 namespace fs = std::filesystem;
 
 inline constexpr std::string_view kSocketInside = "/run/xlings/broker.sock";
+// Where a sandbox without a view of its own (Landlock) finds it: the host
+// path, named by this variable.
+inline constexpr std::string_view kSocketEnv = "XLINGS_BROKER_SOCKET";
 inline constexpr int kExitPending = 75;      // EX_TEMPFAIL: waiting for approval
 inline constexpr int kExitPermission = 13;   // E_PERMISSION
 

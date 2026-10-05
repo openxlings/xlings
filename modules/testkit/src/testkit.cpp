@@ -120,7 +120,7 @@ const std::map<std::string, Meta, std::less<>>& registry() { return registry_mut
 
 namespace {
 
-constexpr std::array<std::string_view, 13> kCapabilities {
+constexpr std::array<std::string_view, 14> kCapabilities {
     "linux", "macos", "windows", "posix",
     "xlings-bin",   // a built binary to drive
     "pty",          // pseudo-terminals (agent contract scan)
@@ -131,6 +131,7 @@ constexpr std::array<std::string_view, 13> kCapabilities {
     "root",
     "sudo",         // non-interactive sudo
     "pasta",        // pasta (passt) and /dev/net/tun: net=nat can run
+    "landlock",     // the kernel answers landlock_create_ruleset (ABI >= 1)
 };
 
 // Run a probe command quietly; true when it exits 0.
@@ -207,6 +208,14 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
         for (auto p : {"/usr/bin/pasta", "/usr/local/bin/pasta"})
             if (fs::exists(p, ec)) return std::nullopt;
         return "pasta (passt) is not installed";
+    }
+    if (cap == "landlock") {
+        if constexpr (!is_linux) return "Landlock is Linux-only";
+#if defined(__linux__)
+        // landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)
+        if (::syscall(444, nullptr, 0, 1u) >= 1) return std::nullopt;
+#endif
+        return "the kernel has no Landlock, or it is not in the LSM list";
     }
     if (cap == "sandbox") {
         // Elsewhere home-redirect is always available.

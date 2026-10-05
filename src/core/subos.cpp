@@ -1803,17 +1803,17 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
         x.sandbox = true;
         if (i + 1 < argc) {
             std::string_view next = argv[i + 1];
-            if (next == "bwrap" || next == "proot") { x.backend = next; ++i; }
+            if (next == "bwrap" || next == "proot" || next == "landlock") { x.backend = next; ++i; }
         }
         return 1;
     }
     if (a.starts_with("--sandbox=")) {
         x.sandbox = true;
         auto v = a.substr(10);
-        if (v == "bwrap" || v == "proot") { x.backend = v; return 1; }
+        if (v == "bwrap" || v == "proot" || v == "landlock") { x.backend = v; return 1; }
         auto p = policy::preset_from_string(v);
         if (!p || *p == policy::Preset::Legacy) {
-            err = std::format("--sandbox={}: expected dev, private or locked (or a backend: bwrap, proot)", v);
+            err = std::format("--sandbox={}: expected dev, private or locked (or a backend: bwrap, proot, landlock)", v);
             return -1;
         }
         x.preset = *p;

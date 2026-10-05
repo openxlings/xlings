@@ -248,7 +248,7 @@ status = "required"
 [ISO-LANDLOCK]
 text = "the Landlock provider restricts writes without namespaces"
 kind = "isolation"
-status = "planned"
+status = "required"
 
 [ISO-MOUNT]
 text = "--mount src:dst[:ro|rw] maps a host path into the instance"

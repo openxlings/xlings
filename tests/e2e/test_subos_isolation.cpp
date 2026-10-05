@@ -133,3 +133,36 @@ XTEST(SubosIsolation, AFailedProbeQuotesBwrapAndNeverAdvisesASysctl,
     EXPECT_NE(all.find("self doctor --isolation --fix"), std::string::npos) << all;
     EXPECT_EQ(all.find("sysctl -w"), std::string::npos) << all;
 }
+
+XTEST(SubosIsolation, LandlockFencesWritesWithoutANamespace,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-LANDLOCK"},
+      .requires_ = {"linux", "xlings-bin", "landlock"}, .proves = "isolation") {
+    auto home = tk::Home::isolated("landlock");
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    const auto outside = home.root() / "outside";
+    const auto mounted = home.root() / "work";
+    fs::create_directories(outside);
+    fs::create_directories(mounted);
+    tk::write_file(outside / "file", "keep\n");
+    const auto cfg_before = tk::read_file(home.dir() / ".xlings.json");
+    auto r = home.xlings({"subos", "exec", "box", "--sandbox", "landlock", "--mount", mounted.string(),
+        "--", "/bin/sh", "-c",
+        "echo x >> \"$XLINGS_HOME/.xlings.json\" 2>/dev/null && echo WROTE-HOME || echo RO-HOME; "
+        "echo x >> '" + (outside / "file").string() + "' 2>/dev/null && echo WROTE-OUTSIDE || echo RO-OUTSIDE; "
+        "touch /tmp/xlings-landlock-$$ 2>/dev/null && echo WROTE-TMP || echo RO-TMP; "
+        "touch \"$HOME/mine\" && echo OWN-HOME; "
+        "t=$(mktemp) && echo OWN-TMP; "
+        "echo y > '" + (mounted / "out").string() + "' && echo MOUNTED; "
+        "cat '" + (outside / "file").string() + "'"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    for (auto want : {"RO-HOME", "RO-OUTSIDE", "RO-TMP", "OWN-HOME", "OWN-TMP", "MOUNTED", "keep"})
+        EXPECT_NE(r.out.find(want), std::string::npos) << want << "\n" << r.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / ".xlings.json"), cfg_before);
+    EXPECT_EQ(tk::read_file(outside / "file"), "keep\n");
+    EXPECT_EQ(tk::read_file(mounted / "out"), "y\n");
+
+    // What only namespaces give is refused, with the reason.
+    auto locked = home.xlings({"subos", "exec", "box", "--sandbox=locked", "--sandbox", "landlock", "--", "true"});
+    EXPECT_EQ(locked.exit_code, 125) << locked.transcript();
+    EXPECT_NE(locked.transcript().find("Landlock"), std::string::npos) << locked.transcript();
+}

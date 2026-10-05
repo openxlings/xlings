@@ -14,6 +14,7 @@ std::string_view to_string(Backend b) {
     case Backend::Bwrap:        return "bwrap";
     case Backend::Proot:        return "proot";
     case Backend::HomeRedirect: return "home-redirect";
+    case Backend::Landlock:     return "landlock";
     default:                    return "fake";
     }
 }
@@ -169,6 +170,10 @@ nlohmann::json SandboxSpec::describe() const {
     // Names only: values can hold secrets, and this lands in audits.
     j["env"] = nlohmann::json::array();
     for (auto& [k, v] : env) j["env"].push_back(k);
+    if (backend == Backend::Landlock) {
+        j["landlock_rw"] = nlohmann::json::array();
+        for (auto& p : landlock_rw) j["landlock_rw"].push_back(p.generic_string());
+    }
     j["cwd"] = cwd.string();
     j["argv"] = argv;
     j["degraded"] = nlohmann::json::array();
@@ -212,6 +217,14 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         } else if (r.preferred == Backend::Proot) {
             if (!caps.proot) return refuse("backend", "proot not installed", "xlings install proot");
             s.backend = Backend::Proot;
+        } else if (r.preferred == Backend::Landlock) {
+            // Only when asked for: it restricts writes and hides nothing, so
+            // it never stands in for bwrap on its own.
+            if (caps.landlock_abi < 1)
+                return refuse("backend", "Landlock is not available on this kernel "
+                                         "(5.13 or later, with landlock in the LSM list)",
+                              "xlings self doctor --isolation");
+            s.backend = Backend::Landlock;
         } else if (caps.bwrap && caps.bwrap->usable) {
             s.backend = Backend::Bwrap;
         } else if (caps.proot) {
@@ -220,6 +233,9 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             return refuse("backend", "no sandbox backend available",
                           "xlings install bwrap (or: xlings install proot)");
         }
+        if (r.storage != Storage::Shared && s.backend == Backend::Landlock)
+            return refuse("storage", std::string(to_string(r.storage))
+                                         + " storage needs a mount namespace (bwrap)", "--sandbox bwrap");
         if (r.storage != Storage::Shared && s.backend == Backend::Proot) {
             std::string hint = "xlings install bwrap";
             if (caps.bwrap && !caps.bwrap->usable) hint = probe_fix(*caps.bwrap);
@@ -258,6 +274,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         // proot binds read-write only: the home stays writable, and says so.
         instance_files(s.mounts, home, shared, etc_dir, /*read_only_home=*/false);
         s.proot_root = dir / "sandbox-root";
+    } else if (s.backend == Backend::Landlock) {
+        // Its own tree (home and tmp included) and devices (a terminal,
+        // /dev/null, /dev/shm). Not the host's /tmp: a rule can only allow,
+        // so allowing /tmp would allow every home that lives under it.
+        // `--mount /tmp` opens it on purpose; --mount adds its sources below.
+        s.landlock_rw = {dir, "/dev", "/proc"};
     }
 
     // ── processes and terminal (S0, design §16) ──────────────────────
@@ -275,6 +297,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     } else if (s.backend == Backend::Proot) {
         for (auto dim : {"fs", "pid", "ipc", "terminal"})
             s.degraded.push_back({dim, "proot has no namespaces", "xlings self doctor --isolation",
+                                  policy::Need::Should});
+    } else if (s.backend == Backend::Landlock) {
+        s.degraded.push_back({"fs", "Landlock restricts writes; the host's files stay visible",
+                              "--sandbox bwrap", policy::Need::Should});
+        for (auto dim : {"pid", "ipc", "terminal"})
+            s.degraded.push_back({dim, "Landlock has no namespaces", "--sandbox bwrap",
                                   policy::Need::Should});
     }
 
@@ -349,6 +377,18 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         }
         if (!exists(r, m.src)) {
             unmet.push_back({"mount", m.src + ": does not exist on the host", "", policy::Need::Must});
+            continue;
+        }
+        if (s.backend == Backend::Landlock) {
+            // No view to map into: a path is reachable where it is, and only
+            // a read-write one is added to what may be written.
+            if (posix(dst) != posix(m.src)) {
+                unmet.push_back({"mount", m.src + ": Landlock cannot map a path elsewhere (" + dst + ")",
+                                 "--mount " + m.src + " (the same path inside), or --sandbox bwrap",
+                                 policy::Need::Must});
+                continue;
+            }
+            if (m.rw) s.landlock_rw.push_back(m.src);
             continue;
         }
         if (!m.rw && !kernel)
@@ -432,6 +472,19 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             }
         }
         if (used_runtime) grant_env["XDG_RUNTIME_DIR"] = runtime;
+        if (s.backend == Backend::Landlock) {
+            // Nothing to bind: the host's sockets are where they are. A grant
+            // passes the variables that name them, and only those.
+            std::erase_if(s.mounts, [](const MountOp&) { return true; });
+            grant_env.clear();
+            auto pass = [&](std::initializer_list<const char*> names) {
+                for (auto n : names) if (auto v = host_env(n); !v.empty()) grant_env[n] = v;
+            };
+            if (grants.contains("display")) pass({"DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"});
+            if (grants.contains("audio")) pass({"PULSE_SERVER", "XDG_RUNTIME_DIR"});
+            if (grants.contains("ssh-agent")) pass({"SSH_AUTH_SOCK"});
+            if (grants.contains("dbus")) pass({"DBUS_SESSION_BUS_ADDRESS"});
+        }
     }
 
     Refusal refusal;
@@ -454,6 +507,31 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     const bool windows = caps.platform == "windows";
     auto native = [&](const fs::path& p) { return windows ? p.string() : posix(p); };
     s.env["XLINGS_SUBOS_LIB"] = native(dir / "lib");
+
+    if (s.backend == Backend::Landlock) {
+        // The host's filesystem with the instance's home and binaries first.
+        const auto sandbox_home = posix(dir / "home" / r.user);
+        for (auto& [k, v] : grant_env) s.env[k] = v;
+        s.env["HOME"] = sandbox_home;
+        s.env["XLINGS_HOME"] = posix(home.home);
+        s.env["XDG_CONFIG_HOME"] = sandbox_home + "/.config";
+        s.env["XDG_DATA_HOME"] = sandbox_home + "/.local/share";
+        s.env["XDG_CACHE_HOME"] = sandbox_home + "/.cache";
+        s.env["XDG_STATE_HOME"] = sandbox_home + "/.local/state";
+        s.env["TMPDIR"] = posix(dir / "tmp");
+        s.env["PATH"] = std::format("{0}/subos/{1}/bin:{0}/bin:/usr/local/bin:/usr/bin:/bin",
+                                    posix(home.home), name);
+        s.env["XLINGS_BROKER_SOCKET"] = posix(home.broker_socket(name));
+        if (s.clear_env) {
+            s.env["USER"] = user;
+            s.env["LOGNAME"] = user;
+            s.env["SHELL"] = r.shell;
+        }
+        s.cwd = sandbox_home;
+        s.argv = r.argv.empty() ? std::vector<std::string>{r.shell} : r.argv;
+        if (r.argv.empty() && r.interactive) s.argv.push_back("-i");
+        return s;
+    }
 
     if (s.backend == Backend::HomeRedirect) {
         const auto sandbox_home = native(dir / "home" / r.user);

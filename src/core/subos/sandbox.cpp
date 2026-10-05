@@ -402,7 +402,9 @@ void emit_refusal_(EventStream& stream, const spec::Refusal& refusal) {
     std::string hint;
     for (const auto& m : refusal.missing) {
         message += std::format("\n  \u2717 {}: {}", m.dimension, m.reason);
-        if (!m.fix.empty()) hint += (hint.empty() ? "" : "; ") + m.fix;
+        // Each remedy once: several items often share it.
+        if (!m.fix.empty() && hint.find(m.fix) == std::string::npos)
+            hint += (hint.empty() ? "" : "; ") + m.fix;
     }
     stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = message,
                             .recoverable = false, .hint = hint });
@@ -578,6 +580,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     }
     if (preferred_backend == "bwrap") request.preferred = spec::Backend::Bwrap;
     if (preferred_backend == "proot") request.preferred = spec::Backend::Proot;
+    if (preferred_backend == "landlock") request.preferred = spec::Backend::Landlock;
     if (gpu) request.grants.insert("gpu");
 #if !defined(_WIN32)
     request.interactive = ::isatty(STDIN_FILENO) == 1;
@@ -781,8 +784,8 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     auto launched = sb;
     for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
     // The broker's socket, made by the supervisor before the backend starts.
-    const bool brokered = sb.backend == spec::Backend::Bwrap;
-    if (brokered)
+    const bool brokered = sb.backend == spec::Backend::Bwrap || sb.backend == spec::Backend::Landlock;
+    if (sb.backend == spec::Backend::Bwrap)
         launched.mounts.push_back({spec::MountKind::Bind, home.broker_socket(name).string(),
                                    std::string(broker::kSocketInside)});
     launched.argv = {std::string(kSessionInitPath), "__session-init"};
@@ -792,8 +795,17 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         launched.argv.push_back("--");
         launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
     }
-    auto argv = sb.backend == spec::Backend::Bwrap ? provider::bwrap_argv(launched, seccomp_fd)
-                                                   : provider::proot_argv(launched);
+    std::vector<std::string> argv;
+    if (sb.backend == spec::Backend::Bwrap) {
+        argv = provider::bwrap_argv(launched, seccomp_fd);
+    } else if (sb.backend == spec::Backend::Landlock) {
+        // No view to mount it into: session-init is this binary where it is,
+        // and fences itself before it starts anything (landlock::kRwEnv).
+        argv = launched.argv;
+        argv[0] = host_exe_();
+    } else {
+        argv = provider::proot_argv(launched);
+    }
 
     if (observe::trace_enabled("provider")) {
         std::string line;

@@ -137,11 +137,18 @@ int forward(std::span<const std::string>) { return kExitPermission; }
 
 #else
 
+namespace {
+std::string socket_path() {
+    const char* p = std::getenv(std::string(kSocketEnv).c_str());
+    return p && *p ? std::string(p) : std::string(kSocketInside);
+}
+}  // namespace
+
 bool available() {
     const char* mode = std::getenv("XLINGS_SUBOS_MODE");
     if (!mode || std::string_view(mode) != "sandbox") return false;
     std::error_code ec;
-    return fs::exists(std::string(kSocketInside), ec);
+    return fs::exists(socket_path(), ec);
 }
 
 int forward(std::span<const std::string> argv) {
@@ -149,9 +156,15 @@ int forward(std::span<const std::string> argv) {
     if (fd < 0) return kExitPermission;
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, kSocketInside.data(), kSocketInside.size());
+    const auto path = socket_path();
+    if (path.size() >= sizeof(addr.sun_path)) {
+        std::fprintf(stderr, "xlings: the broker's socket path is too long (%s)\n", path.c_str());
+        ::close(fd);
+        return kExitPermission;
+    }
+    std::memcpy(addr.sun_path, path.data(), path.size());
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr),
-                  static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + kSocketInside.size() + 1)) != 0) {
+                  static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1)) != 0) {
         std::fprintf(stderr, "xlings: the broker is not reachable (%s)\n", std::strerror(errno));
         ::close(fd);
         return kExitPermission;

@@ -271,3 +271,55 @@ XTEST(SubosSpec, ProotSaysWhatItCannotIsolate,
     EXPECT_FALSE(spec->unshare_pid);
     EXPECT_FALSE(spec->degraded.empty());
 }
+
+// ── Landlock (C18): a write fence without namespaces ─────────────────
+
+XTEST(SubosSpec, LandlockIsAskedForAndNeedsTheKernel,
+      .area = "subos", .covers = {"ISO-LANDLOCK"}) {
+    auto c = linux_caps(false, false);
+    auto r = request({"make"});
+    r.preferred = sp::Backend::Landlock;
+    auto none = sp::compile(pol::preset(pol::Preset::Dev), kHome, c, r);
+    ASSERT_FALSE(none);
+    EXPECT_EQ(none.error().missing[0].dimension, "backend");
+    EXPECT_NE(none.error().missing[0].reason.find("Landlock"), std::string::npos);
+
+    // Not chosen on its own: an unusable bwrap and no proot is still a refusal.
+    c.landlock_abi = 3;
+    EXPECT_FALSE(sp::compile(pol::preset(pol::Preset::Dev), kHome, c, request({"make"})));
+}
+
+XTEST(SubosSpec, LandlockWritesOnlyTheInstanceAndWhatIsMountedReadWrite,
+      .area = "subos", .covers = {"ISO-LANDLOCK"}) {
+    auto c = linux_caps(false, false);
+    c.landlock_abi = 3;
+    auto r = request({"make"});
+    r.preferred = sp::Backend::Landlock;
+    auto policy = pol::preset(pol::Preset::Dev);
+    policy.mounts.push_back({.src = "/work", .dst = "", .rw = true});
+    policy.mounts.push_back({.src = "/ref", .dst = "", .rw = false});
+    auto s = sp::compile(policy, kHome, c, r);
+    ASSERT_TRUE(s) << s.error().missing[0].reason;
+    EXPECT_EQ(s->backend, sp::Backend::Landlock);
+    EXPECT_TRUE(s->mounts.empty()) << "no view: nothing is mounted";
+    std::vector<std::string> rw;
+    for (auto& p : s->landlock_rw) rw.push_back(p.generic_string());
+    EXPECT_EQ(rw, (V{"/h/subos/box", "/dev", "/proc", "/work"})) << "never the host's /tmp, never /ref";
+    EXPECT_EQ(s->env.at("HOME"), "/h/subos/box/home/u");
+    EXPECT_EQ(s->env.at("TMPDIR"), "/h/subos/box/tmp");
+    EXPECT_EQ(s->env.at("XLINGS_BROKER_SOCKET"), kHome.broker_socket("box").generic_string());
+    EXPECT_EQ(s->argv, V{"make"});
+    // What it does not give is said, not implied.
+    std::set<std::string> degraded;
+    for (auto& d : s->degraded) degraded.insert(d.dimension);
+    EXPECT_TRUE(degraded.contains("fs") && degraded.contains("pid")) << s->describe().dump();
+    // session-init reads the fence from its environment.
+    auto env = pv::process_env(*s, {});
+    EXPECT_EQ(env.at("XLINGS_SESSION_LANDLOCK_RW"), "/h/subos/box\n/dev\n/proc\n/work\n");
+
+    // A mapping elsewhere has no meaning without a view.
+    policy.mounts = {{.src = "/work", .dst = "/w", .rw = true}};
+    EXPECT_FALSE(sp::compile(policy, kHome, c, r));
+    // What private requires, Landlock cannot give.
+    EXPECT_FALSE(sp::compile(pol::preset(pol::Preset::Private), kHome, c, r));
+}

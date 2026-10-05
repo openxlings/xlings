@@ -32,6 +32,7 @@ import xlings.observe;
 import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.broker;
+import xlings.subos.landlock;
 
 namespace xlings::subos::session {
 
@@ -1091,6 +1092,20 @@ int session_init(std::span<const std::string> args) {
     // Neither variable means anything to the commands that run here.
     ::unsetenv(std::string(kControlFdEnv).c_str());
     ::unsetenv(std::string(kTtlEnv).c_str());
+
+    // --sandbox landlock: the write fence, before anything is started, so
+    // everything here and everything that joins later is inside it. Failing
+    // to put it up is a failure to set up, never a run without it.
+    if (const char* rw = std::getenv(std::string(landlock::kRwEnv).c_str())) {
+        std::vector<fs::path> paths;
+        std::istringstream in{std::string(rw)};
+        for (std::string line; std::getline(in, line);) if (!line.empty()) paths.emplace_back(line);
+        ::unsetenv(std::string(landlock::kRwEnv).c_str());
+        if (auto r = landlock::restrict_writes(paths); !r) {
+            std::fprintf(stderr, "xlings: %s\n", r.error().c_str());
+            return kExitSetup;
+        }
+    }
 
     // observe=full: the exec filter, before anything is started, its listener
     // to the supervisor. Everything this process starts inherits the filter.

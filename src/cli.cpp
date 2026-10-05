@@ -86,7 +86,7 @@ std::vector<completion::Candidate> completion_live_values_(
             if (request.command == "subos config") {
                 for (auto value : {"dev", "private", "locked"}) add(value);
             } else {
-                for (auto value : {"bwrap", "proot"}) add(value);
+                for (auto value : {"bwrap", "proot", "landlock"}) add(value);
             }
         } else if (option == "--net") {
             for (auto value : {"host", "nat", "none", "proxy"}) add(value);

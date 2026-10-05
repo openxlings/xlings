@@ -13,6 +13,7 @@ import xlings.subos.home_view;
 import xlings.subos.ports;
 import xlings.libs.json;
 import xlings.observe;
+import xlings.subos.landlock;
 
 namespace xlings::subos::caps {
 
@@ -193,6 +194,7 @@ Caps probe(const HomeView& home, const Ports& ports) {
     c.userns = c.bwrap && c.bwrap->usable;
     c.pasta = locate_pasta(home, ports, c.pasta_missing);
     c.seccomp = true;
+    c.landlock_abi = landlock::abi();
     struct utsname u{};
     if (::uname(&u) == 0) c.kernel = u.release;
 #else

@@ -18,7 +18,7 @@ export namespace xlings::subos::spec {
 
 namespace fs = std::filesystem;
 
-enum class Backend { Bwrap, Proot, HomeRedirect, Fake };
+enum class Backend { Bwrap, Proot, HomeRedirect, Landlock, Fake };
 enum class Storage { Shared, Image, Tmpfs };
 
 std::string_view to_string(Backend b);
@@ -96,6 +96,9 @@ struct SandboxSpec {
     fs::path cwd;                             // inside
     std::vector<std::string> argv;            // the command inside
     fs::path proot_root;                      // Backend::Proot only
+    // Backend::Landlock: the only places the command may write. Everything
+    // else on the host stays readable -- it is a write fence, not a view.
+    std::vector<fs::path> landlock_rw;
     std::vector<Unmet> degraded;              // Should-items not met
 
     nlohmann::json describe() const;          // for status, audit, golden tests

@@ -25,6 +25,11 @@ std::vector<Status> probe(const caps::Caps& c) {
         const bool proot = c.proot.has_value();
         if (bwrap)
             add("FsGate", true, Enforced::Kernel, "bwrap mount namespace");
+        else if (c.landlock_abi > 0)
+            add("FsGate", true, Enforced::Kernel,
+                std::format("Landlock ABI {}: writes restricted, host files visible "
+                            "(--sandbox landlock)", c.landlock_abi),
+                "xlings self doctor --isolation");
         else if (proot)
             add("FsGate", true, Enforced::Advisory,
                 "proot (ptrace) is a view, not a security boundary",
