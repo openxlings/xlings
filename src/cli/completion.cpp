@@ -79,12 +79,23 @@ std::vector<Candidate> complete(std::span<const std::string> words,
     // A value-taking option in the last context slot with nothing after it:
     // the cursor is on its value, not on a command word.
     std::string pendingOption;
+    // After `--` every word is an argument, never an option or a command.
+    bool endOfOptions = false;
 
     for (std::size_t i = 0; i < context.size(); ++i) {
         const std::string_view token = context[i];
+        if (endOfOptions) {
+            ++positional;
+            continue;
+        }
+        if (token == "--") {
+            endOfOptions = true;
+            continue;
+        }
         if (token.starts_with('-')) {
             const auto* option = find_option_(*current, token);
-            if (option) {
+            // `--opt=value` carries its value; the next word is its own.
+            if (option && !token.contains('=')) {
                 const bool needs = option->syntax.contains('<');
                 const bool optional = option->syntax.contains('[');
                 if (needs || optional) {
@@ -121,9 +132,26 @@ std::vector<Candidate> complete(std::span<const std::string> words,
         return out;
     }
 
+    // The cursor is on `--opt=<value>`: complete the value, and answer with
+    // the whole token so a shell that replaces the full word gets it intact.
+    if (!endOfOptions && prefix.starts_with('-') && prefix.contains('=')) {
+        const auto eq = prefix.find('=');
+        const std::string name = prefix.substr(0, eq);
+        const std::string valuePrefix = prefix.substr(eq + 1);
+        const auto* option = find_option_(*current, name);
+        if (option && (option->syntax.contains('<') || option->syntax.contains('['))) {
+            for (auto& c : provider({commandPath, "", name})) {
+                if (c.value.starts_with(valuePrefix)) {
+                    add_(out, name + "=" + c.value, std::move(c.description));
+                }
+            }
+        }
+        return out;
+    }
+
     // The cursor is on an option name. Never mix in command names: a token
     // starting with '-' is a flag until it is closed.
-    if (prefix.starts_with('-')) {
+    if (!endOfOptions && prefix.starts_with('-')) {
         add_options_(out, *current, prefix);
         return out;
     }
@@ -131,7 +159,7 @@ std::vector<Candidate> complete(std::span<const std::string> words,
     // Subcommands only where a command word is still expected. Once a
     // positional has been consumed the parser would reject a subcommand, so
     // offering one would be a lie.
-    if (positional == 0) {
+    if (positional == 0 && !endOfOptions) {
         for (const auto& child : current->children) {
             if (child.name.starts_with(prefix)) {
                 add_(out, child.name, child.description);
@@ -139,7 +167,7 @@ std::vector<Candidate> complete(std::span<const std::string> words,
         }
     }
 
-    add_options_(out, *current, prefix);
+    if (!endOfOptions) add_options_(out, *current, prefix);
 
     // Positional argument values. The last argument may be variadic, so keep
     // asking the provider for it after the declared slots are used up.

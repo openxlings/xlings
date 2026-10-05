@@ -54,6 +54,11 @@ grep -q '__complete' "$HOME_DIR/config/shell/xlings-profile.fish" \
     || fail "S1: fish profile missing completion hook"
 grep -q 'Register-ArgumentCompleter' "$HOME_DIR/config/shell/xlings-profile.ps1" \
     || fail "S1: pwsh profile missing completion hook"
+# The sh profile is also read by POSIX sh (a subos's ~/.profile chains to it):
+# a line dash cannot parse stops the file there, and a non-interactive shell
+# exits on it.
+sh -n "$HOME_DIR/config/shell/xlings-profile.sh" \
+    || fail "S1: sh cannot parse the bash/zsh profile"
 
 # ── 2. Legacy profile (no marker) gets upgraded ───────────────────────
 log "Scenario 2: legacy v1 profile (no marker) is upgraded to v2"

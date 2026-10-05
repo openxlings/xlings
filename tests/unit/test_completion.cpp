@@ -103,3 +103,39 @@ TEST(Completion, RepeatsVariadicArgument) {
     complete_words({"install", "gcc", ""}, provider);
     EXPECT_EQ(seen.argument, "packages");
 }
+
+// `--opt=value` carries its own value: the word after it is the next
+// positional, not the option's value.
+TEST(Completion, InlineOptionValueDoesNotConsumeTheNextWord) {
+    Request seen;
+    Provider provider = [&](const Request& request) {
+        seen = request;
+        return std::vector<Candidate>{};
+    };
+    complete_words({"subos", "use", "--shell=bash", ""}, provider);
+    EXPECT_EQ(seen.argument, "name");
+    EXPECT_TRUE(seen.option.empty());
+}
+
+// The cursor inside `--opt=` completes the value and answers with the whole
+// word, which is what a shell replacing the full token needs.
+TEST(Completion, CompletesTheValueOfAnInlineOption) {
+    Provider provider = [](const Request& request) {
+        if (request.option == "--lang") {
+            return std::vector<Candidate>{{"en", ""}, {"zh", ""}};
+        }
+        return std::vector<Candidate>{};
+    };
+    auto candidates = complete_words({"config", "--lang=e"}, provider);
+    EXPECT_TRUE(has(candidates, "--lang=en"));
+    EXPECT_FALSE(has(candidates, "--lang=zh"));
+}
+
+// After `--` nothing is an option or a subcommand any more.
+TEST(Completion, OffersNoOptionsAfterTheTerminator) {
+    auto candidates = complete_words({"subos", "--", "-"});
+    EXPECT_TRUE(candidates.empty());
+    candidates = complete_words({"subos", "--", ""});
+    EXPECT_FALSE(has(candidates, "use"));
+    EXPECT_FALSE(has(candidates, "--yes"));
+}

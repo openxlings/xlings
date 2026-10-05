@@ -154,33 +154,70 @@ fi
 # command list, options, installed tools and subos names, so nothing here goes
 # stale when a command is added.
 #
-#   * bash  — COMPREPLY from `xlings __complete`.
+#   * bash  — complete -F reading `xlings __complete`.
 #   * zsh   — the same file is sourced by zsh, where bash's `complete` does not
 #             exist; a compdef wrapper is registered instead. Guarded on
 #             compdef so a zsh without `compinit` is left untouched.
+#
+# Only POSIX syntax below, bash- and zsh-only parameter forms included: this
+# file is also read by sh (a subos's ~/.profile chains to it), and a dash or
+# busybox ash that cannot PARSE a line stops sourcing the file -- and a
+# non-interactive one exits -- even though the branch never runs there.
 #
 # `xlings` must be on PATH for this to answer; the profile put it there, and a
 # failure is silenced rather than printed on every Tab.
 if [ -n "${BASH_VERSION-}" ] && command -v complete >/dev/null 2>&1; then
     _xlings_complete() {
-        local line value
-        COMPREPLY=()
-        while IFS= read -r line; do
-            value="${line%%$'\t'*}"
-            [ -n "$value" ] && COMPREPLY+=("$value")
-        done < <(xlings __complete "${COMP_WORDS[@]:1}" 2>/dev/null)
+        # The words up to the cursor, split on blanks only. bash's COMP_WORDS
+        # also breaks at `:` and `=` (xim:gcc, --lang=en) and holds the words
+        # after the cursor too.
+        local line cur strip value tab i noglob
+        line="${COMP_LINE:0:COMP_POINT}"
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        tab="$(printf '\t')"
+        case "$-" in *f*) noglob=1 ;; esac
+        set -f
+        set -- $line
+        [ -n "$noglob" ] || set +f
+        shift
+        case "$line" in
+            *" "|*"$tab") set -- "$@" "" ;;
+        esac
+        # bash replaces only its own current word: drop what of the full
+        # token lies before it (`xim:` of `xim:gcc`, `--lang=` of `--lang=en`).
+        eval "strip=\"\${$#}\""
+        strip="${strip%"$cur"}"
+        unset COMPREPLY
+        i=0
+        while IFS= read -r value; do
+            value="${value%%"$tab"*}"
+            [ -n "$value" ] || continue
+            case "$value" in
+                "$strip"*) COMPREPLY[i]="${value#"$strip"}"; i=$((i + 1)) ;;
+            esac
+        done <<_XLINGS_COMPLETE_
+$(xlings __complete "$@" 2>/dev/null)
+_XLINGS_COMPLETE_
     }
     # `default` keeps filename completion as the fallback for arguments that
     # are paths (e.g. `xlings script <file>`).
     complete -o default -F _xlings_complete xlings
-elif [ -n "${ZSH_VERSION-}" ] && (( $+functions[compdef] )); then
+elif [ -n "${ZSH_VERSION-}" ] && typeset -f compdef >/dev/null 2>&1; then
     _xlings_complete() {
-        local -a lines values
-        lines=("${(@f)$(xlings __complete "${(@)words[2,-1]}" 2>/dev/null)}")
-        for line in "${lines[@]}"; do
-            [ -n "$line" ] && values+=("${line%%$'\t'*}")
+        local value tab i
+        tab="$(printf '\t')"
+        set --
+        i=2
+        while [ "$i" -le "$CURRENT" ]; do
+            set -- "$@" "${words[i]}"
+            i=$((i + 1))
         done
-        (( ${#values} )) && compadd -- "${values[@]}"
+        while IFS= read -r value; do
+            value="${value%%"$tab"*}"
+            [ -n "$value" ] && compadd -- "$value"
+        done <<_XLINGS_COMPLETE_
+$(xlings __complete "$@" 2>/dev/null)
+_XLINGS_COMPLETE_
     }
     compdef _xlings_complete xlings
 fi
@@ -244,10 +281,22 @@ end
 # Tab completion: hand the CLI the words before the cursor and let it answer
 # from the live command spec (plus installed tools and subos names). A
 # `value<TAB>description` line is fish's own convention, so descriptions show
-# up beside the value. File completion is left enabled for path arguments.
-# `(commandline -ct)` is quoted so an empty current token still arrives as one
-# (empty) argument instead of vanishing.
-complete -c xlings -a '(xlings __complete (commandline -opc) "(commandline -ct)" 2>/dev/null)'
+# up beside the value. Paths are offered only when the CLI has nothing, as
+# bash's `complete -o default` does; otherwise every subcommand list would be
+# mixed with the files in the current directory.
+# The current token goes through a variable: a quoted variable is exactly one
+# argument in fish, so an empty token still arrives (a command substitution
+# inside double quotes is literal text, not a substitution).
+function __xlings_complete
+    set -l current (commandline -ct)
+    set -l found (xlings __complete (commandline -opc) "$current" 2>/dev/null)
+    if set -q found[1]
+        printf '%s\n' $found
+    else
+        __fish_complete_path "$current"
+    end
+end
+complete -c xlings -f -a '(__xlings_complete)'
 )XPROFILE";
 
 export inline constexpr std::string_view pwsh =
@@ -302,8 +351,10 @@ if ($env:XLINGS_ACTIVE_SUBOS) {
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     Register-ArgumentCompleter -Native -CommandName xlings -ScriptBlock {
         param($wordToComplete, $commandAst, $cursorPosition)
+        # Only the words before the cursor; the ones after it are not context.
         $words = @($commandAst.CommandElements |
             Select-Object -Skip 1 |
+            Where-Object { $_.Extent.StartOffset -lt $cursorPosition } |
             ForEach-Object { $_.Extent.Text })
         if ($words.Count -eq 0 -or $words[-1] -ne $wordToComplete) {
             $words += $wordToComplete
