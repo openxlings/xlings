@@ -83,8 +83,8 @@ the output**; `--strict` refuses such a switch instead.
 | `locked` | none | neutral | deny |
 
 Backends: bwrap (default), `--sandbox landlock` (a kernel write fence, no
-namespaces -- only when asked for), `--sandbox proot` (a view, not a
-boundary). What a backend cannot give degrades under `dev` and refuses
+namespaces, the host's sockets reachable -- only when asked for, never for
+untrusted code), `--sandbox proot` (a view, not a boundary). What a backend cannot give degrades under `dev` and refuses
 (exit 125, with the reason and the fix) under `private` / `locked`.
 `xlings subos status <name>` shows what is requested and what is in effect;
 `xlings subos doctor` checks every instance; `xlings self doctor --isolation

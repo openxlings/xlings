@@ -301,6 +301,11 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     } else if (s.backend == Backend::Landlock) {
         s.degraded.push_back({"fs", "Landlock restricts writes; the host's files stay visible",
                               "--sandbox bwrap", policy::Need::Should});
+        // Not a boundary for untrusted code: a session bus or an agent socket
+        // runs things on the host for whoever connects.
+        s.degraded.push_back({"sockets", "the host's unix sockets (D-Bus, agents, other sessions) "
+                                         "stay reachable -- a write fence, not a boundary for untrusted code",
+                              "--sandbox bwrap", policy::Need::Should});
         for (auto dim : {"pid", "ipc", "terminal"})
             s.degraded.push_back({dim, "Landlock has no namespaces", "--sandbox bwrap",
                                   policy::Need::Should});

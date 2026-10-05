@@ -312,7 +312,8 @@ XTEST(SubosSpec, LandlockWritesOnlyTheInstanceAndWhatIsMountedReadWrite,
     // What it does not give is said, not implied.
     std::set<std::string> degraded;
     for (auto& d : s->degraded) degraded.insert(d.dimension);
-    EXPECT_TRUE(degraded.contains("fs") && degraded.contains("pid")) << s->describe().dump();
+    EXPECT_TRUE(degraded.contains("fs") && degraded.contains("pid") && degraded.contains("sockets"))
+        << s->describe().dump();
     // session-init reads the fence from its environment.
     auto env = pv::process_env(*s, {});
     EXPECT_EQ(env.at("XLINGS_SESSION_LANDLOCK_RW"), "/h/subos/box\n/dev\n/proc\n/work\n");

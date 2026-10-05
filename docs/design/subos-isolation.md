@@ -69,7 +69,7 @@
 | 后端 | 机制 | 能给的 | 给不了的 | 选择方式 |
 |---|---|---|---|---|
 | **bwrap** | user / mount / pid / ipc / uts / net namespace | 全部预设 | — | 默认；查找顺序：root 拥有的 `/usr/lib/xlings/bwrap` → 系统 bwrap → xim payload |
-| **landlock** | Landlock LSM（内核 ≥ 5.13），没有 namespace | 写入围栏：只有实例目录、`/dev`、`/proc` 和 rw `--mount` 可写；`TMPDIR` 在实例内 | 文件不可见、pid / net / 身份隔离 | 只在显式 `--sandbox landlock` 时使用，从不自动替代 bwrap |
+| **landlock** | Landlock LSM（内核 ≥ 5.13），没有 namespace | 写入围栏：只有实例目录、`/dev`、`/proc` 和 rw `--mount` 可写；`TMPDIR` 在实例内 | 文件不可见、pid / net / 身份隔离；宿主的 unix socket（D-Bus、agent、其他会话）仍可连接，**不是**运行不受信代码的边界 | 只在显式 `--sandbox landlock` 时使用，从不自动替代 bwrap |
 | **proot** | ptrace | 文件系统视图 | 安全边界（视图而非边界） | `--sandbox proot`，或 bwrap 不存在时回退 |
 | **home 重定向** | 环境变量 | HOME / USERPROFILE 指向实例 | 其余全部（advisory） | macOS / Windows |
 
