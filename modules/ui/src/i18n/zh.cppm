@@ -178,6 +178,7 @@ inline constexpr Entry kEntries[] = {
     { "Deprecated alias for --show-ok", "--show-ok 的旧别名" },
     { "Check what this host can isolate SubOS sandboxes with; with --fix, install a root-owned bwrap and its AppArmor profile", "检查这台机器能用什么隔离 SubOS 沙箱；配合 --fix 安装 root 所有的 bwrap 及其 AppArmor profile" },
     { "Machine-readable output (with --isolation)", "机器可读输出（配合 --isolation）" },
+    { "Declare its isolation once: dev (default), private or locked", "一次性声明它的隔离程度：dev（默认）、private 或 locked" },
     { "Expose GPU devices (bwrap only)",                         "暴露 GPU 设备(仅 bwrap)" },
     { "List SubOS environments",                                 "列出 SubOS 环境" },
     { "Remove a SubOS",                                          "移除一个 SubOS" },

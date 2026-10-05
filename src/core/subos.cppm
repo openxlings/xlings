@@ -523,6 +523,8 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
 // "K=V" -> {K, V}; nullopt without '='.
 std::optional<std::pair<std::string, std::string>> split_env_(std::string_view kv);
 void stop_legacy_keeper_(const std::string& name);
+int declare_isolation_at_creation_(const std::string& name, std::optional<policy::Preset> preset,
+                                   const std::string& from, EventStream& stream);
 
 using UsageError = std::function<void(std::string_view)>;
 int run_exec_(int argc, char* argv[], EventStream& stream);

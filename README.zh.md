@@ -46,7 +46,7 @@ xlings list                            # 已安装的包
 
 ## 能做什么
 
-| | |
+| 方面 | 能力 |
 |---|---|
 | **包** | 二进制、脚本、配置、SubOS 基础环境 —— 统一为 xpkg，来自官方、第三方或自建索引 |
 | **版本** | 任意多个版本并存；N 个环境共享同一份安装产物 |
@@ -76,10 +76,9 @@ cd my-project/ && xlings install     # 项目自己的 SubOS，装声明的版�
 **在沙箱里运行 Agent 和不受信任的代码** —— [指南](docs/quick-start/subos-and-agent.md)
 
 ```bash
-xlings subos new agent-ws
-xlings subos config agent-ws --sandbox=private   # 私有网络、中性身份、装包需要批准
-xlings subos exec agent-ws -- python run.py      # 执行一条命令，返回它自己的退出码
-xlings subos use agent-ws --sandbox              # 或进入一个 shell
+xlings subos new agent-ws --sandbox=private      # 隔离程度在创建时声明一次
+xlings subos exec agent-ws -- python run.py      # 之后每次进入都是这个沙箱；返回命令自己的退出码
+xlings subos use agent-ws                        # 或进入一个 shell，不用再加参数
 ```
 
 | 平台 | 发布产物 | `--sandbox` 隔离的是 |
@@ -100,7 +99,7 @@ xlings self doctor --fix
 
 ## 文档
 
-| | |
+| 类别 | 文档 |
 |---|---|
 | **指南** | [多版本](docs/quick-start/multi-version.md) · [项目环境](docs/quick-start/project-env.md) · [SubOS 与 Agent](docs/quick-start/subos-and-agent.md) · [自定义索引](docs/quick-start/custom-index.md) · [自我管理](docs/quick-start/self-management.md) · [从源码构建](docs/build-from-source.md) |
 | **设计** | [架构](docs/architecture/overview.md) · [SubOS 隔离](docs/design/subos-isolation.md) · [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm 版本管理](docs/design/xvm-version-management.md) · [索引生态](docs/design/package-index-ecosystem.md) · [接口协议](docs/design/interface-protocol.md) |

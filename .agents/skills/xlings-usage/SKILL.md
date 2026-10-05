@@ -74,7 +74,7 @@ the output**; `--strict` refuses such a switch instead.
 |-------|---------|---|
 | Shell | `xlings subos use <name>` | Version isolation only |
 | Sandbox | `xlings subos use <name> --sandbox` / `subos exec <name> --sandbox -- <cmd>` | Linux: bwrap namespaces; macOS/Windows: home redirection only |
-| Policy | `xlings subos config <name> --sandbox=dev\|private\|locked` | Declared on the instance; holds however it is entered |
+| Policy | `xlings subos new <name> --sandbox=dev\|private\|locked` (or later `subos config`) | Declared once on the instance; holds however it is entered, no flag needed |
 
 | Preset | Network | Identity | Fetching packages from inside |
 |---|---|---|---|
@@ -98,8 +98,9 @@ xlings subos new dev-env
 xlings subos new dev-env --storage tmpfs          # ephemeral data
 xlings subos new dev-env --from subos:py-ds@1.0.0 # fork from xpkg base
 
-# Declare what it may do (owner, outside the sandbox)
-xlings subos config dev-env --sandbox=private     # a preset
+# Declare what it may do -- once, at creation; entries then need no flag
+xlings subos new agent-env --sandbox=private      # a preset; `use` / `exec` enter it that way
+xlings subos config dev-env --sandbox=private     # or declare / change it later
 xlings subos config dev-env --allow gpu --mount ~/proj:/work
 xlings subos config dev-env --sandbox xim:policy-ci@1   # a policy package (locked by sha256)
 
@@ -163,8 +164,7 @@ outside, and `fetch=ask` requests wait (exit 75) for
 
 ```bash
 # Create isolated env for agent
-xlings subos new agent-ws --from subos:dev-env@latest
-xlings subos config agent-ws --sandbox=private
+xlings subos new agent-ws --from subos:dev-env@latest --sandbox=private
 
 # Enter — agent runs INSIDE this world
 xlings subos use agent-ws --sandbox

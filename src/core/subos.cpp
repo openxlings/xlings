@@ -1733,6 +1733,37 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
     return {};
 }
 
+// The declaration a new instance starts with: the preset `new --sandbox`
+// named, else -- forked from a local instance -- that instance's policy, so
+// a copy is isolated as its source was. Written outside the instance and
+// audited, as `subos config` does.
+int declare_isolation_at_creation_(const std::string& name, std::optional<policy::Preset> preset,
+                                   const std::string& from, EventStream& stream) {
+    const auto home = home_view();
+    std::optional<policy::Policy> pol;
+    std::string origin;
+    if (preset) {
+        pol = policy::preset(*preset);
+        origin = "subos new --sandbox";
+    } else if (!from.empty() && from.find_first_of(":@") == std::string::npos
+               && policy_store::has_file(home, from)) {
+        auto src = policy_store::read(home, from);
+        if (src && *src) { pol = **src; origin = "subos new --from " + from; }
+    }
+    if (!pol) return 0;
+    if (auto w = policy_store::write(home, name, *pol); !w) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = w.error(), .recoverable = true });
+        return 1;
+    }
+    observe::append(home.logs_dir(name) / "events.ndjson", observe::Event{
+        .kind = observe::Kind::Lifecycle,
+        .fields = {{"event", "policy-change"}, {"instance", name}, {"by", origin},
+                   {"diff", policy::diff(policy::legacy(), *pol)}}});
+    log::info("'{}' is declared {}: `xlings subos use {}` and `subos exec` enter it that way",
+              name, policy::to_string(pol->preset), name);
+    return 0;
+}
+
 int run(int argc, char* argv[], EventStream& stream) {
     // Drop the options root publishes as valid on every command before any
     // subcommand's argv loop sees them. `subos new` and `subos use` end their
@@ -1789,9 +1820,23 @@ int run(int argc, char* argv[], EventStream& stream) {
         // invalidate every payload already installed. Absent → the built-in
         // default, so existing invocations keep working unchanged.
         std::string runtime;
+        // --sandbox[=dev|private|locked]: how isolated the instance is, declared
+        // once here -- every later `use` / `exec` enters it that way without
+        // being told (design §7). Bare `--sandbox` is dev.
+        std::optional<policy::Preset> declared;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
-            if (a == "--runtime" && i + 1 < argc) {
+            if (a == "--sandbox" || a.starts_with("--sandbox=")) {
+                std::string v = a == "--sandbox" ? std::string("dev") : a.substr(10);
+                if (a == "--sandbox" && i + 1 < argc && policy::preset_from_string(argv[i + 1]))
+                    v = argv[++i];
+                declared = policy::preset_from_string(v);
+                if (!declared || *declared == policy::Preset::Legacy) {
+                    usageError("--sandbox expects dev, private or locked");
+                    return 1;
+                }
+            }
+            else if (a == "--runtime" && i + 1 < argc) {
                 runtime = argv[++i];
             }
             else if (a.rfind("--runtime=", 0) == 0) {
@@ -1829,10 +1874,11 @@ int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
-        if (!fromSpec.empty()) {
-            return new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream);
-        }
-        return create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
+        const int rc = !fromSpec.empty()
+            ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream)
+            : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
+        if (rc != 0) return rc;
+        return declare_isolation_at_creation_(name, declared, fromSpec, stream);
     }
     if (sub == "use") {
         // Flags supported:

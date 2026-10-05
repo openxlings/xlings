@@ -429,6 +429,10 @@ status = "required"
 text = "joining a running session costs less than starting one"
 status = "required"
 
+[POL-DECLARE-AT-NEW]
+text = "subos new --sandbox declares the isolation once; entries need no flag; a fork inherits its source's"
+status = "required"
+
 [SUBOS-DOCTOR]
 text = "subos doctor: per instance, the policy, entry on this host, the policy package, sessions"
 status = "required"

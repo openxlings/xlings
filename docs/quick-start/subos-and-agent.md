@@ -14,15 +14,19 @@ SubOS 是一个有名字的环境：自己的工具版本、自己的 home、自
 ## 速览
 
 ```bash
-xlings subos new work                          # 创建
-xlings subos use work                          # 进入（只切换 PATH，宿主文件照常可见）
-xlings subos use work --sandbox                # 进入沙箱
-xlings subos exec work --sandbox -- make -j8   # 在沙箱里执行一条命令，返回它的退出码
-xlings subos config work --sandbox=private     # 声明它的隔离程度
+xlings subos new work --sandbox=private        # 创建，并声明它的隔离程度
+xlings subos use work                          # 进入：就是那个沙箱，不用再加参数
+xlings subos exec work -- make -j8             # 执行一条命令，返回它的退出码
 xlings subos status work                       # 它要求的 vs 这台机器给的
 xlings subos list                              # 所有 SubOS
 xlings subos remove work                       # 删除（连同 home，会先确认）
 ```
+
+**隔离程度属于实例，在创建时声明一次**（`subos new --sandbox=dev|private|locked`，之后可以用
+`subos config` 修改）。声明过的实例，无论 `use`、`exec`、`start` 还是接口调用，都按声明进入沙箱。
+单次调用上的 `--sandbox=locked`、`--net none` 之类**只能更严格**，不能放宽。没有声明的实例
+（例如场景一那样只用来切换工具链的）保持原来的行为：不加 `--sandbox` 就不进沙箱。
+`--from` 派生的实例继承源实例的声明。
 
 ## 场景一：一套与宿主互不干扰的工具链
 
@@ -51,8 +55,8 @@ xlings subos new rust-env --from subos:rust-env@1.80   # 从 subos 类型的包�
 Agent 改代码、装依赖、跑测试，但不应该碰到你的 home、SSH 密钥和其他项目：
 
 ```bash
-xlings subos new agent-ws
-xlings subos config agent-ws --sandbox=private --mount ~/code/myproj:/work   # 只映射这个项目（可写）
+xlings subos new agent-ws --sandbox=private
+xlings subos config agent-ws --mount ~/code/myproj:/work   # 只映射这个项目（可写）
 xlings subos exec agent-ws -- sh -c 'cd /work && claude --task "fix the failing tests"'
 ```
 
@@ -86,8 +90,8 @@ xlings interface subos_events --args '{"name":"agent-ws","kind":"perm"}'
 来路不明的脚本、要审计的仓库：不给网络，只读地看代码，事后看它做了什么：
 
 ```bash
-xlings subos new quarantine
-xlings subos config quarantine --sandbox=locked --observe full
+xlings subos new quarantine --sandbox=locked
+xlings subos config quarantine --observe full
 xlings subos exec quarantine --mount ~/Downloads/suspicious-repo:/src:ro --timeout 5m -- sh -c 'cd /src && ./build.sh'
 xlings subos report quarantine        # 执行过的每个程序、改动过的文件
 ```
@@ -259,7 +263,7 @@ SubOS 的 home 是用户数据：只有用户发起并确认的删除才会删�
 
 | 命令 | 说明 |
 |---|---|
-| `subos new <name> [--from <src>] [--storage shared\|tmpfs\|image]` | 创建 |
+| `subos new <name> [--sandbox=preset] [--from <src>] [--storage shared\|tmpfs\|image]` | 创建，并声明隔离程度 |
 | `subos use <name> [--sandbox] [--cmd "..."] [--keep\|--ttl N]` | 进入；`--cmd` 执行一条命令 |
 | `subos exec <name>\|--temp [--sandbox[=preset]] [--timeout D] -- argv` | 执行一条命令，返回它的退出码 |
 | `subos config <name> [--sandbox=preset\|ns:pkg] [--net] [--fetch] [--allow] [--mount] ...` | 声明策略 |

@@ -47,7 +47,7 @@ written for agents ships with xlings.
 
 ## What it does
 
-| | |
+| Area | What you get |
 |---|---|
 | **Packages** | binaries, scripts, configs, SubOS bases — all one format (xpkg), from official, third-party or self-hosted indexes |
 | **Versions** | any number side by side; N environments share one copy of each payload |
@@ -77,10 +77,9 @@ cd my-project/ && xlings install     # the project's own SubOS, the declared ver
 **Agents and untrusted code in a sandbox** — [guide](docs/quick-start/subos-and-agent.md)
 
 ```bash
-xlings subos new agent-ws
-xlings subos config agent-ws --sandbox=private   # private network, neutral identity, installs need approval
-xlings subos exec agent-ws -- python run.py      # one command, its own exit code
-xlings subos use agent-ws --sandbox              # or a shell inside
+xlings subos new agent-ws --sandbox=private      # isolation is declared once, here
+xlings subos exec agent-ws -- python run.py      # every entry is that sandbox; its own exit code
+xlings subos use agent-ws                        # or a shell inside -- no flag needed
 ```
 
 | Platform | Release | `--sandbox` isolates |
@@ -102,7 +101,7 @@ xlings self doctor --fix
 
 ## Documentation
 
-| | |
+| Topic | Docs |
 |---|---|
 | **Guides** | [Multi-version](docs/quick-start/multi-version.md) · [Project env](docs/quick-start/project-env.md) · [SubOS & Agent](docs/quick-start/subos-and-agent.md) · [Custom index](docs/quick-start/custom-index.md) · [Self-management](docs/quick-start/self-management.md) · [Build from source](docs/build-from-source.md) |
 | **Design** | [Architecture](docs/architecture/overview.md) · [SubOS isolation](docs/design/subos-isolation.md) · [SubOS-as-XPKG](docs/design/subos-as-xpkg.md) · [xvm versioning](docs/design/xvm-version-management.md) · [Index ecosystem](docs/design/package-index-ecosystem.md) · [Interface protocol](docs/design/interface-protocol.md) |

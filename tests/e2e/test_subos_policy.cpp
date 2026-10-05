@@ -321,3 +321,34 @@ XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,
     EXPECT_NE(one.out.find("subos box"), std::string::npos) << one.out;
     EXPECT_EQ(one.out.find("subos broken"), std::string::npos) << one.out;
 }
+
+// How isolated an instance is, said once when it is made: every later entry
+// is that, without being told; a copy is isolated as its source was.
+XTEST(SubosPolicyE2E, IsolationIsDeclaredWhenTheInstanceIsMade,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"POL-DECLARE-AT-NEW"},
+      .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("declare-at-new");
+    home.seed_sandbox_backend();
+    auto made = home.xlings({"subos", "new", "agent", "--sandbox=locked"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    const auto file = home.dir() / "config" / "subos" / "agent" / "policy.json";
+    ASSERT_TRUE(fs::exists(file));
+    EXPECT_EQ(nlohmann::json::parse(tk::read_file(file))["extends"], "locked");
+    EXPECT_NE(tk::read_file(home.dir() / "logs" / "subos" / "agent" / "events.ndjson").find("policy-change"),
+              std::string::npos) << "the declaration is audited";
+
+    ASSERT_EQ(home.xlings({"subos", "new", "copy", "--from", "agent"}).exit_code, 0);
+    const auto copied = home.dir() / "config" / "subos" / "copy" / "policy.json";
+    ASSERT_TRUE(fs::exists(copied)) << "a copy is isolated as its source was";
+    EXPECT_EQ(nlohmann::json::parse(tk::read_file(copied))["extends"], "locked");
+
+    EXPECT_EQ(home.xlings({"subos", "new", "bad", "--sandbox=vpn"}).exit_code, 1);
+    EXPECT_FALSE(fs::exists(home.dir() / "subos" / "bad"));
+
+    // No --sandbox on the entry: the declaration is what counts.
+    if (tk::probe("sandbox") == std::nullopt && tk::probe("linux") == std::nullopt) {
+        auto r = home.xlings({"subos", "use", "agent", "--cmd", "hostname"});
+        EXPECT_EQ(r.exit_code, 0) << r.transcript();
+        EXPECT_NE(r.out.find("agent"), std::string::npos) << r.transcript();
+    }
+}
