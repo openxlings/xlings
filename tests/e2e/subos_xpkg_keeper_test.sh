@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# E2E test: keeper CLI surface (M4 + M5).
+# E2E test: `subos stop` and the pre-session keeper's files (COMPAT: an older
+# xlings's keeper is still ended by `subos stop`; see stop_legacy_keeper_).
 #
 # Validates the CLI plumbing that's safe to test without an actual
 # bwrap/proot install:

@@ -46,12 +46,8 @@ StorageMode read_storage_mode_(const fs::path& subos_dir) {
     return StorageMode::Shared;
 }
 
-// /etc/* template builders + sandbox dir layout init. uid_t / gid_t
-// are POSIX types — Windows MSVC doesn't have them. Sandbox is
-// Linux-only by design (proot uses ptrace + Linux syscall semantics);
-// the only caller (use_sandbox_mode_) is also Linux-guarded, so we
-// guard these helpers too rather than fight the type system with
-// platform-portable substitutes.
+// /etc/* template builders + sandbox dir layout init (POSIX sandboxes;
+// plain code, so it compiles everywhere and needs no #if).
 // We write per-user passwd/group at sandbox init time so getpwuid
 // (real_uid) inside the sandbox returns the real user's home
 // (= /home/<user>) and shell — most CLI tools depend on this. Root
@@ -205,15 +201,8 @@ int unmount_image_(const fs::path& mountpoint) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Sandbox subos entry — proot-based fs-isolated session.
-//
-// Triggered when `subos use <name>` reads a subos config that has the
-// `sandbox-shell` field. Only available on Linux (proot uses ptrace +
-// Linux syscall conventions). On non-Linux platforms the sandbox config
-// is rejected at create time, so this code path is unreachable there;
-// guard with #if defined(__linux__) and stub elsewhere.
-//
-// See docs/plans/2026-05-09-subos-sandbox-design.md for full rationale.
+// Sandbox entry: policy + host capabilities -> spec -> a session (Linux),
+// or the home redirect (macOS, Windows). See docs/design/subos-isolation.md.
 // ─────────────────────────────────────────────────────────────────────
 
 

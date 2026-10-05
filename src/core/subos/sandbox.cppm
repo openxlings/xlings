@@ -63,12 +63,7 @@ export inline StorageMode storage_from_string_(const std::string& s) {
 export StorageMode read_storage_mode_(const fs::path& subos_dir);
 
 
-// /etc/* template builders + sandbox dir layout init. uid_t / gid_t
-// are POSIX types — Windows MSVC doesn't have them. Sandbox is
-// Linux-only by design (proot uses ptrace + Linux syscall semantics);
-// the only caller (use_sandbox_mode_) is also Linux-guarded, so we
-// guard these helpers too rather than fight the type system with
-// platform-portable substitutes.
+// /etc/* templates for POSIX sandboxes (plain data, compiled everywhere).
 
 inline constexpr std::string_view kEtcHosts =
     "127.0.0.1 localhost\n::1 localhost\n";

@@ -3050,11 +3050,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             else if (a.rfind("--cmd=", 0) == 0) {
                 cmd = a.substr(6);
             }
-            // M5 keeper policy flags. The runtime spawning of the keeper
-            // is wired separately (see keeper.cppm); these flags are
-            // accepted on the CLI and threaded through for forward
-            // compatibility. Auto-default (D9) is governed by
-            // should_auto_keeper() at runtime.
+            // The session's lifetime (see the declarations above).
             else if (a == "--no-keep") {
                 no_keep = true;
             }
