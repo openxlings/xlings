@@ -95,7 +95,7 @@ status = "required"
 
 [F11]
 text = "--keep / --ttl mean session idle time (the keeper is replaced by the session)"
-status = "planned"
+status = "required"
 
 [F12]
 text = "a failed probe reports the raw error and least-privilege fixes, never a global sysctl"
@@ -308,7 +308,7 @@ status = "required"
 
 [SES-SIGNALS]
 text = "SIGTERM/SIGHUP reach the session; the supervisor ignores SIGINT while waiting"
-status = "planned"
+status = "required"
 
 # ── broker and permissions (design §8, §9) ─────────────────────────
 
@@ -393,7 +393,7 @@ status = "planned"
 
 [COMPAT-ALIASES]
 text = "--gpu, --cmd, --keep, --ttl keep working"
-status = "planned"
+status = "required"
 
 [COMPAT-UNDECLARED]
 text = "an instance with no policy keeps its behaviour apart from the S0 fixes"

@@ -118,3 +118,58 @@ XTEST(SubosSession, PsListsAndStopEndsASession,
     EXPECT_TRUE(std::ranges::any_of(ev, [](auto& e) {
         return e.value("event", "") == "session-stop-requested"; }));
 }
+
+XTEST(SubosSession, KeepAndTtlAreTheSessionsIdleTime,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"F11", "COMPAT-ALIASES"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    // --ttl: the session outlives the command, then ends once idle that long.
+    auto ttl = box.home.xlings({"subos", "use", "box", "--sandbox", "--ttl", "2", "--cmd", "echo hi"});
+    EXPECT_EQ(ttl.exit_code, 0) << ttl.transcript();
+    EXPECT_NE(ttl.out.find("hi"), std::string::npos) << ttl.transcript();
+    std::size_t banners = 0;
+    for (auto at = ttl.out.find("entering subos"); at != std::string::npos;
+         at = ttl.out.find("entering subos", at + 1)) ++banners;
+    EXPECT_EQ(banners, 1u) << "one entry, one announcement\n" << ttl.out;
+    EXPECT_TRUE(box.running()) << "the session ended with the command";
+    EXPECT_TRUE(wait_for([&] { return !box.running(); })) << "the session outlived --ttl";
+
+    // --keep: until `subos stop`.
+    auto keep = box.home.xlings({"subos", "use", "box", "--sandbox", "--keep", "--cmd", "echo kept"});
+    EXPECT_EQ(keep.exit_code, 0) << keep.transcript();
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    EXPECT_TRUE(box.running()) << "--keep ended on its own";
+    EXPECT_EQ(box.home.xlings({"subos", "stop", "box"}).exit_code, 0);
+    EXPECT_FALSE(box.running());
+
+    // --gpu still parses and enters (it binds /sys, which a host has).
+    if (fs::exists("/sys")) {
+        auto gpu = box.home.xlings({"subos", "use", "box", "--sandbox", "--gpu", "--cmd", "echo gpu"});
+        EXPECT_EQ(gpu.exit_code, 0) << gpu.transcript();
+    }
+}
+
+XTEST(SubosSession, TermAndHupEndTheSessionAndCtrlCIsTheCommands,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SES-SIGNALS"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    // SIGINT to xlings alone (not the group, so not the command): it waits
+    // on, like system(). Then SIGTERM, or SIGHUP, ends the session.
+    for (const char* sig : {"TERM", "HUP"}) {
+        tk::RunOptions o;
+        o.argv = {"/bin/sh", "-c",
+                  "\"$0\" subos use box --sandbox --cmd 'sleep 30; echo NOT-ENDED' & p=$!; "
+                  "i=0; while [ ! -e \"$XLINGS_HOME/run/subos/box/session.json\" ] && [ $i -lt 200 ]; "
+                  "do sleep 0.1; i=$((i+1)); done; "
+                  "kill -INT $p; sleep 1; kill -0 $p 2>/dev/null && echo ALIVE-AFTER-INT; "
+                  "kill -" + std::string(sig) + " $p; wait $p; echo rc=$?",
+                  tk::xlings_binary().string()};
+        o.env = box.home.env();
+        o.timeout = std::chrono::seconds(60);
+        auto r = tk::run(o);
+        EXPECT_NE(r.out.find("ALIVE-AFTER-INT"), std::string::npos) << sig << "\n" << r.transcript();
+        EXPECT_EQ(r.out.find("NOT-ENDED"), std::string::npos) << sig << "\n" << r.transcript();
+        EXPECT_EQ(r.out.find("rc=0"), std::string::npos) << sig << "\n" << r.transcript();
+        EXPECT_TRUE(wait_for([&] { return !box.running(); })) << sig << ": the session survived";
+    }
+}

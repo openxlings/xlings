@@ -2945,6 +2945,8 @@ int run(int argc, char* argv[], EventStream& stream) {
             auto rc = sandbox::enter(name, stream, sandbox::EnterOptions{
                 .backend = sandbox_backend, .gpu = gpu, .env = declared_env_(name),
                 .ttl = keep_forever ? 0 : ttl_sec, .detached = true,
+                // The join below announces the entry; once is enough.
+                .announce = false,
                 .preset = iso.preset, .overrides = iso.overrides });
             if (rc != 0) return rc;
         }
