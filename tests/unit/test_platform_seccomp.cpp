@@ -15,9 +15,10 @@
 import std;
 import xlings.platform;
 
+// Linux only: the filter is a Linux mechanism, and elsewhere there is none.
 TEST(SubosSeccomp, TheProgramIsNonEmptyOnSupportedArchitectures) {
     auto p = xlings::platform::seccomp::block_terminal_injection();
-#if defined(__x86_64__) || defined(__aarch64__)
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
     ASSERT_FALSE(p.empty());
     EXPECT_EQ(p.size() % 8, 0u);
     EXPECT_LT(xlings::platform::seccomp::instruction_count(p), 64u);

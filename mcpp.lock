@@ -5,18 +5,6 @@
 # file must not change depending on which command ran last.
 version = 2
 
-[package."compat.mbedtls"]
-namespace = "compat"
-version = "3.6.1"
-source  = "index+compat@3.6.1"
-hash    = "fnv1a:bb700e69e973ccd0"
-
-[package."tinyhttps"]
-namespace = "mcpplibs"
-version = "0.2.9"
-source  = "index+mcpplibs@0.2.9"
-hash    = "fnv1a:a01132893163f775"
-
 [package."compat.bzip2"]
 namespace = "compat"
 version = "1.0.8"
@@ -47,6 +35,12 @@ version = "1.10.0"
 source  = "index+compat@1.10.0"
 hash    = "fnv1a:c1f0fef08251ee13"
 
+[package."compat.mbedtls"]
+namespace = "compat"
+version = "3.6.1"
+source  = "index+compat@3.6.1"
+hash    = "fnv1a:bb700e69e973ccd0"
+
 [package."compat.xz"]
 namespace = "compat"
 version = "5.8.3"
@@ -65,21 +59,27 @@ version = "1.5.7"
 source  = "index+compat@1.5.7"
 hash    = "fnv1a:cc855914d41f9bfb"
 
-[package."mcpplibs.capi.lua"]
-namespace = "mcpplibs.capi"
-version = "0.0.3"
-source  = "index+mcpplibs.capi@0.0.3"
-hash    = "fnv1a:f3031630d0b22d94"
-
 [package."mcpplibs.cmdline"]
 namespace = "mcpplibs"
 version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:aad61299abc2c4b7"
 
+[package."tinyhttps"]
+namespace = "mcpplibs"
+version = "0.2.9"
+source  = "index+mcpplibs@0.2.9"
+hash    = "fnv1a:a01132893163f775"
+
 [package."mcpplibs.xpkg"]
 namespace = "mcpplibs"
 version = "0.0.60"
 source  = "index+mcpplibs@0.0.60"
 hash    = "fnv1a:86ae98702bf16787"
+
+[package."mcpplibs.capi.lua"]
+namespace = "mcpplibs.capi"
+version = "0.0.3"
+source  = "index+mcpplibs.capi@0.0.3"
+hash    = "fnv1a:f3031630d0b22d94"
 
