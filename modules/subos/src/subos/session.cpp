@@ -761,6 +761,16 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
                                   {"action", std::string(policy::to_string(d.action))},
                                   {"reason", d.reason}};
                 if (cls.route == broker::Route::Owner) d.action = policy::Action::Deny;
+                // Deny by default: the broker runs, as the owner, only what
+                // changes this instance on its behalf. Anything else -- what
+                // the client runs locally, or never heard of -- is refused
+                // here, whoever sent it: a process inside can talk to this
+                // socket without the client.
+                if (cls.route == broker::Route::Local) {
+                    d.action = policy::Action::Deny;
+                    d.reason = std::format("`{}` is not something the broker runs; it runs inside the sandbox",
+                                           argv[0]);
+                }
                 if (d.action == policy::Action::Deny) {
                     audit(home, L.instance, ev, observe::Kind::Perm);
                     send_msg(bit->fd, {{"exit", broker::kExitPermission},
@@ -794,6 +804,11 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, int ct
                 pid_t bp = ::fork();
                 if (bp == 0) {
                     reset_signals_for_child();
+                    // From the home: a directory that is a home ends the
+                    // project search, so the session owner's cwd (a project,
+                    // perhaps) never becomes the scope this runs in.
+                    if (auto h = L.broker_env.find("XLINGS_HOME"); h != L.broker_env.end())
+                        (void)::chdir(h->second.c_str());
                     for (int i = 0; i < 3; ++i) ::dup2(m->fds[static_cast<std::size_t>(i)], i);
                     ::execve(av2[0], av2.data(), envp2.data());
                     ::_exit(kExitCannotRun);

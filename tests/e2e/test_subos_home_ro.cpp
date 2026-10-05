@@ -142,3 +142,30 @@ XTEST(SubosHomeReadOnly, AutoFetchInstallsFromInsideAndInstallSubosFromOutside,
     auto box_list = box.home.xlings({"list"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
     EXPECT_NE(box_list.out.find("ninja"), std::string::npos) << box_list.transcript();
 }
+
+namespace {
+// Talk to the broker the way a hostile process inside would: directly, with
+// any argv, skipping the client's own classification.
+const char* kRawBrokerRequest =
+    "import socket,json,array,sys,os\n"
+    "s=socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)\n"
+    "s.connect(os.environ.get('XLINGS_BROKER_SOCKET') or '/run/xlings/broker.sock')\n"
+    "s.sendmsg([json.dumps({'op':'run','argv':sys.argv[1:]}).encode()],\n"
+    "          [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i',[0,1,2]))])\n"
+    "print('REPLY', s.recv(65536).decode())\n";
+}
+
+XTEST(SubosHomeReadOnly, TheBrokerRunsOnlyWhatChangesThisInstance,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-PERM", "EXIT-13"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    Box box;
+    // `interface` is what the client runs locally; run OUTSIDE, as the
+    // owner, it would create an instance. The broker must refuse it.
+    auto r = box.home.xlings({"subos", "exec", "box", "--sandbox", "--", "python3", "-c", kRawBrokerRequest,
+                              "interface", "create_subos", "--args", R"({"name":"pwned"})"});
+    if (r.transcript().find("No such file") != std::string::npos) GTEST_SKIP() << "no python3";
+    EXPECT_NE(r.out.find("REPLY"), std::string::npos) << r.transcript();
+    EXPECT_NE(r.out.find("\"exit\":13"), std::string::npos) << r.transcript();
+    EXPECT_FALSE(fs::exists(box.home.dir() / "subos" / "pwned")) << "the broker ran a command it must not";
+}
