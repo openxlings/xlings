@@ -36,11 +36,120 @@ import xlings.core.xvm.commands;
 import xlings.core.profile;
 import xlings.core.utf8;
 import xlings.cli.spec;
+import xlings.cli.completion;
 import xlings.core.xim.index_cmd;
 import xlings.core.xim.repo;
 import xlings.core.palette;
 
 namespace xlings::cli {
+
+// ─── Tab completion: live values for the spec-driven engine ───
+//
+// The engine in xlings.cli.completion resolves the command, the option or the
+// positional argument under the cursor; this turns that context into the
+// values only the running home can answer (installed tools, subos names and
+// the short enum option values). Deliberately local-only: a Tab press must
+// not sync an index or build a package catalog, so remote package names are
+// not offered here.
+std::vector<completion::Candidate> completion_live_values_(
+        const completion::Request& request) {
+    using completion::Candidate;
+    std::vector<Candidate> out;
+
+    const auto add = [&out](std::string value, std::string description = {}) {
+        if (value.empty()) return;
+        const bool seen = std::ranges::any_of(out, [&](const Candidate& c) {
+            return c.value == value;
+        });
+        if (!seen) out.push_back({std::move(value), std::move(description)});
+    };
+
+    // Option values first: the request names the option whose value is wanted.
+    if (!request.option.empty()) {
+        const std::string& option = request.option;
+        if (option == "--lang") {
+            for (auto value : {"auto", "en", "zh"}) add(value);
+        } else if (option == "--mirror") {
+            for (auto value : {"GLOBAL", "CN"}) add(value);
+        } else if (option == "--ui-mode") {
+            for (auto value : {"auto", "cli", "tui"}) add(value);
+        } else if (option == "--interactive") {
+            for (auto value : {"true", "false"}) add(value);
+        } else if (option == "--storage") {
+            for (auto value : {"shared", "tmpfs", "image"}) add(value);
+        } else if (option == "--sandbox") {
+            for (auto value : {"bwrap", "proot"}) add(value);
+        } else if (option == "--shell") {
+            // Kept in step with what xvm::parse_shell accepts; aliases are
+            // cheap to offer and the parser is the authority.
+            for (auto value : {"sh", "bash", "zsh", "fish", "pwsh",
+                               "powershell", "ps1", "ps", "nu"}) {
+                add(value);
+            }
+        } else if (option == "--theme") {
+            add("default", "built in");
+            const auto dir = Config::paths().homeDir / "config" / "themes";
+            std::error_code ec;
+            if (std::filesystem::is_directory(dir, ec)) {
+                for (const auto& entry : platform::dir_entries(dir)) {
+                    if (entry.path().extension() == ".json") {
+                        add(entry.path().stem().string(), "theme");
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    // Installed tool / package names, from the version DB and the effective
+    // workspace. Both are already resident in the Config singleton.
+    const auto add_installed = [&] {
+        for (const auto& entry : Config::versions()) add(entry.first);
+        for (const auto& entry : Config::effective_workspace()) add(entry.first);
+    };
+
+    const std::string& command = request.command;
+    const std::string& argument = request.argument;
+    if (argument == "package" || argument == "packages" || argument == "target") {
+        add_installed();
+    } else if (argument == "filter" && command == "list") {
+        add_installed();
+    } else if (command.starts_with("subos ") && argument == "name"
+               && command != "subos new") {
+        // `new` names a subos that does not exist yet; every other `subos`
+        // verb takes one that does.
+        for (const auto& name : Config::list_subos_names()) add(name);
+        add("current", "global current symlink");
+    }
+
+    return out;
+}
+
+// `xlings __complete <words...>` — the hidden entry point the shell profiles
+// in profile_resources.cppm call on Tab. Prints one candidate per line as
+// `value<TAB>description`, a shape bash, fish and PowerShell can all read.
+// `first` is the argv index of `__complete`; words are everything after it.
+int run_completion_(int argc, char* argv[], int first) {
+    std::vector<std::string> words;
+    for (int i = first + 1; i < argc; ++i) words.emplace_back(argv[i]);
+    // fish passes `(commandline -opc)` verbatim, so the program name is the
+    // first word. bash/zsh strip it themselves; dropping it here when present
+    // makes all three callers agree.
+    if (!words.empty()
+        && (words.front() == "xlings" || words.front() == "xlings.exe")) {
+        words.erase(words.begin());
+    }
+
+    for (const auto& candidate :
+         completion::complete(words, completion_live_values_)) {
+        if (candidate.description.empty()) {
+            std::println("{}", candidate.value);
+        } else {
+            std::println("{}\t{}", candidate.value, candidate.description);
+        }
+    }
+    return 0;
+}
 
 // ─── EventStream consumer: dispatch DataEvent to ui:: functions ───
 // Kinds that reach the wire but deliberately have no terminal renderer.
@@ -1344,6 +1453,23 @@ std::vector<std::string> inject_omitted_values_(int argc, char* argv[]) {
 }
 
 int dispatch_(int argc, char* argv[]) {
+    // Tab completion. Handled before anything else so a Tab press does not pay
+    // for the event stream, theme, i18n or the capability registry — its
+    // consumer is a shell, not a person. The profiles that invoke it live in
+    // src/core/xself/profile_resources.cppm.
+    //
+    // Found as the first non-flag token rather than strictly argv[1]: global
+    // flags may precede it (`--verbose`), and `--ui-mode`'s value is not a
+    // command.
+    for (int i = 1; i < argc; ++i) {
+        std::string_view token{argv[i]};
+        if (token.starts_with("-")) {
+            if (token == "--ui-mode" && i + 1 < argc) ++i;
+            continue;
+        }
+        if (token == "__complete") return run_completion_(argc, argv, i);
+        break;
+    }
     if (argc == 2
         && std::string_view{argv[1]} == "--command-reference-json") {
         std::println("{}", spec::reference_json().dump());

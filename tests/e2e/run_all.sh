@@ -323,6 +323,7 @@ TESTS=(
     # A project's xim.index-base must win over the home's; the lazy home
     # load once overwrote it (PR #639 second review, F3).
     "E2E-131|index_base_precedence_test.sh||"
+    "E2E-132|completion_test.sh||"
 )
 
 # ── orphan check: a test that runs NOWHERE looks exactly like one that passes ──
