@@ -1828,8 +1828,17 @@ int run(int argc, char* argv[], EventStream& stream) {
             std::string a = argv[i];
             if (a == "--sandbox" || a.starts_with("--sandbox=")) {
                 std::string v = a == "--sandbox" ? std::string("dev") : a.substr(10);
-                if (a == "--sandbox" && i + 1 < argc && policy::preset_from_string(argv[i + 1]))
-                    v = argv[++i];
+                if (a == "--sandbox" && i + 1 < argc) {
+                    const std::string_view next = argv[i + 1];
+                    if (policy::preset_from_string(next)) v = argv[++i];
+                    else if (next == "bwrap" || next == "proot" || next == "landlock") v = argv[++i];
+                }
+                if (v == "bwrap" || v == "proot" || v == "landlock") {
+                    usageError(std::format("--sandbox {}: a backend is chosen when the instance is "
+                                           "entered (`subos use <name> --sandbox {}`); `new` declares "
+                                           "dev, private or locked", v, v));
+                    return 1;
+                }
                 declared = policy::preset_from_string(v);
                 if (!declared || *declared == policy::Preset::Legacy) {
                     usageError("--sandbox expects dev, private or locked");
