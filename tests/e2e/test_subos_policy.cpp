@@ -284,3 +284,30 @@ XTEST(SubosPolicyE2E, APolicyPackageIsSelectedLockedAndUpgradedByTheOwner,
     EXPECT_EQ(nlohmann::json::parse(tk::read_file(box.policy_file()))["resolved"]["from"],
               "local:policy-ci@1.1.0") << "a refused upgrade leaves the policy alone";
 }
+
+XTEST(SubosPolicyE2E, DoctorSaysWhatEachInstanceCanDoHere,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SUBOS-DOCTOR"},
+      .requires_ = {"xlings-bin"}) {
+    Box box;
+    ASSERT_EQ(box.run({"subos", "new", "broken"}).exit_code, 0);
+    tk::write_file(box.home.dir() / "config" / "subos" / "broken" / "policy.json",
+                   R"({"isolation":{"net":"vpn"}})");
+    auto r = box.run({"subos", "doctor", "--json"});
+    EXPECT_EQ(r.exit_code, 1) << "an unreadable policy is an error\n" << r.transcript();
+    auto j = nlohmann::json::parse(r.out, nullptr, false);
+    ASSERT_FALSE(j.is_discarded()) << r.transcript();
+    EXPECT_EQ(j["gates"].size(), 8u);
+    std::map<std::string, std::map<std::string, std::string>> level;   // instance -> check -> level
+    for (auto& inst : j["instances"])
+        for (auto& f : inst["findings"])
+            level[inst["instance"]][f["check"]] = f["level"];
+    EXPECT_EQ(level["box"]["policy"], "ok");
+    EXPECT_EQ(level["broken"]["policy"], "error");
+    EXPECT_EQ(level["broken"]["enters"], "error") << "entry refuses while the policy cannot be read";
+
+    // One instance, and a healthy one is exit 0.
+    auto one = box.run({"subos", "doctor", "box"});
+    EXPECT_EQ(one.exit_code, 0) << one.transcript();
+    EXPECT_NE(one.out.find("subos box"), std::string::npos) << one.out;
+    EXPECT_EQ(one.out.find("subos broken"), std::string::npos) << one.out;
+}

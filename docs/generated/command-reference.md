@@ -120,6 +120,12 @@ Show what a SubOS asks for and what this host gives it
 
 Options: `--json` — Machine-readable output
 
+## `xlings subos doctor [name]`
+
+Check each SubOS: policy, entry on this host, policy package, sessions
+
+Options: `--json` — Machine-readable output; `--fix` — Re-install a selected policy package whose payload is missing
+
 ## `xlings subos requests <name>`
 
 List what a SubOS's sandbox asked for and is waiting on

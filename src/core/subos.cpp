@@ -2426,6 +2426,140 @@ int run_config_(int argc, char* argv[], EventStream& stream,
 
 // `subos status <name>`: what the instance asks for, what this host gives it,
 // and why not when it does not (design §14).
+// `subos doctor [<name>] [--json] [--fix]` (design §14, C25): is each
+// instance able to do what it declares, on this host? Findings, not repairs:
+// `--fix` only re-installs a selected policy package's missing payload
+// (derived data). A record of a session whose supervisor died is cleaned by
+// reading it -- that is what every reader of it does -- and is reported.
+int run_doctor_(int argc, char* argv[], EventStream& stream,
+                const std::function<void(std::string_view)>& usageError) {
+    std::string only;
+    bool json = false, fix = false;
+    for (int i = 3; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if (a == "--json") json = true;
+        else if (a == "--fix") fix = true;
+        else if (!a.empty() && a[0] != '-' && only.empty()) only = std::string(a);
+        else { usageError("unknown option for `xlings subos doctor`: " + std::string(a)); return 1; }
+    }
+    std::vector<std::string> names;
+    if (!only.empty()) {
+        auto resolved = resolve_use_name_(only, stream);
+        if (resolved.selected.empty()) return resolved.exitCode;
+        names.push_back(resolved.selected);
+    } else {
+        for (auto& n : Config::list_subos_names()) if (n != "current") names.push_back(n);
+    }
+    const auto home = home_view();
+    nlohmann::json report{{"instances", nlohmann::json::array()}};
+    int errors = 0;
+    for (const auto& name : names) {
+        nlohmann::json findings = nlohmann::json::array();
+        auto add = [&](std::string check, std::string level, std::string detail, std::string fix_hint = {}) {
+            if (level == "error") ++errors;
+            findings.push_back({{"check", std::move(check)}, {"level", std::move(level)},
+                                {"detail", std::move(detail)}, {"fix", std::move(fix_hint)}});
+        };
+        // The manifest: what the instance holds. Unreadable is not empty.
+        {
+            const auto manifest = Config::paths().homeDir / "subos" / name / ".xlings.json";
+            std::error_code ec;
+            if (fs::exists(manifest, ec)) {
+                std::ifstream in(manifest, std::ios::binary);
+                if (nlohmann::json::parse(in, nullptr, false).is_discarded())
+                    add("manifest", "error", manifest.string() + " does not parse",
+                        "restore it; nothing rewrites a file it cannot read");
+            }
+        }
+        // The policy: declared, readable, enforceable by this version.
+        policy::Policy pol = policy::legacy();
+        auto file = policy_store::read(home, name);
+        if (!file) {
+            add("policy", "error", file.error(), "xlings subos config " + name + " --reset");
+        } else if (*file) {
+            pol = **file;
+            add("policy", "ok", std::format("{} ({})", home.policy_file(name).string(), policy::to_string(pol.preset)));
+        } else {
+            add("policy", "ok", "none declared: the instance enters as it always has");
+        }
+        // Can it enter here, as declared? Not at all while the policy
+        // cannot be read: entry refuses rather than guess (fail closed).
+        EventStream quiet;
+        const auto eff = sandbox::preview(name, pol, quiet);
+        if (!file) {
+            add("enters", "error", "refused until the policy reads", "");
+        } else if (eff.value("enters", false)) {
+            std::string degraded;
+            for (auto& d : eff["spec"]["degraded"])
+                degraded += (degraded.empty() ? "" : "; ") + d.value("dimension", "") + ": " + d.value("reason", "");
+            add("enters", degraded.empty() ? "ok" : "warn",
+                std::format("backend {}{}", eff["spec"].value("backend", "?"),
+                            degraded.empty() ? std::string{} : " -- not in effect: " + degraded));
+        } else {
+            std::string why, fixes;
+            for (auto& m : eff["missing"]) {
+                why += (why.empty() ? "" : "; ") + m.value("dimension", "") + ": " + m.value("reason", "");
+                if (auto f = m.value("fix", ""); !f.empty() && fixes.find(f) == std::string::npos)
+                    fixes += (fixes.empty() ? "" : "; ") + f;
+            }
+            add("enters", "warn", "cannot enter on this host: " + why, fixes);
+        }
+        // A selected policy package: still the payload it was locked to?
+        if (pol.package) {
+            const auto& from = pol.package->from;
+            const auto colon = from.find(':'), at = from.rfind('@');
+            const auto dir = Config::paths().homeDir / "data" / "xpkgs"
+                / (from.substr(0, colon) + "-x-" + from.substr(colon + 1, at - colon - 1)) / from.substr(at + 1);
+            auto sha = sha256::hex_file(dir / "policy.json");
+            if (!sha && fix) {
+                (void)platform::run_argv({platform::get_executable_path().string(), "install", from, "-y"});
+                sha = sha256::hex_file(dir / "policy.json");
+            }
+            if (!sha)
+                add("package", "warn", from + " is not installed (the instance keeps its copy of the policy)",
+                    "xlings subos doctor " + name + " --fix");
+            else if (*sha != pol.package->sha256)
+                add("package", "warn", from + " changed since it was selected (sha256 " + sha->substr(0, 12) + "...)",
+                    "xlings subos config " + name + " --policy-upgrade");
+            else
+                add("package", "ok", from + " (sha256 matches)");
+        }
+        // Sessions: a record whose supervisor is gone is removed by reading it.
+        {
+            std::error_code ec;
+            const bool recorded = fs::exists(home.run_dir(name) / "session.json", ec);
+            auto live = session::find(home, name);
+            if (live) add("session", "ok", "running (" + live->id + ")");
+            else if (recorded) add("session", "ok", "a record of a session that had ended was removed");
+        }
+        report["instances"].push_back({{"instance", name}, {"findings", findings}});
+    }
+    {
+        EventStream quiet;
+        report["gates"] = sandbox::preview(names.empty() ? std::string("default") : names.front(),
+                                           policy::legacy(), quiet)["gates"];
+    }
+    report["errors"] = errors;
+    if (json) {
+        std::println(stdout, "{}", report.dump());
+        return errors ? 1 : 0;
+    }
+    std::println(stdout, "this host:");
+    for (auto& g : report["gates"])
+        std::println(stdout, "  {:<14} {:<9} {}", g.value("gate", ""),
+                     g.value("supported", false) ? g.value("enforced", "") : "no", g.value("reason", ""));
+    for (auto& inst : report["instances"]) {
+        std::println(stdout, "subos {}", inst.value("instance", ""));
+        for (auto& f : inst["findings"]) {
+            const auto level = f.value("level", "");
+            const char* mark = level == "ok" ? "✓" : level == "warn" ? "!" : "✗";
+            std::println(stdout, "  {} {:<9} {}{}", mark, f.value("check", ""), f.value("detail", ""),
+                         f.value("fix", "").empty() ? "" : "\n              -> " + f.value("fix", ""));
+        }
+    }
+    return errors ? 1 : 0;
+}
+
 int run_status_(int argc, char* argv[], EventStream& stream,
                 const std::function<void(std::string_view)>& usageError) {
     std::string name;
@@ -3096,6 +3230,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         return run_requests_(sub, argc, argv, stream, usageError);
     if (sub == "config") return run_config_(argc, argv, stream, usageError);
     if (sub == "status") return run_status_(argc, argv, stream, usageError);
+    if (sub == "doctor") return run_doctor_(argc, argv, stream, usageError);
     if (sub == "start") return run_start_(argc, argv, stream, usageError);
     if (sub == "cp") return run_cp_(argc, argv, stream, usageError);
     if (sub == "log") return run_log_(argc, argv, stream, usageError);
