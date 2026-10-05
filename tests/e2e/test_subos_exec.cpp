@@ -112,6 +112,44 @@ XTEST(SubosExec, CpCopiesIntoAndOutOfTheInstancesOwnTreesOnly,
     EXPECT_NE(refused.exit_code, 0);
 }
 
+// What the instance planted in its own tree must not steer the owner's copy
+// (docker's CVE-2018-15664 shape): a link is replaced or copied as a link,
+// never written or read through.
+XTEST(SubosExec, CpNeverFollowsALinkTheInstancePlanted,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SES-CP"},
+      .requires_ = {"linux", "xlings-bin"}, .proves = "isolation") {
+    Box box;
+    const auto tmp = box.home.dir() / "subos" / "box" / "tmp";
+    const auto victim = box.home.root() / "owner-bashrc";
+    const auto victim_dir = box.home.root() / "owner-dir";
+    fs::create_directories(tmp);
+    fs::create_directories(victim_dir);
+    tk::write_file(victim, "owner's own\n");
+    fs::create_symlink(victim, tmp / "link");          // as a process inside would
+    fs::create_symlink(victim_dir, tmp / "dirlink");
+    auto payload = box.home.root() / "payload.txt";
+    tk::write_file(payload, "from the owner\n");
+
+    // In, onto the link: the link is replaced, the owner's file untouched.
+    auto in = box.home.xlings({"subos", "cp", payload.string(), "box:/tmp/link"});
+    EXPECT_EQ(in.exit_code, 0) << in.transcript();
+    EXPECT_EQ(tk::read_file(victim), "owner's own\n");
+    EXPECT_FALSE(fs::is_symlink(tmp / "link"));
+    EXPECT_EQ(tk::read_file(tmp / "link"), "from the owner\n");
+
+    // In, through a linked directory: refused, nothing lands outside.
+    auto through = box.home.xlings({"subos", "cp", payload.string(), "box:/tmp/dirlink/x"});
+    EXPECT_NE(through.exit_code, 0) << through.transcript();
+    EXPECT_FALSE(fs::exists(victim_dir / "x"));
+
+    // Out: a link is copied as a link, not as what it points at.
+    fs::create_symlink(victim, tmp / "secret");
+    const auto got = box.home.root() / "got";
+    auto out = box.home.xlings({"subos", "cp", "box:/tmp/secret", got.string()});
+    EXPECT_EQ(out.exit_code, 0) << out.transcript();
+    EXPECT_TRUE(fs::is_symlink(got)) << "the link's target was read on the owner's behalf";
+}
+
 XTEST(SubosExec, TheInterfaceRunsArgvAndReturnsTheExitCode,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"F16"},
       .requires_ = {"posix", "xlings-bin"}) {

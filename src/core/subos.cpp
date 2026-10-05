@@ -65,6 +65,7 @@ import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
+import xlings.subos.copy;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
@@ -2128,20 +2129,28 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
             .recoverable = false });
         return 1;
     }
-    fs::path from = src ? *mapped : fs::path(paths[0]);
-    fs::path to = src ? fs::path(paths[1]) : *mapped;
-    std::error_code ec;
-    if (!fs::exists(from, ec)) {
-        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = from.string() + ": not found",
-                                .recoverable = false });
-        return 1;
+    // Paths inside are resolved beneath the instance's root and never
+    // through a link it made (xlings.subos.copy).
+    const auto root = Config::subos_dir(resolved.selected);
+    const auto rel = mapped->lexically_relative(root);
+    std::expected<void, std::string> done;
+    if (src) {
+        fs::path to = paths[1];
+        std::error_code ec;
+        if (fs::is_directory(to, ec)) to /= rel.filename();
+        done = subos::copy::out_of(root, rel, to);
+    } else {
+        std::error_code ec;
+        if (!fs::exists(fs::symlink_status(paths[0], ec))) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::NotFound, .message = paths[0] + ": not found",
+                                    .recoverable = false });
+            return 1;
+        }
+        done = subos::copy::into(paths[0], root, rel);
     }
-    if (fs::is_directory(to, ec) && !fs::is_directory(from, ec)) to /= from.filename();
-    if (to.has_parent_path()) fs::create_directories(to.parent_path(), ec);
-    fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-    if (ec) {
+    if (!done) {
         stream.emit(ErrorEvent{ .code = ErrorCode::Internal,
-            .message = "copy failed: " + ec.message(), .recoverable = false });
+            .message = "copy failed: " + done.error(), .recoverable = false });
         return 1;
     }
     observe::append(home_view().logs_dir(resolved.selected) / "events.ndjson", observe::Event{
