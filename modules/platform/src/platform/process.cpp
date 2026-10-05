@@ -26,6 +26,8 @@ module;
 #endif
 #elif defined(_WIN32)
 #include <io.h>
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 module xlings.platform;
@@ -442,7 +444,27 @@ int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::mil
 }
 UserIds user_ids() { return {}; }
 bool stdout_is_terminal() { return ::_isatty(1) != 0; }
-std::map<std::string, std::string> environment() { return {}; }
+std::map<std::string, std::string> environment() {
+    std::map<std::string, std::string> env;
+    wchar_t* block = ::GetEnvironmentStringsW();
+    auto utf8 = [](std::wstring_view w) {
+        if (w.empty()) return std::string{};
+        const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
+                                            nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<std::size_t>(n), '\0');
+        ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n,
+                              nullptr, nullptr);
+        return out;
+    };
+    for (const wchar_t* p = block; p && *p; p += std::wcslen(p) + 1) {
+        std::wstring_view kv(p);
+        const auto eq = kv.find(L'=', 1);   // "=C:=C:\" entries start with '='
+        if (eq == std::wstring_view::npos) continue;
+        env[utf8(kv.substr(0, eq))] = utf8(kv.substr(eq + 1));
+    }
+    if (block) ::FreeEnvironmentStringsW(block);
+    return env;
+}
 void unset_env_variable(const std::string& name) { set_env_variable(name, ""); }
 bool set_inheritable(int, bool) { return false; }
 std::optional<std::array<int, 2>> make_pipe(bool) { return std::nullopt; }
