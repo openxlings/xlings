@@ -141,7 +141,7 @@ Ubuntu 24.04 默认限制非特权 user namespace（AppArmor）。`xlings self d
 
 bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）对宿主存在的 NVIDIA 节点、`/dev/dri` 做
 `--dev-bind`，并只读绑定 `/sys`（libcuda / nvml 枚举 PCI 设备需要）。proot 下 `/dev`、`/sys` 原样透传，
-`--gpu` 不改变什么。实现：`modules/subos/src/subos/gpu.cppm`。
+`--gpu` 不改变什么。实现：`modules/subos/src/gpu.cppm`。
 
 ## 尚未实现
 
@@ -154,3 +154,13 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 | 通过 broker 安装时的 hook 沙箱 | hook 在宿主侧按 owner 权限运行 |
 | 加入会话的交互 shell 的作业控制 | 加入时提示：作业控制留在第一个 shell |
 | interface 的 `subos_exec` 实时流式输出 | 结束后返回输出与退出码 |
+
+## 代码在哪里
+
+| 位置 | 内容 |
+|---|---|
+| `modules/subos/src/` | SubOS 核心：`model`、`policy` / `policy_store`、`spec`（策略 + 主机能力 → 沙箱描述）、`provider`（bwrap / proot 参数）、`caps` / `gates`（能力探测与平台矩阵）、`session`（supervisor 与 session-init）、`broker`、`manifest`、`userdata` |
+| `modules/platform/src/platform/` | 所有系统调用：`process`（进程、信号、带描述符的本地 socket）、`isolation`（namespace、Landlock、seccomp、beneath 拷贝）以及各操作系统的实现 |
+| `modules/runtime/src/` | `guard`（删除前的确认令牌）、`observe`（审计日志、脱敏） |
+| `src/core/subos.cpp` 与 `src/core/subos/` | `xlings subos` 命令：生命周期；`run.cpp`（exec / start / cp）；`configure.cpp`（config / status / doctor）；`audit.cpp`（requests / report / ps / log）；`sandbox.cpp`（把策略和主机能力接到会话上） |
+| `tests/requirements.toml` | 每一项行为的需求 ID；`tests/unit`、`tests/e2e` 中的测试用 `covers` 认领 |
