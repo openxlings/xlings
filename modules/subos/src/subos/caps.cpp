@@ -59,12 +59,19 @@ std::string read_line(const char* path) {
 }
 
 // What a probe result depends on: this boot of this kernel (a sysctl or an
-// AppArmor profile can change, a reboot resets both), and the binary itself.
+// AppArmor profile can change, a reboot resets both), and the binary itself
+// -- its bytes, and its owner and mode: dropping a setuid bit or handing the
+// file to root changes what it can do and not its mtime.
 std::string cache_key(const Backend& b) {
     std::error_code ec;
     auto size = fs::file_size(b.bin, ec);
     auto mtime = fs::last_write_time(b.bin, ec).time_since_epoch().count();
-    return std::format("{}|{}|{}|{}|{}|{}", b.bin.string(), size, mtime,
+    unsigned mode = 0, uid = 0;
+#if defined(__linux__)
+    struct stat st{};
+    if (::stat(b.bin.c_str(), &st) == 0) { mode = st.st_mode; uid = st.st_uid; }
+#endif
+    return std::format("{}|{}|{}|{:o}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
                        read_line("/proc/sys/kernel/osrelease"),
                        read_line("/proc/sys/kernel/random/boot_id"),
                        read_line("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"));

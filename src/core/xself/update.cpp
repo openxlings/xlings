@@ -11,6 +11,8 @@ import xlings.platform;
 
 namespace xlings::xself {
 
+namespace fs = std::filesystem;
+
 bool update_landed_on_index_build(std::string_view activeVersion) {
     // Empty is NOT a failure: it means nothing recorded an active version,
     // which is a different defect and one this command must not claim to have
@@ -39,9 +41,17 @@ int cmd_update(bool user) {
         const auto entry = home::describe_entry(platform::get_executable_path(),
                                                 Config::paths().homeDir);
         if (entry.system) {
-            log::error("{} belongs to a system package; update it with the system's "
-                       "package manager (e.g. `sudo pacman -Syu xlings`)",
-                       entry.path.string());
+            // The command for the package manager this host has.
+            std::string how = "the system's package manager";
+            std::error_code ec;
+            for (auto [bin, cmd] : {std::pair{"/usr/bin/pacman", "sudo pacman -Syu xlings"},
+                                    std::pair{"/usr/bin/apt-get", "sudo apt-get install --only-upgrade xlings"},
+                                    std::pair{"/usr/bin/dnf", "sudo dnf upgrade xlings"},
+                                    std::pair{"/usr/bin/zypper", "sudo zypper update xlings"},
+                                    std::pair{"/sbin/apk", "sudo apk upgrade xlings"}}) {
+                if (fs::exists(bin, ec)) { how = std::format("`{}`", cmd); break; }
+            }
+            log::error("{} belongs to a system package; update it with {}", entry.path.string(), how);
             log::error("  or install a user-level xlings into {} that updates itself: "
                        "`xlings self update --user`", Config::paths().homeDir.string());
             return 1;

@@ -27,6 +27,12 @@ X() { ( cd /tmp && "$BIN" "$@" ); }
 X self init >/dev/null
 X install -y bwrap >/dev/null
 X subos new box >/dev/null
+# The recipe makes its bwrap setuid when sudo answers without a password --
+# true on a CI runner, not on a user's machine. Leave it as a user has it.
+payload="$(find "$XLINGS_HOME/data/xpkgs/xim-x-bwrap" -path '*/bin/bwrap' -type f | head -1)"
+[[ -n "$payload" ]] || fail "no payload bwrap"
+sudo chown "$(id -u):$(id -g)" "$payload"
+chmod 0755 "$payload"
 
 log "1. before: the doctor reports the restriction and no usable bwrap"
 set +e
