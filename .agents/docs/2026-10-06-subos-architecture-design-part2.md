@@ -622,3 +622,28 @@ xlings-res：bash、coreutils；glibc sysconfdir revision（C34）；内核（�
 
 能编译；已有测试全部通过；本 checkpoint 的需求 ID 有测试覆盖（`tests/requirements.toml`，不允许未覆盖）；
 文档同步（使用指南、隔离模型、命令参考自动生成）；CI 全绿后再进入下一个依赖它的 checkpoint。
+
+---
+
+## 19. 实施记录（2026-10-06，PR #641；xim-pkgindex #929）
+
+| checkpoint | 落地 | 与设计的差别 |
+|---|---|---|
+| C28 S | 首个写命令 / `self init` / `doctor --fix` 把 home 的 entry 链到系统本体并铺好 home；shim 的属主按"自身位置、逐跳"找 | — |
+| C29 AUR | PKGBUILD 只装 `/usr/bin/xlings`，去掉以 root 跑 `self uninstall` 的 remove hook；`arch-package` 每个 PR 用本次构建打包、两个用户使用 | — |
+| C30 / C30a | 两种布局（multi `/xlings`、single 构建者 home 的路径）；缺 patchelf 先装 `xim:patchelf`，仍没有则失败；纯词的 alias 不经 shell | **不另做 `--domain` 的 bwrap 构建器**：multi 布局在 `/xlings` 里构建（CI 用 sudo），single 用当前 home；装包始终在 home 的逻辑路径上进行，DOM-BUILD-INSIDE 由此成立 |
+| C31 | `roles`：kind × role → 一张表；remove / config / cp / boot / export / rollback 都问它 | — |
+| C32 / C33 | `rootfs`：投影规则、代、rename 切换、回滚、prune、merged-usr、factory `/etc`、sysusers | 冲突只在两个目标不是同一个文件时记录 |
+| C34 库搜索 | 外来程序经 `/lib64` = 根的 `/usr/lib`（实测，无需改 glibc） | **根自己的 ld.so.cache 推迟**（ROOT-LDCACHE）：需要 glibc 新 revision；`/lib64 = /usr/lib` 已覆盖它的用途 |
+| C35 | rootfs 实例：树为 `/`、uid 0、home 只读、实例同时是嵌套根的 `default`；里面的安装经 broker、即时出现在 `/usr` | store 在实例里整体只读可见（与 Part 1 一致），闭包级绑定未做 |
+| C36 M | `sudo xlings install --system`；profile v13 把系统层放在用户自己之后、宿主之前 | 解析经 PATH（不复制），不把系统层条目写进用户的版本库 |
+| C37 导出 | `--rootfs` / `--tar` / `--disk`（`--tar` 即 docker / podman / `wsl --import` 的输入）；`diff`、`pack` | `--oci`、`--wsl` 合并为 `--tar` |
+| C38 R | `self update` 在 R 下是新一代（entry 保持为 stage-0），可回滚 | — |
+| C39 启动 | stage-0、`boot.json`（once、计数、fallback、mark-good）、起不来的试启动被消耗 | — |
+| C40 Luban | `subos:luban-tiny / core / desktop`（模板由 install() 写出，`from` 链合并，上层优先）；bash 5.2.37、coreutils 9.5（xlings glibc 构建）、linux-kernel 6.8.0-71（Ubuntu 预编译重新打包）；busybox applet 链接、perl shebang、binutils ld 包装脚本修复 | 根里编译的程序默认不在 `/usr/lib` 找库（gcc specs 用 payload loader），需要 `-Wl,-rpath,/usr/lib` |
+| C41 CI | `distro` 车道（bwrap + docker + qemu/kvm + sudo）：rootfs_instance、rootfs_image、rootfs_boot；`isolation-fix` 加 system_layer；`wsl-import`（WSL1，报告不阻塞） | 场景脚本用 `# xtest:` 头进入需求覆盖图 |
+| C42 | `subos boot <n> --now`：busybox init 的 `::restart:` 重新执行 stage-0，不重启内核 | — |
+
+本地实测（CI 之外）：luban-tiny 从导出的 ext4 镜像由 Ubuntu 6.8 内核启动三次——跳过没有 init 的试启动、试启动一次、
+`--now` 切回、未确认的试启动不成为默认；bwrap 实例与启动后的机器 `/usr` 树哈希一致；luban-core 里 144 个形态 X
+可执行文件的闭包在空根里完整；luban-desktop 里编译的 GL 程序用 llvmpipe 离屏渲染出期望的像素。
