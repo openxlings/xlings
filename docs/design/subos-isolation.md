@@ -173,6 +173,7 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 | `net=proxy` | 拒绝（fail closed）；需要沙箱内转发器和 supervisor 桥接 |
 | 根自己的 `/etc/ld.so.cache` | loader 从它 payload 的 `etc/` 读 cache；让它跟随调用路径需要 glibc 新 revision（xlings-res）。`/lib64 = /usr/lib` 已覆盖 cache 的用途 |
 | 在 macOS / Windows 上呈现根 | 返回 unavailable；Windows 用 `subos export --tar` + `wsl --import` |
+| 根里编译的程序默认在 `/usr/lib` 找库 | gcc 的 specs 用的是 payload 的 loader，它的默认目录是 payload 的而不是根的 `/usr/lib`；只在 `/usr/lib` 的库需要 `-Wl,-rpath,/usr/lib`（luban-desktop 的场景就是这样做的）。根里的 gcc 改用 `/lib64` 的 loader 需要 gcc recipe 支持按作用域的 specs |
 | 通过 broker 安装时的 hook 沙箱 | hook 在宿主侧按 owner 权限运行 |
 | 加入会话的交互 shell 的作业控制 | 加入时提示：作业控制留在第一个 shell |
 | interface 的 `subos_exec` 实时流式输出 | 结束后返回输出与退出码 |

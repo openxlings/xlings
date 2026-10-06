@@ -555,8 +555,8 @@ text = "luban-core: compiles and runs a program inside"
 status = "required"
 
 [LUBAN-DESKTOP-RENDER]
-text = "luban-desktop renders a frame offscreen in a container"
-status = "planned"
+text = "luban-desktop: a GL program compiled inside renders a frame offscreen, every GL object from the payloads"
+status = "required"
 
 [LUBAN-FROM-CHAIN]
 text = "an xpkg's from chain merges workspaces, the upper one winning"

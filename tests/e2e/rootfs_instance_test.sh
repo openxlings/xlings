@@ -15,9 +15,11 @@
 #      and the gcc shim (an alias) runs with no /bin/sh at all;
 #   7. what is searched (interpreters, run paths, shebangs) names only this
 #      home -- no build machine;
-#   8. fetch = layer: a root's own scope; a view refuses it.
+#   8. fetch = layer: a root's own scope; a view refuses it;
+#   9. luban-desktop, `from` core: a GL program compiled inside renders a
+#      frame offscreen (llvmpipe), every GL object from the payloads.
 #
-# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY requires=linux,bwrap,network
+# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY,LUBAN-DESKTOP-RENDER requires=linux,bwrap,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -155,5 +157,17 @@ X subos new aview >/dev/null 2>&1 || fail "subos new aview"
 X subos config aview --fetch layer >/dev/null 2>&1 || fail "subos config --fetch layer"
 out="$(X subos exec aview -- true 2>&1)" && fail "a view with fetch=layer was entered"
 grep -q "system scope" <<<"$out" || fail "no reason given: $out"
+
+log "9. luban-desktop renders offscreen"
+rootfs_new desk subos:luban-desktop "$RUNTIME_DIR/new-desk.log" || fail "subos new --from subos:luban-desktop"
+cp "$ROOT_DIR/tests/e2e/fixtures/glprobe.c" "$H/subos/desk/rootfs/root/glprobe.c"
+# -rpath /usr/lib: a program built in a root links the payload loader (gcc's
+# specs), whose default directory is the payload's, not the root's /usr/lib.
+out="$(X subos exec desk -- /bin/sh -c 'cd /root && gcc glprobe.c -o glprobe -lEGL -lGL -Wl,-rpath,/usr/lib && ./glprobe' 2>&1)" \
+  || fail "desktop: $out"
+grep -q '^RESULT=ok' <<<"$out" || fail "desktop: no frame rendered: $out"
+grep -q '^PIXEL=336699' <<<"$out" || fail "desktop: the pixel is not the one asked for: $out"
+foreign="$(grep '^LOADED=' <<<"$out" | grep -v "^LOADED=$H/" || true)"
+[[ -z "$foreign" ]] || fail "desktop: GL objects from outside the home: $foreign"
 
 log "PASS: roots are made, entered, changed from inside and rolled back"
