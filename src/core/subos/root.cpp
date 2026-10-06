@@ -29,7 +29,7 @@ nlohmann::json read_json(const fs::path& p) {
 std::optional<fs::path> payload_root(const fs::path& p) {
     fs::path root;
     int after = -1;
-    for (auto& part : p) {
+    for (const auto& part : p) {
         root /= part;
         if (after >= 0 && ++after == 2) return root;
         if (after < 0 && part == "xpkgs") after = 0;

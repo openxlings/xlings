@@ -163,7 +163,7 @@ std::optional<std::filesystem::path> inside_to_root(const std::filesystem::path&
     else if (p.empty() || p.front() != '/') p = "/root/" + p;
     const auto norm = fs::path(p).lexically_normal();
     if (norm == "/" ) return std::nullopt;
-    for (auto& part : norm) if (part == "..") return std::nullopt;
+    for (const auto& part : norm) if (part == "..") return std::nullopt;
     const auto first = (++norm.begin())->string();
     for (std::string_view provided : {"usr", "bin", "sbin", "lib", "lib64", "proc", "sys", "dev", "run"})
         if (first == provided) return std::nullopt;
