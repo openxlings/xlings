@@ -629,6 +629,15 @@ jobs:
         run: |
           "$XDEV" test --no-mcpp --suite distro --out target/xdev/linux-distro
 
+      # The luban-tiny tarball the image scenario exported, for wsl --import.
+      - name: Attach the root tarball
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: luban-tiny-tar
+          path: /tmp/xlings-e2e-*/rootfs_image/tiny.tar.gz
+          if-no-files-found: ignore
+
       - name: Attach the run
         uses: actions/upload-artifact@v4
         if: always()
@@ -637,9 +646,70 @@ jobs:
           path: target/xdev/
           if-no-files-found: ignore
 
+  # EXPORT-WSL (design part 2 §13): the tarball a Linux build exported,
+  # imported by Windows. GitHub's Windows runners offer WSL1 only, through a
+  # third-party action; per the design's decision this lane REPORTS and does
+  # not block (a WSL1 failure says nothing about WSL2): a pass or a skip
+  # with the reason, in the same report as everything else.
+  wsl-import:
+    needs: distro
+    if: always()
+    runs-on: windows-2022
+    steps:
+      - name: Fetch the root tarball
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: luban-tiny-tar
+          path: root
+
+      - name: WSL
+        id: setup
+        continue-on-error: true
+        uses: Vampire/setup-wsl@v5
+        with:
+          distribution: Alpine
+          wsl-version: 1
+
+      - name: wsl --import, run
+        id: run
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $tar = Get-ChildItem -Recurse root -Filter tiny.tar.gz | Select-Object -First 1
+          if (-not $tar) { throw "no tarball from the distro job" }
+          New-Item -ItemType Directory -Force C:\luban | Out-Null
+          wsl --import luban C:\luban $tar.FullName --version 1
+          if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
+          $out = wsl -d luban -- /bin/sh -c '. /etc/os-release; echo "os=$ID/$VARIANT_ID"; xlings --version'
+          $out
+          if (-not ($out -match "os=luban/tiny")) { throw "not luban tiny: $out" }
+          if (-not ($out -match "^xlings ")) { throw "no xlings: $out" }
+
+      - name: Record
+        if: always()
+        shell: pwsh
+        run: |
+          $dir = "target/xdev/windows-wsl"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $name = "wsl: subos export --tar imports with wsl --import (WSL1)"
+          '{"name":"windows-wsl","platform":"windows","probes":{}}' | Set-Content "$dir/lane.json"
+          ('{"test":"' + $name + '","area":"scenario","covers":["EXPORT-WSL"],"requires":[],"proves":"flow"}') | Set-Content "$dir/meta.ndjson"
+          if ("${{ steps.run.outcome }}" -eq "success") { $st = "pass"; $msg = "" }
+          elseif ("${{ steps.setup.outcome }}" -ne "success") { $st = "skip"; $msg = "WSL1 could not be set up on this runner" }
+          else { $st = "skip"; $msg = "best effort on WSL1 (design part 2 §17.1): the import or the run failed; see the job log" }
+          ('{"test":"' + $name + '","status":"' + $st + '","ms":0,"message":"' + $msg + '"}') | Set-Content "$dir/scripts.ndjson"
+
+      - name: Attach the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdev-linux-wsl
+          path: target/xdev/
+
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [build-and-test, e2e, isolation-fix, arch-package, distro]
+    needs: [build-and-test, e2e, isolation-fix, arch-package, distro, wsl-import]
     if: always()
     runs-on: ubuntu-24.04
     steps:

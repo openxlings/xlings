@@ -947,6 +947,19 @@ RepointSummary repoint_stale_shims(const fs::path& home) {
 bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
                           std::string_view coordinate,
                           std::string_view toVersion) {
+    // The system home of a machine whose root is a SubOS (deployment R,
+    // part 2 §5): its /usr/bin/xlings is a link of the current generation
+    // into this payload, so the version that runs moves with the generation
+    // and a rollback brings the previous one back. The entry is stage-0's
+    // and stays the build the machine booted with.
+    {
+        const auto home = entry.parent_path().parent_path();
+        if (subos_root::running_host(home)) {
+            log::info("xlings {}: /usr/bin/xlings follows the root's generation; the entry "
+                      "({}) stays as stage-0", toVersion, Config::display_path(entry));
+            return true;
+        }
+    }
     if (!entry_binary::replace_with(payloadBinary, entry, coordinate,
                                     toVersion)) {
         return false;

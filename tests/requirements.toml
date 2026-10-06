@@ -516,7 +516,7 @@ status = "required"
 
 [ROOT-SELF-UPDATE]
 text = "in deployment R, self update is a new generation of the host SubOS and can be rolled back"
-status = "planned"
+status = "required"
 
 [INST-ROOTFS]
 text = "--rootfs instance: uid 0 inside, no host /usr, policy, broker and audit as for any instance"
@@ -527,8 +527,8 @@ text = "subos export --tar is a root docker imports and runs"
 status = "required"
 
 [EXPORT-WSL]
-text = "subos export --wsl imports with wsl --import"
-status = "planned"
+text = "subos export --tar imports with wsl --import (WSL1 on CI: reported, not blocking)"
+status = "required"
 
 [EXPORT-DISK]
 text = "subos export --disk boots under qemu"

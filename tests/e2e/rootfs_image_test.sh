@@ -14,9 +14,11 @@
 #   5. no patchelf and no way to get one: an install fails and says why,
 #      instead of reporting a payload it could not relocate as installed;
 #   6. both layouts: single (the builder's home path) and multi (/xlings,
-#      built with sudo), each recorded in the image and running.
+#      built with sudo), each recorded in the image and running;
+#   7. self update in deployment R is a new generation: /usr/bin/xlings
+#      becomes the published payload, and a rollback brings the previous back.
 #
-# xtest: covers=EXPORT-OCI,DOM-BOOTSTRAP,ROOT-LIBSEARCH,ROOT-SURVIVES-GLIBC,DOM-ELFPATCH-FAILCLOSED,DOM-LAYOUTS,DOM-BUILD-INSIDE requires=linux,docker,sudo,network
+# xtest: covers=EXPORT-OCI,DOM-BOOTSTRAP,ROOT-LIBSEARCH,ROOT-SURVIVES-GLIBC,DOM-ELFPATCH-FAILCLOSED,DOM-LAYOUTS,DOM-BUILD-INSIDE,ROOT-SELF-UPDATE requires=linux,docker,sudo,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -90,5 +92,18 @@ grep -q '"root_layout": "single"' "$H/.xlings-home" 2>/dev/null && fail "the bui
 marker="$(tar -xzOf "$RUNTIME_DIR/tiny.tar.gz" ".${H}/.xlings-home" 2>/dev/null || true)"
 grep -q '"root_layout": "single"' <<<"$marker" || fail "single: the first image is not marked single"
 sudo -n rm -rf /xlings
+
+log "7. self update is a generation"
+out="$(D "$IMG" /bin/sh -c '
+    before=$(readlink -f /usr/bin/xlings)
+    xlings self update >/tmp/u.log 2>&1 || { tail -5 /tmp/u.log; }
+    after=$(readlink -f /usr/bin/xlings)
+    echo "before=$before"; echo "after=$after"
+    xlings subos rollback default >/dev/null 2>&1
+    echo "rolled=$(readlink -f /usr/bin/xlings)"' 2>&1)" || true
+before="$(sed -n 's/^before=//p' <<<"$out")"; after="$(sed -n 's/^after=//p' <<<"$out")"
+rolled="$(sed -n 's/^rolled=//p' <<<"$out")"
+[[ "$after" == *"/data/xpkgs/xim-x-xlings/"* ]] || fail "self update did not make /usr/bin/xlings the payload: $out"
+[[ "$rolled" == "$before" ]] || fail "rollback did not bring the previous xlings back: $out"
 
 log "PASS: an exported root is a machine whose only package manager is xlings"
