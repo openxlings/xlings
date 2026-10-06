@@ -453,6 +453,22 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
 
     auto platform = detect_platform();
     std::vector<std::string> targetVec(targets.begin(), targets.end());
+    // A payload linked against the xlings glibc is relocated with patchelf at
+    // install (elfpatch). A host without one -- a fresh root, a minimal
+    // container -- used to get every such payload installed UNPATCHED and
+    // reported as installed (design part 2 §2.4 G1b). The static upstream
+    // build comes first instead.
+    if constexpr (platform::is_linux) {
+        const bool asked = std::ranges::any_of(targetVec, [](const std::string& t) {
+            return t == "patchelf" || t.ends_with(":patchelf") || t.starts_with("patchelf@")
+                || t.find(":patchelf@") != std::string::npos;
+        });
+        if (!dryRun && !asked && !targetVec.empty() && !patchelf_reachable()) {
+            log::info("payloads are relocated with patchelf and this host has none: "
+                      "installing xim:patchelf first");
+            targetVec.insert(targetVec.begin(), "xim:patchelf");
+        }
+    }
     std::vector<PackageMatch> requestedMatches;
     // C2 (#366 UX): allow at most one on-demand index refresh per install call.
     bool refreshedForMissing = false;

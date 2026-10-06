@@ -1184,6 +1184,31 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
 
         platform::set_env_variable("XLINGS_SHIM_DEPTH", std::to_string(depth + 1));
 
+        // An alias that is plain words naming this payload's own program
+        // (gcc's `gcc --sysroot=<dir>`) runs directly: no /bin/sh between
+        // the shim and the compiler, so it dispatches in a root that has no
+        // shell (design part 2 §2.4 G2, SHIM-NO-SHELL). Anything the shell
+        // would interpret -- a variable, a quote, a pipe -- still goes
+        // through it, as before.
+        if constexpr (platform::is_posix) {
+            if (alias_cmd.find_first_of("$`'\"\\|;&<>()*?[]{}~#\n") == std::string::npos) {
+                std::vector<std::string> words;
+                std::istringstream in(alias_cmd);
+                for (std::string w; in >> w;) words.push_back(w);
+                if (!words.empty()) {
+                    auto exe = resolve_executable(words.front(), vdata->path, xlings_home);
+                    if (!exe.empty()) {
+                        std::vector<std::string> args{exe.string()};
+                        args.insert(args.end(), words.begin() + 1, words.end());
+                        for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+                        (void)platform::exec_program(args, platform::environment());
+                        log::error("xlings: failed to exec '{}'", exe.string());
+                        return 127;
+                    }
+                }
+            }
+        }
+
         // Build command: resolved alias + original args, run via platform::exec
         std::string cmd = alias_cmd;
         for (int i = 1; i < argc; ++i) {

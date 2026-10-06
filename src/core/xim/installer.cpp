@@ -3640,6 +3640,19 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
                 platform::set_env_variable("PATH",
                     binDir + std::string(1, platform::PATH_SEPARATOR) + curPath);
             }
+            // Fail closed (part 2 §2.4 G1b): a payload that needs relocating
+            // and no patchelf to do it is not installed, whatever elfpatch
+            // would have said about skipping.
+            if (!ctx.resolved_deps.empty() && !xim::patchelf_reachable()
+                && std::ranges::any_of(ctx.resolved_deps, [](const auto& kv) {
+                       return kv.first.find("glibc") != std::string::npos; })) {
+                const std::string why = "it links the xlings glibc and must be relocated with "
+                                        "patchelf, which this host does not have (xlings install "
+                                        "xim:patchelf)";
+                write_payload_failure_marker(ctx.install_dir, node.version, why);
+                if (onStatus) onStatus({ node.name, InstallPhase::Failed, 0.0f, why });
+                continue;
+            }
             auto epResult = executor.apply_elfpatch_auto();
             if (epResult.success && !epResult.output.empty()) {
                 log::debug("{}: elfpatch auto: {}", node.name, epResult.output);
@@ -4440,3 +4453,24 @@ std::string Installer::detect_platform_() {
 }
 
 } // namespace xlings::xim
+
+namespace xlings::xim {
+
+bool patchelf_reachable() {
+    namespace fs = std::filesystem;
+    if constexpr (!platform::is_linux) return true;
+    std::error_code ec;
+    if (fs::exists(Config::paths().binDir / "patchelf", ec)) return true;
+    const char* path = std::getenv("PATH");
+    std::string_view rest = path ? path : "";
+    while (!rest.empty()) {
+        const auto c = rest.find(platform::PATH_SEPARATOR);
+        const auto dir = rest.substr(0, c);
+        if (!dir.empty() && fs::exists(fs::path(std::string(dir)) / "patchelf", ec)) return true;
+        if (c == std::string_view::npos) break;
+        rest.remove_prefix(c + 1);
+    }
+    return false;
+}
+
+}  // namespace xlings::xim

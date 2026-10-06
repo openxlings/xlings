@@ -37,6 +37,10 @@ import xlings.runtime.cancellation;
 
 export namespace xlings::xim {
 
+// Whether elfpatch has a patchelf to run: the scope's bin/ or PATH. Always
+// true off Linux, where nothing is patched.
+bool patchelf_reachable();
+
 enum class XpkgRegistrationErrorKind {
     InvalidVersion,
     InvalidBinding,
