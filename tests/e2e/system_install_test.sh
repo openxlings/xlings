@@ -6,7 +6,11 @@
 #   1. `self update` leaves a system package's binary to its package manager:
 #      it says so, names the alternative, and downloads nothing;
 #   2. `self update --user` is the explicit ask and is not refused;
-#   3. `self doctor` says which binary is answering.
+#   3. `self doctor` says which binary is answering;
+#   4. a home that has never been laid out is told it has no entry, and the
+#      first install links it to the system binary, so what it installs runs.
+#
+# xtest: covers=HOME-SYSTEM-MODE,DEPLOY-S-ENTRY requires=sudo,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
@@ -46,4 +50,21 @@ set -e
 log "3. self doctor names the entry"
 out="$(X self doctor 2>&1 || true)"
 grep -q "entry: $SYS_DIR/xlings (a system package's" <<<"$out" || fail "the doctor did not name the entry"
+log "4. a fresh home links its entry to the system binary"
+FRESH="$RUNTIME_DIR/fresh"
+mkdir -p "$FRESH"
+echo '{"mirror":"GLOBAL"}' > "$FRESH/.xlings.json"
+F() { ( cd /tmp && XLINGS_HOME="$FRESH" "$SYS_DIR/xlings" "$@" ); }
+out="$(F self doctor 2>&1 || true)"
+grep -q "this home has no entry" <<<"$out" || fail "doctor did not say the home has no entry"
+[[ ! -e "$FRESH/bin/xlings" ]] || fail "a read-only doctor created the entry"
+F install -y xz >/dev/null 2>&1 || fail "install into a fresh home failed"
+[[ "$(readlink "$FRESH/bin/xlings")" == "$SYS_DIR/xlings" ]] \
+  || fail "the entry is not a link to the system binary: $(ls -l "$FRESH/bin/xlings" 2>&1)"
+[[ -x "$FRESH/subos/default/bin/xz" ]] || fail "no shim for what was installed"
+"$FRESH/subos/default/bin/xz" --version | grep -q "xz (XZ Utils)" \
+  || fail "the installed xz does not run through its shim"
+out="$( (cd /tmp && XLINGS_HOME="$FRESH" "$FRESH/bin/xlings" self update) 2>&1 || true)"
+grep -q 'belongs to a system package' <<<"$out" || fail "self update through the link did not refuse"
+
 log "PASS: a system package's xlings is updated by the system"

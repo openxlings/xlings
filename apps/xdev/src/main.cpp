@@ -112,6 +112,49 @@ struct TestArgs {
     std::vector<std::string> mcpp_args;
 };
 
+// A script states what it covers and what it needs in one header line, the
+// way an XTEST does in its metadata:
+//
+//   # xtest: covers=ID,ID requires=sudo,docker proves=isolation
+//
+// System scenarios (a root-owned entry, a container, a booted kernel) run
+// against the release artifact on lanes that have those capabilities, where
+// the C++ test binaries -- dev builds against this runner's mcpp registry --
+// cannot travel. The header makes them part of the same requirement map and
+// the same capability rule: missing on a lane that declares it fails, missing
+// elsewhere skips.
+std::optional<tk::Meta> script_meta(const std::string& command, const fs::path& root) {
+    std::istringstream words(command);
+    for (std::string w; words >> w;) {
+        if (!(w.ends_with(".sh") || w.ends_with(".py"))) continue;
+        std::ifstream in(root / w);
+        if (!in) continue;
+        std::string line;
+        for (int n = 0; n < 40 && std::getline(in, line); ++n) {
+            constexpr std::string_view tag = "# xtest:";
+            if (!line.starts_with(tag)) continue;
+            tk::Meta m;
+            m.area = "scenario";
+            std::istringstream kv(line.substr(tag.size()));
+            for (std::string pair; kv >> pair;) {
+                auto eq = pair.find('=');
+                if (eq == std::string::npos) continue;
+                auto key = pair.substr(0, eq);
+                std::vector<std::string> values;
+                std::istringstream vs(pair.substr(eq + 1));
+                for (std::string v; std::getline(vs, v, ',');)
+                    if (!v.empty()) values.push_back(v);
+                if (key == "covers") m.covers = values;
+                else if (key == "requires") m.requires_ = values;
+                else if (key == "proves" && !values.empty()) m.proves = values.front();
+            }
+            return m;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
     if (a.suites.empty()) return 0;
     auto doc = toml::parse_file(root / "tests" / "suites.toml");
@@ -155,12 +198,27 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
             replace_all("{xlings}", bin);
             replace_all("{tarball}", a.tarball);
             auto log = out / "logs" / std::format("{}-{:02}.log", suite, index++);
+            const auto name = suite + ": " + templ;
+            if (auto m = script_meta(templ, root)) {
+                append_ndjson(out / "meta.ndjson",
+                              json{{"test", name}, {"area", m->area}, {"covers", m->covers},
+                                   {"requires", m->requires_}, {"proves", m->proves}});
+                if (auto v = tk::check_requirements(*m)) {
+                    std::println("xdev: [{}] {} -- {}: {}", suite, templ,
+                                 v->fail ? "FAIL" : "skip", v->reason);
+                    if (v->fail) ++failed;
+                    append_ndjson(out / "scripts.ndjson",
+                                  json{{"test", name}, {"status", v->fail ? "fail" : "skip"},
+                                       {"ms", 0}, {"message", v->reason}});
+                    continue;
+                }
+            }
             std::println("xdev: [{}] {}", suite, command);
             const auto started = std::chrono::steady_clock::now();
             int rc = shell(command, log);
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - started).count();
-            json r{{"test", suite + ": " + templ}, {"status", rc == 0 ? "pass" : "fail"},
+            json r{{"test", name}, {"status", rc == 0 ? "pass" : "fail"},
                    {"ms", ms}, {"exit_code", rc}, {"log", log.string()}};
             if (rc != 0) {
                 ++failed;

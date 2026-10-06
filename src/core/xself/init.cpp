@@ -65,6 +65,26 @@ fs::path xlings_binary_in_home(const fs::path& home_dir) {
     return {};
 }
 
+bool ensure_system_entry_link(const fs::path& home_dir) {
+    if (home_dir.empty()) return false;
+    if (!xlings_binary_in_home(home_dir).empty()) return true;
+    if constexpr (!platform::is_posix) return false;
+    const auto exe = platform::get_executable_path();
+    if (!home::describe_entry(exe, home_dir).system) return false;
+    std::error_code ec;
+    const auto link = home_dir / "bin" / "xlings";
+    fs::create_directories(link.parent_path(), ec);
+    fs::create_symlink(exe, link, ec);
+    if (ec) {
+        log::debug("[xlings:self]: cannot link {} to {}: {}", link.string(), exe.string(),
+                   ec.message());
+        return false;
+    }
+    log::info("this home's xlings is the system's: {} -> {}", Config::display_path(link),
+              exe.string());
+    return true;
+}
+
 LinkResult create_shim(const fs::path& source, const fs::path& target) {
     std::error_code ec;
 
@@ -490,6 +510,7 @@ bool ensure_home_layout(const fs::path& home_dir) {
 
     ensure_home_config_defaults_(home_dir);
 
+    ensure_system_entry_link(home_dir);
     auto xlings_bin = xlings_binary_in_home(home_dir);
     if (!xlings_bin.empty()) {
         // A home whose shims could not be written is not a laid-out home. It
@@ -648,6 +669,17 @@ xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 
 ShimSyncSummary sync_shim_tables() {
     ShimSyncSummary summary;
+    // The first write command of a home whose xlings is a system package's:
+    // the package manager installed a binary, not a home, and no `self init`
+    // ever ran for it. Lay the home out now (that rebuilds this table too),
+    // and read the state it wrote -- the workspace this command loaded at
+    // startup did not exist yet, so it is "not observed", and the table
+    // would refuse to rebuild from it.
+    if (const auto home = Config::paths().homeDir;
+        xlings_binary_in_home(home).empty() && ensure_system_entry_link(home)) {
+        ensure_home_layout(home);
+        Config::reload_state();
+    }
     auto entry = xlings_binary_in_home(Config::paths().homeDir);
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {

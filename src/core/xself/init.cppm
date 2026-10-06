@@ -37,6 +37,14 @@ export enum class LinkResult { Symlink, Hardlink, Copy, Failed };
 export bool is_builtin_shim(std::string_view name);
 export bool is_bootstrap_home_root(const fs::path& root);
 export fs::path xlings_binary_in_home(const fs::path& home_dir);
+// Deployment S (design part 2 §5): the running binary is a system package's
+// and `home_dir` has no entry of its own. Every shim links to
+// `<home>/bin/xlings`, so without one nothing installed is reachable -- the
+// packages land and `cmake` is still the host's. The entry becomes a symlink
+// to the system binary: the package manager's upgrade reaches every user, and
+// `self update` still refuses (what runs is the system file). True when the
+// home has an entry afterwards; never replaces one that exists.
+export bool ensure_system_entry_link(const fs::path& home_dir);
 export LinkResult create_shim(const fs::path& source, const fs::path& target);
 // Returns how many shims could not be created. NOT void: every result used to
 // be discarded, so a shim that failed -- which on Windows is what a locked

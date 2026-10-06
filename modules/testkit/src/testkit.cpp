@@ -120,7 +120,7 @@ const std::map<std::string, Meta, std::less<>>& registry() { return registry_mut
 
 namespace {
 
-constexpr std::array<std::string_view, 14> kCapabilities {
+constexpr std::array<std::string_view, 17> kCapabilities {
     "linux", "macos", "windows", "posix",
     "xlings-bin",   // a built binary to drive
     "pty",          // pseudo-terminals (agent contract scan)
@@ -132,6 +132,9 @@ constexpr std::array<std::string_view, 14> kCapabilities {
     "sudo",         // non-interactive sudo
     "pasta",        // pasta (passt) and /dev/net/tun: net=nat can run
     "landlock",     // the kernel answers landlock_create_ruleset (ABI >= 1)
+    "docker",       // a docker daemon this user can drive
+    "qemu",         // qemu-system for this architecture
+    "kvm",          // /dev/kvm is usable (a boot finishes in seconds, not minutes)
 };
 
 // Run a probe command quietly; true when it exits 0.
@@ -216,6 +219,20 @@ std::optional<std::string> probe_uncached(std::string_view cap) {
         if (::syscall(444, nullptr, 0, 1u) >= 1) return std::nullopt;
 #endif
         return "the kernel has no Landlock, or it is not in the LSM list";
+    }
+    if (cap == "docker") {
+        if (quiet_ok({"docker", "info"})) return std::nullopt;
+        return "no docker daemon this user can drive";
+    }
+    if (cap == "qemu") {
+        if constexpr (!is_linux) return "the boot scenarios run on Linux";
+        for (auto p : {"/usr/bin/qemu-system-x86_64", "/usr/bin/qemu-system-aarch64"})
+            if (fs::exists(p)) return std::nullopt;
+        return "qemu-system is not installed";
+    }
+    if (cap == "kvm") {
+        if (::access("/dev/kvm", R_OK | W_OK) == 0) return std::nullopt;
+        return "/dev/kvm is not usable by this user";
     }
     if (cap == "sandbox") {
         // Elsewhere home-redirect is always available.

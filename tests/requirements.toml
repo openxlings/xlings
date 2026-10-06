@@ -436,3 +436,130 @@ status = "required"
 [SUBOS-DOCTOR]
 text = "subos doctor: per instance, the policy, entry on this host, the policy package, sessions"
 status = "required"
+
+# ── part 2: the host is a SubOS (design part 2 §14) ──────────────────
+# `planned` until its checkpoint lands with a test, then `required`.
+
+[DEPLOY-S-ENTRY]
+text = "a system entry: a fresh home links its entry to it, so what it installs runs; self update still refuses"
+status = "required"
+
+[DEPLOY-S-AUR]
+text = "the AUR package of the current build: two users each install and run a package"
+status = "planned"
+
+[DEPLOY-M-SYSTEM]
+text = "install --system into /xlings; users use it without a copy, override it, cannot write it"
+status = "planned"
+
+[DOM-PREFIX]
+text = "searched locations (interp, rpath/runpath, .pc, .la, shebangs) name only the prefix domain"
+status = "planned"
+
+[DOM-BUILD-INSIDE]
+text = "installing into a prefix domain runs with the domain home at its logical path; no recipe changes"
+status = "planned"
+
+[DOM-BOOTSTRAP]
+text = "inside a tiny root (no host), xlings installs packages with the root's own tools"
+status = "planned"
+
+[DOM-ELFPATCH-FAILCLOSED]
+text = "no patchelf: xim:patchelf is installed first; still none: the package fails, never 'installed' unpatched"
+status = "planned"
+
+[DOM-LAYOUTS]
+text = "deployment R in both layouts: multi (/xlings) and single (/home/<u>/.xlings)"
+status = "planned"
+
+[ECO-HOST-INDEPENDENT]
+text = "every form-X executable of tiny/core resolves its closure in an empty root; programs run with no mapping outside it"
+status = "planned"
+
+[SHIM-NO-SHELL]
+text = "a shim (aliases included) dispatches in a root with no /bin/sh"
+status = "planned"
+
+[ROOT-ROLE-TABLE]
+text = "every subos command x every kind/role is accepted or refused by the one table"
+status = "planned"
+
+[ROOT-PROJECT]
+text = "root projection: merged-usr links, /usr at the current generation, direct links"
+status = "planned"
+
+[ROOT-SAME-TREE]
+text = "one declaration gives the same tree as a bwrap instance, a container and a boot"
+status = "planned"
+
+[ROOT-GEN-ATOMIC]
+text = "a generation switch is one rename; the pointer is old or new, never neither"
+status = "planned"
+
+[ROOT-ROLLBACK]
+text = "rollback moves the pointer; it does not re-run use"
+status = "planned"
+
+[ROOT-ETC-FACTORY]
+text = "factory /etc fills only what is missing; sysusers only appends"
+status = "planned"
+
+[ROOT-LIBSEARCH]
+text = "managed binaries never read a cache; foreign ones find libraries through /lib64 and this root's ld.so.cache"
+status = "planned"
+
+[ROOT-NO-HOST]
+text = "a process in a root maps nothing from outside it"
+status = "planned"
+
+[ROOT-SURVIVES-GLIBC]
+text = "with glibc broken, the static xlings rolls the root back"
+status = "planned"
+
+[ROOT-SELF-UPDATE]
+text = "in deployment R, self update is a new generation of the host SubOS and can be rolled back"
+status = "planned"
+
+[INST-ROOTFS]
+text = "--rootfs instance: uid 0 inside, no host /usr, policy, broker and audit as for any instance"
+status = "planned"
+
+[EXPORT-OCI]
+text = "subos export --oci runs under docker"
+status = "planned"
+
+[EXPORT-WSL]
+text = "subos export --wsl imports with wsl --import"
+status = "planned"
+
+[EXPORT-DISK]
+text = "subos export --disk boots under qemu"
+status = "planned"
+
+[BOOT-STAGE0]
+text = "stage-0 picks the host from boot.json, points /usr at it and execs its init"
+status = "planned"
+
+[BOOT-ONCE-FALLBACK]
+text = "a trial boot not marked good falls back; marked good it becomes the default"
+status = "planned"
+
+[BOOT-NOW]
+text = "subos boot --now switches user space where the init supports it, refuses elsewhere"
+status = "planned"
+
+[LUBAN-TINY]
+text = "luban-tiny: created from its xpkg, exported, booted, installs inside"
+status = "planned"
+
+[LUBAN-CORE]
+text = "luban-core: compiles and runs a program inside"
+status = "planned"
+
+[LUBAN-DESKTOP-RENDER]
+text = "luban-desktop renders a frame offscreen in a container"
+status = "planned"
+
+[LUBAN-FROM-CHAIN]
+text = "an xpkg's from chain merges workspaces, the upper one winning"
+status = "planned"

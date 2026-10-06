@@ -40,11 +40,24 @@ resolve_owner_home(const std::filesystem::path& invoked) {
     // marker, else the legacy layout minus a SubOS. The structural predicate
     // this replaced accepted a SubOS, since every SubOS has an empty `subos/`
     // of its own (#617), and the walk stopped one level too early.
+    //
+    // One link at a time, the file's own location first. Resolving the whole
+    // chain answered with where the ENTRY lives, which is the home only when
+    // the entry is the home's own file: a home whose entry links to a system
+    // package's binary (deployment S) had every shim anchored to nothing. A
+    // link to a shim from outside any home still reaches it on the next hop.
     auto walk_up = [](fs::path p) -> std::optional<fs::path> {
-        std::error_code ec;
-        auto canon = fs::weakly_canonical(p, ec);
-        if (!ec && !canon.empty()) p = canon;
-        return home_identity::nearest_home(p.parent_path());
+        for (int hop = 0; hop < 16; ++hop) {
+            std::error_code ec;
+            auto dir = fs::weakly_canonical(p.parent_path(), ec);
+            if (ec || dir.empty()) dir = p.parent_path();
+            if (auto h = home_identity::nearest_home(dir)) return h;
+            if (!fs::is_symlink(p, ec)) break;
+            auto target = fs::read_symlink(p, ec);
+            if (ec) break;
+            p = target.is_absolute() ? target : dir / target;
+        }
+        return std::nullopt;
     };
 
     if (invoked.has_parent_path() && !invoked.parent_path().empty()) {

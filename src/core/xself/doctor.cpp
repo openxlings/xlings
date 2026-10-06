@@ -5494,6 +5494,19 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
             stream.emit(LogEvent{LogLevel::info, std::format(
                 "entry: {} (a system package's; its package manager updates it)",
                 entry.path.string())});
+        // Without `<home>/bin/xlings` every shim is skipped and nothing this
+        // home installs is on PATH (design part 2 §2.1). Any write command
+        // links it; `--fix` does too.
+        if (entry.system && xlings_binary_in_home(Config::paths().homeDir).empty()) {
+            if (fix && !dryRun && ensure_system_entry_link(Config::paths().homeDir)) {
+                stream.emit(LogEvent{LogLevel::info, "fixed: this home's entry now links to "
+                                                     + entry.path.string()});
+            } else {
+                stream.emit(LogEvent{LogLevel::error, std::format(
+                    "this home has no entry: nothing it installs is on PATH until it links to "
+                    "{} -- run `xlings self doctor --fix` (or any install)", entry.path.string())});
+            }
+        }
         std::error_code ec;
         if (const auto cfg = home::system_config_path(); fs::is_regular_file(cfg, ec))
             stream.emit(LogEvent{LogLevel::info, std::format(
