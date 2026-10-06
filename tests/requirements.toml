@@ -446,7 +446,7 @@ status = "required"
 
 [DEPLOY-S-AUR]
 text = "the AUR package of the current build: two users each install and run a package"
-status = "planned"
+status = "required"
 
 [DEPLOY-M-SYSTEM]
 text = "install --system into /xlings; users use it without a copy, override it, cannot write it"

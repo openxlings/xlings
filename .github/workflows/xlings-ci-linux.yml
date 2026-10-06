@@ -539,9 +539,52 @@ jobs:
           path: target/xdev/
           if-no-files-found: ignore
 
+  # Deployment S as a distribution ships it (design part 2 §5): the AUR
+  # recipe built from THIS build's release artifact, installed with pacman,
+  # used by two users. Replaces xlings-ci-archlinux.yml, which ran only when
+  # config/aur changed and built a 0.4.14 download.
+  arch-package:
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:latest
+    env:
+      XDEV_LANE: linux-arch-package
+      XDEV_LANE_CAPS: linux,root,network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Package, install, use
+        run: |
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          "$xdev" test --no-mcpp --suite aur --tarball build/release.tar.gz \
+            --out target/xdev/linux-arch-package
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-arch-package
+          path: target/xdev/
+          if-no-files-found: ignore
+
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [build-and-test, e2e, isolation-fix]
+    needs: [build-and-test, e2e, isolation-fix, arch-package]
     if: always()
     runs-on: ubuntu-24.04
     steps:

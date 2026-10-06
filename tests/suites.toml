@@ -47,3 +47,12 @@ commands = [
   "bash tests/e2e/isolation_doctor_fix_test.sh",
   "bash tests/e2e/system_install_test.sh",
 ]
+
+# Deployment S as a distribution packages it: the AUR recipe built from the
+# binary under test and used by two users (CI-only: root in an archlinux
+# container, the `arch-package` job).
+[aur]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/aur_package_test.sh {tarball}",
+]

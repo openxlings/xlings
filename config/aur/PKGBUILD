@@ -1,38 +1,33 @@
 # Maintainer: sunrisepeak <speakshen@163.com>
+#
+# Deployment S (SubOS design part 2 §5): /usr/bin/xlings belongs to pacman.
+# Each user still has a home of their own (~/.xlings); the first command that
+# writes one links its entry to this binary, so `pacman -Syu` upgrades every
+# user and `xlings self update` points at pacman instead of replacing it.
+#
+# Nothing is installed but the binary: a user's home is created by xlings on
+# first use, and it is user data -- removing this package never touches it.
+#
+# CI builds this package from the binary under test:
+#   XLINGS_LOCAL_TARBALL=/path/xlings-<ver>-linux-x86_64.tar.gz makepkg
 pkgname=xlings
-pkgver=0.4.14
+pkgver=2026.10.4.1
 pkgrel=1
-pkgdesc="A Developer's Toolkit for Programming Learning, Development, and Tutorial Creation"
+pkgdesc="Universal package infrastructure with OS-like SubOS isolation"
 arch=('x86_64')
 url="https://github.com/openxlings/xlings"
 license=('Apache-2.0')
 depends=()
-source=(
-    "https://github.com/openxlings/xlings/releases/download/v${pkgver}/xlings-${pkgver}-linux-x86_64.tar.gz"
-    "xlings-remove.hook"
-)
-sha256sums=(
-    '4d5ba18fb5f8b32ec899c43c64719302445fe13eec952629f28cce9d8c400b71'
-    'SKIP'
-)
+optdepends=('bubblewrap: kernel-enforced SubOS sandboxes'
+            'passt: private networks (net=nat) for SubOS sandboxes')
+if [[ -n ${XLINGS_LOCAL_TARBALL:-} ]]; then
+    source=("$XLINGS_LOCAL_TARBALL")
+    sha256sums=('SKIP')
+else
+    source=("https://github.com/openxlings/xlings/releases/download/v${pkgver}/xlings-${pkgver}-linux-x86_64.tar.gz")
+    sha256sums=('721f0e3752f5a43b023ed12d6327757ffb51b7814e302c1c88e3c3bf4b00a0b0')
+fi
 
 package() {
-  cd "$srcdir/$pkgname-$pkgver-linux-x86_64"
-
-  # Install binary
-  install -Dm755 bin/xlings "$pkgdir/usr/bin/xlings"
-
-  # Install all files to /usr/share/xlings
-  install -d "$pkgdir/usr/share/$pkgname"
-  cp -r . "$pkgdir/usr/share/$pkgname"
-
-  # Read-only for every user (#640 F14): each user runs with a home of their
-  # own (~/.xlings), and a shared file anyone can write is a file anyone can
-  # use against everyone else who reads it.
-  find "$pkgdir/usr/share/$pkgname" -type f -exec chmod 644 {} +
-  find "$pkgdir/usr/share/$pkgname" -type d -exec chmod 755 {} +
-  chmod 755 "$pkgdir/usr/share/$pkgname/bin/xlings"
-
-  # Add hooks
-  install -Dm644 ../xlings-remove.hook "$pkgdir/usr/share/libalpm/hooks/xlings-remove.hook"
+  install -Dm755 "$srcdir/xlings-${pkgver}-linux-x86_64/bin/xlings" "$pkgdir/usr/bin/xlings"
 }
