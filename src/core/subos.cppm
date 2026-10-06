@@ -534,6 +534,9 @@ bool enters_sandboxed_(const std::string& name);
 // The role table (part 2 §8.3), asked by every command that could hurt the
 // running system: false after emitting the refusal and what to do instead.
 bool role_allows_(roles::Op op, const std::string& name, EventStream& stream);
+// A subos-type xpkg's payload (its template), installed when missing; empty
+// after emitting why it could not be.
+fs::path resolve_base_package_(const std::string& spec, EventStream& stream);
 // `subos new --rootfs`, and a fork of a root (part 2 §11).
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
                               EventStream& stream);

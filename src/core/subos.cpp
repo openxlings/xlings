@@ -945,6 +945,49 @@ fs::path locate_base_pkg_(const PkgRef& ref) {
 
 }
 
+fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream) {
+    auto& p = Config::paths();
+    // ── pkg-spec path: locate or install the base xpkg ────────────
+    auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
+    auto baseDir = new_from_detail_::locate_base_pkg_(ref);
+
+    if (baseDir.empty()) {
+        // Auto-install (E5a): invoke `xlings install <spec>` so the
+        // base lands at xpkgs/<ns>-x-<name>/<ver>/. We use the host
+        // xlings binary (same process binary) so the install runs
+        // with the same context (XLINGS_HOME, mirror config, etc.).
+        log::info("base subos pkg '{}' not installed; auto-installing...",
+                  fromSpec);
+        auto xlings_bin = xself::xlings_binary_in_home(p.homeDir);
+        if (xlings_bin.empty()) xlings_bin = platform::get_executable_path();
+
+        auto cmd = std::format("{} install -y {}",
+                               xlings_bin.string(), fromSpec);
+        auto rc = std::system(cmd.c_str());
+        if (rc != 0) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::Internal,
+                .message = "auto-install of base '" + fromSpec
+                           + "' failed",
+                .recoverable = true,
+                .hint = "run manually: xlings install " + fromSpec,
+            });
+            return {};
+        }
+        baseDir = new_from_detail_::locate_base_pkg_(ref);
+    }
+
+    if (baseDir.empty()) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::NotFound,
+            .message = "couldn't locate base pkg payload for '" + fromSpec
+                       + "' after install",
+            .recoverable = false,
+        });
+    }
+    return baseDir;
+}
+
 int new_from(const std::string& name, const fs::path& customDir,
                     sandbox::StorageMode storage, const std::string& imageSize,
                     const std::string& fromSpec, const std::string& runtime,
@@ -954,44 +997,8 @@ int new_from(const std::string& name, const fs::path& customDir,
     fs::path baseDir;
 
     if (new_from_detail_::is_pkg_spec_(fromSpec)) {
-        // ── pkg-spec path: locate or install the base xpkg ────────────
-        auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
-        baseDir = new_from_detail_::locate_base_pkg_(ref);
-
-        if (baseDir.empty()) {
-            // Auto-install (E5a): invoke `xlings install <spec>` so the
-            // base lands at xpkgs/<ns>-x-<name>/<ver>/. We use the host
-            // xlings binary (same process binary) so the install runs
-            // with the same context (XLINGS_HOME, mirror config, etc.).
-            log::info("base subos pkg '{}' not installed; auto-installing...",
-                      fromSpec);
-            auto xlings_bin = xself::xlings_binary_in_home(p.homeDir);
-
-            auto cmd = std::format("{} install -y {}",
-                                   xlings_bin.string(), fromSpec);
-            auto rc = std::system(cmd.c_str());
-            if (rc != 0) {
-                stream.emit(ErrorEvent{
-                    .code = ErrorCode::Internal,
-                    .message = "auto-install of base '" + fromSpec
-                               + "' failed",
-                    .recoverable = true,
-                    .hint = "run manually: xlings install " + fromSpec,
-                });
-                return 1;
-            }
-            baseDir = new_from_detail_::locate_base_pkg_(ref);
-        }
-
-        if (baseDir.empty()) {
-            stream.emit(ErrorEvent{
-                .code = ErrorCode::NotFound,
-                .message = "couldn't locate base pkg payload for '" + fromSpec
-                           + "' after install",
-                .recoverable = false,
-            });
-            return 1;
-        }
+        baseDir = resolve_base_package_(fromSpec, stream);
+        if (baseDir.empty()) return 1;
     } else {
         // ── local fork path: source is an existing subos by name ──────
         baseDir = p.homeDir / "subos" / fromSpec;

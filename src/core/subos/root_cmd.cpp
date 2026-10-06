@@ -20,6 +20,7 @@ import xlings.subos.roles;
 import xlings.subos.boot;
 import xlings.observe;
 import xlings.core.subos.ports;
+import xlings.core.xself;
 
 namespace xlings::subos {
 
@@ -124,10 +125,31 @@ int run_tool_(const std::vector<std::string>& argv, EventStream& stream, std::st
     return rc;
 }
 
+// A host tool by name: PATH, then the sbin directories a user's PATH often
+// lacks (mkfs.ext4 lives there). The name itself when nothing has it, so the
+// failure names what is missing.
+std::string host_tool_(std::string_view name) {
+    std::vector<fs::path> dirs;
+    if (const char* p = std::getenv("PATH")) {
+        std::string_view rest(p);
+        while (!rest.empty()) {
+            auto c = rest.find(':');
+            dirs.emplace_back(std::string(rest.substr(0, c)));
+            if (c == std::string_view::npos) break;
+            rest.remove_prefix(c + 1);
+        }
+    }
+    for (auto d : {"/usr/sbin", "/sbin", "/usr/bin", "/bin"}) dirs.emplace_back(d);
+    std::error_code ec;
+    for (auto& d : dirs)
+        if (!d.empty() && fs::exists(d / name, ec)) return (d / name).string();
+    return std::string(name);
+}
+
 // The tools that write an image run as root inside a user namespace, so the
 // files they record are root's, as on any distribution's image.
 std::vector<std::string> as_root_(std::vector<std::string> argv) {
-    std::vector<std::string> a{"bwrap", "--unshare-user", "--uid", "0", "--gid", "0",
+    std::vector<std::string> a{host_tool_("bwrap"), "--unshare-user", "--uid", "0", "--gid", "0",
                                "--dev-bind", "/", "/", "--"};
     a.insert(a.end(), argv.begin(), argv.end());
     return a;
@@ -150,11 +172,88 @@ bool role_allows_(roles::Op op, const std::string& name, EventStream& stream) {
     return false;
 }
 
+namespace {
+
+nlohmann::json read_json_(const fs::path& p) {
+    auto j = nlohmann::json::parse(read_text_(p), nullptr, false);
+    return j.is_object() ? j : nlohmann::json::object();
+}
+
+// "xim:busybox@1.36.1" -> "busybox": what a package spec is ABOUT, for the
+// upper template of a chain to replace the lower one's.
+std::string package_key_(std::string spec) {
+    if (auto at = spec.find('@'); at != std::string::npos) spec.resize(at);
+    if (auto colon = spec.rfind(':'); colon != std::string::npos) spec = spec.substr(colon + 1);
+    return spec;
+}
+
+// What a root made from a subos-type xpkg is (design part 2 §9): its
+// template's `subos_kind`, the `packages` it declares, its `boot` -- merged
+// down its `from` chain (luban-desktop from luban-core from luban-tiny), the
+// upper template winning a package or a file both carry.
+struct Declared {
+    bool rootfs { false };
+    std::vector<std::string> packages;
+    std::string init;
+};
+
+std::optional<Declared> declared_by_template_(const fs::path& instance, EventStream& stream) {
+    Declared d;
+    std::vector<nlohmann::json> chain{read_json_(instance / ".xlings.json")};
+    for (std::string from = chain.back().value("from", std::string()); !from.empty();) {
+        if (chain.size() > 8) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                                    .message = "the `from` chain is longer than 8: a cycle?",
+                                    .recoverable = false });
+            return std::nullopt;
+        }
+        const auto dir = resolve_base_package_(from, stream);
+        if (dir.empty()) return std::nullopt;
+        // The lower template's files, where the upper one has none.
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto rel = it->path().lexically_relative(dir);
+            if (rel == ".xlings.json") continue;
+            const auto at = instance / rel;
+            std::error_code sec;
+            if (it->is_directory(sec) && !it->is_symlink(sec)) { fs::create_directories(at, sec); continue; }
+            if (!fs::exists(fs::symlink_status(at, sec)))
+                fs::copy(it->path(), at, fs::copy_options::copy_symlinks, sec);
+        }
+        chain.push_back(read_json_(dir / ".xlings.json"));
+        from = chain.back().value("from", std::string());
+    }
+    std::map<std::string, std::string> by_key;
+    std::vector<std::string> order;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {   // bottom first
+        if (it->value("subos_kind", std::string()) == "rootfs") d.rootfs = true;
+        for (auto& p : it->value("packages", nlohmann::json::array())) {
+            if (!p.is_string()) continue;
+            const auto key = package_key_(p.get<std::string>());
+            if (!by_key.contains(key)) order.push_back(key);
+            by_key[key] = p.get<std::string>();
+        }
+        if (auto b = it->find("boot"); b != it->end() && b->is_object())
+            if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
+    }
+    for (auto& k : order) d.packages.push_back(by_key[k]);
+    return d;
+}
+
+}  // namespace
+
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
                               EventStream& stream) {
     const auto home = home_dir_();
     // A fork of a root is a root (as a fork of a declared instance keeps its policy).
     if (!rootfs && exists_(from) && subos_root::kind_of(home, from) == roles::Kind::Rootfs) rootfs = true;
+    // A root made from a template (subos:luban-*): what it declares.
+    std::optional<Declared> declared;
+    if (!from.empty() && !exists_(from)) {
+        declared = declared_by_template_(HomeView{home}.instance(name), stream);
+        if (!declared) return 1;
+        rootfs = rootfs || declared->rootfs;
+    }
     if (!rootfs) return 0;
     if constexpr (!platform::is_linux) {
         error_(stream, "a rootfs SubOS is a Linux root; this host is not Linux",
@@ -164,6 +263,22 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
     if (auto d = subos_root::declare_kind(home, name, roles::Kind::Rootfs); !d) {
         error_(stream, d.error(), {}, ErrorCode::Internal);
         return 1;
+    }
+    if (declared && !declared->init.empty()) {
+        const auto file = HomeView{home}.instance_file(name);
+        auto j = read_json_(file);
+        j["init"] = declared->init;
+        std::ofstream(file) << j.dump(2) << "\n";
+    }
+    if (declared && !declared->packages.empty()) {
+        // Its packages, installed into it: the same install as any other,
+        // so the generation that follows is the usual one.
+        auto bin = xself::xlings_binary_in_home(home);
+        if (bin.empty()) bin = platform::get_executable_path();
+        std::vector<std::string> argv{bin.string(), "install", "-y", "--subos", name};
+        argv.insert(argv.end(), declared->packages.begin(), declared->packages.end());
+        log::info("installing what '{}' declares: {} package(s)", name, declared->packages.size());
+        if (run_tool_(argv, stream, "installing the declared packages") != 0) return 1;
     }
     auto r = subos_root::refresh(home, name, "subos new --rootfs");
     if (r && !*r) {
@@ -471,11 +586,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
 
     int rc = 0;
     if (!tarball.empty()) {
-        rc = run_tool_(as_root_({"tar", "--numeric-owner", "-C", stage.string(), "-czf",
+        rc = run_tool_(as_root_({host_tool_("tar"), "--numeric-owner", "-C", stage.string(), "-czf",
                                  fs::absolute(tarball).string(), "."}),
                        stream, "writing the tarball");
     } else if (!disk.empty()) {
-        rc = run_tool_(as_root_({"mkfs.ext4", "-q", "-F", "-L", "luban", "-d", stage.string(),
+        rc = run_tool_(as_root_({host_tool_("mkfs.ext4"), "-q", "-F", "-L", "luban", "-d", stage.string(),
                                  fs::absolute(disk).string(), size}),
                        stream, "writing the disk image");
     }
@@ -532,7 +647,7 @@ int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     if (subos_root::kind_of(home, name) == roles::Kind::Rootfs) j["subos_kind"] = "rootfs";
     std::ofstream(stage / ".xlings.json") << j.dump(2) << "\n";
     const auto file = fs::absolute(out_dir) / std::format("{}-{}.tar.gz", pkg, ver);
-    if (run_tool_({"tar", "-C", fs::absolute(out_dir).string(), "-czf", file.string(),
+    if (run_tool_({host_tool_("tar"), "-C", fs::absolute(out_dir).string(), "-czf", file.string(),
                    stage.filename().string()}, stream, "packing") != 0)
         return 1;
     fs::remove_all(stage, ec);

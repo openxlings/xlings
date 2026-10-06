@@ -95,6 +95,10 @@ Plan plan(const Inputs& in) {
                 if (is_executable_entry(e))
                     claim("usr/bin/" + e.path().filename().string(), e.path(), who);
         }
+        // A kernel package's modules (and its vmlinuz, the systemd layout):
+        // usr/lib/modules/<version>.
+        for (auto& e : sorted_entries(payload / "lib" / "modules"))
+            claim("usr/lib/modules/" + e.path().filename().string(), e.path(), who);
         for (auto sub : {"lib", "lib64"}) {
             for (auto& e : sorted_entries(payload / sub)) {
                 const auto name = e.path().filename().string();
