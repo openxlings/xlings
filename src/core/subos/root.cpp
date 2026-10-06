@@ -39,10 +39,6 @@ std::optional<fs::path> payload_root(const fs::path& p) {
 
 fs::path entry_of(const fs::path& home) { return home / "bin" / "xlings"; }
 
-// The SubOS's own files that stand in for a host's in a sandbox view (Part 1
-// §16): never machine state of a root.
-constexpr std::array<std::string_view, 4> kViewEtc{"passwd", "group", "hosts", "nsswitch.conf"};
-
 }  // namespace
 
 rl::Kind kind_of(const fs::path& home, std::string_view name) {
@@ -150,25 +146,7 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
             return std::unexpected(laid.error());
     }
     const auto usr = rf::usr_of(subos_dir);
-    for (auto& f : rf::fill_etc(tree / "etc", usr / "share" / "factory" / "etc"))
-        out.etc_added.push_back(f);
-    // The sysroot's own /etc (certificates a package placed), minus the files
-    // that stand in for a host in a sandbox view.
-    {
-        std::error_code ec;
-        for (fs::directory_iterator it(subos_dir / "etc", ec), end; !ec && it != end; it.increment(ec)) {
-            const auto n = it->path().filename().string();
-            if (std::ranges::find(kViewEtc, n) != kViewEtc.end()) continue;
-            const auto at = tree / "etc" / n;
-            std::error_code sec;
-            if (it->is_directory(sec)) {
-                for (auto& f : rf::fill_etc(at, it->path())) out.etc_added.push_back(n + "/" + f);
-            } else if (!fs::exists(fs::symlink_status(at, sec))) {
-                fs::create_symlink(it->path(), at, sec);
-                if (!sec) out.etc_added.push_back(n);
-            }
-        }
-    }
+    out.etc_added = rf::fill_machine_etc(tree / "etc", subos_dir);
     out.users_added = rf::apply_sysusers(tree / "etc", usr);
     return out;
 }

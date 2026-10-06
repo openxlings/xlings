@@ -80,4 +80,14 @@ std::optional<FileOwnership> file_ownership(const std::filesystem::path& path);
 // `uname -r`; empty where there is none.
 std::string kernel_release();
 
+// ── a machine's first process (SubOS design part 2 §8.2) ─────────────
+//
+// For stage-0, PID 1 of a machine whose root is a SubOS: the kernel's file
+// systems (proc, sysfs, devtmpfs, tmpfs) at `target`, created when missing;
+// already mounted is success. And `/` read-write, which the kernel mounts
+// read-only unless told otherwise.
+bool mount_kernel_fs(std::string_view type, const std::filesystem::path& target);
+bool remount_root_rw();
+bool is_pid1();
+
 }  // namespace xlings::platform

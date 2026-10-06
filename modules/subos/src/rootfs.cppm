@@ -117,6 +117,12 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
 // their own. Nothing that exists is touched. Returns what it added.
 std::vector<std::string> fill_etc(const fs::path& etc, const fs::path& factory);
 
+// A root's machine /etc from what its SubOS provides: the projection's
+// usr/share/factory/etc, and the SubOS's sysroot /etc (certificates a package
+// placed) minus the files that stand in for a host in a sandbox view.
+// fill_etc's rule: only what is missing. Returns what it added.
+std::vector<std::string> fill_machine_etc(const fs::path& etc, const fs::path& subos);
+
 // sysusers.d (systemd's format, without systemd): `u name uid "gecos" home
 // shell` and `g name gid` lines from `<usr>/lib/sysusers.d/*.conf`. Users and
 // groups missing from etc/passwd and etc/group are appended; root always

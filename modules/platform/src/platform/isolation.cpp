@@ -9,6 +9,7 @@ module;
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -512,6 +513,24 @@ std::string kernel_release() {
     return ::uname(&u) == 0 ? std::string(u.release) : std::string{};
 }
 
+bool mount_kernel_fs(std::string_view type, const fs::path& target) {
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    const std::string t(type);
+    unsigned long flags = MS_NOSUID;
+    if (t != "devtmpfs") flags |= MS_NODEV;
+    if (t == "proc" || t == "sysfs") flags |= MS_NOEXEC;
+    if (::mount(t.c_str(), target.c_str(), t.c_str(), flags, t == "tmpfs" ? "mode=0755" : nullptr) == 0)
+        return true;
+    return errno == EBUSY;
+}
+
+bool remount_root_rw() {
+    return ::mount("", "/", "", MS_REMOUNT, nullptr) == 0;
+}
+
+bool is_pid1() { return ::getpid() == 1; }
+
 #else
 
 bool enter_private_network(unsigned, unsigned) { return false; }
@@ -558,6 +577,10 @@ std::optional<FileOwnership> file_ownership(const fs::path& path) {
     return std::nullopt;
 #endif
 }
+
+bool mount_kernel_fs(std::string_view, const fs::path&) { return false; }
+bool remount_root_rw() { return false; }
+bool is_pid1() { return false; }
 
 std::string kernel_release() {
 #if defined(__APPLE__)

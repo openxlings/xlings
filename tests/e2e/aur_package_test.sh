@@ -21,7 +21,8 @@ log() { echo "[aur] $*"; }
 pacman -Sy --noconfirm --needed base-devel >/dev/null
 for u in builder alice bob; do id "$u" >/dev/null 2>&1 || useradd -m "$u"; done
 
-ver="$(tar tzf "$TARBALL" | head -1 | sed -E 's|^xlings-(.*)-linux-x86_64/?$|\1|')"
+# `head` closes the pipe early; tar's SIGPIPE is not a failure of this test.
+ver="$( (tar tzf "$TARBALL" || true) | head -1 | sed -E 's|^xlings-(.*)-linux-x86_64/?$|\1|')"
 work="$(mktemp -d)"
 cp config/aur/PKGBUILD "$work/"
 sed -i "s/^pkgver=.*/pkgver=$ver/" "$work/PKGBUILD"

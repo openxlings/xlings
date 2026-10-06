@@ -8,6 +8,7 @@ import xlings.core.xvm.shim;
 import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
+import xlings.subos.stage0;
 import xlings.observe;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
@@ -17,6 +18,11 @@ import xlings.core.xself.compat;
 
 
 int main(int argc, char* argv[]) {
+    // A machine's first process when its root is a SubOS (design part 2
+    // §8.2): before anything reads a home -- /proc is not even mounted yet.
+    if (argc >= 1 && std::filesystem::path(argv[0]).filename() == xlings::subos::stage0::kName)
+        return xlings::subos::stage0::run(argc, argv);
+
     // The first process inside a SubOS sandbox (xlings.subos.session). Before
     // everything: it must not read, adopt or write any home -- inside, the
     // home is the sandbox's view of it -- and it is not a shim.

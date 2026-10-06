@@ -303,6 +303,26 @@ std::vector<std::string> fill_etc(const fs::path& etc, const fs::path& factory) 
     return added;
 }
 
+std::vector<std::string> fill_machine_etc(const fs::path& etc, const fs::path& subos) {
+    // What a sandbox view puts there for the host's: never a root's machine state.
+    constexpr std::array<std::string_view, 4> kViewEtc{"passwd", "group", "hosts", "nsswitch.conf"};
+    auto added = fill_etc(etc, subos / std::string(kPointer) / "usr" / "share" / "factory" / "etc");
+    std::error_code ec;
+    for (fs::directory_iterator it(subos / "etc", ec), end; !ec && it != end; it.increment(ec)) {
+        const auto n = it->path().filename().string();
+        if (std::ranges::find(kViewEtc, n) != kViewEtc.end()) continue;
+        const auto at = etc / n;
+        std::error_code sec;
+        if (it->is_directory(sec)) {
+            for (auto& f : fill_etc(at, it->path())) added.push_back(n + "/" + f);
+        } else if (!fs::exists(fs::symlink_status(at, sec))) {
+            fs::create_symlink(it->path(), at, sec);
+            if (!sec) added.push_back(n);
+        }
+    }
+    return added;
+}
+
 namespace {
 
 std::set<std::string> names_in(const fs::path& db) {
