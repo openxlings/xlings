@@ -16,7 +16,7 @@ Options: `-h, --help` — Show help for the selected command; `--version` — Sh
 
 Install packages
 
-Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one
+Options: `-g, --global` — Use global scope; `-u, --use` — Activate installed version; `--reconfig` — Run the configuration step again, even where it already ran; `--subos <NAME>` — Install into this subos instead of the current one; `--system` — Install into the system layer (/xlings): every user of this machine gets it
 
 ## `xlings remove <package> [version]`
 
@@ -68,7 +68,7 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44
+Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /
 
 ## `xlings subos use [name]`
 
@@ -157,6 +157,34 @@ Options: `--json` — One JSON object per session
 Show a SubOS's audit events
 
 Options: `--kind <KIND>` — Only this kind (ops, lifecycle, perm, exec, net, fs); repeatable; `--session <ID>` — Only this session; `-n, --lines <N>` — Show the last N events (default 50); `-f, --follow` — Keep printing new events; `--json` — One JSON object per event
+
+## `xlings subos rollback <name>`
+
+Move a root SubOS back to an earlier generation
+
+Options: `--to <N>` — This generation (default: the one before); `--list` — List the generations
+
+## `xlings subos boot [name]`
+
+Choose the SubOS a machine boots, from the next boot on
+
+Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it when the default fails; `--mark-good` — This boot worked: keep booting it; `--now` — Switch user space to it now, where the init can (no reboot)
+
+## `xlings subos export <name>`
+
+Export a root SubOS as a directory, a tarball or a disk image
+
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+
+## `xlings subos diff <a> <b>`
+
+Compare the packages of two SubOS
+
+## `xlings subos pack <name>`
+
+Pack a SubOS's declaration as a subos-type xpkg
+
+Options: `--as <NS:NAME@VERSION>` — The package it becomes; `--out <DIR>` — Where the tarball goes
 
 ## `xlings subos runtime <binding> [name]`
 

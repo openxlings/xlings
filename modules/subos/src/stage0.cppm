@@ -112,12 +112,23 @@ int run(int argc, char* argv[]) {
         say(config.error() + "; booting the defaults");
         config = boot::Config{};
     }
+    // A trial naming nothing bootable is dropped, not kept for every boot.
+    if (config->once && !is_root_subos(home, *config->once)) {
+        say(std::format("the trial '{}' is not a bootable SubOS; dropped", *config->once));
+        config->once.reset();
+        (void)boot::save(home.boot_file(), *config);
+    }
     const auto cands = boot::candidates(*config, [&](std::string_view n) { return is_root_subos(home, n); });
     for (const auto& c : cands) {
         const auto init = init_of(home, c.subos);
         if (!init) {
             say(std::format("'{}' has no init in its /usr; trying the next entry", c.subos));
             log_event(home, {{"event", "boot-skip"}, {"subos", c.subos}, {"why", "no init"}});
+            // A trial that cannot start is used up like one that did.
+            if (c.via == "once") {
+                config->once.reset();
+                (void)boot::save(home.boot_file(), *config);
+            }
             continue;
         }
         const auto dir = home.instance(c.subos);

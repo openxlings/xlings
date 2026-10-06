@@ -3,6 +3,8 @@
 module xlings.core.subos;
 
 import xlings.subos.roles;
+import xlings.subos.rootfs;
+import xlings.core.subos.root;
 import std;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -502,12 +504,43 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     EventStream quiet;
     out["effective"] = sandbox::preview(name, pol, quiet);
     if (auto live = session::find(home, name)) out["session"] = session::to_json(*live);
+    // What it is to this machine (part 2 §3.4): a view, or a root -- its
+    // generation, what it would boot, whether it is the host.
+    {
+        const auto kind = subos_root::kind_of(home.home, name);
+        const auto role = subos_root::role_of(home.home, name);
+        nlohmann::json root{{"kind", std::string(roles::to_string(kind))}, {"host", role.host},
+                            {"boot_entry", role.boot_entry}};
+        if (kind == roles::Kind::Rootfs) {
+            const auto dir = home.instance(name);
+            if (auto g = rootfs::current(dir)) {
+                root["generation"] = *g;
+                if (auto info = rootfs::info(dir, *g)) {
+                    root["links"] = info->links;
+                    root["conflicts"] = nlohmann::json::array();
+                    for (auto& c : info->conflicts)
+                        root["conflicts"].push_back({{"path", c.rel}, {"kept", c.kept}, {"dropped", c.dropped}});
+                }
+            }
+            root["generations"] = rootfs::generations(dir);
+            root["tree"] = subos_root::tree_of(home.home, name).string();
+        }
+        out["root"] = std::move(root);
+    }
     if (json) {
         std::println(std::cout, "{}", out.dump());
         return 0;
     }
     const auto& eff = out["effective"];
     std::println(std::cout, "subos {}  ({})", name, out.value("policy_source", "invalid policy"));
+    if (const auto& r = out["root"]; r.value("kind", "view") == "rootfs") {
+        std::println(std::cout, "  root       generation {} of {}{}{}  ({})", r.value("generation", 0),
+                     r["generations"].size(), r.value("host", false) ? ", the running host" : "",
+                     r.value("boot_entry", false) ? ", a boot entry" : "", r.value("tree", ""));
+        for (auto& c : r.value("conflicts", nlohmann::json::array()))
+            std::println(std::cout, "  ! /{}: {} kept, {} dropped", c.value("path", ""), c.value("kept", ""),
+                         c.value("dropped", ""));
+    }
     if (out.contains("policy_error")) std::println(std::cout, "  policy: {}", out["policy_error"].get<std::string>());
     std::println(std::cout, "  requested  preset={} net={} fetch={} observe={} identity={}",
                  policy::to_string(pol.preset), policy::to_string(pol.net),

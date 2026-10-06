@@ -582,9 +582,64 @@ jobs:
           path: target/xdev/
           if-no-files-found: ignore
 
+  # The root projection (SubOS design part 2): Luban roots from the published
+  # editions -- entered in bwrap, exported to docker, booted under qemu with
+  # their own kernel -- against THIS build's release binary (static: an
+  # exported image's xlings runs with no host under it).
+  distro:
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    env:
+      XDEV_LANE: linux-distro
+      XDEV_LANE_CAPS: linux,xlings-bin,bwrap,userns,network,docker,qemu,sudo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xlings-linux-x86_64
+          path: build
+
+      - name: Fetch xdev
+        uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+
+      - name: Lane capabilities (bwrap, qemu, kvm)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          # KVM when the runner has it: a boot in seconds instead of a minute.
+          if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Binary under test
+        run: |
+          mkdir -p build/extracted
+          tar -xzf build/release.tar.gz -C build/extracted
+          echo "XLINGS_BIN=$(find "$GITHUB_WORKSPACE/build/extracted" -path '*/bin/xlings' -type f | head -1)" >> "$GITHUB_ENV"
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          chmod +x "$xdev"
+          echo "XDEV=$xdev" >> "$GITHUB_ENV"
+
+      - name: Roots, images, boots
+        run: |
+          "$XDEV" test --no-mcpp --suite distro --out target/xdev/linux-distro
+
+      - name: Attach the run
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xdev-linux-distro
+          path: target/xdev/
+          if-no-files-found: ignore
+
   # One report for the Linux lanes, in the step summary.
   report:
-    needs: [build-and-test, e2e, isolation-fix, arch-package]
+    needs: [build-and-test, e2e, isolation-fix, arch-package, distro]
     if: always()
     runs-on: ubuntu-24.04
     steps:

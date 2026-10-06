@@ -357,6 +357,10 @@ ORPHAN_EXEMPT=(
     "isolation_doctor_fix_test.sh"          # xlings-ci-linux.yml (isolation-fix, uses sudo)
     "system_install_test.sh"                # xlings-ci-linux.yml (isolation-fix, uses sudo)
     "aur_package_test.sh"                   # xlings-ci-linux.yml (arch-package, root in archlinux)
+    "system_layer_test.sh"                  # xlings-ci-linux.yml (isolation-fix, uses sudo)
+    "rootfs_instance_test.sh"               # xlings-ci-linux.yml (distro)
+    "rootfs_image_test.sh"                  # xlings-ci-linux.yml (distro, docker + sudo)
+    "rootfs_boot_test.sh"                   # xlings-ci-linux.yml (distro, qemu)
     # Sub-tests invoked by project_e2e_test.sh (E2E-05), not standalone.
     "project_global_fallback_test.sh"
     "project_home_test.sh"

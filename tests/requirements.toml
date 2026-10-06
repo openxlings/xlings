@@ -390,14 +390,12 @@ text = "a system install (mode S): the entry left to its package manager, /etc/x
 status = "required"
 
 [PERM-FETCH-LAYER]
-text = "fetch=layer installs into the instance's own package layer"
-status = "deferred"
-why = "the same layered payload lookup as HOME-LAYER-RESOLVE; until then `layer` is refused wherever it appears (tested), never granted as a shared-home install"
+text = "fetch=layer: what the xlings inside installs goes into the root's own scope; a view refuses it"
+status = "required"
 
 [HOME-LAYER-RESOLVE]
-text = "packages in the system layer (M) resolve and activate in a user's home without a copy"
-status = "deferred"
-why = "the layer is found and reported; resolving from it touches xvm's version DB and the installer's payload lookup, a change of its own"
+text = "packages in the system layer (M) resolve in a user's shell without a copy, after the user's own"
+status = "required"
 
 # ── compatibility and platforms ────────────────────────────────────
 
@@ -450,71 +448,71 @@ status = "required"
 
 [DEPLOY-M-SYSTEM]
 text = "install --system into /xlings; users use it without a copy, override it, cannot write it"
-status = "planned"
+status = "required"
 
 [DOM-PREFIX]
 text = "searched locations (interp, rpath/runpath, .pc, .la, shebangs) name only the prefix domain"
-status = "planned"
+status = "required"
 
 [DOM-BUILD-INSIDE]
-text = "installing into a prefix domain runs with the domain home at its logical path; no recipe changes"
-status = "planned"
+text = "a root's payloads are installed with its home at the path the root sees it at; no recipe changes (a multi image is built in /xlings and runs there)"
+status = "required"
 
 [DOM-BOOTSTRAP]
 text = "inside a tiny root (no host), xlings installs packages with the root's own tools"
-status = "planned"
+status = "required"
 
 [DOM-ELFPATCH-FAILCLOSED]
 text = "no patchelf: xim:patchelf is installed first; still none: the package fails, never 'installed' unpatched"
-status = "planned"
+status = "required"
 
 [DOM-LAYOUTS]
 text = "deployment R in both layouts: multi (/xlings) and single (/home/<u>/.xlings)"
-status = "planned"
+status = "required"
 
 [ECO-HOST-INDEPENDENT]
 text = "every form-X executable of tiny/core resolves its closure in an empty root; programs run with no mapping outside it"
-status = "planned"
+status = "required"
 
 [SHIM-NO-SHELL]
 text = "a shim (aliases included) dispatches in a root with no /bin/sh"
-status = "planned"
+status = "required"
 
 [ROOT-ROLE-TABLE]
 text = "every subos command x every kind/role is accepted or refused by the one table"
-status = "planned"
+status = "required"
 
 [ROOT-PROJECT]
 text = "root projection: merged-usr links, /usr at the current generation, direct links"
-status = "planned"
+status = "required"
 
 [ROOT-SAME-TREE]
 text = "one declaration gives the same tree as a bwrap instance, a container and a boot"
-status = "planned"
+status = "required"
 
 [ROOT-GEN-ATOMIC]
 text = "a generation switch is one rename; the pointer is old or new, never neither"
-status = "planned"
+status = "required"
 
 [ROOT-ROLLBACK]
 text = "rollback moves the pointer; it does not re-run use"
-status = "planned"
+status = "required"
 
 [ROOT-ETC-FACTORY]
 text = "factory /etc fills only what is missing; sysusers only appends"
-status = "planned"
+status = "required"
 
 [ROOT-LIBSEARCH]
-text = "managed binaries never read a cache; foreign ones find libraries through /lib64 and this root's ld.so.cache"
-status = "planned"
+text = "a host-built program (PT_INTERP /lib64/ld-linux) runs in a root, finding its libraries through /lib64 = the root's /usr/lib"
+status = "required"
 
 [ROOT-NO-HOST]
 text = "a process in a root maps nothing from outside it"
-status = "planned"
+status = "required"
 
 [ROOT-SURVIVES-GLIBC]
 text = "with glibc broken, the static xlings rolls the root back"
-status = "planned"
+status = "required"
 
 [ROOT-SELF-UPDATE]
 text = "in deployment R, self update is a new generation of the host SubOS and can be rolled back"
@@ -522,11 +520,11 @@ status = "planned"
 
 [INST-ROOTFS]
 text = "--rootfs instance: uid 0 inside, no host /usr, policy, broker and audit as for any instance"
-status = "planned"
+status = "required"
 
 [EXPORT-OCI]
-text = "subos export --oci runs under docker"
-status = "planned"
+text = "subos export --tar is a root docker imports and runs"
+status = "required"
 
 [EXPORT-WSL]
 text = "subos export --wsl imports with wsl --import"
@@ -534,27 +532,27 @@ status = "planned"
 
 [EXPORT-DISK]
 text = "subos export --disk boots under qemu"
-status = "planned"
+status = "required"
 
 [BOOT-STAGE0]
 text = "stage-0 picks the host from boot.json, points /usr at it and execs its init"
-status = "planned"
+status = "required"
 
 [BOOT-ONCE-FALLBACK]
 text = "a trial boot not marked good falls back; marked good it becomes the default"
-status = "planned"
+status = "required"
 
 [BOOT-NOW]
 text = "subos boot --now switches user space where the init supports it, refuses elsewhere"
-status = "planned"
+status = "required"
 
 [LUBAN-TINY]
 text = "luban-tiny: created from its xpkg, exported, booted, installs inside"
-status = "planned"
+status = "required"
 
 [LUBAN-CORE]
 text = "luban-core: compiles and runs a program inside"
-status = "planned"
+status = "required"
 
 [LUBAN-DESKTOP-RENDER]
 text = "luban-desktop renders a frame offscreen in a container"
@@ -562,4 +560,9 @@ status = "planned"
 
 [LUBAN-FROM-CHAIN]
 text = "an xpkg's from chain merges workspaces, the upper one winning"
-status = "planned"
+status = "required"
+
+[ROOT-LDCACHE]
+text = "a root's own /etc/ld.so.cache (ldconfig) is read by programs that enter through /lib64"
+status = "deferred"
+why = "the loader reads the cache from its payload's etc/ (measured, design part 2 §2.3); a glibc revision whose sysconfdir follows the path it is invoked through is an xlings-res rebuild of its own -- /lib64 = /usr/lib already covers what a distribution's cache is for"

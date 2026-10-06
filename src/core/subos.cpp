@@ -1,6 +1,7 @@
 module xlings.core.subos;
 
 import xlings.subos.roles;
+import xlings.core.subos.root;
 import std;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -1575,10 +1576,14 @@ int run_list_(EventStream& stream) {
     }
     nlohmann::json entriesJson = nlohmann::json::array();
     for (auto& [n, d, commands, packages, active] : entries) {
+        const auto role = subos_root::role_of(Config::paths().homeDir, n);
         entriesJson.push_back({{"name", n}, {"dir", d},
                                {"commands", commands},
                                {"packages", packages},
-                               {"active", active}});
+                               {"active", active},
+                               {"kind", std::string(roles::to_string(
+                                            subos_root::kind_of(Config::paths().homeDir, n)))},
+                               {"host", role.host}, {"boot_entry", role.boot_entry}});
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);

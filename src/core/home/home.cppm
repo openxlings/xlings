@@ -73,7 +73,7 @@ Mode infer_mode(const fs::path& home, Source source);
 //    still has a home of their own; the system adds root-owned components and
 //    a configuration file, and updates the entry through its package manager.
 // M: S plus a root-owned system LAYER, a home a package manager maintains for
-//    every user (/opt/xlings), declared `"mode": "multi"` in its .xlings-home.
+//    every user (/xlings), declared `"mode": "multi"` in its .xlings-home.
 //    Read here; resolving packages from it is not implemented yet.
 
 struct Entry {
@@ -91,7 +91,7 @@ fs::path system_config_path();
 // The file as an object; missing or unreadable is empty, never an error.
 nlohmann::json read_system_config();
 
-// The system layer when one is installed: /opt/xlings (%ProgramData%\xlings\home)
+// The system layer when one is installed: /xlings (%ProgramData%\xlings\home)
 // or XLINGS_SYSTEM_LAYER, and only if its marker declares mode "multi".
 std::optional<fs::path> system_layer();
 

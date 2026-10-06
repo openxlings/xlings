@@ -297,19 +297,23 @@ XTEST(SubosPolicy, APackageExtendsAPresetNeverAnotherPackage,
     EXPECT_FALSE(p::from_package(nlohmann::json{{"isolation", {{"net", "vpn"}}}}, "xim:a@1", {"xim:a@1.0.0", "00"}));
 }
 
-// C24 is not implemented: `layer` parses, and is refused wherever it appears
-// rather than quietly installing into the shared home.
-XTEST(SubosPolicy, FetchLayerIsRefusedUntilItIsImplemented,
+// `layer` (part 2 §3.3) installs into a root's own system scope: it parses
+// wherever it appears, is allowed by the decision, and is what tells the entry
+// that the instance must be a root (a view refuses to start with it).
+XTEST(SubosPolicy, FetchLayerIsTheRootsOwnScope,
       .area = "subos", .covers = {"PERM-FETCH-LAYER", "POL-UNKNOWN-REFUSED"}) {
     namespace p = xlings::subos::policy;
     EXPECT_TRUE(p::fetch_from_string("layer"));
     auto file = p::from_json(nlohmann::json{{"extends", "dev"}, {"permissions", {{"fetch", "layer"}}}});
-    ASSERT_FALSE(file);
-    EXPECT_NE(file.error().find("layer"), std::string::npos);
-    EXPECT_FALSE(p::from_json(nlohmann::json{{"permissions", {{"index_update", "layer"}}}}));
-    EXPECT_FALSE(p::from_json(nlohmann::json{{"permissions", {{"fetch", {{"rules",
-        nlohmann::json::array({{{"match", "*"}, {"action", "layer"}}})}}}}}}));
-    p::Overrides call;
-    call.fetch = p::Fetch::Layer;
-    EXPECT_FALSE(p::apply(p::preset(p::Preset::Dev), call));
+    ASSERT_TRUE(file) << file.error();
+    EXPECT_TRUE(p::fetches_into_layer(*file));
+    EXPECT_EQ(p::decide(*file, {.kind = "fetch", .target = "make", .from_inside = true}).action,
+              p::Action::Allow);
+    auto rules = p::from_json(nlohmann::json{{"permissions", {{"fetch", {{"rules",
+        nlohmann::json::array({{{"match", "*"}, {"action", "layer"}}})}}}}}});
+    ASSERT_TRUE(rules);
+    EXPECT_TRUE(p::fetches_into_layer(*rules));
+    EXPECT_FALSE(p::fetches_into_layer(p::preset(p::Preset::Dev)));
+    // What this version cannot enforce is still refused.
+    EXPECT_FALSE(p::from_json(nlohmann::json{{"isolation", {{"net", "vpn"}}}}));
 }

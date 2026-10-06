@@ -122,6 +122,9 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
         }
     }
     if (!have_xlings) in.programs.push_back({"xlings", entry_of(home)});
+    // Stage-0 at a fixed path in every root (part 2 §8.2): what an init's
+    // restart hands / to, for `subos boot <n> --now`.
+    in.programs.push_back({"xlings-init", entry_of(home)});
     return in;
 }
 

@@ -395,12 +395,14 @@ std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
 }
 
 std::optional<std::string> not_enforced(const Policy& p) {
+    (void)p;
+    return std::nullopt;
+}
+
+bool fetches_into_layer(const Policy& p) {
     bool layer = p.fetch == Fetch::Layer || p.index_update == Fetch::Layer;
     for (const auto& r : p.fetch_rules) layer = layer || r.action == Fetch::Layer;
-    if (layer)
-        return std::string("fetch = 'layer' (an instance-private package layer) is not "
-                           "implemented in this version -- use auto, ask or deny");
-    return std::nullopt;
+    return layer;
 }
 
 bool is_package_ref(std::string_view extends) {

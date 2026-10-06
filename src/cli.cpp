@@ -12,6 +12,7 @@ import mcpplibs.cmdline;
 import mcpplibs.capi.lua;
 import mcpplibs.xpkg.executor;
 import xlings.core.config;
+import xlings.core.home;
 import xlings.core.notice;
 import xlings.core.home_config;
 import xlings.libs.json;
@@ -449,8 +450,14 @@ void dispatch_data_event(const DataEvent& e) {
         std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
         if (json.contains("entries") && json["entries"].is_array()) {
             for (auto& e : json["entries"]) {
+                // A root says so, and what it is to this machine (part 2 §3.4).
+                std::string name = e.value("name", "");
+                if (e.value("kind", "view") == "rootfs") {
+                    name += e.value("host", false) ? " (root, /)" : " (root)";
+                    if (e.value("boot_entry", false)) name += " [boot]";
+                }
                 entries.emplace_back(
-                    e.value("name", ""),
+                    name,
                     e.value("dir", ""),
                     e.value("commands", e.value("pkgCount", 0)),
                     e.value("packages", -1),
@@ -755,6 +762,60 @@ bool parse_target_spec_(const mcpplibs::cmdline::ParsedArgs& args,
 }
 
 // Install packages from project .xlings.json workspace
+// `install --system` (deployment M, SubOS design part 2 §10): the system
+// layer is a home of its own -- root's, /xlings unless XLINGS_SYSTEM_LAYER
+// names another -- and the install runs in it. Every user's profile puts its
+// programs after their home's own, so a user's version wins and the system's
+// is used without a copy; nobody but root can write it.
+int install_into_system_layer_(const std::vector<std::string>& targets, bool yes, bool reconfig) {
+    namespace fs = std::filesystem;
+    const char* named = std::getenv("XLINGS_SYSTEM_LAYER");
+    const auto layer = fs::path(named && *named ? named : "/xlings");
+    if (targets.empty()) {
+        log::error("install --system needs the packages to install");
+        return 2;
+    }
+    std::error_code ec;
+    fs::create_directories(layer / "bin", ec);
+    const auto probe = layer / ".xlings-write-probe";
+    const bool writable = !ec && static_cast<bool>(std::ofstream(probe));
+    fs::remove(probe, ec);
+    if (!writable) {
+        log::error("the system layer {} is root's: sudo xlings install --system ...", layer.string());
+        return 13;
+    }
+    if (!fs::exists(layer / ".xlings-home", ec)) {
+        std::ofstream(layer / ".xlings-home") << "{\n  \"layout\": 2,\n  \"mode\": \"multi\"\n}\n";
+    }
+    // Its entry: this binary when it is a system package's (the package
+    // manager updates it), a copy of it otherwise.
+    const auto exe = platform::get_executable_path();
+    const auto entry = layer / "bin" / "xlings";
+    if (!fs::exists(entry, ec)) {
+        if (home::describe_entry(exe, layer).system) fs::create_symlink(exe, entry, ec);
+        else fs::copy_file(exe, entry, ec);
+        if (ec) {
+            log::error("cannot place {}: {}", entry.string(), ec.message());
+            return 1;
+        }
+    }
+    platform::set_env_variable("XLINGS_HOME", layer.string());
+    platform::unset_env_variable("XLINGS_ACTIVE_SUBOS");
+    if (int rc = platform::run_argv_with_timeout(std::vector<std::string>{entry.string(), "self", "init"},
+                                                 std::chrono::hours(1));
+        rc != 0)
+        return rc;
+    std::vector<std::string> argv{entry.string(), std::string("install")};
+    if (yes) argv.push_back("-y");
+    if (reconfig) argv.push_back("--reconfig");
+    argv.insert(argv.end(), targets.begin(), targets.end());
+    const int rc = platform::run_argv_with_timeout(argv, std::chrono::hours(6));
+    if (rc == 0)
+        log::info("in the system layer {}: every user's shell finds it after their own "
+                  "(their profile, from the next shell on)", layer.string());
+    return rc;
+}
+
 int install_from_project_config_(EventStream& stream, bool reconfig) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2036,6 +2097,7 @@ int dispatch_(int argc, char* argv[]) {
             .option(cmdline::Option("use").short_name('u').help("Activate the installed version even if another version is currently active"))
             .option(cmdline::Option("reconfig").help("Run the configuration step again, even for packages already configured here"))
             .option(cmdline::Option("subos").takes_value().value_name("NAME").help("Install into this subos instead of the current one"))
+            .option(cmdline::Option("system").help("Install into the system layer (/xlings): every user of this machine gets it"))
             .arg("packages").help("Package names with optional version")
             .action(wrap_rc([&stream](const cmdline::ParsedArgs& args) -> int {
                 apply_global_opts_(args);
@@ -2063,6 +2125,8 @@ int dispatch_(int argc, char* argv[]) {
                 }
 
                 const bool reconfig = args.is_flag_set("reconfig");
+                if (args.is_flag_set("system"))
+                    return install_into_system_layer_(targets, args.is_flag_set("yes"), reconfig);
                 // --subos <name> (design §9; remove already had it): act on
                 // that subos, set the way `subos runtime` does -- the override
                 // recomputes the cached paths, the variable is what the

@@ -230,6 +230,47 @@ xlings self doctor --isolation --fix    # 一次 sudo：root 拥有的 bwrap + �
 `--sandbox landlock`：内核限制写入（只能写实例目录），但宿主文件可见、本机 socket 可连接——
 它防误写，不防恶意代码。
 
+## 场景十一：一个完全由 xlings 构成的根（Luban）
+
+SubOS 也可以**作为 `/`** 呈现：它的 `/usr` 是包的链接视图，`/etc`、`/home`、`/var` 是这台"机器"
+自己的状态。同一份声明可以作为沙箱实例进入、导出成容器镜像，或者由内核直接启动——
+这就是 **Luban**（kernel + xlings + 可选的 LubanOS 服务）。官方分级是 subos 类型的包：
+`luban-tiny`（busybox、glibc、内核）、`luban-core`（+ bash、coreutils、gcc、curl……）、
+`luban-desktop`（+ Mesa、Wayland、X11、字体、音频），上一级 `from` 下一级。
+
+```bash
+xlings subos new box --rootfs --from subos:luban-core   # 一个根；它声明的包装进去
+xlings subos use box                                    # 进入：uid 0，自己的 /usr、/etc
+xlings subos exec box -- sh -c 'gcc hello.c && ./a.out'
+xlings subos exec box -- xlings install -y nginx        # 在里面装包：立即出现在它的 /usr/bin
+xlings subos status box                                 # 当前代、各代、名字冲突
+xlings subos rollback box                               # 回到上一代（只切指针）
+
+xlings subos export box --tar box.tar.gz                # docker import / podman import / wsl --import
+xlings subos export box --disk box.img --size 8G        # ext4 磁盘镜像
+qemu-system-x86_64 -m 1G -nographic \
+  -kernel ~/.xlings/subos/box/root/usr/lib/modules/*/vmlinuz \
+  -drive file=box.img,format=raw,if=virtio \
+  -append "root=/dev/vda rw console=ttyS0 init=$HOME/.xlings/boot/xlings-init"
+```
+
+- 包的每一次变动都是一个新的**代**（generation）：`/usr` 指向当前代，切换是一次 rename，
+  回滚只是把指针切回去。glibc 坏了，静态的 xlings 照样能回滚。
+- 镜像里的 xlings 就是唯一的包管理器：`xlings install` 装进系统；`xlings subos boot <n> --once`
+  试启动另一个 SubOS（没确认就自动回到默认），`xlings subos boot <n>` 设为默认，
+  `--now` 在 init 支持时不重启内核直接切换用户态。
+- 两种布局：镜像里的系统 home 就是构建它的 home 的路径（single，一个用户等价于 root），
+  或者在 `/xlings` 里构建（multi，推荐多用户；`/xlings` 由 root 拥有）。
+- 定制自己的发行版：`subos new mydistro --rootfs --from subos:luban-core`，装包，
+  `subos pack mydistro --as myns:mydistro@1.0` 打成包，发布到你自己的索引。
+
+多用户机器上，管理员可以把包装进**系统层**，每个用户都能用、不用复制，自己装的版本优先：
+
+```bash
+sudo xlings install --system gcc cmake      # 装进 /xlings（root 拥有）
+cmake --version                              # 普通用户：shell 里在自己的包之后、宿主之前找到它
+```
+
 ## 排错
 
 ```bash
@@ -274,3 +315,9 @@ SubOS 的 home 是用户数据：只有用户发起并确认的删除才会删�
 | `subos cp <src> <dst>` | 拷入 / 拷出（一端写成 `<name>:<path>`） |
 | `subos list` / `subos info <name>` / `subos remove <name>` | 列出 / 详情 / 删除 |
 | `self doctor --isolation [--fix]` | 这台机器能怎样隔离，以及修复 |
+| `subos new <name> --rootfs [--from subos:luban-*]` | 一个根：作为 `/` 进入、导出、启动 |
+| `subos rollback <name> [--to N] [--list]` | 根回到某一代 |
+| `subos export <name> --rootfs <dir>\|--tar <file>\|--disk <file>` | 导出为目录 / tar 包 / 磁盘镜像 |
+| `subos boot [<name>] [--once\|--fallback\|--now\|--mark-good]` | 机器启动哪个 SubOS |
+| `subos diff <a> <b>` / `subos pack <name> --as ns:pkg@ver` | 比较两个 SubOS / 打成 subos 类型的包 |
+| `install --system <pkg>` | 装进系统层（多用户，root） |

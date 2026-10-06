@@ -46,6 +46,18 @@ platforms = ["linux"]
 commands = [
   "bash tests/e2e/isolation_doctor_fix_test.sh",
   "bash tests/e2e/system_install_test.sh",
+  "bash tests/e2e/system_layer_test.sh",
+]
+
+# The root projection (SubOS design part 2): Luban roots made from the
+# published editions, entered in bwrap, exported to docker, booted by qemu.
+# CI-only: the `distro` job (bwrap, docker, qemu/kvm, sudo).
+[distro]
+platforms = ["linux"]
+commands = [
+  "bash tests/e2e/rootfs_instance_test.sh",
+  "bash tests/e2e/rootfs_image_test.sh",
+  "bash tests/e2e/rootfs_boot_test.sh",
 ]
 
 # Deployment S as a distribution packages it: the AUR recipe built from the

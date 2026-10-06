@@ -5513,7 +5513,7 @@ int cmd_doctor(EventStream& stream, bool fix, bool resetMetadata, bool dryRun, b
                 "system config: {} (defaults this home's .xlings.json overrides)", cfg.string())});
         if (const auto layer = home::system_layer())
             stream.emit(LogEvent{LogLevel::info, std::format(
-                "system layer: {} (found; packages are not resolved from it yet)", layer->string())});
+                "system layer: {} (its programs follow this home's on PATH; `sudo xlings install --system` adds to it)", layer->string())});
     }
 
     const bool deepAudit = deep || fix;

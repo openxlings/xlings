@@ -79,10 +79,14 @@ namespace xlings::xself::profile_resources {
 //       fish and pwsh (7+) each get a hook that asks the CLI, so the
 //       candidate set is the live command spec plus installed tools and
 //       subos names rather than a snapshot frozen at install time.
-export inline constexpr std::string_view kVersion = "12";
+//  13 — the system layer (deployment M, SubOS design part 2 §10): when a
+//       root-owned /xlings (or $XLINGS_SYSTEM_LAYER) is present, its programs
+//       come right after the home's own -- a user's version wins, the
+//       system's is used without a copy, and both before the host's.
+export inline constexpr std::string_view kVersion = "13";
 
 export inline constexpr std::string_view bash_sh =
-R"XPROFILE(# xlings-profile-version: 12
+R"XPROFILE(# xlings-profile-version: 13
 # Xlings Shell Profile (bash/zsh)
 
 _xlings_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
@@ -108,6 +112,16 @@ case ":$PATH:" in
     *":$XLINGS_BIN:"*) ;;
     *) export PATH="$XLINGS_BIN:$XLINGS_HOME/bin:$PATH" ;;
 esac
+
+# The system layer's programs, after this home's own (deployment M).
+_xlings_layer="${XLINGS_SYSTEM_LAYER:-/xlings}/subos/default/bin"
+if [ -d "$_xlings_layer" ] && [ "$_xlings_layer" != "$XLINGS_BIN" ]; then
+    case ":$PATH:" in
+        *":$_xlings_layer:"*) ;;
+        *) export PATH="$(printf '%s' "$PATH" | sed "s|$XLINGS_HOME/bin|$XLINGS_HOME/bin:$_xlings_layer|")" ;;
+    esac
+fi
+unset _xlings_layer
 
 # Prompt marker: when the sub-shell was spawned by `xlings subos use`,
 # decorate PS1 with [xsubos:<name>] so the user sees which subos they are in.
@@ -224,7 +238,7 @@ fi
 )XPROFILE";
 
 export inline constexpr std::string_view fish =
-R"XPROFILE(# xlings-profile-version: 12
+R"XPROFILE(# xlings-profile-version: 13
 # Xlings Shell Profile (fish)
 
 set -l _script_dir (dirname (status filename))
@@ -241,6 +255,17 @@ end
 
 if not contains "$XLINGS_BIN" $PATH
     set -gx PATH "$XLINGS_BIN" "$XLINGS_HOME/bin" $PATH
+end
+
+# The system layer's programs, after this home's own (deployment M).
+set -l _xlings_layer (set -q XLINGS_SYSTEM_LAYER; and echo $XLINGS_SYSTEM_LAYER; or echo /xlings)/subos/default/bin
+if test -d "$_xlings_layer"; and not contains "$_xlings_layer" $PATH; and test "$_xlings_layer" != "$XLINGS_BIN"
+    set -l _i (contains -i "$XLINGS_HOME/bin" $PATH)
+    if test -n "$_i"
+        set -gx PATH $PATH[1..$_i] "$_xlings_layer" $PATH[(math $_i + 1)..-1]
+    else
+        set -gx PATH $PATH "$_xlings_layer"
+    end
 end
 
 # Prompt marker: wrap fish_prompt to prepend [xsubos:<name>] when the env
@@ -300,7 +325,7 @@ complete -c xlings -f -a '(__xlings_complete)'
 )XPROFILE";
 
 export inline constexpr std::string_view pwsh =
-R"XPROFILE(# xlings-profile-version: 12
+R"XPROFILE(# xlings-profile-version: 13
 # Xlings Shell Profile (PowerShell)
 
 $env:XLINGS_HOME = (Resolve-Path "$PSScriptRoot\..\..").Path

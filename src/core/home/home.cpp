@@ -118,7 +118,7 @@ std::optional<fs::path> system_layer() {
     fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
     if (layer.empty()) {
         if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";
-        else layer = "/opt/xlings";
+        else layer = "/xlings";
     }
     auto marker = read_marker(layer);
     if (!marker) return std::nullopt;

@@ -278,7 +278,13 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         std::vector<std::string> argv{bin.string(), "install", "-y", "--subos", name};
         argv.insert(argv.end(), declared->packages.begin(), declared->packages.end());
         log::info("installing what '{}' declares: {} package(s)", name, declared->packages.size());
-        if (run_tool_(argv, stream, "installing the declared packages") != 0) return 1;
+        if (run_tool_(argv, stream, "installing the declared packages") != 0) {
+            std::string list;
+            for (auto& p : declared->packages) list += " " + p;
+            log::info("'{}' is made but not complete: `xlings install -y --subos {}{}` finishes it, "
+                      "`xlings subos remove {}` takes it away", name, name, list, name);
+            return 1;
+        }
     }
     auto r = subos_root::refresh(home, name, "subos new --rootfs");
     if (r && !*r) {
@@ -357,10 +363,11 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     const auto home = home_dir_();
     const auto file = HomeView{home}.boot_file();
     std::string name;
-    bool once = false, mark_good = false, fallback = false;
+    bool once = false, mark_good = false, fallback = false, now = false;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--once") once = true;
+        else if (a == "--now") now = true;
         else if (a == "--fallback") fallback = true;
         else if (a == "--mark-good") mark_good = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
@@ -384,6 +391,35 @@ int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     }
     if (!exists_(name)) { error_(stream, "no SubOS named '" + name + "'"); return 1; }
     if (!role_allows_(roles::Op::Boot, name, stream)) return 1;
+    // --now (part 2 §8.1): hand / to it without restarting the kernel. Only
+    // an init that can re-exec stage-0 can do that -- busybox init with a
+    // `::restart:` entry naming /usr/bin/xlings-init (luban-tiny's), on the
+    // machine this home is the root of. Anything else would leave the
+    // running processes on one SubOS and new ones on another: refused, and
+    // a reboot does it.
+    if (now) {
+        const auto host = subos_root::running_host(home);
+        std::error_code ec;
+        const auto init = fs::read_symlink("/proc/1/exe", ec).filename().string();
+        const auto inittab = read_text_("/etc/inittab");
+        const bool restartable = host && init == "busybox"
+            && inittab.find("::restart:/usr/bin/xlings-init") != std::string::npos;
+        if (!restartable) {
+            error_(stream, !host ? "this home is not the root of the running machine"
+                                 : "this machine's init cannot hand / to another SubOS without a reboot",
+                   std::format("xlings subos boot {} --once, then reboot", name));
+            return 1;
+        }
+        cfg->once = name;
+        if (auto s = bt::save(file, *cfg); !s) { error_(stream, s.error()); return 1; }
+        log::info("switching user space to '{}' now", name);
+        std::cout.flush();
+        if (!platform::send_signal(1, platform::sig::quit)) {
+            error_(stream, "init did not take the signal: " + platform::error_text(platform::last_error()));
+            return 1;
+        }
+        return 0;
+    }
     if (once) cfg->once = name;
     else if (fallback) cfg->fallback = name;
     else { cfg->default_entry = name; cfg->tries[name] = bt::kTries; }

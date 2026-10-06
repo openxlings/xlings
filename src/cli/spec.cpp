@@ -20,7 +20,7 @@ const CommandSpec& root() {
         },
         .children = {
             {"install", "Install packages", {}, {{"packages", "Package names", false, true}},
-                {{"-g, --global", "Use global scope"}, {"-u, --use", "Activate installed version"}, {"--reconfig", "Run the configuration step again, even where it already ran"}, {"--subos <NAME>", "Install into this subos instead of the current one"}}, {}},
+                {{"-g, --global", "Use global scope"}, {"-u, --use", "Activate installed version"}, {"--reconfig", "Run the configuration step again, even where it already ran"}, {"--subos <NAME>", "Install into this subos instead of the current one"}, {"--system", "Install into the system layer (/xlings): every user of this machine gets it"}}, {}},
             {"remove", "Remove a package", {}, {{"package", "Package name", true}, {"version", "Optional version", false}},
                 {{"-g, --global", "Use global scope"},
                  {"--force", "Remove even if packages depend on it, the recipe is gone, or its uninstall hook fails"},
@@ -117,7 +117,8 @@ const CommandSpec& root() {
                     {{"--to <N>", "This generation (default: the one before)"}, {"--list", "List the generations"}}, {}},
                 {"boot", "Choose the SubOS a machine boots, from the next boot on", {}, {{"name", "SubOS name; omit to show", false}},
                     {{"--once", "Only the next boot (a trial)"}, {"--fallback", "Boot it when the default fails"},
-                     {"--mark-good", "This boot worked: keep booting it"}}, {}},
+                     {"--mark-good", "This boot worked: keep booting it"},
+                     {"--now", "Switch user space to it now, where the init can (no reboot)"}}, {}},
                 {"export", "Export a root SubOS as a directory, a tarball or a disk image", {}, {{"name", "SubOS name", true}},
                     {{"--rootfs <DIR>", "A root directory (chroot, bwrap, nspawn)"},
                      {"--tar <FILE>", "A root tarball (docker import, podman import, wsl --import)"},

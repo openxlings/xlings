@@ -536,6 +536,17 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         return kFail;
     }
     const auto pol = std::move(*effective);
+    if (policy::fetches_into_layer(pol) && !rootfs) {
+        stream.emit(ErrorEvent{
+            .code = ErrorCode::InvalidInput,
+            .message = "fetch = layer installs into the root's own system scope, and '" + name
+                       + "' is a view of the host with none",
+            .recoverable = false,
+            .hint = std::format("a root: xlings subos new <name> --rootfs --from {}; or "
+                                "xlings subos config {} --fetch auto|ask|deny", name, name),
+        });
+        return kFail;
+    }
 
     spec::Request request{
         .instance = name,

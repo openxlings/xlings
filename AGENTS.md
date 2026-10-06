@@ -22,7 +22,8 @@ modules/                             # packages linked into xlings, one per resp
 │                      process (fork/exec/signals/sockets), isolation (ns/Landlock/seccomp)
 ├── ui/         theme, i18n
 ├── subos/      the SubOS core: model, policy, spec, providers, caps, gates,
-│               session (supervisor + session-init), broker, manifest, userdata
+│               session (supervisor + session-init), broker, manifest, userdata,
+│               rootfs (the root projection, generations), boot, roles, stage0
 └── testkit/    C++ e2e test library (dev-dependency)
 apps/
 ├── gui/        GUI library half
@@ -36,6 +37,7 @@ src/                                 # not yet separated: core, cli, ui, runtime
     ├── home/                        # HomeContext: deployment mode, layout, system config
     ├── subos.cpp                    # `subos` commands (new/use/exec/start/config/...)
     ├── subos/sandbox.cpp            # adapter: policy + caps -> spec -> session
+    ├── subos/root.cpp, root_cmd.cpp # a workspace -> its root projection; rollback/boot/export
     ├── xself/                       # self install/update/doctor
     ├── xim/                         # package management (installer, resolver, index...)
     └── xvm/                         # version management, shims
@@ -259,6 +261,28 @@ prints its remedy with the entry's full path, because `xlings` on PATH is one
 of the stale files. A home an older client upgraded needs that command once
 (`& "$env:USERPROFILE\.xlings\bin\xlings.exe" self init` also works): new code
 never runs there on its own.
+
+### A SubOS can be a root (SubOS design part 2)
+
+A SubOS's content (workspace, home, policy) is one thing and how a process
+sees it is another: the PATH overlay, the sandbox view, and the **root** --
+`subos new --rootfs`, where `/usr` is a generation of links into payloads
+and `/etc`, `/home`, `/var` are the root's own machine state. The design is
+`.agents/docs/2026-10-06-subos-architecture-design-part2.md`; what to keep
+in mind when changing code near it:
+
+* **Every workspace change of a rootfs SubOS is a new generation**, made by
+  `xself::sync_shim_tables` (the one writer). A generation is switched with
+  one rename and never edited; rollback moves the pointer.
+* **What may be done to a SubOS is `roles::check(op, kind, role)`** -- a
+  running host is not removed, a boot entry is not removed, a view has no
+  root to export. A new command that can hurt a running system asks it.
+* **Stage-0 (`<home>/boot/xlings-init`) runs before anything reads a home**:
+  /proc is not mounted yet. Nothing on its path may use Config.
+* Deployment forms: S (a package manager's `/usr/bin/xlings`; a home links
+  its entry to it on first write), M (`sudo xlings install --system` into a
+  root-owned `/xlings`, after each user's own on PATH), R (a machine whose
+  userland is a SubOS: `/etc/xlings/root.json` names its system home).
 
 ### SubOS user data
 

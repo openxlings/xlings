@@ -1,4 +1,4 @@
-> 更新日期：2026-10-06
+> 更新日期：2026-10-06（含 Part 2：根呈现、系统层、Luban）
 >
 > 总体架构（部署形态、策略、进入与外部执行、可观测性、平台抽象）见
 > `.agents/docs/2026-10-05-subos-architecture-design.md`。本文是落地后的使用与行为说明：
@@ -125,7 +125,30 @@ Ubuntu 24.04 默认限制非特权 user namespace（AppArmor）。`xlings self d
 - **系统包（S）**：`/usr/bin/xlings` 归包管理器所有。`self update` 不碰它，提示包管理器命令；
   `self update --user` 显式在 home 里装一个用户级 xlings。`/etc/xlings/config.json` 提供 `mirror` / `lang` 默认值
   和 `subos_policy_sources`，home 自己的 `.xlings.json` 覆盖它。`self doctor` 报告实际在用的 entry 和系统文件。
-- **系统层（M）**：`/opt/xlings`（`.xlings-home` 声明 `mode: multi`）会被识别并在 `self doctor` 中报告。
+- **系统包（S）的 home**：用户第一次执行写命令（或 `self init`、`doctor --fix`）时，home 的 `bin/xlings` 被建成
+  指向系统 entry 的链接——没有它，shim 表不会建立，装的包就不在 PATH 上。包管理器升级本体，所有用户跟着升级。
+- **系统层（M）**：`sudo xlings install --system <pkg>` 装进 `/xlings`（root 拥有，`.xlings-home` 声明 `mode: multi`；
+  `XLINGS_SYSTEM_LAYER` 可指定别处）。用户的 shell profile 把它的程序放在用户自己的之后、宿主之前：
+  不复制，用户自己的版本优先，用户写不了它。
+- **根（R）**：一台机器的整个用户态就是一个 SubOS（见下一节）。系统 home 是 `/xlings`（multi）或构建它的
+  home 的路径（single，这个用户等价于 root）；`/etc/xlings/root.json` 是 stage-0 找到它的锚点。
+
+## 根呈现（Part 2）
+
+设计：`.agents/docs/2026-10-06-subos-architecture-design-part2.md`。一个 SubOS 的内容（工作区、home、策略）
+与它的呈现方式无关；第三种呈现方式是**根**：SubOS 本身就是 `/`。
+
+| 部分 | 行为 |
+|---|---|
+| 种类与角色 | `subos new --rootfs` 声明 `kind=rootfs`（`config/subos/<n>/instance.json`，沙箱里只读）；正在作为 `/` 的是 `host`，`boot.json` 里的是启动项。删除、策略、拷贝、启动、导出、回滚都问同一张表（`modules/subos/src/roles.cppm`） |
+| `/usr` | 一代 = 一棵链接树：已注册的程序和库优先，再是各激活包 payload 的 `bin/`、`lib/`（普通发行版的语义，busybox 的 applet 就这样进 `/usr/bin`）；带 alias 的程序保留 shim；`usr/lib/modules/<ver>` 来自内核包 |
+| 代 | `<subos>/root -> root.gen/<k>`，一次 rename 切换；工作区的每次变动（install / use / remove）产生新的一代；`subos rollback` 只切指针 |
+| 机器状态 | `/etc` 只补缺（factory：`usr/share/factory/etc` 和 sysroot 的 `etc/`），sysusers 只追加；`/home`、`/var`、`/root` 不随代变化 |
+| 进入实例 | bwrap：实例的树作为 `/`，uid 0，home 只读挂在原路径，实例本身同时是嵌套根的 `default`——里面的 xlings 就是这个根的包管理器；安装经 broker，立即出现在 `/usr` |
+| `fetch=layer` | 沙箱里装的包进这个根自己的作用域；视图实例（没有根）拒绝进入 |
+| 导出 | `subos export --rootfs/--tar/--disk`：实例成为镜像的 `default`，带上闭包里的 payload（工作区、已安装、每个 ELF 的 loader 与搜索路径）、静态 xlings、`root.json`、`boot/xlings-init` |
+| 启动 | 内核 `init=<home>/boot/xlings-init`：stage-0 挂载内核文件系统，按 `boot.json`（试启动 once、默认、计数用尽后 fallback）选 SubOS，把 `/usr` 指过去，exec 它的 init；init 起不来就试下一个。`subos boot <n> --now`：busybox init 的 restart 重新执行 stage-0，不重启内核 |
+| 库搜索 | xlings 的包按自己的 RUNPATH 闭包找库，从不读 cache；外来程序（`PT_INTERP=/lib64/ld-linux…`）的默认目录是 `/lib64` = 根的 `/usr/lib`（实测） |
 
 ## 跨平台
 
@@ -148,9 +171,8 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 | 项 | 现状 |
 |---|---|
 | `net=proxy` | 拒绝（fail closed）；需要沙箱内转发器和 supervisor 桥接 |
-| `fetch=layer`（实例私有包层） | 拒绝；与下一项是同一个机制 |
-| 系统层（M）的包解析与激活 | 识别并报告，尚不从中解析包 |
-| 独立 rootfs | 维护者决定（计划 C27） |
+| 根自己的 `/etc/ld.so.cache` | loader 从它 payload 的 `etc/` 读 cache；让它跟随调用路径需要 glibc 新 revision（xlings-res）。`/lib64 = /usr/lib` 已覆盖 cache 的用途 |
+| 在 macOS / Windows 上呈现根 | 返回 unavailable；Windows 用 `subos export --tar` + `wsl --import` |
 | 通过 broker 安装时的 hook 沙箱 | hook 在宿主侧按 owner 权限运行 |
 | 加入会话的交互 shell 的作业控制 | 加入时提示：作业控制留在第一个 shell |
 | interface 的 `subos_exec` 实时流式输出 | 结束后返回输出与退出码 |
@@ -162,5 +184,6 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 | `modules/subos/src/` | SubOS 核心：`model`、`policy` / `policy_store`、`spec`（策略 + 主机能力 → 沙箱描述）、`provider`（bwrap / proot 参数）、`caps` / `gates`（能力探测与平台矩阵）、`session`（supervisor 与 session-init）、`broker`、`manifest`、`userdata` |
 | `modules/platform/src/platform/` | 所有系统调用：`process`（进程、信号、带描述符的本地 socket）、`isolation`（namespace、Landlock、seccomp、beneath 拷贝）以及各操作系统的实现 |
 | `modules/runtime/src/` | `guard`（删除前的确认令牌）、`observe`（审计日志、脱敏） |
-| `src/core/subos.cpp` 与 `src/core/subos/` | `xlings subos` 命令：生命周期；`run.cpp`（exec / start / cp）；`configure.cpp`（config / status / doctor）；`audit.cpp`（requests / report / ps / log）；`sandbox.cpp`（把策略和主机能力接到会话上） |
+| `src/core/subos.cpp` 与 `src/core/subos/` | `xlings subos` 命令：生命周期；`run.cpp`（exec / start / cp）；`configure.cpp`（config / status / doctor）；`audit.cpp`（requests / report / ps / log）；`root_cmd.cpp`（new --rootfs / rollback / boot / export / diff / pack）；`root.cpp`（工作区 → 根的投影）；`sandbox.cpp`（把策略和主机能力接到会话上） |
+| `modules/subos/src/rootfs`、`boot`、`roles`、`stage0` | 根投影与代、启动项选择、种类 × 角色的允许操作表、stage-0 |
 | `tests/requirements.toml` | 每一项行为的需求 ID；`tests/unit`、`tests/e2e` 中的测试用 `covers` 认领 |
