@@ -20,6 +20,7 @@ import xlings.core.xvm.lock;
 import xlings.core.entry_binary;
 import xlings.core.home_identity;
 import xlings.core.home;
+import xlings.core.subos.root;
 
 namespace xlings::xself {
 
@@ -680,6 +681,25 @@ ShimSyncSummary sync_shim_tables() {
         ensure_home_layout(home);
         Config::reload_state();
     }
+    // A rootfs SubOS's /usr is derived from the same workspace (design part 2
+    // §6): every workspace change gives it a new generation. Before the entry
+    // check: a root's /usr does not need shims.
+    if (const auto dir = Config::xvm_artifact_subos_dir();
+        (dir != Config::global_subos_dir() || Config::global_workspace_observed())
+        && dir.parent_path() == Config::paths().homeDir / "subos") {
+        const auto name = dir.filename().string();
+        if (auto r = subos_root::refresh(Config::paths().homeDir, name, dir, Config::workspace(),
+                                         Config::versions(), "workspace change")) {
+            if (!*r) {
+                log::warn("the root of subos '{}' was not updated: {}", name, r->error());
+            } else if ((*r)->changed) {
+                log::info("subos '{}': root generation {}{}", name, (*r)->generation,
+                          (*r)->conflicts ? std::format(" ({} name conflict(s), see `xlings subos "
+                                                        "status {}`)", (*r)->conflicts, name)
+                                          : std::string{});
+            }
+        }
+    }
     auto entry = xlings_binary_in_home(Config::paths().homeDir);
     std::error_code ec;
     if (entry.empty() || !fs::exists(entry, ec)) {
@@ -763,6 +783,7 @@ ShimSyncSummary sync_shim_tables() {
             : true;
     sync_one(Config::xvm_artifact_subos_dir(), Config::workspace(), "scope",
              scopeObserved);
+
 
     // In project scope, the global active subos too: the project's bin is
     // never on PATH, so its command names must also exist in the directory

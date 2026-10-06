@@ -32,6 +32,9 @@ import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
 import xlings.libs.sha256;
+import xlings.core.subos.root;
+import xlings.subos.rootfs;
+import xlings.subos.roles;
 import xlings.core.version_order;
 
 namespace xlings::subos {
@@ -199,7 +202,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     int rc = 0;
     std::string mode;
     if (iso.sandbox || iso.preset || session::find(home_view(), name)
-        || policy_store::has_file(home_view(), name)) {
+        || enters_sandboxed_(name)) {
         mode = "sandbox";
         use_detail_::apply_subos_env_(name);
         auto declared = declared_env_(name);
@@ -353,16 +356,27 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     if (resolved.selected.empty()) return resolved.exitCode;
     auto user = utils::get_env_or_default(platform::is_windows ? "USERNAME" : "USER");
     if (user.empty()) user = "user";
-    auto mapped = model::inside_to_host(Config::subos_dir(resolved.selected), user, inst.second);
+    if (!role_allows_(roles::Op::Copy, resolved.selected, stream)) return 1;
+    // A rootfs instance's own tree is everything but what the projection and
+    // the kernel provide (part 2 §6.1); a view's is its home and /tmp.
+    const bool rootfs = subos_root::kind_of(Config::paths().homeDir, resolved.selected)
+                        == roles::Kind::Rootfs;
+    auto mapped = rootfs
+        ? model::inside_to_root(Config::subos_dir(resolved.selected) / std::string(rootfs::kTree),
+                                inst.second, Config::paths().homeDir)
+        : model::inside_to_host(Config::subos_dir(resolved.selected), user, inst.second);
     if (!mapped) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-            .message = inst.second + " is not the instance's own (only /home/" + user + " and /tmp are)",
+            .message = rootfs ? inst.second + " is not the root's own (/usr, /proc, /sys, /dev, /run and "
+                                              "the xlings home are provided, not copied into)"
+                              : inst.second + " is not the instance's own (only /home/" + user + " and /tmp are)",
             .recoverable = false });
         return 1;
     }
     // Paths inside are resolved beneath the instance's root and never
     // through a link it made (platform::copy_into_beneath).
-    const auto root = Config::subos_dir(resolved.selected);
+    const auto root = rootfs ? Config::subos_dir(resolved.selected) / std::string(rootfs::kTree)
+                             : Config::subos_dir(resolved.selected);
     const auto rel = mapped->lexically_relative(root);
     std::expected<void, std::string> done;
     if (src) {

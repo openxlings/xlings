@@ -11,6 +11,8 @@ using spec::MountKind;
 std::vector<std::string> bwrap_argv(const spec::SandboxSpec& s, std::optional<int> seccomp_fd) {
     std::vector<std::string> a{ s.backend_bin.generic_string() };
     if (s.unshare_user) a.push_back("--unshare-user");
+    if (s.uid) a.insert(a.end(), {"--uid", std::to_string(*s.uid)});
+    if (s.gid) a.insert(a.end(), {"--gid", std::to_string(*s.gid)});
     if (s.disable_userns) a.push_back("--disable-userns");
     if (s.unshare_pid) a.push_back("--unshare-pid");
     if (s.unshare_ipc) a.push_back("--unshare-ipc");

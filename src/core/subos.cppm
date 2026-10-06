@@ -14,6 +14,7 @@ import xlings.subos.graphics;
 import xlings.core.subos.sandbox;
 import xlings.subos.manifest;
 import xlings.subos.policy;
+import xlings.subos.roles;
 // Leaf module (std + json only). Same source for "is this a global option"
 // that the CLI validator uses, so the two cannot disagree about `--yes`.
 import xlings.cli.spec;
@@ -495,6 +496,7 @@ export std::optional<SubosInfo> info(const std::string& name);
 // src/core/subos/run.cpp       exec, start, cp, and the isolation flags
 // src/core/subos/configure.cpp config, status, doctor, policy packages
 // src/core/subos/audit.cpp     requests / approve / deny, report, ps, log
+// src/core/subos/root_cmd.cpp  new --rootfs, rollback, boot, export, diff, pack
 //
 // Not exported: they are the module's own.
 
@@ -526,6 +528,16 @@ void stop_legacy_keeper_(const std::string& name);
 int declare_isolation_at_creation_(const std::string& name, std::optional<policy::Preset> preset,
                                    const std::string& from, EventStream& stream);
 
+// A declared instance -- a policy, or a root -- is entered sandboxed however
+// it is entered (design §10; part 2 §3.1).
+bool enters_sandboxed_(const std::string& name);
+// The role table (part 2 §8.3), asked by every command that could hurt the
+// running system: false after emitting the refusal and what to do instead.
+bool role_allows_(roles::Op op, const std::string& name, EventStream& stream);
+// `subos new --rootfs`, and a fork of a root (part 2 §11).
+int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
+                              EventStream& stream);
+
 using UsageError = std::function<void(std::string_view)>;
 int run_exec_(int argc, char* argv[], EventStream& stream);
 int run_start_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
@@ -538,6 +550,12 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
 int run_report_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_ps_(int argc, char* argv[], EventStream& stream);
 int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+// src/core/subos/root_cmd.cpp: the root projection's commands.
+int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
+int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 
 export int run(int argc, char* argv[], EventStream& stream);
 

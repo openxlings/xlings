@@ -25,6 +25,8 @@ import xlings.core.elfread;
 import xlings.core.confirm;
 import xlings.observe;
 import xlings.core.subos.ports;
+import xlings.core.subos.root;
+import xlings.subos.roles;
 
 namespace xlings::subos::sandbox {
 
@@ -498,10 +500,36 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     const auto home = subos::home_view();
     const auto ports = subos::make_ports(stream);
 
+    // A rootfs instance (design part 2 §3.1) is entered as its own root,
+    // always in a sandbox; with no isolation declared it is `dev`. Its
+    // projection is brought up to date first -- a no-op when nothing moved.
+    const bool rootfs = subos_root::kind_of(p.homeDir, name) == roles::Kind::Rootfs;
+    auto preset = opts.preset;
+    if (rootfs) {
+        if constexpr (!platform::is_linux) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = "a rootfs SubOS is entered as a Linux root; this host is not Linux",
+                .recoverable = false,
+                .hint = std::format("on Windows: xlings subos export {} --wsl <file> on a Linux "
+                                    "machine, then wsl --import", name),
+            });
+            return kFail;
+        }
+        if (!preset && !policy_store::has_file(home, name)) preset = policy::Preset::Dev;
+        if (auto r = subos_root::refresh(p.homeDir, name, "enter"); r && !*r) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::Internal,
+                                    .message = "the root of '" + name + "' could not be prepared: "
+                                               + r->error(),
+                                    .recoverable = false });
+            return kFail;
+        }
+    }
+
     // What this instance may do: its policy file, a stricter preset named on
     // this call, this call's (tighten-only) overrides. A policy that does not
     // parse, or names what this version cannot enforce, refuses entry.
-    auto effective = policy_store::effective(home, name, opts.preset, opts.overrides);
+    auto effective = policy_store::effective(home, name, preset, opts.overrides);
     if (!effective) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = effective.error(),
                                 .recoverable = false });
@@ -532,6 +560,11 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     request.explicit_env = opts.env;
     request.cwd = opts.cwd;
     if (opts.detached) request.interactive = false;
+    if (rootfs) {
+        request.root = subos_root::tree_of(p.homeDir, name);
+        if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
+        request.shell = "/bin/sh";
+    }
 
     nlohmann::json payload;
     payload["name"] = name;

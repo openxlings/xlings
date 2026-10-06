@@ -28,6 +28,10 @@ struct HomeView {
     fs::path instance(std::string_view name) const { return subos_root() / name; }
     fs::path config_dir(std::string_view name) const { return home / "config" / "subos" / name; }
     fs::path policy_file(std::string_view name) const { return config_dir(name) / "policy.json"; }
+    // What the instance IS, declared when it was made (part 2 §3.4: its kind).
+    fs::path instance_file(std::string_view name) const { return config_dir(name) / "instance.json"; }
+    // Which SubOS this home boots (part 2 §8), when it is a machine's root.
+    fs::path boot_file() const { return home / "boot.json"; }
     fs::path logs_dir(std::string_view name) const { return home / "logs" / "subos" / name; }
     fs::path run_dir(std::string_view name) const { return home / "run" / "subos" / name; }
     fs::path state_dir() const { return home / "state"; }

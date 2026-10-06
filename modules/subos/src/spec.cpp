@@ -166,6 +166,7 @@ nlohmann::json SandboxSpec::describe() const {
     j["new_session"] = new_session;
     j["block_tiocsti"] = block_tiocsti;
     if (!hostname.empty()) j["hostname"] = hostname;
+    if (uid) j["uid"] = *uid;
     j["clear_env"] = clear_env;
     // Names only: values can hold secrets, and this lands in audits.
     j["env"] = nlohmann::json::array();
@@ -249,7 +250,35 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
     }
 
     // ── filesystem ───────────────────────────────────────────────────
-    if (s.backend == Backend::Bwrap || s.backend == Backend::Fake) {
+    const bool rootfs = !r.root.empty();
+    if (rootfs && s.backend != Backend::Bwrap && s.backend != Backend::Fake) {
+        return std::unexpected(Refusal{ .missing = { Unmet{
+            "root", std::string(to_string(s.backend)) + " cannot present a root: a rootfs SubOS needs bwrap",
+            "xlings self doctor --isolation", policy::Need::Must } } });
+    }
+    if (rootfs) {
+        // The instance's own tree is `/` (design part 2 §6.1): its /usr is
+        // the projection, its /etc, /root, /var are its machine state. The
+        // home is where it always is, read-only -- the projection's links and
+        // every payload's RPATH name it -- with this instance writable at its
+        // own path and, nested, as the root's `default` (§3.3): the xlings
+        // inside is the package manager of this root.
+        s.mounts.push_back({MountKind::Bind, posix(r.root), "/"});
+        s.mounts.push_back({MountKind::Dev, "", "/dev"});
+        s.mounts.push_back({MountKind::Proc, "", "/proc"});
+        home_view_ro(s.mounts, home, r);
+        if (r.instance != "default")
+            s.mounts.push_back({MountKind::Bind, posix(r.instance_dir), posix(home.instance("default"))});
+        if (policy.net != policy::Net::None && exists(r, "/etc/resolv.conf"))
+            s.mounts.push_back({MountKind::RoBind, "/etc/resolv.conf", "/etc/resolv.conf"});
+        s.unshare_user = true;
+        s.uid = 0;
+        s.gid = 0;
+        if (gpu) {
+            auto g = gpu_mounts(r);
+            s.mounts.insert(s.mounts.end(), g.begin(), g.end());
+        }
+    } else if (s.backend == Backend::Bwrap || s.backend == Backend::Fake) {
         s.mounts.push_back({MountKind::Dev, "", "/dev"});
         s.mounts.push_back({MountKind::Proc, "", "/proc"});
         host_userland(s.mounts, r, !neutral);
@@ -560,6 +589,40 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         }
         s.cwd = sandbox_home;
         s.argv = r.argv;
+        return s;
+    }
+
+    if (rootfs) {
+        // The root's own userland and its own root user. /run/xlings last:
+        // the client hosting the session, whatever the root holds.
+        if (neutral) {
+            s.env["TZ"] = policy.tz.empty() ? "UTC" : policy.tz;
+            s.env["LANG"] = "C.UTF-8";
+        }
+        for (auto& [k, v] : grant_env) s.env[k] = v;
+        s.env.erase("XLINGS_ACTIVE_SUBOS");
+        s.env["XLINGS_ROOT_INSTANCE"] = name;
+        s.env["HOME"] = "/root";
+        s.env["USER"] = "root";
+        s.env["LOGNAME"] = "root";
+        s.env["SHELL"] = "/bin/sh";
+        s.env["XLINGS_HOME"] = posix(home.home);
+        s.env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin:/run/xlings";
+        std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
+        pass.insert(pass.end(), policy.env_pass.begin(), policy.env_pass.end());
+        for (auto& [k, v] : r.explicit_env) {
+            if (policy.env_explicit_any || policy::env_name_matches(k, pass)) s.env[k] = v;
+            else s.degraded.push_back({"env", "--env " + k + " is not in the policy's env_pass",
+                                       "xlings subos config " + name + " --env-pass " + k,
+                                       policy::Need::Should});
+        }
+        s.cwd = r.cwd.empty() ? fs::path("/root") : fs::path(r.cwd);
+        if (r.argv.empty()) {
+            s.argv = {"/bin/sh"};
+            if (r.interactive) s.argv.push_back("-i");
+        } else {
+            s.argv = r.argv;
+        }
         return s;
     }
 

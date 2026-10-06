@@ -67,6 +67,9 @@ struct Request {
     std::map<std::string, std::string> explicit_env;
     std::string cwd;                          // inside; empty = the user's home
     std::vector<std::string> publish;         // --publish HOST:SANDBOX (net=nat)
+    // A rootfs instance (design part 2 §3.1): the tree that is `/` inside,
+    // <subos>/rootfs. Empty for a view of the host.
+    fs::path root;
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
 };
@@ -89,6 +92,10 @@ struct SandboxSpec {
     bool new_session { false };
     bool block_tiocsti { false };
     std::string hostname;
+    // The ids inside the user namespace (bwrap --uid/--gid): a rootfs
+    // instance runs as its own root, as a container does.
+    std::optional<unsigned> uid;
+    std::optional<unsigned> gid;
     // clear_env: the sandbox sees exactly `env`. Otherwise the caller's
     // environment is inherited and `env` is applied on top (Legacy).
     bool clear_env { false };

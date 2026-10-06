@@ -1,5 +1,6 @@
 module xlings.core.subos;
 
+import xlings.subos.roles;
 import std;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -1314,7 +1315,7 @@ int use_spawn_shell(const std::string& name, EventStream& stream, bool sandbox, 
 {
     // A declared instance is entered under its policy however it is entered
     // (design §10: the secure default belongs to the instance, not the flag).
-    if (!sandbox && (preset || policy_store::has_file(home_view(), name))) sandbox = true;
+    if (!sandbox && (preset || enters_sandboxed_(name))) sandbox = true;
     // V5: --sandbox [backend] is a `use`-time modifier. Dispatch to the
     // sandbox path when set; auto-detect backend (bwrap preferred, proot
     // fallback) or use the explicitly requested one.
@@ -1824,8 +1825,11 @@ int run(int argc, char* argv[], EventStream& stream) {
         // once here -- every later `use` / `exec` enters it that way without
         // being told (design §7). Bare `--sandbox` is dev.
         std::optional<policy::Preset> declared;
+        // --rootfs: the instance can be presented as `/` (design part 2 §3.1).
+        bool rootfs = false;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
+            if (a == "--rootfs") { rootfs = true; continue; }
             if (a == "--sandbox" || a.starts_with("--sandbox=")) {
                 std::string v = a == "--sandbox" ? std::string("dev") : a.substr(10);
                 if (a == "--sandbox" && i + 1 < argc) {
@@ -1887,7 +1891,8 @@ int run(int argc, char* argv[], EventStream& stream) {
             ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream)
             : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
         if (rc != 0) return rc;
-        return declare_isolation_at_creation_(name, declared, fromSpec, stream);
+        if (auto r = declare_isolation_at_creation_(name, declared, fromSpec, stream); r != 0) return r;
+        return declare_root_at_creation_(name, rootfs, fromSpec, stream);
     }
     if (sub == "use") {
         // Flags supported:
@@ -2068,6 +2073,7 @@ int run(int argc, char* argv[], EventStream& stream) {
             target = pick_subos_or_fail_("remove|rm", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
+        if (!role_allows_(roles::Op::Remove, target, stream)) return 1;
         return remove(target, yesGiven, "-y", stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);
@@ -2106,6 +2112,11 @@ int run(int argc, char* argv[], EventStream& stream) {
     if (sub == "start") return run_start_(argc, argv, stream, usageError);
     if (sub == "cp") return run_cp_(argc, argv, stream, usageError);
     if (sub == "log") return run_log_(argc, argv, stream, usageError);
+    if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
+    if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
+    if (sub == "export") return run_export_(argc, argv, stream, usageError);
+    if (sub == "diff") return run_diff_(argc, argv, stream, usageError);
+    if (sub == "pack") return run_pack_(argc, argv, stream, usageError);
 
     // xlings subos runtime <binding> [name]
     //

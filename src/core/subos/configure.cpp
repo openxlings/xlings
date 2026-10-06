@@ -2,6 +2,7 @@
 // gives it, and whether it is healthy (module xlings.core.subos).
 module xlings.core.subos;
 
+import xlings.subos.roles;
 import std;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -212,6 +213,9 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         std::println(std::cout, "{}", json ? doc.dump() : doc.dump(2));
         return 0;
     }
+
+    // The host is what grants isolation, not something isolated (part 2 §8.3).
+    if (!role_allows_(roles::Op::Policy, name, stream)) return 1;
 
     // Only the owner, outside the sandbox (design §8.1): the instance does not
     // get to rewrite what it is allowed.

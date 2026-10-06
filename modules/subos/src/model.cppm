@@ -38,6 +38,14 @@ std::optional<std::filesystem::path> inside_to_host(const std::filesystem::path&
                                                     std::string_view user,
                                                     std::string_view inside);
 
+// The same for a rootfs instance (design part 2 §6.1): a path inside is its
+// root tree's, `~` and relative paths from /root -- except what the
+// projection and the kernel provide (/usr and the merged links, /proc, /sys,
+// /dev, /run) and the xlings home, none of which a copy goes into.
+std::optional<std::filesystem::path> inside_to_root(const std::filesystem::path& tree,
+                                                   std::string_view inside,
+                                                   const std::filesystem::path& home);
+
 // "90", "90s", "10m", "2h" -> seconds; nullopt for anything else.
 std::optional<long long> parse_duration(std::string_view text);
 
@@ -144,6 +152,25 @@ std::optional<std::filesystem::path> inside_to_host(const std::filesystem::path&
     if (under(home)) return instance_dir / "home" / std::string(user) / fs::path(norm.substr(home.size())).relative_path();
     if (under("/tmp")) return instance_dir / "tmp" / fs::path(norm.substr(4)).relative_path();
     return std::nullopt;
+}
+
+std::optional<std::filesystem::path> inside_to_root(const std::filesystem::path& tree,
+                                                   std::string_view inside,
+                                                   const std::filesystem::path& home) {
+    namespace fs = std::filesystem;
+    std::string p(inside);
+    if (p == "~" || p.starts_with("~/")) p = "/root" + p.substr(1);
+    else if (p.empty() || p.front() != '/') p = "/root/" + p;
+    const auto norm = fs::path(p).lexically_normal();
+    if (norm == "/" ) return std::nullopt;
+    for (auto& part : norm) if (part == "..") return std::nullopt;
+    const auto first = (++norm.begin())->string();
+    for (std::string_view provided : {"usr", "bin", "sbin", "lib", "lib64", "proc", "sys", "dev", "run"})
+        if (first == provided) return std::nullopt;
+    const auto h = home.lexically_normal();
+    if (norm == h || std::mismatch(h.begin(), h.end(), norm.begin(), norm.end()).first == h.end())
+        return std::nullopt;
+    return tree / norm.relative_path();
 }
 
 std::optional<long long> parse_duration(std::string_view text) {
