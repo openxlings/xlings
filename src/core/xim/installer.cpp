@@ -2774,10 +2774,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& plan, con
 
         const std::string hostArch =
             mcpplibs::xpkg::normalize_arch(detail_::detect_arch_());
-        auto pkg = mcpplibs::xpkg::load_package(node.pkgFile, {
-            .platform = platform,
-            .arch = hostArch,
-        });
+        auto pkg = load_native_recipe(node.pkgFile);
         if (!pkg) {
             log::warn("skipping {}: {}", node.name, pkg.error());
             continue;

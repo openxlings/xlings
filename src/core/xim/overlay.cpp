@@ -9,6 +9,7 @@ import mcpplibs.xpkg.loader;
 import xlings.core.config;
 import xlings.core.version_order;
 import xlings.core.xim.repo;
+import xlings.core.xim.index;
 import xlings.libs.sha256;
 import xlings.libs.json;
 import xlings.platform;
@@ -73,7 +74,7 @@ std::string now_utc_iso() {
 }
 
 std::optional<std::string> declared_latest(const fs::path& recipeFile) {
-    auto loaded = xpkg::load_package(recipeFile);
+    auto loaded = load_native_recipe(recipeFile);
     if (!loaded) return std::nullopt;
     auto& pkg = *loaded;
     // Prefers the current platform (what THIS host would install) but falls

@@ -31,6 +31,11 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 
 export namespace xlings::xim {
 
+// Recipes describe the ABI of the client process, including under emulation.
+// Metadata resolution and installation use the same loader context.
+std::expected<xpkg::Package, std::string>
+load_native_recipe(const std::filesystem::path& path);
+
 // One recognised shape for a line a package index's build script writes:
 // "[i/n] <message>", the self-refreshing progress line of
 // xim-pkgindex-*/pkgindex-build.lua. Not specific to that script: anything
