@@ -26,6 +26,8 @@ import sys
 # it fail loudly here instead of on a user's machine. Each pattern is matched
 # against recipe text, so keep them specific enough not to fire on prose.
 CAPABILITIES = [
+    (re.compile(r'(?m)^local\s+\w+\s*=\s*\(os\.arch\s+and\s+os\.arch\(\)\)'),
+     "2026.10.8.1", "process architecture in catalog metadata"),
     (re.compile(r'kind\s*=\s*["\']files["\']'),  "0.4.70",
      "xvm registration kind 'files'"),
     (re.compile(r'kind\s*=\s*["\']group["\']'),  "0.4.60",

@@ -12,6 +12,7 @@ module;
 module xlings.core.xim.commands;
 
 import std;
+import xlings.core.xim.index;
 import xlings.core.xim.libxpkg.types.type;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.executor;
@@ -2571,7 +2572,7 @@ int cmd_add_xpkg(const std::string& fileOrUrl, EventStream& stream) {
     }
 
     // Validate xpkg file
-    auto pkg = xpkg::load_package(luaFile);
+    auto pkg = load_native_recipe(luaFile);
     if (!pkg) {
         log::error("invalid xpkg: {}", pkg.error());
         fs::remove(luaFile);

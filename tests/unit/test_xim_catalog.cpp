@@ -43,6 +43,7 @@ import xlings.core.notice;
 import xlings.core.config;
 import xlings.core.home_config;
 import xlings.platform;
+import xlings.platform.target;
 import xlings.libs.json;
 import xlings.core.xself;
 import xlings.core.profile;
@@ -451,6 +452,45 @@ TEST(ConfigIndexReposTest, MalformedEntriesSkipped) {
     auto repos = xlings::parse_index_repos_json(j, "");
     ASSERT_EQ(repos.size(), 1u);
     EXPECT_EQ(repos[0].name, "b");
+}
+
+TEST(XimRecipeContext, NativeMetadataAndCatalogUseTheProcessArchitecture) {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("xlings-native-recipe-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    } cleanup{root};
+    const auto recipe = root / "native-context.lua";
+    std::ofstream(recipe) << R"lua(
+package = {
+    spec = "1", name = "native-context", type = "script",
+    description = os.host() .. ":" .. os.arch(),
+    xpm = { linux = {
+        ["0.0.1"] = {},
+        exports = { runtime = {
+            loader = "lib/loader-" .. os.arch(),
+            abi = os.host() .. "-" .. os.arch(),
+        } },
+    } },
+}
+)lua";
+    const auto arch = mcpplibs::xpkg::normalize_arch(
+        std::string(xlings::platform::build_arch()));
+    const auto identity = std::string(xlings::platform::build_os()) + ":" + arch;
+    auto native = xlings::xim::load_native_recipe(recipe);
+    ASSERT_TRUE(native.has_value()) << native.error();
+    EXPECT_EQ(native->description, identity);
+    EXPECT_EQ(native->xpm.exports.at("linux").runtime.loader, "lib/loader-" + arch);
+    auto manager = make_identity_index({identity_entry(
+        "fixture", "native-context", "0.0.1", recipe)});
+    auto metadata = manager.load_package("fixture:native-context@0.0.1");
+    ASSERT_TRUE(metadata.has_value()) << metadata.error();
+    EXPECT_EQ(metadata->description, native->description);
+    EXPECT_EQ(metadata->xpm.exports.at("linux").runtime.abi,
+              native->xpm.exports.at("linux").runtime.abi);
 }
 
 // ============================================================

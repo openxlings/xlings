@@ -8,6 +8,7 @@ import xlings.libs.json;
 import xlings.core.log;
 import xlings.core.config;
 import xlings.platform;
+import xlings.platform.target;
 
 namespace xlings::xim::cache_detail_ {
 
@@ -168,6 +169,14 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 // ── out-of-line class members ──────────────────────────────────
 
 namespace xlings::xim {
+
+std::expected<xpkg::Package, std::string>
+load_native_recipe(const std::filesystem::path& path) {
+    return xpkg::load_package(path, {
+        .platform = std::string(platform::build_os()),
+        .arch = std::string(platform::build_arch()),
+    });
+}
 
 std::optional<BracketedStep> parse_bracketed_step(std::string_view line) {
     // Strip a trailing ANSI CSI sequence (ESC '[' <params> <final-byte>).
@@ -395,7 +404,7 @@ std::expected<xpkg::Package, std::string> IndexManager::load_package(const std::
     if (it == index_.entries.end()) {
         return std::unexpected(std::format("package '{}' not found in index", name));
     }
-    return xpkg::load_package(it->second.path);
+    return load_native_recipe(it->second.path);
 }
 
 const xpkg::IndexEntry* IndexManager::find_entry(const std::string& name) const {
