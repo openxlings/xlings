@@ -12,6 +12,7 @@ struct Case {
     std::string area;
     std::string cost { "fast" };
     std::vector<std::string> requires_;
+    std::vector<std::string> resources;
 };
 
 struct Test {
@@ -57,6 +58,7 @@ struct Selected {
     Test test;
     std::string filter;               // gtest case filter; empty = all cases
     std::vector<std::string> requires_;
+    std::vector<std::string> resources;
     std::size_t shard { 1 };
 };
 
@@ -67,7 +69,7 @@ std::expected<std::pair<std::size_t, std::size_t>, std::string> parse_shard(std:
 // Input: mcpp test --list --message-format json, optionally augmented by
 // xdev's exported compiled registries. Invalid records are errors, not skips.
 std::expected<std::vector<Test>, std::string> discovery(std::string_view ndjson, const fs::path& root);
-std::expected<void, std::string> apply_timings(std::vector<Test>& tests, const nlohmann::json& timings);
+std::expected<void, std::string> apply_timings(std::vector<Test>& tests, const nlohmann::json& timings, std::string_view platform = {});
 nlohmann::json matrix(std::span<const Test> tests, const Options& options,
                       const std::set<std::string>& impacted = {});
 

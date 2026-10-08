@@ -1,6 +1,6 @@
 # PR #641 总体进度报告
 
-评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。本文结合设计、最终代码、测试声明、远端 CI 和 rebase 后本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
+评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
 ## 1. 结论
 
@@ -205,7 +205,7 @@ Linux lint 阻断了新增 distro、AUR 和 isolation-fix；本地文档契约�
 本轮执行了分支获取、rebase、分析、构建与验证，新增本文；没有把检查失败自动修成通过，也没有 push 或修改远端 PR。
 
 
-## 9. 续行实施状态（2026-10-08）
+## 11. 续行实施状态（2026-10-08）
 
 本报告前述结果是初次评估的快照。续行依赖计划见
 [完整交付计划](../plans/2026-10-08-subos-delivery-plan.md)，任务状态见
@@ -229,3 +229,78 @@ xim-pkgindex 使用独立工作树，原工作树用户改动保留。真实 hom
 这些工作尚未改变最终验收结论：完整 CI、proxy/连接事件、系统层/闭包、hook worker、库 cache、
 fixture/资源调度、升级/性能证据与发布链仍需完成。候选版本为 2026.10.8.2，正式发布时按当天
 已有 release 重新确定；没有发布 #641 的资源或更新 latest。
+
+## 12. 下一实施批次的证据（2026-10-08）
+
+后续遵循用户的新约束：只追加 commit、普通 push，不 force push 或改写已推送提交。
+`3ea30c71` 修正隔离测试使用的 xdev 路径，`dd118625` 将 app 自测的实际结果接入报告，
+并为 macOS generation 读取失败增加 errno/path 诊断；断言仍要求取得完整 generation。
+
+上游 [libxpkg #46](https://github.com/openxlings/libxpkg/pull/46) 已通过 CI 并合入，
+发布 0.0.61；[mcpp-index #516](https://github.com/mcpplibs/mcpp-index/pull/516) 已通过
+检查并合入。CN source archive 通过 GET 校验，SHA256 为
+`ee1e1a6dd2367a50fd9cd13f179367aa8638b9fa83410bdda60cd4bdb54b9019`。
+客户端已经恢复正式依赖并成功下载/构建，未依赖 local path override。
+
+新增实现包含持久 Lua worker（顶层加载、metadata、builder、hook 均可进入执行边界）、
+独立控制协议、每目标 payload shadow、受限写入、输出日志和 exec/net 审计通知。
+网络 proxy 使用独立 netns 与 supervisor 转接，只有声明的 SOCKS5h 出口；目标域名交给
+代理解析。原生强边界仍以 Linux 支持为准，不把 macOS/Windows 的不支持解释成同等隔离。
+
+本地有限回归：protocol 2、worker flow 2、cache 2、network unit 3 个用例通过；worker 的
+3 个真实隔离用例及 network 的 2 个用例因本机 bwrap 不可用跳过。后续的 net 审计接入、
+cache 所有权证明、resolution evidence 与系统层复用仍需要新批次回归。xdev 资源锁、
+HTTP fixture、CLI 与选择器共 17 个 app 用例已通过；动态 CI、趋势及性能矩阵尚未验收。
+
+[索引 #940 的两架构构建](https://github.com/openxlings/xim-pkgindex/actions/runs/37707873566)
+均通过，包括 loader 的版本、私有库搜索、locale/gconv、logical-root cache/preload 和
+managed loader 不读外来根 cache 的实际运行。两份资源已发布到 GitHub，并在资源出现后立即由本地 gtc 补齐 GitCode；CN 完整 GET 的
+SHA256 与构建产物一致。recipe 2.44.3 revision 2 已按架构选择 loader、ABI、URL 和 digest，
+#940 最新 head 的两架构及三平台检查通过，已于 2026-10-08T01:22:00Z 合入（`ebf1fbb3417ec513b923279044433887b3af8850`）；旧客户端 2026.10.4.1 在独立 HOME、CN 镜像下实际安装成功，记录 configured revision 2；
+对安装后的真实 payload 再跑 logical-root cache/preload 探针通过。候选客户端生态安装仍待验证。
+
+客户端新增库 cache 生成遵守用户数据规则：只写专属 staging，既有 cache 必须有匹配
+digest 的 xlings ownership record；未知/外部修改的数据保留并报错。写前记录旧、新 digest，
+中断后的任一有效状态可再次识别。root refresh、rollback 与 stage-0 已接入，待本批 CI。
+
+macOS 日志将并发读取失败定位为 `readlink` 返回 EINVAL；`2b78ce6e` 追加有界读取重试，
+维持完整 generation 的断言，macOS CI 已通过（run 37709550248）。Windows 的 JSON/string_view 测试比较歧义
+由 `88eafe96` 追加提交修正；Linux locked audit 清理断言失败，supervisor teardown 修复待本批回归。xdev 动态矩阵已接入 distro 三车道，
+本地计划确认三个脚本各执行一次；未把计划输出当作场景执行证据。
+
+完整交付仍未完成：真实 Linux 隔离、系统层完整闭包/prefix domain、
+升级与性能证据、最终 CI、自审、客户端 release 及 CN 真实升级均须继续推进。
+
+
+## 13. 事务、流与闭包基础批次（2026-10-08）
+
+本批已完整构建通过（GCC 16.1，build 8）。一次完整客户端回归为 98 个测试程序：
+94 pass、4 fail；运行记录中的 49 个具体用例 skip 保留为缺证据。三处失败已定位为
+Meta 字段顺序、模块导出签名不一致、loader fixture 缺失；第四处 self init 超时来自 fixture
+仍自动获取官方索引，已改成显式本地默认索引和测试索引，现有二进制初始化实测 0.047 秒。
+四项针对性复验均已通过；借用正式 group fixture 补齐 kind，旧 shared-entry fixture 改用
+正式 xim:xlings 身份，产品权限不放宽。逐程序最新证据为 98 pass，保存于
+`target/xdev/pr641-hardening/boundaries-latest-binaries.ndjson`，不是第二次全量运行。
+xdev 本批完整 4 程序 / 18 用例 pass、0 skip，删除/header lint 和 diff 检查通过。
+借用使用正式 provider/version 登记和唯一 checked runtime evidence reader，不复解析依赖名称；
+`use`、config 和 remove 对全部资产先预检，以旧 scope 登记作为 ownership，未知用户文件不覆盖。
+资产、候选 DB/workspace 与 root refresh 失败时回滚；状态发布使用 atomic writer，并检查写后读回。
+系统共享 store 的 GC 保留无法观察外部引用的 payload，用户 store symlink 不能取得删除授权。
+
+新增 NDJSON 1.6 的 `subos_exec` 流式 stdout/stderr、有界分块与取消；非 UTF-8 分块显式标记
+base64。xdev 的趋势端到端用例已通过，报告保持 member-qualified ID，导出每平台成功耗时
+中位数用于下一次实际 CI 计划；main 历史和 90 天报告 artifact 的接线仍待 CI。
+
+root_mount 的平台接口已构建，通过捕获的 namespace/root FD 发布只读文件或目录，失败回滚；
+新增真实 namespace 回归尚待执行。Root GCC shim 的逻辑 loader 选择仅在对应 generation
+的真实投影和正式 gcc provider 证明下启用，默认宿主执行不改变；真实生态 consumer 验证待完成。rootfs_instance 已增加唯一 SONAME、/opt 私有库、
+root cache、逻辑 PT_INTERP 与 managed loader 对照场景，并移除 desktop 人为 rpath；待 Linux CI 实际执行。
+
+D2 当前只完成 pure closure 与 evidence 基础；private skeleton、逐 payload 的实际绑定和 broker
+后的实时挂载更新尚待接入。D3 已加入 strict prefix-domain 选择与创建前预检，跨前缀 namespace
+producer 未接通时明确拒绝，不能把它计作已完成。旧镜像测试删除宿主 `/xlings` 的操作已移除，
+替换为 owner-private domain 的正式制作场景；producer 接通后必须实际通过，不能用 skip 代替。
+
+已推送 `88eafe96` 的 macOS、Windows、aarch64、Linux root 和 ASAN 已通过；Linux 主套件
+仍因 locked audit cleanup 失败，修复处于本批尚未推送的代码中。最终固定 head CI、升级/性能、
+Root/Luban 场景、自审、合入和客户端发布链均未完成。

@@ -8,7 +8,7 @@
 # Its own package, never linked into xlings: `mcpp build` at the root does not
 # build it, so the product's build time and binary are unchanged. Build it with
 # `mcpp build -p xdev`. It depends on testkit (the process runner and the
-# capability probes) and JSON, and on nothing of xlings -- the tool that
+# capability probes) and JSON, and the platform OS boundary -- the tool that
 # measures the product must not share its failure modes.
 [package]
 namespace = "xlings"
@@ -22,6 +22,7 @@ main = "src/main.cpp"
 [dependencies]
 libs    = { path = "../../modules/libs" }
 testkit = { path = "../../modules/testkit" }
+platform = { path = "../../modules/platform" }
 
 [build]
 include_dirs = ["../../modules/libs/src/json", "../../modules/testkit/include"]

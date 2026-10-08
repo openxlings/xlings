@@ -161,3 +161,48 @@ XTEST(XdevCli, ChangedSelectionFollowsARealGitDiffThroughAnImplementationDepende
     ASSERT_EQ(matrix["include"].size(), 1);
     EXPECT_EQ(matrix["include"][0]["tests"], std::vector<std::string>{"unit/affected"});
 }
+
+XTEST(XdevCli, TrendArtifactsPreserveMemberAndPlatformAndFeedFutureShardPlans,
+      .area = "testkit", .covers = {"CI-TRENDS"}) {
+    Fixture fixture;
+    if (!fixture.binary || !*fixture.binary) GTEST_SKIP() << "set XDEV_BIN to the built xdev";
+    auto report = [&](std::string run, long long ms, std::string status, fs::path prior = {}) {
+        const auto input = fixture.home.root() / ("input-" + run);
+        const auto output = fixture.home.root() / ("report-" + run);
+        tk::write_file(input / "lane.json", json{{"name", "linux-unit"}, {"platform", "linux"},
+            {"run", run}, {"declared", json::array()}, {"probes", json::object()}}.dump());
+        tk::write_file(input / "mcpp.ndjson", json{{"member", "xdev"}, {"test", "unit/slow"},
+            {"status", status}, {"duration_ms", ms}}.dump() + "\n");
+        std::vector<std::string> args{"report", "--in", input.string(), "--write", output.string(),
+            "--timings-out", (fixture.home.root() / "timings.json").string()};
+        if (!prior.empty()) args.insert(args.end(), {"--trend", prior.string()});
+        return std::pair{fixture.run(args), output};
+    };
+    const auto [first, baseline] = report("1", 3000, "pass");
+    ASSERT_EQ(first.exit_code, 0) << first.transcript();
+    const auto [second, latest] = report("2", 6000, "pass", baseline / "trend.json");
+    ASSERT_EQ(second.exit_code, 0) << second.transcript();
+    EXPECT_NE(second.out.find("100.0%"), std::string::npos) << second.out;
+    auto history = json::parse(tk::read_file(latest / "trend.json"));
+    EXPECT_EQ(history.at("observations").size(), 2);
+    const auto timing = json::parse(tk::read_file(fixture.home.root() / "timings.json"));
+    EXPECT_EQ(timing.at("linux:xdev:unit/slow"), 4500);
+    const auto [failed, failure] = report("3", 99999, "fail", latest / "trend.json");
+    EXPECT_EQ(failed.exit_code, 1) << failed.transcript();
+    EXPECT_NE(failed.out.find("both passing and failing"), std::string::npos) << failed.out;
+    EXPECT_EQ(json::parse(tk::read_file(fixture.home.root() / "timings.json")), timing)
+        << "failed duration never becomes a shard weight";
+    // Re-render the same execution; it must not manufacture another sample.
+    const auto duplicate = fixture.run({"report", "--in", (fixture.home.root() / "input-3").string(),
+        "--trend", (failure / "trend.json").string(), "--write", (fixture.home.root() / "repeat").string()});
+    EXPECT_EQ(duplicate.exit_code, 1);
+    EXPECT_EQ(json::parse(tk::read_file(fixture.home.root() / "repeat/trend.json"))["observations"].size(), 3);
+    tk::write_file(fixture.home.root() / "tests/unit/slow.cpp", "import std;");
+    const auto inventory = fixture.discovery({json{{"member", "xdev"}, {"test", "unit/slow"},
+        {"main", "tests/unit/slow.cpp"}, {"cases", json::array({test_case("Slow.Check")})}}});
+    const auto plan = fixture.run({"ci", "plan", "--platform", "linux", "--discovery", inventory.string(),
+        "--timings", (fixture.home.root() / "timings.json").string()});
+    ASSERT_EQ(plan.exit_code, 0) << plan.transcript();
+    const auto matrix = json::parse(plan.out);
+    EXPECT_EQ(matrix["include"][0]["estimated_ms"], 4500);
+}

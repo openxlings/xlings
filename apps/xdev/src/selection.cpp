@@ -1,6 +1,7 @@
 module xlings.xdev.selection;
 
 import std;
+import xlings.xdev.resources;
 import xlings.libs.json;
 
 namespace xlings::xdev::selection {
@@ -223,6 +224,11 @@ select(std::span<const Test> tests, const Options& options, const std::set<std::
                 if (!entry.filter.empty()) entry.filter += ':';
                 entry.filter += testCase.name;
                 ++kept;
+                for (const auto& resource : testCase.resources) {
+                    auto name = resources::normalize(resource);
+                    if (!name) return std::unexpected(test.id + ": " + name.error());
+                    if (!has(entry.resources, *name)) entry.resources.push_back(*name);
+                }
                 for (const auto& cap : testCase.requires_)
                     if (!has(entry.requires_, cap)) entry.requires_.push_back(cap);
             }
@@ -278,7 +284,8 @@ std::expected<std::vector<Test>, std::string> discovery(std::string_view ndjson,
                 for (const auto& value : *cases) {
                     Case testCase{.name = value.at("test").get<std::string>(),
                         .area = value.value("area", ""), .cost = value.value("cost", "fast"),
-                        .requires_ = value.value("requires", std::vector<std::string>{})};
+                        .requires_ = value.value("requires", std::vector<std::string>{}),
+                        .resources = value.value("resources", std::vector<std::string>{})};
                     if (testCase.name.empty() || testCase.name.find_first_of(":*?\n\r") != testCase.name.npos
                         || !names.insert(testCase.name).second)
                         return std::unexpected("invalid or duplicate discovered case name");
@@ -295,10 +302,11 @@ std::expected<std::vector<Test>, std::string> discovery(std::string_view ndjson,
     return tests;
 }
 
-std::expected<void, std::string> apply_timings(std::vector<Test>& tests, const nlohmann::json& timings) {
+std::expected<void, std::string> apply_timings(std::vector<Test>& tests, const nlohmann::json& timings, std::string_view platform) {
     if (!timings.is_object()) return std::unexpected("timings must map test binary IDs to positive milliseconds");
     for (auto& test : tests) {
-        const auto value = timings.find(test.id);
+        auto value = platform.empty() ? timings.end() : timings.find(std::string(platform) + ":" + test.id);
+        if (value == timings.end()) value = timings.find(test.id);
         if (value == timings.end()) continue;
         if (!value->is_number_integer() || *value <= 0 || *value > 86400000)
             return std::unexpected("invalid timing for " + test.id);
@@ -318,19 +326,21 @@ nlohmann::json matrix(std::span<const Test> tests, const Options& options, const
         if (!selected) throw std::invalid_argument(selected.error());
         for (std::size_t shard = 1; shard <= options.shards; ++shard) {
             nlohmann::json ids = nlohmann::json::array(), filters = nlohmann::json::object();
-            std::set<std::string> capabilities;
+            std::set<std::string> capabilities, resourceNames;
             long long duration { 0 };
             for (const auto& test : *selected) {
                 if (test.shard != shard) continue;
                 ids.push_back(test.test.id);
                 filters[test.test.id] = test.filter;
                 capabilities.insert(test.requires_.begin(), test.requires_.end());
+                resourceNames.insert(test.resources.begin(), test.resources.end());
                 duration += test.test.duration_ms;
             }
             if (ids.empty()) continue;
             include.push_back({{"platform", platform}, {"lane", options.lane},
                 {"shard", std::format("{}/{}", shard, options.shards)}, {"tests", ids},
                 {"filters", filters}, {"requires", std::vector<std::string>(capabilities.begin(), capabilities.end())},
+                {"resources", std::vector<std::string>(resourceNames.begin(), resourceNames.end())},
                 {"estimated_ms", duration}});
         }
     }

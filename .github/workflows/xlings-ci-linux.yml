@@ -592,11 +592,42 @@ jobs:
   # editions -- entered in bwrap, exported to docker, booted under qemu with
   # their own kernel -- against THIS build's release binary (static: an
   # exported image's xlings runs with no host under it).
-  distro:
+  plan-distro:
     needs: build-and-test
     runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: xdev-linux-build
+          path: xdev-artifact
+      - name: Restore measured main-branch shard weights
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
+      - name: Plan root scenarios with the local selector
+        id: plan
+        run: |
+          xdev="$(find "$GITHUB_WORKSPACE/xdev-artifact" -name xdev -type f | head -1)"
+          test -n "$xdev"
+          chmod +x "$xdev"
+          weights=()
+          if [[ -f target/xdev/history/timings.json ]]; then weights+=(--timings target/xdev/history/timings.json); fi
+          matrix="$("$xdev" ci plan --no-mcpp --suite distro --platform linux --lane main --shards 3 --require-metadata "${weights[@]}")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  distro:
+    needs: [build-and-test, plan-distro]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan-distro.outputs.matrix) }}
+    runs-on: ubuntu-24.04
     env:
-      XDEV_LANE: linux-distro
+      XDEV_LANE: linux-distro-${{ strategy.job-index }}
       XDEV_LANE_CAPS: linux,xlings-bin,bwrap,userns,network,docker,qemu,sudo
     steps:
       - name: Checkout
@@ -633,7 +664,8 @@ jobs:
 
       - name: Roots, images, boots
         run: |
-          "$XDEV" test --no-mcpp --suite distro --out target/xdev/linux-distro
+          "$XDEV" test --no-mcpp --suite distro --lane main --shard '${{ matrix.shard }}' \
+            --require-metadata --out target/xdev/linux-distro-${{ strategy.job-index }}
 
       # The luban-tiny tarball the image scenario exported, for wsl --import.
       - name: Attach the root tarball
@@ -648,7 +680,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: xdev-linux-distro
+          name: xdev-linux-distro-${{ strategy.job-index }}
           path: target/xdev/
           if-no-files-found: ignore
 
@@ -728,6 +760,13 @@ jobs:
           pattern: xdev-linux-*
           path: runs
 
+      - name: Restore main-branch execution history
+        uses: actions/cache/restore@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
+          restore-keys: xdev-history-v1-linux-
+
       - name: Report
         run: |
           xdev="$(find runs -name xdev -type f | head -1)"
@@ -737,8 +776,34 @@ jobs:
           for d in $(find runs -name lane.json -exec dirname {} \;); do args+=(--in "$d"); done
           # --fail-uncovered: a `required` ID in tests/requirements.toml with
           # no test, or a test naming an ID the file does not declare, fails.
-          "$xdev" report "${args[@]}" --summary \
-            --requirements tests/requirements.toml --fail-uncovered
+          history=()
+          if [[ -f target/xdev/history/trend.json ]]; then history+=(--trend target/xdev/history/trend.json); fi
+          mkdir -p target/xdev/current-report
+          status=0
+          "$xdev" report "${args[@]}" "${history[@]}" --summary \
+            --requirements tests/requirements.toml --fail-uncovered \
+            --write target/xdev/current-report --timings-out target/xdev/current-report/timings.json || status=$?
+          if [[ -f target/xdev/current-report/trend.json && -f target/xdev/current-report/timings.json ]]; then
+            mkdir -p target/xdev/history
+            cp target/xdev/current-report/{trend,timings}.json target/xdev/history/
+          fi
+          exit "$status"
+
+      - name: Attach reports and retained trends
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdev-linux-report
+          path: target/xdev/current-report
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Retain main-branch trends for subsequent plans
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('target/xdev/history/trend.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: target/xdev/history
+          key: xdev-history-v1-linux-${{ github.sha }}
 
   unit-asan:
     # Off the PR critical path (design §24.5): it is the slowest job (~27 min,

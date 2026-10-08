@@ -15,11 +15,17 @@ import xlings.libs.json;
 import xlings.testkit;
 import xlings.xdev.toml;
 import xlings.xdev.selection;
+import xlings.xdev.resources;
+import xlings.xdev.fixture;
+import xlings.xdev.history;
 
 namespace fs = std::filesystem;
 namespace tk = xlings::testkit;
 namespace toml = xlings::xdev::toml;
 namespace sel = xlings::xdev::selection;
+namespace resource = xlings::xdev::resources;
+namespace fixture = xlings::xdev::fixture;
+namespace history = xlings::xdev::history;
 using nlohmann::json;
 
 namespace {
@@ -91,6 +97,8 @@ json describe_lane() {
     json lane;
     lane["name"] = env_or("XDEV_LANE", "local-" + platform_name());
     lane["platform"] = platform_name();
+    lane["run"] = env_or("GITHUB_RUN_ID", std::to_string(std::chrono::system_clock::now().time_since_epoch().count()))
+        + ":" + env_or("GITHUB_RUN_ATTEMPT", "1");
     lane["declared"] = json::array();
     for (auto cap : tk::capability_names())
         if (tk::lane_declares(cap)) lane["declared"].push_back(std::string(cap));
@@ -119,6 +127,9 @@ struct TestArgs {
     fs::path discovery;
     fs::path timings;
     fs::path write_discovery;
+    std::size_t jobs { 1 };
+    fs::path fixture_root;
+    fs::path lock_directory;
 };
 
 // A script states what it covers and what it needs in one header line, the
@@ -155,6 +166,7 @@ std::optional<tk::Meta> script_meta(const std::string& command, const fs::path& 
                     if (!v.empty()) values.push_back(v);
                 if (key == "covers") m.covers = values;
                 else if (key == "requires") m.requires_ = values;
+                else if (key == "resources") m.resources = values;
                 else if (key == "proves" && !values.empty()) m.proves = values.front();
             }
             return m;
@@ -207,7 +219,8 @@ std::vector<sel::Case> listed_cases(std::string_view output, const std::vector<j
     std::map<std::string, sel::Case> known;
     for (const auto& row : metadata) {
         sel::Case test{.name = row.value("test", ""), .area = row.value("area", ""),
-            .cost = row.value("cost", "fast"), .requires_ = row.value("requires", std::vector<std::string>{})};
+            .cost = row.value("cost", "fast"), .requires_ = row.value("requires", std::vector<std::string>{}),
+            .resources = row.value("resources", std::vector<std::string>{})};
         known[test.name] = std::move(test);
     }
     std::istringstream in{std::string(output)};
@@ -288,7 +301,8 @@ std::expected<Catalog, std::string> catalog(const TestArgs& args, const fs::path
                 if (const auto metadata = script_meta(command, root)) {
                     test.metadata_known = true;
                     test.cases.push_back({.name = test.id, .area = metadata->area,
-                        .cost = std::string(tk::to_string(metadata->cost)), .requires_ = metadata->requires_});
+                        .cost = std::string(tk::to_string(metadata->cost)), .requires_ = metadata->requires_,
+                        .resources = metadata->resources});
                 }
                 result.tests.push_back(std::move(test));
             }
@@ -297,7 +311,7 @@ std::expected<Catalog, std::string> catalog(const TestArgs& args, const fs::path
     const auto timingFile = args.timings.empty() ? root / "tests/ci-timings.json" : args.timings;
     if (fs::exists(timingFile)) {
         const auto timings = json::parse(tk::read_file(timingFile), nullptr, false);
-        if (const auto applied = sel::apply_timings(result.tests, timings); !applied)
+        if (const auto applied = sel::apply_timings(result.tests, timings, args.selection.platform.empty() ? platform_name() : args.selection.platform); !applied)
             return std::unexpected(applied.error());
     } else if (!args.timings.empty()) return std::unexpected("timings file does not exist: " + timingFile.string());
     if (!args.changed.empty()) {
@@ -345,7 +359,7 @@ int cmd_plan(const TestArgs& args) {
                     row["cases"] = json::array();
                     for (const auto& testCase : test.cases)
                         row["cases"].push_back({{"test", testCase.name}, {"area", testCase.area},
-                            {"cost", testCase.cost}, {"requires", testCase.requires_}});
+                            {"cost", testCase.cost}, {"requires", testCase.requires_}, {"resources", testCase.resources}});
                 }
                 output << row.dump() << '\n';
             }
@@ -407,10 +421,12 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root,
             replace_all("{tarball}", a.tarball);
             auto log = out / "logs" / std::format("{}-{:02}.log", suite, commandIndex);
             const auto name = suite + ": " + templ;
+            std::vector<std::string> resourceNames;
             if (auto m = script_meta(templ, root)) {
+                resourceNames = m->resources;
                 append_ndjson(out / "meta.ndjson",
                               json{{"test", name}, {"area", m->area}, {"covers", m->covers},
-                                   {"requires", m->requires_}, {"proves", m->proves}});
+                                   {"requires", m->requires_}, {"resources", m->resources}, {"proves", m->proves}});
                 if (auto v = tk::check_requirements(*m)) {
                     std::println("xdev: [{}] {} -- {}: {}", suite, templ,
                                  v->fail ? "FAIL" : "skip", v->reason);
@@ -423,6 +439,15 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root,
             }
             std::println("xdev: [{}] {}", suite, command);
             const auto started = std::chrono::steady_clock::now();
+            const auto lockDirectory = a.lock_directory.empty() ? root / "target/xdev/resource-locks" : a.lock_directory;
+            auto lease = resource::Lease::acquire(lockDirectory, resourceNames);
+            if (!lease) {
+                ++failed;
+                append_ndjson(out / "scripts.ndjson", json{{"test", name}, {"status", "fail"},
+                    {"ms", 0}, {"message", lease.error()}});
+                std::println(std::cerr, "xdev: {}", lease.error());
+                continue;
+            }
             int rc = shell(command, log);
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - started).count();
@@ -440,7 +465,8 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root,
 }
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to);
+                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
+                    const fs::path& trend_from = {}, const fs::path& timings_out = {});
 
 int cmd_test(const TestArgs& a) {
     const auto root = repo_root();
@@ -451,7 +477,7 @@ int cmd_test(const TestArgs& a) {
     std::optional<Catalog> inventory;
     std::vector<sel::Selected> selection;
     std::set<std::string> selectedIds;
-    if (a.selecting || a.no_build) {
+    if (a.mcpp || a.selecting || a.no_build || !a.fixture_root.empty()) {
         auto discovered = catalog(a, root);
         if (!discovered) { std::println(std::cerr, "xdev: {}", discovered.error()); return 2; }
         inventory = std::move(*discovered);
@@ -483,8 +509,18 @@ int cmd_test(const TestArgs& a) {
         std::ofstream(out / "lane.json") << describe_lane().dump(2);
     }
 
+    std::optional<fixture::Server> server;
+    if (!a.fixture_root.empty()) {
+        auto started = fixture::Server::start(a.fixture_root);
+        if (!started) { std::println(std::cerr, "xdev: {}", started.error()); return 2; }
+        server.emplace(std::move(*started));
+        std::println("xdev: fixture {} serves {}", server->url(), a.fixture_root.string());
+    }
+    const auto lockDirectory = a.lock_directory.empty() ? root / "target/xdev/resource-locks" : a.lock_directory;
     int mcpp_rc = 0;
     if (a.mcpp && inventory) {
+        std::vector<resource::Task> tasks;
+        std::vector<fs::path> taskDirectories;
         for (const auto& test : selection) {
             if (test.test.script) continue;
             std::string buildOutput;
@@ -551,32 +587,49 @@ int cmd_test(const TestArgs& a) {
                 if (separator != a.mcpp_args.end()) argv.insert(argv.end(), separator + 1, a.mcpp_args.end());
             }
             if (!fresh->front().filter.empty()) argv.push_back("--gtest_filter=" + fresh->front().filter);
+            const auto taskDirectory = out / "workers" / std::to_string(tasks.size());
+            fs::create_directories(taskDirectory);
+            taskDirectories.push_back(taskDirectory);
             auto env = tk::inherited_env();
-            env["XTEST_META_OUT"] = (out / "meta.ndjson").string();
-            env["XTEST_RESULTS_OUT"] = (out / "cases.ndjson").string();
-            env["XTEST_ARTIFACTS"] = (out / "artifacts").string();
-            const auto run = tk::run({.argv = std::move(argv), .env = std::move(env), .cwd = root,
-                .timeout = std::chrono::minutes(30)});
-            if (run.exit_code != 0) mcpp_rc = 1;
-            append_ndjson(out / "mcpp.ndjson", json{{"test", test.test.id},
-                {"status", run.exit_code == 0 ? "pass" : "fail"}, {"duration_ms", run.elapsed.count()},
-                {"run_output", run.transcript()}, {"compile_output", buildOutput}});
-            if (run.exit_code != 0) std::println(std::cerr, "{}", tail_lines(run.transcript(), 25));
+            env["XTEST_META_OUT"] = (taskDirectory / "meta.ndjson").string();
+            env["XTEST_RESULTS_OUT"] = (taskDirectory / "cases.ndjson").string();
+            env["XTEST_ARTIFACTS"] = (taskDirectory / "artifacts").string();
+            if (server) env["XLINGS_TEST_FIXTURE_URL"] = server->url();
+            tasks.push_back({.id = test.test.id, .resources = fresh->front().resources,
+                .run = [argv = std::move(argv), env = std::move(env), root, taskDirectory,
+                        id = test.test.id, buildOutput] () mutable {
+                    const auto run = tk::run({.argv = std::move(argv), .env = std::move(env), .cwd = root,
+                        .timeout = std::chrono::minutes(30)});
+                    append_ndjson(taskDirectory / "mcpp.ndjson", json{{"test", id},
+                        {"status", run.exit_code == 0 ? "pass" : "fail"}, {"duration_ms", run.elapsed.count()},
+                        {"run_output", run.transcript()}, {"compile_output", buildOutput}});
+                    return run.exit_code;
+                }});
         }
-    } else if (a.mcpp) {
-        tk::set_env("XTEST_META_OUT", (out / "meta.ndjson").string());
-        tk::set_env("XTEST_RESULTS_OUT", (out / "cases.ndjson").string());
-        tk::set_env("XTEST_ARTIFACTS", (out / "artifacts").string());
-        std::string command = "mcpp test --message-format json";
-        for (auto& x : a.mcpp_args) command += " " + x;
-        if (!a.pattern.empty()) command += " " + a.pattern;
-        std::println("xdev: {}", command);
-        std::cout.flush();
-        auto full = (tk::is_windows ? std::string{} : "cd \"" + root.string() + "\" && ")
-                    + command + " > \"" + (out / "mcpp.ndjson").string() + "\"";
-        mcpp_rc = std::system(full.c_str());
+        const auto executed = resource::run(tasks, a.jobs, lockDirectory);
+        if (!executed) { std::println(std::cerr, "xdev: {}", executed.error()); return 2; }
+        for (std::size_t index = 0; index < executed->size(); ++index) {
+            const auto& result = (*executed)[index];
+            if (result.exit_code != 0) mcpp_rc = 1;
+            if (!result.error.empty()) {
+                append_ndjson(out / "mcpp.ndjson", json{{"test", result.id}, {"status", "fail"},
+                    {"duration_ms", result.elapsed_ms}, {"run_output", result.error}});
+                std::println(std::cerr, "xdev: {}: {}", result.id, result.error);
+            }
+            for (const auto& name : {"mcpp.ndjson", "meta.ndjson", "cases.ndjson"}) {
+                for (const auto& row : read_ndjson(taskDirectories[index] / name)) {
+                    append_ndjson(out / name, row);
+                    if (std::string_view(name) == "mcpp.ndjson" && result.exit_code != 0)
+                        std::println(std::cerr, "{}", tail_lines(row.value("run_output", ""), 25));
+                }
+            }
+        }
     }
+    // Script adapters inherit a fixture URL once; worker threads have joined.
+    const auto oldFixture = env_or("XLINGS_TEST_FIXTURE_URL");
+    if (server) tk::set_env("XLINGS_TEST_FIXTURE_URL", server->url());
     int script_failures = run_suites(a, out, root, inventory ? &selectedIds : nullptr);
+    if (server) tk::set_env("XLINGS_TEST_FIXTURE_URL", oldFixture);
     if (script_failures == 2 && a.suites.size() > 0 && !fs::exists(out / "scripts.ndjson")) return 2;
 
     int rc = cmd_report_dirs({out}, env_or("GITHUB_STEP_SUMMARY").size() > 0
@@ -626,9 +679,11 @@ struct Requirement {
 };
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to) {
+                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to,
+                    const fs::path& trend_from, const fs::path& timings_out) {
     std::vector<Record> records;
     std::vector<json> lanes;
+    std::vector<history::Observation> observations;
     using EvidenceKey = std::pair<std::string, std::string>; // lane, test
     std::map<EvidenceKey, json> meta;
 
@@ -639,9 +694,19 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             lane_name = l.value("name", lane_name);
             lanes.push_back(l);
         }
+        const auto first = records.size();
+        std::string execution = fs::absolute(dir).lexically_normal().string();
+        std::string platform;
+        if (!lanes.empty() && lanes.back().value("name", "") == lane_name) {
+            platform = lanes.back().value("platform", "");
+            execution = lanes.back().value("run", execution);
+        }
         for (auto& j : read_ndjson(dir / "mcpp.ndjson")) {
             if (!j.contains("test")) continue;
-            Record r{ .kind = "binary", .name = j.value("test", ""),
+            auto id = j.value("test", "");
+            const auto member = j.value("member", "");
+            if (!member.empty() && !id.starts_with(member + ":")) id = member + ":" + id;
+            Record r{ .kind = "binary", .name = std::move(id),
                       .status = normalise_mcpp_status(j.value("status", "")),
                       .ms = j.value("duration_ms", 0LL), .lane = lane_name };
             if (r.status == "fail") {
@@ -663,6 +728,11 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
         }
         for (auto& j : read_ndjson(dir / "meta.ndjson"))
             meta[{lane_name, j.value("test", "")}] = j;
+        if (!platform.empty())
+            for (auto i = first; i < records.size(); ++i) {
+                const auto& r = records[i];
+                observations.push_back({r.kind, r.name, platform, lane_name, execution, r.status, r.ms});
+            }
     }
 
     auto count = [&](std::string_view kind, std::string_view status) {
@@ -822,8 +892,25 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
         if (fail_unverified) coverage_errors += static_cast<int>(unverified.size());
     }
 
+    json previous;
+    if (!trend_from.empty()) {
+        std::ifstream input(trend_from);
+        if (!input) { std::println(std::cerr, "xdev: cannot read trend history {}", trend_from.string()); return 2; }
+        previous = json::parse(input, nullptr, false);
+    }
+    const auto trend = history::append(previous, observations);
+    if (!trend) { std::println(std::cerr, "xdev: {}", trend.error()); return 2; }
+    md += trend->markdown;
     std::println("{}", md);
+    if (!timings_out.empty()) {
+        std::ofstream output(timings_out);
+        output << trend->timings.dump(2) << '\n';
+        output.flush();
+        if (!output) { std::println(std::cerr, "xdev: cannot write timings {}", timings_out.string()); return 2; }
+    }
     if (!write_to.empty()) {
+        fs::create_directories(write_to);
+        std::ofstream(write_to / "trend.json") << trend->history.dump(2) << '\n';
         std::ofstream(write_to / "report.md") << md;
         json j;
         j["lanes"] = lanes;
@@ -891,8 +978,9 @@ int usage() {
     std::println(std::cerr,
         "usage: xdev <command>\n"
         "  test   [unit|e2e|perf|pattern] [--lane pr|main|nightly] [--shard i/n] [--changed BASE]\n"
-        "         [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
+        "         [-j N] [--fixture DIR] [--lock-dir DIR] [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
         "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered] [--fail-unverified]\n"
+        "         [--trend PREVIOUS.json] [--write DIR] [--timings-out FILE]\n"
         "  ci plan [--lane pr|main|nightly] [--shards N] [--platform OS] [--changed BASE..HEAD]\n"
         "          [--suite NAME]... [--discovery FILE] [--timings FILE] [--write-discovery FILE] [--require-metadata]\n"
         "  doctor");
@@ -929,7 +1017,17 @@ int main(int argc, char** argv) {
             try {
                 if (parse_selection_option(args, i, a)) continue;
             } catch (const std::exception& error) { std::println(std::cerr, "xdev: {}", error.what()); return 2; }
-            if (x == "--suite" && i + 1 < args.size()) a.suites.push_back(args[++i]);
+            if (x == "-j" || x == "--jobs") {
+                if (i + 1 >= args.size()) return usage();
+                const auto& count = args[++i];
+                const auto [end, error] = std::from_chars(count.data(), count.data() + count.size(), a.jobs);
+                if (error != std::errc{} || end != count.data() + count.size() || a.jobs == 0 || a.jobs > 1024) {
+                    std::println(std::cerr, "xdev: -j needs 1..1024 workers"); return 2;
+                }
+                a.selecting = true;
+            } else if (x == "--fixture" && i + 1 < args.size()) { a.fixture_root = args[++i]; a.selecting = true; }
+            else if (x == "--lock-dir" && i + 1 < args.size()) { a.lock_directory = args[++i]; a.selecting = true; }
+            else if (x == "--suite" && i + 1 < args.size()) a.suites.push_back(args[++i]);
             else if (x == "--no-mcpp") a.mcpp = false;
             else if (x == "--no-build") { a.no_build = true; a.selecting = true; }
             else if (x == "--out" && i + 1 < args.size()) a.out = args[++i];
@@ -947,7 +1045,7 @@ int main(int argc, char** argv) {
     if (cmd == "report") {
         std::vector<fs::path> dirs;
         bool summary = false, fail_uncovered = false, fail_unverified = false;
-        fs::path requirements, write_to;
+        fs::path requirements, write_to, trend_from, timings_out;
         for (std::size_t i = 1; i < args.size(); ++i) {
             const auto& x = args[i];
             if (x == "--in" && i + 1 < args.size()) dirs.emplace_back(args[++i]);
@@ -956,10 +1054,12 @@ int main(int argc, char** argv) {
             else if (x == "--fail-uncovered") fail_uncovered = true;
             else if (x == "--fail-unverified") fail_unverified = true;
             else if (x == "--write" && i + 1 < args.size()) write_to = args[++i];
+            else if (x == "--trend" && i + 1 < args.size()) trend_from = args[++i];
+            else if (x == "--timings-out" && i + 1 < args.size()) timings_out = args[++i];
             else { std::println(std::cerr, "xdev report: unknown option {}", x); return 2; }
         }
         if (dirs.empty()) dirs.push_back(repo_root() / "target" / "xdev" / "run");
-        return cmd_report_dirs(dirs, summary, requirements, fail_uncovered, fail_unverified, write_to);
+        return cmd_report_dirs(dirs, summary, requirements, fail_uncovered, fail_unverified, write_to, trend_from, timings_out);
     }
     if (cmd == "doctor") return cmd_doctor();
     return usage();
