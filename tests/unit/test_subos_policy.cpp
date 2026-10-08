@@ -11,7 +11,8 @@ import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.spec;
-import xlings.subos.provider;
+import xlings.confine.provider;
+import xlings.confine;
 
 namespace pol = xlings::subos::policy;
 namespace sp = xlings::subos::spec;
@@ -132,7 +133,7 @@ XTEST(SubosPolicy, OneDecideAnswersFetchGrantsAndChanges,
 
 XTEST(SubosPolicy, LockedCompilesToNoNetworkANeutralIdentityAndNoNestedNamespaces,
       .area = "subos", .covers = {"POL-PRESETS", "ISO-SPEC-GOLDEN"}) {
-    auto s = sp::compile(pol::preset(pol::Preset::Locked), HomeView{"/h"}, bwrap_host(), req());
+    auto s = xlings::confine::compile(pol::preset(pol::Preset::Locked), HomeView{"/h"}, bwrap_host(), req());
     ASSERT_TRUE(s.has_value());
     EXPECT_TRUE(s->unshare_net);
     EXPECT_TRUE(s->disable_userns);
@@ -143,7 +144,7 @@ XTEST(SubosPolicy, LockedCompilesToNoNetworkANeutralIdentityAndNoNestedNamespace
     EXPECT_EQ(s->env.at("TZ"), "UTC");
     EXPECT_EQ(s->env.at("LANG"), "C.UTF-8");
     EXPECT_FALSE(s->env.contains("LC_TIME"));
-    auto a = xlings::subos::provider::bwrap_argv(*s);
+    auto a = xlings::confine::provider::bwrap_argv(*s);
     EXPECT_NE(std::ranges::find(a, "--unshare-net"), a.end());
     EXPECT_NE(std::ranges::find(a, "/h/subos/box/etc-neutral/passwd"), a.end());
     EXPECT_EQ(std::ranges::find(a, "/etc/localtime"), a.end()) << "the host's zone stays outside";
@@ -152,33 +153,33 @@ XTEST(SubosPolicy, LockedCompilesToNoNetworkANeutralIdentityAndNoNestedNamespace
 XTEST(SubosPolicy, AMustThisHostCannotMeetRefusesAndAShouldDegrades,
       .area = "subos", .covers = {"ISO-MUST-SHOULD", "ISO-NO-DEGRADE"}) {
     // private needs a private network; without pasta there is none to give.
-    auto r = sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(), req());
+    auto r = xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(), req());
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().missing.front().dimension, "net");
     EXPECT_NE(r.error().missing.front().fix.find("passt"), std::string::npos);
     // With pasta, it enters.
-    EXPECT_TRUE(sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), req()));
+    EXPECT_TRUE(xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), req()));
 
     // proot under dev: entered, degraded, and says what.
     caps::Caps proot;
     proot.platform = "linux";
     proot.proot = caps::Backend{ .name = "proot", .bin = "/p", .source = "payload", .usable = true };
-    auto dev = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, proot, req());
+    auto dev = xlings::confine::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, proot, req());
     ASSERT_TRUE(dev.has_value());
     EXPECT_FALSE(dev->degraded.empty());
     // ...and with --no-degrade, refused.
     auto strict = pol::preset(pol::Preset::Dev);
     strict.no_degrade = true;
-    EXPECT_FALSE(sp::compile(strict, HomeView{"/h"}, proot, req()));
+    EXPECT_FALSE(xlings::confine::compile(strict, HomeView{"/h"}, proot, req()));
 }
 
 XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
       .area = "subos", .covers = {"ISO-NET-NAT", "ISO-GRANTS"}) {
     auto r = req();
-    auto s = sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
+    auto s = xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
     ASSERT_TRUE(s.has_value());
     EXPECT_TRUE(s->net_nat);
-    auto a = xlings::subos::provider::pasta_args(*s);
+    auto a = xlings::confine::provider::pasta_args(*s);
     auto has = [&](std::vector<std::string> seq) {
         return std::ranges::search(a, seq).begin() != a.end();
     };
@@ -186,19 +187,19 @@ XTEST(SubosPolicy, NatOpensNothingUnlessPublishedOrGranted,
     EXPECT_TRUE(has({"-T", "none"}));
     EXPECT_TRUE(has({"--no-map-gw"}));
     // bwrap must not make a second network namespace: it runs in pasta's.
-    auto b = xlings::subos::provider::bwrap_argv(*s);
+    auto b = xlings::confine::provider::bwrap_argv(*s);
     EXPECT_EQ(std::ranges::find(b, "--unshare-net"), b.end());
 
     r.publish = {"18080:80"};
     r.grants = {"host-loopback"};
-    auto p = sp::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
+    auto p = xlings::confine::compile(pol::preset(pol::Preset::Private), HomeView{"/h"}, bwrap_host(true), r);
     ASSERT_TRUE(p.has_value());
-    auto pa = xlings::subos::provider::pasta_args(*p);
+    auto pa = xlings::confine::provider::pasta_args(*p);
     EXPECT_NE(std::ranges::search(pa, std::vector<std::string>{"-t", "18080:80"}).begin(), pa.end());
     EXPECT_EQ(std::ranges::find(pa, "--no-map-gw"), pa.end());
 
     // --publish without nat is a degradation dev reports, not silence.
-    auto d = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(true), r);
+    auto d = xlings::confine::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(true), r);
     ASSERT_TRUE(d.has_value());
     EXPECT_TRUE(std::ranges::any_of(d->degraded, [](auto& u) { return u.dimension == "publish"; }));
 }
@@ -234,7 +235,7 @@ XTEST(SubosPolicy, AMountMayNotReachTheHomeOrTheSystem,
     auto refused = [&](std::string src, std::string dst) {
         auto p = pol::preset(pol::Preset::Dev);
         p.mounts.push_back({.src = src, .dst = dst});
-        return !sp::compile(p, HomeView{"/h/.xlings"}, bwrap_host(), req()).has_value();
+        return !xlings::confine::compile(p, HomeView{"/h/.xlings"}, bwrap_host(), req()).has_value();
     };
     EXPECT_TRUE(refused("/h/.xlings", ""));          // the home itself
     EXPECT_TRUE(refused("/h", "/x"));                // above it
@@ -249,7 +250,7 @@ XTEST(SubosPolicy, AGrantOpensOneSocketAndPointsItsVariableAtIt,
     r.host_env = {{"SSH_AUTH_SOCK", "/run/user/1/ssh"}, {"DISPLAY", ":0"},
                   {"DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus"}};
     r.grants = {"ssh-agent", "display", "dbus"};
-    auto s = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), r);
+    auto s = xlings::confine::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), r);
     ASSERT_TRUE(s.has_value());
     EXPECT_EQ(s->env.at("SSH_AUTH_SOCK"), "/tmp/.xlings-ssh-agent");
     EXPECT_EQ(s->env.at("DISPLAY"), ":0");
@@ -260,7 +261,7 @@ XTEST(SubosPolicy, AGrantOpensOneSocketAndPointsItsVariableAtIt,
     EXPECT_TRUE(has_bind("/run/user/1/ssh", "/tmp/.xlings-ssh-agent"));
     EXPECT_TRUE(has_bind("/tmp/.X11-unix", "/tmp/.X11-unix"));
     // Ungranted, none of it is there.
-    auto none = sp::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), req());
+    auto none = xlings::confine::compile(pol::preset(pol::Preset::Dev), HomeView{"/h"}, bwrap_host(), req());
     EXPECT_FALSE(none->env.contains("SSH_AUTH_SOCK"));
 }
 

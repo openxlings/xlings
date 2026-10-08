@@ -17,8 +17,9 @@ import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.spec;
-import xlings.subos.provider;
-import xlings.subos.gates;
+import xlings.confine.provider;
+import xlings.confine;
+import xlings.confine.gates;
 import xlings.subos.session;
 import xlings.subos.broker;
 import xlings.core.elfread;
@@ -699,7 +700,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         }
 
         auto host_caps = caps::probe(home, ports);
-        auto compiled = spec::compile(pol, home, host_caps, request);
+        auto compiled = xlings::confine::compile(pol, home, host_caps, request);
 
         // Nothing usable and nothing asked for: fetch a backend, once.
         if (!compiled && !request.preferred && compiled.error().missing.front().dimension == "backend") {
@@ -729,7 +730,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                 return kFail;
             }
             host_caps = caps::probe(home, ports);
-            compiled = spec::compile(pol, home, host_caps, request);
+            compiled = xlings::confine::compile(pol, home, host_caps, request);
             if (!compiled && compiled.error().missing.front().dimension == "backend") {
                 stream.emit(ErrorEvent{
                     .code = ErrorCode::NotFound,
@@ -876,17 +877,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             launched.argv.push_back("--");
             launched.argv.insert(launched.argv.end(), sb.argv.begin(), sb.argv.end());
         }
-        std::vector<std::string> argv;
-        if (sb.backend == spec::Backend::Bwrap) {
-            argv = provider::bwrap_argv(launched, seccomp_fd);
-        } else if (sb.backend == spec::Backend::Landlock) {
-            // No view to mount it into: session-init is this binary where it is,
-            // and fences itself before it starts anything (session::kLandlockRwEnv).
-            argv = launched.argv;
-            argv[0] = host_exe_();
-        } else {
-            argv = provider::proot_argv(launched);
-        }
+        // The implementation's command (xlings.confine): bwrap's or proot's
+        // argv around session-init, or -- Landlock, no view to mount it into
+        // -- this binary where it is, fencing itself before it starts anything.
+        const auto argv = xlings::confine::launch_argv(launched, seccomp_fd, host_exe_());
 
         if (observe::trace_enabled("provider")) {
             std::string line;
@@ -900,7 +894,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         const int rc = session::host(home, session::Launch{
             .instance = name,
             .argv = std::move(argv),
-            .env = provider::process_env(sb, request.host_env),
+            .env = xlings::confine::provider::process_env(sb, request.host_env),
             .keep_fds = keep_fds,
             .backend = backend_name,
             .digest = digest,
@@ -912,7 +906,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .ttl = opts.ttl,
             .detached = opts.detached,
             .timeout = opts.timeout,
-            .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
+            .pasta = sb.net_nat ? xlings::confine::provider::pasta_args(sb) : std::vector<std::string>{},
             .proxy_url = sb.net_proxy ? sb.proxy_url : std::string{},
             .trace_net = (sb.net_nat || sb.net_proxy) && (pol.observe == policy::Observe::Standard || pol.observe == policy::Observe::Full),
             .broker_policy = brokered ? std::optional(pol) : std::nullopt,
@@ -934,7 +928,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     } else {
         // macOS / Windows: home redirect (dotfile isolation).
         auto host_caps = caps::probe(home, ports);
-        auto compiled = spec::compile(pol, home, host_caps, request);
+        auto compiled = xlings::confine::compile(pol, home, host_caps, request);
         if (!compiled) {
             emit_refusal_(stream, compiled.error());
             return kFail;
@@ -979,7 +973,7 @@ nlohmann::json preview(const std::string& name, const policy::Policy& pol, Event
                            .storage = to_spec_storage_(read_storage_mode_(dir)) };
     const auto host_caps = caps::probe(home, ports);
     nlohmann::json out;
-    auto compiled = spec::compile(pol, home, host_caps, request);
+    auto compiled = xlings::confine::compile(pol, home, host_caps, request);
     if (compiled) {
         out["enters"] = true;
         out["spec"] = compiled->describe();
@@ -990,9 +984,9 @@ nlohmann::json preview(const std::string& name, const policy::Policy& pol, Event
             out["missing"].push_back({{"dimension", m.dimension}, {"reason", m.reason}, {"fix", m.fix}});
     }
     out["gates"] = nlohmann::json::array();
-    for (auto& g : gates::probe(host_caps))
+    for (auto& g : xlings::confine::gates::probe(host_caps))
         out["gates"].push_back({{"gate", g.gate}, {"supported", g.supported},
-                                {"enforced", std::string(gates::to_string(g.enforced))},
+                                {"enforced", std::string(xlings::confine::gates::to_string(g.enforced))},
                                 {"reason", g.reason}, {"route", g.route}});
     return out;
 }
@@ -1052,9 +1046,9 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     report["pasta"] = host_caps.pasta ? nlohmann::json(host_caps.pasta->string())
                                       : nlohmann::json(host_caps.pasta_missing);
     report["gates"] = nlohmann::json::array();
-    for (auto& g : gates::probe(host_caps))
+    for (auto& g : xlings::confine::gates::probe(host_caps))
         report["gates"].push_back({{"gate", g.gate}, {"supported", g.supported},
-                                   {"enforced", std::string(gates::to_string(g.enforced))}, {"reason", g.reason}});
+                                   {"enforced", std::string(xlings::confine::gates::to_string(g.enforced))}, {"reason", g.reason}});
     const bool ok = host_caps.platform != "linux" || (host_caps.bwrap && host_caps.bwrap->usable);
     report["ok"] = ok;
 

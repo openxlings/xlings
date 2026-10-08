@@ -13,14 +13,15 @@ import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.caps;
 import xlings.subos.spec;
-import xlings.subos.provider;
-import xlings.subos.gates;
+import xlings.confine.provider;
+import xlings.confine;
+import xlings.confine.gates;
 
 namespace sp = xlings::subos::spec;
-namespace pv = xlings::subos::provider;
+namespace pv = xlings::confine::provider;
 namespace pol = xlings::subos::policy;
 namespace caps = xlings::subos::caps;
-namespace gates = xlings::subos::gates;
+namespace gates = xlings::confine::gates;
 using xlings::subos::HomeView;
 using V = std::vector<std::string>;
 
@@ -77,7 +78,7 @@ V concat(std::initializer_list<V> parts) {
 
 XTEST(SubosSpec, LegacyBwrapArgvIsTheOldOnePlusTheS0Fixes,
       .area = "subos", .covers = {"ISO-SPEC-GOLDEN", "COMPAT-UNDECLARED"}) {
-    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), request({"/bin/bash", "-c", "true"}));
+    auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(), request({"/bin/bash", "-c", "true"}));
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->backend, sp::Backend::Bwrap);
     auto expected = concat({
@@ -112,7 +113,7 @@ XTEST(SubosSpec, LegacyInteractiveShellGetsDashIOnlyOnATerminal,
       .area = "subos", .covers = {"ISO-SPEC-GOLDEN"}) {
     auto r = request();
     r.interactive = true;
-    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), r);
+    auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r);
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->argv, (V{"/bin/bash", "-i"}));
     // A terminal keeps its job control: no new session, the seccomp filter instead.
@@ -121,14 +122,14 @@ XTEST(SubosSpec, LegacyInteractiveShellGetsDashIOnlyOnATerminal,
     auto a = pv::bwrap_argv(*spec, 7);
     EXPECT_NE(std::ranges::search(a, V{"--seccomp", "7"}).begin(), a.end());
     r.interactive = false;
-    EXPECT_EQ(sp::compile(pol::legacy(), kHome, linux_caps(), r)->argv, (V{"/bin/bash"}));
+    EXPECT_EQ(xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r)->argv, (V{"/bin/bash"}));
 }
 
 XTEST(SubosSpec, LegacyTmpfsAndImageStorage,
       .area = "subos", .covers = {"ISO-SPEC-GOLDEN"}) {
     auto r = request({"/bin/bash", "-c", "true"});
     r.storage = sp::Storage::Tmpfs;
-    auto t = pv::bwrap_argv(*sp::compile(pol::legacy(), kHome, linux_caps(), r));
+    auto t = pv::bwrap_argv(*xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r));
     const V tail{"--tmpfs", "/home/u", "--tmpfs", "/tmp",
                  "--chdir", "/home/u", "--", "/bin/bash", "-c", "true"};
     ASSERT_GE(t.size(), tail.size());
@@ -138,14 +139,14 @@ XTEST(SubosSpec, LegacyTmpfsAndImageStorage,
 
     r.storage = sp::Storage::Image;
     r.image_mountpoint = "/h/subos/box/.mountpoint";
-    auto i = pv::bwrap_argv(*sp::compile(pol::legacy(), kHome, linux_caps(), r));
+    auto i = pv::bwrap_argv(*xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r));
     EXPECT_NE(std::ranges::search(i, V{"--bind", "/h/subos/box/.mountpoint", "/home"}).begin(), i.end());
     EXPECT_NE(std::ranges::search(i, V{"--tmpfs", "/tmp"}).begin(), i.end());
 }
 
 XTEST(SubosSpec, LegacyProotArgvIsUnchanged,
       .area = "subos", .covers = {"ISO-SPEC-GOLDEN"}) {
-    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false),
+    auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false),
                             request({"/bin/bash", "-c", "true"}));
     ASSERT_TRUE(spec.has_value());
     EXPECT_EQ(spec->backend, sp::Backend::Proot);
@@ -168,21 +169,21 @@ XTEST(SubosSpec, BackendRefusalsSayWhatIsMissingAndHowToFixIt,
       .area = "subos", .covers = {"ISO-MUST-SHOULD"}) {
     caps::Caps none;
     none.platform = "linux";
-    auto r = sp::compile(pol::legacy(), kHome, none, request());
+    auto r = xlings::confine::compile(pol::legacy(), kHome, none, request());
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().missing.front().dimension, "backend");
     EXPECT_EQ(r.error().missing.front().need, pol::Need::Must);
 
     auto req = request();
     req.preferred = sp::Backend::Bwrap;
-    auto b = sp::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), req);
+    auto b = xlings::confine::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), req);
     ASSERT_FALSE(b.has_value());
     EXPECT_NE(b.error().missing.front().reason.find("uid map"), std::string::npos)
         << "the probe's own words, not a guess";
 
     auto tmpfs = request();
     tmpfs.storage = sp::Storage::Tmpfs;
-    auto t = sp::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), tmpfs);
+    auto t = xlings::confine::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), tmpfs);
     ASSERT_FALSE(t.has_value());
     EXPECT_EQ(t.error().missing.front().dimension, "storage");
 }
@@ -192,7 +193,7 @@ XTEST(SubosSpec, GpuGrantAddsOnlyTheDevicesThatExist,
     auto r = request();
     r.grants.insert("gpu");
     r.host_exists = [](std::string_view p) { return p == "/dev/nvidiactl" || p == "/dev/dri" || p == "/usr"; };
-    auto a = pv::bwrap_argv(*sp::compile(pol::legacy(), kHome, linux_caps(), r));
+    auto a = pv::bwrap_argv(*xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r));
     EXPECT_NE(std::ranges::search(a, V{"--dev-bind", "/dev/nvidiactl", "/dev/nvidiactl"}).begin(), a.end());
     EXPECT_NE(std::ranges::search(a, V{"--dev-bind", "/dev/dri", "/dev/dri"}).begin(), a.end());
     EXPECT_EQ(std::ranges::search(a, V{"--dev-bind", "/dev/nvidia0", "/dev/nvidia0"}).begin(), a.end());
@@ -203,7 +204,7 @@ XTEST(SubosSpec, HomeRedirectOnMacosAndWindows,
       .area = "subos", .covers = {"PLAT-HINT"}) {
     caps::Caps mac;
     mac.platform = "macos";
-    auto m = sp::compile(pol::legacy(), kHome, mac, request());
+    auto m = xlings::confine::compile(pol::legacy(), kHome, mac, request());
     ASSERT_TRUE(m.has_value());
     EXPECT_EQ(m->backend, sp::Backend::HomeRedirect);
     EXPECT_EQ(m->env.at("HOME"), "/h/subos/box/home/u");
@@ -211,7 +212,7 @@ XTEST(SubosSpec, HomeRedirectOnMacosAndWindows,
 
     caps::Caps win;
     win.platform = "windows";
-    auto w = sp::compile(pol::legacy(), kHome, win, request());
+    auto w = xlings::confine::compile(pol::legacy(), kHome, win, request());
     ASSERT_TRUE(w.has_value());
     EXPECT_TRUE(w->env.contains("USERPROFILE"));
     EXPECT_FALSE(w->env.contains("HOME"));
@@ -223,7 +224,7 @@ XTEST(SubosSpec, DescribeCarriesEnvironmentNamesNeverValues,
     r.host_env = {{"GITHUB_TOKEN", "ghp_secret"}, {"LANG", "C.UTF-8"}};
     auto p = pol::legacy();
     p.env_inherit = false;
-    auto spec = sp::compile(p, kHome, linux_caps(), r);
+    auto spec = xlings::confine::compile(p, kHome, linux_caps(), r);
     ASSERT_TRUE(spec.has_value());
     auto text = spec->describe().dump();
     EXPECT_EQ(text.find("ghp_secret"), std::string::npos);
@@ -255,7 +256,7 @@ XTEST(SubosSpec, TheEnvironmentIsAnAllowList,
     r.host_env = {{"GITHUB_TOKEN", "x"}, {"SSH_AUTH_SOCK", "/run/a"}, {"XAUTHORITY", "/x"},
                   {"DBUS_SESSION_BUS_ADDRESS", "unix:"}, {"LANG", "C.UTF-8"}, {"LC_ALL", "C"},
                   {"EDITOR", "vi"}, {"https_proxy", "http://p"}, {"XLINGS_AGENT_MODE", "1"}};
-    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(), r);
+    auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(), r);
     ASSERT_TRUE(spec.has_value());
     for (auto k : {"GITHUB_TOKEN", "SSH_AUTH_SOCK", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"})
         EXPECT_FALSE(spec->env.contains(k)) << k;
@@ -266,7 +267,7 @@ XTEST(SubosSpec, TheEnvironmentIsAnAllowList,
 
 XTEST(SubosSpec, ProotSaysWhatItCannotIsolate,
       .area = "subos", .covers = {"ISO-MUST-SHOULD"}) {
-    auto spec = sp::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), request());
+    auto spec = xlings::confine::compile(pol::legacy(), kHome, linux_caps(/*bwrap_ok=*/false), request());
     ASSERT_TRUE(spec.has_value());
     EXPECT_FALSE(spec->unshare_pid);
     EXPECT_FALSE(spec->degraded.empty());
@@ -279,14 +280,14 @@ XTEST(SubosSpec, LandlockIsAskedForAndNeedsTheKernel,
     auto c = linux_caps(false, false);
     auto r = request({"make"});
     r.preferred = sp::Backend::Landlock;
-    auto none = sp::compile(pol::preset(pol::Preset::Dev), kHome, c, r);
+    auto none = xlings::confine::compile(pol::preset(pol::Preset::Dev), kHome, c, r);
     ASSERT_FALSE(none);
     EXPECT_EQ(none.error().missing[0].dimension, "backend");
     EXPECT_NE(none.error().missing[0].reason.find("Landlock"), std::string::npos);
 
     // Not chosen on its own: an unusable bwrap and no proot is still a refusal.
     c.landlock_abi = 3;
-    EXPECT_FALSE(sp::compile(pol::preset(pol::Preset::Dev), kHome, c, request({"make"})));
+    EXPECT_FALSE(xlings::confine::compile(pol::preset(pol::Preset::Dev), kHome, c, request({"make"})));
 }
 
 XTEST(SubosSpec, LandlockWritesOnlyTheInstanceAndWhatIsMountedReadWrite,
@@ -298,7 +299,7 @@ XTEST(SubosSpec, LandlockWritesOnlyTheInstanceAndWhatIsMountedReadWrite,
     auto policy = pol::preset(pol::Preset::Dev);
     policy.mounts.push_back({.src = "/work", .dst = "", .rw = true});
     policy.mounts.push_back({.src = "/ref", .dst = "", .rw = false});
-    auto s = sp::compile(policy, kHome, c, r);
+    auto s = xlings::confine::compile(policy, kHome, c, r);
     ASSERT_TRUE(s) << s.error().missing[0].reason;
     EXPECT_EQ(s->backend, sp::Backend::Landlock);
     EXPECT_TRUE(s->mounts.empty()) << "no view: nothing is mounted";
@@ -320,7 +321,7 @@ XTEST(SubosSpec, LandlockWritesOnlyTheInstanceAndWhatIsMountedReadWrite,
 
     // A mapping elsewhere has no meaning without a view.
     policy.mounts = {{.src = "/work", .dst = "/w", .rw = true}};
-    EXPECT_FALSE(sp::compile(policy, kHome, c, r));
+    EXPECT_FALSE(xlings::confine::compile(policy, kHome, c, r));
     // What private requires, Landlock cannot give.
-    EXPECT_FALSE(sp::compile(pol::preset(pol::Preset::Private), kHome, c, r));
+    EXPECT_FALSE(xlings::confine::compile(pol::preset(pol::Preset::Private), kHome, c, r));
 }

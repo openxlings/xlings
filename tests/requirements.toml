@@ -680,11 +680,11 @@ status = "required"
 
 [INTENT-EQ]
 text = "the Intent IR and the confine registry produce byte-identical bwrap argv to the code they replaced"
-status = "planned"
+status = "required"
 
 [GATE-CONFORM]
 text = "the platform matrix is the implementations' probes, not a hand-kept table"
-status = "planned"
+status = "required"
 
 [CARRIER-LOCAL]
 text = "the local carrier runs a SubOS through the carrier SPI with today's behaviour"

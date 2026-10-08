@@ -7,7 +7,7 @@ import xlings.subos.ports;
 // What this host can do for isolation (design §18), measured, never assumed.
 //
 // The compiler decides what a sandbox gets from Policy + Caps; the platform
-// matrix `subos status` prints is these probes (xlings.subos.gates). A
+// matrix `subos status` prints is these probes (xlings.confine.gates). A
 // capability is a FACT with its evidence: a backend that was found but does
 // not work carries the probe's raw output, because "bwrap failed" without
 // the reason is how #640's misleading sysctl advice happened.

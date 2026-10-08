@@ -1,10 +1,13 @@
-module xlings.subos.provider;
+module xlings.confine.provider;
 
 import std;
 import xlings.subos.spec;
 import xlings.subos.session;
 
-namespace xlings::subos::provider {
+namespace xlings::confine::provider {
+
+namespace spec = xlings::subos::spec;
+namespace session = xlings::subos::session;
 
 using spec::MountKind;
 
@@ -64,9 +67,11 @@ std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
     return env;
 }
 
-}  // namespace xlings::subos::provider
+}  // namespace xlings::confine::provider
 
-namespace xlings::subos::provider {
+namespace xlings::confine::provider {
+
+
 
 std::vector<std::string> pasta_args(const spec::SandboxSpec& s) {
     std::vector<std::string> a{ s.pasta_bin.string(), "--config-net", "--quiet" };
@@ -79,4 +84,4 @@ std::vector<std::string> pasta_args(const spec::SandboxSpec& s) {
     return a;
 }
 
-}  // namespace xlings::subos::provider
+}  // namespace xlings::confine::provider

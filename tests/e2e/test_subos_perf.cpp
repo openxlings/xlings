@@ -11,7 +11,8 @@ import xlings.core.elfread;
 import xlings.subos.caps;
 import xlings.subos.ports;
 import xlings.subos.spec;
-import xlings.subos.provider;
+import xlings.confine.provider;
+import xlings.confine;
 import xlings.subos.policy;
 import xlings.subos.home_view;
 
@@ -128,11 +129,11 @@ DirectBackend direct_backend(const Box& box, const std::vector<std::string>& com
     subos::spec::Request request{
         .instance = "box", .instance_dir = home.instance("box"), .user = environment.at("USER"),
         .argv = command, .preferred = subos::spec::Backend::Bwrap, .host_env = environment};
-    const auto compiled = subos::spec::compile(subos::policy::legacy(), home, caps, request);
+    const auto compiled = xlings::confine::compile(subos::policy::legacy(), home, caps, request);
     if (!compiled) throw std::runtime_error("direct-provider baseline did not compile");
     if (compiled->backend != subos::spec::Backend::Bwrap || compiled->mounts.empty() || !compiled->unshare_pid)
         throw std::runtime_error("direct-provider baseline omitted the sandbox");
-    return {subos::provider::bwrap_argv(*compiled), subos::provider::process_env(*compiled, environment)};
+    return {xlings::confine::provider::bwrap_argv(*compiled), xlings::confine::provider::process_env(*compiled, environment)};
 }
 
 } // namespace

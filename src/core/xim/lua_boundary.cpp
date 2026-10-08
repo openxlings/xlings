@@ -23,7 +23,8 @@ import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.ports;
 import xlings.subos.spec;
-import xlings.subos.provider;
+import xlings.confine.provider;
+import xlings.confine;
 import xlings.subos.network;
 namespace xlings::xim::lua_boundary {
 namespace xpkg = mcpplibs::xpkg;
@@ -494,7 +495,7 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                                      .cwd = w->scratch.string()};
         if (platform::is_linux)
             request.preferred = subos::spec::Backend::Bwrap;
-        auto compiled = subos::spec::compile(p, home, capabilities, request);
+        auto compiled = xlings::confine::compile(p, home, capabilities, request);
         if (!compiled) {
             std::string reason = "Lua worker isolation unavailable";
             for (const auto& missing : compiled.error().missing)
@@ -656,18 +657,18 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                 sandbox.mounts.push_back(
                     {subos::spec::MountKind::Bind, path.generic_string(), path.generic_string()});
             }
-            command = subos::provider::bwrap_argv(sandbox);
+            command = xlings::confine::provider::bwrap_argv(sandbox);
         } else {
             // compile() refused all Must dimensions; this is the documented advisory
             // platform path, still an external worker with no in-process fallback.
             log::warn("Lua worker isolation is advisory on {}", capabilities.platform);
         }
-        auto env = subos::provider::process_env(sandbox, inherited);
+        auto env = xlings::confine::provider::process_env(sandbox, inherited);
         env.erase("XLINGS_BROKER_SOCKET");
         env.erase("XLINGS_SUBOS_MODE");
         platform::worker::Network network;
         if (sandbox.net_nat) {
-            network.pasta = subos::provider::pasta_args(sandbox);
+            network.pasta = xlings::confine::provider::pasta_args(sandbox);
             network.pid_file = w->scratch / "pasta.pid";
         }
         if (sandbox.net_proxy) {

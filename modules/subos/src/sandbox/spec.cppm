@@ -4,9 +4,9 @@ import std;
 import xlings.libs.json;
 import xlings.subos.home_view;
 import xlings.subos.policy;
-import xlings.subos.caps;
 
-// Policy + HomeView + Caps -> SandboxSpec (design §16).
+// What a sandbox is, as data (design §16). xlings.confine compiles a policy
+// and the host's capabilities into one (part 3 §6.2).
 //
 // The spec is pure data: every mount in order, every namespace, the whole
 // environment, the identity, the command. A provider translates it and
@@ -117,10 +117,5 @@ struct SandboxSpec {
 struct Refusal {
     std::vector<Unmet> missing;               // Must-items not met
 };
-
-std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
-                                            const HomeView& home,
-                                            const caps::Caps& caps,
-                                            const Request& request);
 
 }  // namespace xlings::subos::spec

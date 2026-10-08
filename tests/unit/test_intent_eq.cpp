@@ -16,14 +16,15 @@ import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.caps;
 import xlings.subos.spec;
-import xlings.subos.provider;
+import xlings.confine.provider;
+import xlings.confine;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
 namespace pol = xlings::subos::policy;
 namespace sp = xlings::subos::spec;
 namespace caps = xlings::subos::caps;
-namespace pv = xlings::subos::provider;
+namespace pv = xlings::confine::provider;
 using xlings::subos::HomeView;
 
 namespace {
@@ -112,7 +113,7 @@ sp::Request request_of(int storage, bool interactive, int grants, bool root, std
 
 nlohmann::json outcome(const pol::Policy& p, const caps::Caps& c, const sp::Request& r) {
     const HomeView home{"/h/.xlings"};
-    auto compiled = sp::compile(p, home, c, r);
+    auto compiled = xlings::confine::compile(p, home, c, r);
     if (!compiled) {
         nlohmann::json j{{"refused", nlohmann::json::array()}};
         for (const auto& u : compiled.error().missing)

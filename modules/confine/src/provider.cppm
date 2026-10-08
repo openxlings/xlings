@@ -1,4 +1,4 @@
-export module xlings.subos.provider;
+export module xlings.confine.provider;
 
 import std;
 import xlings.subos.spec;
@@ -9,7 +9,9 @@ import xlings.subos.spec;
 // a golden-testable value. A capability the spec asks for that a backend
 // cannot express is the COMPILER's problem (it reports it as unmet); a
 // provider that silently dropped one would be a second, invisible policy.
-export namespace xlings::subos::provider {
+namespace xlings::confine::provider { namespace spec = xlings::subos::spec; }
+
+export namespace xlings::confine::provider {
 
 // `bwrap ... -- <argv>`. `seccomp_fd` is a filter the caller has open
 // (--seccomp <fd>), when the spec blocks terminal injection.
@@ -29,4 +31,4 @@ std::map<std::string, std::string> process_env(const spec::SandboxSpec& s,
 // it): the nat options the spec asks for.
 std::vector<std::string> pasta_args(const spec::SandboxSpec& s);
 
-}  // namespace xlings::subos::provider
+}  // namespace xlings::confine::provider

@@ -7,7 +7,9 @@
 #   ui        -> platform: theme and i18n
 #   store     -> libs, platform: what keeps a payload alive (GC roots, the
 #                retained ledger)
-#   subos     -> libs, runtime, platform: the SubOS core
+#   subos     -> libs, runtime, platform, store: the SubOS core
+#   confine   -> subos: the sandbox implementations, their selector, the
+#                platform matrix
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -24,6 +26,7 @@ members = [
     "modules/ui",
     "modules/store",
     "modules/subos",
+    "modules/confine",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -126,6 +129,7 @@ platform = { path = "modules/platform" }
 ui       = { path = "modules/ui" }
 store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
+confine  = { path = "modules/confine" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"

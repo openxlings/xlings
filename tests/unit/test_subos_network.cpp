@@ -7,7 +7,8 @@ import xlings.subos.network;
 import xlings.subos.policy;
 import xlings.subos.spec;
 import xlings.subos.caps;
-import xlings.subos.provider;
+import xlings.confine.provider;
+import xlings.confine;
 
 namespace network = xlings::subos::network;
 namespace platform = xlings::platform;
@@ -40,7 +41,7 @@ XTEST(SubosNetwork, CompilerAndProviderKeepTheAlreadyCreatedProxyNamespace,
     caps.platform = "linux";
     caps.bwrap = xlings::subos::caps::Backend{.name = "bwrap", .bin = "/bwrap", .usable = true};
     caps.userns = true;
-    const auto compiled = spec::compile(requested, {.home = "/h"}, caps,
+    const auto compiled = xlings::confine::compile(requested, {.home = "/h"}, caps,
         {.instance = "box", .instance_dir = "/h/subos/box", .argv = {"true"},
          .host_exists = [](std::string_view) { return true; }});
     ASSERT_TRUE(compiled);
@@ -48,13 +49,13 @@ XTEST(SubosNetwork, CompilerAndProviderKeepTheAlreadyCreatedProxyNamespace,
     EXPECT_TRUE(compiled->net_proxy);
     EXPECT_FALSE(compiled->net_nat);
     EXPECT_EQ(compiled->env.at("ALL_PROXY"), "socks5h://127.0.0.1:1080");
-    const auto argv = xlings::subos::provider::bwrap_argv(*compiled);
+    const auto argv = xlings::confine::provider::bwrap_argv(*compiled);
     EXPECT_EQ(std::ranges::find(argv, "--unshare-net"), argv.end());
     EXPECT_EQ(compiled->describe()["net"]["dns"], "remote");
     for (const auto* other : {"macos", "windows"}) {
         caps.platform = other;
         requested.needs["net"] = policy::Need::Must;
-        EXPECT_FALSE(spec::compile(requested, {.home = "/h"}, caps,
+        EXPECT_FALSE(xlings::confine::compile(requested, {.home = "/h"}, caps,
             {.instance = "box", .instance_dir = "/h/subos/box", .host_exists = [](std::string_view) { return true; }}));
     }
 }

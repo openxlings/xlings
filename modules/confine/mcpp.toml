@@ -1,0 +1,28 @@
+# Confinement implementations, as their own package (SubOS design part 3
+# §6.2).
+#
+# The SubOS core (modules/subos) says what a sandbox should be: the policy,
+# lowered into an Intent. This package says how a backend makes one: each
+# implementation -- linux-bwrap, linux-proot, linux-landlock, home-redirect,
+# fake -- states whether it can run here, plans its view from the Intent,
+# and builds the argv that starts it. The selector picks one; the matrix
+# `subos status` prints is what the implementations report, not a table.
+#
+# Nothing here reads a policy, a config file or a workspace: an Intent and
+# the host's capabilities in, a SandboxSpec (a pure value) out.
+[package]
+namespace = "xlings"
+name      = "confine"
+version   = "0.1.0"
+
+[targets.confine]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../libs" }
+platform = { path = "../platform" }
+runtime  = { path = "../runtime" }
+subos    = { path = "../subos" }
+
+[build]
+include_dirs = ["../libs/src/json"]
