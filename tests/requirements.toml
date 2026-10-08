@@ -711,6 +711,15 @@ text = "one content declaration yields the same root view on every carrier"
 status = "deferred"
 why = "needs a real guest kernel (WSL2 or a VZ VM): hosted runners have no nested virtualization, and the stand-in wsl.exe runs on the host kernel -- it proves routing, not the guest root; tests/e2e/windows_carrier_wsl2_test.ps1 runs it wherever WSL2 exists"
 
+[CARRIER-VZ-LIFECYCLE]
+text = "a vz carrier VM is created per home on first need through its helper's contract, started when stopped, reached through it, and grants are the helper's virtiofs shares"
+status = "required"
+
+[CARRIER-VZ-HELPER]
+text = "xlings-vm, the signed Virtualization.framework helper that answers the vz carrier's contract, is published as a payload"
+status = "deferred"
+why = "a separate Swift package signed with com.apple.security.virtualization; hosted macOS runners cannot nest a VM to test it. Until it is published the vz carrier is refused with `xlings install xlings-vm` as its route (CARRIER-UNAVAILABLE)"
+
 [SESSION-NATIVE-SUPERVISED]
 text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"
 status = "required"

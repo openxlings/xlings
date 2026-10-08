@@ -37,6 +37,10 @@ const std::vector<Entry>& table() {
         // APFS clonefile); a SubOS fork falls back to std::filesystem.
         {{"cp", ""}, "",
          {{Source::Host, "/bin/cp"}, {Source::Host, "/usr/bin/cp"}}},
+        // The VMM the vz carrier drives (part 3 §5.4): a signed helper with
+        // Virtualization.framework's entitlement, as a payload.
+        {{"xlings-vm", "xlings-vm"}, "xim-x-xlings-vm",
+         {{Source::Payload, "bin"}}},
         {{"mkfs.ext4", "e2fsprogs"}, "xim-x-e2fsprogs",
          {{Source::Payload, "sbin"}, {Source::Payload, "bin"},
           {Source::Host, "/usr/sbin/mkfs.ext4"}, {Source::Host, "/sbin/mkfs.ext4"},

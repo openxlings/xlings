@@ -6,6 +6,7 @@ import xlings.platform;
 import xlings.platform.stream;
 import xlings.subos.home_view;
 import xlings.carrier.wsl2;
+import xlings.carrier.vz;
 
 namespace xlings::carrier {
 
@@ -44,7 +45,7 @@ std::vector<std::string> command(const Endpoint& at, std::span<const std::string
 }  // namespace
 
 std::span<const Carrier> carriers() {
-    static const std::vector<Carrier> all{local(), wsl2::make()};
+    static const std::vector<Carrier> all{local(), wsl2::make(), vz::make()};
     return all;
 }
 
@@ -67,10 +68,12 @@ const Carrier* find(std::string_view name) {
 std::vector<std::string_view> carriers_of(std::string_view platform) {
     if (platform == "windows") return {"local", "wsl2"};
     if (platform == "macos") return {"local", "vz"};
-    // XLINGS_WSL_EXE (a stand-in wsl.exe) lets the wsl2 carrier's lifecycle
-    // be exercised on a Linux CI host; nothing else enables it here.
-    if (const char* seam = std::getenv("XLINGS_WSL_EXE"); seam && *seam) return {"local", "wsl2"};
-    return {"local"};
+    // XLINGS_WSL_EXE / XLINGS_VZ_HELPER (stand-ins) let the guest carriers'
+    // lifecycles be exercised on a Linux CI host; nothing else enables them.
+    std::vector<std::string_view> out{"local"};
+    if (const char* seam = std::getenv("XLINGS_WSL_EXE"); seam && *seam) out.push_back("wsl2");
+    if (const char* seam = std::getenv("XLINGS_VZ_HELPER"); seam && *seam) out.push_back("vz");
+    return out;
 }
 
 int terminal(const Endpoint& at, std::span<const std::string> args, const std::map<std::string, std::string>& env) {
