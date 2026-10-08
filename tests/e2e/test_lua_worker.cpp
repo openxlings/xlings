@@ -103,7 +103,9 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     fs::create_directory_symlink(external, script.parent_path());
     tk::write_file(forbidden, "host original");
     const auto quoted = "'" + forbidden.generic_string() + "'";
-    tk::write_file(script, "local f=io.open([[" + forbidden.generic_string() +
+    tk::write_file(script, "local r=io.open([[" + forbidden.generic_string() +
+                               "]],'r'); assert(r==nil, 'unrelated host file became visible')\n"
+                               "local f=io.open([[" + forbidden.generic_string() +
                                "]],'w'); if f then f:write('virtual top-level'); f:close() end\n"
                                "function xpkg_main()\n"
                                " os.execute([[printf escaped > " +
@@ -210,9 +212,14 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
             return true
         end
     )LUA");
+    const auto primary = home.root() / "empty-primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
     nlohmann::json config = {
-        {"mirror", "GLOBAL"},
-        {"index_repos", {{{"name", "fixture"}, {"url", repo.generic_string()}}}}};
+        {"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos", nlohmann::json::array({
+            {{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+            {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
     tk::write_file(home.dir() / ".xlings.json", config.dump());
     fs::create_directories(home.dir() / "bin");
     fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");

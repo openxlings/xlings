@@ -493,14 +493,12 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                     return;
                 const auto destination = fs::absolute(path).lexically_normal();
                 const auto source = fs::canonical(destination);
-                // Local indexes are links out of the home. Their targets must
-                // exist in the private /tmp or /home before mounting the alias.
+                // The read-only home already exposes its index symlinks. Make
+                // their exact canonical targets visible in private /tmp/home;
+                // binding again through the alias cannot create a destination
+                // beneath that read-only symlink.
                 sandbox.mounts.push_back({subos::spec::MountKind::RoBind, source.generic_string(),
                                           source.generic_string()});
-                if (source != destination)
-                    sandbox.mounts.push_back({subos::spec::MountKind::RoBind,
-                                              source.generic_string(),
-                                              destination.generic_string()});
             };
             auto rw = [&](const fs::path& path) {
                 if (path.empty())
