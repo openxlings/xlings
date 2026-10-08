@@ -403,7 +403,7 @@ jobs:
       # and the static musl target the release uses.
       - name: openkal coexistence (OPENKAL-COEXIST)
         run: |
-          cd tests/openkal
+          cd tools/openkal-coexistence
           for target in "" "--target x86_64-linux-musl"; do
             mcpp build $target
             bin="$(find target -path '*/bin/openkal-coexistence' -type f -newer mcpp.toml | xargs ls -t | head -1)"

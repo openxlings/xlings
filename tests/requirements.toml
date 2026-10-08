@@ -727,7 +727,7 @@ status = "required"
 [OPENKAL-COEXIST]
 text = "openkal-linux links and runs beside xlings' C and C++ runtimes (glibc and the static musl release target)"
 status = "deferred"
-why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coexistence' builds and runs tests/openkal for both targets on every PR; nothing of xlings links openkal yet (part 3 §19, C53)"
+why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coexistence' builds and runs tools/openkal-coexistence for both targets on every PR; nothing of xlings links openkal yet (part 3 §19, C53)"
 
 [LUBAN-INIT]
 text = "stage-0 is its own static binary and reads no Config"
