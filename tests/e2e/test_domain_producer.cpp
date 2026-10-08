@@ -149,6 +149,10 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
             std::string(spelling) + ":/mnt/domain-probe:ro"};
         args.insert(args.end(), shellGrants.begin(), shellGrants.end());
         args.insert(args.end(), {"--", "/bin/sh", "-c",
+            "uidSeen=0; capsSeen=0; while read -r key a b rest; do "
+            "case \"$key\" in Uid:) [ \"$a:$b\" = 0:0 ] && uidSeen=1;; "
+            "CapEff:) [ \"$a\" = 0000000000000000 ] && capsSeen=1;; esac; "
+            "done < /proc/self/status; [ \"$uidSeen:$capsSeen\" = 1:1 ] || exit 73; "
             "IFS= read -r value < /mnt/domain-probe/probe || :; printf '%s|%s|%s' \"$value\" \"$1\" \"$2\"",
             "probe", "--mount", "~/command-literal:/unused:ro"});
         auto mounted = home.xlings(args);

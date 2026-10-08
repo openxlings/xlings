@@ -18,6 +18,8 @@ std::expected<std::optional<Scope>, std::string> read_scope(const fs::path& owne
 std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::path& entry);
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry);
 struct OutputBinding { fs::path source; fs::path guest; };
+// Management maps the owner to a non-root namespace ID, including during
+// construction; the native root provider creates the actual UID-0 root view.
 std::expected<std::vector<std::string>, std::string> command(const Domain& domain,
     std::span<const std::string> arguments, std::optional<OutputBinding> output = std::nullopt,
     const domain_producer_source::Facade* source = nullptr, bool runtime = false);

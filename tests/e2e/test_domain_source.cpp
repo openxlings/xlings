@@ -47,6 +47,10 @@ XTEST(DomainSourceProducer, ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage
     fs::create_directories(primary / "pkgs");
     tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
     tk::write_file(repo / "pkgs/d/domain-source.lua", R"LUA(
+        local proc = assert(io.open('/proc/self/status', 'r'))
+        local identity = proc:read('*a'); proc:close()
+        assert(identity:match('Uid:%s+(%d+)') == '1000', 'source worker lost the mapped owner identity')
+        assert(identity:match('CapEff:%s+([%x]+)'):match('^0+$'), 'source worker gained capabilities')
         package = {spec='1', name='domain-source', type='subos', archs={'x86_64','aarch64'},
             xpm={linux={['1.0.0']={}}}}
         import('xim.libxpkg.pkginfo')

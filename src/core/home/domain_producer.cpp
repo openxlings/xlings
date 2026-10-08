@@ -172,7 +172,11 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
     if (bwrap.empty()) return std::unexpected("prefix-domain producer requires bwrap; no host-prefix fallback");
     std::vector<std::string> argv{bwrap.string(), "--die-with-parent", "--new-session", "--unshare-user"};
     if (!runtime) argv.push_back("--unshare-pid");
-    argv.insert(argv.end(), {"--uid", "0", "--gid", "0"});
+    // Management maps the same host owner to a non-root namespace ID. Both
+    // construction workers and root views must create child user namespaces:
+    // mapping parent UID 0 needs creator CAP_SETFCAP since Linux 5.12. The
+    // actual root-view provider still maps its child to UID 0.
+    argv.insert(argv.end(), {"--uid", "1000", "--gid", "1000"});
     // bwrap's initial root is namespace-owned tmpfs. Mount each host entry
     // read-only so a missing /xlings mountpoint never requires a host mkdir.
     const auto bind_host_entry = [&](const fs::path& path) -> std::expected<void, std::string> {
