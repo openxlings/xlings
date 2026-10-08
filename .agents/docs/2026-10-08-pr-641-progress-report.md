@@ -2,10 +2,17 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（Linux 日志发布与嵌套 namespace 修复中）
+## 当前交付状态（首次 payload 挂载与静态域验收收口中）
 
 后续实现均以追加 commit、普通 push 进入 #641，保留审查历史。main 仍为 `c55d89a`，
 候选版本为 `2026.10.8.2`，尚未合并、发布。
+
+`476fc244` 的 macOS、Windows、ARM64 和 Linux root 已实际通过；Linux 主车道为
+196 pass、3 fail、4 skip，ASAN 仍运行。worker 的 dev/locked、loader alias、完整
+exec/net 观测及日志 symlink 拒绝已实际通过。余项分别为首次 writable payload 的
+父 mountpoint、HomeLayer fixture 在声明 layer 前执行 legacy metadata，以及 dynamic
+开发 client 的 root runtime 闭包拒绝。对应修复与静态实际 pass-only 门禁已落地，
+待本批构建和新 head CI。
 
 `f1fd0b19` 的 macOS、Windows、ARM64 和 Linux root 已实际通过；Linux 主车道为
 192 pass、6 fail、4 skip，ASAN 仍在运行。此次 worker 已实际启动并返回合法响应，
@@ -589,3 +596,22 @@ DOM-SOURCE 保留只读/导出断言并检查实际 worker UID1000/CapEff0；dom
 与实际 root 的身份断言等待下一固定 head CI，未把 skip 当作通过。两项安全 lint、
 whitespace 通过；mcpp.lock 仅重排且语义相同，已恢复。全部源码更改以追加提交、
 普通 push 保留记录。
+
+
+`476fc244` 现场 196 pass、3 fail、4 skip 的剩余修复：writable worker 仅为经过
+declared store、coordinate、canonical 校验的单 package 父目录准备挂载点；private
+shadow mount 保持不变，相邻 payload 写入仍拒绝。HomeLayer fixture 的 self init
+本来在 layer 声明前加载 index，legacy undeclared loader 合法执行顶层 Lua；现在
+从首次 metadata 读起声明同一实际系统层，并在 init 前后及 install 后验证未越界，
+不删除已出现的文件，也不修改 undeclared recipe 兼容路径。
+
+动态开发入口需要根内未声明的 GCC runtime，产品拒绝正确；DomainProducer 全生命周期
+改由实际静态 candidate 验收。Linux 静态步骤分别运行 source/export 与 domain producer，
+三项完整 case 各恰好一条且必须 pass，任何 skip/missing/fail 都失败；所有 UID0/CapEff0、
+mount、session、NDJSON、用户数据和只读来源断言保留。本批尚待构建与固定新 head CI。
+
+本批 dev 30.16 s、dist static 22.73 s 构建通过，109 测试程序一次编译通过
+（106.021 s）。三个相关程序 exit0，注册用例 5 pass、8 capability skip、0 fail。
+两项安全 lint、CI YAML parse 和 whitespace 通过；lock 仅重排且语义相同，已恢复。
+首次 payload 隔离、带来源 metadata 和静态 domain 全生命周期仍须新 head 实际 pass。
+未将本机 capability skip 计作完成证据，全部更改继续追加 commit / 普通 push。

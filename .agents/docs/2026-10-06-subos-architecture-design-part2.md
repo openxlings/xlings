@@ -694,3 +694,10 @@ Linux 5.12 起，映射 parent UID 0 要求创建者的 CAP_SETFCAP；清 caps �
 检验真实 worker 的 UID1000/CapEff0、只读来源与导出，domain exec 检验实际 root 的 UID0/CapEff0。
 recipe 捕获输出由宿主发布到安全创建的 `logs/recipes`；拒绝符号链接目录，不给 worker
 额外日志写挂载。发布目录错误独立归因，不能把合法 worker 响应误报为协议损坏。
+
+root domain 的完整生命周期使用静态 release candidate 验收；dynamic 开发 client
+若缺少根内已声明 runtime 闭包必须拒绝，不能为通过 fixture 扩大宿主 runtime 挂载。
+静态步骤对 source、export、producer lifecycle 三项实际 case 强制 pass，不接受 skip。
+首次 writable payload 只在已声明 managed store 下安全准备单 package 父 mountpoint，
+版本内容仍由 private shadow 提交，其他 package 保持只读。系统层 fixture 从首次 index
+metadata 读取起声明该层，避免把未声明策略下的 legacy setup 执行误归于受限安装。
