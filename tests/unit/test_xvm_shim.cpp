@@ -560,7 +560,8 @@ TEST_F(XvmHeaderSymlinkTest, InstallAndRemoveHeaders) {
 #endif
 
     // Remove headers
-    ASSERT_TRUE(xlings::xvm::remove_headers(srcInclude.string(), sysrootInclude, claims));
+    auto removed = xlings::xvm::remove_headers(srcInclude.string(), sysrootInclude, claims);
+    ASSERT_TRUE(removed) << removed.error();
 
     // Verify links removed
     EXPECT_FALSE(fs::exists(sysrootInclude / "stdio.h"));

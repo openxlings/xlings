@@ -33,7 +33,10 @@ std::expected<bool, std::string> present_(const fs::path& path) {
 bool refers_(const fs::path& path, const fs::path& source, const fs::path& original) {
     std::error_code ec;
     const auto target = platform::read_symlink(path, ec);
-    if (!ec) return normal_(target.is_absolute() ? target : original.parent_path() / target) == normal_(source);
+    if (!ec) {
+        if (normal_(target.is_absolute() ? target : original.parent_path() / target) == normal_(source)) return true;
+        if constexpr (!platform::is_windows) return false;
+    }
     if (normal_(source) == original) return false;
     ec.clear();
     // File object identity proves a hard link or directory junction. Byte

@@ -75,6 +75,8 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
 XTEST(RootStoreClosure, CheckedEvidenceTranslatesOnlyTheProvedRecordedHome, .area = "subos",
       .covers = {"ROOT-STORE-CLOSURE"}) {
     auto home = tk::Home::isolated("root-recorded-home");
+    const auto recordedHome = fs::canonical(home.root()) / "recorded";
+    const auto recordedSecond = recordedHome / "data/xpkgs/fixture-x-second/2.0.0";
     const auto first = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-first/1.0.0";
     const auto second = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-second/2.0.0";
     tk::write_file(second / "lib/libsecond.a", "library");
@@ -86,18 +88,18 @@ XTEST(RootStoreClosure, CheckedEvidenceTranslatesOnlyTheProvedRecordedHome, .are
                             {"name", "fixture:second"},
                             {"version", "2.0.0"},
                             {"source", "fixture"},
-                            {"install_dir", "/xlings/data/xpkgs/fixture-x-second/2.0.0"},
-                            {"libdirs", {"/xlings/data/xpkgs/fixture-x-second/2.0.0/lib"}}}})}}
+                            {"install_dir", recordedSecond.string()},
+                            {"libdirs", {(recordedSecond / "lib").string()}}}})}}
             .dump());
     auto owner = evidence::physical_store_root(fs::canonical(home.dir()), first);
     auto dependency = evidence::physical_store_root(fs::canonical(home.dir()), second);
     ASSERT_TRUE(owner);
     ASSERT_TRUE(dependency);
-    owner->recordedHome = "/xlings";
-    dependency->recordedHome = "/xlings";
+    owner->recordedHome = recordedHome;
+    dependency->recordedHome = recordedHome;
     const auto resolve =
         [&](const fs::path& recorded) -> std::expected<evidence::OwnedPayload, std::string> {
-        if (recorded != "/xlings/data/xpkgs/fixture-x-second/2.0.0")
+        if (recorded != recordedSecond)
             return std::unexpected("path has no proved mapping");
         return *dependency;
     };
