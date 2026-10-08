@@ -122,6 +122,7 @@ XTEST(HomeLayerInstall, BorrowedPayloadUsesTheCurrentScopeAndAReadonlyWorker, .a
       .resources = {"sandbox"}, .proves = "isolation") {
     using Json = nlohmann::json;
     auto user = tk::Home::isolated("borrowed-install");
+    ASSERT_TRUE(user.seed_sandbox_backend());
     const auto system = user.root() / "system";
     const auto payload = system / "data/xpkgs/fixture-x-layer-recipe/1.0.0";
     tk::write_file(payload / "bin/layer-command", "system payload sentinel");
@@ -171,9 +172,14 @@ XTEST(HomeLayerInstall, BorrowedPayloadUsesTheCurrentScopeAndAReadonlyWorker, .a
     const auto entry = user.dir() / "bin/xlings";
     fs::create_directories(entry.parent_path());
     fs::copy_file(tk::xlings_binary(), entry);
-    ASSERT_EQ(user.xlings({"self", "init"}).exit_code, 0);
-    const auto result = user.xlings({"install", "fixture:layer-recipe@1.0.0", "-y"},
-                                    {{"XLINGS_SYSTEM_LAYER", system.generic_string()}});
+    const std::map<std::string, std::string> layer_environment = {
+        {"XLINGS_SYSTEM_LAYER", system.generic_string()}};
+    ASSERT_FALSE(fs::exists(forbidden));
+    const auto initialized = user.xlings({"self", "init"}, layer_environment);
+    ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    ASSERT_FALSE(fs::exists(forbidden)) << "initial index metadata read escaped its layer boundary";
+    const auto result =
+        user.xlings({"install", "fixture:layer-recipe@1.0.0", "-y"}, layer_environment);
     ASSERT_EQ(result.exit_code, 0) << result.transcript();
     ASSERT_TRUE(fs::is_symlink(user.dir() / "data/fixture"));
     EXPECT_EQ(fs::canonical(user.dir() / "data/fixture"), fs::canonical(repo));

@@ -603,6 +603,21 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                 ro(context.install_dir);
             } else if (!context.install_dir.empty()) {
                 w->payload = fs::absolute(context.install_dir).lexically_normal();
+                const auto parent = w->payload.parent_path();
+                const auto store = parent.parent_path();
+                const bool declared_store = std::ranges::any_of(
+                    context.dependency_store_roots, [&](const auto& root) {
+                        return fs::absolute(root).lexically_normal() == store;
+                    });
+                if (!declared_store || store.filename() != "xpkgs" ||
+                    !xvm::coordinate_from_payload_path(w->payload.string()))
+                    return std::unexpected("hook payload is outside its declared managed store");
+                const auto expected_parent = fs::weakly_canonical(store) / parent.filename();
+                if (fs::weakly_canonical(parent) != expected_parent)
+                    return std::unexpected("hook payload parent traverses a symlink");
+                fs::create_directories(parent);
+                if (fs::canonical(parent) != expected_parent)
+                    return std::unexpected("hook payload parent traverses a symlink");
                 w->shadow_parent = w->scratch / "payload";
                 fs::create_directory(w->shadow_parent);
                 auto refreshed = w->refresh_payload();

@@ -295,6 +295,8 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
     ASSERT_TRUE(home.seed_sandbox_backend());
     const auto secret = home.root() / "private-user-file";
     tk::write_file(secret, "never expose this host data through a recipe declaration");
+    const auto sibling = home.dir() / "data/xpkgs/unrelated-x-payload/1.0.0/user-file";
+    tk::write_file(sibling, "unrelated payload bytes");
     const auto repo = home.root() / "index";
     tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
     tk::write_file(
@@ -307,6 +309,8 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
         import('xim.libxpkg.pkginfo')
         import('xim.libxpkg.xvm')
         function install()
+    )LUA" + std::string("local sibling = io.open([[") + sibling.generic_string() +
+            "]], 'w'); assert(not sibling, 'unrelated payload became writable')\n" + R"LUA(
             os.mkdir(pkginfo.install_dir())
             io.writefile(path.join(pkginfo.install_dir(), 'asset'), 'owned payload')
             if pkginfo.version() == '2.0.0' then
@@ -349,6 +353,7 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
     ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
     ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=locked"}).exit_code, 0);
+    ASSERT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-fixture"));
     for (const auto version : {"1.0.0", "2.0.0", "3.0.0"}) {
         const auto result =
             home.xlings({"install", "fixture:fixture@" + std::string(version), "-y"},
@@ -364,4 +369,5 @@ XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedP
     EXPECT_EQ(tk::read_file(home.dir() / "subos" / "box" / "usr" / "share" / "owned"),
               "owned payload");
     EXPECT_EQ(tk::read_file(secret), "never expose this host data through a recipe declaration");
+    EXPECT_EQ(tk::read_file(sibling), "unrelated payload bytes");
 }
