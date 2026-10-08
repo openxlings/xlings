@@ -439,3 +439,27 @@ fork/exec；新 producer 不是跨 sibling userns setns。因此没有为假设�
 canonical home/system，相关两个程序本地回归通过（真实 namespace case 仍 skip）。
 接口波次已追加为本地 `c89bc054`，其 26 个 interface protocol 用例通过；后续 macOS
 路径测试修复继续单独追加，等待本批 Linux/Windows 现场后一起普通 push。
+
+`0c9f395f` 的现场 CI 结果已收齐：ARM 通过；macOS、Windows、Linux root、Linux
+unit 有失败，ASAN 尚在运行。此 head 不能合入。追加修复按失败证据收口：
+
+| 现场 | 原因与修复 | 尚需的证据 |
+|---|---|---|
+| Windows | 两个测试比较原始分隔符 / 使用无 drive 的 `/xlings`；改为规范化路径和平台绝对 recorded home。junction 的可读目标拼写不相等时，继续用文件对象 identity 证明归属，拒绝未知条目 | Windows 新 head 实际运行 |
+| Linux worker | 私有 `/home` 遮蔽开发版 ELF loader/RUNPATH；私有 `/tmp` 遮蔽外部索引 symlink 目标。补精确 RO runtime 与 canonical 目标挂载 | 原 Lua / system-layer 隔离断言实际通过 |
+| Linux root closure | fixture 在 RO `/` 下挂不存在的 `/root-view-result`，bwrap 尚未启动就失败；结果目录迁入已有私有 `/run` | broker 成功、inode 替换后 remove、refresh 失败 125 的实际用例 |
+| Linux root 性能 | 300 payload build 约 76 ms；完整校验后切换 13 ms 超过 10 ms。减少重复 syscall、路径比较与 manifest 读取，保留全量库存与目标校验，预算不变 | 新 head root CI 的完整 checked switch 测量 |
+
+无感升级审查另发现私有 `bin/xlings` 固定于创建时的 source 路径/字节，owner 升级
+不能让它更新。创建及 runtime 共用 managed mirror 刷新：v2 证明绑定 owner/private home、
+domain marker 和 entry SHA；事务锁串行化 pending/ready；独占 snapshot 同时通过 digest
+和 marked-client 检验，再由现有 `entry_binary::replace_with` 发布并修复 stale shim。
+恢复只接受日志授权的旧/新字节；未知、损坏或无归属 staging 保留并拒绝。新增六个
+filesystem 回归覆盖 source 路径变化、同路径升级、WAL 恢复、legacy 证明和拒绝无写。
+两轮只读复核未发现其他明确 P1/P2；构建与新 head 验收仍是独立门禁。
+
+本批产品最终构建通过；108 个测试程序一次构建通过。dispatcher 六个实际回归
+全部 pass。300 payload 生成 median 23.034 ms，完整 checked switch median 4.626 ms，
+两项预算均通过；链接被改成 regular file / 陌生目录也仍拒绝。受影响的注册 case
+49 pass、8 skip、0 fail，另 legacy shim 用例通过。skip 全为本机无 bwrap 的真实隔离
+用例，必须由固定新 head CI 补齐。两项安全 lint 与 whitespace 检查通过。

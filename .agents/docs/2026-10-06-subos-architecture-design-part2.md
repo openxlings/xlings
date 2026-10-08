@@ -668,3 +668,11 @@ xlings-res：bash、coreutils；glibc sysconfdir revision（C34）；内核（�
 真实 namespace/source/broker/export CI 为准。性能已实测 300 payload 的
 生成/切换预算；stage-0 四次真实启动预算待 boot 车道。最终自审、合入、客户端发布和 CN
 fresh install/self update 仍待完成。后续提交只追加 commit、普通 push，保留 PR 历史。
+
+2026-10-08 后续 CI 修复还补齐 private dispatcher 的无感升级：创建与 runtime 共同
+刷新当前 owner 选择的客户端，不固定旧构建路径。只替换证明属于 managed mirror 的
+entry；pending/ready 与旧/新 SHA 约束中断恢复，独占 snapshot 验证后走现有入口 writer，
+事务锁串行化并修复 stale shim。未知客户端、证明和 staging 均保留拒绝。
+新增六个 filesystem 用例已本地实际通过；namespace 验收仍待新 head CI。
+300 payload 的新本地测量为生成 23.034 ms、完整 checked switch 4.626 ms；保留全量
+库存及链接目标检查，原 CI 13 ms 超预算不能记为通过。
