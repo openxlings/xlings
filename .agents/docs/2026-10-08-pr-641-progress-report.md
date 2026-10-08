@@ -432,3 +432,10 @@ bwrap 仍 skip。原运行中的 ARM workflow 已通过；新接口波次需要�
 session join 只通过 Unix socket / SCM 传递命令，由原 session_init 在原 namespace 内
 fork/exec；新 producer 不是跨 sibling userns setns。因此没有为假设的 namespace 权限
 问题改代码，保留实际 session 复用测试验证。
+
+
+`0c9f395f` 的 macOS unit/xdev 失败为 RootStoreClosure 两个新断言使用原始 `/var` 路径，
+而产品 closure/RootView 已 canonical 为 `/private/var`；产品准备本身成功。测试统一
+canonical home/system，相关两个程序本地回归通过（真实 namespace case 仍 skip）。
+接口波次已追加为本地 `c89bc054`，其 26 个 interface protocol 用例通过；后续 macOS
+路径测试修复继续单独追加，等待本批 Linux/Windows 现场后一起普通 push。

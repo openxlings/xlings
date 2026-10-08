@@ -22,9 +22,9 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
     if constexpr (!tk::is_posix)
         GTEST_SKIP() << "root projection uses directory symlinks";
     auto home = tk::Home::isolated("root-store-closure");
-    const auto visible = home.dir() / "data/xpkgs/fixture-x-visible/1.0.0";
-    const auto hidden = home.dir() / "data/xpkgs/fixture-x-hidden/2.0.0";
-    const auto scope = home.dir() / "subos/box";
+    const auto visible = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-visible/1.0.0";
+    const auto hidden = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-hidden/2.0.0";
+    const auto scope = fs::canonical(home.dir()) / "subos/box";
     tk::write_file(visible / "bin/visible", "visible program");
     tk::write_file(hidden / "private.txt", "another scope's payload");
     tk::write_file(visible / ".xlings-resolution.json",
@@ -35,7 +35,7 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
           {"versions", {{"fixture:1.0.0", {{"path", visible.string() + "/bin"}}}}}}},
         {"hidden",
          {{"type", "program"}, {"versions", {{"fixture:2.0.0", {{"path", hidden.string()}}}}}}}};
-    tk::write_file(home.dir() / ".xlings.json", Json{{"versions", versions}}.dump());
+    tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
     tk::write_file(
         scope / ".xlings.json",
         Json{{"workspace",
@@ -45,7 +45,7 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
     generation.payloads = {visible};
     generation.programs = {{"visible", visible / "bin/visible"}};
     ASSERT_TRUE(rf::commit(scope, rf::plan(generation), "fixture"));
-    auto inputs = closure::read_scope(home.dir(), "box", scope / "rootfs");
+    auto inputs = closure::read_scope(fs::canonical(home.dir()), "box", scope / "rootfs");
     ASSERT_TRUE(inputs) << inputs.error();
     auto prepared = view::prepare(*inputs);
     ASSERT_TRUE(prepared) << prepared.error();
@@ -54,13 +54,13 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
         return binding.source == visible && binding.destination == visible;
     }));
     EXPECT_FALSE(std::ranges::any_of(bindings, [&](const auto& binding) {
-        return binding.source == hidden || binding.source == home.dir() ||
-               binding.source == home.dir() / "data/xpkgs";
+        return binding.source == hidden || binding.source == fs::canonical(home.dir()) ||
+               binding.source == fs::canonical(home.dir()) / "data/xpkgs";
     }));
     EXPECT_FALSE(fs::exists((*prepared)->private_instance().parent_path().parent_path() /
                             "data/xpkgs/fixture-x-hidden/2.0.0"));
     const auto primary = std::ranges::find_if(bindings, [&](const auto& binding) {
-        return binding.destination == home.dir() / ".xlings.json";
+        return binding.destination == fs::canonical(home.dir()) / ".xlings.json";
     });
     ASSERT_NE(primary, bindings.end());
     const auto filtered = Json::parse(tk::read_file(primary->source));
@@ -75,8 +75,8 @@ XTEST(RootStoreClosure, PrivateSkeletonExposesOnlyOptedInPayloadsAndMetadata, .a
 XTEST(RootStoreClosure, CheckedEvidenceTranslatesOnlyTheProvedRecordedHome, .area = "subos",
       .covers = {"ROOT-STORE-CLOSURE"}) {
     auto home = tk::Home::isolated("root-recorded-home");
-    const auto first = home.dir() / "data/xpkgs/fixture-x-first/1.0.0";
-    const auto second = home.dir() / "data/xpkgs/fixture-x-second/2.0.0";
+    const auto first = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-first/1.0.0";
+    const auto second = fs::canonical(home.dir()) / "data/xpkgs/fixture-x-second/2.0.0";
     tk::write_file(second / "lib/libsecond.a", "library");
     tk::write_file(
         first / ".xlings-resolution.json",
@@ -89,8 +89,8 @@ XTEST(RootStoreClosure, CheckedEvidenceTranslatesOnlyTheProvedRecordedHome, .are
                             {"install_dir", "/xlings/data/xpkgs/fixture-x-second/2.0.0"},
                             {"libdirs", {"/xlings/data/xpkgs/fixture-x-second/2.0.0/lib"}}}})}}
             .dump());
-    auto owner = evidence::physical_store_root(home.dir(), first);
-    auto dependency = evidence::physical_store_root(home.dir(), second);
+    auto owner = evidence::physical_store_root(fs::canonical(home.dir()), first);
+    auto dependency = evidence::physical_store_root(fs::canonical(home.dir()), second);
     ASSERT_TRUE(owner);
     ASSERT_TRUE(dependency);
     owner->recordedHome = "/xlings";
@@ -115,10 +115,10 @@ XTEST(RootStoreClosure, BorrowedHomeMetadataIsLimitedToTheCheckedScope, .area = 
     if constexpr (!tk::is_posix)
         GTEST_SKIP() << "root projection uses directory symlinks";
     auto home = tk::Home::isolated("root-borrowed-closure");
-    const auto system = home.root() / "system";
+    const auto system = fs::canonical(home.root()) / "system";
     const auto payload = system / "data/xpkgs/fixture-x-visible/1.0.0";
     const auto hidden = system / "data/xpkgs/fixture-x-hidden/2.0.0";
-    const auto scope = home.dir() / "subos/box";
+    const auto scope = fs::canonical(home.dir()) / "subos/box";
     tk::write_file(payload / "bin/visible", "borrowed tool");
     tk::write_file(hidden / "private.txt", "other source scope");
     tk::write_file(payload / ".xlings-resolution.json",
@@ -139,7 +139,7 @@ XTEST(RootStoreClosure, BorrowedHomeMetadataIsLimitedToTheCheckedScope, .area = 
     versions.erase("hidden");
     versions["visible"]["versions"]["fixture:1.0.0"]["layer"] = {{"home", system.string()},
                                                                  {"scope", "default"}};
-    tk::write_file(home.dir() / ".xlings.json", Json{{"versions", versions}}.dump());
+    tk::write_file(fs::canonical(home.dir()) / ".xlings.json", Json{{"versions", versions}}.dump());
     tk::write_file(
         scope / ".xlings.json",
         Json{{"workspace",
@@ -149,7 +149,7 @@ XTEST(RootStoreClosure, BorrowedHomeMetadataIsLimitedToTheCheckedScope, .area = 
     generation.payloads = {payload};
     generation.programs = {{"visible", payload / "bin/visible"}};
     ASSERT_TRUE(rf::commit(scope, rf::plan(generation), "borrowed fixture"));
-    auto inputs = closure::read_scope(home.dir(), "box", scope / "rootfs");
+    auto inputs = closure::read_scope(fs::canonical(home.dir()), "box", scope / "rootfs");
     ASSERT_TRUE(inputs) << inputs.error();
     auto prepared = view::prepare(*inputs);
     ASSERT_TRUE(prepared) << prepared.error();
