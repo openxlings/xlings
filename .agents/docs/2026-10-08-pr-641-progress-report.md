@@ -683,3 +683,20 @@ archive；精确候选版本匹配和原失败退出码保留，不用诊断重�
 最终 xdev 有限复验：e2e/test_lua_worker exit0，注册用例3 pass、7本地 sandbox
 capability skip、0fail；unit/test_xim_install exit0，传统gtest63 pass。安全删除lint
 13标记、platform header lint、diff-check、ARM YAML/bash/Python语法均通过。
+
+## 22. 静态 source fixture 的执行入口修复
+
+固定`68399f72`的macOS（147/0/2）、Windows（105/0/44）、ARM cross/native、
+Linux root完整通过；Linux主单元、静态release与candidate cold-home阶段通过。
+ASAN实际107程序pass、0fail，1771.41s，其中build1711.75s、run57.59s；没有
+sanitizer错误，instrumented timing明确不作预算证据。
+
+首次static-domain gate长时间停在source用例。只读源码和实际GTest ELF marker
+显示具体递归路径：测试直接调用producer::run，后者把当前GTest image当CLI刷新，
+version_of(--version)重新运行整套GTest并再次刷新。尚待该CI最终日志补齐现场，
+不将推断标为进程树实证。fixture现显式prepare/refresh静态candidate，使用与
+production相同的checked source Facade和command，testkit执行每个操作上限120s，
+完整记录退出码/signal/output。三个硬验收和所有只读/元数据/导出断言保留。
+
+有限复验：相关2程序编译8.695s通过；实际静态RootExport1pass，source namespace
+因本机缺bwrap1skip，不能替代CI实际隔离pass。客户端产品源码未改变。
