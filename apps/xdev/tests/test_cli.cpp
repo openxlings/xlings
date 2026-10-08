@@ -125,6 +125,41 @@ printf '%s\n' '{{"test":"{}.Fast","status":"pass"}}' >> "$XTEST_RESULTS_OUT"
     EXPECT_EQ(called.find(".Network"), std::string::npos);
 }
 
+XTEST(XdevCli, ExplicitPerfProgramRunsAfterCompiledCaseDiscoveryWithoutEnablingNetwork,
+      .area = "testkit", .covers = {"CI-TEST-SELECTION"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "POSIX executable artifact fixture";
+    Fixture fixture;
+    if (!fixture.binary || !*fixture.binary) GTEST_SKIP() << "set XDEV_BIN to the built xdev";
+    tk::write_file(fixture.home.root() / "tests/unit/selected_perf.cpp", "import std;");
+    const auto inventory = fixture.discovery({row("unit/selected_perf", "tests/unit/selected_perf.cpp",
+        {test_case("Perf.Measure"), test_case("Perf.Network", {"network"})})});
+    executable(fixture.home.root() / "target/fixture/bin/unit/selected_perf", R"(#!/bin/sh
+if [ "$1" = "--gtest_list_tests" ]; then
+  printf '%s\n' 'Perf.' '  Measure' '  Network'
+  printf '%s\n' '{"test":"Perf.Measure","area":"fixture","requires":[]}' '{"test":"Perf.Network","area":"fixture","requires":["network"]}' > "$XTEST_META_OUT"
+  exit 0
+fi
+printf '%s\n' "$*" > "$EXEC_TRACE"
+printf '%s\n' '{"test":"Perf.Measure","status":"pass"}' > "$XTEST_RESULTS_OUT"
+)");
+    const auto planned = fixture.run({"ci", "plan", "--lane", "pr", "--discovery", inventory.string()});
+    ASSERT_EQ(planned.exit_code, 0) << planned.transcript();
+    EXPECT_TRUE(json::parse(planned.out)["include"].empty());
+    const auto output = fixture.home.root() / "explicit-perf";
+    const auto trace = fixture.home.root() / "trace";
+    const auto run = fixture.run({"test", "unit/selected_perf", "--lane", "pr", "--no-build",
+        "--discovery", inventory.string(), "--out", output.string()}, {{"EXEC_TRACE", trace.string()}});
+    ASSERT_EQ(run.exit_code, 0) << run.transcript();
+    EXPECT_EQ(tk::read_file(trace), "--gtest_filter=Perf.Measure\n");
+    const auto report = json::parse(tk::read_file(output / "report.json"));
+    const auto found = std::ranges::find_if(report["records"], [](const json& record) {
+        return record.value("kind", "") == "binary" &&
+               record.value("name", "") == "unit/selected_perf";
+    });
+    ASSERT_NE(found, report["records"].end());
+    EXPECT_EQ(found->at("status").get<std::string>(), "pass");
+}
+
 XTEST(XdevCli, ChangedSelectionFollowsARealGitDiffThroughAnImplementationDependency,
       .area = "testkit", .covers = {"CI-TEST-SELECTION"}) {
     Fixture fixture;

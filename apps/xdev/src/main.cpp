@@ -559,7 +559,7 @@ int cmd_test(const TestArgs& a) {
             }
             auto options = a.selection;
             options.platform = platform_name();
-            options.pattern.clear();
+            options.pattern = a.pattern;
             options.shards = 1;
             options.shard = 0;
             options.changed = !a.changed.empty();
