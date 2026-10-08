@@ -215,6 +215,11 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
         (domain.logicalHome / "subos/default/bin").string() + ":" +
             (domain.logicalHome / "bin").string() + ":/usr/sbin:/usr/bin:/sbin:/bin",
         "--chdir", domain.logicalHome.string()});
+    for (const auto* key : {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                            "http_proxy", "https_proxy", "all_proxy", "no_proxy"}) {
+        if (const auto* value = std::getenv(key); value && *value)
+            argv.insert(argv.end(), {"--setenv", key, value});
+    }
     if (source) {
         argv.insert(argv.end(), {"--ro-bind", source->mapping.physicalHome.string(), source->mapping.recordedHome.string()});
         for (const auto& binding : source->metadata)
