@@ -651,3 +651,69 @@ status = "required"
 text = "Real PID 1 startup through preparing exec init takes at most 200 milliseconds, including fallback and boot --now"
 kind = "flow"
 status = "required"
+
+# ── SubOS design part 3 (C43-C53) ───────────────────────────────────
+
+[LAYOUT-DEPS]
+text = "packages import downward only: luban -> modules, modules -/-> luban or the frontend; platform selection is if constexpr"
+status = "required"
+
+[ROOT-GC-ROOT]
+text = "a payload a retained generation links into is not deleted by remove; rolling back to that generation finds every target"
+status = "required"
+
+[ROOT-GEN-RETAIN]
+text = "a SubOS keeps kKeepGenerations besides its current one; what only pruned ones held is released; a pointer naming no generation prunes nothing"
+status = "required"
+
+[ROOT-GEN-DURABLE]
+text = "a generation and its pointer reach stable storage before the switch is reported (fsync of files and directories)"
+status = "planned"
+
+[ROOT-SWITCH-SCALE]
+text = "a checked switch stays within budget at 300 and 3000 payloads (digest check, not a full tree walk)"
+status = "planned"
+
+[TOOL-RESOLVE]
+text = "every external tool is resolved in one place (in-process > xlings payload > declared host tool) and reported with its source"
+status = "planned"
+
+[INTENT-EQ]
+text = "the Intent IR and the confine registry produce byte-identical bwrap argv to the code they replaced"
+status = "planned"
+
+[GATE-CONFORM]
+text = "the platform matrix is the implementations' probes, not a hand-kept table"
+status = "planned"
+
+[CARRIER-LOCAL]
+text = "the local carrier runs a SubOS through the carrier SPI with today's behaviour"
+status = "planned"
+
+[CARRIER-WSL-LIFECYCLE]
+text = "a wsl2 carrier is created per home on first need, reached through wsl.exe, stopped when idle, unregistered only by a confirmed removal"
+status = "planned"
+
+[CARRIER-WSL-INTEROP-OFF]
+text = "inside a wsl2 carrier, Windows executables cannot run and /mnt/c is not mounted"
+status = "planned"
+
+[CARRIER-WSL-GRANT]
+text = "only granted host directories are visible in a wsl2 carrier, and only for the session"
+status = "planned"
+
+[CARRIER-UNAVAILABLE]
+text = "without a usable carrier a Must refuses with the route and a native SubOS is unaffected"
+status = "planned"
+
+[VIEW-CARRIER-EQ]
+text = "one content declaration yields the same root view on every carrier"
+status = "planned"
+
+[SESSION-NATIVE-SUPERVISED]
+text = "a native-ABI SubOS on macOS / Windows runs under a supervisor: join, timeout, exit codes as on Linux"
+status = "planned"
+
+[LUBAN-INIT]
+text = "stage-0 is its own static binary and reads no Config"
+status = "planned"

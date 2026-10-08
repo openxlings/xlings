@@ -14,28 +14,41 @@ void write(const fs::path& file, std::string_view data) {
     out.flush();
     if (!out) throw std::runtime_error("cannot write HTTP fixture " + file.string());
 }
-std::string payload() {
-    constexpr std::string_view contents = "xlings HTTP fixture\n";
-    std::string header(512, '\0');
-    header.replace(0, 11, "fixture.txt");
-    header.replace(100, 7, "0000644");
-    header.replace(108, 7, "0000000");
-    header.replace(116, 7, "0000000");
-    header.replace(124, 11, std::format("{:011o}", contents.size()));
-    header.replace(136, 11, "00000000000");
-    header.replace(148, 8, "        ");
-    header[156] = '0';
-    header.replace(257, 5, "ustar");
-    header.replace(263, 2, "00");
-    unsigned sum = 0;
-    for (unsigned char byte : header) sum += byte;
-    header.replace(148, 6, std::format("{:06o}", sum));
-    header[154] = '\0';
-    header[155] = ' ';
-    header += contents;
-    header.resize(1024, '\0');
-    header.resize(2048, '\0');
-    return header;
+// A ustar archive of regular files: {name, mode, contents}.
+struct Entry { std::string_view name; std::string_view mode; std::string_view contents; };
+std::string tar(std::initializer_list<Entry> entries) {
+    std::string out;
+    for (const auto& e : entries) {
+        std::string header(512, '\0');
+        header.replace(0, e.name.size(), e.name);
+        header.replace(100, 7, e.mode);
+        header.replace(108, 7, "0000000");
+        header.replace(116, 7, "0000000");
+        header.replace(124, 11, std::format("{:011o}", e.contents.size()));
+        header.replace(136, 11, "00000000000");
+        header.replace(148, 8, "        ");
+        header[156] = '0';
+        header.replace(257, 5, "ustar");
+        header.replace(263, 2, "00");
+        unsigned sum = 0;
+        for (unsigned char byte : header) sum += byte;
+        header.replace(148, 6, std::format("{:06o}", sum));
+        header[154] = '\0';
+        header[155] = ' ';
+        std::string body(e.contents);
+        body.resize((body.size() + 511) / 512 * 512, '\0');
+        out += header + body;
+    }
+    out.resize(out.size() + 1024, '\0');
+    return out;
+}
+std::string payload() { return tar({{"fixture.txt", "0000644", "xlings HTTP fixture\n"}}); }
+// A program a SubOS can put on PATH and a root can put in /usr/bin.
+std::string tool_payload() {
+    // Two top-level entries, so no extractor reads the archive as one
+    // wrapping directory to strip.
+    return tar({{"bin/fixture-tool", "0000755", "#!/bin/sh\necho fixture-tool\n"},
+                {"README", "0000644", "fixture-tool\n"}});
 }
 struct Store {
     fs::path root;
@@ -65,6 +78,20 @@ struct Store {
                 recipe += std::string(platform) + "={['1.0.0']=" + version + "},";
             recipe += "}}\n";
             write(root / "index/pkgs/f/fixture-data.lua", recipe);
+            const auto tool = tool_payload();
+            write(root / "fixture-tool-1.0.0.tar", tool);
+            const auto toolVersion = std::format("{{url='{}',sha256='{}'}}",
+                server->url() + "/fixture-tool-1.0.0.tar", sha256::hex(tool));
+            std::string toolRecipe = "package = {spec='1',name='fixture-tool',type='package',"
+                "archs={'x86_64','aarch64'},xpm={";
+            for (const auto* platform : {"linux", "macosx", "windows"})
+                toolRecipe += std::string(platform) + "={['1.0.0']=" + toolVersion + "},";
+            toolRecipe += "}}\n"
+                "import('xim.libxpkg.pkginfo')\nimport('xim.libxpkg.xvm')\n"
+                "function config()\n"
+                "  xvm.add('fixture-tool', { bindir = path.join(pkginfo.install_dir(), 'bin') })\n"
+                "  return true\nend\n";
+            write(root / "index/pkgs/f/fixture-tool.lua", toolRecipe);
         } catch (...) {
             server.reset();
             std::error_code ec;

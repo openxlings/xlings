@@ -10,6 +10,7 @@
 # upward is a build that compiles today and cannot be split tomorrow -- the
 # SubOS core reaching for the package manager is exactly what `Ports` exists
 # to prevent, and nothing else would notice until the split.
+# xtest: covers=LAYOUT-DEPS requires=
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

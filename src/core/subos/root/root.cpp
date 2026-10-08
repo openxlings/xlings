@@ -15,6 +15,8 @@ import xlings.subos.home_view;
 import xlings.subos.library_cache;
 import xlings.core.subos.store_closure;
 import xlings.core.subos.root_view;
+import xlings.store;
+import xlings.core.xim.retention;
 
 namespace xlings::subos_root {
 
@@ -47,18 +49,6 @@ std::expected<rl::Kind, std::string> kind_in(const nlohmann::json& j, const fs::
     if (it->is_string())
         if (auto kind = rl::kind_from_string(it->get<std::string>()); kind) return *kind;
     return std::unexpected(file.string() + ": unknown or invalid SubOS kind");
-}
-
-// <home>/data/xpkgs/<pkg>/<version>, the payload a path lives in.
-std::optional<fs::path> payload_root(const fs::path& p) {
-    fs::path root;
-    int after = -1;
-    for (const auto& part : p) {
-        root /= part;
-        if (after >= 0 && ++after == 2) return root;
-        if (after < 0 && part == "xpkgs") after = 0;
-    }
-    return std::nullopt;
 }
 
 fs::path entry_of(const fs::path& home) { return home / "bin" / "xlings"; }
@@ -160,7 +150,7 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
         const auto source = xvm::effective_source_name(target, info, data, kind);
         const auto dest = xvm::effective_destination_name(target, data, kind, source);
         const fs::path dir = xvm::expand_path(data.path, h);
-        if (auto root = payload_root(dir); root && seen.insert(*root).second)
+        if (auto root = store::payload_root(dir); root && seen.insert(*root).second)
             in.payloads.push_back(*root);
         if (kind == "program" && !dest.empty()) {
             if (dest == "xlings") have_xlings = true;
@@ -249,6 +239,10 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
     } catch (const std::exception& error) {
         return failed(error.what());
     }
+    // Retention (design part 3 §7.1): the newest kKeepGenerations besides the
+    // current one; what only the pruned ones held is released.
+    if (out.changed && !rf::prune(subos_dir, rf::kKeepGenerations).empty())
+        (void)xim::retention::release();
     return out;
 }
 

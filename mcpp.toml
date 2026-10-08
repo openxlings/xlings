@@ -5,6 +5,8 @@
 #   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
 #   platform  -> runtime: the OS boundary -- every system header and call
 #   ui        -> platform: theme and i18n
+#   store     -> libs, platform: what keeps a payload alive (GC roots, the
+#                retained ledger)
 #   subos     -> libs, runtime, platform: the SubOS core
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
@@ -20,6 +22,7 @@ members = [
     "modules/runtime",
     "modules/platform",
     "modules/ui",
+    "modules/store",
     "modules/subos",
     "modules/testkit",
     "apps/gui",
@@ -121,6 +124,7 @@ libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
 ui       = { path = "modules/ui" }
+store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 
 [dependencies.compat]

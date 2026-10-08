@@ -399,6 +399,15 @@ jobs:
         run: |
           "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
 
+      # The same repository lints as the first step, through xdev this time,
+      # so what they cover (LAYOUT-DEPS ...) is evidence in the requirement
+      # report and not only a green step.
+      - name: Repository lints (requirement evidence)
+        env:
+          XDEV_LANE: linux-lint
+        run: |
+          "$XDEV" test --no-mcpp --suite lint --out target/xdev/linux-lint
+
       # ── Phase 2: Build via Release Script ───────────────────────
       # The ONE release build of this commit on Linux x86_64. The e2e job
       # below takes this artifact instead of building its own (it used to be a

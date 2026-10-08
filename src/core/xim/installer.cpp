@@ -9,6 +9,7 @@ import mcpplibs.xpkg.executor;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.compatibility;
 import xlings.core.xim.payload;
+import xlings.core.xim.retention;
 import xlings.core.xim.install_state;
 import xlings.core.xim.index;
 import xlings.core.xim.catalog;
@@ -4240,6 +4241,18 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         index_->mark_installed(name, false);
     }
     std::error_code ec;
+    // A retained root generation that links into this payload holds it too
+    // (SubOS design part 3 §7.1): rolling back to that generation must find
+    // its files. Everything else of the removal is done; the directory waits
+    // in the retained ledger until the last such generation is pruned.
+    if (const auto pins = retention::generation_pins(installDir); pins.held()) {
+        if (auto kept = retention::retain(installDir, detachTarget, detachVersion); !kept)
+            log::warn("[xim] {}", kept.error());
+        log::info("{}@{} removed; its files stay for rollback until {} {} pruned",
+                  name, resolvedMatch ? resolvedMatch->version : detachVersion,
+                  retention::describe(pins),
+                  pins.holders.size() + pins.unreadable.size() == 1 ? "is" : "are");
+    } else {
     // Sweep first: whatever an earlier removal had to park is dead weight,
     // and clearing it here is the "removed on a later run" this strategy
     // promises. Cheap -- an empty or absent trash directory is one stat.
@@ -4258,6 +4271,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
         log::warn("  they are marked incomplete, so nothing will mistake them "
                   "for an install; re-run `xlings remove {}` once that process "
                   "has gone", name);
+    }
     }
 
     // installDir is the version directory (e.g. .../xim-x-node/22.17.1).

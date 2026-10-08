@@ -385,6 +385,20 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     return next;
 }
 
+std::expected<std::vector<fs::path>, std::string> linked_targets(const fs::path& subos, int generation) {
+    const auto file = generation_dir(subos, generation) / "links.tsv";
+    const auto text = read_checked_text(file);
+    if (!text) return std::unexpected(file.string() + ": cannot be read");
+    std::vector<fs::path> out;
+    std::istringstream records(*text);
+    for (std::string line; std::getline(records, line);) {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) return std::unexpected(file.string() + ": malformed record");
+        out.emplace_back(line.substr(tab + 1));
+    }
+    return out;
+}
+
 std::expected<void, std::string> validate_generation(const fs::path& subos, int generation) {
     if (generation <= 0 || !owned_generation(subos, generation))
         return std::unexpected(generation_dir(subos, generation).string()
@@ -396,6 +410,10 @@ std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const 
     std::vector<int> removed;
     auto gens = generations(subos);
     const auto now = current(subos);
+    std::error_code pointerError;
+    const auto pointer = fs::symlink_status(subos / std::string(kPointer), pointerError);
+    if (!now && (fs::exists(pointer) || (pointerError && pointerError != std::errc::no_such_file_or_directory)))
+        return removed;
     std::size_t kept = 0;
     for (auto it = gens.rbegin(); it != gens.rend(); ++it) {
         const int k = *it;

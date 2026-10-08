@@ -103,11 +103,22 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& plan,
                                        std::string_view reason);
 // The pointer to an existing generation (rollback). Nothing is re-planned.
 std::expected<void, std::string> switch_to(const fs::path& subos, int generation);
+// How many generations a SubOS keeps besides its current one, the one a boot
+// entry or the running machine uses (design part 3 §7.1).
+inline constexpr std::size_t kKeepGenerations = 5;
+
 // Removes generations beyond the `keep` newest; never the current one or a
 // `pinned` one. Only trees whose complete contents match their projection
 // manifest are derived data; unknown or modified trees are left alone.
+// A pointer that exists but does not name a generation removes nothing: the
+// generation it really refers to is not known, so none may go.
 // Returns what it removed.
 std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const int> pinned = {});
+
+// The absolute targets generation `generation` links to, from its record
+// (links.tsv). A generation that cannot be read is an error, never "links to
+// nothing": what it holds must stay held (design part 3 §7.1).
+std::expected<std::vector<fs::path>, std::string> linked_targets(const fs::path& subos, int generation);
 
 // ── a root tree ──────────────────────────────────────────────────────
 
