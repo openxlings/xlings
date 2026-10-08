@@ -8369,3 +8369,31 @@ TEST(XvmExactRemovalTest, VersionlessRemovalWithTwoRecordsIsStillAmbiguous) {
               xlings::xvm::RemovalErrorKind::AmbiguousVersion);
     EXPECT_EQ(db["fd"].versions.size(), 2u);
 }
+
+TEST(XimXvmMetadataBatchTest, AnActiveOnlyLegacyBindingSurvivesAnUnrelatedPublication) {
+    xlings::xvm::VersionDB db;
+    db["gcc-specs-config"].versions["0.0.1"].path = "/shared/specs/bin";
+    xlings::xvm::Workspace active{{"gcc-specs-config", "0.0.1"}};
+    xlings::xvm::WorkspaceInstalled installed{{"retained", {"repo:2.0.0", "repo:1.0.0"}}};
+    xlings::xim::PlanNode node;
+    node.name = "unrelated";
+    node.version = "1.0.0";
+    node.namespaceName = "fixture";
+    node.canonicalName = "fixture:unrelated";
+    const std::vector<mcpplibs::xpkg::XvmOp> operations{
+        {.op = "add", .name = "unrelated", .bindir = "/shared/unrelated/bin"}};
+    const auto plan = xlings::xim::normalize_xpkg_registration_plan(
+        node, operations, "fixture", "/data", false);
+    ASSERT_TRUE(plan) << plan.error().message;
+    const auto result = xlings::xim::apply_xpkg_xvm_metadata_batch(
+        db, active, installed, operations, {}, *plan);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(active.at("gcc-specs-config"), "0.0.1");
+    ASSERT_TRUE(installed.contains("gcc-specs-config"));
+    EXPECT_EQ(installed.at("gcc-specs-config"), (std::vector<std::string>{"0.0.1"}));
+    EXPECT_EQ(installed.at("retained"), (std::vector<std::string>{"repo:1.0.0", "repo:2.0.0"}));
+    const auto persisted = xlings::xvm::subos_workspace_from_json(
+        xlings::xvm::subos_workspace_to_json({.active = active, .installed = installed}));
+    EXPECT_EQ(persisted.active, active);
+    EXPECT_EQ(persisted.installed, installed);
+}

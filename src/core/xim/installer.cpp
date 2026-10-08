@@ -48,6 +48,8 @@ import xlings.runtime.cancellation;
 namespace xlings::xim {
 
 namespace {
+void normalize_scope_metadata(xvm::Workspace& active, xvm::WorkspaceInstalled& installed);
+
 std::filesystem::path node_payload_path(const PlanNode& node,
                                         const std::filesystem::path& dataDir) {
     if (!node.borrowedPayload.empty()) {
@@ -595,6 +597,7 @@ apply_xpkg_xvm_metadata_batch(xvm::VersionDB& db, xvm::Workspace& workspace, xvm
         registered = std::move(*registrationResult);
     }
 
+    normalize_scope_metadata(candidateWorkspace, candidateInstalled);
     db.swap(candidateDb);
     workspace.swap(candidateWorkspace);
     installed.swap(candidateInstalled);
@@ -604,6 +607,17 @@ apply_xpkg_xvm_metadata_batch(xvm::VersionDB& db, xvm::Workspace& workspace, xvm
         .detachedLegacy = std::move(detachedLegacy),
         .effects = registration.effects,
     };
+}
+
+namespace {
+void normalize_scope_metadata(xvm::Workspace& active, xvm::WorkspaceInstalled& installed) {
+    xvm::SubosWorkspace scope;
+    scope.active = active;
+    scope.installed = installed;
+    const auto saved = xvm::subos_workspace_from_json(xvm::subos_workspace_to_json(scope));
+    active = saved.active;
+    installed = saved.installed;
+}
 }
 
 std::expected<void, std::string> cleanup_removed_xvm_library_artifacts(
@@ -1733,8 +1747,7 @@ std::expected<void, std::string>
 publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorkspace,
                        xvm::WorkspaceInstalled candidateInstalled,
                        const std::vector<mcpplibs::xpkg::XvmOp>& operations = {}) {
-    for (auto& [name, keys] : candidateInstalled)
-        std::ranges::sort(keys);
+    normalize_scope_metadata(candidateWorkspace, candidateInstalled);
     namespace mat = xvm::materialize;
     const auto beforeDb = Config::versions();
     const auto beforeWorkspace = Config::workspace();
@@ -2184,8 +2197,6 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             selectedFiles[member.target] = member.version;
     }
     xvm::reclaim_conflicting_file_bindings(candidateDb, candidateWorkspace, selectedFiles, homeDir);
-    for (auto& [name, keys] : candidateInstalled)
-        std::ranges::sort(keys);
 
     auto changes_for = [&](const std::filesystem::path& root, const xvm::Workspace& active,
                            const xvm::WorkspaceInstalled& oldInstalled)
