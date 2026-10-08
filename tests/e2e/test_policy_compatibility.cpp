@@ -16,7 +16,8 @@ XTEST(PolicyCompatibility, NewPoliciesDeclareTheirMinimumClient,
     auto set = home.xlings({"subos", "config", "box", "--sandbox", "dev"});
     ASSERT_EQ(set.exit_code, 0) << set.transcript();
     auto doc = nlohmann::json::parse(tk::read_file(home.dir() / "config" / "subos" / "box" / "policy.json"));
-    EXPECT_EQ(doc["min_client"], xlings::subos::policy::kPolicyMinClient);
+    ASSERT_TRUE(doc["min_client"].is_string());
+    EXPECT_EQ(doc["min_client"].get<std::string>(), xlings::subos::policy::kPolicyMinClient);
     auto show = home.xlings({"subos", "config", "box", "--json"});
     ASSERT_EQ(show.exit_code, 0) << show.transcript();
     EXPECT_EQ(nlohmann::json::parse(show.out)["min_client"], doc["min_client"]);
