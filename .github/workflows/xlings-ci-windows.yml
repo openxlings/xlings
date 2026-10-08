@@ -287,8 +287,13 @@ jobs:
           $xdev = Get-ChildItem target, apps\xdev -Recurse -Filter xdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $xdev) { Write-Host "::error::mcpp build -p xdev produced no xdev.exe under target/"; exit 1 }
           $env:XDEV_BIN = $xdev.FullName
+          New-Item -ItemType Directory -Force target/xdev/windows-xdev | Out-Null
+          '{"name":"windows-xdev","platform":"windows","probes":{}}' | Set-Content target/xdev/windows-xdev/lane.json
+          $env:XTEST_META_OUT = "$env:GITHUB_WORKSPACE/target/xdev/windows-xdev/meta.ndjson"
+          $env:XTEST_RESULTS_OUT = "$env:GITHUB_WORKSPACE/target/xdev/windows-xdev/cases.ndjson"
           mcpp test -p xdev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:XTEST_META_OUT, Env:XTEST_RESULTS_OUT
           & $xdev.FullName test --out target/xdev/windows-unit
           if ($LASTEXITCODE -ne 0) {
             $status = $LASTEXITCODE

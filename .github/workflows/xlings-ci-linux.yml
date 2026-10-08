@@ -327,7 +327,11 @@ jobs:
           xdev="$GITHUB_WORKSPACE/$xdev"
           echo "XDEV=$xdev" >> "$GITHUB_ENV"
           export XDEV_BIN="$xdev"
-          mcpp test -p xdev
+          mkdir -p target/xdev/linux-xdev
+          printf '%s\n' '{"name":"linux-xdev","platform":"linux","probes":{}}' > target/xdev/linux-xdev/lane.json
+          XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
+          XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
+            mcpp test -p xdev
           "$xdev" test --out target/xdev/linux-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"

@@ -111,6 +111,7 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
     // pathname lookups through a moving symlink are not a snapshot (macOS can
     // invalidate a name-cache walk during rename); readlink observes the entry.
     std::atomic<int> misses { 0 }, reads { 0 };
+    std::vector<std::string> diagnostics;
     std::latch ready { 1 };
     std::jthread reader([&](std::stop_token stop) {
         do {
@@ -118,9 +119,17 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
             const auto target = fs::read_symlink(subos / rf::kPointer, ec);
             if (ec || target.parent_path() != rf::kGenerations) {
                 ++misses;
+                if (diagnostics.size() < 8)
+                    diagnostics.push_back(std::format("pointer: {} [{}:{}] target={}",
+                        ec.message(), ec.category().name(), ec.value(), target.string()));
             } else {
                 const auto program = fs::read_symlink(subos / target / "usr/bin/sh", ec);
-                if (ec || (program != t.dir / "a/sh" && program != t.dir / "b/sh")) ++misses;
+                if (ec || (program != t.dir / "a/sh" && program != t.dir / "b/sh")) {
+                    ++misses;
+                    if (diagnostics.size() < 8)
+                        diagnostics.push_back(std::format("generation {}: {} [{}:{}] program={}",
+                            target.string(), ec.message(), ec.category().name(), ec.value(), program.string()));
+                }
             }
             if (++reads == 1) ready.count_down();
         } while (!stop.stop_requested());
@@ -133,7 +142,8 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
     reader.request_stop();
     reader.join();
     EXPECT_GT(reads.load(), 0);
-    EXPECT_EQ(misses.load(), 0) << "the pointer or its acquired generation was missing or incomplete";
+    EXPECT_EQ(misses.load(), 0) << "the pointer or its acquired generation was missing or incomplete: "
+                              << ::testing::PrintToString(diagnostics);
 
     const auto gens = rf::generations(subos);
     ASSERT_GE(gens.size(), 3u);
