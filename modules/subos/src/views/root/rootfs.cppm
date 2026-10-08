@@ -107,9 +107,18 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& plan,
 // latency, which is the device's number, not ours.
 enum class Flush { Durable, Deferred };
 
+// What a switch proves before it moves the pointer. Choosing an existing
+// generation (rollback, a boot entry) proves its tree is as placed AND that
+// every payload it links into is still there; publishing one commit just
+// built proves the tree only -- its links may name payloads at a logical path
+// (an exported image's home, a prefix domain) that exists where it is used,
+// not here.
+enum class Verify { TreeAndPayloads, Tree };
+
 // The pointer to an existing generation (rollback). Nothing is re-planned.
 std::expected<void, std::string> switch_to(const fs::path& subos, int generation,
-                                           Flush flush = Flush::Durable);
+                                           Flush flush = Flush::Durable,
+                                           Verify verify = Verify::TreeAndPayloads);
 // How many generations a SubOS keeps besides its current one, the one a boot
 // entry or the running machine uses (design part 3 §7.1).
 inline constexpr std::size_t kKeepGenerations = 5;

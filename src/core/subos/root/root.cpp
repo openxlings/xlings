@@ -213,7 +213,7 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
 
     const auto failed = [&](std::string error) -> std::expected<Refreshed, std::string> {
         if (before && out.changed) {
-            if (auto restored = rf::switch_to(subos_dir, *before); !restored)
+            if (auto restored = rf::switch_to(subos_dir, *before, rf::Flush::Durable, rf::Verify::Tree); !restored)
                 error += "; cannot restore prior generation: " + restored.error();
         }
         return std::unexpected(std::move(error));

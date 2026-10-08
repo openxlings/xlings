@@ -259,7 +259,8 @@ enum class Inventory { Matches, Differs, Missing };
 
 // `missingPayload` names the first payload the generation links into that
 // is gone: the generation is intact and still cannot be used.
-Inventory check_inventory(const fs::path& subos, int generation, fs::path* missingPayload = nullptr) {
+Inventory check_inventory(const fs::path& subos, int generation, fs::path* missingPayload = nullptr,
+                          bool payloads = true) {
     const auto text = read_checked_text(inventory_path(subos, generation));
     if (!text) return Inventory::Missing;
     const auto dir = generation_dir(subos, generation);
@@ -284,7 +285,7 @@ Inventory check_inventory(const fs::path& subos, int generation, fs::path* missi
         }
         if (n == 2 && f[0] == "payload") {
             // One lstat: a payload root is a directory, never a link.
-            if (!platform::change_stamp(fs::path(f[1]))) {
+            if (payloads && !platform::change_stamp(fs::path(f[1]))) {
                 if (missingPayload) *missingPayload = fs::path(f[1]);
                 return Inventory::Differs;
             }
@@ -439,10 +440,11 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation) {
     }
 }
 
-std::expected<void, std::string> switch_to(const fs::path& subos, int generation, Flush flush) {
+std::expected<void, std::string> switch_to(const fs::path& subos, int generation, Flush flush, Verify verify) {
+    const bool payloads = verify == Verify::TreeAndPayloads;
     std::error_code ec;
     fs::path gone;
-    switch (check_inventory(subos, generation, &gone)) {
+    switch (check_inventory(subos, generation, &gone, payloads)) {
     case Inventory::Matches: break;
     case Inventory::Differs:
         if (!gone.empty())
@@ -452,7 +454,7 @@ std::expected<void, std::string> switch_to(const fs::path& subos, int generation
     case Inventory::Missing:
         if (!owned_generation(subos, generation))
             return std::unexpected(std::format("generation {} is absent or is not an intact projection", generation));
-        if (auto missing = missing_payload(subos, generation))
+        if (auto missing = payloads ? missing_payload(subos, generation) : std::nullopt)
             return std::unexpected(std::format("generation {} links into {}, which is gone; reinstall it "
                                                "or choose another generation", generation, missing->string()));
     }
@@ -548,7 +550,7 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     sync_dir(subos / std::string(kGenerations));
     if (auto inventory = write_inventory(subos, next, directories, payloads); !inventory)
         trace_sync("inventory-skipped", inventory_path(subos, next));   // the full check still works
-    if (auto sw = switch_to(subos, next); !sw) return std::unexpected(sw.error());
+    if (auto sw = switch_to(subos, next, Flush::Durable, Verify::Tree); !sw) return std::unexpected(sw.error());
     return next;
 }
 

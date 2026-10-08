@@ -492,7 +492,7 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
     }
     if (auto cache = subos_root::refresh_cache(home_dir_(), name); !cache) {
         if (now) {
-            if (auto restored = rf::switch_to(dir, *now); !restored)
+            if (auto restored = rf::switch_to(dir, *now, rf::Flush::Durable, rf::Verify::Tree); !restored)
                 error_(stream, "cannot restore prior generation: " + restored.error());
         }
         error_(stream, cache.error());

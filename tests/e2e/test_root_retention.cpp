@@ -138,6 +138,22 @@ XTEST(RootGeneration, ACommitFlushesItsRecordsAndDirectoriesBeforePublishingThem
     EXPECT_TRUE(fs::exists(box / rf::kGenerations / std::format(".{}.inventory", *generation)));
 }
 
+XTEST(RootGeneration, ACommitPublishesLinksToLogicalPathsThatExistOnlyWhereTheRootIsUsed,
+      .area = "subos", .covers = {"ROOT-GC-ROOT", "ROOT-GEN-ATOMIC"}, .requires_ = {"posix"}) {
+    // An exported image's generation names payloads at the image home's
+    // path; at export time they live in the staging tree, not there.
+    auto home = tk::Home::isolated("root-logical");
+    const auto image = home.dir() / "stage/subos/default";
+    const fs::path logical = "/nonexistent-logical-home/data/xpkgs/fixture-x-tool/1/bin/tool";
+    const auto placed = rf::commit(image, {{{"usr/bin/tool", logical, "fixture"}}, {}}, "export");
+    ASSERT_TRUE(placed) << placed.error();
+    EXPECT_EQ(rf::current(image), placed);
+    // Choosing it again later, here, is a rollback: that does check.
+    ASSERT_TRUE(rf::commit(image, {{{"usr/bin/other", logical, "fixture"}}, {}}, "second"));
+    EXPECT_FALSE(rf::switch_to(image, *placed));
+    EXPECT_TRUE(rf::switch_to(image, *placed, rf::Flush::Durable, rf::Verify::Tree));
+}
+
 XTEST(RootGeneration, ASwitchRefusesAGenerationWhosePayloadIsGone,
       .area = "subos", .covers = {"ROOT-GC-ROOT", "ROOT-SWITCH-SCALE"}, .requires_ = {"posix"}) {
     auto home = tk::Home::isolated("root-switch-gone");
