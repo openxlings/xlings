@@ -229,9 +229,18 @@ end
 
   $env:XLINGS_FIXTURE_PAYLOAD = $payload
   try {
-    & $entry config --add-xpkg $fixtureRecipe
-    if ($LASTEXITCODE -ne 0) { throw "S3: fixture recipe import failed" }
-    & $entry install local:xlings@9.9.9 --use -y
+    # The shared client is owned by xim:xlings; another namespace must not
+    # acquire its entry authority. Give this isolated home a private xim.
+    $fixtureIndex = Join-Path $work "xim-index"
+    $fixturePkgs = Join-Path $fixtureIndex "pkgs\x"
+    New-Item -ItemType Directory -Force -Path $fixturePkgs | Out-Null
+    Copy-Item $fixtureRecipe (Join-Path $fixturePkgs "xlings.lua")
+    'xim_indexrepos = {}' | Set-Content (Join-Path $fixtureIndex "xim-indexrepos.lua")
+    $configPath = Join-Path $env:XLINGS_HOME ".xlings.json"
+    $config = Get-Content -Raw $configPath | ConvertFrom-Json
+    $config | Add-Member -Force -NotePropertyName index_repos -NotePropertyValue @(@{ name = "xim"; url = $fixtureIndex })
+    $config | ConvertTo-Json -Depth 100 | Set-Content $configPath
+    & $entry install xim:xlings@9.9.9 --use -y
     if ($LASTEXITCODE -ne 0) { throw "S3: install --use of the fixture xlings failed" }
   } finally {
     Remove-Item Env:XLINGS_FIXTURE_PAYLOAD -ErrorAction SilentlyContinue

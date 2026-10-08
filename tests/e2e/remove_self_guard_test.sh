@@ -10,9 +10,8 @@
 # case, which is the only one that hits the broken "no surviving
 # versions" branch in the installer.
 #
-# Fixture: a fake xpkg called "xlings" (two versions, no URL) that just
-# drops a stub file and registers via xvm.add. We never actually replace
-# the bootstrap — we only exercise the remove-side decision logic.
+# Fixture: two local registrations using the actual candidate binary.
+# Commands use XLINGS_BIN throughout, including after entry activation.
 
 set -euo pipefail
 
@@ -84,8 +83,8 @@ printf 'xim_indexrepos = {}\n' > "$LOCAL_INDEX_DIR/xim-indexrepos.lua"
 rm -f "$LOCAL_INDEX_DIR/.xlings-index-cache.json"
 mkdir -p "$(dirname "$FIXTURE_PKG")"
 
-# Override pkgs/x/xlings.lua with a fixture that just drops a stub and
-# registers via xvm.add — no real binary, no self-replace, no downloads.
+# Override the recipe with a local candidate copy and no downloads.
+cp "$XLINGS_BIN" "$(dirname "$FIXTURE_PKG")/candidate-xlings"
 cat > "$FIXTURE_PKG" <<'LUA'
 package = {
     spec = "1",
@@ -107,13 +106,13 @@ package = {
 
 import("xim.libxpkg.pkginfo")
 import("xim.libxpkg.xvm")
+import("xim.libxpkg.system")
 
 function install()
     local bindir = path.join(pkginfo.install_dir(), "bin")
     os.tryrm(pkginfo.install_dir())
     os.mkdir(bindir)
-    io.writefile(path.join(bindir, "xlings"),
-                 "#!/bin/sh\necho 'fixture xlings " .. pkginfo.version() .. "'\n")
+    os.cp(path.join(system.xpkgdir(), "candidate-xlings"), path.join(bindir, "xlings"))
     return true
 end
 
@@ -130,7 +129,7 @@ LUA
 
 # Seed XLINGS_HOME pointing at our private (neutralised) index.
 mkdir -p "$HOME_DIR/subos/default/bin" "$HOME_DIR/bin"
-cp "$XLINGS_BIN" "$HOME_DIR/xlings"
+cp "$XLINGS_BIN" "$HOME_DIR/bin/xlings"
 cat > "$HOME_DIR/.xlings.json" <<EOF
 {
   "mirror": "GLOBAL",
@@ -147,8 +146,8 @@ printf '{}\n' > "$HOME_DIR/data/xim-index-repos/xim-indexrepos.json"
 
 # ── Scenario 1: install one version, try to remove it → guard refuses ───
 log "scenario 1: single-version remove must be refused"
-RUN install "xim:xlings@1.0.0" -y >/dev/null 2>&1 \
-    || fail "install xim:xlings@1.0.0 failed"
+RUN install "xim:xlings@1.0.0" -y > "$RUNTIME_DIR/install.log" 2>&1 \
+    || { cat "$RUNTIME_DIR/install.log"; fail "install xim:xlings@1.0.0 failed"; }
 
 [[ "$(xlings_versions)" == "1.0.0" ]] \
     || fail "post-install: expected versions=1.0.0, got '$(xlings_versions)'"
@@ -177,8 +176,8 @@ log "  ok: refused with rc=2, version DB intact"
 
 # ── Scenario 2: install a second version, multi-version remove succeeds ─
 log "scenario 2: multi-version remove must auto-switch (existing semantics)"
-RUN install "xim:xlings@2.0.0" -y >/dev/null 2>&1 \
-    || fail "install xim:xlings@2.0.0 failed"
+RUN install "xim:xlings@2.0.0" -y > "$RUNTIME_DIR/install.log" 2>&1 \
+    || { cat "$RUNTIME_DIR/install.log"; fail "install xim:xlings@2.0.0 failed"; }
 RUN use xlings 2.0.0 >/dev/null 2>&1 \
     || fail "use xlings 2.0.0 failed"
 

@@ -37,19 +37,14 @@ bytes=$(wc -c < "$out_file")
 log "'xlings config' emitted $bytes bytes (stdout+stderr)"
 
 # Look for any of the canonical multi-byte UTF-8 sequences.
-declare -A markers=(
-    ["U+25C6 ◆ package"]="e2 97 86"
-    ["U+2500 ─ box-h"]="e2 94 80"
-    ["U+2502 │ box-v"]="e2 94 82"
-    ["U+2713 ✓ done"]="e2 9c 93"
-    ["U+25CB ○ pending"]="e2 97 8b"
-)
+labels=("U+25C6 ◆ package" "U+2500 ─ box-h" "U+2502 │ box-v" "U+2713 ✓ done" "U+25CB ○ pending")
+markers=("e2 97 86" "e2 94 80" "e2 94 82" "e2 9c 93" "e2 97 8b")
 
 found=()
 hex=$(od -An -tx1 "$out_file" | tr -s ' \n' ' ')
-for label in "${!markers[@]}"; do
-    if [[ "$hex" == *"${markers[$label]}"* ]]; then
-        found+=("$label")
+for index in "${!markers[@]}"; do
+    if [[ "$hex" == *"${markers[$index]}"* ]]; then
+        found+=("${labels[$index]}")
     fi
 done
 
