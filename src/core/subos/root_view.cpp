@@ -358,7 +358,7 @@ class PrivateView final : public View {
             fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/default");
         fs::create_directory_symlink(inputs.scope, skeletons_.at(guestHome) / "subos/current");
 
-        for (const auto name : {"usr", "lib", "bin"}) {
+        for (const auto name : {"usr", "lib", "bin", "share"}) {
             const auto source = inputs.instance / name;
             std::error_code ec;
             const auto status = fs::symlink_status(source, ec);

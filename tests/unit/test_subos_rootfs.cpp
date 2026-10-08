@@ -66,11 +66,14 @@ XTEST(SubosRootfs, AProjectionIsWhatADistributionWouldInstall,
     const auto sysroot = t.dir / "subos" / "usr";
     fs::create_directories(sysroot / "include");
     fs::create_directories(sysroot / "share" / "terminfo");
+    const auto shared = t.dir / "subos" / "share";
+    fs::create_directories(shared / "glvnd" / "egl_vendor.d");
 
     rf::Inputs in;
     in.programs = {{"ls", coreutils / "bin" / "ls"}, {"xlings", t.dir / "bin" / "xlings"}};
     in.payloads = {busybox, glibc, coreutils};
     in.sysroot_usr = sysroot;
+    in.sysroot_share = shared;
     auto p = rf::plan(in);
 
     ASSERT_NE(find(p, "usr/bin/sh"), nullptr);
@@ -84,7 +87,8 @@ XTEST(SubosRootfs, AProjectionIsWhatADistributionWouldInstall,
     EXPECT_EQ(target_of(p, "usr/lib64"), fs::path("lib"));
     EXPECT_EQ(target_of(p, "usr/sbin"), fs::path("bin"));
     EXPECT_EQ(target_of(p, "usr/include"), sysroot / "include");
-    EXPECT_EQ(target_of(p, "usr/share"), sysroot / "share");
+    EXPECT_EQ(target_of(p, "usr/share/terminfo"), sysroot / "share/terminfo");
+    EXPECT_EQ(target_of(p, "usr/share/glvnd"), shared / "glvnd");
     // busybox's ls lost to the registered one, and that is written down.
     auto c = std::ranges::find(p.conflicts, "usr/bin/ls", &rf::Conflict::rel);
     ASSERT_NE(c, p.conflicts.end());

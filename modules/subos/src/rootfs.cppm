@@ -44,9 +44,11 @@ struct Inputs {
     // distribution's semantics (busybox's applet links arrive this way).
     std::vector<fs::path> payloads;
     // The SubOS's sysroot (<subos>/usr: include/, share/, what the sysroot
-    // model wrote) and xvm's library links (<subos>/lib), lowest priority.
+    // model wrote), xvm's library links (<subos>/lib), and runtime datasets
+    // (<subos>/share), lowest priority.
     fs::path sysroot_usr;
     fs::path sysroot_lib;
+    fs::path sysroot_share;
 };
 
 struct Link {

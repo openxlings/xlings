@@ -145,6 +145,7 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     rf::Inputs in;
     in.sysroot_usr = subos_dir / "usr";
     in.sysroot_lib = subos_dir / "lib";
+    in.sysroot_share = subos_dir / "share";
     const auto h = home.string();
     std::set<fs::path> seen;
     bool have_xlings = false;

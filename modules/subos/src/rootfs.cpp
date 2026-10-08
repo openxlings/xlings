@@ -243,6 +243,8 @@ Plan plan(const Inputs& in) {
         for (auto& e : sorted_entries(in.sysroot_lib))
             claim("usr/lib/" + e.path().filename().string(), e.path(), "sysroot");
     }
+    for (auto& e : sorted_entries(in.sysroot_share))
+        claim("usr/share/" + e.path().filename().string(), e.path(), "sysroot");
     if (!in.sysroot_usr.empty()) {
         for (auto& e : sorted_entries(in.sysroot_usr)) {
             const auto name = e.path().filename().string();
@@ -250,6 +252,9 @@ Plan plan(const Inputs& in) {
             if (name == "lib" && e.is_directory(ec)) {
                 for (auto& l : sorted_entries(e.path()))
                     claim("usr/lib/" + l.path().filename().string(), l.path(), "sysroot");
+            } else if (name == "share" && e.is_directory(ec)) {
+                for (auto& shared : sorted_entries(e.path()))
+                    claim("usr/share/" + shared.path().filename().string(), shared.path(), "sysroot");
             } else if (name != "bin" && name != "sbin" && name != "lib64") {
                 claim("usr/" + name, e.path(), "sysroot");
             }
