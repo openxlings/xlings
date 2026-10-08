@@ -601,7 +601,7 @@ C53 openkal：§4.3 两点确认后分项接入；确认不了则记录为结论
 ### C53：§4.3 两个问题的结论
 
 1. **openkal 能否在 xlings 现有 C 运行时下链接：能（Linux 实测）。** `openkal-linux` 0.16.1 直接基于系统调用，与 libstdc++ 在 glibc
-   动态构建和 xlings 发布用的 x86_64-linux-musl 静态目标下都能链接、运行（`tests/openkal`，CI 每个 PR 构建并运行两种目标）。
+   动态构建和 xlings 发布用的 x86_64-linux-musl 静态目标下都能链接、运行（`tools/openkal-coexistence`，CI 每个 PR 构建并运行两种目标）。
    一个互操作事实：`kal::write` 绕过 C 库的 stdio 缓冲，混用前必须 flush。`openkal-windows` 声明"不使用任何 C 运行时符号"，
    `openkal-macos` 直接基于内核调用；两者在 xlings 接入时由各自平台 CI 验证。
 2. **跨进程传递句柄：openkal 0.15 不定义**（SPEC §11 第 9 条："A general mechanism for passing a handle to a context in another
