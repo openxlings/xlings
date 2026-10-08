@@ -10,7 +10,8 @@
 `4daee595` 的 ARM64 与 Linux root 流水线通过；macOS、Windows 的构建及单元测试
 通过，但两个旧 shell/PowerShell fixture 与新入口所有权边界不兼容，已按实际失败
 日志修正 fixture，未降低产品边界。Linux 主测试实际 191 pass、5 fail、4 skip；失败集中于 Lua worker 挂载/审计与私有域
-backend 判定，正在修复。root 闭包隔离回归已实际通过；ASAN 仍在执行。
+backend 判定；对应修复已追加提交并等待下一 head CI。root 闭包隔离回归和 ASAN
+已实际通过。
 
 最终 review 另修复私有域 exec/use 对 `./`、`~/` 挂载源的二次解析；命令分隔符后
 argv 保持原样。开发与静态构建通过，真实隔离回归等待 CI。
@@ -509,3 +510,21 @@ filesystem 回归覆盖 source 路径变化、同路径升级、WAL 恢复、leg
 独立 mcpp registry 同样设置 CN，`mcpp new cn-ecosystem`→build（38.48 s）→run 成功，
 使用实际 `import std` 模块 C++23。旧 payload 4448 条字节/链接/权限及四项用户数据
 sentinel 已留快照，待正式候选发布后执行真实 self update 对比；尚未把候选包冒充发布。
+
+
+最后三项根因修复与本地证据：
+
+- `588586d9`：worker 仅绑定 exact canonical recipe/source；现有 RO home 的 symlink
+  自然解析到该目标，不再穿过 RO symlink 再绑定一遍。未知宿主 sibling 仍不可读。
+- `c58ac9a8`：Ports 先由 ShimClassifier 验证候选为 actual dispatcher，再查询 owner；
+  普通 system bwrap 仍真实 probe，不因当前 `/xlings/bin/xlings` 调用者归属被排除。
+- `b70e8cc7`：worker 和 session-init 共用一个 exec/network notification listener，
+  一次可信 pre-filter helper/SCM 交接；typed notice 保留所有 syscall 和 ABI checks。
+  exec 审计只读 filename，审计完成后才 CONTINUE；失败拒绝、终止，native 返回 125。
+  full + proxy/NAT 回归要求同一真实日志 row 的 exec path、net-attempt 和 mode 证据。
+
+两轮专项只读复核未发现本批明确 P1/P2。产品 dev 构建 31.49 s、dist static 45.84 s
+通过；108 程序构建 118.705 s 通过。kernel seccomp 四个真实用例通过，单 FD 同时
+阻塞 exec 与 datagram，net 拒绝及 exec allow/deny 实测通过。另针对性 XTEST 5 pass、
+16 skip、0 fail；跳过仅因本机无法创建 bwrap namespace，不能据此宣称 namespace
+组合验收完成。schema/YAML parse、两项 safety lint、whitespace 检查通过。
