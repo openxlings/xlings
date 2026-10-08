@@ -719,3 +719,10 @@ no-replace，已有目录保留 set-aside/rollback，未知或非目录目的地
 卸载只对已验证 selection 合成；实际 hook 失败保持原错误和非零退出。回归覆盖
 真实 dev worker 与无 policy 的旧 recipe，显式/裸名称 hook 恰好一次、错误版本
 不运行 hook，以及失败 hook 不报告成功。最终固定 head CI 待通过后记录发布证据。
+
+
+系统模板的只读slot存在只证明payload可读，不能作为当前HOME已配置的证据。
+`subos new --from`在checked source producer内识别borrowed mount后，仍在创建
+新scope之前通过既有installer建立本地借用登记和config记录；不重装来源payload，
+不复制来源configured，也不绕过scope配置判定。borrowed mount authority不可读
+或验证失败时拒绝操作，不能把失败解释为普通owned目录。

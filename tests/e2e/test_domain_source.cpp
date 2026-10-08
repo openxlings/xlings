@@ -106,9 +106,13 @@ XTEST(DomainSourceProducer, ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage
     const auto copiedSlot = selected->physicalHome / "data/xpkgs/fixture-x-domain-source/1.0.0";
     EXPECT_TRUE(fs::is_empty(copiedSlot)) << "logical mountpoints hold no copied system payload";
     const auto privateConfig = Json::parse(tk::read_file(selected->physicalHome / ".xlings.json"));
-    const auto& borrowed = privateConfig["versions"]["source-member"]["versions"][coordinate];
-    EXPECT_EQ(borrowed["layer"]["home"], physicalSource.generic_string());
-    EXPECT_EQ(borrowed["path"], "/run/xlings-system-source/data/xpkgs/fixture-x-domain-source/1.0.0/bin");
+    const Json::json_pointer registration("/versions/source-member/versions/fixture:1.0.0");
+    ASSERT_TRUE(privateConfig.contains(registration)) << privateConfig.dump(2);
+    const auto& borrowed = privateConfig.at(registration);
+    ASSERT_TRUE(borrowed.contains("layer") && borrowed.at("layer").contains("home")) << borrowed.dump(2);
+    ASSERT_TRUE(borrowed.contains("path")) << borrowed.dump(2);
+    EXPECT_EQ(borrowed.at("layer").at("home"), physicalSource.generic_string());
+    EXPECT_EQ(borrowed.at("path"), "/run/xlings-system-source/data/xpkgs/fixture-x-domain-source/1.0.0/bin");
     auto status = owner.xlings({"subos", "status", "source-root", "--json"});
     ASSERT_EQ(status.exit_code, 0) << status.transcript();
     EXPECT_EQ(Json::parse(status.out)["root"]["kind"], "rootfs");
@@ -122,8 +126,10 @@ XTEST(DomainSourceProducer, ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage
     const auto imageHome = output / "rootfs/xlings";
     EXPECT_EQ(tk::read_file(imageHome / "data/xpkgs/fixture-x-domain-source/1.0.0/bin/source-member"), "#!/bin/sh\nexit 0\n");
     const auto imageConfig = Json::parse(tk::read_file(imageHome / ".xlings.json"));
-    const auto& imageVersion = imageConfig["versions"]["source-member"]["versions"][coordinate];
-    EXPECT_EQ(imageVersion["path"], "/xlings/data/xpkgs/fixture-x-domain-source/1.0.0/bin");
+    ASSERT_TRUE(imageConfig.contains(registration)) << imageConfig.dump(2);
+    const auto& imageVersion = imageConfig.at(registration);
+    ASSERT_TRUE(imageVersion.contains("path")) << imageVersion.dump(2);
+    EXPECT_EQ(imageVersion.at("path"), "/xlings/data/xpkgs/fixture-x-domain-source/1.0.0/bin");
     EXPECT_FALSE(imageVersion.contains("layer"));
     EXPECT_EQ(Json::parse(tk::read_file(imageHome / "data/xpkgs/fixture-x-domain-source/1.0.0/.xlings-resolution.json"))["future"],
               "unknown record remains");

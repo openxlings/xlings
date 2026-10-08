@@ -2,10 +2,10 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（payloadless 卸载发布修复待最新 CI）
+## 当前交付状态（系统模板借用配置修复待最新 CI）
 
 后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
-候选版本为 `2026.10.8.2`，尚未合并、发布。
+候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§23；以下保留历史轮次证据。
 
 `8e8638fc` 的 macOS（147 pass、0 fail、2 skip）、Windows（105/0/44）、
 Linux root 完整流水线通过。ARM64 首次 qemu version 检查退出 139，同一 head
@@ -700,3 +700,29 @@ production相同的checked source Facade和command，testkit执行每个操作�
 
 有限复验：相关2程序编译8.695s通过；实际静态RootExport1pass，source namespace
 因本机缺bwrap1skip，不能替代CI实际隔离pass。客户端产品源码未改变。
+
+## 23. 系统模板已挂载不等于目标 home 已配置
+
+固定`2d1ef97a`：macOS147pass/0fail/2skip，Windows105/0/44，ARM cross/native和
+Linux root完整通过。Linux主单元204/0/5，static release和cold-home通过；静态
+source用例执行2.932秒后因const JSON缺字段断言SIGABRT，随后性能和下游未执行。
+ASAN尚待该轮结束；其他平台green不替代source gate。
+
+日志确认producer初始化与创建的前置断言没有报错，随后测试读取借用登记字段
+中止；没有栈或home JSON现场，不能断言具体缺失key已被直接采集。源码审查发现
+`resolve_base_package_`仅看payload目录是否存在。checked source facade已把只读
+slot挂在logical prefix，因此原路径跳过installer，没有运行config和生成目标home
+借用登记；与最早const读取`versions/source-member`缺字段的现象吻合。
+
+修复对已存在base先调用`borrowed_mount`验证authority：验证失败拒绝，确为只读借用
+则在同进程调用既有`cmd_install`完成checked borrow/config和持久登记。作用域与原
+missing base自动安装一致，在新SubOS创建之前，不提前切到尚不存在的scope。
+来源payload保持只读，重复配置仍由既有configured verdict决定。测试保留所有原
+断言，同时先检查JSON pointer存在并输出完整受控fixture JSON，使失败能正常保存
+现场，避免abort。下一固定head仍须三个原静态隔离场景实际pass。
+
+本批有限复验：dev31.95s、static/dist23.83s构建通过；相关2程序构建36.408s通过。
+静态source/export程序实际1pass、1本机bwrap能力skip、0fail，未将skip作为隔离
+通过。既有legacy fork shell四场景全部通过（local独立性、missing base自动安装、
+equals参数、missing source拒绝）。删除/平台header lint和diff-check通过；lock
+重排语义一致已恢复。真实借用config和全部静态门禁待下一固定headCI。

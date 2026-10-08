@@ -32,6 +32,7 @@ import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
 import xlings.core.home.domain_producer;
+import xlings.core.home.domain_producer_source;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
@@ -962,6 +963,24 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     // ── pkg-spec path: locate or install the base xpkg ────────────
     auto ref = new_from_detail_::parse_pkg_spec_(fromSpec);
     auto baseDir = new_from_detail_::locate_base_pkg_(ref);
+
+    if (!baseDir.empty()) {
+        auto borrowed = xlings::home::domain_producer_source::borrowed_mount(baseDir);
+        if (!borrowed) {
+            stream.emit(ErrorEvent{
+                .code = ErrorCode::InvalidInput,
+                .message = borrowed.error(),
+                .recoverable = false,
+            });
+            return {};
+        }
+        if (*borrowed) {
+            const std::vector<std::string> targets{fromSpec};
+            if (xim::cmd_install(targets, /*yes=*/true, /*noDeps=*/false, stream) != 0)
+                return {};
+            baseDir = new_from_detail_::locate_base_pkg_(ref);
+        }
+    }
 
     if (baseDir.empty()) {
         // Auto-install (E5a): invoke `xlings install <spec>` so the
