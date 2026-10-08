@@ -178,7 +178,9 @@ void prune_empty_asset_dirs(const fs::path& absolute,
     auto relative = relativeToRoot.parent_path();
     while (components(relative) >= 3) {
         std::error_code rmEc;
-        if (!fs::remove(subosRoot / relative, rmEc)) break;
+        const auto directory = subosRoot / relative;
+        if (!fs::is_directory(fs::symlink_status(directory, rmEc)) || rmEc ||
+            !platform::remove_empty_directory(directory)) break;
         relative = relative.parent_path();
     }
 }
@@ -549,6 +551,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     }
     auto oldClaims = materialize::collect_claims(Config::versions(), previousInstalled,
         p.subosDir, p.libDir, p.homeDir.string());
+    reclaim_conflicting_file_bindings(candidateDb, candidateActive, to_switch, p.homeDir.string());
     WorkspaceInstalled selected;
     for (const auto& [name, key] : candidateActive) selected[name] = {key};
     auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string(),

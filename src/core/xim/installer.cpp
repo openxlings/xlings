@@ -35,6 +35,7 @@ import xlings.core.xvm.bindings;
 import xlings.core.xvm.removal;
 import xlings.core.xvm.registration;
 import xlings.core.xvm.materialize;
+import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.errors;
 import xlings.subos.manifest;
 import xlings.core.profile;
@@ -1732,6 +1733,8 @@ std::expected<void, std::string>
 publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorkspace,
                        xvm::WorkspaceInstalled candidateInstalled,
                        const std::vector<mcpplibs::xpkg::XvmOp>& operations = {}) {
+    for (auto& [name, keys] : candidateInstalled)
+        std::ranges::sort(keys);
     namespace mat = xvm::materialize;
     const auto beforeDb = Config::versions();
     const auto beforeWorkspace = Config::workspace();
@@ -1817,7 +1820,11 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
             failure += "; root rollback failed: " + sync.root_error;
         return std::unexpected(std::move(failure));
     }
-    return applied->commit();
+    auto committed = applied->commit();
+    if (!committed) return committed;
+    for (const auto& change : changes)
+        if (change.remove) xvm::prune_empty_asset_dirs(change.destination, root);
+    return {};
 }
 
 std::expected<void, std::string> detach_current_subos_(const std::string& target,
@@ -2170,6 +2177,15 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     attach_legacy_header_dir(candidateDb, node.name,
                              xvm::make_ns_version(versionNamespace, node.version),
                              metadata->effects);
+    xvm::Workspace selectedFiles;
+    for (const auto& member : metadata->registered) {
+        const auto active = candidateWorkspace.find(member.target);
+        if (active != candidateWorkspace.end() && active->second == member.version)
+            selectedFiles[member.target] = member.version;
+    }
+    xvm::reclaim_conflicting_file_bindings(candidateDb, candidateWorkspace, selectedFiles, homeDir);
+    for (auto& [name, keys] : candidateInstalled)
+        std::ranges::sort(keys);
 
     auto changes_for = [&](const std::filesystem::path& root, const xvm::Workspace& active,
                            const xvm::WorkspaceInstalled& oldInstalled)

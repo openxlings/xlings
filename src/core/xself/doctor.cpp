@@ -3020,8 +3020,30 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                                      Config::display_path(source)));
                     continue;
                 }
-                const auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
+                auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
                     Config::paths().subosDir, Config::paths().libDir, st.homeStr);
+                if (claims) {
+                    const auto store = (Config::paths().dataDir / "xpkgs").lexically_normal();
+                    const auto payload = [&](fs::path path) {
+                        path = path.lexically_normal();
+                        while (!path.empty() && path != path.parent_path()) {
+                            if (path.parent_path().parent_path() == store) return path;
+                            path = path.parent_path();
+                        }
+                        return fs::path{};
+                    };
+                    ec.clear();
+                    auto old = fs::read_symlink(f.shimPath, ec);
+                    if (!ec) {
+                        if (old.is_relative()) old = f.shimPath.parent_path() / old;
+                        old = old.lexically_normal();
+                        const auto owner = payload(source);
+                        const bool exists = fs::exists(f.shimPath, ec);
+                        if (!ec && !exists && !owner.empty() && payload(old) == owner &&
+                            old.filename() == fs::path(source).filename())
+                            claims->push_back({old, f.shimPath, false});
+                    }
+                }
                 const auto placed = claims
                     ? xvm::place_asset(source, f.shimPath, *claims)
                     : xvm::MaterializationResult(std::unexpected(claims.error()));

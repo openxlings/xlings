@@ -7,6 +7,7 @@ import std;
 import xlings.core.home;
 import xlings.core.home_identity;
 import xlings.libs.json;
+import xlings.platform;
 
 namespace h = xlings::home;
 namespace fs = std::filesystem;
@@ -152,6 +153,23 @@ XTEST(WriterRules, SubosNewDoesNotBlankAnUnparseableManifest,
 }
 
 // ── Deployment S and M (design §4) ───────────────────────────────────
+
+XTEST(Deployment, AUserCannotCreateOrMutateASystemLayerEvenWhenItsPathIsWritable,
+      .area = "home", .covers = {"DEPLOY-M-SYSTEM"}, .requires_ = {"posix", "xlings-bin"}) {
+    if (xlings::platform::is_root()) GTEST_SKIP() << "requires an unprivileged caller";
+    auto home = tk::Home::isolated("system-root-authority");
+    const auto layer = home.root() / "system-layer";
+    const auto absent = home.xlings({"install", "--system", "-y", "xz"},
+                                   {{"XLINGS_SYSTEM_LAYER", layer.string()}});
+    EXPECT_EQ(absent.exit_code, 13) << absent.transcript();
+    EXPECT_FALSE(fs::exists(layer));
+    tk::write_file(layer / ".xlings-write-probe", "user-owned file");
+    const auto existing = home.xlings({"install", "--system", "-y", "xz"},
+                                     {{"XLINGS_SYSTEM_LAYER", layer.string()}});
+    EXPECT_EQ(existing.exit_code, 13) << existing.transcript();
+    EXPECT_EQ(tk::read_file(layer / ".xlings-write-probe"), "user-owned file");
+    EXPECT_FALSE(fs::exists(layer / "bin"));
+}
 
 XTEST(Deployment, AnEntryIsASystemPackagesOnlyWhereRootInstallsThem,
       .area = "home", .covers = {"HOME-SYSTEM-MODE"}) {

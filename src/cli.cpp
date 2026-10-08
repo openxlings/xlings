@@ -776,14 +776,15 @@ int install_into_system_layer_(const std::vector<std::string>& targets, bool yes
         log::error("install --system needs the packages to install");
         return 2;
     }
-    std::error_code ec;
-    fs::create_directories(layer / "bin", ec);
-    const auto probe = layer / ".xlings-write-probe";
-    const bool writable = !ec && static_cast<bool>(std::ofstream(probe));
-    fs::remove(probe, ec);
-    if (!writable) {
+    if (!platform::is_root()) {
         log::error("the system layer {} is root's: sudo xlings install --system ...", layer.string());
         return 13;
+    }
+    std::error_code ec;
+    fs::create_directories(layer / "bin", ec);
+    if (ec) {
+        log::error("cannot initialize the system layer {}: {}", layer.string(), ec.message());
+        return 1;
     }
     if (!fs::exists(layer / ".xlings-home", ec)) {
         std::ofstream(layer / ".xlings-home") << "{\n  \"layout\": 2,\n  \"mode\": \"multi\"\n}\n";

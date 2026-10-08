@@ -162,7 +162,7 @@ log "D4: the directory now equals a fresh install"
 [[ ! -e "$PAYLOAD_DIR/another-package-9.9.9.lock" ]] \
   || fail "D4: the .lock sidecar survived --fix"
 
-fresh_entries="$(ls -A "$PAYLOAD_DIR" | grep -v -E '^\.xpkg' | wc -l | tr -d ' ')"
+fresh_entries="$(ls -A "$PAYLOAD_DIR" | grep -v -E '^(\.xpkg-install\.json|\.xpkg\.lua|\.xlings-resolution\.json)$' | wc -l | tr -d ' ')"
 [[ "$fresh_entries" == "1" ]] \
   || fail "D4: swept-fixture's install_dir has $fresh_entries non-bookkeeping entries after --fix, expected exactly 1 (bin); got: $(ls -A "$PAYLOAD_DIR")"
 

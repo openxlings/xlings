@@ -22,6 +22,11 @@ std::string node_key_(std::string_view canonicalName, std::string_view version);
 
 std::string node_key_(const PackageMatch& match);
 
+// An installation tool orders the remaining graph after its own dependency
+// closure. These Build edges do not become payload runtime dependencies.
+std::expected<void, std::string> require_install_tool(InstallPlan& plan,
+                                                     std::string_view toolKey);
+
 // What version of `name` THIS SUBOS is pinned to, if any.
 //
 // Deliberately not called "active": the caller answers from a precedence, and

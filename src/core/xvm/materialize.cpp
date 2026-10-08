@@ -208,7 +208,10 @@ std::expected<std::vector<AssetClaim>, std::string> collect_claims(const Version
     for (const auto& [target, keys] : installed) {
         for (const auto& version : keys) {
             const auto* data = get_vdata(db, target, version);
-            if (!data) return std::unexpected(target + "@" + version + ": installed asset registration missing");
+            if (!data) {
+                if (source == ClaimSource::Recorded) continue;
+                return std::unexpected(target + "@" + version + ": installed asset registration missing");
+            }
             const auto prefix = data->sourceHome.empty() ? home : data->sourceHome;
             for (auto header : group_header_assets(db, target, version)) {
                 header.sourceDir = expand_path(header.sourceDir, prefix);

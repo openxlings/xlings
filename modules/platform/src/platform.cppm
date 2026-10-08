@@ -55,6 +55,7 @@ namespace platform {
     export inline constexpr bool is_linux = false;
 #endif
     export inline constexpr bool is_posix = !is_windows;
+    export bool remove_empty_directory(const std::filesystem::path& path);
 
     export using platform_impl::PATH_SEPARATOR;
     export using platform_impl::OS_NAME;

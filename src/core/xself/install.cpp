@@ -4,6 +4,7 @@ import std;
 import xlings.core.xself.init;
 import xlings.core.xself.shell_profile;
 import xlings.core.config;
+import xlings.core.home;
 import xlings.core.home_config;
 import xlings.core.xvm.lock;
 import xlings.libs.json;
@@ -676,7 +677,8 @@ int cmd_install(EventStream& stream) {
             return 1;
         }
         setup_shell_profiles(targetHome);
-        platform::chown_to_invoker(targetHome);
+        if (home::describe(targetHome, home::Source::Env).user_owned())
+            platform::chown_to_invoker(targetHome);
         log::println("[xlings:self] {} ({}) - ok\n", targetHome.string(), pkgVersion);
         return 0;
     }
@@ -991,7 +993,8 @@ int cmd_install(EventStream& stream) {
     // Hand the freshly-written ~/.xlings back to the invoking user when we
     // ran via sudo, so a later non-sudo `xlings install` isn't locked out by
     // root-owned files. No-op for pure root / non-root installs.
-    platform::chown_to_invoker(targetHome);
+    if (home::describe(targetHome, home::Source::Env).user_owned())
+        platform::chown_to_invoker(targetHome);
 
     std::println("\n[xlings:self] install: {} ({}) - ok", targetHome.string(), pkgVersion);
     std::println("");

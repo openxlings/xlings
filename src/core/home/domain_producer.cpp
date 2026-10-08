@@ -17,9 +17,10 @@ namespace xlings::home::domain_producer {
 namespace {
 using Json = nlohmann::json;
 std::expected<void, std::string> name_(std::string_view name) {
-    if (name.empty() || name == "." || name == ".." || name == "current" ||
+    if (name == "current") return std::unexpected("'current' is a reserved subos name");
+    if (name.empty() || name == "." || name == ".." ||
         name.find_first_of("/\\") != std::string_view::npos)
-        return std::unexpected("invalid prefix-domain instance name");
+        return std::unexpected(std::format("invalid subos name: '{}'", name));
     return {};
 }
 std::expected<bool, std::string> present_(const fs::path& path) {

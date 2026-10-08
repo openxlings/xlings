@@ -36,6 +36,8 @@ RUN() {
 
 mkdir -p "$HOME_DIR/subos/default/bin"
 cp "$XLINGS_BIN" "$HOME_DIR/xlings"
+require_fixture_index
+write_home_config "$HOME_DIR"
 
 log "Initializing sandbox XLINGS_HOME at $HOME_DIR"
 RUN self init >/dev/null 2>&1 || fail "self init failed"

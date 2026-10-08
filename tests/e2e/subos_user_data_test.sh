@@ -68,6 +68,7 @@ grep -q '"confirmedBy":"yes:true"' "$LOG" || fail "AC18: no log line for the int
 log "  ok AC10: remove_subos without yes informs the agent; with yes:true it removes"
 
 # ── AC12: the one deletion entry point refuses what is not a subos ─────
+seed "$HOME_DIR/subos/default"
 python3 - "$HOME_DIR/.xlings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; d = json.load(open(p))
@@ -78,17 +79,20 @@ PY
 set +e; OUT="$(X subos remove .. -y 2>&1)"; RC=$?; set -e
 [[ $RC -ne 0 ]] || fail "AC12: removing '..' succeeded"
 [[ -f "$HOME_DIR/.xlings.json" && -d "$HOME_DIR/subos/default" ]] || fail "AC12: '..' reached the home"
+has_data "$HOME_DIR/subos/default" || fail "AC12: '..' changed the default home"
+case "$OUT" in *"refusing to delete"*|*"invalid subos name"*) ;; *) fail "AC12: no invalid-name refusal: $OUT" ;; esac
 set +e; OUT2="$(X subos remove current -y 2>&1)"; RC=$?; set -e
 [[ $RC -ne 0 ]] || fail "AC12: removing 'current' succeeded"
 [[ -d "$HOME_DIR/subos/default" ]] || fail "AC12: removing 'current' deleted what it points at"
-case "$OUT$OUT2" in *"refusing to delete"*) ;; *) fail "AC12: no refusal reason: $OUT $OUT2" ;; esac
+has_data "$HOME_DIR/subos/default" || fail "AC12: 'current' changed the default home"
+case "$OUT2" in *"refusing to delete"*|*"reserved subos name"*) ;; *) fail "AC12: no reserved-name refusal: $OUT2" ;; esac
 python3 - "$HOME_DIR/.xlings.json" <<'PY'
 import json, sys
 p = sys.argv[1]; d = json.load(open(p))
 d["subos"].pop("..", None); d["subos"].pop("current", None)
 json.dump(d, open(p, "w"))
 PY
-log "  ok AC12: '..' and 'current' are refused by the deletion entry point itself"
+log "  ok AC12: '..' and 'current' are refused before any deletion; the default home is intact"
 
 # ── AC13: never delete through a live mount (Linux) ────────────────────
 if [[ "$(uname -s)" == "Linux" ]] && unshare -rm true 2>/dev/null; then

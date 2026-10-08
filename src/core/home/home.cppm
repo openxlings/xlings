@@ -53,6 +53,7 @@ struct HomeContext {
     std::string id;                  // the marker's id, when there is one
 
     bool writable() const { return layout <= kLayout; }
+    bool user_owned() const { return mode == Mode::User || mode == Mode::Custom || mode == Mode::Portable; }
 };
 
 // Read `.xlings-home` and complete the context for a home Config resolved.

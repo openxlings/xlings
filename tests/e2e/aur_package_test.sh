@@ -39,8 +39,9 @@ files="$(pacman -Qlq xlings | grep -v '/$')"
 
 for u in alice bob; do
   log "2. $u installs and runs a package"
-  su "$u" -c 'cd ~ && xlings install -y xz' >/dev/null 2>&1 \
-    || fail "$u: install failed"
+  install_log="$work/$u-install.log"
+  su "$u" -c 'cd ~ && xlings install -y xz' >"$install_log" 2>&1 \
+    || { tail -60 "$install_log"; fail "$u: install failed"; }
   home="$(getent passwd "$u" | cut -d: -f6)/.xlings"
   [[ "$(readlink "$home/bin/xlings")" == /usr/bin/xlings ]] || fail "$u: entry is not a link to /usr/bin/xlings"
   su "$u" -c "'$home/subos/default/bin/xz' --version" | grep -q "XZ Utils" || fail "$u: xz does not run"

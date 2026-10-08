@@ -26,6 +26,8 @@ namespace xlings::xvm::detail_ {
 }  // namespace xlings::xvm::detail_
 
 export namespace xlings::xvm {
+void reclaim_conflicting_file_bindings(const VersionDB& db, Workspace& workspace,
+                                      const Workspace& selected, const std::string& home);
 
 // What has to change on disk for one member of the release.
 //

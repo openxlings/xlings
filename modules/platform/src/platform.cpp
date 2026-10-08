@@ -32,6 +32,14 @@ namespace platform {
 
 std::string gRundir = std::filesystem::current_path().string();
 
+bool remove_empty_directory(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    return ::RemoveDirectoryW(path.c_str()) != 0;
+#else
+    return ::rmdir(path.c_str()) == 0;
+#endif
+}
+
 #if !defined(_WIN32)
 
 #endif

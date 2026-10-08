@@ -8,6 +8,7 @@ import xlings.libs.json;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
 import xlings.core.xvm.materialize;
+import xlings.core.xvm.switch_plan;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -20,6 +21,33 @@ void derived(const fs::path& source, const fs::path& destination) {
         else fs::create_hard_link(source, destination);
     } else fs::create_symlink(source, destination);
 }
+}
+
+XTEST(XvmMaterialize, SelectingAContestedFileRetiresOnlyThePreviousBindingAndKeepsDirectoryClaims,
+      .area = "xvm", .covers = {"HOME-LAYER-RESOLVE"}) {
+    auto home = tk::Home::isolated("contested-file-selection");
+    const auto first = home.dir() / "data/xpkgs/first/1";
+    const auto next = home.dir() / "data/xpkgs/next/1";
+    tk::write_file(first / "header.h", "old");
+    tk::write_file(next / "header.h", "new");
+    xlings::xvm::VersionDB db;
+    for (const auto& [target, payload] : std::map<std::string, fs::path>{{"old", first}, {"new", next}}) {
+        xlings::xvm::add_version(db, target, "1", payload.string());
+        auto& data = db[target].versions["1"];
+        data.kind = "files";
+        data.fileSrc = "header.h";
+        data.fileDst = "usr/include/header.h";
+    }
+    xlings::xvm::Workspace active{{"old", "1"}, {"new", "1"}, {"untouched", "7"}};
+    xlings::xvm::reclaim_conflicting_file_bindings(db, active, {{"new", "1"}}, home.dir().string());
+    EXPECT_FALSE(active.contains("old"));
+    EXPECT_EQ(active.at("new"), "1");
+    EXPECT_EQ(active.at("untouched"), "7");
+    fs::remove(next / "header.h");
+    fs::create_directory(next / "header.h");
+    active["old"] = "1";
+    xlings::xvm::reclaim_conflicting_file_bindings(db, active, {{"new", "1"}}, home.dir().string());
+    EXPECT_EQ(active.at("old"), "1");
 }
 
 XTEST(XvmMaterialize, RecordedHeaderClaimsSurviveMissingSourcesButIncomingAssetsRequireThem,
@@ -38,6 +66,25 @@ XTEST(XvmMaterialize, RecordedHeaderClaimsSurviveMissingSourcesButIncomingAssets
     EXPECT_TRUE(recorded->front().descendants);
     EXPECT_FALSE(m::collect_claims(db, installed, scope, scope / "lib", home.dir().string(),
         m::ClaimSource::Present));
+}
+
+XTEST(XvmMaterialize, MissingRegistrationsProveNoOldAssetsAndCannotAuthorizeAnIncomingOverwrite,
+      .area = "xvm", .covers = {"HOME-LAYER-RESOLVE"}) {
+    auto home = tk::Home::isolated("missing-registration-claims");
+    const auto scope = home.dir() / "subos/default";
+    const xlings::xvm::WorkspaceInstalled installed{{"missing", {"9"}}};
+    const auto old = m::collect_claims({}, installed, scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(old) << old.error();
+    EXPECT_TRUE(old->empty());
+    EXPECT_FALSE(m::collect_claims({}, installed, scope, scope / "lib", home.dir().string(),
+                                 m::ClaimSource::Present));
+    const auto source = home.dir() / "data/xpkgs/demo/1/asset";
+    const auto destination = scope / "usr/include/user.h";
+    tk::write_file(source, "package");
+    tk::write_file(destination, "user data");
+    EXPECT_FALSE(m::preflight_materialization(std::vector<m::AssetChange>{{source, destination}},
+                                             *old, scope));
+    EXPECT_EQ(tk::read_file(destination), "user data");
 }
 
 XTEST(XvmMaterialize, ReplacedPayloadRepairsProvenDanglingHeadersAndPreservesUnknownSiblings,
