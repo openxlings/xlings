@@ -427,10 +427,11 @@ std::vector<std::string> rw_mount_sources_(const policy::Policy& pol) {
 }
 
 // This binary on the host: the broker runs what it allows with it.
+// This binary, on every platform (/proc/self/exe is Linux's alone; macOS
+// runs its home redirect's session-init from here too).
 std::string host_exe_() {
-    std::error_code ec;
-    auto exe = fs::read_symlink("/proc/self/exe", ec);
-    return ec ? std::string("xlings") : exe.string();
+    auto exe = platform::get_executable_path();
+    return exe.empty() ? std::string("xlings") : exe.string();
 }
 
 // What a brokered command runs with: this host environment, acting on this
