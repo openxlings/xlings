@@ -77,6 +77,8 @@ inline constexpr std::string_view kTree = "rootfs";
 // Ascending. Unreadable or absent is empty.
 std::vector<int> generations(const fs::path& subos);
 std::optional<int> current(const fs::path& subos);
+// Reuse the same full inventory proof that authorizes generation pruning.
+std::expected<void, std::string> validate_generation(const fs::path& subos, int generation);
 // <subos>/root/usr: what a root's /usr points at.
 fs::path usr_of(const fs::path& subos);
 
@@ -136,5 +138,9 @@ std::vector<std::string> apply_sysusers(const fs::path& etc, const fs::path& usr
 // The SubOS a root's /usr points at, read from the link: the host of a
 // machine in deployment R. nullopt when /usr is not a projection.
 std::optional<std::string> host_of(const fs::path& root, const fs::path& home);
+
+// The scope whose immutable generation /usr actually names. Also accepts a
+// session's pinned generation after its host current pointer has moved.
+std::optional<int> running_projection(const fs::path& root, const fs::path& scope);
 
 }  // namespace xlings::subos::rootfs

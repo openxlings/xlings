@@ -330,6 +330,13 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     return next;
 }
 
+std::expected<void, std::string> validate_generation(const fs::path& subos, int generation) {
+    if (generation <= 0 || !owned_generation(subos, generation))
+        return std::unexpected(generation_dir(subos, generation).string()
+            + ": projection is incomplete, modified, or not owned by xlings");
+    return {};
+}
+
 std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const int> pinned) {
     std::vector<int> removed;
     auto gens = generations(subos);
@@ -544,6 +551,30 @@ std::optional<std::string> host_of(const fs::path& root, const fs::path& home) {
     if (++it == rel.end() || it->string() != kPointer) return std::nullopt;
     if (++it == rel.end() || it->string() != "usr" || ++it != rel.end()) return std::nullopt;
     return name;
+}
+
+std::optional<int> running_projection(const fs::path& root, const fs::path& scope) {
+    std::error_code ec;
+    const auto target = platform::read_symlink(root / "usr", ec);
+    if (ec || !target.is_absolute() || target.filename() != "usr") return std::nullopt;
+    const auto parent = target.parent_path();
+    fs::path owner;
+    if (parent.filename() == kPointer) owner = parent.parent_path();
+    else if (parent.parent_path().filename() == kGenerations) {
+        const auto text = parent.filename().string();
+        int generation = 0;
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), generation);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || generation <= 0)
+            return std::nullopt;
+        owner = parent.parent_path().parent_path();
+    } else return std::nullopt;
+    if (owner != scope && (!fs::equivalent(owner, scope, ec) || ec)) return std::nullopt;
+    for (const int generation : generations(scope)) {
+        ec.clear();
+        if (fs::equivalent(root / "usr", generation_dir(scope, generation) / "usr", ec) && !ec)
+            return generation;
+    }
+    return std::nullopt;
 }
 
 }  // namespace xlings::subos::rootfs

@@ -40,7 +40,7 @@ std::vector<Status> probe(const caps::Caps& c) {
         add("ProcessScope", bwrap, bwrap ? Enforced::Kernel : Enforced::None,
             bwrap ? "pid namespace" : "needs bwrap");
         add("NetGate", bwrap, bwrap ? Enforced::Kernel : Enforced::None,
-            bwrap ? (c.pasta ? "net namespace; nat via pasta" : "net namespace (host, none)")
+            bwrap ? (c.pasta ? "net namespace; nat via pasta, proxy via SOCKS5h relay" : "net namespace (host, none, SOCKS5h proxy)")
                   : "needs bwrap");
         add("DeviceGate", bwrap, bwrap ? Enforced::Kernel : Enforced::None,
             bwrap ? "minimal /dev, named grants" : "needs bwrap");

@@ -25,8 +25,8 @@
 #   -DLIBARCHIVE_STATIC    not needed -- `archive` appears nowhere in platform
 #   include_dirs           not needed -- every #include is a system header
 #
-# So this file declares no [build] section on purpose. Re-run that check before
-# adding a source file here.
+# Re-run that macro check before adding a source file here. The Windows
+# loopback TCP boundary now declares its Winsock link dependency below.
 [package]
 namespace = "xlings"
 name      = "platform"
@@ -37,3 +37,7 @@ kind = "lib"
 
 [dependencies]
 runtime = { path = "../runtime" }   # cancellation
+
+# Loopback TCP fixtures use Winsock on Windows.
+[target.windows.build]
+ldflags = ["-lws2_32"]

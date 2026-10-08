@@ -179,6 +179,7 @@ std::expected<void, std::string> check_client(const Policy& p, std::string_view 
 // `grants_allowed`. Anything else is refused with the reason.
 struct Overrides {
     std::optional<Net> net;
+    std::optional<std::string> proxy;
     std::optional<Fetch> fetch;
     std::optional<Observe> observe;
     std::set<std::string, std::less<>> allow;    // --allow <grant>

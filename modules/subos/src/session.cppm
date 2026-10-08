@@ -78,6 +78,8 @@ struct Launch {
     // net=nat: pasta's argv without its target. The backend then starts in a
     // user + network namespace made for it, which pasta has configured.
     std::vector<std::string> pasta;
+    std::string proxy_url;                     // Linux, no-route netns and private relay
+    bool trace_net { false };                  // nat connect/sendto attempts
     // The broker (xlings.subos.broker): set, the supervisor listens on
     // HomeView::broker_socket and runs what the policy allows with `exe`
     // (this client, on the host) in `broker_env`.

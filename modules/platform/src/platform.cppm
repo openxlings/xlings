@@ -23,6 +23,10 @@ export import :windows;
 export import :unix;
 // Processes, signals, descriptors and local sockets (a supervisor's needs).
 export import :process;
+export import :tcp;
+export import :network;
+export import :net_notify;
+export import :asset_paths;
 // The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
 export import :isolation;
 

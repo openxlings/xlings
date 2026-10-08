@@ -19,7 +19,7 @@ std::vector<std::string> bwrap_argv(const spec::SandboxSpec& s, std::optional<in
     if (s.unshare_uts) a.push_back("--unshare-uts");
     // nat: the network namespace already exists, pasta attached to it before
     // bwrap starts (session::host); bwrap runs inside it, it does not make one.
-    if (s.unshare_net && !s.net_nat) a.push_back("--unshare-net");
+    if (s.unshare_net && !s.net_nat && !s.net_proxy) a.push_back("--unshare-net");
     if (!s.hostname.empty()) a.insert(a.end(), {"--hostname", s.hostname});
     if (s.die_with_parent) a.push_back("--die-with-parent");
     if (s.new_session) a.push_back("--new-session");

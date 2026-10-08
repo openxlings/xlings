@@ -585,6 +585,11 @@ nlohmann::json to_json(const Policy& p) {
 }
 
 std::expected<Policy, std::string> apply(Policy p, const Overrides& o) {
+    if (o.proxy) {
+        if (p.net == Net::Proxy && !p.proxy.empty() && *o.proxy != p.proxy)
+            return std::unexpected("--proxy cannot replace this instance's declared proxy; its owner may use subos config");
+        p.proxy = *o.proxy;
+    }
     if (o.net) {
         if (rank(*o.net) < rank(p.net))
             return std::unexpected(std::format("--net {} would loosen this instance's policy (net {})",

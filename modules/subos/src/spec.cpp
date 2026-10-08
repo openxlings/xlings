@@ -6,6 +6,7 @@ import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.caps;
 import xlings.subos.gpu;
+import xlings.subos.network;
 
 namespace xlings::subos::spec {
 
@@ -162,6 +163,11 @@ nlohmann::json SandboxSpec::describe() const {
                     {"uts", unshare_uts}, {"net", unshare_net}};
     j["disable_userns"] = disable_userns;
     if (net_nat) j["net"] = {{"mode", "nat"}, {"host_loopback", host_loopback}, {"publish", publish}};
+    if (net_proxy) {
+        const auto proxy = network::parse_proxy(proxy_url);
+        j["net"] = {{"mode", "proxy"}, {"gateway", "socks5h://127.0.0.1:1080"}, {"dns", "remote"}};
+        if (proxy) { j["net"]["proxy_host"] = proxy->host; j["net"]["proxy_port"] = proxy->port; }
+    }
     j["die_with_parent"] = die_with_parent;
     j["new_session"] = new_session;
     j["block_tiocsti"] = block_tiocsti;
@@ -363,15 +369,22 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             s.publish = r.publish;
         } else if (!kernel) {
             unmet.push_back({"net", std::string(to_string(s.backend)) + " cannot isolate the network",
-                             "xlings self doctor --isolation", need_of("net")});
+                             "xlings self doctor --isolation",
+                             policy.net == policy::Net::Proxy ? policy::Need::Must : need_of("net")});
         } else if (policy.net == policy::Net::Nat) {
             unmet.push_back({"net", "net=nat needs pasta: " + (caps.pasta_missing.empty()
                                  ? std::string("pasta (passt) is not installed") : caps.pasta_missing),
                              "install passt (e.g. apt install passt), or --net none for no network",
                              need_of("net")});
+        } else if (caps.platform != "linux") {
+            unmet.push_back({"net", "net=proxy requires a Linux network namespace",
+                             "--net none", policy::Need::Must});
+        } else if (const auto proxy = network::parse_proxy(policy.proxy); !proxy) {
+            unmet.push_back({"net", proxy.error(), "set isolation.proxy to socks5h://HOST:PORT", policy::Need::Must});
         } else {
-            unmet.push_back({"net", "net=proxy is not implemented yet",
-                             "--net nat or --net none", need_of("net")});
+            s.unshare_net = true;
+            s.net_proxy = true;
+            s.proxy_url = policy.proxy;
         }
     }
     if (!r.publish.empty() && !s.net_nat)
@@ -564,6 +577,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.cwd = sandbox_home;
         s.argv = r.argv.empty() ? std::vector<std::string>{r.shell} : r.argv;
         if (r.argv.empty() && r.interactive) s.argv.push_back("-i");
+        if (s.net_proxy) {
+            s.env["ALL_PROXY"] = "socks5h://127.0.0.1:1080";
+            s.env["all_proxy"] = s.env["ALL_PROXY"];
+            for (const auto* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+                s.env[key] = "";
+        }
         return s;
     }
 
@@ -589,6 +608,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         }
         s.cwd = sandbox_home;
         s.argv = r.argv;
+        if (s.net_proxy) {
+            s.env["ALL_PROXY"] = "socks5h://127.0.0.1:1080";
+            s.env["all_proxy"] = s.env["ALL_PROXY"];
+            for (const auto* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+                s.env[key] = "";
+        }
         return s;
     }
 
@@ -622,6 +647,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
             if (r.interactive) s.argv.push_back("-i");
         } else {
             s.argv = r.argv;
+        }
+        if (s.net_proxy) {
+            s.env["ALL_PROXY"] = "socks5h://127.0.0.1:1080";
+            s.env["all_proxy"] = s.env["ALL_PROXY"];
+            for (const auto* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+                s.env[key] = "";
         }
         return s;
     }
@@ -666,6 +697,12 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         if (r.interactive && s.backend != Backend::Proot) s.argv.push_back("-i");
     } else {
         s.argv = r.argv;
+    }
+    if (s.net_proxy) {
+        s.env["ALL_PROXY"] = "socks5h://127.0.0.1:1080";
+        s.env["all_proxy"] = s.env["ALL_PROXY"];
+        for (const auto* key : {"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+            s.env[key] = "";
     }
     return s;
 }

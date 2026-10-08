@@ -6,6 +6,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.subos.boot;
 import xlings.subos.rootfs;
+import xlings.subos.library_cache;
 import xlings.subos.home_view;
 
 namespace xlings::subos::stage0 {
@@ -196,6 +197,7 @@ int run(int argc, char* argv[]) {
         }
         (void)rootfs::fill_machine_etc("/etc", dir);
         (void)rootfs::apply_sysusers("/etc", rootfs::usr_of(dir));
+        if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         const auto next = boot::record_boot(*config, candidate);
         if (auto saved = boot::save(home.boot_file(), next); !saved) recover(saved.error());
         log_event(home, {{"event", "boot"}, {"subos", candidate.subos}, {"via", candidate.via},

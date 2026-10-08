@@ -7,6 +7,7 @@ import xlings.platform;
 import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.broker;
+import xlings.subos.network;
 
 // Every system call here is xlings.platform's (:process, :isolation): this
 // file is the session's logic -- who talks to whom, what is recorded, when a
@@ -242,6 +243,29 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         return kExitSetup;
     }
 
+    std::optional<network::Relay> proxyRelay;
+    std::optional<std::array<int, 2>> proxyBridge;
+    if (!L.proxy_url.empty()) {
+        const auto resolved = network::resolve_proxy(L.proxy_url);
+        if (!resolved || !(proxyBridge = platform::unix_pair())) {
+            report(resolved ? "cannot create the private proxy bridge" : resolved.error());
+            (void)audit({{"event", "session-setup-failed"}, {"session", info.id}, {"reason", "proxy"}});
+            platform::close_fd(listen_fd);
+            for (int fd : ctl) platform::close_fd(fd);
+            platform::close_fds(L.keep_fds);
+            platform::close_fd(ready_fd);
+            std::error_code ec;
+            fs::remove(sock_path(home, L.instance), ec);
+            return kExitSetup;
+        }
+        // Only this declared endpoint is resolved on the host. Sandbox target
+        // domain names remain SOCKS wire bytes and go to the remote proxy.
+        if (!audit({{"event", "proxy-endpoint-resolved"}, {"session", info.id},
+                    {"proxy_host", resolved->declared.host}, {"proxy_port", resolved->declared.port},
+                    {"resolution", "host-proxy-endpoint-only"}}, observe::Kind::Net)) return kExitSetup;
+        proxyRelay.emplace(*resolved);
+    }
+
     // Like system(): while the sandbox runs, Ctrl-C is the command's. SIGTERM
     // and SIGHUP end the session (forwarded to the sandbox).
     const int signal_fd = platform::route_signals({sig::terminate, sig::hangup},
@@ -260,8 +284,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     // net=nat handshake: the child makes its namespaces and says so; pasta
     // attaches; the child is told to go on (1) or to give up (0).
     const bool nat = !L.pasta.empty();
+    const bool proxy = proxyRelay.has_value();
     std::optional<std::array<int, 2>> ready_pipe, go_pipe;
-    if (nat) {
+    if (nat || proxy) {
         ready_pipe = platform::make_pipe();
         go_pipe = platform::make_pipe();
         if (!ready_pipe || !go_pipe) {
@@ -281,9 +306,29 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         platform::close_fd(listen_fd);
         platform::close_fd(ctl[0]);
         platform::close_fd(broker_fd);
-        if (nat) {
-            // A network namespace of its own, which pasta can join.
+        if (nat || proxy) {
+            // The only interfaces proxy receives are lo; no route or pasta.
             if (!platform::enter_private_network(ids.uid, ids.gid)) platform::exit_now(kExitSetup);
+            if (proxy) {
+                platform::close_fd((*proxyBridge)[0]);
+                if (!platform::network::enable_loopback()) platform::exit_now(kExitSetup);
+                const auto listener = platform::network::listen_loopback(network::GATEWAY_PORT);
+                if (!listener) platform::exit_now(kExitSetup);
+                const int gate = platform::fork_process();
+                if (gate < 0) platform::exit_now(kExitSetup);
+                if (gate == 0) {
+                    platform::close_fd(ctl[1]);
+                    platform::close_fd(ready_fd);
+                    for (const auto& pair : {*ready_pipe, *go_pipe}) for (int fd : pair) platform::close_fd(fd);
+                    platform::close_fds(L.keep_fds);
+                    const int null = platform::open_null();
+                    const int stdio[3] = {null, null, null};
+                    platform::redirect_stdio(stdio);
+                    platform::exit_now(network::gateway_run((*proxyBridge)[1], *listener));
+                }
+                platform::close_fd(*listener);
+                platform::close_fd((*proxyBridge)[1]);
+            }
             const char ready = 1;
             (void)platform::write_fd((*ready_pipe)[1], std::string_view(&ready, 1));
             char go = 0;
@@ -300,8 +345,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     platform::close_fd(ctl[1]);
     for (int fd : L.keep_fds) platform::close_fd(fd);
 
+    if (proxy) platform::close_fd((*proxyBridge)[1]);
     const auto pasta_pidfile = home.run_dir(L.instance) / "pasta.pid";
-    if (nat) {
+    if (nat || proxy) {
         platform::close_fd((*ready_pipe)[1]);
         platform::close_fd((*go_pipe)[0]);
         platform::PollFd rp{ (*ready_pipe)[0] };
@@ -309,7 +355,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         const bool ready = platform::poll_fds(std::span(&rp, 1), 10000) > 0
                            && platform::read_exact((*ready_pipe)[0], &b, 1);
         int pasta_rc = -1;
-        if (ready) {
+        if (ready && nat) {
             auto pargv = L.pasta;
             pargv.insert(pargv.end(), {"--pid", pasta_pidfile.string(), std::to_string(pid)});
             const int pp = platform::fork_process();
@@ -324,16 +370,18 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (pp > 0)
                 if (auto st = platform::wait_process(pp, true)) pasta_rc = platform::exit_code(*st);
         }
-        const char go = (ready && pasta_rc == 0) ? 1 : 0;
+        const char go = (ready && (proxy || pasta_rc == 0)) ? 1 : 0;
         (void)platform::write_fd((*go_pipe)[1], std::string_view(&go, 1));
         platform::close_fd((*go_pipe)[1]);
         platform::close_fd((*ready_pipe)[0]);
         if (!go) {
-            report(std::format("net=nat: pasta could not set up the network ({})",
+            report(proxy ? "net=proxy: private loopback gateway was not created"
+                         : std::format("net=nat: pasta could not set up the network ({})",
                                ready ? std::format("pasta exited {}", pasta_rc)
                                      : std::string("the namespace was not created")));
             audit({{"event", "session-setup-failed"}, {"session", info.id},
-                                     {"reason", "pasta"}, {"exit", pasta_rc}});
+                                     {"reason", proxy ? "proxy" : "pasta"}, {"exit", pasta_rc}});
+            if (proxyBridge) platform::close_fd((*proxyBridge)[0]);
             (void)platform::wait_process(pid, true);
             std::error_code rec;
             fs::remove(sock_path(home, L.instance), rec);
@@ -348,6 +396,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     // so bwrap itself never runs under no_new_privs -- which would keep an
     // AppArmor profile (self doctor --isolation --fix) from applying to it.
     int notify_fd = -1;
+    int net_notify_fd = -1;
     const auto fs_since = fs::file_time_type::clock::now();
 
     const auto started = std::chrono::steady_clock::now();
@@ -384,6 +433,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     auto drop = [](int& fd) { platform::close_fd(fd); fd = -1; };
 
     while (true) {
+        // An audit failure ends admission immediately. Draining the normal
+        // control channel can wait on a backend blocked by our listeners.
+        if (audit_failed) break;
         if (!reaped) {
             if (auto st = platform::wait_process(pid, false)) { status = *st; reaped = true; pid = -1; }
         }
@@ -397,10 +449,21 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (platform::poll_fds(std::span(&p, 1), 0) <= 0) break;
         }
 
+        if (proxyRelay) proxyRelay->tick([&](const network::Event& event) {
+            return audit({{"event", event.event}, {"session", info.id}, {"connection", event.connection},
+                {"target", event.target}, {"port", event.port}, {"remote_dns", event.remote_dns},
+                {"reason", event.reason}, {"mode", "proxy"}}, observe::Kind::Net);
+        });
         std::vector<platform::PollFd> pfds{{listen_fd}, {signal_fd}};
+        if (proxyBridge && (*proxyBridge)[0] >= 0) pfds.push_back({(*proxyBridge)[0]});
+        if (proxyRelay) {
+            const auto networkFds = proxyRelay->fds();
+            pfds.insert(pfds.end(), networkFds.begin(), networkFds.end());
+        }
         if (ctl_open) pfds.push_back({ctl[0]});
         if (broker_fd >= 0) pfds.push_back({broker_fd});
         if (notify_fd >= 0) pfds.push_back({notify_fd});
+        if (net_notify_fd >= 0) pfds.push_back({net_notify_fd});
         for (auto& b : brokered) if (b.fd >= 0 && b.pid < 0) pfds.push_back({b.fd});
         for (auto& c : clients) if (c.fd >= 0) pfds.push_back({c.fd});
         platform::poll_fds(pfds, 200);
@@ -439,7 +502,39 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         std::erase_if(brokered, [](const BrokerClient& b) { return b.fd < 0; });
 
         for (auto& p : pfds) {
+            if (audit_failed) break;
             if (!p.readable && !p.closed) continue;
+            if (proxyBridge && p.fd == (*proxyBridge)[0]) {
+                const auto client = platform::receive_message(p.fd, 128);
+                if (!client) {
+                    audit({{"event", "proxy-gateway-lost"}, {"session", info.id}}, observe::Kind::Net);
+                    if (pid > 0) platform::send_signal(pid, sig::kill);
+                    drop((*proxyBridge)[0]);
+                } else {
+                    auto descriptors = client->fds;
+                    if (client->data == "proxy-client" && descriptors.size() == 1) {
+                        if (!proxyRelay->add(descriptors.front()))
+                            audit({{"event", "denied"}, {"session", info.id}, {"mode", "proxy"},
+                                   {"reason", "gateway connection limit"}}, observe::Kind::Net);
+                        descriptors.clear();
+                    }
+                    platform::close_fds(descriptors);
+                }
+                continue;
+            }
+            if (net_notify_fd >= 0 && p.fd == net_notify_fd) {
+                if (p.closed && !p.readable) { drop(net_notify_fd); continue; }
+                if (const auto request = platform::net_notify::next(net_notify_fd)) {
+                    // A destination-less sendmsg may be control traffic; it
+                    // is still audited as attempted I/O, never a success.
+                    const bool allowed = audit({{"event", "net-attempt"}, {"session", info.id},
+                        {"mode", "nat"}, {"syscall", request->syscall}, {"pid", request->pid},
+                        {"address", request->address}, {"port", request->port},
+                        {"address_readable", request->address_readable}, {"result", "unknown"}}, observe::Kind::Net);
+                    (void)platform::net_notify::complete(net_notify_fd, request->id, allowed);
+                }
+                continue;
+            }
             if (notify_fd >= 0 && p.fd == notify_fd) {
                 if (p.closed && !p.readable) { drop(notify_fd); continue; }
                 if (auto ex = platform::seccomp::next_exec(notify_fd)) {
@@ -553,6 +648,19 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     ctl_open = false;
                     continue;
                 }
+                if (m->json.value("op", "") == "net-listener") {
+                    if (!m->fds.empty() && net_notify_fd < 0) {
+                        net_notify_fd = m->fds.front();
+                        m->fds.erase(m->fds.begin());
+                    } else if (m->fds.empty()) {
+                        (void)audit({{"event", "net-trace-unavailable"}, {"session", info.id},
+                            {"reason", m->json.value("reason", "")}}, observe::Kind::Net);
+                        report("net=nat: outbound request tracing is unavailable");
+                        if (L.audit_required && pid > 0) platform::send_signal(pid, sig::kill);
+                    }
+                    platform::close_fds(m->fds);
+                    continue;
+                }
                 if (m->json.value("op", "") == "exec-listener") {
                     if (!m->fds.empty() && notify_fd < 0) {
                         notify_fd = m->fds.front();
@@ -652,6 +760,9 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         platform::close_fd(c.fd);
     }
     platform::close_fd(notify_fd);
+    platform::close_fd(net_notify_fd);
+    if (proxyRelay) proxyRelay->stop();
+    if (proxyBridge) platform::close_fd((*proxyBridge)[0]);
     // What changed in the host paths mapped read-write (design §22, fs).
     for (const auto& root : L.rw_paths) {
         auto [files, truncated] = changed_since(root, fs_since, 200);
@@ -680,6 +791,14 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     }
     platform::close_fd(listen_fd);
     if (ctl_open) platform::close_fd(ctl[0]);
+    if (audit_failed && !reaped && pid > 0) {
+        platform::send_signal(pid, sig::kill);
+        if (const auto exit = platform::wait_process(pid, true)) {
+            status = *exit;
+            reaped = true;
+            pid = -1;
+        }
+    }
     const int code = audit_failed ? kExitSetup : timed_out ? kExitTimeout : reaped ? platform::exit_code(status) : kExitSetup;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - started).count();
@@ -713,6 +832,7 @@ int host(const HomeView& home, Launch L) {
     L.env[std::string(kControlFdEnv)] = std::to_string((*ctl)[1]);
     L.env[std::string(kTtlEnv)] = std::to_string(L.ttl);
     if (L.trace_exec) L.env["XLINGS_SESSION_TRACE"] = "1";
+    if (L.trace_net) L.env["XLINGS_SESSION_NET_TRACE"] = "1";
 
     Info info{ .instance = L.instance, .id = new_id(), .supervisor_pid = platform::get_pid(),
                .started = observe::utc_now(), .backend = L.backend, .digest = L.digest,
@@ -849,6 +969,28 @@ int session_init(std::span<const std::string> args) {
                 std::println(std::cerr, "xlings: {}", r.error());
                 return kExitSetup;
             }
+        }
+        if (auto trace = env.find("XLINGS_SESSION_NET_TRACE"); trace != env.end() && trace->second == "1") {
+            platform::unset_env_variable("XLINGS_SESSION_NET_TRACE");
+            // This trusted helper exists before the network filter. It shares
+            // the new listener fd and sends it without filtering its own
+            // sendmsg; it exits before any command is forked. The command's
+            // thread and every descendant inherit all three syscall checks.
+            std::promise<std::pair<int, std::string>> handoff;
+            auto pending = handoff.get_future();
+            bool transferred { false };
+            std::jthread helper([&, result = std::move(pending)] () mutable {
+                const auto [listener, reason] = result.get();
+                if (listener >= 0 && ctl >= 0) {
+                    const int descriptor[1] = {listener};
+                    transferred = send_msg(ctl, {{"op", "net-listener"}}, descriptor);
+                    platform::close_fd(listener);
+                } else if (ctl >= 0) transferred = send_msg(ctl, {{"op", "net-listener"}, {"reason", reason}});
+            });
+            const int listener = platform::net_notify::listener();
+            handoff.set_value({listener, listener < 0 ? platform::error_text(platform::last_error()) : std::string{}});
+            helper.join();
+            if (!transferred) return kExitSetup;
         }
         // observe=full: the exec filter, before anything is started, its
         // listener to the supervisor. Everything this process starts inherits it.

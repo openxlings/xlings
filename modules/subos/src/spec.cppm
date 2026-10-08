@@ -84,6 +84,8 @@ struct SandboxSpec {
     bool unshare_uts { false };
     bool unshare_net { false };
     bool net_nat { false };                   // a private network, egress through pasta
+    bool net_proxy { false };                 // loopback-only netns, declared SOCKS5h exit
+    std::string proxy_url;
     fs::path pasta_bin;
     bool host_loopback { false };             // grant: reach the host's own services
     std::vector<std::string> publish;         // "8080:80" host:sandbox TCP ports
