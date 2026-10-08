@@ -10,6 +10,8 @@
 #   subos     -> libs, runtime, platform, store: the SubOS core
 #   confine   -> subos: the sandbox implementations, their selector, the
 #                platform matrix
+#   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
+#                xlings reaches it
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -27,6 +29,7 @@ members = [
     "modules/store",
     "modules/subos",
     "modules/confine",
+    "modules/carrier",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -130,6 +133,7 @@ ui       = { path = "modules/ui" }
 store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }
+carrier  = { path = "modules/carrier" }
 
 [dependencies.compat]
 ftxui      = "6.1.9"

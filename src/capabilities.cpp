@@ -340,21 +340,7 @@ auto ListSubos::spec() const -> CapabilitySpec {
 }
 
 auto ListSubos::execute(Params, EventStream& stream) -> Result {
-    auto all = subos::candidate_view().candidates;
-    nlohmann::json entries = nlohmann::json::array();
-    for (auto& s : all) {
-        entries.push_back({
-            {"name",     s.name},
-            {"dir",      s.dir.string()},
-            {"commands", s.commandCount},
-            {"packages", s.packageCount},
-            {"active",   s.isActive},
-        });
-    }
-    nlohmann::json payload;
-    payload["entries"] = std::move(entries);
-    stream.emit(DataEvent{"subos_list", payload.dump()});
-    return exit_result(0);
+    return exit_result(subos::list(stream));
 }
 
 auto ListSubosShims::spec() const -> CapabilitySpec {

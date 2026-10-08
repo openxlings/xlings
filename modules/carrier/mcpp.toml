@@ -1,0 +1,29 @@
+# Carriers, as their own package (SubOS design part 3 §5).
+#
+# Where a SubOS runs and how the xlings on this machine reaches it:
+#
+#   local   this machine's kernel -- the SubOS is here (every Linux SubOS,
+#           and a macOS / Windows one of the host's own ABI)
+#   wsl2    a WSL2 distribution per home, a Luban (tiny) whose /xlings is the
+#           home's Linux side; reached through wsl.exe
+#   vz      a Virtualization.framework VM per home, the same shape on macOS
+#
+# One protocol, the NDJSON interface: the xlings there answers `xlings
+# interface <capability>` as the one here does, and a terminal runs `xlings
+# <args>` there with this terminal attached. Nothing new is spoken.
+[package]
+namespace = "xlings"
+name      = "carrier"
+version   = "0.1.0"
+
+[targets.carrier]
+kind = "lib"
+
+[dependencies]
+libs     = { path = "../libs" }
+platform = { path = "../platform" }
+runtime  = { path = "../runtime" }
+subos    = { path = "../subos" }
+
+[build]
+include_dirs = ["../libs/src/json"]

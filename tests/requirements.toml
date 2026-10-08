@@ -687,8 +687,8 @@ text = "the platform matrix is the implementations' probes, not a hand-kept tabl
 status = "required"
 
 [CARRIER-LOCAL]
-text = "the local carrier runs a SubOS through the carrier SPI with today's behaviour"
-status = "planned"
+text = "where a SubOS runs is chosen by what it is (part 3 §5.6), recorded and listed; a carrier is reached through a launcher prefix and the NDJSON interface"
+status = "required"
 
 [CARRIER-WSL-LIFECYCLE]
 text = "a wsl2 carrier is created per home on first need, reached through wsl.exe, stopped when idle, unregistered only by a confirmed removal"
@@ -704,7 +704,7 @@ status = "planned"
 
 [CARRIER-UNAVAILABLE]
 text = "without a usable carrier a Must refuses with the route and a native SubOS is unaffected"
-status = "planned"
+status = "required"
 
 [VIEW-CARRIER-EQ]
 text = "one content declaration yields the same root view on every carrier"

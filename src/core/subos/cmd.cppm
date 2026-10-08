@@ -46,6 +46,11 @@ export struct SubosCandidateView {
 
 export SubosCandidateView candidate_view(bool includeToolCount = true);
 
+// The `subos_list` data event: every SubOS with its kind, its role, where it
+// runs (carrier, abi) and how it is seen (view). One emitter for the CLI and
+// the NDJSON interface.
+export int list(EventStream& stream);
+
 export std::vector<SubosInfo> list_all();
 
 struct CandidateResolution_ {

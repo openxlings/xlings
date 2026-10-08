@@ -25,6 +25,8 @@ import xlings.i18n;
 import xlings.core.confirm;
 import xlings.core.destructive_log;
 import xlings.subos.userdata;
+import xlings.carrier;
+import xlings.subos.caps;
 import xlings.subos.model;
 import xlings.core.subos.ports;
 import xlings.subos.session;
@@ -1643,6 +1645,77 @@ std::optional<SubosInfo> info(const std::string& name) {
                      counts.commands, counts.packages};
 }
 
+// ── carriers (design part 3 §5) ──────────────────────────────────────
+//
+// Where a SubOS runs is recorded beside its kind, in config/subos/<n>/
+// instance.json: `carrier` (local | wsl2 | vz) and `abi` (native | linux).
+// Absent means local and native -- every SubOS made before part 3. A reader
+// that knows only `kind` ignores both.
+
+struct CarrierBinding_ {
+    std::string carrier { "local" };
+    std::string abi { "native" };
+};
+
+CarrierBinding_ carrier_of_(const std::string& name) {
+    CarrierBinding_ b;
+    std::ifstream in(home_view().instance_file(name));
+    if (!in) return b;
+    auto j = nlohmann::json::parse(in, nullptr, false);
+    if (!j.is_object()) return b;
+    if (auto it = j.find("carrier"); it != j.end() && it->is_string()) b.carrier = it->get<std::string>();
+    if (auto it = j.find("abi"); it != j.end() && it->is_string()) b.abi = it->get<std::string>();
+    return b;
+}
+
+std::expected<void, std::string> record_carrier_(const std::string& name, const CarrierBinding_& b) {
+    const auto file = home_view().instance_file(name);
+    nlohmann::json j = nlohmann::json::object();
+    if (std::ifstream in(file); in) {
+        j = nlohmann::json::parse(in, nullptr, false);
+        if (!j.is_object()) return std::unexpected(file.string() + ": not a JSON object; nothing recorded");
+    }
+    j["carrier"] = b.carrier;
+    j["abi"] = b.abi;
+    try {
+        std::error_code ec;
+        fs::create_directories(file.parent_path(), ec);
+        platform::write_file_atomic(file.string(), j.dump(2) + "\n");
+    } catch (const std::exception& e) {
+        return std::unexpected(file.string() + ": " + e.what());
+    }
+    return {};
+}
+
+carrier::Probe probe_carrier_(std::string_view name) {
+    if (const auto* c = carrier::find(name)) return c->probe(home_view());
+    return carrier::Probe{.supported = false,
+                          .reason = std::format("the {} carrier is not in this build", name),
+                          .route = "xlings self update"};
+}
+
+// The SubOS is somewhere else: its own xlings answers this command there,
+// with this terminal attached, and its exit code is ours.
+int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args, EventStream& stream) {
+    const auto* c = carrier::find(b.carrier);
+    const auto probed = probe_carrier_(b.carrier);
+    if (!c || !probed.supported) {
+        stream.emit(ErrorEvent{.code = ErrorCode::NotFound,
+                               .message = std::format("this SubOS runs on the {} carrier: {}", b.carrier, probed.reason),
+                               .recoverable = true, .hint = probed.route});
+        return 125;
+    }
+    auto at = c->ensure(home_view());
+    if (!at) {
+        stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = at.error(), .recoverable = true});
+        return 125;
+    }
+    std::map<std::string, std::string> env;
+    for (const auto* k : {"XLINGS_AGENT_MODE", "XLINGS_NON_INTERACTIVE", "XLINGS_TRACE", "NO_COLOR", "TERM", "LANG"})
+        if (const char* v = std::getenv(k)) env[k] = v;
+    return carrier::terminal(*at, args, env);
+}
+
 int run_list_(EventStream& stream) {
     auto all = candidate_view().candidates;
     std::vector<std::tuple<std::string, std::string, int, int, bool>> entries;
@@ -1661,18 +1734,24 @@ int run_list_(EventStream& stream) {
             return 1;
         }
         const auto role = *declared_role;
+        const auto where = carrier_of_(n);
         entriesJson.push_back({{"name", n}, {"dir", d},
                                {"commands", commands},
                                {"packages", packages},
                                {"active", active},
                                {"kind", std::string(roles::to_string(*declared_kind))},
-                               {"host", role.host}, {"boot_entry", role.boot_entry}});
+                               {"host", role.host}, {"boot_entry", role.boot_entry},
+                               {"carrier", where.carrier}, {"abi", where.abi},
+                               {"view", role.host ? "machine"
+                                        : *declared_kind == roles::Kind::Rootfs ? "root" : "overlay"}});
     }
     nlohmann::json payload;
     payload["entries"] = std::move(entriesJson);
     stream.emit(DataEvent{"subos_list", payload.dump()});
     return 0;
 }
+
+int list(EventStream& stream) { return run_list_(stream); }
 
 // The graphics section of `xlings subos info`.
 //
@@ -1904,6 +1983,32 @@ int run(int argc, char* argv[], EventStream& stream) {
         });
     };
 
+    // A SubOS on another carrier: its xlings answers there (part 3 §5).
+    static const std::set<std::string, std::less<>> kNamed{
+        "use", "exec", "start", "stop", "remove", "info", "config", "status", "doctor", "cp", "log",
+        "report", "requests", "approve", "deny", "rollback", "boot", "export", "diff", "pack"};
+    if (kNamed.contains(sub)) {
+        for (int i = 3; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--") break;
+            if (a.empty() || a[0] == '-' || !fs::exists(Config::subos_dir(a))) continue;
+            const auto where = carrier_of_(a);
+            if (where.carrier == "local") break;
+            std::vector<std::string> args{"subos", sub};
+            for (int k = 3; k < argc; ++k) args.emplace_back(argv[k]);
+            if (yesGiven) args.push_back("-y");
+            const int rc = forward_to_carrier_(where, args, stream);
+            if (sub == "remove" && rc == 0) {
+                // There it is gone; here only its name and record remain.
+                std::error_code ec;
+                fs::remove(home_view().instance_file(a), ec);
+                fs::remove(home_view().config_dir(a), ec);
+                fs::remove(Config::subos_dir(a), ec);
+            }
+            return rc;
+        }
+    }
+
     if (sub == "new") {
         if (argc < 4) { usageError("missing <name> for: xlings subos new"); return 1; }
         // Parse: xlings subos new <name> [--storage <mode>] [--image-size <size>] [--from <spec>]
@@ -1927,8 +2032,19 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --rootfs: the instance can be presented as `/` (design part 2 §3.1).
         bool rootfs = false;
         std::string domain;
+        // --carrier / --abi (design part 3 §5.6): where it runs. Default:
+        // this machine's kernel unless what it is needs another one.
+        std::string requestedCarrier, abi = "native";
+        std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
+            if ((a == "--carrier" || a == "--abi") && i + 1 < argc) {
+                (a == "--carrier" ? requestedCarrier : abi) = argv[++i];
+                continue;
+            }
+            if (a.starts_with("--carrier=")) { requestedCarrier = a.substr(10); continue; }
+            if (a.starts_with("--abi=")) { abi = a.substr(6); continue; }
+            forwardArgs.push_back(a);
             if (a == "--rootfs") { rootfs = true; continue; }
             if (a == "--domain") {
                 if (i + 1 >= argc || !domain.empty()) { usageError("--domain expects one absolute home path"); return 1; }
@@ -1993,6 +2109,34 @@ int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
+        if (abi != "native" && abi != "linux") { usageError("--abi expects native or linux"); return 1; }
+        const auto platformName = std::string(caps::platform_name());
+        if (abi == "linux" && platformName == "linux") abi = "native";
+        const auto choice = carrier::choose(platformName,
+            carrier::Want{.requested = requestedCarrier, .abi = abi, .root = rootfs}, probe_carrier_);
+        if (!choice) {
+            stream.emit(ErrorEvent{.code = ErrorCode::NotFound, .message = choice.error().reason,
+                                   .recoverable = true, .hint = choice.error().route});
+            return 125;
+        }
+        if (choice->carrier != "local") {
+            if (fs::exists(Config::subos_dir(name))) { usageError("subos '" + name + "' already exists"); return 1; }
+            std::vector<std::string> args{"subos", "new"};
+            args.insert(args.end(), forwardArgs.begin(), forwardArgs.end());
+            if (yesGiven) args.push_back("-y");
+            const CarrierBinding_ binding{choice->carrier, abi};
+            log::info("'{}' runs on the {} carrier ({})", name, choice->carrier, choice->why);
+            const int rc = forward_to_carrier_(binding, args, stream);
+            if (rc != 0) return rc;
+            // Here: the name, and where it lives. Its content is there.
+            std::error_code ec;
+            fs::create_directories(Config::subos_dir(name), ec);
+            if (auto recorded = record_carrier_(name, binding); !recorded) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = recorded.error(), .recoverable = true});
+                return 1;
+            }
+            return 0;
+        }
         if (!fromSpec.empty() && fromSpec.find_first_of(":@") == std::string::npos) {
             auto source = xlings::home::domain_producer::read_scope(Config::paths().homeDir, fromSpec);
             if (!source) { usageError(source.error()); return 1; }
@@ -2033,7 +2177,14 @@ int run(int argc, char* argv[], EventStream& stream) {
             : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
         if (rc != 0) return rc;
         if (auto r = declare_isolation_at_creation_(name, declared, fromSpec, stream); r != 0) return r;
-        return declare_root_at_creation_(name, rootfs, fromSpec, stream, domain);
+        if (auto r = declare_root_at_creation_(name, rootfs, fromSpec, stream, domain); r != 0) return r;
+        if (!requestedCarrier.empty() || abi != "native") {
+            if (auto recorded = record_carrier_(name, {"local", abi}); !recorded) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = recorded.error(), .recoverable = true});
+                return 1;
+            }
+        }
+        return 0;
     }
     if (sub == "use") {
         // Flags supported:

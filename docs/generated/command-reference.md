@@ -68,7 +68,7 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace
+Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux
 
 ## `xlings subos use [name]`
 
