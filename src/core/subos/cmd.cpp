@@ -1658,12 +1658,20 @@ struct CarrierBinding_ {
     std::string abi { "native" };
 };
 
-CarrierBinding_ carrier_of_(const std::string& name) {
+// Absent is local/native; present and unreadable is an error -- a SubOS whose
+// record cannot be read might run elsewhere, and acting on it here could
+// remove its name while its content lives on (could not read is not empty).
+std::expected<CarrierBinding_, std::string> carrier_of_(const std::string& name) {
     CarrierBinding_ b;
-    std::ifstream in(home_view().instance_file(name));
-    if (!in) return b;
-    auto j = nlohmann::json::parse(in, nullptr, false);
-    if (!j.is_object()) return b;
+    const auto file = home_view().instance_file(name);
+    std::error_code ec;
+    if (!fs::exists(file, ec)) {
+        if (ec) return std::unexpected(file.string() + ": " + ec.message());
+        return b;
+    }
+    std::ifstream in(file);
+    auto j = in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json(nlohmann::json::value_t::discarded);
+    if (!j.is_object()) return std::unexpected(file.string() + ": unreadable; where this SubOS runs is not known");
     if (auto it = j.find("carrier"); it != j.end() && it->is_string()) b.carrier = it->get<std::string>();
     if (auto it = j.find("abi"); it != j.end() && it->is_string()) b.abi = it->get<std::string>();
     return b;
@@ -1736,7 +1744,7 @@ int run_list_(EventStream& stream) {
             return 1;
         }
         const auto role = *declared_role;
-        const auto where = carrier_of_(n);
+        const auto where = carrier_of_(n).value_or(CarrierBinding_{"unknown", "unknown"});
         entriesJson.push_back({{"name", n}, {"dir", d},
                                {"commands", commands},
                                {"packages", packages},
@@ -1994,7 +2002,13 @@ int run(int argc, char* argv[], EventStream& stream) {
             const std::string a = argv[i];
             if (a == "--") break;
             if (a.empty() || a[0] == '-' || !fs::exists(Config::subos_dir(a))) continue;
-            const auto where = carrier_of_(a);
+            const auto read = carrier_of_(a);
+            if (!read) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = read.error(), .recoverable = true,
+                                       .hint = "xlings self doctor"});
+                return 1;
+            }
+            const auto& where = *read;
             if (where.carrier == "local") break;
             std::vector<std::string> args{"subos", sub};
             for (int k = 3; k < argc; ++k) args.emplace_back(argv[k]);

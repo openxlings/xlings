@@ -102,3 +102,14 @@ XTEST(Carrier, AnEndpointIsReachedThroughItsLauncherWithTheNdjsonInterface,
     const std::vector<std::string> unknown{"subos", "info", "no-such-subos"};
     EXPECT_NE(cr::terminal(at, unknown), 0) << "the exit code is the command's, through the launcher";
 }
+
+XTEST(Carrier, AnUnreadableRecordOfWhereASubosRunsIsRefusedNotTakenAsLocal,
+      .area = "subos", .covers = {"CARRIER-LOCAL"}, .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("carrier-unreadable");
+    ASSERT_EQ(home.xlings({"subos", "new", "box", "--carrier", "local"}).exit_code, 0);
+    tk::write_file(home.dir() / "config/subos/box/instance.json", "{ not json");
+    auto r = home.xlings({"subos", "remove", "box", "-y"});
+    EXPECT_EQ(r.exit_code, 1) << r.transcript();
+    EXPECT_NE(r.transcript().find("where this SubOS runs is not known"), std::string::npos) << r.transcript();
+    EXPECT_TRUE(fs::exists(home.dir() / "subos/box")) << "nothing removed on a guess";
+}
