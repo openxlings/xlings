@@ -40,9 +40,11 @@ Info info_from_json(const nlohmann::json& j) {
 namespace {
 
 // Sessions need a SessionHost (design §17): fork, a local socket that carries
-// descriptors, a process that outlives its parent. Linux has one today;
-// elsewhere `subos status` says so and every entry point below declines.
-constexpr bool kSessions = platform::is_linux;
+// descriptors, a process that outlives its parent. Where there is none,
+// `subos status` says so and every entry point below declines.
+// macOS has one too since part 3 (§6.3): fork, and a framed SOCK_STREAM in
+// place of SEQPACKET (xlings.platform). Windows has neither yet.
+constexpr bool kSessions = platform::is_linux || platform::is_macos;
 
 // ── messages: one JSON object per datagram, descriptors attached ─────
 

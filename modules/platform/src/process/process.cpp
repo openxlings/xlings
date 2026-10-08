@@ -115,6 +115,26 @@ bool make_addr(const std::filesystem::path& path, UnixAddr& a) {
         if (a.dirfd < 0) return false;
         s = std::format("/proc/self/fd/{}/{}", a.dirfd, path.filename().string());
         if (s.size() >= sizeof(a.addr.sun_path)) return false;
+#elif defined(__APPLE__)
+        // No /proc/self/fd here: a short link in /tmp to the socket's
+        // directory, named for it (FNV-1a, the same in every xlings build) and
+        // for this user. One that is someone else's, or points elsewhere and
+        // cannot be replaced, is not used.
+        const auto dir = path.parent_path().lexically_normal().string();
+        std::uint64_t h = 1469598103934665603ull;
+        for (unsigned char c : dir) { h ^= c; h *= 1099511628211ull; }
+        const auto link = std::format("/tmp/.xlings-{}-{:016x}", ::getuid(), h);
+        char target[1024];
+        const auto n = ::readlink(link.c_str(), target, sizeof(target) - 1);
+        if (n < 0 || std::string_view(target, static_cast<std::size_t>(n)) != dir) {
+            struct stat st {};
+            if (::lstat(link.c_str(), &st) == 0) {
+                if (st.st_uid != ::getuid() || ::unlink(link.c_str()) != 0) return false;
+            }
+            if (::symlink(dir.c_str(), link.c_str()) != 0) return false;
+        }
+        s = link + "/" + path.filename().string();
+        if (s.size() >= sizeof(a.addr.sun_path)) return false;
 #else
         return false;
 #endif
@@ -124,8 +144,17 @@ bool make_addr(const std::filesystem::path& path, UnixAddr& a) {
     return true;
 }
 
+// One message per datagram. Linux: SOCK_SEQPACKET keeps the boundary. macOS
+// has no SEQPACKET for AF_UNIX: a stream, each message framed by a 4-byte
+// big-endian length, its descriptors riding on the frame's header.
+#if defined(__APPLE__)
+constexpr int kMessageSocket = SOCK_STREAM;
+#else
+constexpr int kMessageSocket = SOCK_SEQPACKET;
+#endif
+
 int seqpacket_socket() {
-    const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    const int fd = ::socket(AF_UNIX, kMessageSocket, 0);
     cloexec(fd);
     return fd;
 }
@@ -356,14 +385,21 @@ int unix_accept(int listen_fd) {
 
 std::optional<std::array<int, 2>> unix_pair() {
     int p[2];
-    if (::socketpair(AF_UNIX, SOCK_SEQPACKET, 0, p) != 0) return std::nullopt;
+    if (::socketpair(AF_UNIX, kMessageSocket, 0, p) != 0) return std::nullopt;
     cloexec(p[0]);
     cloexec(p[1]);
     return std::array<int, 2>{p[0], p[1]};
 }
 
 bool send_message(int sock, std::string_view data, std::span<const int> fds) {
+#if defined(__APPLE__)
+    const auto size = static_cast<std::uint32_t>(data.size());
+    unsigned char header[4] = {static_cast<unsigned char>(size >> 24), static_cast<unsigned char>(size >> 16),
+                               static_cast<unsigned char>(size >> 8), static_cast<unsigned char>(size)};
+    iovec iov{ header, sizeof(header) };
+#else
     iovec iov{ const_cast<char*>(data.data()), data.size() };
+#endif
     msghdr msg{};
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
@@ -383,15 +419,71 @@ bool send_message(int sock, std::string_view data, std::span<const int> fds) {
 #else
     constexpr int flags = 0;    // macOS: SIGPIPE is ignored by the callers
 #endif
+#if defined(__APPLE__)
+    // The header carries the descriptors; the rest follows on the stream.
+    std::size_t sent = 0;
+    while (sent < sizeof(header)) {
+        const auto n = sent == 0 ? ::sendmsg(sock, &msg, flags) : ::send(sock, header + sent, sizeof(header) - sent, flags);
+        if (n < 0) { if (errno == EINTR) continue; return false; }
+        sent += static_cast<std::size_t>(n);
+    }
+    for (std::size_t at = 0; at < data.size();) {
+        const auto n = ::send(sock, data.data() + at, data.size() - at, flags);
+        if (n < 0) { if (errno == EINTR) continue; return false; }
+        at += static_cast<std::size_t>(n);
+    }
+    return true;
+#else
     while (true) {
         const auto n = ::sendmsg(sock, &msg, flags);
         if (n >= 0) return static_cast<std::size_t>(n) == data.size();
         if (errno != EINTR) return false;
     }
+#endif
 }
 
 std::optional<Message> receive_message(int sock, std::size_t max) {
     constexpr int kMaxFds = 8;
+#if defined(__APPLE__)
+    // The frame's header, with whatever descriptors ride on it.
+    unsigned char header[4];
+    std::size_t got = 0;
+    Message framed;
+    while (got < sizeof(header)) {
+        iovec hiov{ header + got, sizeof(header) - got };
+        alignas(cmsghdr) char hcontrol[CMSG_SPACE(sizeof(int) * kMaxFds)];
+        msghdr hmsg{};
+        hmsg.msg_iov = &hiov;
+        hmsg.msg_iovlen = 1;
+        hmsg.msg_control = hcontrol;
+        hmsg.msg_controllen = sizeof(hcontrol);
+        const auto n = ::recvmsg(sock, &hmsg, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0 || (hmsg.msg_flags & MSG_CTRUNC)) { close_fds(framed.fds); return std::nullopt; }
+        for (cmsghdr* cm = CMSG_FIRSTHDR(&hmsg); cm; cm = CMSG_NXTHDR(&hmsg, cm)) {
+            if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+            const auto count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+            for (std::size_t i = 0; i < count; ++i) {
+                int fd;
+                std::memcpy(&fd, CMSG_DATA(cm) + i * sizeof(int), sizeof(int));
+                cloexec(fd);
+                framed.fds.push_back(fd);
+            }
+        }
+        got += static_cast<std::size_t>(n);
+    }
+    const std::size_t size = (std::size_t{header[0]} << 24) | (std::size_t{header[1]} << 16)
+                           | (std::size_t{header[2]} << 8) | std::size_t{header[3]};
+    framed.data.resize(size);
+    for (std::size_t at = 0; at < size;) {
+        const auto n = ::recv(sock, framed.data.data() + at, size - at, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { close_fds(framed.fds); return std::nullopt; }
+        at += static_cast<std::size_t>(n);
+    }
+    if (size > max) { close_fds(framed.fds); return std::nullopt; }   // as a truncated datagram
+    return framed;
+#endif
     std::size_t capacity = max;
 #if defined(__linux__)
     ssize_t pending;
@@ -452,8 +544,60 @@ std::optional<std::pair<int, ExitStatus>> reap_child() { return std::nullopt; }
 bool new_session() { return false; }
 bool take_controlling_terminal() { return false; }
 void redirect_stdio(std::span<const int>) {}
-int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds) {
-    return run_argv(argv);
+// The Windows process scope (design part 3 §6.3): the program and everything
+// it starts in one Job Object that dies with this process (kill-on-close) and
+// is ended whole when it runs past `limit` (124).
+int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
+    if (argv.empty()) return 127;
+    std::wstring line;
+    for (const auto& a : argv) {
+        if (!line.empty()) line += L' ';
+        const auto w = std::filesystem::path(a).wstring();
+        const bool quote = w.empty() || w.find_first_of(L" \t\"") != std::wstring::npos;
+        if (!quote) { line += w; continue; }
+        line += L'"';
+        std::size_t slashes = 0;
+        for (wchar_t c : w) {
+            if (c == L'\\') { ++slashes; continue; }
+            if (c == L'"') line.append(slashes * 2 + 1, L'\\');
+            else line.append(slashes, L'\\');
+            slashes = 0;
+            line += c;
+        }
+        line.append(slashes * 2, L'\\');
+        line += L'"';
+    }
+    HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
+    if (!job) return 126;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    ::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!::CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED, nullptr, nullptr,
+                          &startup, &process)) {
+        const auto err = ::GetLastError();
+        ::CloseHandle(job);
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 127 : 126;
+    }
+    ::AssignProcessToJobObject(job, process.hProcess);
+    ::ResumeThread(process.hThread);
+    ::CloseHandle(process.hThread);
+    const auto ms = limit.count();
+    const DWORD wait = ms <= 0 || ms >= static_cast<long long>(INFINITE) ? INFINITE : static_cast<DWORD>(ms);
+    int rc = 124;
+    if (::WaitForSingleObject(process.hProcess, wait) == WAIT_OBJECT_0) {
+        DWORD code = 126;
+        ::GetExitCodeProcess(process.hProcess, &code);
+        rc = static_cast<int>(code);
+    } else {
+        ::TerminateJobObject(job, 124);
+        ::WaitForSingleObject(process.hProcess, 5000);
+    }
+    ::CloseHandle(process.hProcess);
+    ::CloseHandle(job);   // kill-on-close: nothing it started outlives it
+    return rc;
 }
 UserIds user_ids() { return {}; }
 bool stdout_is_terminal() { return ::_isatty(1) != 0; }

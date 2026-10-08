@@ -288,7 +288,8 @@ std::vector<std::string> launch_argv(const sp::SandboxSpec& s, std::optional<int
     switch (s.backend) {
     case sp::Backend::Bwrap: return provider::bwrap_argv(s, seccomp_fd);
     case sp::Backend::Proot: return provider::proot_argv(s);
-    case sp::Backend::Landlock: {
+    case sp::Backend::Landlock:
+    case sp::Backend::HomeRedirect: {
         if (s.argv.empty()) return {};
         auto argv = s.argv;
         argv[0] = self;

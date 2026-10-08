@@ -30,10 +30,9 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const subos::policy::Policy&
                                                     const sp::Request& request);
 
 // The command that starts `s` (`seccomp_fd`: a terminal-injection filter the
-// caller has open). Landlock has no view to start a program in: its argv is
-// `s.argv` run as `self` (this binary), which fences itself before it starts
-// anything. Empty for an implementation that starts nothing (home redirect,
-// fake).
+// caller has open). Landlock and the home redirect have no view to start a
+// program in: their argv is `s.argv` run as `self` (this binary) -- Landlock's
+// fences itself before it starts anything. Empty for fake.
 std::vector<std::string> launch_argv(const sp::SandboxSpec& s, std::optional<int> seccomp_fd = std::nullopt,
                                      const std::string& self = {});
 

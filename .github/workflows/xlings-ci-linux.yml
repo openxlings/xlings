@@ -867,7 +867,9 @@ jobs:
           report = json.loads(Path('target/xdev/current-report/report.json').read_text())
           # Windows quoting has its own mandatory Windows gate; WSL1 is the
           # design's explicit best-effort lane and remains visible as such.
-          elsewhere = {'SUBOS-CMD-WIN-QUOTING', 'EXPORT-WSL'}
+          # A native SubOS's supervisor is the macOS and Windows workflows' own
+          # gate (tests/e2e/test_subos_native_session.cpp runs only there).
+          elsewhere = {'SUBOS-CMD-WIN-QUOTING', 'EXPORT-WSL', 'SESSION-NATIVE-SUPERVISED'}
           missing = [name for name, evidence in report['requirements'].items()
                      if name not in elsewhere and not evidence['passed_by']]
           assert not missing, f'required behavior lacks passing execution evidence: {missing}'

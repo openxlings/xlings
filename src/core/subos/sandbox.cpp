@@ -635,7 +635,9 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     std::cout.flush();
     std::cerr.flush();
 
-    if constexpr (platform::is_linux) {
+    // Under a supervisor wherever there is a session host (Linux, macOS):
+    // join, --timeout, exit codes and the audit are the same (part 3 §6.3).
+    if constexpr (platform::is_posix) {
         // image/tmpfs storage requires bwrap (mount namespace needed)
         if (storage != StorageMode::Shared && preferred_backend == "proot") {
             stream.emit(ErrorEvent{
@@ -764,6 +766,18 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             }
             if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
             return kFail;
+        }
+        if (compiled->backend == spec::Backend::HomeRedirect) {
+            // macOS: the home redirect, now under the same supervisor. Say
+            // what it is where the person is: a dotfile redirect -- no
+            // filesystem, network or process boundary (the carrier is).
+            if (cmd.empty())
+                log::warn("sandbox on macOS redirects the home directory only -- it does not contain the "
+                          "filesystem, network or processes. A boundary: --carrier vz, or a VM.");
+            if (compiled->argv.empty()) {
+                compiled->argv = {platform::resolve_shell()};
+                if (request.interactive) compiled->argv.push_back("-i");
+            }
         }
         const auto& sb = *compiled;
         auto trace_spec = sb.describe();
@@ -927,7 +941,8 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
         return rc;
     } else {
-        // macOS / Windows: home redirect (dotfile isolation).
+        // Windows: the home redirect (dotfile isolation), its command in a
+        // Job Object -- the whole tree ends with it, or at --timeout (124).
         auto host_caps = caps::probe(home, ports);
         auto compiled = xlings::confine::compile(pol, home, host_caps, request);
         if (!compiled) {
@@ -942,14 +957,12 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // Only on interactive entry: a `--cmd` run is a script, and a warning it
         // emits on every invocation is noise nobody reads. `--quiet` silences it.
         if (cmd.empty()) {
-            log::warn("sandbox on {} redirects the home directory only -- "
+            log::warn("sandbox on Windows redirects the home directory only -- "
                       "it does not contain the filesystem, network or processes. "
-                      "Use an OS sandbox or a VM for untrusted code.",
-                      platform::is_macos ? "macOS" : "Windows");
+                      "A boundary: --carrier wsl2.");
         }
         if (pol.preset != policy::Preset::Legacy) report_degraded_(*compiled);
         payload["backend"] = "home-redirect";
-        if constexpr (platform::is_macos) payload["shell"] = platform::resolve_shell();
         if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
         std::fflush(nullptr);
         for (const auto& [k, v] : compiled->env) platform::set_env_variable(k, v);
@@ -958,7 +971,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         if (!opts.argv.empty()) {
             std::error_code ec;
             fs::current_path(opts.cwd.empty() ? compiled->cwd : fs::path(opts.cwd), ec);
-            return platform::run_argv(opts.argv);
+            return platform::run_argv_with_timeout(opts.argv, opts.timeout.value_or(std::chrono::milliseconds::max()));
         }
         return platform::run_shell(cmd, cmd.empty());
     }
