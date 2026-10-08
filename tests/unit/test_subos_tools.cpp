@@ -81,7 +81,14 @@ XTEST(SubosTools, ATarballIsWrittenInProcessWithLinksKeptAndRootOwnedEntries,
         for (std::string line; std::getline(lines, line);) {
             if (line.empty()) continue;
             ++entries;
-            EXPECT_NE(line.find(" 0/0 "), std::string::npos) << line;
+            // GNU tar: "-rw-r--r-- 0/0 22 ..."; bsdtar (macOS): "-rw-r--r--  0 0 0 22 ..."
+            // (link count, uid, gid).
+            std::istringstream fields(line);
+            std::vector<std::string> f;
+            for (std::string w; fields >> w && f.size() < 4;) f.push_back(w);
+            ASSERT_GE(f.size(), 3u) << line;
+            if (f[1].find('/') != std::string::npos) EXPECT_EQ(f[1], "0/0") << line;
+            else EXPECT_TRUE(f.size() == 4 && f[2] == "0" && f[3] == "0") << line;
         }
         EXPECT_GE(entries, 5);
     }
