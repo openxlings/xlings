@@ -228,9 +228,12 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 
 | 位置 | 内容 |
 |---|---|
-| `modules/subos/src/` | SubOS 核心：`model`、`policy` / `policy_store`、`spec`（策略 + 主机能力 → 沙箱描述）、`provider`（bwrap / proot 参数）、`caps` / `gates`（能力探测与平台矩阵）、`session`（supervisor 与 session-init）、`broker`、`manifest`、`userdata` |
-| `modules/platform/src/platform/` | 所有系统调用：`process`（进程、信号、带描述符的本地 socket）、`isolation`（namespace、Landlock、seccomp、beneath 拷贝）以及各操作系统的实现 |
+| `modules/subos/src/` | SubOS 核心：`model/`（model、manifest、roles、ports、userdata）、`policy/`、`intent/`（策略 + 调用 → 与后端无关的 Intent）、`sandbox/`（spec 类型、caps、tools 工具表、elevation、network、gpu）、`views/root/`（根投影、generation、库缓存）、`session/`（supervisor 与 session-init、broker） |
+| `modules/confine/src/` | 沙箱实现：linux-bwrap、linux-proot、linux-landlock、home-redirect、fake；选择器、编译骨架、`provider`（argv）、`gates`（由各实现的声明汇总出的平台矩阵） |
+| `modules/carrier/src/` | 承载：local、wsl2（每个 home 一个 WSL2 发行版）、vz（经 xlings-vm 助手）；`choose`（按 ABI 选择）、`terminal` / `control`（同一套 NDJSON interface） |
+| `modules/store/src/` | payload 的 GC roots：哪些保留中的 generation 引用它，以及保留账本 |
+| `modules/platform/src/` | 所有系统头与系统调用：`os/`、`process/`（进程、信号、带描述符的本地 socket；macOS 为分帧的流）、`net/`、`isolation/`（namespace、Landlock、seccomp、挂载）、`fs/`、`triple/` |
 | `modules/runtime/src/` | `guard`（删除前的确认令牌）、`observe`（审计日志、脱敏） |
-| `src/core/subos.cpp` 与 `src/core/subos/` | `xlings subos` 命令：生命周期；`run.cpp`（exec / start / cp）；`configure.cpp`（config / status / doctor）；`audit.cpp`（requests / report / ps / log）；`root_cmd.cpp`（new --rootfs / rollback / boot / export / diff / pack）；`root.cpp`（工作区 → 根的投影）；`sandbox.cpp`（把策略和主机能力接到会话上） |
-| `modules/subos/src/rootfs`、`boot`、`roles`、`stage0` | 根投影与代、启动项选择、种类 × 角色的允许操作表、stage-0 |
+| `luban/src/` | 只属于"一台机器"：`boot`（启动项）、`stage0`（第一个进程）、`machine`（机器的 /etc、sysusers）；`apps/luban-init` 是 stage-0 的独立二进制 |
+| `src/core/subos/` | `xlings subos` 命令：`cmd.cpp`（生命周期、承载路由）；`run.cpp`（exec / start / cp）；`configure.cpp`（config / status / doctor）；`audit.cpp`；`root/`（根的投影、rollback / boot / export / diff / pack）；`domain/`（前缀域）；`sandbox.cpp`（把策略接到 confine 和会话上）；`carrier_image.cpp`（承载镜像） |
 | `tests/requirements.toml` | 每一项行为的需求 ID；`tests/unit`、`tests/e2e` 中的测试用 `covers` 认领 |

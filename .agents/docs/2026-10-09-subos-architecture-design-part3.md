@@ -579,3 +579,34 @@ C53 openkal：§4.3 两点确认后分项接入；确认不了则记录为结论
 - 新需求 ID 写进 `tests/requirements.toml`，测试带 `covers`；
 - 涉及跨平台的改动在 macOS / Windows CI 上实际跑过，不以"Linux 通过"代替；
 - 文档（AGENTS.md、Part 3 §19 实施记录）随 commit 更新。
+
+---
+
+## 19. 实施记录（2026-10-09，PR #641）
+
+| C | 提交 | 结果 | 验证 |
+|---|---|---|---|
+| C43 | `f91c481` | 目录分层（platform `os/ process/ net/ isolation/ fs/ triple/`；subos `model/ policy/ sandbox/ views/root/ session/`；core `subos/cmd.cpp root/ domain/`）；接口单元不含系统头；`src/` 中全部平台 `#if` 改为 `if constexpr`（剩余 14 处为编译器差异或 runtime 层，带 `platform-if-ok`）；新增 `lint_platform_branches`、`lint_layer_deps`；CI 运行全部 `tools/lint_*.sh`（`lint_platform_headers` 此前没有 CI 步骤） | 三平台 CI 编译通过 |
+| C44 | `02816a8` | `modules/store`；generation 成为 GC root（H1）；保留 5 代 + 释放（M1）；读不懂的指针不 prune | ROOT-GC-ROOT、ROOT-GEN-RETAIN（CLI 级：remove 后回滚找得到目标；prune 释放） |
+| C45 | `0aacae7` `94041bd` `b7040ad` | 持久化（H2，fsync 顺序可追踪）；切换校验改为目录 change stamp + payload 存在性（M2）：300 payload 0.2 ms、3000 payload 1.9 ms（优化）/ 3.0 ms（dev）；发布新代只校验树（静态车道发现：导出镜像的链接指向逻辑路径） | ROOT-GEN-DURABLE、ROOT-SWITCH-SCALE；静态车道 RootExport |
+| C46 | `f36ec0e` | 工具表、提权入口；export/pack 的 tar 改为进程内（libarchive，root-owned，无需 user namespace）；`priv_prefix` 删除；`std::system` 清零 | TOOL-RESOLVE；distro 车道 docker import / qemu boot 通过 |
+| C47 | `58d0e0c` `86527fa` | Intent IR + `modules/confine` 注册表；core 不再分派后端；矩阵由实现声明汇总 | INTENT-EQ：872 个录制用例逐字节一致；GATE-CONFORM |
+| C48 | `898b67d` | `modules/carrier`、`choose`、`subos new --carrier --abi`、按名转发、`list` 统一（interface 的 list_subos 原先缺 kind） | CARRIER-LOCAL、CARRIER-UNAVAILABLE |
+| C49 | `a8f6262` | wsl2 承载：每个 home 一个发行版，镜像 = 本版本 Linux 构建 + 声明的机器文件（关闭 automount/interop），`__carrier-env` / `__carrier-grant` | 假 wsl.exe 跑通整个生命周期（发现 guest 无 env(1)）；Windows 车道 E2E-08（有 WSL2 则走生命周期与 interop-off，无则拒绝并给路线）；VIEW-CARRIER-EQ deferred（需要真实 guest 内核） |
+| C50 | `482b54c` | macOS：消息 socket 为分帧的 SOCK_STREAM，会话在 macOS 上与 Linux 同一条路径；Windows：Job Object（整树、超时 124） | SESSION-NATIVE-SUPERVISED 由 macOS / Windows 工作流把关；Windows 的 join 需要 CreateProcess supervisor，未声称 |
+| C51 | `43ab70f` | vz 承载，经 `xlings-vm` 助手的契约 | CARRIER-VZ-LIFECYCLE（假助手）；CARRIER-VZ-HELPER deferred（签名的 Swift 包，托管 macOS 无法嵌套虚拟化） |
+| C52 | `f1dd2e2` | `luban/`（boot、stage0、machine）；`apps/luban-init` 独立包：0 个前端符号（作为根包目标时 6812 个）；发现 `inline constexpr` 模块变量仅由前端发射的潜在缺陷 | LUBAN-INIT（release tarball 上检查） |
+| C53 | 本提交 | 见下 | OPENKAL-COEXIST（CI 步骤） |
+
+### C53：§4.3 两个问题的结论
+
+1. **openkal 能否在 xlings 现有 C 运行时下链接：能（Linux 实测）。** `openkal-linux` 0.16.1 直接基于系统调用，与 libstdc++ 在 glibc
+   动态构建和 xlings 发布用的 x86_64-linux-musl 静态目标下都能链接、运行（`tests/openkal`，CI 每个 PR 构建并运行两种目标）。
+   一个互操作事实：`kal::write` 绕过 C 库的 stdio 缓冲，混用前必须 flush。`openkal-windows` 声明"不使用任何 C 运行时符号"，
+   `openkal-macos` 直接基于内核调用；两者在 xlings 接入时由各自平台 CI 验证。
+2. **跨进程传递句柄：openkal 0.15 不定义**（SPEC §11 第 9 条："A general mechanism for passing a handle to a context in another
+   space is not defined by this version"）。因此 `Transport`（SCM_RIGHTS / `DuplicateHandle` / 分帧流）留在 `modules/platform`。
+
+**本 PR 不把 openkal 接入 xlings 的产品代码**：可移植的部分（spawn、fs、stream）目前没有一项能因换成 `kal_*` 而让 xlings 的行为变好，
+为接入而接入只会把一个新依赖放进三平台的发布路径。第一项有意义的接入是 confine 中"按授权启动 openkal 程序"的实现
+（Intent 的 grants → `kal_process_spawn` 的预打开）——它与 Luban 自有内核一起做，那时授权由内核强制执行（§4.2）。

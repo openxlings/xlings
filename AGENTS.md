@@ -22,14 +22,21 @@ modules/                             # packages linked into xlings, one per resp
 │               windows, unix), process/ (spawn, worker, stream), net/,
 │               isolation/ (ns, Landlock, seccomp, mounts), fs/, triple/
 ├── ui/         theme, i18n
+├── store/      what keeps a payload alive: GC roots (retained generations), the retained ledger
 ├── subos/      the SubOS core
-│   └── src/    model/ (model, manifest, roles, ports, userdata), policy/,
-│               sandbox/ (spec, caps, gates, providers, network, gpu),
+│   └── src/    model/ (model, manifest, roles, ports, userdata), policy/, intent/ (policy -> Intent),
+│               sandbox/ (spec types, caps, tools table, elevation, network, gpu),
 │               views/root/ (root projection, generations, library cache),
-│               session/ (supervisor + session-init, broker), boot, stage0
+│               session/ (supervisor + session-init, broker)
+├── confine/    sandbox implementations (linux-bwrap/proot/landlock, home-redirect, fake),
+│               the selector, the compile skeleton, provider argv, the platform matrix
+├── carrier/    where a SubOS runs: local, wsl2, vz; choose(); terminal/control over NDJSON
 └── testkit/    C++ e2e test library (dev-dependency)
+luban/                               # only what a SubOS that is a MACHINE needs (luban.*)
+└── src/        boot (boot entries), stage0 (first process), machine (/etc, sysusers)
 apps/
 ├── gui/        GUI library half
+├── luban-init/ stage-0 as its own binary (links luban + modules/, never src/)
 └── xdev/       dev tool: tests, report, requirement map (not shipped)
 src/                                 # not yet separated: core, cli, ui, runtime
 ├── main.cpp                         # entry point
@@ -42,6 +49,7 @@ src/                                 # not yet separated: core, cli, ui, runtime
     ├── subos/sandbox.cpp            # adapter: policy + caps -> spec -> session
     ├── subos/root/                  # a workspace -> its root projection; rollback/boot/export
     ├── subos/domain/                # prefix domains, their producer, layers, evidence
+    ├── subos/carrier_image.cpp      # the image a guest carrier imports
     ├── xself/                       # self install/update/doctor
     ├── xim/                         # package management (installer, resolver, index...)
     └── xvm/                         # version management, shims
@@ -136,6 +144,37 @@ must name opaquely (`HANDLE`) is stored as `void*` with the sentinel spelled
 out, as `ProcessHandle` and `FileLock` do. The lint checks both rules; testkit
 and `tests/` are outside the product and carry the same constants under the
 same names.
+
+### SubOS = content x view x carrier (SubOS design part 3)
+
+One noun: a SubOS is CONTENT (workspace, home, policy). How a process sees it
+is its VIEW (overlay, sandbox, root, machine); where it runs is its CARRIER
+(local, wsl2, vz, native). A payload's target ABI decides the carrier -- a
+Linux SubOS on Windows runs in a WSL2 distribution of the home's own, which
+the user never enters (`xlings subos ...` is forwarded through `wsl.exe -d
+<name> -u root --exec /xlings/bin/xlings __carrier-env ... -- <args>`).
+`instance.json`'s `carrier` / `abi` record it (absent = local/native).
+`.agents/docs/2026-10-09-subos-architecture-design-part3.md`.
+
+Rules that came with it:
+
+* **External programs come from one table** (`xlings.subos.tools`: payload,
+  then the machine's paths it names, never another home's shim), and
+  administrator rights through one door (`xlings.subos.elevation`, recorded
+  in `logs/elevation.ndjson`). `tools/lint_tool_resolve.sh` fails a
+  `std::system`, an argv that starts with a tool's literal name, or an
+  administrator argv outside `elevation::run`.
+* **Package layers import downward** (`tools/lint_layer_deps.sh`): `luban/`
+  -> `modules/`; `modules/` never imports `luban.*` or the frontend. A binary
+  that must not carry the frontend is its OWN package (`apps/luban-init`): a
+  package's binaries link every source of that package.
+* **A retained generation is a GC root.** `remove` completes and keeps the
+  payload in `<data>/retained.json` while a generation links into it; a prune
+  releases it. A generation's switch is durable and checked by its inventory
+  (`root.gen/.<k>.inventory`); never edit a placed generation.
+* **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`,
+  INTENT-EQ). A change to it is a change to what a sandbox IS: regenerate with
+  `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose, and say so in the commit.
 
 ### Core and interaction surfaces are separate (2026.10, #640)
 

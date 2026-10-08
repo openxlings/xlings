@@ -399,6 +399,21 @@ jobs:
         run: |
           "$XDEV" test --no-mcpp --suite contract-scripts --out target/xdev/linux-contracts
 
+      # openkal beside this toolchain's runtimes (design part 3 §4.3): glibc,
+      # and the static musl target the release uses.
+      - name: openkal coexistence (OPENKAL-COEXIST)
+        run: |
+          cd tests/openkal
+          for target in "" "--target x86_64-linux-musl"; do
+            mcpp build $target
+            bin="$(find target -path '*/bin/openkal-coexistence' -type f -newer mcpp.toml | xargs ls -t | head -1)"
+            out="$("$bin")"
+            echo "$out"
+            grep -qx 'libstdc++ says: hello' <<<"$out"
+            grep -qx 'openkal says: hello' <<<"$out"
+            grep -q '^kal_version=' <<<"$out"
+          done
+
       # The same repository lints as the first step, through xdev this time,
       # so what they cover (LAYOUT-DEPS ...) is evidence in the requirement
       # report and not only a green step.

@@ -724,6 +724,11 @@ why = "a separate Swift package signed with com.apple.security.virtualization; h
 text = "a native SubOS on macOS runs under the supervisor (start, join, stop, --timeout, the exit-code table); on Windows its command runs in a Job Object (tree ended at --timeout, the command's exit code); joining a running session on Windows needs a CreateProcess supervisor and is part 3 §6.3's next step"
 status = "required"
 
+[OPENKAL-COEXIST]
+text = "openkal-linux links and runs beside xlings' C and C++ runtimes (glibc and the static musl release target)"
+status = "deferred"
+why = "evidence, not a product behaviour: the xlings-ci-linux step 'openkal coexistence' builds and runs tests/openkal for both targets on every PR; nothing of xlings links openkal yet (part 3 §19, C53)"
+
 [LUBAN-INIT]
 text = "stage-0 is its own static binary and reads no Config"
 status = "required"
