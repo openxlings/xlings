@@ -11,11 +11,12 @@
 #   2. the doctor says so, names the restriction, and does not advise sysctl;
 #   3. --fix -y installs the root-owned copy and its profile;
 #   4. a sandbox now enters, through /usr/lib/xlings/bwrap.
+# xtest: covers=F12,DOC-ISOLATION requires=linux,xlings-bin,sudo,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
 [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" == 1 ]] \
-  || { log "SKIP: this host does not restrict user namespaces through AppArmor"; exit 0; }
+  || fail "this CI-only test needs AppArmor-restricted user namespaces"
 sudo -n true || fail "needs non-interactive sudo"
 
 BIN="$(find_xlings_bin)"
@@ -52,8 +53,8 @@ printf '%s\n' "$entry" | sed 's/^/      | /'
 if [[ $rc -eq 0 ]]; then
     # proot made it in: the user is told what they got and how to get more.
     grep -q 'not a security boundary' <<<"$entry" || fail "the proot fallback was silent"
-    grep -q 'uid map' <<<"$entry" || fail "bwrap's own words were not quoted"
 fi
+grep -q 'uid map' <<<"$entry" || fail "bwrap's own words were not quoted"
 grep -q 'self doctor --isolation --fix' <<<"$entry" || fail "the fix was not offered"
 ! grep -q 'sysctl -w' <<<"$entry" || fail "a global sysctl was advised"
 

@@ -595,7 +595,7 @@ jobs:
 
       - name: self doctor --isolation --fix
         run: |
-          "$XDEV" test --no-mcpp --suite isolation-fix --out target/xdev/linux-isolation-fix
+          "$XDEV" test --no-mcpp --suite isolation-fix --require-metadata --out target/xdev/linux-isolation-fix
 
       - name: Attach the run
         uses: actions/upload-artifact@v4

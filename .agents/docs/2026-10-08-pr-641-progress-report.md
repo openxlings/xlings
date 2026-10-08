@@ -928,3 +928,37 @@ NO_PROXY设置；实际下载曾403/低速失败。现在只转交8个标准大�
 清理宿主scope环境；本地同一下载流程已完成实际资源传输及校验，完整multi仍
 因上述namespace环境问题未通过。最终static增量build通过，完整acceptance仍
 须由支持普通用户namespace的CI验证。正式依赖#47仍未合入/发布；不合入641。
+
+
+## 29. b3dd5009 完整发行版通过与F12证据接线（2026-10-09）
+
+固定head b3dd5009、141 commits：Linux主job107程序pass、XTEST216pass/0fail/5skip。
+额外三个静态domain/source/export与六个性能case实际pass/0skip；DomainProducer
+16416ms，包含未确认删除退出2与host数据保留。硬门禁核对candidate/domain/perf
+三个真实outcome均success。性能额外中位shim1408us、hot4133us、cold6542us、
+root entry4257us；300 payload build67646us、checked switch9598us，预算未放宽。
+
+macOS、Windows、ARM64、Linux root完整通过；macOS154pass/0fail/2skip，
+Windows111pass/0fail/45skip。Arch、isolation、QEMU boot、旧E2E完整通过；
+旧E2E报告141pass行（含wrapper行），不是141个独立用例。
+
+两个此前失败的distro实际完整通过：rootfs_instance216509ms，全部9阶段，
+包含144可执行闭包、no-shell shim、core/cache、fetch=layer与desktop render。
+rootfs_image216373ms，全部7阶段，含single、多前缀/xlings、glibc损坏回滚、
+patchelf缺失拒绝、self-update真实HTTP下载与rollback。before为正式.1、root.gen/2；
+after为候选.2、root.gen/3；rolled恢复.1与root.gen/2，stage0字节/inode不变
+断言通过。这是候选验收，不能当作.2正式发布后的CN升级证据。
+
+最终报告143/146 verified、3 unverified；Windows quoting在独立Windows硬门禁
+验收，WSL1为明确best-effort例外，唯一剩余硬阻塞是F12。主测试因可用system
+bwrap跳过；专用isolation-fix脚本实际运行、原始uid-map错误/最小权限提示/
+root-owned修复均通过，但缺covers，汇总正确拒绝计入。现在补F12与DOC-ISOLATION
+metadata，CI要求该suite metadata完整；前提不符不再exit0冒充pass，raw uid-map
+断言无论fallback退出码都检查。原CI执行记录的真实report重放：补metadata前
+F12 passed_by为空且退出1，之后有实际脚本passed_by并退出0；不以重放代替
+追加提交后的新CI。前提不符的负对照：旧guard退出0、新guard退出1。
+
+此时ASAN仍运行，未跳过/取消；完成后再追加push，保留该固定产品head的证据。
+libxpkg #47的0.0.62候选head838fe5d CI通过；现有三平台索引引用同一源码包，
+Linux预编译包仅补充构建证据。源码候选已准备，尚未合入/发布。
+本轮继续只追加commit、普通push；达标后先由用户review，不合入、不发布。
