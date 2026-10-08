@@ -7,6 +7,7 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
+import xlings.platform;
 import xlings.subos.rootfs;
 import xlings.subos.boot;
 import xlings.subos.roles;
@@ -108,15 +109,15 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
     EXPECT_EQ(fs::read_symlink(rf::usr_of(subos) / "bin" / "sh"), t.dir / "a" / "sh");
 
     // Acquire the pointer once, then read that immutable generation. Separate
-    // pathname lookups through a moving symlink are not a snapshot (macOS can
-    // invalidate a name-cache walk during rename); readlink observes the entry.
+    // pathname lookups through a moving symlink are not a snapshot. The
+    // production reader handles macOS's transient EINVAL during vnode replacement.
     std::atomic<int> misses { 0 }, reads { 0 };
     std::vector<std::string> diagnostics;
     std::latch ready { 1 };
     std::jthread reader([&](std::stop_token stop) {
         do {
             std::error_code ec;
-            const auto target = fs::read_symlink(subos / rf::kPointer, ec);
+            const auto target = xlings::platform::read_symlink(subos / rf::kPointer, ec);
             if (ec || target.parent_path() != rf::kGenerations) {
                 ++misses;
                 if (diagnostics.size() < 8)

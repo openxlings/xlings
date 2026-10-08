@@ -224,7 +224,7 @@ std::vector<int> generations(const fs::path& subos) {
 
 std::optional<int> current(const fs::path& subos) {
     std::error_code ec;
-    const auto target = fs::read_symlink(subos / std::string(kPointer), ec);
+    const auto target = platform::read_symlink(subos / std::string(kPointer), ec);
     if (ec) return std::nullopt;
     const auto name = target.filename().string();
     int k = 0;

@@ -566,6 +566,18 @@ std::expected<void, std::string> rename_no_replace(const std::filesystem::path& 
         return {};
     }
 
+std::filesystem::path read_symlink(const std::filesystem::path& path, std::error_code& error) {
+    namespace fs = std::filesystem;
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        auto target = fs::read_symlink(path, error);
+        if (!error || !is_macos || error != std::errc::invalid_argument) return target;
+        std::error_code inspected;
+        if (!fs::is_symlink(fs::symlink_status(path, inspected)) || inspected) return {};
+        std::this_thread::yield();
+    }
+    return {};
+}
+
 void write_file_atomic(const std::string& filepath, const std::string& content) {
         namespace fs = std::filesystem;
         std::error_code ec;

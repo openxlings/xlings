@@ -315,6 +315,9 @@ namespace platform {
         const std::filesystem::path& from, const std::filesystem::path& to);
 
     export void write_file_atomic(const std::string& filepath, const std::string& content);
+    // Acquire a link target once; macOS may return EINVAL while its symlink
+    // vnode is being replaced. Persistent errors remain errors.
+    export std::filesystem::path read_symlink(const std::filesystem::path& path, std::error_code& error);
 
     export void write_string_to_file(const std::string& filepath, const std::string& content);
 
