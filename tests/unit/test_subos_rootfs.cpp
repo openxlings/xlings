@@ -7,15 +7,16 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
+import luban.machine;
 import xlings.platform;
 import xlings.subos.rootfs;
-import xlings.subos.boot;
+import luban.boot;
 import xlings.subos.roles;
 
 namespace fs = std::filesystem;
 namespace tk = xlings::testkit;
 namespace rf = xlings::subos::rootfs;
-namespace bt = xlings::subos::boot;
+namespace bt = luban::boot;
 namespace rl = xlings::subos::roles;
 
 namespace {
@@ -233,12 +234,12 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
     const auto factory = t.dir / "factory";
     tk::write_file(factory / "hostname", "luban\n");
     tk::write_file(factory / "ssl" / "certs" / "ca-certificates.crt", "pem");
-    auto added = rf::fill_etc(root / "etc", factory);
+    auto added = luban::machine::fill_etc(root / "etc", factory);
     ASSERT_TRUE(added.has_value()) << added.error();
     EXPECT_EQ(*added, std::vector<std::string>{"ssl/certs/ca-certificates.crt"});
     EXPECT_EQ(tk::read_file(root / "etc" / "hostname"), "mine\n") << "the machine's file stays";
     EXPECT_TRUE(fs::is_symlink(root / "etc" / "ssl" / "certs" / "ca-certificates.crt"));
-    auto again = rf::fill_etc(root / "etc", factory);
+    auto again = luban::machine::fill_etc(root / "etc", factory);
     ASSERT_TRUE(again.has_value()) << again.error();
     EXPECT_TRUE(again->empty()) << "a second fill adds nothing";
 
@@ -247,14 +248,14 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
     tk::write_file(usr / "lib" / "sysusers.d" / "sshd.conf",
                    "# comment\ng ssh 74\nu sshd 74 \"SSH daemon\" /var/empty /usr/bin/nologin\n");
     tk::write_file(root / "etc" / "passwd", "alice:x:1000:1000::/home/alice:/bin/sh\n");
-    auto users = rf::apply_sysusers(root / "etc", usr);
+    auto users = luban::machine::apply_sysusers(root / "etc", usr);
     ASSERT_TRUE(users.has_value()) << users.error();
     EXPECT_NE(std::ranges::find(*users, "user root"), users->end());
     EXPECT_NE(std::ranges::find(*users, "user sshd"), users->end());
     const auto passwd = tk::read_file(root / "etc" / "passwd");
     EXPECT_TRUE(passwd.starts_with("alice:x:1000")) << passwd;
     EXPECT_NE(passwd.find("sshd:x:74:74:SSH daemon:/var/empty:/usr/bin/nologin"), std::string::npos) << passwd;
-    auto usersAgain = rf::apply_sysusers(root / "etc", usr);
+    auto usersAgain = luban::machine::apply_sysusers(root / "etc", usr);
     ASSERT_TRUE(usersAgain.has_value()) << usersAgain.error();
     EXPECT_TRUE(usersAgain->empty()) << "nothing twice";
 }
@@ -285,9 +286,9 @@ XTEST(SubosRootfs, MachineEtcRefusesSymlinkAncestorsAndPreservesExternalData,
     tk::write_file(factory / "new-file", "factory bytes");
     fs::create_directories(root);
     fs::create_directory_symlink(outside, root / "etc");
-    EXPECT_FALSE(rf::fill_etc(root / "etc", factory).has_value());
-    EXPECT_FALSE(rf::fill_machine_etc(root / "etc", t.dir / "scope").has_value());
-    EXPECT_FALSE(rf::apply_sysusers(root / "etc", t.dir / "usr").has_value());
+    EXPECT_FALSE(luban::machine::fill_etc(root / "etc", factory).has_value());
+    EXPECT_FALSE(luban::machine::fill_machine_etc(root / "etc", t.dir / "scope").has_value());
+    EXPECT_FALSE(luban::machine::apply_sysusers(root / "etc", t.dir / "usr").has_value());
     EXPECT_FALSE(rf::lay_out(root, "/xlings/subos/box/root/usr", "/xlings").has_value());
     EXPECT_EQ(tk::read_file(outside / "sentinel"), "external user bytes");
     EXPECT_FALSE(fs::exists(outside / "new-file"));
@@ -298,7 +299,7 @@ XTEST(SubosRootfs, MachineEtcRefusesSymlinkAncestorsAndPreservesExternalData,
     fs::create_directories(root / "etc");
     tk::write_file(factory / "ssl" / "certs" / "new-certificate", "pem");
     fs::create_directory_symlink(outside, root / "etc" / "ssl");
-    EXPECT_FALSE(rf::fill_etc(root / "etc", factory).has_value());
+    EXPECT_FALSE(luban::machine::fill_etc(root / "etc", factory).has_value());
     EXPECT_FALSE(fs::exists(outside / "certs"));
     EXPECT_EQ(tk::read_file(outside / "sentinel"), "external user bytes");
 
@@ -310,7 +311,7 @@ XTEST(SubosRootfs, MachineEtcRefusesSymlinkAncestorsAndPreservesExternalData,
     // The tree's parent is also part of the authority, not canonicalized
     // away as if an arbitrary user alias were a trusted filesystem root.
     fs::create_directory_symlink(outside, t.dir / "alias");
-    EXPECT_FALSE(rf::fill_etc(t.dir / "alias" / "root" / "etc", factory).has_value());
+    EXPECT_FALSE(luban::machine::fill_etc(t.dir / "alias" / "root" / "etc", factory).has_value());
     EXPECT_FALSE(fs::exists(outside / "root"));
 }
 
@@ -326,14 +327,14 @@ XTEST(SubosRootfs, FactoryProjectionLeavesUseLexicalDestinationsAndPrivateAccoun
     tk::write_file(payload / "passwd", "alice:x:1000:1000::/home/alice:/bin/sh\n");
     fs::create_symlink(payload / "hostname", factory / "hostname");
     fs::create_symlink(payload / "passwd", factory / "passwd");
-    auto filled = rf::fill_etc(root / "etc", factory);
+    auto filled = luban::machine::fill_etc(root / "etc", factory);
     ASSERT_TRUE(filled.has_value()) << filled.error();
     EXPECT_TRUE(fs::is_symlink(root / "etc" / "hostname"));
     EXPECT_EQ(fs::read_symlink(root / "etc" / "hostname"), factory / "hostname");
     EXPECT_FALSE(fs::exists(root / "payload")) << "source resolution must not manufacture ../ destinations";
     EXPECT_FALSE(fs::is_symlink(root / "etc" / "passwd"));
     EXPECT_EQ(tk::read_file(root / "etc" / "passwd"), tk::read_file(payload / "passwd"));
-    auto users = rf::apply_sysusers(root / "etc", t.dir / "usr");
+    auto users = luban::machine::apply_sysusers(root / "etc", t.dir / "usr");
     ASSERT_TRUE(users.has_value()) << users.error();
     EXPECT_NE(tk::read_file(root / "etc" / "passwd").find("root:x:0:0:"), std::string::npos);
     EXPECT_EQ(tk::read_file(payload / "passwd"), "alice:x:1000:1000::/home/alice:/bin/sh\n");
@@ -341,7 +342,7 @@ XTEST(SubosRootfs, FactoryProjectionLeavesUseLexicalDestinationsAndPrivateAccoun
     const auto machine_passwd = tk::read_file(root / "etc" / "passwd");
     fs::remove(factory / "passwd");
     fs::create_symlink(payload / "missing-default", factory / "passwd");
-    auto reused = rf::fill_etc(root / "etc", factory);
+    auto reused = luban::machine::fill_etc(root / "etc", factory);
     ASSERT_TRUE(reused.has_value()) << reused.error();
     EXPECT_TRUE(reused->empty()) << "an existing account database does not read its factory default";
     EXPECT_EQ(tk::read_file(root / "etc" / "passwd"), machine_passwd);
@@ -356,13 +357,13 @@ XTEST(SubosRootfs, SysusersRefusesUnknownLinksAndSharedFilesWithoutChangingTheir
     tk::write_file(external, "external:x:900:900::/:/bin/sh\n");
     fs::create_directories(etc);
     fs::create_symlink(external, etc / "passwd");
-    EXPECT_FALSE(rf::apply_sysusers(etc, t.dir / "usr").has_value());
+    EXPECT_FALSE(luban::machine::apply_sysusers(etc, t.dir / "usr").has_value());
     EXPECT_TRUE(fs::is_symlink(etc / "passwd"));
     EXPECT_FALSE(fs::exists(etc / "group"));
     EXPECT_EQ(tk::read_file(external), "external:x:900:900::/:/bin/sh\n");
     fs::remove(etc / "passwd");
     fs::create_hard_link(external, etc / "passwd");
-    EXPECT_FALSE(rf::apply_sysusers(etc, t.dir / "usr").has_value());
+    EXPECT_FALSE(luban::machine::apply_sysusers(etc, t.dir / "usr").has_value());
     EXPECT_EQ(tk::read_file(external), "external:x:900:900::/:/bin/sh\n");
     EXPECT_FALSE(fs::exists(etc / "group"));
 }

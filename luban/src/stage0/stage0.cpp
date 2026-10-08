@@ -1,20 +1,32 @@
 // See stage0.cppm for the boot boundary: no Config and no guessing unreadable state.
-module xlings.subos.stage0;
+module luban.stage0;
 
 import std;
 import xlings.libs.json;
 import xlings.platform;
-import xlings.subos.boot;
+import luban.boot;
+import luban.machine;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.home_view;
 
-namespace xlings::subos::stage0 {
+namespace luban::stage0 {
+
+namespace platform = xlings::platform;
+namespace rootfs = xlings::subos::rootfs;
+namespace library_cache = xlings::subos::library_cache;
+using xlings::subos::HomeView;
 
 namespace {
 
+// The name it was started as: luban-init, or xlings-init (xlings itself).
+std::string& self_name() {
+    static std::string name = "luban-init";
+    return name;
+}
+
 void say(std::string_view msg) {
-    std::cerr << "xlings-init: " << msg << std::endl;
+    std::cerr << self_name() << ": " << msg << std::endl;
 }
 
 std::expected<nlohmann::json, std::string> read_json(const fs::path& path) {
@@ -140,8 +152,7 @@ std::expected<std::optional<fs::path>, std::string> init_of(const HomeView& home
 }
 
 int run(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
+    if (argc >= 1 && argv[0] && *argv[0]) self_name() = std::filesystem::path(argv[0]).filename().string();
     if (!platform::is_pid1()) {
         say("runs as a machine's first process (the kernel's init=); this is not PID 1");
         return 1;
@@ -196,8 +207,8 @@ int run(int argc, char* argv[]) {
             say(laid.error());
             continue;
         }
-        if (auto etc = rootfs::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
-        if (auto users = rootfs::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
+        if (auto etc = luban::machine::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
+        if (auto users = luban::machine::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         const auto next = boot::record_boot(*config, candidate);
         if (auto saved = boot::save(home.boot_file(), next); !saved) recover(saved.error());
@@ -220,4 +231,4 @@ int run(int argc, char* argv[]) {
     recover("nothing could be booted");
 }
 
-}  // namespace xlings::subos::stage0
+}  // namespace luban::stage0

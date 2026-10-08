@@ -1,4 +1,4 @@
-export module xlings.subos.stage0;
+export module luban.stage0;
 
 import std;
 import xlings.subos.home_view;
@@ -20,11 +20,14 @@ import xlings.subos.home_view;
 //
 // Before any home or Config is read: at this point /proc is not mounted, so
 // nothing that finds a home by its executable could.
-export namespace xlings::subos::stage0 {
+namespace luban::stage0 { using xlings::subos::HomeView; }
+
+export namespace luban::stage0 {
 
 namespace fs = std::filesystem;
 
-inline constexpr std::string_view kName = "xlings-init";
+inline constexpr std::string_view kName = "xlings-init";        // xlings itself, under this name
+inline constexpr std::string_view kStandalone = "luban-init";   // apps/luban-init
 inline constexpr std::string_view kAnchor = "/etc/xlings/root.json";
 
 // What a SubOS boots into: the `init` its instance.json declares, else the
@@ -38,4 +41,4 @@ std::expected<std::optional<fs::path>, std::string> init_of(const HomeView& home
 // Runs as PID 1. Returns only when it cannot be stage-0 (not PID 1).
 int run(int argc, char* argv[]);
 
-}  // namespace xlings::subos::stage0
+}  // namespace luban::stage0

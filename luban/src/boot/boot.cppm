@@ -1,4 +1,4 @@
-export module xlings.subos.boot;
+export module luban.boot;
 
 import std;
 import xlings.libs.json;
@@ -11,7 +11,7 @@ import xlings.libs.json;
 // stage-0 runs. Pure: the file's content in, the choice and the content to
 // write back out. Stage-0 and `subos boot` share it, and the tests drive it
 // without a machine.
-export namespace xlings::subos::boot {
+export namespace luban::boot {
 
 namespace fs = std::filesystem;
 
@@ -57,4 +57,4 @@ Config record_boot(Config c, const Candidate& chosen);
 // The running boot worked: its tries are restored.
 Config mark_good(Config c);
 
-}  // namespace xlings::subos::boot
+}  // namespace luban::boot

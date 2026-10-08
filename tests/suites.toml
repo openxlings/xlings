@@ -40,6 +40,7 @@ commands = [
 platforms = ["linux"]
 commands = [
   "bash tests/e2e/run_all.sh {tarball}",
+  "bash tests/e2e/luban_init_test.sh {tarball}",
 ]
 
 # What needs root on a stock Ubuntu 24.04 (CI-only: it uses sudo): the

@@ -1,6 +1,7 @@
 module xlings.core.subos.root;
 
 import std;
+import luban.machine;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.core.profile;
@@ -10,7 +11,7 @@ import xlings.core.xvm.db;
 import xlings.core.xvm.shim;
 import xlings.subos.rootfs;
 import xlings.subos.roles;
-import xlings.subos.boot;
+import luban.boot;
 import xlings.subos.home_view;
 import xlings.subos.library_cache;
 import xlings.core.subos.store_closure;
@@ -114,7 +115,7 @@ std::expected<rl::Role, std::string> read_role(const fs::path& home, std::string
     auto host = read_running_host(home);
     if (!host) return std::unexpected(host.error());
     r.host = *host == std::string(name);
-    auto c = subos::boot::load(subos::HomeView{home}.boot_file());
+    auto c = luban::boot::load(subos::HomeView{home}.boot_file());
     if (!c) return std::unexpected(c.error());
     {
         std::error_code ec;
@@ -171,6 +172,8 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     // Stage-0 at a fixed path in every root (part 2 §8.2): what an init's
     // restart hands / to, for `subos boot <n> --now`.
     in.programs.push_back({"xlings-init", entry_of(home)});
+    if (std::error_code ec; fs::exists(home / "bin" / "luban-init", ec))
+        in.programs.push_back({"luban-init", home / "bin" / "luban-init"});
     return in;
 }
 
@@ -228,10 +231,10 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
                 return failed(laid.error());
         }
         const auto usr = rf::usr_of(subos_dir);
-        auto etc = rf::fill_machine_etc(tree / "etc", subos_dir);
+        auto etc = luban::machine::fill_machine_etc(tree / "etc", subos_dir);
         if (!etc) return failed("machine /etc " + (tree / "etc").string() + ": " + etc.error());
         out.etc_added = std::move(*etc);
-        auto users = rf::apply_sysusers(tree / "etc", usr);
+        auto users = luban::machine::apply_sysusers(tree / "etc", usr);
         if (!users) return failed("machine /etc " + (tree / "etc").string() + ": " + users.error());
         out.users_added = std::move(*users);
         if (auto cache = refresh_cache(home, name); !cache)

@@ -24,7 +24,7 @@ import xlings.subos.policy;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
-import xlings.subos.boot;
+import luban.boot;
 import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.xself;
@@ -37,7 +37,7 @@ namespace xlings::subos {
 namespace {
 
 namespace rf = xlings::subos::rootfs;
-namespace bt = xlings::subos::boot;
+namespace bt = luban::boot;
 
 fs::path home_dir_() { return Config::paths().homeDir; }
 
@@ -858,9 +858,21 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                     fs::perm_options::replace, ec);
     if (!check_io()) return 1;
+    // Stage-0's own binary travels with the client it belongs to (part 3 §8).
+    if (const auto init = entry.parent_path() / "luban-init"; fs::is_regular_file(init, ec)) {
+        fs::copy_file(init, image_home / "bin" / "luban-init", fs::copy_options::overwrite_existing, ec);
+        if (!check_io()) return 1;
+        fs::permissions(image_home / "bin" / "luban-init", fs::perms::owner_all | fs::perms::group_read
+                        | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
+                        fs::perm_options::replace, ec);
+        if (!check_io()) return 1;
+    }
+    ec.clear();
     fs::create_directories(image_home / "boot", ec);
     if (!check_io()) return 1;
     fs::create_symlink("../bin/xlings", image_home / "boot" / "xlings-init", ec);
+    if (!ec && fs::exists(image_home / "bin" / "luban-init"))
+        fs::create_symlink("../bin/luban-init", image_home / "boot" / "luban-init", ec);
     if (!check_io()) return 1;
     {
         // The home config: this instance's packages, nothing of the builder's.
@@ -981,7 +993,8 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         log::info("  docker import {} luban:{}   |   wsl --import <distro> <dir> {}", out.string(), name,
                   out.string());
     if (!disk.empty())
-        log::info("  boots with init={}/boot/xlings-init root=/dev/vda", home.string());
+        log::info("  boots with init={}/boot/{} root=/dev/vda", home.string(),
+                  fs::exists(home / "bin" / "luban-init") ? "luban-init" : "xlings-init");
     return 0;
 }
 

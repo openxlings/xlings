@@ -137,7 +137,7 @@ inline constexpr std::string_view DEFAULT_RUNTIME_QUERY = "xim:glibc";
 // `runtime_source: "fallback"`, so a stale pin can never be mistaken for a
 // resolved fact. Nothing else may read it: substituting a constant for an
 // answer under Describe is exactly the defect this file already fixed.
-inline constexpr std::string_view DEFAULT_RUNTIME_FALLBACK = "glibc@2.44";
+constexpr std::string_view DEFAULT_RUNTIME_FALLBACK = "glibc@2.44";   // not inline: defined in this unit, so a binary of modules alone links
 
 inline constexpr std::string_view OP_SET     = "set";
 inline constexpr std::string_view OP_PREPEND = "prepend";

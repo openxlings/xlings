@@ -107,6 +107,16 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin"
 
 cp "$BIN_SRC"         "$OUT_DIR/bin/xlings"
+
+# Stage-0 as its own binary (SubOS design part 3 §8): its own package, so it
+# links luban and modules/ and nothing of the frontend.
+"$MCPP_BIN" build -p luban-init --profile dist --target "$MCPP_TARGET" 2>&1 || fail "mcpp build -p luban-init failed"
+INIT_SRC="$(find "$PROJECT_DIR/target/$MCPP_TARGET" -path '*/bin/luban-init/luban-init' -type f -perm -111 -exec ls -t {} + | head -1)"
+[[ -f "$INIT_SRC" ]] || fail "luban-init not found"
+if command -v file &>/dev/null; then
+  file "$INIT_SRC" | grep -qi "statically linked" || fail "luban-init is not statically linked"
+fi
+cp "$INIT_SRC"        "$OUT_DIR/bin/luban-init"
 chmod +x "$OUT_DIR/bin/"*
 
 # .xlings.json — release packages default to GLOBAL. Users can switch mirror

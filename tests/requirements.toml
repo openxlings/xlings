@@ -726,4 +726,4 @@ status = "required"
 
 [LUBAN-INIT]
 text = "stage-0 is its own static binary and reads no Config"
-status = "planned"
+status = "required"

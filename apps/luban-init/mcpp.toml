@@ -1,0 +1,17 @@
+# luban-init: stage-0 as its own binary (SubOS design part 3 §8). Its own
+# package, so what it links is luban and the shared modules/ -- never the
+# xlings frontend: a package's binaries link every source of that package.
+[package]
+namespace = "luban"
+name      = "luban-init"
+version   = "0.1.0"
+
+[targets.luban-init]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+luban = { path = "../../luban" }
+
+[build]
+include_dirs = ["../../modules/libs/src/json"]
