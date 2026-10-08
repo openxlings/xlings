@@ -56,9 +56,24 @@ std::string fingerprint(const Plan& p) {
     return s;
 }
 
-std::string read_text(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    return {std::istreambuf_iterator<char>(in), {}};
+std::optional<std::string> read_checked_text(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        return std::nullopt;
+    const auto size = static_cast<std::streamoff>(input.tellg());
+    if (size < 0 || size > std::numeric_limits<std::streamsize>::max())
+        return std::nullopt;
+    std::string text(static_cast<std::size_t>(size), '\0');
+    input.seekg(0);
+    if (!input.read(text.data(), static_cast<std::streamsize>(text.size())) ||
+        input.peek() != std::char_traits<char>::eof() || input.bad())
+        return std::nullopt;
+    return text;
+}
+
+std::string read_text(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), {}};
 }
 
 bool safe_relative_link(const fs::path& path) {
@@ -103,41 +118,76 @@ public:
 
 // Metadata alone is not ownership: every entry must be a recorded projection
 // link, its parent directory, or one of the two metadata files we wrote.
-bool owned_generation(const fs::path& subos, int generation) {
+bool owned_generation(const fs::path& subos, int generation,
+                      std::string* checkedRecords = nullptr) {
     const auto dir = generation_dir(subos, generation);
     std::error_code ec;
-    if (!fs::is_directory(fs::symlink_status(subos / kGenerations, ec)) || ec
-        || !fs::is_directory(fs::symlink_status(dir, ec)) || ec) return false;
-    for (auto name : {"generation.json", "links.tsv"})
-        if (!fs::is_regular_file(fs::symlink_status(dir / name, ec)) || ec) return false;
-    const auto metadata = nlohmann::json::parse(read_text(dir / "generation.json"), nullptr, false);
-    if (!metadata.is_object() || !metadata.contains("number") || !metadata["number"].is_number_integer()
-        || metadata["number"] != generation) return false;
-    std::map<fs::path, fs::path> links;
-    std::set<fs::path> directories {"usr"};
-    std::istringstream records(read_text(dir / "links.tsv"));
+    if (!fs::is_directory(fs::symlink_status(subos / kGenerations, ec)) || ec ||
+        !fs::is_directory(fs::symlink_status(dir, ec)) || ec)
+        return false;
+    for (const auto name : {"generation.json", "links.tsv"})
+        if (!fs::is_regular_file(fs::symlink_status(dir / name, ec)) || ec)
+            return false;
+    const auto manifest = read_checked_text(dir / "generation.json");
+    auto contents = read_checked_text(dir / "links.tsv");
+    if (!manifest || !contents)
+        return false;
+    const auto metadata = nlohmann::json::parse(*manifest, nullptr, false);
+    if (!metadata.is_object() || !metadata.contains("number") ||
+        !metadata["number"].is_number_integer() || metadata["number"] != generation)
+        return false;
+    std::unordered_map<std::string, fs::path> links;
+    std::unordered_set<std::string> directories{"usr"};
+    std::istringstream records(*contents);
     for (std::string line; std::getline(records, line);) {
         const auto tab = line.find('\t');
-        if (tab == std::string::npos) return false;
+        if (tab == std::string::npos)
+            return false;
         const fs::path rel = line.substr(0, tab);
-        if (!safe_relative_link(rel) || !links.emplace(rel, line.substr(tab + 1)).second) return false;
-        for (auto parent = rel.parent_path(); !parent.empty(); parent = parent.parent_path())
-            directories.insert(parent);
+        if (!safe_relative_link(rel))
+            return false;
+        const auto key = rel.generic_string();
+        if (!links.emplace(key, line.substr(tab + 1)).second)
+            return false;
+        for (auto slash = key.rfind('/'); slash != std::string::npos;
+             slash = key.rfind('/', slash - 1))
+            directories.insert(key.substr(0, slash));
     }
-    std::size_t seen { 0 };
+    const auto prefix = dir.generic_string() + "/";
+    std::size_t seen{0};
+    bool sawUsr = false;
     for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
-        const auto rel = it->path().lexically_relative(dir);
-        const auto status = it->symlink_status(ec);
-        if (ec) return false;
-        if (fs::is_directory(status)) {
-            if (!directories.contains(rel)) return false;
-        } else if (fs::is_symlink(status)) {
-            const auto link = links.find(rel);
-            if (link == links.end() || fs::read_symlink(it->path(), ec) != link->second || ec) return false;
+        const auto path = it->path().generic_string();
+        if (!path.starts_with(prefix))
+            return false;
+        const auto rel = path.substr(prefix.size());
+        if (const auto link = links.find(rel); link != links.end()) {
+            // read_symlink proves both the entry type and its exact target.
+            // Do not follow it even if its directory-entry type changed.
+            it.disable_recursion_pending();
+            if (fs::read_symlink(it->path(), ec) != link->second || ec)
+                return false;
             ++seen;
-        } else if (rel != "generation.json" && rel != "links.tsv") return false;
+            continue;
+        }
+        const auto status = it->symlink_status(ec);
+        if (ec)
+            return false;
+        if (fs::is_directory(status)) {
+            if (!directories.contains(rel))
+                return false;
+            if (rel == "usr")
+                sawUsr = true;
+        } else if (!fs::is_regular_file(status) ||
+                   (rel != "generation.json" && rel != "links.tsv")) {
+            return false;
+        }
     }
-    return !ec && seen == links.size();
+    if (ec || !sawUsr || seen != links.size())
+        return false;
+    if (checkedRecords)
+        *checkedRecords = std::move(*contents);
+    return true;
 }
 
 }  // namespace
@@ -258,8 +308,7 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation) {
 
 std::expected<void, std::string> switch_to(const fs::path& subos, int generation) {
     std::error_code ec;
-    const auto dir = generation_dir(subos, generation);
-    if (!owned_generation(subos, generation) || !fs::is_directory(dir / "usr", ec))
+    if (!owned_generation(subos, generation))
         return std::unexpected(std::format("generation {} is absent or is not an intact projection", generation));
     const auto pointer = subos / std::string(kPointer);
     const auto status = fs::symlink_status(pointer, ec);
@@ -294,8 +343,9 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     const auto gens = generations(subos);
     const auto now = current(subos);
     const auto print = fingerprint(p);
-    if (now && owned_generation(subos, *now)
-        && read_text(generation_dir(subos, *now) / "links.tsv") == print) return *now;
+    std::string checkedRecords;
+    if (now && owned_generation(subos, *now, &checkedRecords) && checkedRecords == print)
+        return *now;
     if (!gens.empty() && gens.back() == std::numeric_limits<int>::max())
         return std::unexpected("generation numbers are exhausted");
     const int next = gens.empty() ? 1 : gens.back() + 1;
