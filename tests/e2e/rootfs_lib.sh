@@ -110,14 +110,23 @@ import sys
 recipe = pathlib.Path(sys.argv[1])
 candidate, port, package_name, digest = sys.argv[2:]
 text = recipe.read_text()
-match = re.search(r'\["latest"\]\s*=\s*\{\s*ref\s*=\s*"([^"]+)"', text)
-if not match or match[1] == candidate:
+linux = re.search(r'(?m)^([ \t]*)linux\s*=\s*\{', text)
+if not linux:
+    raise SystemExit("fixture needs the official Linux platform table")
+next_platform = re.search(r'(?m)^' + re.escape(linux[1]) + r'(?:macosx|windows)\s*=\s*\{', text[linux.end():])
+table = text[linux.end():linux.end() + next_platform.start()] if next_platform else text[linux.end():]
+published = set(re.findall(r'\["(\d+\.\d+\.\d+\.\d+)"\]\s*=\s*\{', table))
+number = lambda version: tuple(map(int, version.split('.')))
+older = [version for version in published if number(version) < number(candidate)]
+if not older:
     raise SystemExit("fixture needs a distinct published predecessor")
+latest = re.search(r'\["latest"\]\s*=\s*\{\s*ref\s*=\s*"([^"]+)"', table)
+predecessor = latest[1] if latest and latest[1] in older else max(older, key=number)
 recipe.write_text(text + '\npackage.xpm.linux["' + candidate + '"] = {\n'
                   + '    url = "http://127.0.0.1:' + port + '/' + package_name + '.tar.gz",\n'
                   + '    sha256 = "' + digest + '",\n'
                   + '}\npackage.xpm.linux["latest"] = { ref = "' + candidate + '" }\n')
-print(match[1])
+print(predecessor)
 PY
     )" || fail "cannot prepare the official self-update recipe"
 }
