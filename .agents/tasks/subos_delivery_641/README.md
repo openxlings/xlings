@@ -2,6 +2,11 @@
 
 更新：2026-10-08。依赖与验收见 [续行计划](../../plans/2026-10-08-subos-delivery-plan.md)。
 
+最新验收：`e8fbdd01` 的 macOS、Windows、ARM64 与 Linux root 已通过；Linux 主车道
+的五个失败已据真实现场追加 backend context / ELF runtime alias 修复。本批 dev / static
+及 109 程序编译通过，针对性 6 pass、7 namespace skip、0 fail；最终新 head CI、发布
+及真实 CN 升级仍未完成。下表及后文保留推进记录，当前证据见进度报告顶部。
+
 | 任务 | 状态 | 证据 / 后续 |
 |---|---|---|
 | 获取 #641、rebase 最新 main | 完成 | 本地 `review/pr-641-rebased`，base `c55d89a`，无冲突 |

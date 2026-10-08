@@ -54,7 +54,7 @@ xlings、libxpkg、xim-pkgindex、资源仓库分别使用独立分支/工作树
 把未出现的 URL/hash 写成可安装的 latest。客户端仍以 #641 交付，上游改动记录
 关联 PR/commit 与兼容测试，避免在客户端复制 Lua 解析或 URL 展开逻辑。
 
-## 当前证据
+## 初次证据（历史基线）
 
 初次 rebase 无冲突。原 PR 的 Linux lint 与 macOS generation 测试失败；本地清理
 测试环境后 77 个测试程序通过，但真实沙箱等 36 个 XTEST 跳过。因此尚不能发布。

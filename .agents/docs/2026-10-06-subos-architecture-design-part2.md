@@ -676,3 +676,9 @@ entry；pending/ready 与旧/新 SHA 约束中断恢复，独占 snapshot 验证
 新增六个 filesystem 用例已本地实际通过；namespace 验收仍待新 head CI。
 300 payload 的新本地测量为生成 23.034 ms、完整 checked switch 4.626 ms；保留全量
 库存及链接目标检查，原 CI 13 ms 超预算不能记为通过。
+
+backend 能力探针与实际 provider 一样显式创建 user namespace；缓存须区分当前
+user/mount namespace、凭据及 seccomp 状态，不跨宿主和 producer 复用权限结论。
+动态 worker 除 canonical runtime 目标外，须保留 ELF 声明的解释器及库搜索路径；
+私有 `/home` / `/tmp` 会遮蔽宿主的 alias。绑定限于入口声明的加载路径，已由 RO
+视图呈现的 alias 不重复挂载，不能为修复加载问题暴露整个宿主 home。

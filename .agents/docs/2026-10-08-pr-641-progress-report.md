@@ -2,10 +2,18 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（最终 review 收口中）
+## 当前交付状态（Linux 隔离回归收口中）
 
 后续实现均以追加 commit、普通 push 进入 #641，保留审查历史。main 仍为 `c55d89a`，
 候选版本为 `2026.10.8.2`，尚未合并、发布。
+
+`e8fbdd01` 的 macOS、Windows、ARM64（含原生兼容）及 Linux root 流水线已实际通过。
+Linux 主车道仍为 191 pass、5 fail、4 skip；ASAN 尚在运行。完整失败现场证明，worker
+在加载 ELF 入口时即因解释器 literal 路径不可见而退出，审计握手错误为次生报错；
+前一轮将该错误直接归于两个 listener 的诊断不充分。单 listener 的实际 kernel 回归
+已通过，但 namespace 组合验收须等加载路径修复后的 CI。私有域 probe 已正确找到
+system bwrap，剩余假阴性来自 uid=0、清 capabilities 的 context 中省略 `--unshare-user`。
+两项修复与实际回归已完成本地构建，待新 head CI，不能沿用其他 head 的 green。
 
 `4daee595` 的 ARM64 与 Linux root 流水线通过；macOS、Windows 的构建及单元测试
 通过，但两个旧 shell/PowerShell fixture 与新入口所有权边界不兼容，已按实际失败
@@ -528,3 +536,16 @@ sentinel 已留快照，待正式候选发布后执行真实 self update 对比�
 阻塞 exec 与 datagram，net 拒绝及 exec allow/deny 实测通过。另针对性 XTEST 5 pass、
 16 skip、0 fail；跳过仅因本机无法创建 bwrap namespace，不能据此宣称 namespace
 组合验收完成。schema/YAML parse、两项 safety lint、whitespace 检查通过。
+
+`e8fbdd01` 后续修复与有限复验：backend 探针显式 `--unshare-user`，缓存区分
+user/mount namespace、凭据及 seccomp 状态；动态 worker 保留 exact canonical 与
+ELF 声明的解释器/RPATH 别名，只在被私有视图遮蔽时补 RO 绑定。新动态入口回归
+使用目录与文件双重 loader symlink，要求 dev/locked 启动成功、loader 不可写、
+相邻宿主文件不可读；宿主启动基线已实际通过，真实隔离部分本机明确 skip。
+
+本批 dev 30.81 s、dist static 24.01 s 构建通过；109 个测试程序一次编译通过
+（126.570 s）。五个相关程序全部 exit 0：注册用例 6 pass、7 namespace skip、
+0 fail，另四个实际 kernel seccomp 用例通过。安全 lint 与 whitespace 检查通过。
+镜像 self-update fixture 动态选取官方 Linux 的真实前序版本，兼容发布后 latest
+已与候选相等的情况；两种索引现场的前序选择与 shell 语法检查通过。仍需完整
+固定新 head 的隔离、性能、镜像升级和各平台 CI，尚未合入、发布。
