@@ -287,6 +287,7 @@ jobs:
           # own, depending on the mcpp version.
           xdev="$(find target apps/xdev -name xdev -type f -perm -111 2>/dev/null | head -1)"
           [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
+          xdev="$GITHUB_WORKSPACE/$xdev"
           export XDEV_BIN="$xdev"
           mcpp test -p xdev
           "$xdev" test --out target/xdev/macos-unit || {
