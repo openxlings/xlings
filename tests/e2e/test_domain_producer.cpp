@@ -4,6 +4,7 @@ import xlings.testkit;
 import std;
 import xlings.libs.json;
 import xlings.core.home.domain_producer;
+import xlings.core.elfread;
 import xlings.subos.home_view;
 import xlings.subos.manifest;
 
@@ -99,6 +100,49 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     auto invalidObserve = home.xlings({"subos", "exec", "domain-root", "--observe", "unknown", "--", "/bin/true"});
     EXPECT_EQ(invalidObserve.exit_code, 125) << invalidObserve.transcript();
     EXPECT_NE(invalidObserve.transcript().find("--observe expects"), std::string::npos);
+
+    // Explicit grants provide a shell and its exact loader dependencies; the
+    // root still obtains no host directories implicitly.
+    const auto shell = xlings::elfread::read("/bin/sh");
+    ASSERT_TRUE(shell);
+    std::set<fs::path> shellFiles{"/bin/sh"};
+    if (!shell->interpreter.empty()) {
+        shellFiles.insert(shell->interpreter);
+        auto libraries = tk::run({.argv = {shell->interpreter, "--list", "/bin/sh"}, .env = home.env()});
+        ASSERT_EQ(libraries.exit_code, 0) << libraries.transcript();
+        std::istringstream tokens(libraries.out);
+        std::string token;
+        while (tokens >> token) if (token.starts_with('/')) shellFiles.insert(token);
+    }
+    std::vector<std::string> shellGrants;
+    for (const auto& file : shellFiles) {
+        ASSERT_TRUE(fs::is_regular_file(file)) << file;
+        shellGrants.insert(shellGrants.end(), {"--mount", file.string() + ":" + file.string() + ":ro"});
+    }
+    const auto mountSource = home.root() / "domain-mount-source";
+    tk::write_file(mountSource / "probe", "outer mount source");
+    tk::write_file(privateHome / "domain-mount-source/probe", "wrong private mount source");
+    for (const auto* spelling : {"./domain-mount-source", "~/domain-mount-source"}) {
+        std::vector<std::string> args{"subos", "exec", "domain-root", "--mount",
+            std::string(spelling) + ":/mnt/domain-probe:ro"};
+        args.insert(args.end(), shellGrants.begin(), shellGrants.end());
+        args.insert(args.end(), {"--", "/bin/sh", "-c",
+            "IFS= read -r value < /mnt/domain-probe/probe || :; printf '%s|%s|%s' \"$value\" \"$1\" \"$2\"",
+            "probe", "--mount", "~/command-literal:/unused:ro"});
+        auto mounted = home.xlings(args);
+        ASSERT_EQ(mounted.exit_code, 0) << mounted.transcript();
+        EXPECT_EQ(mounted.out, "outer mount source|--mount|~/command-literal:/unused:ro");
+
+        args = {"subos", "use", "domain-root", "--no-keep",
+            "--mount=" + std::string(spelling) + ":/mnt/domain-probe:ro"};
+        args.insert(args.end(), shellGrants.begin(), shellGrants.end());
+        args.insert(args.end(), {"--cmd",
+            "IFS= read -r value < /mnt/domain-probe/probe || :; printf 'use-mount:%s' \"$value\""});
+        auto used = home.xlings(args);
+        ASSERT_EQ(used.exit_code, 0) << used.transcript();
+        EXPECT_NE(used.out.find("use-mount:outer mount source"), std::string::npos) << used.transcript();
+        EXPECT_EQ(used.out.find("wrong private mount source"), std::string::npos);
+    }
 
     auto doctor = home.xlings({"subos", "doctor", "domain-root", "--json"});
     const auto diagnosed = Json::parse(doctor.out);

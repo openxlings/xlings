@@ -2050,6 +2050,7 @@ int run(int argc, char* argv[], EventStream& stream) {
         // already passes /dev and /sys through wholesale).
         // Ref: .agents/docs/2026-05-22-subos-sandbox-gpu-passthrough.md
         bool gpu = false;
+        std::vector<std::pair<int, std::string>> normalizedMounts;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--global") { mode = "global"; }
@@ -2070,6 +2071,12 @@ int run(int argc, char* argv[], EventStream& stream) {
                 auto r = parse_isolation_flag_(a, i, argc, argv, iso, err);
                 if (r < 0) { usageError(err); return 1; }
                 if (r == 0) { usageError("unknown option for `xlings subos use`: " + a); return 1; }
+                if (a == "--mount" || a.starts_with("--mount=")) {
+                    const auto& mount = iso.overrides.mounts.back();
+                    auto spec = mount.src + (mount.dst.empty() ? "" : ":" + mount.dst);
+                    if (mount.mode_given) spec += mount.rw ? ":rw" : ":ro";
+                    normalizedMounts.emplace_back(i, a == "--mount" ? spec : "--mount=" + spec);
+                }
                 sandbox = sandbox || iso.sandbox;
                 if (!iso.backend.empty()) sandbox_backend = iso.backend;
             }
@@ -2148,6 +2155,7 @@ int run(int argc, char* argv[], EventStream& stream) {
 
         std::vector<std::string> domainArgs{"subos", "use"};
         domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        for (const auto& [index, spec] : normalizedMounts) domainArgs[index - 1] = spec;
         if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
 
         if (mode == "global") {

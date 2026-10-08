@@ -157,6 +157,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     std::optional<std::chrono::milliseconds> timeout;
     bool json = false, temp = false;
     IsolationArgs iso;
+    std::vector<std::pair<int, std::string>> normalizedMounts;
     std::vector<std::string> command;
     auto fail = [&](std::string message, std::string hint = {}) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = std::move(message),
@@ -169,8 +170,15 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         std::string a = argv[i];
         if (a == "--") { command.assign(argv + i + 1, argv + argc); break; }
         std::string err;
-        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) continue;
-        else if (r < 0) return fail(err);
+        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) {
+            if (a == "--mount" || a.starts_with("--mount=")) {
+                const auto& mount = iso.overrides.mounts.back();
+                auto spec = mount.src + (mount.dst.empty() ? "" : ":" + mount.dst);
+                if (mount.mode_given) spec += mount.rw ? ":rw" : ":ro";
+                normalizedMounts.emplace_back(i, a == "--mount" ? spec : "--mount=" + spec);
+            }
+            continue;
+        } else if (r < 0) return fail(err);
         if (a == "--json") json = true;
         else if (a == "--temp") temp = true;
         else if (a == "--from" && i + 1 < argc) from = argv[++i];
@@ -219,6 +227,7 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
     if (!temp) {
         std::vector<std::string> domainArgs{"subos", "exec"};
         domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        for (const auto& [index, spec] : normalizedMounts) domainArgs[index - 1] = spec;
         if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
     }
 
