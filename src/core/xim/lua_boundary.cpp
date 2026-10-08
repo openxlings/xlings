@@ -361,7 +361,13 @@ struct Worker {
                     const auto& contents = *captured;
                     const auto published = recipe_logs / (scratch.filename().string() + "." +
                                                           source.filename().string());
-                    platform::write_file_atomic(published.string(), contents);
+                    try {
+                        platform::write_file_atomic(published.string(), contents);
+                    } catch (const std::exception& error) {
+                        failure = "cannot publish recipe log " + published.string() + ": " +
+                                  error.what();
+                        return std::unexpected(*failure);
+                    }
                     if (!answer.at("ok").get<bool>()) {
                         std::istringstream lines(contents);
                         std::deque<std::string> tail;
@@ -406,7 +412,22 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
         w->effect_context = context;
         w->readonly_payload = readonly_payload;
         w->audit_state->path = home.logs_dir(paths.activeSubos) / "events.ndjson";
-        w->recipe_logs = paths.homeDir / "logs" / "recipes";
+        w->recipe_logs = fs::canonical(paths.homeDir);
+        for (const auto directory : {"logs", "recipes"}) {
+            w->recipe_logs /= directory;
+            std::error_code error;
+            const auto status = fs::symlink_status(w->recipe_logs, error);
+            if (error && error != std::errc::no_such_file_or_directory)
+                return std::unexpected("cannot inspect recipe log directory: " + error.message());
+            if (fs::exists(status) && !fs::is_directory(status))
+                return std::unexpected("recipe log directory is not an owned directory: " +
+                                       w->recipe_logs.string());
+            if (!fs::exists(status))
+                fs::create_directory(w->recipe_logs);
+            if (fs::canonical(w->recipe_logs) != w->recipe_logs)
+                return std::unexpected("recipe log directory traverses a symlink: " +
+                                       w->recipe_logs.string());
+        }
         w->audit_state->required = declared.preset == subos::policy::Preset::Locked;
         auto parent = home.run_dir(paths.activeSubos) / "lua";
         fs::create_directories(parent);

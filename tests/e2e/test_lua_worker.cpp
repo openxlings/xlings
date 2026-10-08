@@ -96,6 +96,8 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     ASSERT_TRUE(home.seed_sandbox_backend());
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
     ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
+    const auto recipe_logs = home.dir() / "logs" / "recipes";
+    ASSERT_FALSE(fs::exists(recipe_logs));
     const auto forbidden = home.root() / "host-secret";
     const auto external = home.root() / "external-recipes";
     const auto script = home.dir() / "data/external-recipes/script.lua";
@@ -104,9 +106,12 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     fs::create_directory_symlink(external, script.parent_path());
     tk::write_file(forbidden, "host original");
     const auto quoted = "'" + forbidden.generic_string() + "'";
-    tk::write_file(script, "local r=io.open([[" + forbidden.generic_string() +
+    const std::string load_output = "RECIPE_LOAD_OUTPUT_BELONGS_IN_ITS_LOG";
+    tk::write_file(script, "print('" + load_output + "')\nlocal r=io.open([[" +
+                               forbidden.generic_string() +
                                "]],'r'); assert(r==nil, 'unrelated host file became visible')\n"
-                               "local f=io.open([[" + forbidden.generic_string() +
+                               "local f=io.open([[" +
+                               forbidden.generic_string() +
                                "]],'w'); if f then f:write('virtual top-level'); f:close() end\n"
                                "function xpkg_main()\n"
                                " os.execute([[printf escaped > " +
@@ -118,8 +123,43 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
                                "end\n");
     const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
     EXPECT_EQ(result.exit_code, 0) << result.transcript();
+    EXPECT_EQ(result.out.find(load_output), std::string::npos);
+    ASSERT_TRUE(fs::is_directory(recipe_logs));
+    bool output_published = false;
+    for (const auto& file : fs::directory_iterator(recipe_logs)) {
+        if (file.path().filename().string().ends_with(".executor.load.log") &&
+            tk::read_file(file.path()).find(load_output) != std::string::npos)
+            output_published = true;
+    }
+    EXPECT_TRUE(output_published);
     EXPECT_EQ(tk::read_file(forbidden), "host original");
     EXPECT_TRUE(fs::is_symlink(script.parent_path()));
+}
+
+XTEST(LuaWorker, RecipeLogDirectorySymlinkRefusesBeforeRecipeLoad, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-log-symlink");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
+    const auto outside = home.root() / "user-log-directory";
+    const auto sentinel = outside / "user-file";
+    tk::write_file(sentinel, "user-owned bytes");
+    const auto before = fs::last_write_time(sentinel);
+    const auto recipe_logs = home.dir() / "logs" / "recipes";
+    fs::create_directories(recipe_logs.parent_path());
+    fs::create_directory_symlink(outside, recipe_logs);
+    const auto script = home.root() / "script.lua";
+    tk::write_file(script, "error('RECIPE_TOP_LEVEL_MUST_NOT_RUN')\nfunction xpkg_main() end\n");
+    const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(result.exit_code, 0) << result.transcript();
+    EXPECT_NE(result.transcript().find("recipe log directory"), std::string::npos);
+    EXPECT_EQ(result.transcript().find("RECIPE_TOP_LEVEL_MUST_NOT_RUN"), std::string::npos);
+    EXPECT_TRUE(fs::is_symlink(recipe_logs));
+    EXPECT_EQ(tk::read_file(sentinel), "user-owned bytes");
+    EXPECT_EQ(fs::last_write_time(sentinel), before);
+    EXPECT_EQ(std::distance(fs::directory_iterator(outside), fs::directory_iterator{}), 1);
 }
 
 XTEST(LuaWorker, RuntimeInterpreterAliasUnderPrivateTmpRemainsExecutableAndReadonly, .area = "xim",
