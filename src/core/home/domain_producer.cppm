@@ -15,6 +15,7 @@ struct Scope {
 // Missing descriptor is a native scope; a present invalid descriptor is an error.
 std::expected<std::optional<Scope>, std::string> read_scope(const fs::path& ownerHome,
                                                           std::string_view name);
+std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::path& entry);
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry);
 struct OutputBinding { fs::path source; fs::path guest; };
 std::expected<std::vector<std::string>, std::string> command(const Domain& domain,

@@ -1,6 +1,8 @@
 module xlings.core.home.domain_producer;
 import std;
 import xlings.core.home;
+import xlings.core.entry_binary;
+import xlings.core.xself.init;
 import xlings.core.home_config;
 import xlings.core.home.prefix_domain;
 import xlings.core.home.domain_producer_source;
@@ -105,6 +107,18 @@ std::expected<std::optional<Scope>, std::string> read_scope(const fs::path& owne
     return std::optional<Scope>{Scope{*selected, control, producer, selected->logicalHome / "subos" / name}};
 }
 
+std::expected<void, std::string> refresh_entry(const Domain& domain, const fs::path& entry) {
+    auto checked = prefix_domain::parse(prefix_domain::serialize(domain), domain.ownerHome);
+    if (!checked) return std::unexpected(checked.error());
+    if (!domain.privateHome) return std::unexpected("managed dispatcher requires a private domain");
+    auto refreshed = entry_binary::refresh_mirror(entry, {domain.ownerHome, domain.physicalHome});
+    if (!refreshed) return std::unexpected(refreshed.error());
+    const auto shims = xself::repoint_stale_shims(domain.physicalHome);
+    if (shims.refused || !shims.failed.empty())
+        return std::unexpected("private dispatcher is current but stale shims could not be repaired; retry the owner command");
+    return {};
+}
+
 std::expected<void, std::string> prepare(const Domain& domain, const fs::path& entry) {
     if (!domain.privateHome) return std::unexpected("namespace producer requires an owner-private domain");
     if (auto reserved = prefix_domain::prepare_private(domain); !reserved) return reserved;
@@ -127,29 +141,7 @@ std::expected<void, std::string> prepare(const Domain& domain, const fs::path& e
         auto config = read_json_for_update(configFile);
         if (!config) return std::unexpected(config.error());
     }
-    const auto binary = domain.physicalHome / "bin/xlings";
-    auto binaryExists = present_(binary);
-    if (!binaryExists) return std::unexpected(binaryExists.error());
-    std::error_code ec;
-    if (*binaryExists) {
-        if (auto regular = regular_(binary); !regular) return regular;
-        const auto proof = domain.physicalHome / ".xlings-domain-entry.json";
-        if (auto regular = regular_(proof); !regular) return regular;
-        auto record = read_json_for_update(proof);
-        if (!record || !record->contains("source") || (*record)["source"] != fs::canonical(entry, ec).generic_string() || ec)
-            return std::unexpected(binary.string() + ": domain dispatcher ownership/source changed; preserved");
-        const auto current = platform::read_file_to_string(entry.string());
-        if (platform::read_file_to_string(binary.string()) != current)
-            return std::unexpected(binary.string() + ": domain dispatcher differs from selected build; explicit domain recovery required");
-    } else {
-        const auto source = fs::canonical(entry, ec);
-        if (ec) return std::unexpected(entry.string() + ": cannot read selected domain dispatcher");
-        if (!fs::copy_file(source, binary, fs::copy_options::none, ec) || ec)
-            return std::unexpected(binary.string() + ": cannot reserve domain dispatcher: " + ec.message());
-        if (auto written = write_(domain.physicalHome / ".xlings-domain-entry.json",
-                Json{{"schema", 1}, {"source", source.generic_string()}}); !written) return written;
-    }
-    return {};
+    return refresh_entry(domain, entry);
 }
 
 std::expected<std::vector<std::string>, std::string> command(const Domain& domain,
@@ -238,6 +230,8 @@ std::expected<std::vector<std::string>, std::string> command(const Domain& domai
 }
 std::expected<int, std::string> run(const Domain& domain, std::span<const std::string> arguments,
                                   std::optional<OutputBinding> output, bool runtime) {
+    if (auto refreshed = refresh_entry(domain, platform::get_executable_path()); !refreshed)
+        return std::unexpected(refreshed.error());
     struct Stage {
         fs::path path;
         ~Stage() {

@@ -108,15 +108,19 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     {
         std::ofstream events(producer.logs_dir("domain-root") / "events.ndjson", std::ios::app);
         ASSERT_TRUE(events);
-        events << Json{{"kind", "lifecycle"}, {"event", "domain-route-probe"}, {"session", "--global"}}.dump() << '\n';
+        events << Json{{"kind", "lifecycle"}, {"event", "domain-route-probe"}, {"session", "domain-session-probe"}}.dump() << '\n';
     }
     tk::write_file(outer.logs_dir("domain-root") / "events.ndjson",
-                  Json{{"kind", "lifecycle"}, {"event", "outer-control-probe"}, {"session", "--global"}}.dump() + "\n");
-    auto logged = home.xlings({"subos", "log", "domain-root", "--json", "--session", "--global"});
+                  Json{{"kind", "lifecycle"}, {"event", "outer-control-probe"}, {"session", "domain-session-probe"}}.dump() + "\n");
+    auto logged = home.xlings({"subos", "log", "domain-root", "--json", "--session", "domain-session-probe"});
     ASSERT_EQ(logged.exit_code, 0) << logged.transcript();
     EXPECT_EQ(Json::parse(logged.out)["event"], "domain-route-probe");
+    auto missingSession = home.xlings({"subos", "log", "domain-root", "--session", "--global"});
+    EXPECT_NE(missingSession.exit_code, 0);
+    EXPECT_NE(missingSession.transcript().find("missing value"), std::string::npos);
 
-    const auto eventArguments = Json{{"name", "domain-root"}, {"session", "--global"}}.dump();
+
+    const auto eventArguments = Json{{"name", "domain-root"}, {"session", "domain-session-probe"}}.dump();
     auto interfaceEvents = home.xlings({"interface", "subos_events", "--args", eventArguments});
     ASSERT_EQ(interfaceEvents.exit_code, 0) << interfaceEvents.transcript();
     std::istringstream eventLines(interfaceEvents.out);
@@ -246,7 +250,7 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_TRUE(fs::is_regular_file(outer.instance_file("domain-sibling")));
     EXPECT_EQ(tk::read_file(payload / "produced-prefix"), payloadBefore);
     EXPECT_EQ(tk::read_file(outer.logs_dir("domain-root") / "events.ndjson"),
-              Json({{"kind", "lifecycle"}, {"event", "outer-control-probe"}, {"session", "--global"}}).dump() + "\n");
+              Json({{"kind", "lifecycle"}, {"event", "outer-control-probe"}, {"session", "domain-session-probe"}}).dump() + "\n");
     EXPECT_EQ(tk::read_file(hostSentinel), "host must remain intact");
 
 }
