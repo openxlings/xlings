@@ -25,6 +25,9 @@ public:
     // 0 means orderly EOF; a timeout is an error, never EOF.
     std::expected<std::size_t, std::string>
     receive(std::span<char> bytes, std::chrono::milliseconds timeout);
+    // nullopt means the bounded wait expired; a value of zero means EOF.
+    std::expected<std::optional<std::size_t>, std::string>
+    poll_receive(std::span<char> bytes, std::chrono::milliseconds timeout);
     std::expected<void, std::string>
     send_all(std::string_view bytes, std::chrono::milliseconds timeout);
     void close() noexcept;

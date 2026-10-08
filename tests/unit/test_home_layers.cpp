@@ -156,8 +156,8 @@ XTEST(HomeLayers, BorrowIncludesRuntimeDependenciesAndPinsForeignHome, .area = "
     const auto& data = plan->registrations.at("layer-tool").versions.at("fixture:1.0.0");
     EXPECT_EQ(data.sourceHome, fs::canonical(layer.home).string());
     EXPECT_EQ(data.sourceScope, "default");
-    EXPECT_EQ(data.path, (layer.tool / "bin").string());
-    EXPECT_EQ(data.alias.front(), (layer.tool / "bin/layer-tool").string());
+    EXPECT_EQ(data.path, (fs::canonical(layer.tool) / "bin").string());
+    EXPECT_EQ(data.alias.front(), (fs::canonical(layer.tool) / "bin/layer-tool").string());
     const auto roundtrip = xvm::vdata_from_json(xvm::vdata_to_json(data));
     EXPECT_EQ(roundtrip.sourceHome, data.sourceHome);
     EXPECT_EQ(roundtrip.sourceScope, data.sourceScope);

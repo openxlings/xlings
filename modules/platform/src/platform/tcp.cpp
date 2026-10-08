@@ -4,6 +4,7 @@ module;
 #define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #pragma comment(lib, "ws2_32.lib")
 #else
@@ -154,6 +155,14 @@ std::expected<TcpStream, std::string> TcpStream::connect_loopback(std::uint16_t 
 }
 
 std::expected<std::size_t, std::string> TcpStream::receive(std::span<char> bytes,
+    std::chrono::milliseconds timeout) {
+    auto read = poll_receive(bytes, timeout);
+    if (!read) return std::unexpected(read.error());
+    if (!*read) return std::unexpected("loopback receive timed out");
+    return **read;
+}
+
+std::expected<std::optional<std::size_t>, std::string> TcpStream::poll_receive(std::span<char> bytes,
                                                         std::chrono::milliseconds timeout) {
     if (handle_ == -1) return std::unexpected("socket is closed");
     if (bytes.empty()) return 0;
@@ -162,7 +171,7 @@ std::expected<std::size_t, std::string> TcpStream::receive(std::span<char> bytes
     for (;;) {
         const auto ready = wait_socket(socket, false, deadline);
         if (!ready) return std::unexpected(ready.error());
-        if (!*ready) return std::unexpected("loopback receive timed out");
+        if (!*ready) return std::nullopt;
         const auto length = static_cast<int>(std::min<std::size_t>(bytes.size(), std::numeric_limits<int>::max()));
         const auto read = ::recv(socket, bytes.data(), length, 0);
         if (read >= 0) return static_cast<std::size_t>(read);

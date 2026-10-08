@@ -5,6 +5,7 @@ module;
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
 #include <cerrno>

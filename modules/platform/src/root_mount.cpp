@@ -5,20 +5,15 @@ module;
 #include <cstring>
 #include <fcntl.h>
 #include <linux/nsfs.h>
-#include <linux/openat2.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifndef SYS_mount_setattr
-#define SYS_mount_setattr 442
-#endif
 #endif
 
 module xlings.platform.root_mount;
@@ -28,6 +23,13 @@ import std;
 namespace xlings::platform::root_mount {
 #if defined(__linux__)
 namespace {
+// Stable kernel ABIs; the static toolchain does not ship recent UAPI headers.
+struct OpenHow { std::uint64_t flags, mode, resolve; };
+struct MountAttributes { std::uint64_t attr_set, attr_clr, propagation, userns_fd; };
+constexpr long kOpenat2 = 437, kOpenTree = 428, kMoveMount = 429, kMountSetattr = 442;
+constexpr std::uint64_t kInRoot = 0x10, kNoSymlinks = 0x04, kNoMagicLinks = 0x02;
+constexpr unsigned kOpenTreeClone = 1, kMoveMountEmpty = 0x04;
+constexpr std::uint64_t kReadOnly = 0x01, kNoSuid = 0x02, kNoDev = 0x04;
 struct Descriptors {
     std::vector<int> values;
     ~Descriptors() { for (const int fd : values) if (fd >= 0) ::close(fd); }
@@ -44,10 +46,10 @@ bool absolute_normal(const std::filesystem::path& path) {
         && path.native().find('\0') == std::string::npos;
 }
 int open_beneath(int root, const std::string& path) {
-    open_how how{};
+    OpenHow how{};
     how.flags = O_PATH | O_CLOEXEC;
-    how.resolve = RESOLVE_IN_ROOT | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
-    return static_cast<int>(::syscall(SYS_openat2, root, path.c_str(), &how, sizeof(how)));
+    how.resolve = kInRoot | kNoSymlinks | kNoMagicLinks;
+    return static_cast<int>(::syscall(kOpenat2, root, path.c_str(), &how, sizeof(how)));
 }
 struct Mount {
     int source;
@@ -58,15 +60,15 @@ struct ChildError { int step; int code; int rollback; };
 // Clone the opened file or directory as a detached mount, make it read-only
 // before publication, then attach it. No writable mount is visible to guests.
 int bind_readonly(int source, const char* destination) {
-    const int tree = static_cast<int>(::syscall(SYS_open_tree, source, "",
-        AT_EMPTY_PATH | OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC));
+    const int tree = static_cast<int>(::syscall(kOpenTree, source, "",
+        AT_EMPTY_PATH | kOpenTreeClone | O_CLOEXEC));
     if (tree < 0) return -1;
-    mount_attr attributes{};
-    attributes.attr_set = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV;
-    const bool configured = ::syscall(SYS_mount_setattr, tree, "", AT_EMPTY_PATH,
+    MountAttributes attributes{};
+    attributes.attr_set = kReadOnly | kNoSuid | kNoDev;
+    const bool configured = ::syscall(kMountSetattr, tree, "", AT_EMPTY_PATH,
         &attributes, sizeof(attributes)) == 0;
-    const bool attached = configured && ::syscall(SYS_move_mount, tree, "", AT_FDCWD,
-        destination, MOVE_MOUNT_F_EMPTY_PATH) == 0;
+    const bool attached = configured && ::syscall(kMoveMount, tree, "", AT_FDCWD,
+        destination, kMoveMountEmpty) == 0;
     const int saved = errno;
     ::close(tree);
     errno = saved;

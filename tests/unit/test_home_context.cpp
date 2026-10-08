@@ -190,7 +190,7 @@ XTEST(Deployment, TheSystemConfigIsADefaultTheHomeOverrides,
     auto doctor = home.xlings({"self", "doctor"}, env);
     EXPECT_NE(doctor.transcript().find("system config: " + sys.string()), std::string::npos)
         << doctor.transcript();
-    EXPECT_NE(doctor.transcript().find("system layer: " + layer.string()), std::string::npos)
+    EXPECT_NE(doctor.transcript().find("system layer: " + fs::canonical(layer).string()), std::string::npos)
         << doctor.transcript();
 }
 
