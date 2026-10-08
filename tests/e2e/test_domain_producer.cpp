@@ -140,9 +140,28 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
         std::string token;
         while (tokens >> token) if (token.starts_with('/')) shellFiles.insert(token);
     }
+    // Empty templates have no shell in the readonly /usr projection. Reserve
+    // this fixture's machine mountpoints without changing that projection.
+    const auto machineRoot = privateHome / "subos/domain-root/rootfs";
+    for (const auto* directory : {"bin", "lib", "lib64"}) {
+        const auto at = machineRoot / directory;
+        ASSERT_TRUE(fs::is_symlink(fs::symlink_status(at))) << at;
+        ASSERT_EQ(fs::read_symlink(at), fs::path("usr") / directory) << at;
+        ASSERT_TRUE(fs::remove(at));
+        ASSERT_TRUE(fs::create_directory(at));
+    }
     std::vector<std::string> shellGrants;
     for (const auto& file : shellFiles) {
         ASSERT_TRUE(fs::is_regular_file(file)) << file;
+        const auto relative = file.relative_path();
+        ASSERT_FALSE(relative.empty());
+        const auto directory = relative.begin()->generic_string();
+        ASSERT_TRUE(directory == "bin" || directory == "lib" || directory == "lib64")
+            << "fixture runtime grant needs a machine mountpoint: " << file;
+        const auto destination = machineRoot / relative;
+        fs::create_directories(destination.parent_path());
+        ASSERT_FALSE(fs::exists(fs::symlink_status(destination))) << destination;
+        tk::write_file(destination, "");
         shellGrants.insert(shellGrants.end(), {"--mount", file.string() + ":" + file.string() + ":ro"});
     }
     const auto mountSource = home.root() / "domain-mount-source";

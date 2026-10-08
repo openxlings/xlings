@@ -5,7 +5,7 @@
 ## 当前交付状态（系统模板借用配置修复待最新 CI）
 
 后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
-候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§23；以下保留历史轮次证据。
+候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§24；以下保留历史轮次证据。
 
 `8e8638fc` 的 macOS（147 pass、0 fail、2 skip）、Windows（105/0/44）、
 Linux root 完整流水线通过。ARM64 首次 qemu version 检查退出 139，同一 head
@@ -726,3 +726,29 @@ missing base自动安装一致，在新SubOS创建之前，不提前切到尚不
 通过。既有legacy fork shell四场景全部通过（local独立性、missing base自动安装、
 equals参数、missing source拒绝）。删除/平台header lint和diff-check通过；lock
 重排语义一致已恢复。真实借用config和全部静态门禁待下一固定headCI。
+
+## 24. 系统来源实际通过；空模板的 runtime grant 目标修正
+
+固定`77431da7`：macOS147pass/0fail/2skip、Windows105/0/44、ARM cross/native、
+Linux root完整通过；Linux主单元204/0/5、static release和cold-home通过。
+ASAN实际107程序pass、0fail，1572.62s（build1521.52s/run50.05s），无sanitizer错误。
+静态source实际两个pass/0skip：
+`DomainSourceProducer.ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage` 3876ms，
+`RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions` 56ms。§23产品修复已有
+真实namespace、只读来源、完整导出与未知字段保留的执行证据。
+
+随后`DomainProducer.InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData`
+在显式shell file grant阶段退出125，bwrap报`Can't create file at /bin/sh`。
+原grant未在重放中被改名；fixture的空template没有/usr/bin/sh，/bin等merged-usr
+链接指向不可创建runtime mountpoint的只读投影。后续namespace FD错误是启动失败
+结果，不是另一处broker/FD根因。性能和发行版下游因此未执行。
+
+最小调整只改fixture：精确核验bin/lib/lib64原始links后，仅移除本次Home自有的
+已知link并创建机器目录，按实际shell/loader/library literal目标创建regular占位。
+未知条目不替换，/usr和generation/payload不写；仍按原单文件RO grants实际执行，
+不挂任何whole host目录。UID0/Cap0、exec/use两组 ./与~/mount source及`--`后argv
+原样断言保留。产品源码、scope/closure和权限不变。相关程序编译6.771s通过；本机
+无bwrap的实际namespace明确skip，不计验收pass，等待下一固定head硬门禁。
+
+用户最新要求：技术验收和综合自审完成后先汇报，用户review决定是否合入；本轮
+不合入、不发布。发布/CN latest实测保留为获准后的步骤，不冒充已完成。
