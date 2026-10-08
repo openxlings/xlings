@@ -6,9 +6,9 @@
 version = 2
 
 [package."mcpplibs.xpkg"]
-version = "7c202104625a072b5e6553603cc18859c3e29b47"
-source  = "git+https://github.com/openxlings/libxpkg.git#rev=7c202104625a072b5e6553603cc18859c3e29b47"
-hash    = "fnv1a:004e30bad96166b7"
+version = "912720f7aa2204a4c48f0d989331af993bb3c1e4"
+source  = "git+https://github.com/openxlings/libxpkg.git#rev=912720f7aa2204a4c48f0d989331af993bb3c1e4"
+hash    = "fnv1a:84ad1e27eb935f69"
 
 [package."compat.bzip2"]
 namespace = "compat"
