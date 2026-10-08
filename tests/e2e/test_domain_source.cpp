@@ -71,13 +71,37 @@ XTEST(DomainSourceProducer, ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage
                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}}.dump());
     auto selected = domain::resolve(owner.dir(), "/xlings", physicalSource);
     ASSERT_TRUE(selected) << selected.error();
-    ASSERT_TRUE(producer::prepare(*selected, tk::xlings_binary()));
+    auto prepared = producer::prepare(*selected, tk::xlings_binary());
+    ASSERT_TRUE(prepared) << prepared.error();
+    // run() refreshes from the calling CLI image; this caller is a GTest
+    // program. Select the candidate explicitly and execute the same command.
+    int operation { 0 };
+    auto runProducer = [&](std::span<const std::string> arguments,
+                           std::optional<producer::OutputBinding> output = std::nullopt)
+        -> std::expected<tk::RunResult, std::string> {
+        auto refreshed = producer::refresh_entry(*selected, tk::xlings_binary());
+        if (!refreshed) return std::unexpected(refreshed.error());
+        const auto stage = owner.root() / ("source-view-" + std::to_string(operation++));
+        std::error_code ec;
+        if (!fs::create_directory(stage, ec) || ec)
+            return std::unexpected("cannot reserve fixture source facade " + stage.string() + ": " + ec.message());
+        auto facade = xlings::home::domain_producer_source::prepare(*selected, stage);
+        if (!facade) return std::unexpected(facade.error());
+        auto command = producer::command(*selected, arguments, output, &*facade);
+        if (!command) return std::unexpected(command.error());
+        return tk::run({.argv = std::move(*command), .env = owner.env(), .cwd = owner.root(),
+                        .timeout = std::chrono::seconds(120)});
+    };
     const std::vector<std::string> initialize{"self", "init"};
-    auto initialized = producer::run(*selected, initialize);
-    ASSERT_TRUE(initialized) << initialized.error(); ASSERT_EQ(*initialized, 0);
+    auto initialized = runProducer(initialize);
+    ASSERT_TRUE(initialized) << initialized.error();
+    ASSERT_FALSE(initialized->timed_out) << initialized->transcript();
+    ASSERT_EQ(initialized->exit_code, 0) << "signal=" << initialized->signal << '\n' << initialized->transcript();
     const std::vector<std::string> create{"subos", "new", "source-root", "--rootfs", "--from", "fixture:domain-source@1.0.0"};
-    auto created = producer::run(*selected, create);
-    ASSERT_TRUE(created) << created.error(); ASSERT_EQ(*created, 0);
+    auto created = runProducer(create);
+    ASSERT_TRUE(created) << created.error();
+    ASSERT_FALSE(created->timed_out) << created->transcript();
+    ASSERT_EQ(created->exit_code, 0) << "signal=" << created->signal << '\n' << created->transcript();
     ASSERT_TRUE(producer::publish_scope(*selected, "source-root"));
     const auto copiedSlot = selected->physicalHome / "data/xpkgs/fixture-x-domain-source/1.0.0";
     EXPECT_TRUE(fs::is_empty(copiedSlot)) << "logical mountpoints hold no copied system payload";
@@ -91,8 +115,10 @@ XTEST(DomainSourceProducer, ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage
     const auto output = owner.root() / "export";
     fs::create_directory(output);
     const std::vector<std::string> exportArgs{"subos", "export", "source-root", "--rootfs", "/run/xlings-domain-output/rootfs"};
-    auto exported = producer::run(*selected, exportArgs, producer::OutputBinding{output, "/run/xlings-domain-output"});
-    ASSERT_TRUE(exported) << exported.error(); ASSERT_EQ(*exported, 0);
+    auto exported = runProducer(exportArgs, producer::OutputBinding{output, "/run/xlings-domain-output"});
+    ASSERT_TRUE(exported) << exported.error();
+    ASSERT_FALSE(exported->timed_out) << exported->transcript();
+    ASSERT_EQ(exported->exit_code, 0) << "signal=" << exported->signal << '\n' << exported->transcript();
     const auto imageHome = output / "rootfs/xlings";
     EXPECT_EQ(tk::read_file(imageHome / "data/xpkgs/fixture-x-domain-source/1.0.0/bin/source-member"), "#!/bin/sh\nexit 0\n");
     const auto imageConfig = Json::parse(tk::read_file(imageHome / ".xlings.json"));
