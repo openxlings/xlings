@@ -4122,7 +4122,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     // Process xvm operations collected by the uninstall hook, or synthesise
     // the default removal op when there was no hook to ask (script/subos
     // type, or no recipe at all), or the one there was threw.
-    if (useDefaultRemoval) {
+    if (useDefaultRemoval && removalContext.hasSelection) {
         xvm_ops.push_back({
             .op = "remove",
             .name = detachTarget,

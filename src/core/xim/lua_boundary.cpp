@@ -256,6 +256,14 @@ struct Worker {
         if (payload.empty())
             return {};
         try {
+            std::error_code payload_error;
+            const auto previous_status = fs::symlink_status(payload, payload_error);
+            if (payload_error && payload_error != std::errc::no_such_file_or_directory)
+                return std::unexpected("cannot inspect hook payload destination: " +
+                                       payload_error.message());
+            if (previous_status.type() != fs::file_type::directory &&
+                previous_status.type() != fs::file_type::not_found)
+                return std::unexpected("hook payload destination must be a real directory");
             const auto source = shadow_parent / payload.filename();
             std::error_code ec;
             const auto status = fs::symlink_status(source, ec);
@@ -288,6 +296,11 @@ struct Worker {
             auto copied = platform::copy_out_of_beneath(shadow_parent, payload.filename(), ready);
             if (!copied)
                 return std::unexpected(copied.error());
+            if (previous_status.type() == fs::file_type::not_found) {
+                if (fs::is_empty(ready))
+                    return {};
+                return platform::rename_no_replace(ready, payload);
+            }
             auto previous = set_aside_payload(payload);
             if (!previous)
                 return std::unexpected(previous.error());

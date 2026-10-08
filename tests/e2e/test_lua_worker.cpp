@@ -162,11 +162,11 @@ XTEST(LuaWorker, RecipeLogDirectorySymlinkRefusesBeforeRecipeLoad, .area = "xim"
     EXPECT_EQ(std::distance(fs::directory_iterator(outside), fs::directory_iterator{}), 1);
 }
 
-XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .area = "xim",
-      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
-      .proves = "isolation") {
-    auto home = tk::Home::isolated("lua-config-remove");
-    ASSERT_TRUE(home.seed_sandbox_backend());
+namespace {
+void expect_payloadless_config_removal(bool sandbox) {
+    auto home = tk::Home::isolated(sandbox ? "lua-config-remove" : "config-remove-legacy");
+    if (sandbox)
+        ASSERT_TRUE(home.seed_sandbox_backend());
     const auto repo = home.root() / "index";
     tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
     for (const auto name : {"config-explicit", "config-bare"}) {
@@ -177,6 +177,10 @@ XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .a
                            "function uninstall() print('PAYLOADLESS_UNINSTALL_" +
                            name + "'); return true end\n");
     }
+    tk::write_file(repo / "pkgs/c/config-failed.lua",
+                   "package={spec='1',name='config-failed',type='config',"
+                   "archs={'x86_64','aarch64'},xpm={linux={['1.0.0']={}}}}\n"
+                   "function uninstall() error('PAYLOADLESS_UNINSTALL_ACTUAL_FAILURE') end\n");
     const auto primary = home.root() / "empty-primary";
     tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
     fs::create_directories(primary / "pkgs");
@@ -193,7 +197,8 @@ XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .a
     const auto initialized = home.xlings({"self", "init"});
     ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
-    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
+    if (sandbox)
+        ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
     for (const auto name : {"config-explicit", "config-bare"}) {
         const auto package_parent = home.dir() / "data/xpkgs" / ("fixture-x-" + std::string(name));
         ASSERT_FALSE(fs::exists(package_parent));
@@ -211,6 +216,29 @@ XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .a
         EXPECT_EQ(output.find(marker, first + marker.size()), std::string::npos);
         EXPECT_FALSE(fs::exists(package_parent / "1.0.0"));
     }
+    const auto explicit_log = home.dir() / "logs/hooks/fixture-config-explicit@1.0.0.uninstall.log";
+    const auto previous_log = tk::read_file(explicit_log);
+    const auto invalid = home.xlings({"remove", "fixture:config-explicit@9.9.9", "-y"},
+                                     {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(invalid.exit_code, 0) << invalid.transcript();
+    EXPECT_EQ(tk::read_file(explicit_log), previous_log);
+    const auto failed = home.xlings({"remove", "fixture:config-failed@1.0.0", "-y"},
+                                    {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(failed.exit_code, 0) << failed.transcript();
+    EXPECT_NE(failed.transcript().find("PAYLOADLESS_UNINSTALL_ACTUAL_FAILURE"), std::string::npos)
+        << failed.transcript();
+}
+} // namespace
+
+XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    expect_payloadless_config_removal(true);
+}
+
+XTEST(LuaWorker, UndeclaredPayloadlessConfigRemovalRunsWithoutASandbox, .area = "xim",
+      .requires_ = {"linux", "xlings-bin"}) {
+    expect_payloadless_config_removal(false);
 }
 
 XTEST(LuaWorker, RuntimeInterpreterAliasUnderPrivateTmpRemainsExecutableAndReadonly, .area = "xim",
