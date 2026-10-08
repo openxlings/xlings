@@ -79,6 +79,28 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     auto scope = xlings::home::domain_producer::read_scope(home.dir(), "domain-root");
     ASSERT_TRUE(scope) << scope.error(); ASSERT_TRUE(*scope);
     EXPECT_EQ((**scope).producerInstance, privateHome / "subos/domain-root");
+    // The actual owned /xlings/bin/xlings entry must still discover and probe
+    // the host backend. A caller's home is not proof that bwrap is its shim.
+    std::optional<xlings::home::domain_producer_source::Facade> backendSource;
+    if ((**scope).domain.systemSource) {
+        const auto stage = home.root() / "backend-source-view";
+        ASSERT_TRUE(fs::create_directory(stage));
+        auto prepared = xlings::home::domain_producer_source::prepare((**scope).domain, stage);
+        ASSERT_TRUE(prepared) << prepared.error();
+        backendSource.emplace(std::move(*prepared));
+    }
+    const std::vector<std::string> backendArguments{"self", "doctor", "--isolation", "--json"};
+    auto backendCommand = xlings::home::domain_producer::command(
+        (**scope).domain, backendArguments, std::nullopt,
+        backendSource ? &*backendSource : nullptr, true);
+    ASSERT_TRUE(backendCommand) << backendCommand.error();
+    auto backendDiagnosis = tk::run({.argv = *backendCommand, .env = home.env(), .cwd = home.root()});
+    ASSERT_EQ(backendDiagnosis.exit_code, 0) << backendDiagnosis.transcript();
+    const auto backendReport = Json::parse(backendDiagnosis.out);
+    ASSERT_TRUE(backendReport["ok"].get<bool>()) << backendDiagnosis.transcript();
+    ASSERT_EQ(backendReport["backend"]["name"].get<std::string>(), "bwrap");
+    EXPECT_FALSE(backendReport["bwrap"].empty());
+    EXPECT_EQ(tk::read_file(hostSentinel), "host must remain intact");
     const auto beforeSwitch = tk::read_file(home.dir() / ".xlings.json");
     auto switched = home.xlings({"interface", "switch_subos", "--args", Json{{"name", "domain-root"}}.dump()});
     EXPECT_NE(switched.exit_code, 0) << switched.transcript();
