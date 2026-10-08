@@ -297,28 +297,7 @@ jobs:
           mcpp test --no-run --message-format json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $xdev.FullName test --no-build --out target/xdev/windows-unit
-          if ($LASTEXITCODE -ne 0) {
-            $status = $LASTEXITCODE
-            Write-Host "::group::mcpp build diagnostics"
-            $ninjaCmd = Get-Command ninja -ErrorAction SilentlyContinue
-            $ninja = if ($ninjaCmd) { $ninjaCmd.Source } else { "" }
-            if (-not $ninja) {
-              $ninjaFile = Get-ChildItem -Path "$env:USERPROFILE\.mcpp", "$env:XLINGS_HOME" -Filter ninja.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($ninjaFile) { $ninja = $ninjaFile.FullName }
-            }
-            if (-not $ninja) {
-              Write-Host "ninja not found"
-            } else {
-              $buildFiles = Get-ChildItem -Path target -Filter build.ninja -Recurse -ErrorAction SilentlyContinue
-              foreach ($buildFile in $buildFiles) {
-                $buildDir = $buildFile.DirectoryName
-                Write-Host "`$ $ninja -C $buildDir -v"
-                & $ninja -C $buildDir -v
-              }
-            }
-            Write-Host "::endgroup::"
-            exit $status
-          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $quoting = @(Get-Content target/xdev/windows-unit/cases.ndjson | ForEach-Object { $_ | ConvertFrom-Json } |
             Where-Object test -eq 'SubosCmdContract.ExitCodeHomeAndCmdQuotingOnWindows')
           if ($quoting.Count -ne 1 -or $quoting[0].status -ne 'pass') {

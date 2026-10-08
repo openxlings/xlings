@@ -333,26 +333,7 @@ jobs:
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
             mcpp test -p xdev
           mcpp test --no-run --message-format json
-          "$xdev" test --no-build --out target/xdev/linux-unit || {
-            status=$?
-            echo "::group::mcpp build diagnostics"
-
-            ninja_bin="$(command -v ninja || true)"
-            if [[ -z "$ninja_bin" ]]; then
-              ninja_bin="$(find "$HOME/.mcpp" "$XLINGS_HOME" -name ninja -type f -perm -111 2>/dev/null | head -1 || true)"
-            fi
-            if [[ -z "$ninja_bin" ]]; then
-              echo "ninja not found"
-            else
-              while IFS= read -r build_file; do
-                build_dir="$(dirname "$build_file")"
-                echo "\$ $ninja_bin -C $build_dir -v"
-                "$ninja_bin" -C "$build_dir" -v || true
-              done < <(find target -name build.ninja -type f | sort)
-            fi
-            echo "::endgroup::"
-            exit "$status"
-          }
+          "$xdev" test --no-build --out target/xdev/linux-unit
 
       # A separate step, `if: failure()`, and not an `|| { ... }` on one
       # command.
