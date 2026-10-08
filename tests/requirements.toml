@@ -676,7 +676,7 @@ status = "required"
 
 [TOOL-RESOLVE]
 text = "every external tool is resolved in one place (in-process > xlings payload > declared host tool) and reported with its source"
-status = "planned"
+status = "required"
 
 [INTENT-EQ]
 text = "the Intent IR and the confine registry produce byte-identical bwrap argv to the code they replaced"

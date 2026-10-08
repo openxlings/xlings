@@ -35,8 +35,8 @@ XTEST(SubosOutputSafety, PackPreservesExistingDirectoriesAndRefusesExistingArchi
     expect_no_staging(out);
 }
 
-XTEST(SubosOutputSafety, PackRejectsPathTraversalAndCleansUpAfterToolFailure,
-      .area = "subos", .covers = {"OUTPUT-PRESERVE"}, .requires_ = {"xlings-bin"}) {
+XTEST(SubosOutputSafety, PackRejectsPathTraversalNeedsNoHostTarAndCleansUpAfterAFailure,
+      .area = "subos", .covers = {"OUTPUT-PRESERVE", "TOOL-RESOLVE"}, .requires_ = {"xlings-bin"}) {
     auto home = tk::Home::isolated("pack-errors");
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
     const auto out = home.root() / "out";
@@ -47,14 +47,31 @@ XTEST(SubosOutputSafety, PackRejectsPathTraversalAndCleansUpAfterToolFailure,
     }
     EXPECT_TRUE(fs::is_empty(out));
     if constexpr (tk::is_posix) {
+        // The archive is written in-process: a broken `tar` first on PATH
+        // changes nothing (it used to be what pack ran).
         const auto tools = home.root() / "tools";
         tk::write_file(tools / "tar", "#!/bin/sh\nexit 37\n");
         fs::permissions(tools / "tar", fs::perms::owner_all);
         const auto r = home.xlings({"subos", "pack", "box", "--as", "demo:bundle@1", "--out", out.string()},
                                    {{"PATH", tools.string()}});
-        EXPECT_NE(r.exit_code, 0) << r.transcript();
-        EXPECT_FALSE(fs::exists(out / "bundle-1.tar.gz"));
+        EXPECT_EQ(r.exit_code, 0) << r.transcript();
+        EXPECT_TRUE(fs::exists(out / "bundle-1.tar.gz"));
         expect_no_staging(out);
+
+        // A failure leaves nothing behind: an output directory nobody may
+        // write into (root may, so there it proves nothing and is skipped).
+        const auto locked = home.root() / "locked";
+        fs::create_directory(locked);
+        fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec);
+        if (std::ofstream(locked / "probe")) {
+            fs::remove(locked / "probe");
+        } else {
+            const auto failed = home.xlings({"subos", "pack", "box", "--as", "demo:bundle@2", "--out",
+                                             locked.string()});
+            EXPECT_NE(failed.exit_code, 0) << failed.transcript();
+            EXPECT_TRUE(fs::is_empty(locked));
+        }
+        fs::permissions(locked, fs::perms::owner_all);
     }
 }
 

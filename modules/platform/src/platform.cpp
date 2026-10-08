@@ -22,6 +22,7 @@ module;
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 module xlings.platform;
@@ -60,10 +61,6 @@ bool remove_empty_directory(const std::filesystem::path& path) {
         return SudoInvoker{ static_cast<unsigned int>(uid),
                             static_cast<unsigned int>(gid),
                             user ? std::string{user} : std::string{} };
-    }
-
-[[nodiscard]] std::string priv_prefix() {
-        return platform_impl::is_root() ? std::string{} : std::string{"sudo "};
     }
 
 [[nodiscard]] std::optional<SudoInvoker> sudo_invoker() {
@@ -454,6 +451,53 @@ int run_shell_command(std::string_view command, bool interactive) {
         return 127;
 #endif
     }
+
+bool is_elevated() {
+#if defined(_WIN32)
+    HANDLE token = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const bool ok = ::GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    ::CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+#else
+    return platform_impl::is_root();
+#endif
+}
+
+int run_elevated(const std::vector<std::string>& argv) {
+    if (argv.empty()) return 127;
+    if (is_elevated()) return run_argv(argv);
+#if defined(_WIN32)
+    std::wstring parameters;
+    for (std::size_t i = 1; i < argv.size(); ++i) {
+        if (!parameters.empty()) parameters += L' ';
+        parameters += std::filesystem::path(shell_quote(argv[i])).wstring();
+    }
+    const auto file = std::filesystem::path(argv[0]).wstring();
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    info.lpVerb = L"runas";
+    info.lpFile = file.c_str();
+    info.lpParameters = parameters.c_str();
+    info.nShow = SW_HIDE;
+    if (!::ShellExecuteExW(&info) || !info.hProcess) {
+        auto err = ::GetLastError();
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) ? 127 : 126;
+    }
+    ::WaitForSingleObject(info.hProcess, INFINITE);
+    DWORD exitCode = 126;
+    ::GetExitCodeProcess(info.hProcess, &exitCode);
+    ::CloseHandle(info.hProcess);
+    return static_cast<int>(exitCode);
+#else
+    std::vector<std::string> withSudo{"sudo", "--"};
+    withSudo.insert(withSudo.end(), argv.begin(), argv.end());
+    return run_argv(withSudo);
+#endif
+}
 
 int run_argv(const std::vector<std::string>& argv) {
         if (argv.empty()) return 127;

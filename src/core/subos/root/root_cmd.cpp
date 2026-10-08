@@ -28,6 +28,9 @@ import xlings.subos.boot;
 import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.xself;
+import xlings.core.xim.extract;
+import xlings.subos.tools;
+import xlings.subos.caps;
 
 namespace xlings::subos {
 
@@ -144,31 +147,28 @@ int run_tool_(const std::vector<std::string>& argv, EventStream& stream, std::st
     return rc;
 }
 
-// A host tool by name: PATH, then the sbin directories a user's PATH often
-// lacks (mkfs.ext4 lives there). The name itself when nothing has it, so the
-// failure names what is missing.
-std::string host_tool_(std::string_view name) {
-    std::vector<fs::path> dirs;
-    if (const char* p = std::getenv("PATH")) {
-        std::string_view rest(p);
-        while (!rest.empty()) {
-            auto c = rest.find(':');
-            dirs.emplace_back(std::string(rest.substr(0, c)));
-            if (c == std::string_view::npos) break;
-            rest.remove_prefix(c + 1);
-        }
-    }
-    for (auto d : {"/usr/sbin", "/sbin", "/usr/bin", "/bin"}) dirs.emplace_back(d);
-    std::error_code ec;
-    for (auto& d : dirs)
-        if (!d.empty() && fs::exists(d / name, ec)) return (d / name).string();
-    return std::string(name);
+// A tool from the one table (xlings.subos.tools): the home's payload first,
+// then the machine's at the paths the table names. Missing is an error that
+// names the package bringing it.
+std::optional<std::string> tool_(std::string_view name, EventStream& stream) {
+    auto ports = subos::make_ports(stream);
+    if (auto found = subos::tools::first(name, home_view(), ports)) return found->bin.string();
+    const auto hint = subos::tools::install_hint(name);
+    error_(stream, std::format("{} is not available", name), hint, ErrorCode::NotFound);
+    return std::nullopt;
 }
 
 // The tools that write an image run as root inside a user namespace, so the
 // files they record are root's, as on any distribution's image.
-std::vector<std::string> as_root_(std::vector<std::string> argv) {
-    std::vector<std::string> a{host_tool_("bwrap"), "--unshare-user", "--uid", "0", "--gid", "0",
+std::optional<std::vector<std::string>> as_root_(std::vector<std::string> argv, EventStream& stream) {
+    auto ports = subos::make_ports(stream);
+    auto bwrap = subos::caps::locate_bwrap(home_view(), ports);
+    if (!bwrap || !bwrap->usable) {
+        error_(stream, "writing a root image needs a user namespace and bwrap cannot make one here",
+               "xlings self doctor --isolation", ErrorCode::NotFound);
+        return std::nullopt;
+    }
+    std::vector<std::string> a{bwrap->bin.string(), "--unshare-user", "--uid", "0", "--gid", "0",
                                "--dev-bind", "/", "/", "--"};
     a.insert(a.end(), argv.begin(), argv.end());
     return a;
@@ -944,13 +944,19 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
 
     int rc = 0;
     if (!tarball.empty()) {
-        rc = run_tool_(as_root_({host_tool_("tar"), "--numeric-owner", "-C", stage.string(), "-czf",
-                                 (scratch->path() / "output").string(), "."}),
-                       stream, "writing the tarball");
+        // In-process, root-owned entries: no host tar, no user namespace.
+        if (auto written = xim::write_tar_gz(stage, scratch->path() / "output", xim::ArchiveOwner::Root);
+            !written) {
+            error_(stream, "writing the tarball: " + written.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
     } else if (!disk.empty()) {
-        rc = run_tool_(as_root_({host_tool_("mkfs.ext4"), "-q", "-F", "-L", "luban", "-d", stage.string(),
-                                 (scratch->path() / "output").string(), size}),
-                       stream, "writing the disk image");
+        auto mkfs = tool_("mkfs.ext4", stream);
+        if (!mkfs) return 1;
+        auto argv = as_root_({*mkfs, "-q", "-F", "-L", "luban", "-d", stage.string(),
+                              (scratch->path() / "output").string(), size}, stream);
+        if (!argv) return 1;
+        rc = run_tool_(*argv, stream, "writing the disk image");
     }
     if (rc != 0) return 1;
     if (!rootfs_dir.empty()) {
@@ -1035,9 +1041,12 @@ int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usa
         if (!config) { error_(stream, "cannot write package configuration"); return 1; }
     }
     const auto archive = scratch->path() / "output.tar.gz";
-    if (run_tool_({host_tool_("tar"), "-C", scratch->path().string(), "-czf", archive.string(),
-                   stage.filename().string()}, stream, "packing") != 0)
+    if (auto written = xim::write_tar_gz(stage, archive, xim::ArchiveOwner::AsOnDisk,
+                                         stage.filename().string());
+        !written) {
+        error_(stream, "packing: " + written.error(), {}, ErrorCode::Internal);
         return 1;
+    }
     if (auto published = publish_file_(archive, file); !published) {
         error_(stream, published.error());
         return 1;

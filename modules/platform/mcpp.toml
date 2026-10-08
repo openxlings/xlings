@@ -38,6 +38,7 @@ kind = "lib"
 [dependencies]
 runtime = { path = "../runtime" }   # cancellation
 
-# Loopback TCP fixtures use Winsock on Windows.
+# Loopback TCP fixtures use Winsock on Windows; run_elevated / is_elevated
+# use shell32 and advapi32 (also named by os/windows_syslibs.cpp for MSVC).
 [target.windows.build]
-ldflags = ["-lws2_32"]
+ldflags = ["-lws2_32", "-lshell32", "-ladvapi32"]

@@ -29,6 +29,9 @@ import xlings.core.subos.root;
 import xlings.core.subos.store_closure;
 import xlings.core.subos.root_view;
 import xlings.subos.roles;
+import xlings.subos.elevation;
+import xlings.subos.tools;
+import xlings.subos.userdata;
 
 namespace xlings::subos::sandbox {
 
@@ -160,15 +163,37 @@ void init_sandbox_dirs_(const fs::path& subos_dir,
 
 int init_image_(const fs::path& img, const std::string& size) {
     if (fs::exists(img)) return 0;
-    auto truncate_cmd = "truncate -s " + size + " " + img.string();
-    if (std::system(truncate_cmd.c_str()) != 0) return 1;
-    auto mkfs_cmd = "mkfs.ext4 -F -m 0 -q " + img.string() + " 2>/dev/null";
-    return std::system(mkfs_cmd.c_str());
+    // A sparse file of `size` (K/M/G/T suffixes, as truncate takes it), then
+    // an ext4 on it with the mkfs the tool table finds.
+    auto bytes = policy::parse_size(size);
+    if (!bytes) {
+        log::error("image size '{}' is not a size", size);
+        return 1;
+    }
+    {
+        std::ofstream create(img, std::ios::binary);
+        if (!create) return 1;
+    }
+    std::error_code ec;
+    fs::resize_file(img, *bytes, ec);
+    if (ec) {
+        log::error("cannot size {}: {}", img.string(), ec.message());
+        return 1;
+    }
+    auto mkfs = subos::tools::first("mkfs.ext4", subos::home_view(), Ports{});
+    if (!mkfs) {
+        log::error("mkfs.ext4 is not available; {}", subos::tools::install_hint("mkfs.ext4"));
+        return 1;
+    }
+    return platform::run_argv({mkfs->bin.string(), "-F", "-m", "0", "-q", img.string()});
 }
 
+// A mount at exactly `path`, from this process's mount table.
 bool is_mounted_(const fs::path& path) {
-    auto cmd = "mountpoint -q " + path.string() + " 2>/dev/null";
-    return std::system(cmd.c_str()) == 0;
+    std::ifstream in("/proc/self/mountinfo");
+    const auto table = std::string(std::istreambuf_iterator<char>(in), {});
+    const auto at = subos::userdata::mount_under_in(table, path);
+    return at && *at == path;
 }
 
 // Mount an image file at mountpoint. Supports multi-terminal reuse.
@@ -179,29 +204,25 @@ int mount_image_(const fs::path& img, const fs::path& mountpoint,
     fs::create_directories(mountpoint);
     if (is_mounted_(mountpoint)) return 0;  // already mounted
 
-    // mount (privileged). priv_prefix() is "" when already root — sudo is
-    // redundant and frequently absent in minimal root containers, where the
-    // old hardcoded "sudo mount" died with "sudo: command not found".
-    auto cmd = platform::priv_prefix() + "mount -o loop " + img.string() + " "
-               + mountpoint.string();
-    auto rc = std::system(cmd.c_str());
+    // Privileged, through the one elevation path (run directly when already
+    // root -- sudo is frequently absent in minimal root containers).
+    const auto home = subos::home_view();
+    auto rc = subos::elevation::run(home, {"mount", "-o", "loop", img.string(), mountpoint.string()},
+                                    "mount a SubOS home image");
     if (rc != 0) return rc;
 
     // ext4 root dir is owned by root after mkfs; chown to real user
     // so sandbox init can create dirs without sudo.
-    if (!user.empty()) {
-        auto chown_cmd = platform::priv_prefix() + "chown " + user + ":" + user
-                         + " " + mountpoint.string();
-        std::system(chown_cmd.c_str());
-    }
+    if (!user.empty())
+        (void)subos::elevation::run(home, {"chown", user + ":" + user, mountpoint.string()},
+                                    "hand a SubOS home image to its user");
     return 0;
 }
 
 int unmount_image_(const fs::path& mountpoint) {
     if (!is_mounted_(mountpoint)) return 0;
-    auto cmd = platform::priv_prefix() + "umount " + mountpoint.string()
-               + " 2>/dev/null";
-    return std::system(cmd.c_str());
+    return subos::elevation::run(subos::home_view(), {"umount", mountpoint.string()},
+                                 "unmount a SubOS home image");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -285,7 +306,7 @@ std::optional<std::string> backend_target_unavailable_() {
 
     const auto hostArch = xim::host_architecture();
     std::string target;
-    for (const auto* name : {"bwrap", "proot"}) {
+    for (const auto* name : {"bwrap", "proot"}) {  // tool-ok: package names in the index
         auto match = catalog.resolve_target(name, "linux");
         if (!match) return std::nullopt;          // cannot say -> let it try
         auto pkg = catalog.load_package(*match);
@@ -759,7 +780,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                       "not a security boundary. A real sandbox: xlings self doctor --isolation --fix",
                       why.empty() ? "probe failed" : why);
         }
-        if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "host") {
+        if (sb.backend == spec::Backend::Proot && host_caps.proot && host_caps.proot->source == "system") {
             log::warn("using the host's proot ({}) -- no proot payload in {}. "
                       "Run `xlings install proot` to make this deterministic.",
                       sb.backend_bin.string(), p.homeDir.string());
@@ -1012,6 +1033,17 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
                                        {"probe", b.usable ? std::string("ok") : first}});
         }
     }
+    // Where every external tool would come from (xlings.subos.tools): the
+    // one table, its answer on this machine, and what brings a missing one.
+    report["tools"] = nlohmann::json::array();
+    for (const auto& tool : subos::tools::known()) {
+        auto found = subos::tools::first(tool.name, home, ports);
+        report["tools"].push_back(found
+            ? nlohmann::json{{"name", tool.name}, {"path", found->bin.string()},
+                             {"source", subos::tools::to_string(found->source)}}
+            : nlohmann::json{{"name", tool.name}, {"path", nullptr},
+                             {"install", subos::tools::install_hint(tool.name)}});  // tool-ok: a JSON key
+    }
     auto host_caps = caps::probe(home, ports);
     report["backend"] = host_caps.bwrap && host_caps.bwrap->usable
         ? nlohmann::json{{"name", "bwrap"}, {"path", host_caps.bwrap->bin.string()}, {"source", host_caps.bwrap->source}}
@@ -1084,16 +1116,21 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             "}\n";
         const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
         platform::write_string_to_file(tmp.string(), profile);
-        const auto sudo = platform::priv_prefix();
-        const std::vector<std::string> steps{
-            std::format("{}install -D -o root -g root -m 0755 {} {}", sudo,
-                        platform::shell_quote(source->string()), caps::kRootOwnedBwrap),
-            std::format("{}install -D -o root -g root -m 0644 {} /etc/apparmor.d/xlings-bwrap", sudo,
-                        platform::shell_quote(tmp.string())),
-            std::format("{}apparmor_parser -r /etc/apparmor.d/xlings-bwrap", sudo),
+        // Each step runs through elevation::run below (tool-ok on each line).
+        const std::vector<std::vector<std::string>> steps{
+            {"install", "-D", "-o", "root", "-g", "root", "-m", "0755", source->string(),  // tool-ok: elevated below
+             std::string(caps::kRootOwnedBwrap)},
+            {"install", "-D", "-o", "root", "-g", "root", "-m", "0644", tmp.string(),  // tool-ok: elevated below
+             "/etc/apparmor.d/xlings-bwrap"},
+            {"apparmor_parser", "-r", "/etc/apparmor.d/xlings-bwrap"},  // tool-ok: elevated below
+        };
+        auto spelled = [](const std::vector<std::string>& argv) {
+            std::string line;
+            for (const auto& a : argv) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
+            return line;
         };
         std::string plan = "this runs, as root:";
-        for (auto& c : steps) plan += "\n    " + c;
+        for (auto& c : steps) plan += "\n    " + spelled(c);
         log::info("{}", plan);
         auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
                                   "install the root-owned bwrap and its AppArmor profile?", yes, "-y");
@@ -1108,11 +1145,11 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             return 1;
         }
         for (auto& c : steps) {
-            log::info("$ {}", c);
-            if (std::system(c.c_str()) != 0) {
+            log::info("$ {}", spelled(c));
+            if (subos::elevation::run(home, c, "self doctor --isolation --fix") != 0) {
                 std::error_code ec;
                 fs::remove(tmp, ec);
-                log::error("failed: {}", c);
+                log::error("failed: {}", spelled(c));
                 return 1;
             }
         }

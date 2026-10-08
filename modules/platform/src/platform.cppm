@@ -113,12 +113,6 @@ namespace platform {
     // unless both numeric ids are present and well-formed.
     export [[nodiscard]] std::optional<SudoInvoker> parse_sudo_env();
 
-    // Shell-command prefix for privileged ops (mount/umount/chown):
-    // "" when already root (sudo is redundant and often absent in minimal
-    // root containers), "sudo " otherwise — identical to the historical
-    // hardcoded string for the non-root case.
-    export [[nodiscard]] std::string priv_prefix();
-
     // The invoking user iff launched via sudo (root EUID + SUDO_* set).
     // nullopt for pure root (no demotion target) and unprivileged runs.
     export [[nodiscard]] std::optional<SudoInvoker> sudo_invoker();
@@ -267,6 +261,18 @@ namespace platform {
     // is not found, 126 when it cannot be executed, 128+n for signal n (the
     // `subos exec` exit-code table, design §12.2).
     export int run_argv(const std::vector<std::string>& argv);
+
+    // Run `argv` with administrator rights, waiting for it (SubOS design
+    // part 3 §6.4, "Elevation"): directly when this process already has
+    // them; otherwise `sudo` on Linux and macOS (the terminal asks), and the
+    // UAC prompt on Windows (ShellExecuteEx "runas"). No shell: argv is
+    // passed as given. 126 when elevation could not be started, 127 when the
+    // program does not exist. Callers record what they elevated
+    // (xlings.subos.elevation); this function only runs it.
+    export int run_elevated(const std::vector<std::string>& argv);
+
+    // Whether this process already runs with administrator rights.
+    export bool is_elevated();
 
     // Escape a single argument for safe embedding in a shell command string.
     export [[nodiscard]] std::string shell_quote(const std::string& arg);

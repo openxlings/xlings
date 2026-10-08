@@ -18,8 +18,9 @@ namespace fs = std::filesystem;
 struct Backend {
     std::string name;            // "bwrap" | "proot"
     fs::path bin;
-    // payload | runtimedir | host -- where it was found; a host binary is
-    // used only when it is DECLARED here and reported (design §20).
+    // root-owned | payload | runtimedir | system -- where it was found
+    // (xlings.subos.tools, the one table of where a tool may come from); a
+    // machine's binary is used only when that table names its path.
     std::string source;
     bool usable { false };       // the probe passed
     std::string probe_output;    // raw stdout+stderr of a failed probe

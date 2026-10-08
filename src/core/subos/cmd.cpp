@@ -8,6 +8,8 @@ import xlings.core.home_config;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
+import xlings.subos.tools;
+import xlings.subos.ports;
 import xlings.runtime;
 import xlings.core.utils;
 import xlings.core.xself;
@@ -885,19 +887,22 @@ int copy_tree_(const fs::path& src, const fs::path& dst,
     // Use the system cp with reflink/clonefile flags; falls back to
     // full copy when the FS doesn't support it. Skip the bin/ subtree
     // here — shims are regenerated below.
-    std::string copy_cmd;
-    if constexpr (platform::is_linux) {
-        // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
-        // COW where available (btrfs/xfs) and full copy otherwise.
-        copy_cmd = std::format(
-            "cp -a --reflink=auto '{}/.' '{}/'", src.string(), dst.string());
-    } else if constexpr (platform::is_macos) {
-        // APFS clonefile via /bin/cp -c
-        copy_cmd = std::format("cp -ac '{}/.' '{}/'", src.string(), dst.string());
+    // argv, not a shell line: a path with a quote in it is a path.
+    std::vector<std::string> copy_argv;
+    if (auto cp = subos::tools::first("cp", subos::home_view(), subos::Ports{})) {
+        const auto from = (src / ".").string(), to = (dst / "").string();
+        if constexpr (platform::is_linux) {
+            // cp -a preserves mode/ownership/timestamps; --reflink=auto uses
+            // COW where available (btrfs/xfs) and full copy otherwise.
+            copy_argv = {cp->bin.string(), "-a", "--reflink=auto", from, to};
+        } else if constexpr (platform::is_macos) {
+            // APFS clonefile via /bin/cp -c
+            copy_argv = {cp->bin.string(), "-ac", from, to};
+        }
     }
 
-    if (!copy_cmd.empty()) {
-        auto rc = std::system(copy_cmd.c_str());
+    if (!copy_argv.empty()) {
+        auto rc = platform::run_argv(copy_argv);
         if (rc != 0) {
             log::warn("cp -a/--reflink failed (rc={}), falling back to "
                       "std::filesystem::copy", rc);
@@ -992,9 +997,7 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
         auto xlings_bin = xself::xlings_binary_in_home(p.homeDir);
         if (xlings_bin.empty()) xlings_bin = platform::get_executable_path();
 
-        auto cmd = std::format("{} install -y {}",
-                               xlings_bin.string(), fromSpec);
-        auto rc = std::system(cmd.c_str());
+        auto rc = platform::run_argv({xlings_bin.string(), "install", "-y", fromSpec});
         if (rc != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Internal,

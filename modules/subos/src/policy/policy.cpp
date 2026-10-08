@@ -161,8 +161,8 @@ std::optional<std::uint64_t> parse_size(std::string_view text) {
     for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     std::string_view v(upper);
     for (auto [suffix, m] : std::initializer_list<std::pair<std::string_view, std::uint64_t>>{
-             {"GB", 1ull << 30}, {"MB", 1ull << 20}, {"KB", 1ull << 10}, {"G", 1ull << 30},
-             {"M", 1ull << 20}, {"K", 1ull << 10}, {"B", 1}}) {
+             {"TB", 1ull << 40}, {"GB", 1ull << 30}, {"MB", 1ull << 20}, {"KB", 1ull << 10},
+             {"T", 1ull << 40}, {"G", 1ull << 30}, {"M", 1ull << 20}, {"K", 1ull << 10}, {"B", 1}}) {
         if (v.ends_with(suffix)) { mult = m; v.remove_suffix(suffix.size()); break; }
     }
     std::uint64_t n = 0;

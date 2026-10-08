@@ -4,6 +4,7 @@ import std;
 import xlings.platform;
 import xlings.subos.home_view;
 import xlings.subos.ports;
+import xlings.subos.tools;
 import xlings.libs.json;
 import xlings.observe;
 
@@ -15,29 +16,14 @@ std::string_view platform_name() {
     else return "linux";
 }
 
-namespace {
-
-// Sentinel iteration, not a range-for over a directory_iterator: a copy of
-// the iterator through a BMI fails to link on the musl cross toolchain, and
-// libc++ only offers the sentinel comparison (see the history of the sandbox
-// code this replaces).
-std::optional<fs::path> first_payload_bin(const fs::path& root, std::string_view bin) {
-    std::error_code ec;
-    if (!fs::is_directory(root, ec)) return std::nullopt;
-    std::error_code it_ec;
-    for (auto it = fs::directory_iterator(root, it_ec);
-         !it_ec && it != std::default_sentinel; it.increment(it_ec)) {
-        auto candidate = it->path() / "bin" / std::string(bin);
-        if (fs::is_regular_file(candidate, ec)) return candidate;
-    }
-    return std::nullopt;
+Backend backend_of(const tools::Found& f, bool usable = false) {
+    return Backend{ .name = f.tool, .bin = f.bin, .source = std::string(tools::to_string(f.source)),
+                    .usable = usable };
 }
 
-}  // namespace
-
 std::optional<Backend> payload_bwrap(const HomeView& home) {
-    if (auto bin = first_payload_bin(home.home / "data" / "xpkgs" / "xim-x-bwrap", "bwrap"))
-        return Backend{ .name = "bwrap", .bin = *bin, .source = "payload" };
+    for (const auto& f : tools::candidates("bwrap", home, Ports{}))
+        if (f.source == tools::Source::Payload) return backend_of(f);
     return std::nullopt;
 }
 
@@ -129,20 +115,8 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
 
 std::vector<Backend> bwrap_candidates(const HomeView& home, const Ports& ports, bool fresh) {
     std::vector<Backend> out;
-    std::error_code ec;
-    if constexpr (platform::is_linux) {
-        // Root's, and writable by nobody else (group/other write bits clear).
-        const fs::path p(kRootOwnedBwrap);
-        if (auto own = platform::file_ownership(p); own && own->uid == 0 && !(own->mode & 022))
-            out.push_back(Backend{ .name = "bwrap", .bin = p, .source = "root-owned" });
-    }
-    for (const auto* p : {"/usr/bin/bwrap", "/usr/local/bin/bwrap"}) {
-        fs::path candidate(p);
-        if (!fs::is_regular_file(candidate, ec)) continue;
-        if (ports.shim_owner && ports.shim_owner(candidate)) continue;
-        out.push_back(Backend{ .name = "bwrap", .bin = candidate, .source = "system" });
-    }
-    if (auto b = payload_bwrap(home)) out.push_back(*b);
+    if constexpr (!platform::is_linux) return out;
+    for (const auto& f : tools::candidates("bwrap", home, ports)) out.push_back(backend_of(f));
     probe_cached(out, home, fresh);
     return out;
 }
@@ -155,45 +129,24 @@ std::optional<Backend> locate_bwrap(const HomeView& home, const Ports& ports) {
 }
 
 std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports) {
-    if (auto bin = first_payload_bin(home.home / "data" / "xpkgs" / "xim-x-proot", "proot"))
-        return Backend{ .name = "proot", .bin = *bin, .source = "payload", .usable = true };
-    std::error_code ec;
-    auto runtime = home.home / "runtimedir" / "proot";
-    if (fs::is_regular_file(runtime, ec))
-        return Backend{ .name = "proot", .bin = runtime, .source = "runtimedir", .usable = true };
-    // The host's proot, at the two paths a distribution puts it. PATH is not
-    // searched: a `proot` on PATH may be an xlings shim, and running it would
-    // move the whole session to whichever home owns it.
-    for (const auto* p : {"/usr/bin/proot", "/usr/local/bin/proot"}) {
-        fs::path candidate(p);
-        if (!fs::is_regular_file(candidate, ec)) continue;
-        if (ports.shim_owner && ports.shim_owner(candidate)) continue;
-        return Backend{ .name = "proot", .bin = candidate, .source = "host", .usable = true };
-    }
+    // PATH is not searched: a `proot` on PATH may be an xlings shim, and
+    // running it would move the whole session to whichever home owns it.
+    if (auto f = tools::first("proot", home, ports)) return backend_of(*f, true);
     return std::nullopt;
 }
 
 std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, std::string& why_not) {
-    std::error_code ec;
-    std::optional<fs::path> found = first_payload_bin(home.home / "data" / "xpkgs" / "xim-x-passt", "pasta");
-    if (!found) {
-        for (const auto* p : {"/usr/bin/pasta", "/usr/local/bin/pasta"}) {
-            fs::path candidate(p);
-            if (!fs::exists(candidate, ec)) continue;
-            if (ports.shim_owner && ports.shim_owner(candidate)) continue;
-            found = candidate;
-            break;
-        }
-    }
+    auto found = tools::first("pasta", home, ports);
     if (!found) {
         why_not = "pasta (passt) is not installed";
         return std::nullopt;
     }
+    std::error_code ec;
     if (!fs::exists("/dev/net/tun", ec)) {
         why_not = "/dev/net/tun is missing on this host";
         return std::nullopt;
     }
-    return found;
+    return found->bin;
 }
 
 void probe_bwrap(Backend& b) {

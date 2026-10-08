@@ -51,10 +51,13 @@ TEST(Identity, NonRootIsNotRoot) {
     EXPECT_FALSE(xlings::platform::is_root());
 }
 
-TEST(Identity, PrivPrefixIsSudoWhenNonRoot) {
-    // Byte-for-byte identical to the historical hardcoded "sudo " string —
-    // this is the safety invariant that keeps existing flows unchanged.
-    EXPECT_EQ(xlings::platform::priv_prefix(), "sudo ");
+TEST(Identity, ElevationIsRequiredExactlyWhenNotRoot) {
+    // Privileged steps run through platform::run_elevated, which runs them
+    // directly when this process already has the rights (sudo is often
+    // absent in minimal root containers) and asks otherwise.
+    if constexpr (xlings::platform::is_posix)
+        EXPECT_EQ(xlings::platform::is_elevated(), xlings::platform::is_root());
+    EXPECT_EQ(xlings::platform::run_elevated({}), 127) << "an empty argv names no program";
 }
 
 TEST(Identity, SudoInvokerGatedOnRoot) {
