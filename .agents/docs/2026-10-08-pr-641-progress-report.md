@@ -558,3 +558,9 @@ ASAN 的 300-payload 工作量保留全部 projection、generation 与完整切�
 强制两项 generation case 实际 pass，build ≤1 s、checked switch ≤10 ms 阈值未变。
 该调整后的普通构建复验两项实际 pass：生成 median 22.203 ms、完整 checked switch
 median 3.561 ms，无 skip；ASAN 的新 head 结果待 CI。
+
+发布路径亦遵循“不改写提交记录”：`bump_index.sh` 在已有 bot branch 上合并最新
+main、追加 bump 并普通 push；不存在则从 main 创建，merge 冲突或远端更新拒绝时
+停止，保留旧历史。token 由 credential helper 提供，不进入 remote URL。临时 bare
+仓库实测连续两次发布保留 previous/main ancestry、重复版本不动 tip、一个 open PR
+持续更新；缺分支、检查失败、冲突拒绝及无 token 输出均通过，尚未触发真实发布。
