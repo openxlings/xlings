@@ -6,7 +6,7 @@ module;
 #include <cstddef>
 #include <linux/audit.h>
 #include <linux/filter.h>
-#include <linux/seccomp.h>
+#include "seccomp_abi.hpp"
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
@@ -42,30 +42,30 @@ int listener() {
     // Unsupported ABIs are denied: a compat binary cannot bypass a native
     // syscall-number monitor and create unaudited egress.
     std::vector<sock_filter> filter{
-        {static_cast<unsigned short>(BPF_LD | BPF_W | BPF_ABS), 0, 0, offsetof(seccomp_data, arch)},
+        {static_cast<unsigned short>(BPF_LD | BPF_W | BPF_ABS), 0, 0, offsetof(seccomp_abi::Data, arch)},
         {static_cast<unsigned short>(BPF_JMP | BPF_JEQ | BPF_K), 1, 0, ARCH},
-        {static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_KILL_PROCESS},
-        {static_cast<unsigned short>(BPF_LD | BPF_W | BPF_ABS), 0, 0, offsetof(seccomp_data, nr)}};
+        {static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kKill},
+        {static_cast<unsigned short>(BPF_LD | BPF_W | BPF_ABS), 0, 0, offsetof(seccomp_abi::Data, nr)}};
     for (const auto syscall : {SYS_connect, SYS_sendto, SYS_sendmsg, SYS_sendmmsg}) {
         filter.push_back({static_cast<unsigned short>(BPF_JMP | BPF_JEQ | BPF_K), 0, 1,
                           static_cast<unsigned>(syscall)});
-        filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_USER_NOTIF});
+        filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kNotify});
     }
 #if defined(__x86_64__)
     // x32 shares AUDIT_ARCH_X86_64 and encodes a different syscall table.
     filter.push_back({static_cast<unsigned short>(BPF_JMP | BPF_JSET | BPF_K), 0, 1, 0x40000000U});
-    filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_KILL_PROCESS});
+    filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kKill});
 #endif
-    filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, SECCOMP_RET_ALLOW});
+    filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kAllow});
     sock_fprog program{static_cast<unsigned short>(filter.size()), filter.data()};
     if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
-    return static_cast<int>(::syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &program));
+    return static_cast<int>(::syscall(SYS_seccomp, seccomp_abi::kFilter, seccomp_abi::kNewListener, &program));
 }
 std::optional<Notice> next(int listenerFd) {
     pollfd ready{listenerFd, POLLIN, 0};
     if (::poll(&ready, 1, 0) <= 0) return std::nullopt;
-    seccomp_notif request{};
-    if (::ioctl(listenerFd, SECCOMP_IOCTL_NOTIF_RECV, &request) != 0) return std::nullopt;
+    seccomp_abi::Request request{};
+    if (::ioctl(listenerFd, seccomp_abi::kRecv, &request) != 0) return std::nullopt;
     Notice result{.id = request.id, .pid = static_cast<int>(request.pid)};
     std::uint64_t pointer { 0 }, size { 0 };
     if (request.data.nr == SYS_connect) {
@@ -113,15 +113,15 @@ std::optional<Notice> next(int listenerFd) {
     }
     // Validate again after memory access: a killed task's reused id is never
     // completed on behalf of an unrelated notification.
-    if (::ioctl(listenerFd, SECCOMP_IOCTL_NOTIF_ID_VALID, &request.id) != 0) return std::nullopt;
+    if (::ioctl(listenerFd, seccomp_abi::kIdValid, &request.id) != 0) return std::nullopt;
     return result;
 }
 bool complete(int listenerFd, std::uint64_t id, bool allow) {
-    seccomp_notif_resp response{};
+    seccomp_abi::Response response{};
     response.id = id;
     response.error = allow ? 0 : -EACCES;
-    response.flags = allow ? SECCOMP_USER_NOTIF_FLAG_CONTINUE : 0;
-    return ::ioctl(listenerFd, SECCOMP_IOCTL_NOTIF_SEND, &response) == 0;
+    response.flags = allow ? seccomp_abi::kContinue : 0;
+    return ::ioctl(listenerFd, seccomp_abi::kSend, &response) == 0;
 }
 #else
 int listener() { return -1; }

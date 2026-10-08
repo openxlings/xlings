@@ -16,6 +16,7 @@ module;
 #include <sys/uio.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+#include "seccomp_abi.hpp"
 #elif defined(__APPLE__)
 #include <sys/stat.h>
 #include <sys/utsname.h>
@@ -232,15 +233,13 @@ std::size_t instruction_count(std::span<const std::uint8_t> program) {
 namespace {
 
 // execve / execveat as user notifications.
-struct SeccompData { std::int32_t nr; std::uint32_t arch; std::uint64_t ip; std::uint64_t args[6]; };
-struct SeccompNotif { std::uint64_t id; std::uint32_t pid; std::uint32_t flags; SeccompData data; };
-struct SeccompNotifResp { std::uint64_t id; std::int64_t val; std::int32_t error; std::uint32_t flags; };
-constexpr unsigned long kNotifRecv = 0xC0502100UL;      // _IOWR('!', 0, seccomp_notif)
-constexpr unsigned long kNotifSend = 0xC0182101UL;      // _IOWR('!', 1, seccomp_notif_resp)
-constexpr unsigned long kNotifIdValid = 0x40082102UL;   // _IOW('!', 2, __u64)
-constexpr std::uint32_t kRetUserNotif = 0x7fc00000U, kRetAllow = 0x7fff0000U;
-constexpr unsigned kSetModeFilter = 1, kFlagNewListener = 1U << 3;
-constexpr std::uint32_t kUserNotifContinue = 1;
+using SeccompNotif = seccomp_abi::Request;
+using SeccompNotifResp = seccomp_abi::Response;
+constexpr auto kNotifRecv = seccomp_abi::kRecv, kNotifSend = seccomp_abi::kSend;
+constexpr auto kNotifIdValid = seccomp_abi::kIdValid;
+constexpr auto kRetUserNotif = seccomp_abi::kNotify, kRetAllow = seccomp_abi::kAllow;
+constexpr auto kSetModeFilter = seccomp_abi::kFilter, kFlagNewListener = seccomp_abi::kNewListener;
+constexpr auto kUserNotifContinue = seccomp_abi::kContinue;
 #if defined(__x86_64__)
 constexpr std::uint32_t kArch = 0xC000003EU, kExecve = 59, kExecveat = 322;
 #elif defined(__aarch64__)
