@@ -25,6 +25,7 @@ kind = "lib"
 [dependencies]
 libs     = { path = "../libs" }
 platform = { path = "../platform" }
+store    = { path = "../store" }      # payload roots of a generation
 runtime  = { path = "../runtime" }   # guard, observe
 
 [build]

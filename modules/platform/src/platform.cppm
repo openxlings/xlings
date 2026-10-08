@@ -299,6 +299,19 @@ namespace platform {
     // non-durable write it hardens.
     export void sync_directory(const std::filesystem::path& dir);
 
+    // What changes whenever an entry's own metadata or a directory's entries
+    // change: inode and ctime, not following a final symlink (lstat). ctime
+    // cannot be set back by a user, so an equal stamp means "not touched
+    // since". nullopt where it cannot be read, and always on Windows (no
+    // root projection exists there).
+    export struct ChangeStamp {
+        std::uint64_t inode { 0 };
+        std::int64_t seconds { 0 };
+        std::int64_t nanoseconds { 0 };
+        bool operator==(const ChangeStamp&) const = default;
+    };
+    export std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path);
+
     // Publish a same-filesystem scratch atomically, refusing every existing destination.
     // No copy or check-then-rename fallback when the OS cannot enforce this.
     export std::expected<void, std::string> rename_no_replace(

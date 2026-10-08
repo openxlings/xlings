@@ -101,8 +101,15 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation);
 // generation's writes nothing and returns the current number.
 std::expected<int, std::string> commit(const fs::path& subos, const Plan& plan,
                                        std::string_view reason);
+// Whether a switch waits for the pointer to reach stable storage. Every
+// caller in the product switches durably (ROOT-GEN-DURABLE); Deferred exists
+// so the performance lane can time the CHECK apart from the disk's flush
+// latency, which is the device's number, not ours.
+enum class Flush { Durable, Deferred };
+
 // The pointer to an existing generation (rollback). Nothing is re-planned.
-std::expected<void, std::string> switch_to(const fs::path& subos, int generation);
+std::expected<void, std::string> switch_to(const fs::path& subos, int generation,
+                                           Flush flush = Flush::Durable);
 // How many generations a SubOS keeps besides its current one, the one a boot
 // entry or the running machine uses (design part 3 §7.1).
 inline constexpr std::size_t kKeepGenerations = 5;

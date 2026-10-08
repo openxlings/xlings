@@ -99,3 +99,63 @@ XTEST(RootRetention, ARootPointerThatNamesNoGenerationPrunesNothing,
     EXPECT_TRUE(rf::prune(box, 1).empty());
     EXPECT_EQ(rf::generations(box), before);
 }
+
+XTEST(RootGeneration, ACommitFlushesItsRecordsAndDirectoriesBeforePublishingThem,
+      .area = "subos", .covers = {"ROOT-GEN-DURABLE"}, .requires_ = {"linux", "xlings-bin"}) {
+    auto home = tk::Home::isolated("root-durable");
+    ASSERT_EQ(home.xlings({"subos", "new", "box", "--rootfs"}).exit_code, 0);
+    auto env = kBox;
+    env["XLINGS_TRACE"] = "durability";
+    auto installed = home.xlings({"install", "fixture-tool", "-y"}, env);
+    ASSERT_EQ(installed.exit_code, 0) << installed.transcript();
+    const auto box = home.dir() / "subos/box";
+    const auto generation = rf::current(box);
+    ASSERT_TRUE(generation);
+
+    // The order of the flushes is the guarantee: everything a rename
+    // publishes is on disk before the directory that holds the rename is.
+    std::vector<std::string> trace;
+    std::istringstream lines(installed.transcript());
+    for (std::string line; std::getline(lines, line);)
+        if (line.starts_with("[trace:durability] ")) trace.push_back(line.substr(19));
+    auto at = [&](std::string_view needle) {
+        const auto it = std::ranges::find_if(trace, [&](const std::string& t) { return t.find(needle) != std::string::npos; });
+        return it == trace.end() ? std::ptrdiff_t{-1} : it - trace.begin();
+    };
+    const auto records = at("links.tsv");
+    const auto bin = at("/usr/bin");
+    const auto placedLine = std::format("dir {}", (box / rf::kGenerations).string());
+    const auto placedIt = std::ranges::find(trace, placedLine);   // exact: staging lives under it
+    const auto placed = placedIt == trace.end() ? std::ptrdiff_t{-1} : placedIt - trace.begin();
+    const auto pointer = static_cast<std::ptrdiff_t>(trace.size()) - 1;
+    ASSERT_GE(records, 0) << installed.transcript();
+    ASSERT_GE(bin, 0) << installed.transcript();
+    ASSERT_GE(placed, 0) << installed.transcript();
+    EXPECT_LT(records, placed);
+    EXPECT_LT(bin, placed);
+    EXPECT_EQ(trace.back(), std::format("dir {}", box.string())) << "the pointer's directory is flushed last";
+    EXPECT_LT(placed, pointer);
+    EXPECT_TRUE(fs::exists(box / rf::kGenerations / std::format(".{}.inventory", *generation)));
+}
+
+XTEST(RootGeneration, ASwitchRefusesAGenerationWhosePayloadIsGone,
+      .area = "subos", .covers = {"ROOT-GC-ROOT", "ROOT-SWITCH-SCALE"}, .requires_ = {"posix"}) {
+    auto home = tk::Home::isolated("root-switch-gone");
+    const auto box = home.dir() / "subos/box";
+    const auto payload = home.dir() / "data/xpkgs/fixture-x-tool/1";
+    tk::write_file(payload / "bin/tool", "fixture");
+    const auto first = rf::commit(box, {{{"usr/bin/tool", payload / "bin/tool", "fixture"}}, {}}, "first");
+    ASSERT_TRUE(first) << first.error();
+    const auto second = rf::commit(box, {{{"usr/bin/other", payload / "bin/tool", "fixture"}}, {}}, "second");
+    ASSERT_TRUE(second) << second.error();
+    fs::remove_all(payload);
+    const auto refused = rf::switch_to(box, *first);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find("which is gone"), std::string::npos) << refused.error();
+    EXPECT_EQ(rf::current(box), second);
+    // Without the inventory the full walk decides, and says the same.
+    fs::remove(box / rf::kGenerations / std::format(".{}.inventory", *first));
+    const auto again = rf::switch_to(box, *first);
+    ASSERT_FALSE(again);
+    EXPECT_NE(again.error().find("which is gone"), std::string::npos) << again.error();
+}

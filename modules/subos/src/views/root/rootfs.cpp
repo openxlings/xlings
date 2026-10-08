@@ -3,6 +3,8 @@ module xlings.subos.rootfs;
 import std;
 import xlings.libs.json;
 import xlings.platform;
+import xlings.observe;
+import xlings.store;
 
 namespace xlings::subos::rootfs {
 
@@ -81,6 +83,27 @@ bool safe_relative_link(const fs::path& path) {
     for (const auto& part : path)
         if (part == ".." || part == ".") return false;
     return *path.begin() == "usr" && std::distance(path.begin(), path.end()) > 1;
+}
+
+// ── durability (ROOT-GEN-DURABLE) ────────────────────────────────────
+//
+// A generation is published by two renames, and a rename is durable only
+// once the directory holding it is flushed -- the entries it publishes, and
+// the files they name, before it. `XLINGS_TRACE=durability` prints the
+// order, which is what the test of it reads.
+
+void trace_sync(std::string_view what, const fs::path& path) {
+    if (observe::trace_enabled("durability")) observe::trace("durability", std::format("{} {}", what, path.string()));
+}
+
+void sync_file(const fs::path& path) {
+    trace_sync("file", path);
+    (void)platform::sync_file(path);
+}
+
+void sync_dir(const fs::path& path) {
+    trace_sync("dir", path);
+    platform::sync_directory(path);
 }
 
 class OwnedStage {
@@ -188,6 +211,105 @@ bool owned_generation(const fs::path& subos, int generation,
     if (checkedRecords)
         *checkedRecords = std::move(*contents);
     return true;
+}
+
+// ── the inventory (ROOT-SWITCH-SCALE) ────────────────────────────────
+//
+// What `owned_generation` proves by reading every link, recorded once when
+// the generation is placed: the change stamp (inode + ctime) of each of its
+// directories and of its two record files, and the payloads it links into.
+// Adding, removing or replacing an entry changes its directory's ctime, and
+// ctime cannot be set back, so equal stamps mean "as placed". It lives beside
+// the generation (root.gen/.<k>.inventory), never inside: the tree is
+// immutable once placed. Missing or unequal falls back to the full walk.
+
+fs::path inventory_path(const fs::path& subos, int generation) {
+    return subos / std::string(kGenerations) / std::format(".{}.inventory", generation);
+}
+
+std::string stamp_line(std::string_view kind, std::string_view rel, const platform::ChangeStamp& s) {
+    return std::format("{}\t{}\t{}\t{}\t{}\n", kind, rel, s.inode, s.seconds, s.nanoseconds);
+}
+
+std::expected<void, std::string> write_inventory(const fs::path& subos, int generation,
+                                                 const std::set<fs::path>& directories,
+                                                 const std::set<fs::path>& payloads) {
+    const auto dir = generation_dir(subos, generation);
+    std::string text;
+    for (const auto& rel : directories) {
+        auto stamp = platform::change_stamp(rel.empty() ? dir : dir / rel);
+        if (!stamp) return std::unexpected("cannot stamp " + (dir / rel).string());
+        text += stamp_line("dir", rel.generic_string(), *stamp);
+    }
+    for (const auto* name : {"generation.json", "links.tsv"}) {
+        auto stamp = platform::change_stamp(dir / name);
+        if (!stamp) return std::unexpected("cannot stamp " + (dir / name).string());
+        text += stamp_line("file", name, *stamp);
+    }
+    for (const auto& payload : payloads) text += std::format("payload\t{}\n", payload.generic_string());
+    try {
+        platform::write_file_atomic(inventory_path(subos, generation).string(), text);
+    } catch (const std::exception& e) {
+        return std::unexpected(std::string("cannot write the generation inventory: ") + e.what());
+    }
+    return {};
+}
+
+enum class Inventory { Matches, Differs, Missing };
+
+// `missingPayload` names the first payload the generation links into that
+// is gone: the generation is intact and still cannot be used.
+Inventory check_inventory(const fs::path& subos, int generation, fs::path* missingPayload = nullptr) {
+    const auto text = read_checked_text(inventory_path(subos, generation));
+    if (!text) return Inventory::Missing;
+    const auto dir = generation_dir(subos, generation);
+    std::istringstream lines(*text);
+    bool sawDir = false;
+    for (std::string line; std::getline(lines, line);) {
+        std::vector<std::string> f;
+        for (std::size_t at = 0;;) {
+            const auto tab = line.find('\t', at);
+            f.push_back(line.substr(at, tab == std::string::npos ? std::string::npos : tab - at));
+            if (tab == std::string::npos) break;
+            at = tab + 1;
+        }
+        if (f.size() == 2 && f[0] == "payload") {
+            std::error_code ec;
+            if (!fs::exists(fs::path(f[1]), ec)) {
+                if (missingPayload) *missingPayload = f[1];
+                return Inventory::Differs;
+            }
+            continue;
+        }
+        if (f.size() != 5 || (f[0] != "dir" && f[0] != "file")) return Inventory::Differs;
+        platform::ChangeStamp want;
+        try {
+            want = {std::stoull(f[2]), std::stoll(f[3]), std::stoll(f[4])};
+        } catch (...) {
+            return Inventory::Differs;
+        }
+        const auto have = platform::change_stamp(f[1].empty() ? dir : dir / f[1]);
+        if (!have || *have != want) return Inventory::Differs;
+        sawDir |= f[0] == "dir" && f[1].empty();
+    }
+    return sawDir ? Inventory::Matches : Inventory::Differs;
+}
+
+// Every payload generation `generation` links into still exists.
+std::optional<fs::path> missing_payload(const fs::path& subos, int generation) {
+    const auto text = read_checked_text(generation_dir(subos, generation) / "links.tsv");
+    if (!text) return std::nullopt;
+    std::set<fs::path> seen;
+    std::istringstream records(*text);
+    for (std::string line; std::getline(records, line);) {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        const auto root = store::payload_root(line.substr(tab + 1));
+        if (!root || !seen.insert(*root).second) continue;
+        std::error_code ec;
+        if (!fs::exists(*root, ec)) return *root;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -311,10 +433,23 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation) {
     }
 }
 
-std::expected<void, std::string> switch_to(const fs::path& subos, int generation) {
+std::expected<void, std::string> switch_to(const fs::path& subos, int generation, Flush flush) {
     std::error_code ec;
-    if (!owned_generation(subos, generation))
-        return std::unexpected(std::format("generation {} is absent or is not an intact projection", generation));
+    fs::path gone;
+    switch (check_inventory(subos, generation, &gone)) {
+    case Inventory::Matches: break;
+    case Inventory::Differs:
+        if (!gone.empty())
+            return std::unexpected(std::format("generation {} links into {}, which is gone; reinstall it "
+                                               "or choose another generation", generation, gone.string()));
+        [[fallthrough]];
+    case Inventory::Missing:
+        if (!owned_generation(subos, generation))
+            return std::unexpected(std::format("generation {} is absent or is not an intact projection", generation));
+        if (auto missing = missing_payload(subos, generation))
+            return std::unexpected(std::format("generation {} links into {}, which is gone; reinstall it "
+                                               "or choose another generation", generation, missing->string()));
+    }
     const auto pointer = subos / std::string(kPointer);
     const auto status = fs::symlink_status(pointer, ec);
     if (ec && ec != std::errc::no_such_file_or_directory)
@@ -328,6 +463,7 @@ std::expected<void, std::string> switch_to(const fs::path& subos, int generation
     if (ec) return std::unexpected("cannot stage root pointer: " + ec.message());
     fs::rename(staged, pointer, ec);
     if (ec) return std::unexpected("cannot move root pointer: " + ec.message());
+    if (flush == Flush::Durable) sync_dir(subos);
     return {};
 }
 
@@ -348,9 +484,15 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
     const auto gens = generations(subos);
     const auto now = current(subos);
     const auto print = fingerprint(p);
-    std::string checkedRecords;
-    if (now && owned_generation(subos, *now, &checkedRecords) && checkedRecords == print)
-        return *now;
+    if (now) {
+        std::string checkedRecords;
+        if (check_inventory(subos, *now) == Inventory::Matches) {
+            if (auto text = read_checked_text(generation_dir(subos, *now) / "links.tsv")) checkedRecords = *text;
+        } else if (!owned_generation(subos, *now, &checkedRecords)) {
+            checkedRecords.clear();
+        }
+        if (!checkedRecords.empty() && checkedRecords == print) return *now;
+    }
     if (!gens.empty() && gens.back() == std::numeric_limits<int>::max())
         return std::unexpected("generation numbers are exhausted");
     const int next = gens.empty() ? 1 : gens.back() + 1;
@@ -379,8 +521,27 @@ std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
         manifest.close();
         if (!records || !manifest) return std::unexpected("cannot write generation metadata");
     }
+    // Durable before it is published: the records, then every directory the
+    // links were created in, deepest first.
+    std::set<fs::path> directories{fs::path{}, fs::path{"usr"}};
+    std::set<fs::path> payloads;
+    for (const auto& link : p.links) {
+        for (auto parent = fs::path(link.rel).parent_path(); !parent.empty(); parent = parent.parent_path())
+            directories.insert(parent);
+        if (auto root = store::payload_root(link.target)) payloads.insert(*root);
+    }
+    sync_file(staging / "links.tsv");
+    sync_file(staging / "generation.json");
+    std::vector<fs::path> deepest(directories.begin(), directories.end());
+    std::ranges::sort(deepest, std::greater<>{}, [](const fs::path& d) {
+        return std::ranges::distance(d.begin(), d.end());
+    });
+    for (const auto& d : deepest) sync_dir(d.empty() ? staging : staging / d);
     if (auto placed = platform::rename_no_replace(staging, dir); !placed)
         return std::unexpected(std::format("cannot place generation {}: {}", next, placed.error()));
+    sync_dir(subos / std::string(kGenerations));
+    if (auto inventory = write_inventory(subos, next, directories, payloads); !inventory)
+        trace_sync("inventory-skipped", inventory_path(subos, next));   // the full check still works
     if (auto sw = switch_to(subos, next); !sw) return std::unexpected(sw.error());
     return next;
 }
@@ -423,7 +584,10 @@ std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const 
         if (!owned_generation(subos, k)) continue;
         std::error_code ec;
         fs::remove_all(generation_dir(subos, k), ec); // subos-remove-all-ok: intact manifest and complete inventory prove derived generation ownership
-        if (!ec) removed.push_back(k);
+        if (!ec) {
+            fs::remove(inventory_path(subos, k), ec);
+            removed.push_back(k);
+        }
     }
     std::ranges::sort(removed);
     return removed;

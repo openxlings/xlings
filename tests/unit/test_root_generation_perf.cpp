@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
 namespace rf = xlings::subos::rootfs;
 
 XTEST(RootGenerationPerf, ThreeHundredPayloadsMeetBuildAndSwitchBudgets, .area = "subos",
-      .cost = tk::Cost::Medium, .covers = {"PERF-GEN-BUILD", "PERF-GEN-SWITCH"},
+      .cost = tk::Cost::Medium, .covers = {"PERF-GEN-BUILD", "PERF-GEN-SWITCH", "ROOT-SWITCH-SCALE"},
       .requires_ = {"linux"}) {
     auto home = tk::Home::isolated("generation-perf");
     const auto scope = home.dir() / "subos/box";
@@ -50,25 +50,75 @@ XTEST(RootGenerationPerf, ThreeHundredPayloadsMeetBuildAndSwitchBudgets, .area =
         EXPECT_EQ(fs::read_symlink(rf::usr_of(scope) / "lib/libtool-299.so"),
                   inputs.payloads[299] / "lib/libtool-299.so");
     }
+    std::vector<long long> durable;
     for (const int generation : generations) {
-        const auto started = std::chrono::steady_clock::now();
-        const auto switched = rf::switch_to(scope, generation);
+        // The check (inventory, payloads, the rename) apart from the device's
+        // flush latency, then the same switch durably.
+        auto started = std::chrono::steady_clock::now();
+        auto switched = rf::switch_to(scope, generation, rf::Flush::Deferred);
         ASSERT_TRUE(switched) << switched.error();
         switches.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
                                std::chrono::steady_clock::now() - started)
                                .count());
+        started = std::chrono::steady_clock::now();
+        switched = rf::switch_to(scope, generation);
+        ASSERT_TRUE(switched) << switched.error();
+        durable.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - started).count());
         ASSERT_TRUE(rf::current(scope));
         EXPECT_EQ(*rf::current(scope), generation);
     }
     std::ranges::sort(builds);
     std::ranges::sort(switches);
+    std::ranges::sort(durable);
     std::cout << "generation_300_payloads build_median_us=" << builds[1]
-              << " checked_switch_median_us=" << switches[1] << '\n';
+              << " checked_switch_median_us=" << switches[1]
+              << " durable_switch_median_us=" << durable[1] << '\n';
 #if defined(XLINGS_GENERATION_INSTRUMENTED)
     GTEST_SKIP() << "instrumented workload validated; runtime timing budgets require the mandatory "
                    "static performance lane";
 #endif
     EXPECT_LE(builds[1], 1'000'000);
+    EXPECT_LE(switches[1], 10'000);
+}
+
+XTEST(RootGenerationPerf, ThreeThousandPayloadsSwitchWithinTheSameBudget, .area = "subos",
+      .cost = tk::Cost::Slow, .covers = {"ROOT-SWITCH-SCALE", "PERF-GEN-SWITCH"},
+      .requires_ = {"linux"}) {
+    // Ten times the payloads, the same switch budget: a checked switch
+    // compares the recorded change stamps of a generation's directories and
+    // stats its payloads; it does not read every link (design part 3 §7.2).
+    auto home = tk::Home::isolated("generation-perf-3000");
+    const auto scope = home.dir() / "subos/box";
+    rf::Plan plan;
+    for (int i = 0; i != 3000; ++i) {
+        const auto payload = home.dir() / "data/xpkgs" / std::format("fixture-x-tool-{}/1", i);
+        tk::write_file(payload / "bin" / std::format("tool-{}", i), "#!/bin/sh\nexit 0\n");
+        plan.links.push_back({std::format("usr/bin/tool-{}", i), payload / "bin" / std::format("tool-{}", i), "fixture"});
+        plan.links.push_back({std::format("usr/lib/libtool-{}.so", i), payload / "bin" / std::format("tool-{}", i), "fixture"});
+    }
+    std::vector<int> generations;
+    for (int sample = 0; sample != 3; ++sample) {
+        auto sampled = plan;
+        sampled.links.push_back({std::format("usr/share/sample-{}", sample), "/nonexistent", "fixture"});
+        const auto generation = rf::commit(scope, sampled, "performance sample");
+        ASSERT_TRUE(generation) << generation.error();
+        generations.push_back(*generation);
+    }
+    std::vector<long long> switches;
+    for (const int generation : generations) {
+        const auto started = std::chrono::steady_clock::now();
+        const auto switched = rf::switch_to(scope, generation, rf::Flush::Deferred);
+        ASSERT_TRUE(switched) << switched.error();
+        switches.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - started).count());
+    }
+    std::ranges::sort(switches);
+    std::cout << "generation_3000_payloads checked_switch_median_us=" << switches[1] << '\n';
+#if defined(XLINGS_GENERATION_INSTRUMENTED)
+    GTEST_SKIP() << "instrumented workload validated; runtime timing budgets require the mandatory "
+                   "static performance lane";
+#endif
     EXPECT_LE(switches[1], 10'000);
 }
 

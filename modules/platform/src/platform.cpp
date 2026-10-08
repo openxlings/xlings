@@ -10,6 +10,7 @@ module;
 #include <stdio.h>
 #endif
 #if !defined(_WIN32)
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -703,6 +704,23 @@ void sync_directory(const std::filesystem::path& dir) {
     ::close(fd);
 #else
     (void)dir;  // no directory-handle fsync equivalent on Windows
+#endif
+}
+
+std::optional<ChangeStamp> change_stamp(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    (void)path;
+    return std::nullopt;
+#else
+    struct stat st {};
+    if (::lstat(path.c_str(), &st) != 0) return std::nullopt;
+#if defined(__APPLE__)
+    return ChangeStamp{static_cast<std::uint64_t>(st.st_ino), static_cast<std::int64_t>(st.st_ctimespec.tv_sec),
+                       static_cast<std::int64_t>(st.st_ctimespec.tv_nsec)};
+#else
+    return ChangeStamp{static_cast<std::uint64_t>(st.st_ino), static_cast<std::int64_t>(st.st_ctim.tv_sec),
+                       static_cast<std::int64_t>(st.st_ctim.tv_nsec)};
+#endif
 #endif
 }
 

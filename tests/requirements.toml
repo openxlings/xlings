@@ -668,11 +668,11 @@ status = "required"
 
 [ROOT-GEN-DURABLE]
 text = "a generation and its pointer reach stable storage before the switch is reported (fsync of files and directories)"
-status = "planned"
+status = "required"
 
 [ROOT-SWITCH-SCALE]
 text = "a checked switch stays within budget at 300 and 3000 payloads (digest check, not a full tree walk)"
-status = "planned"
+status = "required"
 
 [TOOL-RESOLVE]
 text = "every external tool is resolved in one place (in-process > xlings payload > declared host tool) and reported with its source"
