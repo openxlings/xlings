@@ -905,3 +905,26 @@ libc.so.6、broken，再由 static xlings rollback 得到 restored。完整镜�
 均记为本地夹具问题；修正夹具后用正式索引继续。未改变 host sysctl/AppArmor。
 最终客户端新 head 的五平台 CI 与146需求 hard gate 仍须重新验收；本轮只追加
 commit/普通 push。达到技术标准后先向用户汇报 review，不合入、不发布。
+
+
+## 28. 完整 rootfs 通过与镜像剩余验证（2026-10-09）
+
+49a6f0f6 已普通 push，PR共139 commits，最新main仍c55d89aa。固定head的
+macOS与ARM64 CI已完整通过；Linux主job的unit与跨平台脚本通过，release和下游
+仍运行；Windows、root、ASAN仍待完成，不以局部green作全流程结论。
+
+最新二进制的完整 rootfs_instance fixture 实际退出0，全部9阶段通过，包括
+144个可执行文件闭包检查、无shell shim、逻辑loader/cache、fetch=layer和
+Mesa离屏渲染。完整镜像fixture实际通过S1–5，multi/self update仍待收口。
+
+本地 root Docker 的 controller UID1000 嵌套UID map被拒绝；普通用户Docker的
+基础bwrap探针也被UID map拒绝，不能作为CI普通用户的替代环境。试验UID0能通过
+嵌套探针，但保留controller capabilities，明确不采用：该改动未commit/push，
+已撤回，原UID1000与隔离边界保持。该试验镜像运行不计最终验收证据。其后
+实际root缓存运行还遇到nested proc mount EPERM，未静默回退或声称通过。
+
+独立网络问题：namespace producer的clearenv丢失宿主标准HTTP(S)/ALL_PROXY及
+NO_PROXY设置；实际下载曾403/低速失败。现在只转交8个标准大小写代理变量，仍
+清理宿主scope环境；本地同一下载流程已完成实际资源传输及校验，完整multi仍
+因上述namespace环境问题未通过。最终static增量build通过，完整acceptance仍
+须由支持普通用户namespace的CI验证。正式依赖#47仍未合入/发布；不合入641。
