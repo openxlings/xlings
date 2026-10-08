@@ -10,6 +10,7 @@ import xlings.platform.target;
 import xlings.core.config;
 import xlings.core.home;
 import xlings.core.home.layers;
+import xlings.core.elfread;
 import xlings.core.log;
 import xlings.observe;
 import xlings.core.xim.payload;
@@ -488,9 +489,18 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
             }
 
             auto ro = [&](const fs::path& path) {
-                if (!path.empty() && fs::exists(path))
-                    sandbox.mounts.push_back({subos::spec::MountKind::RoBind, path.generic_string(),
-                                              path.generic_string()});
+                if (path.empty() || !fs::exists(path))
+                    return;
+                const auto destination = fs::absolute(path).lexically_normal();
+                const auto source = fs::canonical(destination);
+                // Local indexes are links out of the home. Their targets must
+                // exist in the private /tmp or /home before mounting the alias.
+                sandbox.mounts.push_back({subos::spec::MountKind::RoBind, source.generic_string(),
+                                          source.generic_string()});
+                if (source != destination)
+                    sandbox.mounts.push_back({subos::spec::MountKind::RoBind,
+                                              source.generic_string(),
+                                              destination.generic_string()});
             };
             auto rw = [&](const fs::path& path) {
                 if (path.empty())
@@ -501,6 +511,37 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                                           canonical.generic_string()});
             };
             ro(executable);
+            if (auto runtime = elfread::read(executable)) {
+                std::set<fs::path> runtimeDirectories;
+                if (!runtime->interpreter.empty()) {
+                    if (!fs::is_regular_file(runtime->interpreter))
+                        return std::unexpected("Lua worker ELF interpreter is unavailable: " +
+                                               runtime->interpreter);
+                    runtimeDirectories.insert(fs::path(runtime->interpreter).parent_path());
+                }
+                for (auto path : runtime->searchPaths) {
+                    for (const auto token :
+                         {std::string_view("${ORIGIN}"), std::string_view("$ORIGIN")}) {
+                        std::size_t position{};
+                        while ((position = path.find(token, position)) != std::string::npos) {
+                            const auto origin = executable.parent_path().generic_string();
+                            path.replace(position, token.size(), origin);
+                            position += origin.size();
+                        }
+                    }
+                    runtimeDirectories.insert(fs::path(path));
+                }
+                for (const auto& directory : runtimeDirectories) {
+                    if (!directory.is_absolute() || !fs::is_directory(directory))
+                        continue;
+                    // A dev build's managed loader and libraries can be outside
+                    // host_userland(), under the home that this worker masks.
+                    ro(directory);
+                }
+            } else if (elfread::is_elf(executable)) {
+                return std::unexpected("cannot read the Lua worker ELF runtime: " +
+                                       executable.string());
+            }
             ro(package);
             ro(context.xpkg_dir);
             ro(context.project_data_dir);

@@ -96,7 +96,11 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
     ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
     const auto forbidden = home.root() / "host-secret";
-    const auto script = home.root() / "script.lua";
+    const auto external = home.root() / "external-recipes";
+    const auto script = home.dir() / "data/external-recipes/script.lua";
+    fs::create_directories(external);
+    fs::create_directories(script.parent_path().parent_path());
+    fs::create_directory_symlink(external, script.parent_path());
     tk::write_file(forbidden, "host original");
     const auto quoted = "'" + forbidden.generic_string() + "'";
     tk::write_file(script, "local f=io.open([[" + forbidden.generic_string() +
@@ -112,6 +116,7 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
     EXPECT_EQ(result.exit_code, 0) << result.transcript();
     EXPECT_EQ(tk::read_file(forbidden), "host original");
+    EXPECT_TRUE(fs::is_symlink(script.parent_path()));
 }
 
 XTEST(LuaWorker, FullObservationAuditsHookSubprocessesWithoutArgumentValues, .area = "xim",

@@ -175,6 +175,8 @@ XTEST(HomeLayerInstall, BorrowedPayloadUsesTheCurrentScopeAndAReadonlyWorker, .a
     const auto result = user.xlings({"install", "fixture:layer-recipe@1.0.0", "-y"},
                                     {{"XLINGS_SYSTEM_LAYER", system.generic_string()}});
     ASSERT_EQ(result.exit_code, 0) << result.transcript();
+    ASSERT_TRUE(fs::is_symlink(user.dir() / "data/fixture"));
+    EXPECT_EQ(fs::canonical(user.dir() / "data/fixture"), fs::canonical(repo));
     EXPECT_FALSE(fs::exists(user.dir() / "data/xpkgs/fixture-x-layer-recipe/1.0.0"));
     EXPECT_FALSE(fs::exists(forbidden));
     EXPECT_FALSE(fs::exists(payload / "hook-write"));
