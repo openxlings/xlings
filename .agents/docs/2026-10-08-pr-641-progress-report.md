@@ -8,7 +8,9 @@
 候选版本为 `2026.10.8.2`，尚未合并、发布。
 
 `e8fbdd01` 的 macOS、Windows、ARM64（含原生兼容）及 Linux root 流水线已实际通过。
-Linux 主车道仍为 191 pass、5 fail、4 skip；ASAN 尚在运行。完整失败现场证明，worker
+Linux 主车道仍为 191 pass、5 fail、4 skip；ASAN 为 105 程序 pass、1 fail，唯一失败是
+受 instrumentation 影响的 generation 切换 11.069 ms 超过 10 ms，无 sanitizer 报错。
+完整失败现场证明，worker
 在加载 ELF 入口时即因解释器 literal 路径不可见而退出，审计握手错误为次生报错；
 前一轮将该错误直接归于两个 listener 的诊断不充分。单 listener 的实际 kernel 回归
 已通过，但 namespace 组合验收须等加载路径修复后的 CI。私有域 probe 已正确找到
@@ -549,3 +551,10 @@ ELF 声明的解释器/RPATH 别名，只在被私有视图遮蔽时补 RO 绑�
 镜像 self-update fixture 动态选取官方 Linux 的真实前序版本，兼容发布后 latest
 已与候选相等的情况；两种索引现场的前序选择与 shell 语法检查通过。仍需完整
 固定新 head 的隔离、性能、镜像升级和各平台 CI，尚未合入、发布。
+
+ASAN 的 300-payload 工作量保留全部 projection、generation 与完整切换断言；只在
+最后将 instrumented timing budget 标为明确 skip，不把该测量当作运行时性能证据。
+单独 inventory 的未知目录/替换文件拒绝用例继续受 ASAN 检验。静态性能车道依旧
+强制两项 generation case 实际 pass，build ≤1 s、checked switch ≤10 ms 阈值未变。
+该调整后的普通构建复验两项实际 pass：生成 median 22.203 ms、完整 checked switch
+median 3.561 ms，无 skip；ASAN 的新 head 结果待 CI。

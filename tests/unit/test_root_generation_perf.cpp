@@ -4,6 +4,14 @@ import xlings.testkit;
 import std;
 import xlings.subos.rootfs;
 
+#if defined(__SANITIZE_ADDRESS__)
+#define XLINGS_GENERATION_INSTRUMENTED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define XLINGS_GENERATION_INSTRUMENTED 1
+#endif
+#endif
+
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
 namespace rf = xlings::subos::rootfs;
@@ -56,6 +64,10 @@ XTEST(RootGenerationPerf, ThreeHundredPayloadsMeetBuildAndSwitchBudgets, .area =
     std::ranges::sort(switches);
     std::cout << "generation_300_payloads build_median_us=" << builds[1]
               << " checked_switch_median_us=" << switches[1] << '\n';
+#if defined(XLINGS_GENERATION_INSTRUMENTED)
+    GTEST_SKIP() << "instrumented workload validated; runtime timing budgets require the mandatory "
+                   "static performance lane";
+#endif
     EXPECT_LE(builds[1], 1'000'000);
     EXPECT_LE(switches[1], 10'000);
 }
