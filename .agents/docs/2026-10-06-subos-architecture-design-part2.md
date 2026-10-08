@@ -203,7 +203,10 @@ recipe 会把真实的 `install_dir()` 写进装出来的文件（gcc specs、pk
   物理位置是 `<home>/domains/xlings/`，只在 bwrap 里挂在 `/xlings`；有 `/xlings`（M 或 R）时只读复用它，用户私有域叠在上面。
 - 导出的镜像保留它的前缀域：single 布局的镜像里系统 home 就在 `/home/<u>/.xlings`。
 - **在根里面安装，不在外面拼路径**：往系统域装包，一律在 bwrap 里执行 —— 目标树绑成 `/`，域 home 绑在 `/xlings`，
-  user namespace 里映射成 uid 0，宿主上这个静态 musl 的 xlings 绑到 `/xlings/bin/xlings`。装出来的路径天然就是根里的路径，
+  实际 rootfs provider 在 user namespace 里映射成 uid 0，静态 musl 的 xlings 绑到 `/xlings/bin/xlings`。
+  私有域的准备、依赖安装编排与 runtime 控制器将同一宿主 owner 映射为非零 UID/GID 1000，
+  让只读来源的 metadata/config worker 和实际 root provider 都能再创建自己的 namespace；
+  不保留任何 capabilities。装出来的路径天然就是根里的路径，
   **所有 recipe 一行不改**。hook 需要的工具来自安装工具集（C30a，§2.4），不来自宿主。没有 user namespace 的机器
   （Ubuntu 24.04 未修复）给出 Part 1 的 `self doctor --isolation --fix`。
 - **store 在实例里只读可见**，与 Part 1 的沙箱一致（"沙箱里能看到 xlings home，但只读"）。只挂入闭包（看不到别的实例装了什么）
@@ -437,7 +440,8 @@ interface 同步：`subos_new` 的 `rootfs`、`subos_export`、`subos_boot`、`s
 
 ## 12. 安全与用户数据
 
-- 构建与进入 rootfs 都在 user namespace 里映射 uid 0（多个 uid 用 `newuidmap` + `/etc/subuid`，没有就只映射一个），
+- 实际 rootfs 视图在 user namespace 里映射 uid 0；私有域管理和构建编排使用映射到同一 owner 的非零 UID，
+  所有子 worker 与 root provider 继续清除 capabilities（多个 uid 用 `newuidmap` + `/etc/subuid`，没有就只映射一个），
   **不需要 setuid，不需要 root**（Part 1 §20 已确认的前提）。
 - 宿主角色的拒绝规则（§8.3）由允许操作表强制；`subos remove` 遇到启动项拒绝。
 - 机器状态（`/etc` `/home` `/var` `/root` `/srv`）和 rootfs 实例的同名目录都是用户数据；`subos export` 默认**不**包含
@@ -682,3 +686,11 @@ user/mount namespace、凭据及 seccomp 状态，不跨宿主和 producer 复�
 动态 worker 除 canonical runtime 目标外，须保留 ELF 声明的解释器及库搜索路径；
 私有 `/home` / `/tmp` 会遮蔽宿主的 alias。绑定限于入口声明的加载路径，已由 RO
 视图呈现的 alias 不重复挂载，不能为修复加载问题暴露整个宿主 home。
+
+私有域控制器（构建与 runtime）使用 UID/GID 1000，实际 rootfs provider 仍是 UID 0。
+Linux 5.12 起，映射 parent UID 0 要求创建者的 CAP_SETFCAP；清 caps 的 UID-0 控制器
+不能创建 metadata/config 的 Must worker，也不能创建实际 root 视图。因此控制器映射
+非零 owner，同时保持宿主 UID、文件归属和逻辑前缀，避免增加 capability。静态 DOM-SOURCE
+检验真实 worker 的 UID1000/CapEff0、只读来源与导出，domain exec 检验实际 root 的 UID0/CapEff0。
+recipe 捕获输出由宿主发布到安全创建的 `logs/recipes`；拒绝符号链接目录，不给 worker
+额外日志写挂载。发布目录错误独立归因，不能把合法 worker 响应误报为协议损坏。
