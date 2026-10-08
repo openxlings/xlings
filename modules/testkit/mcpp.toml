@@ -9,7 +9,7 @@
 # which is how a developer inside a subos sees a failure CI never does.
 #
 # Linked by tests only (`[dev-dependencies]` of the root). It depends on the
-# JSON module and nothing of xlings: tests drive the product through the
+# JSON and generic platform modules, without the product adapters: tests drive the product through the
 # binary, the same way a user does, so a test cannot reach around the
 # interface it is checking.
 #
@@ -26,6 +26,7 @@ kind = "lib"
 
 [dependencies]
 libs = { path = "../libs" }
+platform = { path = "../platform" }
 
 [build]
 include_dirs = ["../libs/src/json"]

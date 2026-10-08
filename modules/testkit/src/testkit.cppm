@@ -143,6 +143,8 @@ class Home {
 public:
     // A new, empty xlings home in the system temp dir, with a user home
     // next to it. `name` only makes the directory recognisable.
+    // Its default index/payloads use an owned loopback HTTP fixture. Only an
+    // XTEST explicitly requiring network selects the real mirror.
     static Home isolated(std::string_view name);
 
     Home(Home&&) noexcept;

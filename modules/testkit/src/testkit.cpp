@@ -32,6 +32,7 @@ module xlings.testkit;
 
 import std;
 import xlings.libs.json;
+import xlings.testkit.index_fixture;
 
 namespace xlings::testkit {
 
@@ -704,9 +705,15 @@ Home Home::isolated(std::string_view name) {
     fs::create_directories(h.root_ / "tmp");
     // The mirror the shell suite uses, for the same reason (AGENTS.md: an
     // unreachable mirror looks like the command under test hanging).
-    nlohmann::json cfg;
-    cfg["mirror"] = env_or("XLINGS_TEST_MIRROR", "GLOBAL");
-    write_file(h.dir_ / ".xlings.json", cfg.dump(2));
+    const auto mirror = env_or("XLINGS_TEST_MIRROR", "GLOBAL");
+    bool network = false;
+    if (g_name) {
+        const auto found = registry().find(g_name());
+        network = found != registry().end()
+            && std::ranges::find(found->second.requires_, "network") != found->second.requires_.end();
+    }
+    write_file(h.dir_ / ".xlings.json", network
+        ? nlohmann::json{{"mirror", mirror}}.dump(2) : index_fixture::config(mirror));
     return h;
 }
 

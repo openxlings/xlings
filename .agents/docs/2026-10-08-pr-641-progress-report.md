@@ -304,3 +304,32 @@ producer 未接通时明确拒绝，不能把它计作已完成。旧镜像测�
 已推送 `88eafe96` 的 macOS、Windows、aarch64、Linux root 和 ASAN 已通过；Linux 主套件
 仍因 locked audit cleanup 失败，修复处于本批尚未推送的代码中。最终固定 head CI、升级/性能、
 Root/Luban 场景、自审、合入和客户端发布链均未完成。
+
+## 14. HTTP fixture、平台修复与旧 home 升级（2026-10-08）
+
+基础批次已普通推送为 `6a1df938`、`d968ee47`、`0faff256`。其固定 head CI 失败：
+Linux/ARM musl 缺少 `linux/openat2.h`；Windows 模块混入 Winsock 1/2；旧 mcpp
+2026.9.28.3 的生成模块缓存依赖缺失影响 Linux root、ASAN 和 macOS。macOS 另有两项
+路径断言把 `/var` 原始路径与 `/private/var` canonical 路径混用。
+追加 `562cfbd9` 使用稳定 syscall ABI、统一 Windows 精简头，mcpp 固定到已发布的
+2026.10.5.3，CI 索引快照更新为 `ebf1fbb`，路径断言使用实际 canonical 路径。
+本地产品构建及 home context/layers 的 20 个用例通过；新 head 的 CI 尚待结果。
+
+testkit 默认 home 已接真实进程内 HTTP fixture：本地真实 xpkg 索引、数值 loopback、
+SHA256、实际解包，以及缺包不回落公共索引。真实下载暴露安装器漏识别 `.tar`，修复后
+端到端安装通过。HTTP transport 的 3 个用例通过，覆盖真实字节、来源/本地错误、
+拒绝外部地址/重定向/畸形响应和取消。带 `network` 的测试继续明确使用真实镜像。
+xdev 合并结果为 case 保留 program 身份，防止不同测试程序的同名 case 混入趋势。
+xdev 本批完整 6 程序 / 22 用例通过、0 skip，证据为 `xdev-http-complete.ndjson`。
+
+隔离 home 的已发布 2026.10.4.1 已真实安装新版 glibc recipe revision 2；更换该 home
+的实际 dispatcher 为候选 2026.10.8.2 后，CN 配置、self init、再次 install glibc 均通过。
+configured revision、完整 workspace 与 payload 文件大小/mtime 保持一致，证据为
+`target/xdev/pr641-hardening/nminus1-candidate-upgrade.ndjson`。这是现有 home 升级验证，
+正式发布后的 self update/fresh install 验证仍待完成。
+
+D2 新增 owner-private RootView 与 cache exact bindings，本地全构建通过；SCM 三 FD 与
+broker 完成后的真实挂载更新仍在接线。D3 `new --domain /xlings` 与 export 已接 namespace
+producer，本地 prefix 6 用例通过；真实 namespace 用例因本机 bwrap 能力跳过，不能算验收。
+已有只读 systemSource 桥、runtime scope 路由及旧镜像 reader 仍在实现。最终 CI、
+Root/Luban/性能真实场景、自审、合入与发布链尚未完成。后续继续仅追加提交与普通 push。

@@ -1296,7 +1296,8 @@ std::filesystem::path uninstall_xpkg_file_(const std::filesystem::path& indexPkg
 
 bool is_archive_(const std::filesystem::path& path) {
     auto filename = path.filename().string();
-    return filename.ends_with(".tar.gz")
+    return filename.ends_with(".tar")
+        || filename.ends_with(".tar.gz")
         || filename.ends_with(".tar.xz")
         || filename.ends_with(".tar.bz2")
         || filename.ends_with(".tgz")

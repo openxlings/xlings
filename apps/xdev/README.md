@@ -57,10 +57,12 @@ bounded waits, responses close the connection, and the owning server joins
 its worker and closes its listener at shutdown. It serves up to 64 MiB per
 file. It binds exclusively to IPv4 loopback and never fetches external URLs.
 
-Tests currently opt in to that URL explicitly. Automatic recipe/index
-rewriting and testkit `Home::isolated()` defaulting to the HTTP fixture remain
-integration work; starting this server alone does not prove an existing
-network-dependent scenario is offline.
+`Home::isolated()` starts a process-owned minimal fixture mirror by default.
+Its real xpkg index resolves `xim:fixture-data@1.0.0`; the product downloads
+the archive from numeric loopback, verifies its SHA256 and extracts it.
+Missing packages stay missing. Tests declaring `network` opt into the real
+mirror instead. `--fixture DIR` provides an additional explicit URL to tests
+and scripts; it does not rewrite their recipes or replace their index.
 
 `xdev report --trend PREVIOUS/trend.json --write NEXT --timings-out NEXT/timings.json`
 retains up to 64 distinct executions per platform, lane and test. The report

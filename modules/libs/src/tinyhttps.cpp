@@ -352,6 +352,8 @@ DownloadFileResult download_file(const DownloadOptions& opts) {
             anyLive = true;
             auto r = opts.transferOverride
                 ? opts.transferOverride(url, opts.destFile)
+                : opts.loopbackHttp && url.starts_with("http://127.0.0.1:")
+                    ? opts.loopbackHttp(url, opts.destFile)
                 : detail_::download_once(url, opts.destFile,
                       opts.connectTimeoutSec, opts.maxTimeSec,
                       lowSpeedBytes, lowSpeedSecs,

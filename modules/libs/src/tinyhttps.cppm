@@ -71,6 +71,9 @@ struct DownloadOptions {
     // change the verdict). Used for sha256 integrity: a mirror may win
     // the latency race yet serve corrupted bytes.
     std::function<std::string(const std::string& url)> onVerify;
+    // An optional real loopback HTTP transport supplied by the platform adapter.
+    // The candidate loop still verifies length, digest and failure attribution.
+    std::function<DownloadFileResult(const std::string&, const std::filesystem::path&)> loopbackHttp;
     // TEST SEAM: when set, replaces the network transfer for one URL
     // attempt (must write destFile on success). Lets unit tests exercise
     // the candidate loop / verify fallback without sockets.

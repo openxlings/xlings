@@ -617,7 +617,8 @@ int cmd_test(const TestArgs& a) {
                 std::println(std::cerr, "xdev: {}: {}", result.id, result.error);
             }
             for (const auto& name : {"mcpp.ndjson", "meta.ndjson", "cases.ndjson"}) {
-                for (const auto& row : read_ndjson(taskDirectories[index] / name)) {
+                for (auto row : read_ndjson(taskDirectories[index] / name)) {
+                    if (std::string_view(name) != "mcpp.ndjson") row["program"] = result.id;
                     append_ndjson(out / name, row);
                     if (std::string_view(name) == "mcpp.ndjson" && result.exit_code != 0)
                         std::println(std::cerr, "{}", tail_lines(row.value("run_output", ""), 25));
@@ -717,7 +718,9 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             records.push_back(std::move(r));
         }
         for (auto& j : read_ndjson(dir / "cases.ndjson")) {
-            records.push_back({ .kind = "case", .name = j.value("test", ""),
+            const auto program = j.value("program", "");
+            const auto name = j.value("test", "");
+            records.push_back({ .kind = "case", .name = program.empty() ? name : program + ":" + name,
                                 .status = j.value("status", ""), .ms = j.value("ms", 0LL),
                                 .message = j.value("message", ""), .lane = lane_name });
         }
@@ -726,8 +729,12 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
                                 .status = j.value("status", ""), .ms = j.value("ms", 0LL),
                                 .message = j.value("message", ""), .lane = lane_name });
         }
-        for (auto& j : read_ndjson(dir / "meta.ndjson"))
+        for (auto& j : read_ndjson(dir / "meta.ndjson")) {
+            const auto program = j.value("program", "");
+            const auto name = j.value("test", "");
+            if (!program.empty()) j["test"] = program + ":" + name;
             meta[{lane_name, j.value("test", "")}] = j;
+        }
         if (!platform.empty())
             for (auto i = first; i < records.size(); ++i) {
                 const auto& r = records[i];
