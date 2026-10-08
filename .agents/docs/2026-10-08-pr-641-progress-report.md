@@ -2,21 +2,33 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（最终写入边界与 CI 工具保留收口中）
+## 当前交付状态（payloadless 卸载发布修复待最新 CI）
 
 后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
 候选版本为 `2026.10.8.2`，尚未合并、发布。
 
+`8e8638fc` 的 macOS（147 pass、0 fail、2 skip）、Windows（105/0/44）、
+Linux root 完整流水线通过。ARM64 首次 qemu version 检查退出 139，同一 head
+重跑交叉构建和原生兼容均通过；原因未确定，补充失败 trace 与 archive 保存，
+不放宽原始退出码和候选版本匹配。Linux 主单元为 202 pass、1 fail、5 skip，
+ASAN 仍运行；静态 domain、性能和发行版下游因单元失败尚未执行。
+
+唯一 Linux 失败是新 payloadless config remove 回归。artifact 的 uninstall log
+确认 hook 已运行一次，但 worker publication 无条件移动从未存在的旧 payload，
+随后 fallback 合成不存在的 XVM remove 又遮蔽该错误。最小修复使 missing old +
+empty shadow 不制造空 payload，非空首次发布仍用 no-replace；unknown/nonregular
+目标拒绝，已有目录保留事务。fallback 仅对 validated selection 合成 remove。
+真实 hook 失败继续非零；dev 与 legacy 两路都校验显式/bare hook once、错误版本
+拒绝且旧日志不变、真实 hook 错误不吞掉。正在有限本地复验，最新 head 全 CI 待完成。
+
+最终只读审查的 anchored FD `/etc`/sysusers 写入修复已在 Linux/macOS 实际通过，
+外部 user data、symlink/hardlink 与 rename 后目录边界均有回归。静态 release 清理
+后的 xdev 与四个已构建验收程序保留修复已落地，完整静态实际 pass 门禁尚待执行。
+不能用其他 head 或平台的 green 替代这些验收。
+
 `1019d353` 的 macOS、Windows、ARM64 和 Linux root 完整 CI 已实际通过；
 Linux 单元为 198 pass、0 fail、5 skip，静态 release 和 candidate cold-home 通过。
-静态 domain 硬验收启动前因 release 清理 musl target 同时删除 xdev 而失败；
-domain、性能与下游发行版尚未执行，ASAN 仍运行。CI 将静态 xdev 和四个已经构建的
-candidate 验收程序保留到 target/xdev 下，避免 release 清理，并保留 actual-pass 要求。
-
-最终只读审查发现 payloadless config remove 预检误申请 payload write context，以及
-factory/sysusers 沿用户目录 symlink 写到机器根外部的路径。两项已完成最小调用修复及
-anchored FD 写入实现，正在串行构建和有限复验；新 head 的完整 CI、发布和真实 CN
-fresh install/self update 仍未完成，不能以旧 head 的四平台 green 替代。
+静态 domain 硬验收启动前因 release 清理 musl target 同时删除 xdev 而失败。
 
 `476fc244` 的 macOS、Windows、ARM64 和 Linux root 已实际通过；Linux 主车道为
 196 pass、3 fail、4 skip，ASAN 仍运行。worker 的 dev/locked、loader alias、完整
@@ -654,3 +666,20 @@ skip、0 fail；其中 rootfs 13 项全部实际通过，含四组新增真实�
 验收程序的 listing 均正常启动。两项 safety lint、Linux CI YAML/脚本语法、
 whitespace 通过；lock 重排语义一致，已恢复。真实 namespace 卸载、静态 domain、
 性能、boot/self update 与 ASAN 仍须下一固定 head CI，不以本地 skip 计完成。
+
+## 21. Payloadless publication 根因修复与有限复验
+
+CI `8e8638fc` 唯一失败的实际 uninstall log 有一次 hook marker，错误链已定位到
+missing old payload 的 publication，而不是 hook 未执行。最终补丁保留现有目录
+事务、no-replace 首发、unknown/nonregular 拒绝；只对 validated selection 合成
+默认 XVM remove，hook 真失败非零。共享 dev/legacy 回归覆盖显式/bare once、
+9.9.9拒绝且旧日志不变、唯一原始 hook failure 不吞。
+
+开发构建30.31 s、dist/static38.61 s通过，109测试程序构建303.617 s通过。
+新增无policy真实CLI专项1 pass；本机namespace能力缺失，dev worker验收待新head CI。
+ARM失败诊断只增加原始status/stdout/stderr、shim/provider traces及always保存已有
+archive；精确候选版本匹配和原失败退出码保留，不用诊断重跑放宽验收。
+
+最终 xdev 有限复验：e2e/test_lua_worker exit0，注册用例3 pass、7本地 sandbox
+capability skip、0fail；unit/test_xim_install exit0，传统gtest63 pass。安全删除lint
+13标记、platform header lint、diff-check、ARM YAML/bash/Python语法均通过。

@@ -710,3 +710,12 @@ metadata 读取起声明该层，避免把未声明策略下的 legacy setup 执
 外部 sentinel、路径置换和账号 hardlink 回归须实际通过，Windows 不支持该 root writer。
 release 清理 triple target 前保留静态 xdev 和已构建的四个专项程序，避免把工具缺失
 误归于 domain 功能；三项 domain 与六项静态预算仍必须实际 pass。
+
+### Payloadless config 卸载发布（2026-10-08 最终回归）
+
+只读 hook 预检不能申请 payload write context；执行后的空 shadow 与不存在的旧
+payload 表示没有字节需要发布，不创建空版本目录。非空首次 publication 仍采用
+no-replace，已有目录保留 set-aside/rollback，未知或非目录目的地拒绝。默认 XVM
+卸载只对已验证 selection 合成；实际 hook 失败保持原错误和非零退出。回归覆盖
+真实 dev worker 与无 policy 的旧 recipe，显式/裸名称 hook 恰好一次、错误版本
+不运行 hook，以及失败 hook 不报告成功。最终固定 head CI 待通过后记录发布证据。
