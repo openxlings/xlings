@@ -2,10 +2,10 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（系统模板借用配置修复待最新 CI）
+## 当前交付状态（Linux 后续验收修复待最新 CI）
 
 后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
-候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§25；以下保留历史轮次证据。
+候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§26；以下保留历史轮次证据。
 
 `8e8638fc` 的 macOS（147 pass、0 fail、2 skip）、Windows（105/0/44）、
 Linux root 完整流水线通过。ARM64 首次 qemu version 检查退出 139，同一 head
@@ -787,3 +787,56 @@ hard-verdict shell 对 125 个 outcome 组合验证仅全部 success 返回 0。
 
 仍保持 draft，后续全部追加提交、普通 push。按用户最新要求，全部必需 CI 通过并
 完成最终审查后先报告交给用户 review，未经用户确定不合入、不发布。
+
+## 26. DomainProducer 已通过；独立验收暴露的 Linux 问题收口
+
+固定 `2b802853` 的三个静态 domain/source/export 用例实际通过，包含用户贴出的
+DomainProducer 未确认 remove 退出 2，以及 copy/fork/已确认删除/宿主用户数据保留。
+macOS 147/0/2、Windows 105/0/44、ARM cross/native、Linux root 全流水线通过。
+ASAN 107 程序 pass、0 fail，1824.23s（build1763.48s/run58.69s）。
+Linux E2E 为 131 pass、9 fail；热/冷 exec 额外约206ms失败，isolation/system layer、
+Arch 和三个 distro 分片失败。执行报告146 required全部有声明，但仅123有通过证据、
+23未验证；因此这一 head 不具备合入条件。continue-on-error 的 step conclusion
+曾被误读为性能通过，已更正；实际 outcome、日志和案例才是验收依据。
+
+本批产品修复：
+
+- session-init 在 fork 前接入 SIGCHLD self-pipe，main/joined child 恢复信号，
+  supervisor 与 init 先排空信号再 reap，使退出唤醒不会丢失。200ms只作TTL/超时tick。
+- syscall trace 确认每个极小IPC包也分配并清零1MB。Linux先peek实际packet长，
+  按长度和上限分配，接收仍保留原FD/CLOEXEC规则；数据或FD截断关闭已接收FD并拒绝。
+- ldconfig 使用私有tmpfs /run，先精确RO闭包alias，再挂独占RW cache staging，
+  非递归将 /run 只读。机器自己的 /run和payload不改变，running root直跑规则不变。
+- system/multi/root HOME 不交还 SUDO_UID；只有 user/custom/portable HOME可以。
+  install --system 在创建目录前要求root，移除会截断未知文件的固定write probe。
+- 缺 patchelf 的首次安装在同一个 InstallPlan 上加 Build-kind 顺序约束，工具自己的
+  闭包先于工具，其他节点后于工具；不改payload runtime_deps，不递归install或二次resolve。
+  自动注入工具不占用户 install_targets 的槽位，显式工具请求也遵守顺序。
+- 发布前将 installed[] 排序，与已有writer规范一致，避免多版本成功保存被误判为失败。
+  缺失旧注册不能证明任何旧asset，仍不能授权覆盖；incoming缺注册继续拒绝。
+- install/use 共用精确file destination选择：新选中的普通文件取消旧冲突active binding，
+  保留installed记录和目录claims。共享目录继续由materializer无损unwrap，不写payload。
+- 只有提交后的已删除asset路径才清理空父目录；native rmdir拒绝普通文件，
+  symlink/nonempty/固定sysroot形状不移除。doctor对已登记同payload同文件名的
+  dangling legacy路径构造准确旧link证明，仍由materializer复查和事务替换。
+
+本地复验：先前9个失败E2E全部实际pass，包括共享destination、双方向目录unwrap、
+少asset版本切换、另一个SubOS损坏active的恢复，以及删除确认/未知数据/GC拒绝。
+精确更新两个内容断言，仅排除3个已知bookkeeping文件，未宽泛排除未知文件。
+SubOS名称预检保留并恢复native明确诊断；AC12新增默认home用户数据不变断言。
+subos_events改用本已有fixture index，避免生命周期断言依赖网络同步。
+Ubuntu20隔离容器的系统entry+新alice HOME，CN首次安装xz：实际patchelf→glibc→xz
+配置，退出0；xz及liblzma均打印5.8.3。Arch正式makepkg/pacman仍需新CI实际通过。
+
+针对性unit实际：session wakeup+packet/FD边界3pass，tool-order3pass，
+materializer10pass，HomeContext12pass，cache5pass/1本机bwrap skip。
+补充隔离root容器：实际static ldconfig生成、/run禁止其他输出、来源字节与机器用户
+文件保留、用户替换cache拒绝，该case实际pass（130ms）；这不替代CI非root隔离验收。
+本批最终dev与dist构建通过；delete/header lint、bash parse和diff-check通过。
+
+本地非instrumented容器优化后cold额外中位5.035ms通过10ms预算，hot额外5.961ms
+仍超过5ms预算；不放宽门槛、不把该失败报告为通过。ptrace采样只作定位，不作预算证据。
+新固定head仍要求三个domain、六个静态性能用例、全部平台与146需求真实执行验收。
+
+按用户再次明确的要求：全部追加提交、普通push；达到技术标准并综合自审后先汇报
+给用户review决定是否合入，本轮不合入、不发布。
