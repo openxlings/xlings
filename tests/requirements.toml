@@ -428,11 +428,19 @@ text = "self doctor --isolation diagnoses; --fix installs the root-owned backend
 status = "required"
 
 [PERF-SHIM]
-text = "shim dispatch inside a sandbox does not go through the broker"
+text = "static shim dispatch inside a sandbox avoids the broker and adds less than 10 ms"
 status = "required"
 
 [PERF-EXEC-HOT]
-text = "joining a running session costs less than starting one"
+text = "static hot-session exec adds at most 5 ms over direct exec measured with the same runner"
+status = "required"
+
+[PERF-EXEC-COLD]
+text = "static cold exec adds at most 10 ms over the equivalent direct bwrap provider invocation"
+status = "required"
+
+[PERF-ROOT-ENTRY]
+text = "entering an actual rootfs with its checked closure adds at most 100 ms over view cold exec"
 status = "required"
 
 [POL-DECLARE-AT-NEW]

@@ -440,6 +440,30 @@ jobs:
               assert len(checked) == 1 and checked[0]['status'] == 'pass', f'{case} must actually pass'
           PY
 
+      - name: Static SubOS performance budgets
+        env:
+          XDEV_LANE: linux-static-perf
+        run: |
+          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          export XLINGS_BIN="$candidate"
+          "$XDEV" test e2e/test_subos_perf --no-build --require-metadata \
+            --out target/xdev/linux-static-perf
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          results = [json.loads(line) for line in Path('target/xdev/linux-static-perf/cases.ndjson').read_text().splitlines()]
+          assert len(results) == 4 and all(row['status'] == 'pass' for row in results), results
+          PY
+          "$XDEV" test unit/test_root_generation_perf --no-build --require-metadata \
+            --out target/xdev/linux-static-generation-perf
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          results = [json.loads(line) for line in Path('target/xdev/linux-static-generation-perf/cases.ndjson').read_text().splitlines()]
+          assert len(results) == 2 and all(row['status'] == 'pass' for row in results), results
+          PY
+
       - name: Attach artifact
         uses: actions/upload-artifact@v4
         if: success()
@@ -803,6 +827,17 @@ jobs:
           "$xdev" report "${args[@]}" "${history[@]}" --summary \
             --requirements tests/requirements.toml --fail-uncovered \
             --write target/xdev/current-report --timings-out target/xdev/current-report/timings.json || status=$?
+          python3 - <<'PY' || status=1
+          import json
+          from pathlib import Path
+          report = json.loads(Path('target/xdev/current-report/report.json').read_text())
+          # Windows quoting has its own mandatory Windows gate; WSL1 is the
+          # design's explicit best-effort lane and remains visible as such.
+          elsewhere = {'SUBOS-CMD-WIN-QUOTING', 'EXPORT-WSL'}
+          missing = [name for name, evidence in report['requirements'].items()
+                     if name not in elsewhere and not evidence['passed_by']]
+          assert not missing, f'required behavior lacks passing execution evidence: {missing}'
+          PY
           if [[ -f target/xdev/current-report/trend.json && -f target/xdev/current-report/timings.json ]]; then
             mkdir -p target/xdev/history
             cp target/xdev/current-report/{trend,timings}.json target/xdev/history/

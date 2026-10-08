@@ -319,6 +319,11 @@ jobs:
             Write-Host "::endgroup::"
             exit $status
           }
+          $quoting = @(Get-Content target/xdev/windows-unit/cases.ndjson | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object test -eq 'SubosCmdContract.ExitCodeHomeAndCmdQuotingOnWindows')
+          if ($quoting.Count -ne 1 -or $quoting[0].status -ne 'pass') {
+            throw 'SUBOS-CMD-WIN-QUOTING must have a passing Windows execution'
+          }
 
       # If the BUILD failed there is nothing to run E2E against, and every
       # step below would fail for a reason that has nothing to do with it.
