@@ -214,10 +214,83 @@ jobs:
           echo "== file =="; file "$bin"
           file "$bin" | grep -q "ARM aarch64" || { echo "NOT aarch64"; exit 1; }
           file "$bin" | grep -q "statically linked" || { echo "NOT static"; exit 1; }
+          diagnostic_dir=build/aarch64-run-diagnostics
+          mkdir -p "$diagnostic_dir"
+          expected_version=$(sed -n 's/.*VERSION = "\([^"]*\)".*/\1/p' src/core/config.cppm | head -1)
+          test -n "$expected_version"
+          printf 'xlings %s\n' "$expected_version" > "$diagnostic_dir/expected-version.txt"
+          git rev-parse HEAD > "$diagnostic_dir/candidate-commit.txt"
+          qemu_shim=$(command -v qemu-aarch64-static)
+          {
+            type -a qemu-aarch64-static
+            printf 'shim=%s\n' "$qemu_shim"
+            readlink -f "$qemu_shim"
+            file -L "$qemu_shim"
+            if grep -aqF 'xlings:multicall-shim:abi=1:caps=handoff:f615c0de' "$qemu_shim"; then
+              echo 'shim carries multicall marker v1'
+            else
+              echo 'shim has no multicall marker v1 (legacy dispatch may apply)'
+            fi
+          } > "$diagnostic_dir/qemu-routing.txt"
+          # Record only this provider's paths and active version, never the
+          # complete home configuration or environment (which can hold tokens).
+          python3 - "$diagnostic_dir" <<'PY'
+          import json, os, pathlib, sys
+          destination = pathlib.Path(sys.argv[1])
+          try:
+              home = pathlib.Path(os.environ['XLINGS_HOME'])
+              config = json.loads((home / '.xlings.json').read_text())
+              scope = home / 'subos' / 'current' / '.xlings.json'
+              workspace = json.loads(scope.read_text())['workspace']
+              active = workspace['qemu-aarch64-static']
+              if isinstance(active, dict):
+                  active = active['active']
+              target = config['versions']['qemu-aarch64-static']
+              release = target['versions'][active]
+              filename = release.get('filename') or target.get('filename') or 'qemu-aarch64-static'
+              provider = pathlib.Path(release['path']) / filename
+              if release.get('alias'):
+                  raise ValueError('provider has an alias; direct diagnostic is unavailable')
+              if not provider.is_absolute() or not provider.is_file():
+                  raise ValueError('registered provider is not an absolute existing file')
+              (destination / 'qemu-provider.txt').write_text(str(provider) + '\n')
+              (destination / 'qemu-provider.json').write_text(json.dumps({
+                  'version': active, 'path': str(provider), 'scope': str(scope)
+              }) + '\n')
+          except Exception as error:
+              (destination / 'qemu-provider-error.txt').write_text(str(error) + '\n')
+          PY
           echo "== qemu xlings --version =="
-          ver=$(qemu-aarch64-static "$bin" --version)
-          echo "$ver"
-          echo "$ver" | grep -q "xlings" || { echo "xlings --version failed under qemu"; exit 1; }
+          set +e
+          "$qemu_shim" "$bin" --version > "$diagnostic_dir/stdout.txt" 2> "$diagnostic_dir/stderr.txt"
+          run_status=$?
+          set -e
+          printf '%s\n' "$run_status" > "$diagnostic_dir/status.txt"
+          cat "$diagnostic_dir/stdout.txt" "$diagnostic_dir/stderr.txt"
+          if [ "$run_status" -ne 0 ] || ! cmp -s "$diagnostic_dir/expected-version.txt" "$diagnostic_dir/stdout.txt"; then
+            # Diagnostic reruns never turn a failed admission into success.
+            # Preserve both shim and direct-provider traces to distinguish
+            # native dispatch from the emulator and the guest startup path.
+            set +e
+            cat "$diagnostic_dir/qemu-routing.txt"
+            cat "$diagnostic_dir"/qemu-provider*.txt "$diagnostic_dir"/qemu-provider.json 2>/dev/null
+            timeout 20s "$qemu_shim" --version > "$diagnostic_dir/shim-version.txt" 2>&1
+            printf '%s\n' "$?" > "$diagnostic_dir/shim-version-status.txt"
+            timeout 20s "$qemu_shim" -strace "$bin" --version > "$diagnostic_dir/shim-trace-stdout.txt" 2> "$diagnostic_dir/shim-trace-stderr.txt"
+            printf '%s\n' "$?" > "$diagnostic_dir/shim-trace-status.txt"
+            if [ -s "$diagnostic_dir/qemu-provider.txt" ]; then
+              qemu_provider=$(cat "$diagnostic_dir/qemu-provider.txt")
+              file "$qemu_provider"
+              sha256sum "$qemu_provider" "$bin"
+              timeout 20s "$qemu_provider" --version > "$diagnostic_dir/provider-version.txt" 2>&1
+              printf '%s\n' "$?" > "$diagnostic_dir/provider-version-status.txt"
+              timeout 20s "$qemu_provider" -strace "$bin" --version > "$diagnostic_dir/provider-trace-stdout.txt" 2> "$diagnostic_dir/provider-trace-stderr.txt"
+              printf '%s\n' "$?" > "$diagnostic_dir/provider-trace-status.txt"
+            fi
+            tail -n 100 "$diagnostic_dir"/*trace-stderr.txt
+            echo "::error::ARM candidate --version failed: status=$run_status, expected xlings $expected_version"
+            if [ "$run_status" -eq 0 ]; then exit 1; else exit "$run_status"; fi
+          fi
 
       # Runs ONLY on failure, as its own step.
       #
@@ -281,9 +354,11 @@ jobs:
           done
 
       - name: Upload aarch64 candidate
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: xlings-linux-aarch64-candidate
           path: |
             build/xlings-*-linux-aarch64.tar.gz
             build/xlings-*-linux-aarch64.tar.gz.sha256
+            build/aarch64-run-diagnostics/**
