@@ -37,7 +37,7 @@ constexpr std::uint32_t ARCH { AUDIT_ARCH_AARCH64 };
 constexpr std::uint32_t ARCH { 0 };
 #endif
 }
-int listener() {
+int listener(Selection selection) {
     if constexpr (ARCH == 0) return -1;
     // Unsupported ABIs are denied: a compat binary cannot bypass a native
     // syscall-number monitor and create unaudited egress.
@@ -46,11 +46,15 @@ int listener() {
         {static_cast<unsigned short>(BPF_JMP | BPF_JEQ | BPF_K), 1, 0, ARCH},
         {static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kKill},
         {static_cast<unsigned short>(BPF_LD | BPF_W | BPF_ABS), 0, 0, offsetof(seccomp_abi::Data, nr)}};
-    for (const auto syscall : {SYS_connect, SYS_sendto, SYS_sendmsg, SYS_sendmmsg}) {
+    const auto notify = [&](int syscall) {
         filter.push_back({static_cast<unsigned short>(BPF_JMP | BPF_JEQ | BPF_K), 0, 1,
                           static_cast<unsigned>(syscall)});
         filter.push_back({static_cast<unsigned short>(BPF_RET | BPF_K), 0, 0, seccomp_abi::kNotify});
-    }
+    };
+    if (selection.network)
+        for (const auto syscall : {SYS_connect, SYS_sendto, SYS_sendmsg, SYS_sendmmsg}) notify(syscall);
+    if (selection.exec)
+        for (const auto syscall : {SYS_execve, SYS_execveat}) notify(syscall);
 #if defined(__x86_64__)
     // x32 shares AUDIT_ARCH_X86_64 and encodes a different syscall table.
     filter.push_back({static_cast<unsigned short>(BPF_JMP | BPF_JSET | BPF_K), 0, 1, 0x40000000U});
@@ -68,7 +72,20 @@ std::optional<Notice> next(int listenerFd) {
     if (::ioctl(listenerFd, seccomp_abi::kRecv, &request) != 0) return std::nullopt;
     Notice result{.id = request.id, .pid = static_cast<int>(request.pid)};
     std::uint64_t pointer { 0 }, size { 0 };
-    if (request.data.nr == SYS_connect) {
+    if (request.data.nr == SYS_execve || request.data.nr == SYS_execveat) {
+        result.kind = Kind::Exec;
+        result.syscall = request.data.nr == SYS_execve ? "execve" : "execveat";
+        const auto address = request.data.args[request.data.nr == SYS_execve ? 0 : 1];
+        std::array<char, 256> text{};
+        for (unsigned offset = 0; address && offset < 4096; offset += text.size()) {
+            iovec local{text.data(), text.size()}, distant{reinterpret_cast<void*>(address + offset), text.size()};
+            const auto bytes = ::process_vm_readv(request.pid, &local, 1, &distant, 1, 0);
+            if (bytes <= 0) break;
+            const auto end = std::find(text.begin(), text.begin() + bytes, '\0');
+            result.execPath.append(text.begin(), end);
+            if (end != text.begin() + bytes) break;
+        }
+    } else if (request.data.nr == SYS_connect) {
         result.syscall = "connect";
         pointer = request.data.args[1];
         size = request.data.args[2];
@@ -124,7 +141,7 @@ bool complete(int listenerFd, std::uint64_t id, bool allow) {
     return ::ioctl(listenerFd, seccomp_abi::kSend, &response) == 0;
 }
 #else
-int listener() { return -1; }
+int listener(Selection) { return -1; }
 std::optional<Notice> next(int) { return std::nullopt; }
 bool complete(int, std::uint64_t, bool) { return false; }
 #endif

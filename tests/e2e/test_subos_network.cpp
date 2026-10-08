@@ -82,20 +82,20 @@ struct Box {
         if (created.exit_code != 0) ADD_FAILURE() << created.transcript();
     }
     std::vector<nlohmann::json> events() const {
-        return home.xlings({"subos", "log", "box", "--json", "--kind", "net", "-n", "1000"}).json_lines();
+        return home.xlings({"subos", "log", "box", "--json", "-n", "1000"}).json_lines();
     }
 };
 
 }  // namespace
 
 XTEST(SubosNetworkE2E, ProxyHasOneExitAndPassesTheUnresolvableDomainToThatExit,
-      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-PROXY", "OBS-NET"},
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"ISO-NET-PROXY", "OBS-NET", "OBS-EXEC"},
       .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}, .proves = "isolation") {
     if (!fs::is_regular_file("/usr/bin/curl")) GTEST_SKIP() << "curl HTTP probe unavailable";
     ProxyFixture proxy;
     Box box;
     const auto configured = box.home.xlings({"subos", "config", "box", "--sandbox", "dev", "--proxy", proxy.url(),
-                                            "--observe", "standard"});
+                                            "--observe", "full"});
     ASSERT_EQ(configured.exit_code, 0) << configured.transcript();
     const auto proxied = box.home.xlings({"subos", "exec", "box", "--", "/usr/bin/curl", "--max-time", "10",
         "--silent", "--show-error", "http://must-not-resolve-on-host.invalid/payload"});
@@ -124,8 +124,14 @@ XTEST(SubosNetworkE2E, ProxyHasOneExitAndPassesTheUnresolvableDomainToThatExit,
     EXPECT_NE(bypass.out.find("lo:"), std::string::npos);
     EXPECT_EQ(bypass.out.find("eth"), std::string::npos);
     EXPECT_EQ(bypass.out.find("tap"), std::string::npos);
-    bool attempted { false }, accepted { false };
+    bool attempted { false }, accepted { false }, executed { false }, notified { false };
     for (const auto& event : box.events()) {
+        if (event.value("kind", "") == "exec" && event.value("path", "").find("curl") != std::string::npos)
+            executed = true;
+        if (event.value("kind", "") == "net" && event.value("event", "") == "net-attempt") {
+            notified = true;
+            EXPECT_EQ(event.value("mode", ""), "proxy");
+        }
         if (event.value("event", "") == "connect-attempt") {
             attempted = true;
             EXPECT_EQ(event["target"], "must-not-resolve-on-host.invalid");
@@ -135,24 +141,31 @@ XTEST(SubosNetworkE2E, ProxyHasOneExitAndPassesTheUnresolvableDomainToThatExit,
     }
     EXPECT_TRUE(attempted);
     EXPECT_TRUE(accepted);
+    EXPECT_TRUE(executed) << "full observation must acknowledge curl's exec syscall";
+    EXPECT_TRUE(notified) << "the same listener must report proxy namespace network syscalls";
     proxy.finish();
     EXPECT_TRUE(proxy.error.empty()) << proxy.error;
     EXPECT_EQ(proxy.connections.load(), 1) << "direct probes cannot reach the proxy by bypassing the gate";
 }
 
 XTEST(SubosNetworkE2E, NatAuditsConnectAndDnsPortRequestsBeforeContinuing,
-      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-NET", "ISO-NET-NAT"},
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-NET", "ISO-NET-NAT", "OBS-EXEC"},
       .requires_ = {"linux", "xlings-bin", "sandbox", "pasta"}, .resources = {"sandbox"}, .proves = "isolation") {
     Box box;
-    const auto run = box.home.xlings({"subos", "exec", "box", "--sandbox=private", "--observe", "standard",
+    const auto run = box.home.xlings({"subos", "exec", "box", "--sandbox=private", "--observe", "full",
         "--", "/bin/bash", "-c", "echo dns >/dev/udp/127.0.0.1/53 || true"});
     ASSERT_EQ(run.exit_code, 0) << run.transcript();
-    bool request { false };
+    bool request { false }, executed { false };
     for (const auto& event : box.events()) {
-        if (event.value("event", "") != "net-attempt" || event.value("address", "") != "127.0.0.1") continue;
+        if (event.value("kind", "") == "exec" && event.value("path", "").find("bash") != std::string::npos)
+            executed = true;
+        if (event.value("kind", "") != "net" || event.value("event", "") != "net-attempt" ||
+            event.value("address", "") != "127.0.0.1") continue;
         request = true;
+        EXPECT_EQ(event["mode"], "nat");
         EXPECT_EQ(event["port"], 53);
         EXPECT_EQ(event["result"], "unknown") << "notification CONTINUE proves only a request";
     }
     EXPECT_TRUE(request);
+    EXPECT_TRUE(executed) << "full observation must acknowledge bash's exec syscall";
 }

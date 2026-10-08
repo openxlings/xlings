@@ -893,7 +893,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .timeout = opts.timeout,
             .pasta = sb.net_nat ? provider::pasta_args(sb) : std::vector<std::string>{},
             .proxy_url = sb.net_proxy ? sb.proxy_url : std::string{},
-            .trace_net = sb.net_nat && (pol.observe == policy::Observe::Standard || pol.observe == policy::Observe::Full),
+            .trace_net = (sb.net_nat || sb.net_proxy) && (pol.observe == policy::Observe::Standard || pol.observe == policy::Observe::Full),
             .broker_policy = brokered ? std::optional(pol) : std::nullopt,
             .broker_exe = { host_exe_() },
             .broker_env = broker_env_(request.host_env, p.homeDir, name),

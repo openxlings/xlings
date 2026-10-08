@@ -210,22 +210,22 @@ bool install_trace(std::string_view channel) {
         return false;
     const auto fd = static_cast<int>(*socket);
     platform::set_inheritable(fd, false);
-    std::promise<std::array<int, 2>> listeners;
+    std::promise<int> listeners;
     auto ready = listeners.get_future();
     bool transferred = false;
     // This helper must exist before either filter: its one SCM_RIGHTS handoff
     // must never wait for the network listener it is still handing to the host.
     std::jthread handoff([&] {
-        const auto fds = ready.get();
-        if (fds[0] >= 0 && fds[1] >= 0)
-            transferred = platform::send_message(fd, "trace-listeners", fds);
-        for (int listener : fds)
+        const int listener = ready.get();
+        if (listener >= 0) {
+            const std::array descriptors{listener};
+            transferred = platform::send_message(fd, "trace-listeners", descriptors);
             platform::close_fd(listener);
+        }
         platform::close_fd(fd);
     });
-    const auto net_listener = platform::net_notify::listener();
-    const auto exec_listener = platform::seccomp::exec_listener();
-    listeners.set_value({exec_listener, net_listener});
+    const auto listener = platform::net_notify::listener({.network = true, .exec = true});
+    listeners.set_value(listener);
     handoff.join();
     return transferred;
 }
@@ -373,7 +373,6 @@ struct Process::State {
 #else
     int pid{-1};
     int pasta_pidfd{-1};
-    int exec_listener{-1};
     int net_listener{-1};
     int proxy_bridge{-1};
     std::atomic<bool> stopping{false};
@@ -393,8 +392,6 @@ struct Process::State {
         stopping.store(true);
         if (observer.joinable())
             observer.join();
-        if (exec_listener >= 0)
-            platform::close_fd(exec_listener);
         platform::close_fd(net_listener);
         platform::close_fd(proxy_bridge);
 #if defined(__linux__)
@@ -674,14 +671,13 @@ std::expected<Process, std::string> Process::launch(const std::vector<std::strin
         const bool ready = platform::poll_fds(std::span(&ready_listener, 1), 10000) > 0;
         auto listener = ready ? platform::receive_message((*trace_channel)[0]) : std::nullopt;
         platform::close_fd((*trace_channel)[0]);
-        if (!listener || listener->fds.size() != 2 || listener->data != "trace-listeners") {
+        if (!listener || listener->fds.size() != 1 || listener->data != "trace-listeners") {
             if (listener)
                 for (int fd : listener->fds)
                     platform::close_fd(fd);
             return std::unexpected("Lua worker could not install its required exec audit filter");
         }
-        state->exec_listener = listener->fds[0];
-        state->net_listener = listener->fds[1];
+        state->net_listener = listener->fds[0];
     }
     if (trace_channel || proxy_bridge) {
         auto* owned = state.get();
@@ -689,8 +685,6 @@ std::expected<Process, std::string> Process::launch(const std::vector<std::strin
             std::thread([owned, audit = trace.audit, net_audit = trace.net_audit, network] {
                 while (!owned->stopping.load()) {
                     std::vector<platform::PollFd> pending;
-                    if (owned->exec_listener >= 0)
-                        pending.push_back({owned->exec_listener});
                     if (owned->net_listener >= 0)
                         pending.push_back({owned->net_listener});
                     if (owned->proxy_bridge >= 0)
@@ -703,30 +697,16 @@ std::expected<Process, std::string> Process::launch(const std::vector<std::strin
                     for (const auto& event : pending) {
                         if (!event.readable)
                             continue;
-                        if (event.fd == owned->exec_listener) {
-                            auto notification = platform::seccomp::next_exec(owned->exec_listener);
-                            if (!notification)
-                                continue;
-                            bool allowed = false;
-                            try {
-                                allowed = audit && audit(notification->pid, notification->path);
-                            } catch (...) {
-                            }
-                            (void)platform::seccomp::complete_exec(owned->exec_listener,
-                                                                   notification->id, allowed);
-                            if (!allowed) {
-                                platform::send_signal_group(owned->pid, platform::sig::terminate);
-                                platform::send_signal(owned->pid, platform::sig::terminate);
-                                owned->stopping.store(true);
-                                break;
-                            }
-                        } else if (event.fd == owned->net_listener) {
+                        if (event.fd == owned->net_listener) {
                             auto notification = platform::net_notify::next(owned->net_listener);
                             if (!notification)
                                 continue;
                             bool allowed = false;
                             try {
-                                allowed = net_audit && net_audit(*notification);
+                                if (notification->kind == platform::net_notify::Kind::Exec)
+                                    allowed = audit && audit(notification->pid, notification->execPath);
+                                else
+                                    allowed = net_audit && net_audit(*notification);
                             } catch (...) {
                             }
                             (void)platform::net_notify::complete(owned->net_listener,

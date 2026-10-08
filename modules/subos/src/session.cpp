@@ -455,7 +455,6 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     // listener over the control socket (handled in the loop below). Inside,
     // so bwrap itself never runs under no_new_privs -- which would keep an
     // AppArmor profile (self doctor --isolation --fix) from applying to it.
-    int notify_fd = -1;
     int net_notify_fd = -1;
     const auto fs_since = fs::file_time_type::clock::now();
 
@@ -522,7 +521,6 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         }
         if (ctl_open) pfds.push_back({ctl[0]});
         if (broker_fd >= 0) pfds.push_back({broker_fd});
-        if (notify_fd >= 0) pfds.push_back({notify_fd});
         if (net_notify_fd >= 0) pfds.push_back({net_notify_fd});
         for (auto& b : brokered) if (b.fd >= 0 && b.pid < 0) pfds.push_back({b.fd});
         for (auto& c : clients) if (c.fd >= 0) pfds.push_back({c.fd});
@@ -611,23 +609,20 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (net_notify_fd >= 0 && p.fd == net_notify_fd) {
                 if (p.closed && !p.readable) { drop(net_notify_fd); continue; }
                 if (const auto request = platform::net_notify::next(net_notify_fd)) {
-                    // A destination-less sendmsg may be control traffic; it
-                    // is still audited as attempted I/O, never a success.
-                    const bool allowed = audit({{"event", "net-attempt"}, {"session", info.id},
-                        {"mode", "nat"}, {"syscall", request->syscall}, {"pid", request->pid},
-                        {"address", request->address}, {"port", request->port},
-                        {"address_readable", request->address_readable}, {"result", "unknown"}}, observe::Kind::Net);
+                    bool allowed{};
+                    if (request->kind == platform::net_notify::Kind::Exec) {
+                        allowed = audit({{"event", "exec"}, {"session", info.id},
+                            {"path", request->execPath.empty() ? std::string("?") : request->execPath},
+                            {"pid", request->pid}}, observe::Kind::Exec);
+                    } else {
+                        // A destination-less sendmsg may be control traffic;
+                        // it remains attempted I/O, never a connection success.
+                        allowed = audit({{"event", "net-attempt"}, {"session", info.id},
+                            {"mode", proxyRelay ? "proxy" : "nat"}, {"syscall", request->syscall}, {"pid", request->pid},
+                            {"address", request->address}, {"port", request->port},
+                            {"address_readable", request->address_readable}, {"result", "unknown"}}, observe::Kind::Net);
+                    }
                     (void)platform::net_notify::complete(net_notify_fd, request->id, allowed);
-                }
-                continue;
-            }
-            if (notify_fd >= 0 && p.fd == notify_fd) {
-                if (p.closed && !p.readable) { drop(notify_fd); continue; }
-                if (auto ex = platform::seccomp::next_exec(notify_fd)) {
-                    const bool allowed = audit({{"event", "exec"}, {"session", info.id},
-                                                {"path", ex->path.empty() ? std::string("?") : ex->path},
-                                                {"pid", ex->pid}}, observe::Kind::Exec);
-                    (void)platform::seccomp::complete_exec(notify_fd, ex->id, allowed);
                 }
                 continue;
             }
@@ -741,26 +736,16 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     if (pid > 0) platform::send_signal(pid, sig::kill);
                     continue;
                 }
-                if (m->json.value("op", "") == "net-listener") {
-                    if (!m->fds.empty() && net_notify_fd < 0) {
+                if (m->json.value("op", "") == "net-listener" ||
+                    m->json.value("op", "") == "exec-listener") {
+                    if (m->fds.size() == 1 && net_notify_fd < 0) {
                         net_notify_fd = m->fds.front();
-                        m->fds.erase(m->fds.begin());
-                    } else if (m->fds.empty()) {
-                        (void)audit({{"event", "net-trace-unavailable"}, {"session", info.id},
-                            {"reason", m->json.value("reason", "")}}, observe::Kind::Net);
-                        report("net=nat: outbound request tracing is unavailable");
-                        if (L.audit_required && pid > 0) platform::send_signal(pid, sig::kill);
-                    }
-                    platform::close_fds(m->fds);
-                    continue;
-                }
-                if (m->json.value("op", "") == "exec-listener") {
-                    if (!m->fds.empty() && notify_fd < 0) {
-                        notify_fd = m->fds.front();
-                        m->fds.erase(m->fds.begin());
-                    } else if (m->fds.empty()) {
-                        audit({{"event", "exec-trace-unavailable"}, {"session", info.id},
-                                                 {"reason", m->json.value("reason", "")}});
+                        m->fds.clear();
+                    } else {
+                        (void)audit({{"event", "audit-trace-unavailable"}, {"session", info.id},
+                            {"reason", m->json.value("reason", "invalid notification listener handoff")}});
+                        report("required syscall audit listener is unavailable");
+                        if (pid > 0) platform::send_signal(pid, sig::kill);
                     }
                     platform::close_fds(m->fds);
                     continue;
@@ -852,7 +837,6 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         if (c.exec_id) send_msg(c.fd, {{"error", "the session ended"}, {"phase", "setup"}});
         platform::close_fd(c.fd);
     }
-    platform::close_fd(notify_fd);
     platform::close_fd(net_notify_fd);
     if (proxyRelay) proxyRelay->stop();
     if (proxyBridge) platform::close_fd((*proxyBridge)[0]);
@@ -1083,12 +1067,13 @@ int session_init(std::span<const std::string> args) {
                 return kExitSetup;
             }
         }
-        if (auto trace = env.find("XLINGS_SESSION_NET_TRACE"); trace != env.end() && trace->second == "1") {
-            platform::unset_env_variable("XLINGS_SESSION_NET_TRACE");
-            // This trusted helper exists before the network filter. It shares
-            // the new listener fd and sends it without filtering its own
-            // sendmsg; it exits before any command is forked. The command's
-            // thread and every descendant inherit all three syscall checks.
+        const bool traceNet = env_int("XLINGS_SESSION_NET_TRACE", 0) == 1;
+        const bool traceExec = env_int("XLINGS_SESSION_TRACE", 0) == 1;
+        platform::unset_env_variable("XLINGS_SESSION_NET_TRACE");
+        platform::unset_env_variable("XLINGS_SESSION_TRACE");
+        if (traceNet || traceExec) {
+            // One filter/listener carries both classes. The pre-filter helper
+            // makes its sole SCM_RIGHTS handoff without auditing its own sendmsg.
             std::promise<std::pair<int, std::string>> handoff;
             auto pending = handoff.get_future();
             bool transferred { false };
@@ -1100,24 +1085,10 @@ int session_init(std::span<const std::string> args) {
                     platform::close_fd(listener);
                 } else if (ctl >= 0) transferred = send_msg(ctl, {{"op", "net-listener"}, {"reason", reason}});
             });
-            const int listener = platform::net_notify::listener();
+            const int listener = platform::net_notify::listener({.network = traceNet, .exec = traceExec});
             handoff.set_value({listener, listener < 0 ? platform::error_text(platform::last_error()) : std::string{}});
             helper.join();
-            if (!transferred) return kExitSetup;
-        }
-        // observe=full: the exec filter, before anything is started, its
-        // listener to the supervisor. Everything this process starts inherits it.
-        if (auto t = env.find("XLINGS_SESSION_TRACE"); t != env.end() && t->second == "1") {
-            platform::unset_env_variable("XLINGS_SESSION_TRACE");
-            const int listener = platform::seccomp::exec_listener();
-            if (listener >= 0 && ctl >= 0) {
-                const int one[1] = {listener};
-                send_msg(ctl, {{"op", "exec-listener"}}, one);
-                platform::close_fd(listener);
-            } else if (ctl >= 0) {
-                send_msg(ctl, {{"op", "exec-listener"},
-                               {"reason", platform::error_text(platform::last_error())}});
-            }
+            if (listener < 0 || !transferred) return kExitSetup;
         }
     }
 
