@@ -16,7 +16,8 @@
 #   6. both layouts: single (the builder's home path) and multi (/xlings,
 #      built in an owner-private namespace), each recorded in the image and running;
 #   7. self update in deployment R is a new generation: /usr/bin/xlings
-#      becomes the published payload, and a rollback brings the previous back.
+#      moves from a published payload to the candidate release, and rollback
+#      restores the old version without replacing the static stage0 entry.
 #
 # xtest: covers=EXPORT-OCI,DOM-BOOTSTRAP,ROOT-LIBSEARCH,ROOT-SURVIVES-GLIBC,DOM-ELFPATCH-FAILCLOSED,DOM-LAYOUTS,DOM-BUILD-INSIDE,ROOT-SELF-UPDATE requires=linux,docker,sudo,network
 set -euo pipefail
@@ -27,7 +28,14 @@ BIN="$(find_xlings_bin)"
 RUNTIME_DIR="$(runtime_home_dir rootfs_image)"
 rm -rf "$RUNTIME_DIR"; mkdir -p "$RUNTIME_DIR"
 IMG=xlings-e2e-luban
-cleanup() { docker rm -f warm >/dev/null 2>&1 || true; docker rmi -f "$IMG" "$IMG-warm" "$IMG-multi" >/dev/null 2>&1 || true; }
+cleanup() {
+    if [[ -n "${ROOTFS_HTTP_PID:-}" ]]; then
+        kill "$ROOTFS_HTTP_PID" 2>/dev/null || true
+        wait "$ROOTFS_HTTP_PID" 2>/dev/null || true
+    fi
+    docker rm -f warm >/dev/null 2>&1 || true
+    docker rmi -f "$IMG" "$IMG-warm" "$IMG-multi" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 rootfs_home "$RUNTIME_DIR/home"
@@ -92,16 +100,51 @@ marker="$(tar -xzOf "$RUNTIME_DIR/tiny.tar.gz" ".${H}/.xlings-home" 2>/dev/null 
 grep -q '"root_layout": "single"' <<<"$marker" || fail "single: the first image is not marked single"
 
 log "7. self update is a generation"
-out="$(D "$IMG" /bin/sh -c '
+rootfs_update_fixture "$RUNTIME_DIR/self-update" "$H"
+# The candidate stage0 owns the new root update semantics. The published old
+# payload is a real /usr consumer; it is not asked to implement this PR's layout.
+out="$(D --network host -e H="$H" -e OLD_VERSION="$ROOTFS_OLD_VERSION" \
+    -e CANDIDATE_VERSION="$ROOTFS_CANDIDATE_VERSION" \
+    -v "$RUNTIME_DIR/self-update:/root/update-fixture:ro" "$IMG" /bin/sh -ec '
+    export XLINGS_HOME="$H" PATH="$H/bin:/usr/bin:/bin"
+    entry="$H/bin/xlings"
+    stage0_hash=$(sha256sum "$entry")
+    stage0_inode=$(stat -Lc "%d:%i" "$entry")
+    "$entry" config --index-repo xim:/root/update-fixture/index >/tmp/index.log 2>&1 \
+        || { cat /tmp/index.log; exit 1; }
+    "$entry" update >/tmp/index.log 2>&1 || { cat /tmp/index.log; exit 1; }
+    "$entry" install "xim:xlings@$OLD_VERSION" -y --use >/tmp/old.log 2>&1 \
+        || { cat /tmp/old.log; exit 1; }
     before=$(readlink -f /usr/bin/xlings)
-    xlings self update >/tmp/u.log 2>&1 || { tail -5 /tmp/u.log; }
+    before_gen=$(readlink "$H/subos/default/root")
+    before_version=$(/usr/bin/xlings --version)
+    echo "before=$before"; echo "before_gen=$before_gen"; echo "before_version=$before_version"
+    test "$before_version" = "xlings $OLD_VERSION"
+    test "$before" = "$H/data/xpkgs/xim-x-xlings/$OLD_VERSION/bin/xlings"
+    "$entry" self update >/tmp/u.log 2>&1 || { cat /tmp/u.log; exit 1; }
     after=$(readlink -f /usr/bin/xlings)
-    echo "before=$before"; echo "after=$after"
-    xlings subos rollback default >/dev/null 2>&1
-    echo "rolled=$(readlink -f /usr/bin/xlings)"' 2>&1)" || true
-before="$(sed -n 's/^before=//p' <<<"$out")"; after="$(sed -n 's/^after=//p' <<<"$out")"
-rolled="$(sed -n 's/^rolled=//p' <<<"$out")"
-[[ "$after" == *"/data/xpkgs/xim-x-xlings/"* ]] || fail "self update did not make /usr/bin/xlings the payload: $out"
-[[ "$rolled" == "$before" ]] || fail "rollback did not bring the previous xlings back: $out"
+    after_gen=$(readlink "$H/subos/default/root")
+    after_version=$(/usr/bin/xlings --version)
+    echo "after=$after"; echo "after_gen=$after_gen"; echo "after_version=$after_version"
+    test "$after_version" = "xlings $CANDIDATE_VERSION"
+    test "$after" = "$H/data/xpkgs/xim-x-xlings/$CANDIDATE_VERSION/bin/xlings"
+    test "$after_gen" != "$before_gen"
+    test "$(sha256sum "$entry")" = "$stage0_hash"
+    test "$(stat -Lc "%d:%i" "$entry")" = "$stage0_inode"
+    "$entry" subos rollback default --to "${before_gen##*/}" >/tmp/rollback.log 2>&1 \
+        || { cat /tmp/rollback.log; exit 1; }
+    rolled=$(readlink -f /usr/bin/xlings)
+    rolled_gen=$(readlink "$H/subos/default/root")
+    rolled_version=$(/usr/bin/xlings --version)
+    echo "rolled=$rolled"; echo "rolled_gen=$rolled_gen"; echo "rolled_version=$rolled_version"
+    test "$rolled" = "$before"
+    test "$rolled_gen" = "$before_gen"
+    test "$rolled_version" = "$before_version"
+    test "$(sha256sum "$entry")" = "$stage0_hash"
+    test "$(stat -Lc "%d:%i" "$entry")" = "$stage0_inode"
+    ' 2>&1)" || fail "self update or rollback failed: $out"
+cat <<<"$out"
+grep -q 'GET /xlings-.*\.tar\.gz HTTP/1\.[01]" 200' "$RUNTIME_DIR/self-update/http.log" \
+    || fail "the candidate was not transferred through the actual HTTP downloader"
 
 log "PASS: an exported root is a machine whose only package manager is xlings"
