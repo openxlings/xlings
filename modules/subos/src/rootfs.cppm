@@ -91,14 +91,18 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation);
 
 // Writes the next generation and moves the pointer to it. The pointer moves
 // with one rename(2): a reader resolves the old generation or the new one,
-// never neither (ROOT-GEN-ATOMIC). A plan identical to the current
+// never neither (ROOT-GEN-ATOMIC). A reader acquires that link once and uses
+// the referenced immutable directory for its whole read; independent lookups
+// through the changing pointer do not form a snapshot. A plan identical to the current
 // generation's writes nothing and returns the current number.
 std::expected<int, std::string> commit(const fs::path& subos, const Plan& plan,
                                        std::string_view reason);
 // The pointer to an existing generation (rollback). Nothing is re-planned.
 std::expected<void, std::string> switch_to(const fs::path& subos, int generation);
 // Removes generations beyond the `keep` newest; never the current one or a
-// `pinned` one. Returns what it removed.
+// `pinned` one. Only trees whose complete contents match their projection
+// manifest are derived data; unknown or modified trees are left alone.
+// Returns what it removed.
 std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const int> pinned = {});
 
 // ── a root tree ──────────────────────────────────────────────────────

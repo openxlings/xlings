@@ -326,6 +326,8 @@ jobs:
           [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
           xdev="$GITHUB_WORKSPACE/$xdev"
           echo "XDEV=$xdev" >> "$GITHUB_ENV"
+          export XDEV_BIN="$xdev"
+          mcpp test -p xdev
           "$xdev" test --out target/xdev/linux-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"

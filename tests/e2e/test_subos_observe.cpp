@@ -111,3 +111,79 @@ XTEST(SubosObserve, TheAuditHasNamesNeverValues,
     EXPECT_EQ(all.find("ghp-do-not-record-me"), std::string::npos);
     EXPECT_EQ(all.find("also-not-me"), std::string::npos);
 }
+
+XTEST(SubosObserve, InitialCommandArgumentsAreRedacted,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-REDACT", "OBS-LIFECYCLE"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    auto r = box.home.xlings({"subos", "exec", "box", "--sandbox", "--", "/bin/sh", "-c",
+                              "test -n \"$1\" && echo executed", "_", "observe-argv-secret"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(r.out.find("executed"), std::string::npos);
+    auto events = box.log("lifecycle");
+    bool started = false;
+    for (const auto& e : events) {
+        EXPECT_EQ(e.dump().find("observe-argv-secret"), std::string::npos);
+        if (e.value("event", "") != "session-start") continue;
+        started = true;
+        EXPECT_FALSE(e["spec"].contains("argv"));
+        EXPECT_EQ(e["spec"]["program"], "/bin/sh");
+        EXPECT_EQ(e["spec"]["argc"], 5);
+        const auto session_file = box.home.dir() / "logs" / "subos" / "box" / "sessions"
+                                  / (e["session"].get<std::string>() + ".ndjson");
+        EXPECT_TRUE(fs::is_regular_file(session_file));
+        EXPECT_EQ(tk::read_file(session_file).find("observe-argv-secret"), std::string::npos);
+    }
+    EXPECT_TRUE(started);
+}
+
+XTEST(SubosObserve, LockedRefusesAnUnwritableAuditBeforeStartingTheCommand,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-AUDIT-FAIL", "OBS-LIFECYCLE", "OBS-LOG"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    const auto journal = box.home.dir() / "logs" / "subos" / "box" / "events.ndjson";
+    std::error_code ec;
+    fs::remove(journal, ec);
+    fs::create_directories(journal);
+    auto r = box.home.xlings({"subos", "exec", "box", "--sandbox=locked", "--", "/bin/sh", "-c",
+                              "echo AUDIT_COMMAND_RAN"});
+    EXPECT_EQ(r.exit_code, 125) << r.transcript();
+    EXPECT_NE(r.err.find("E_AUDIT_WRITE"), std::string::npos) << r.transcript();
+    EXPECT_EQ(r.out.find("AUDIT_COMMAND_RAN"), std::string::npos);
+    EXPECT_FALSE(fs::exists(box.home.dir() / "run" / "subos" / "box" / "session.json"));
+}
+
+XTEST(SubosObserve, DevWarnsAndContinuesWhenTheAuditCannotBeWritten,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-AUDIT-FAIL", "OBS-LIFECYCLE", "OBS-LOG"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    const auto journal = box.home.dir() / "logs" / "subos" / "box" / "events.ndjson";
+    std::error_code ec;
+    fs::remove(journal, ec);
+    fs::create_directories(journal);
+    auto r = box.home.xlings({"subos", "exec", "box", "--sandbox=dev", "--", "/bin/sh", "-c",
+                              "echo AUDIT_COMMAND_RAN"});
+    ASSERT_EQ(r.exit_code, 0) << r.transcript();
+    EXPECT_NE(r.err.find("E_AUDIT_WRITE"), std::string::npos);
+    EXPECT_NE(r.out.find("AUDIT_COMMAND_RAN"), std::string::npos);
+}
+
+XTEST(SubosObserve, LockedEndsALiveSessionWhenTheAuditBecomesUnwritable,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-AUDIT-FAIL", "OBS-LIFECYCLE", "OBS-LOG"},
+      .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
+    Box box;
+    auto start = box.home.xlings({"subos", "start", "box", "--sandbox=locked"});
+    ASSERT_EQ(start.exit_code, 0) << start.transcript();
+    const auto journal = box.home.dir() / "logs" / "subos" / "box" / "events.ndjson";
+    ASSERT_TRUE(fs::is_regular_file(journal));
+    ASSERT_TRUE(fs::remove(journal));
+    fs::create_directory(journal);
+    auto r = box.home.xlings({"subos", "exec", "box", "--", "/bin/sh", "-c", "echo AUDIT_COMMAND_RAN"});
+    EXPECT_EQ(r.exit_code, 125) << r.transcript();
+    EXPECT_EQ(r.out.find("AUDIT_COMMAND_RAN"), std::string::npos);
+    const auto session = box.home.dir() / "run" / "subos" / "box" / "session.json";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (fs::exists(session) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_FALSE(fs::exists(session)) << "the supervisor must clean up the failed session";
+}

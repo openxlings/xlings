@@ -19,7 +19,7 @@
 #   9. luban-desktop, `from` core: a GL program compiled inside renders a
 #      frame offscreen (llvmpipe), every GL object from the payloads.
 #
-# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY,LUBAN-DESKTOP-RENDER requires=linux,bwrap,network
+# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ISO-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY,LUBAN-DESKTOP-RENDER requires=linux,bwrap,network proves=isolation
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"

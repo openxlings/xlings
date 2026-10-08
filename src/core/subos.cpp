@@ -1249,7 +1249,7 @@ int use_emit_shell(const std::string& name,
             // plain R"(...)" literal early -- and the truncation compiles,
             // because what is left is still a valid string.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(std::cout, 
+                std::println(std::cout,
                     R"SH(if set -q {0}; set -gx {0} "{1}:${0}"; else; set -gx {0} "{1}"; end;)SH",
                     v.var, v.value);
             } else {
@@ -1269,7 +1269,7 @@ int use_emit_shell(const std::string& name,
             // ';' rather than ':' -- these are path lists, and on Windows the
             // separator is the one the platform's own tools split on.
             if (v.op == manifest::OP_PREPEND) {
-                std::println(std::cout, 
+                std::println(std::cout,
                     R"($env:{0} = if ($env:{0}) {{ '{1}' + ';' + $env:{0} }} else {{ '{1}' }})",
                     v.var, v.value);
             } else {
@@ -1576,13 +1576,20 @@ int run_list_(EventStream& stream) {
     }
     nlohmann::json entriesJson = nlohmann::json::array();
     for (auto& [n, d, commands, packages, active] : entries) {
-        const auto role = subos_root::role_of(Config::paths().homeDir, n);
+        const auto declared_kind = subos_root::read_kind(Config::paths().homeDir, n);
+        const auto declared_role = subos_root::read_role(Config::paths().homeDir, n);
+        if (!declared_kind || !declared_role) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                .message = !declared_kind ? declared_kind.error() : declared_role.error(),
+                .recoverable = false });
+            return 1;
+        }
+        const auto role = *declared_role;
         entriesJson.push_back({{"name", n}, {"dir", d},
                                {"commands", commands},
                                {"packages", packages},
                                {"active", active},
-                               {"kind", std::string(roles::to_string(
-                                            subos_root::kind_of(Config::paths().homeDir, n)))},
+                               {"kind", std::string(roles::to_string(*declared_kind))},
                                {"host", role.host}, {"boot_entry", role.boot_entry}});
     }
     nlohmann::json payload;

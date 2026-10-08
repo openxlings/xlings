@@ -99,7 +99,10 @@ needs guard/observe); C5→C26; T1→every new e2e test.
 | C26 | deployment mode S; system layer (M) read path | L5 |
 | C27 | rootfs — maintainer decision, see §4 | — |
 
-## 4. Scope decisions inside this PR
+## 4. 原实施范围记录
+
+2026-10-08：以下是初版实施时的范围记录。C27 已由 Part 2 实现；后续完整交付按
+[续行计划](2026-10-08-subos-delivery-plan.md)逐项处理缺项，不以本节作为验收豁免。
 
 Recorded here so the PR description and the final report say the same thing:
 
@@ -130,7 +133,8 @@ Recorded here so the PR description and the final report say the same thing:
 
 ## 5. Release
 
-Version: the date the PR lands, `.1` (`2026.10.6.1`). After `release.yml`
+Version: the date the PR lands, `N >= 1`; increment against the releases already published that day.
+Current candidate: `2026.10.8.2` (2026.10.8.1 is already published). After `release.yml`
 publishes the assets: top up GitCode with the local `gtc` immediately (do not
 wait for the release workflow's mirror step), bump `xim-pkgindex/pkgs/x/xlings.lua`,
 then verify the ecosystem on a real home: quick install, `self update`,

@@ -503,7 +503,13 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // A rootfs instance (design part 2 §3.1) is entered as its own root,
     // always in a sandbox; with no isolation declared it is `dev`. Its
     // projection is brought up to date first -- a no-op when nothing moved.
-    const bool rootfs = subos_root::kind_of(p.homeDir, name) == roles::Kind::Rootfs;
+    const auto kind = subos_root::read_kind(p.homeDir, name);
+    if (!kind) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = kind.error(),
+                                .recoverable = false });
+        return kFail;
+    }
+    const bool rootfs = *kind == roles::Kind::Rootfs;
     auto preset = opts.preset;
     if (rootfs) {
         if constexpr (!platform::is_linux) {
@@ -529,7 +535,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // What this instance may do: its policy file, a stricter preset named on
     // this call, this call's (tighten-only) overrides. A policy that does not
     // parse, or names what this version cannot enforce, refuses entry.
-    auto effective = policy_store::effective(home, name, preset, opts.overrides);
+    auto effective = policy_store::effective(home, name, preset, opts.overrides, Info::VERSION);
     if (!effective) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = effective.error(),
                                 .recoverable = false });
@@ -696,7 +702,10 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             return kFail;
         }
         const auto& sb = *compiled;
-        observe::trace("spec", sb.describe().dump());
+        auto trace_spec = sb.describe();
+        trace_spec.erase("argv");
+        trace_spec["argc"] = sb.argv.size();
+        observe::trace("spec", trace_spec.dump());
         if (pol.preset != policy::Preset::Legacy) report_degraded_(sb);
         // proot because bwrap is there and cannot make a sandbox (Ubuntu 24.04's
         // AppArmor restriction, most often): never silently. Asked for by name,
@@ -798,7 +807,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 
         if (observe::trace_enabled("provider")) {
             std::string line;
-            for (auto& a : argv) line += " " + a;
+            line = std::format("{} ({} arguments)", backend_name, argv.size());
             observe::trace("provider", line);
         }
         std::vector<std::string> pass(policy::kBaseEnvPass.begin(), policy::kBaseEnvPass.end());
@@ -813,6 +822,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .backend = backend_name,
             .digest = digest,
             .spec = sb.describe(),
+            .audit_required = pol.preset == policy::Preset::Locked,
             .exec_env = sb.env,
             .env_pass = std::move(pass),
             .default_cwd = sb.cwd.string(),

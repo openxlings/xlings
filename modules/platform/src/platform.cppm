@@ -309,6 +309,11 @@ namespace platform {
 #endif
     }
 
+    // Publish a same-filesystem scratch atomically, refusing every existing destination.
+    // No copy or check-then-rename fallback when the OS cannot enforce this.
+    export std::expected<void, std::string> rename_no_replace(
+        const std::filesystem::path& from, const std::filesystem::path& to);
+
     export void write_file_atomic(const std::string& filepath, const std::string& content);
 
     export void write_string_to_file(const std::string& filepath, const std::string& content);

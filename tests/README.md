@@ -70,3 +70,10 @@ tests and the lane's capabilities.
 - Inside China set `XLINGS_TEST_MIRROR=CN` (AGENTS.md: an unreachable mirror
   looks like the command under test hanging).
 - Network is opt-in: `XDEV_NETWORK=1`.
+
+
+`xdev report --requirements tests/requirements.toml --fail-uncovered` 检查需求的测试声明。
+报告另外列出执行证据，跳过的测试不能证明需求已验证。发布验收使用 `--fail-unverified`
+检查合并后的各车道记录；隔离需求还要求 `proves=isolation`。JSON 报告中的
+`requirements.<id>.declared_by` 与 `passed_by` 分别给出两种证据。
+`xdev test --out` 必须选择空目录，避免覆盖已有现场或用户文件。

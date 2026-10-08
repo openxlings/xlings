@@ -67,6 +67,7 @@ struct Launch {
     std::string backend;
     std::string digest;
     nlohmann::json spec;                         // SandboxSpec::describe(), for the audit
+    bool audit_required { false };              // locked: refuse/terminate on a lost record
     std::map<std::string, std::string> exec_env; // base environment of joined commands
     std::vector<std::string> env_pass;           // what a joined command may add
     std::string default_cwd;                     // inside

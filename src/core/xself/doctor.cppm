@@ -314,6 +314,8 @@ enum class FindingKind {
     // why `self update` used to refuse), so "the package version" is itself
     // ambiguous and a check built on it would inherit the ambiguity.
     EntryBinaryDrift,
+    // A policy requires a newer client than the actual entry can enforce.
+    PolicyClientUnsupported,
     // One version registered twice, under two spellings of its key -- bare
     // and namespaced -- both naming the same payload. The owner-less half is
     // a record from before providers were recorded; the owned half was
@@ -487,6 +489,8 @@ struct AuditSelection {
     // stopped working and says so instead of just being slow again.
     std::function<void(std::size_t scanned, std::size_t fromCache)> onAuditDone;
 };
+
+std::vector<Finding> detect_policy_clients_(const fs::path& homeDir, std::string_view entryVersion);
 
 Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
              const AuditSelection& audit);

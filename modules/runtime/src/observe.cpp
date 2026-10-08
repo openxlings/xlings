@@ -50,44 +50,74 @@ std::mutex& journal_mutex() {
     return *m;
 }
 
-void rotate(const fs::path& file, int keep) {
+bool rotate(const fs::path& file, int keep) {
     std::error_code ec;
     if (keep <= 0) {
         fs::remove(file, ec);
-        return;
+        return !ec;
     }
     fs::remove(fs::path(file.string() + "." + std::to_string(keep)), ec);
+    if (ec) return false;
     for (int i = keep - 1; i >= 1; --i) {
         auto from = fs::path(file.string() + "." + std::to_string(i));
-        if (fs::exists(from, ec))
+        const bool exists = fs::exists(from, ec);
+        if (ec) return false;
+        if (exists) {
             fs::rename(from, fs::path(file.string() + "." + std::to_string(i + 1)), ec);
+            if (ec) return false;
+        }
     }
     fs::rename(file, fs::path(file.string() + ".1"), ec);
+    return !ec;
 }
 
 }  // namespace
 
-void append_json(const fs::path& file, const nlohmann::json& line, JournalLimits limits) noexcept {
+bool append_json_checked(const fs::path& file, const nlohmann::json& line,
+                         JournalLimits limits) noexcept {
     try {
+        const auto text = line.dump() + '\n';
         std::lock_guard lock(journal_mutex());
         std::error_code ec;
-        if (file.has_parent_path()) fs::create_directories(file.parent_path(), ec);
+        if (file.has_parent_path()) {
+            fs::create_directories(file.parent_path(), ec);
+            if (ec) return false;
+        }
         if (limits.max_bytes > 0) {
-            auto size = fs::file_size(file, ec);
-            if (!ec && size >= limits.max_bytes) rotate(file, limits.keep);
+            const bool exists = fs::exists(file, ec);
+            if (ec) return false;
+            if (exists) {
+                const auto size = fs::file_size(file, ec);
+                if (ec) return false;
+                if (size >= limits.max_bytes && !rotate(file, limits.keep)) return false;
+            }
         }
         std::ofstream out(file, std::ios::app | std::ios::binary);
-        if (out) out << line.dump() << '\n';
+        if (!out) return false;
+        out << text;
+        out.flush();
+        if (!out) return false;
+        out.close();
+        return !out.fail();
     } catch (...) {
-        // A lost line, never a failed operation.
+        return false;
     }
 }
 
-void append(const fs::path& file, const Event& event, JournalLimits limits) noexcept {
+bool append_checked(const fs::path& file, const Event& event, JournalLimits limits) noexcept {
     try {
-        append_json(file, event.to_json(), limits);
+        return append_json_checked(file, event.to_json(), limits);
     } catch (...) {
+        return false;
     }
+}
+
+void append_json(const fs::path& file, const nlohmann::json& line, JournalLimits limits) noexcept {
+    (void)append_json_checked(file, line, limits);
+}
+
+void append(const fs::path& file, const Event& event, JournalLimits limits) noexcept {
+    (void)append_checked(file, event, limits);
 }
 
 std::vector<nlohmann::json> read(const fs::path& file, bool include_rotated) {

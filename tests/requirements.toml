@@ -281,8 +281,8 @@ status = "required"
 
 [ISO-ROOTFS]
 text = "an instance can run on its own rootfs"
-status = "deferred"
-why = "C27 is the maintainer's decision (plan §4)"
+kind = "isolation"
+status = "required"
 
 # ── sessions (design §12, §16) ─────────────────────────────────────
 
@@ -566,3 +566,35 @@ status = "required"
 text = "a root's own /etc/ld.so.cache (ldconfig) is read by programs that enter through /lib64"
 status = "deferred"
 why = "the loader reads the cache from its payload's etc/ (measured, design part 2 §2.3); a glibc revision whose sysconfdir follows the path it is invoked through is an xlings-res rebuild of its own -- /lib64 = /usr/lib already covers what a distribution's cache is for"
+
+[OUTPUT-PRESERVE]
+text = "pack/export refuse existing outputs; cleanup only removes exclusively owned staging"
+status = "required"
+
+[STATE-STRICT]
+text = "missing legacy metadata defaults; invalid or unreadable present SubOS/boot metadata is refused"
+status = "required"
+
+[STATE-KEEP-UNKNOWN]
+text = "SubOS/boot metadata writes preserve unknown fields"
+status = "required"
+
+[OBS-AUDIT-FAIL]
+text = "locked refuses startup and terminates execution when its audit journal cannot be written"
+status = "required"
+
+[ROOT-REFRESH-FAIL]
+text = "workspace write commands fail when their root projection cannot be updated"
+status = "required"
+
+[POLICY-MIN-CLIENT]
+text = "policy declares a minimum client; unsupported clients refuse and doctor explains compatibility"
+status = "required"
+
+[REPORT-EXECUTION-EVIDENCE]
+text = "report distinguishes declaration coverage from passed evidence; skipped tests cannot verify requirements"
+status = "required"
+
+[CI-TEST-SELECTION]
+text = "ci plan and test share real discovery, transitive change impact, capability selection and deterministic duration-aware shards without duplicates or omissions"
+status = "required"

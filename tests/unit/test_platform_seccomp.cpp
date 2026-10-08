@@ -10,6 +10,7 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <cerrno>
+#include <csignal>
 #endif
 
 import std;
@@ -61,5 +62,58 @@ TEST(SubosSeccomp, AProcessCarryingTheFilterCannotInjectIntoATerminal) {
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0) << "10/11: could not install; 20: TIOCSTI allowed; "
                                          "21: high-bit spelling allowed; 22: other ioctl blocked";
+}
+
+TEST(SubosSeccomp, ExecRemainsBlockedUntilTheSupervisorAllowsOrDeniesIt) {
+    for (bool allow : {false, true}) {
+        auto ctl = xlings::platform::unix_pair();
+        ASSERT_TRUE(ctl);
+        const int pid = ::fork();
+        ASSERT_GE(pid, 0);
+        if (pid == 0) {
+            ::close((*ctl)[0]);
+            const int listener = xlings::platform::seccomp::exec_listener();
+            const int fds[] = {listener};
+            (void)xlings::platform::send_message((*ctl)[1], "listener",
+                listener >= 0 ? std::span<const int>(fds) : std::span<const int>{});
+            if (listener < 0) ::_exit(77);
+            ::close(listener);
+            ::close((*ctl)[1]);
+            ::execl("/bin/true", "true", static_cast<char*>(nullptr));
+            ::_exit(!allow && errno == EACCES ? 0 : 91);
+        }
+        struct Cleanup {
+            int pid;
+            int socket;
+            int listener = -1;
+            ~Cleanup() {
+                if (pid > 0) {
+                    ::kill(pid, SIGKILL);
+                    (void)::waitpid(pid, nullptr, 0);
+                }
+                ::close(socket);
+                if (listener >= 0) ::close(listener);
+            }
+        } cleanup{pid, (*ctl)[0]};
+        ::close((*ctl)[1]);
+        xlings::platform::PollFd ready{cleanup.socket};
+        ASSERT_GT(xlings::platform::poll_fds(std::span(&ready, 1), 2000), 0);
+        auto msg = xlings::platform::receive_message(cleanup.socket);
+        ASSERT_TRUE(msg);
+        if (msg->fds.empty()) GTEST_SKIP() << "kernel cannot install an exec notification filter";
+        cleanup.listener = msg->fds.front();
+        xlings::platform::PollFd notification{cleanup.listener};
+        ASSERT_GT(xlings::platform::poll_fds(std::span(&notification, 1), 2000), 0);
+        auto ex = xlings::platform::seccomp::next_exec(cleanup.listener);
+        ASSERT_TRUE(ex);
+        EXPECT_EQ(ex->path, "/bin/true");
+        int status = 0;
+        ASSERT_EQ(::waitpid(pid, &status, WNOHANG), 0) << "exec was released before its audit";
+        ASSERT_TRUE(xlings::platform::seccomp::complete_exec(cleanup.listener, ex->id, allow));
+        ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+        cleanup.pid = -1;
+        ASSERT_TRUE(WIFEXITED(status));
+        EXPECT_EQ(WEXITSTATUS(status), 0) << "allow=" << allow;
+    }
 }
 #endif

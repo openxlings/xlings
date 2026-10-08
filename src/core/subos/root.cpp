@@ -2,6 +2,7 @@ module xlings.core.subos.root;
 
 import std;
 import xlings.libs.json;
+import xlings.platform;
 import xlings.core.profile;
 import xlings.core.config;
 import xlings.core.xvm.types;
@@ -18,11 +19,31 @@ namespace rf = xlings::subos::rootfs;
 
 namespace {
 
-nlohmann::json read_json(const fs::path& p) {
+std::expected<nlohmann::json, std::string> read_json(const fs::path& p) {
+    std::error_code ec;
+    const auto status = fs::symlink_status(p, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory)
+        return std::unexpected(p.string() + ": cannot be inspected: " + ec.message());
+    if (status.type() == fs::file_type::not_found) return nlohmann::json::object();
+    if (!fs::is_regular_file(p, ec) || ec)
+        return std::unexpected(p.string() + ": is not a readable regular file");
     std::ifstream in(p, std::ios::binary);
-    if (!in) return nlohmann::json::object();
-    auto j = nlohmann::json::parse(std::string{std::istreambuf_iterator<char>(in), {}}, nullptr, false);
-    return j.is_object() ? j : nlohmann::json::object();
+    if (!in) return std::unexpected(p.string() + ": cannot be read");
+    std::string bytes;
+    try { bytes.assign(std::istreambuf_iterator<char>(in), {}); }
+    catch (const std::exception& e) { return std::unexpected(p.string() + ": " + e.what()); }
+    auto j = nlohmann::json::parse(bytes, nullptr, false);
+    if (in.bad() || !j.is_object())
+        return std::unexpected(p.string() + ": could not be parsed as a JSON object");
+    return j;
+}
+
+std::expected<rl::Kind, std::string> kind_in(const nlohmann::json& j, const fs::path& file) {
+    auto it = j.find("kind");
+    if (it == j.end()) return rl::Kind::View;
+    if (it->is_string())
+        if (auto kind = rl::kind_from_string(it->get<std::string>()); kind) return *kind;
+    return std::unexpected(file.string() + ": unknown or invalid SubOS kind");
 }
 
 // <home>/data/xpkgs/<pkg>/<version>, the payload a path lives in.
@@ -42,36 +63,67 @@ fs::path entry_of(const fs::path& home) { return home / "bin" / "xlings"; }
 }  // namespace
 
 rl::Kind kind_of(const fs::path& home, std::string_view name) {
-    const auto j = read_json(subos::HomeView{home}.instance_file(name));
-    return rl::kind_from_string(j.value("kind", "view")).value_or(rl::Kind::View);
+    return read_kind(home, name).value_or(rl::Kind::View);
+}
+
+std::expected<rl::Kind, std::string> read_kind(const fs::path& home, std::string_view name) {
+    const auto file = subos::HomeView{home}.instance_file(name);
+    const auto j = read_json(file);
+    if (!j) return std::unexpected(j.error());
+    return kind_in(*j, file);
 }
 
 std::expected<void, std::string> declare_kind(const fs::path& home, std::string_view name,
                                               rl::Kind kind) {
     const auto file = subos::HomeView{home}.instance_file(name);
     auto j = read_json(file);
-    j["kind"] = std::string(rl::to_string(kind));
+    if (!j) return std::unexpected(j.error());
+    if (auto previous = kind_in(*j, file); !previous) return std::unexpected(previous.error());
+    (*j)["kind"] = std::string(rl::to_string(kind));
     std::error_code ec;
     fs::create_directories(file.parent_path(), ec);
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    out << j.dump(2) << "\n";
-    if (!out) return std::unexpected("cannot write " + file.string());
+    if (ec) return std::unexpected("cannot create " + file.parent_path().string() + ": " + ec.message());
+    try {
+        platform::write_file_atomic(file.string(), j->dump(2) + "\n");
+    } catch (const std::exception& e) {
+        return std::unexpected(e.what());
+    }
     return {};
 }
 
 std::optional<std::string> running_host(const fs::path& home) {
+    return read_running_host(home).value_or(std::nullopt);
+}
+
+std::expected<std::optional<std::string>, std::string> read_running_host(const fs::path& home) {
     const auto anchor = read_json("/etc/xlings/root.json");
-    const auto declared = fs::path(anchor.value("home", std::string()));
-    if (declared.empty()) return std::nullopt;
+    if (!anchor) return std::unexpected(anchor.error());
+    auto it = anchor->find("home");
+    std::error_code anchor_ec;
+    const auto status = fs::symlink_status("/etc/xlings/root.json", anchor_ec);
+    if (status.type() == fs::file_type::not_found) return std::nullopt;
+    if (it == anchor->end() || !it->is_string())
+        return std::unexpected("/etc/xlings/root.json: home must be an absolute path string");
+    const auto declared = fs::path(it->get<std::string>());
+    if (declared.empty() || !declared.is_absolute() || declared.lexically_normal() != declared)
+        return std::unexpected("/etc/xlings/root.json: home must be a nonempty absolute path");
     std::error_code ec;
     if (!fs::equivalent(declared, home, ec)) return std::nullopt;
     return rf::host_of("/", declared);
 }
 
 rl::Role role_of(const fs::path& home, std::string_view name) {
+    return read_role(home, name).value_or(rl::Role{});
+}
+
+std::expected<rl::Role, std::string> read_role(const fs::path& home, std::string_view name) {
     rl::Role r;
-    r.host = running_host(home) == std::string(name);
-    if (auto c = subos::boot::load(subos::HomeView{home}.boot_file()); c) {
+    auto host = read_running_host(home);
+    if (!host) return std::unexpected(host.error());
+    r.host = *host == std::string(name);
+    auto c = subos::boot::load(subos::HomeView{home}.boot_file());
+    if (!c) return std::unexpected(c.error());
+    {
         std::error_code ec;
         if (fs::exists(subos::HomeView{home}.boot_file(), ec))
             r.boot_entry = c->default_entry == name || c->fallback == name
@@ -131,7 +183,10 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
 std::optional<std::expected<Refreshed, std::string>>
 refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         const xvm::Workspace& workspace, const xvm::VersionDB& db, std::string_view reason) {
-    if (kind_of(home, name) != rl::Kind::Rootfs) return std::nullopt;
+    auto kind = read_kind(home, name);
+    if (!kind) return std::unexpected(kind.error());
+    if (*kind != rl::Kind::Rootfs) return std::nullopt;
+    if (auto role = read_role(home, name); !role) return std::unexpected(role.error());
     Refreshed out;
     const auto plan = rf::plan(inputs(home, subos_dir, workspace, db));
     out.conflicts = plan.conflicts.size();
@@ -156,7 +211,9 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
 
 std::optional<std::expected<Refreshed, std::string>>
 refresh(const fs::path& home, std::string_view name, std::string_view reason) {
-    if (kind_of(home, name) != rl::Kind::Rootfs) return std::nullopt;
+    auto kind = read_kind(home, name);
+    if (!kind) return std::unexpected(kind.error());
+    if (*kind != rl::Kind::Rootfs) return std::nullopt;
     const auto dir = subos::HomeView{home}.instance(name);
     xvm::Workspace ws;
     for (auto& snap : profile::load_subos_snapshots(home))

@@ -209,6 +209,116 @@ Policy preset(Preset which) {
     return p;
 }
 
+namespace {
+
+struct ClientVersion {
+    std::array<std::uint64_t, 4> parts{};
+    std::vector<std::string> prerelease;
+};
+
+std::expected<ClientVersion, std::string> client_version(std::string_view text) {
+    const auto original = text;
+    auto invalid = [&]() -> std::expected<ClientVersion, std::string> {
+        return std::unexpected(std::format("invalid client version '{}'", original));
+    };
+    ClientVersion result;
+    const auto suffix = text.find_first_of("-+");
+    const auto core = text.substr(0, suffix);
+    auto rest = core;
+    int count = 0;
+    while (!rest.empty()) {
+        if (count == 4) return invalid();
+        const auto dot = rest.find('.');
+        const auto part = rest.substr(0, dot);
+        if (part.empty() || (part.size() > 1 && part[0] == '0')) return invalid();
+        std::uint64_t number = 0;
+        auto parsed = std::from_chars(part.data(), part.data() + part.size(), number);
+        if (parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size()) return invalid();
+        result.parts[count++] = number;
+        if (dot == std::string_view::npos) break;
+        rest.remove_prefix(dot + 1);
+        if (rest.empty()) return invalid();
+    }
+    if (count != 3 && count != 4) return invalid();
+    if (count == 4) {
+        const auto& v = result.parts;
+        if (suffix != std::string_view::npos || v[0] < 1000 || v[0] > 9999
+            || v[1] < 1 || v[1] > 12 || v[2] < 1 || v[2] > 31) return invalid();
+        const auto date = std::chrono::year(static_cast<int>(v[0]))
+                        / std::chrono::month(static_cast<unsigned>(v[1]))
+                        / std::chrono::day(static_cast<unsigned>(v[2]));
+        if (!date.ok()) return invalid();
+        return result;
+    }
+    if (suffix == std::string_view::npos) return result;
+    auto tail = text.substr(suffix);
+    auto identifiers = [&](std::string_view list, bool prerelease) {
+        if (list.empty()) return false;
+        while (!list.empty()) {
+            const auto dot = list.find('.');
+            const auto id = list.substr(0, dot);
+            if (id.empty()) return false;
+            bool numeric = true;
+            for (const char c : id) {
+                const bool digit = c >= '0' && c <= '9';
+                if (!digit && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && c != '-')
+                    return false;
+                numeric = numeric && digit;
+            }
+            if (prerelease && numeric && id.size() > 1 && id[0] == '0') return false;
+            if (prerelease) result.prerelease.emplace_back(id);
+            if (dot == std::string_view::npos) break;
+            list.remove_prefix(dot + 1);
+            if (list.empty()) return false;
+        }
+        return true;
+    };
+    if (tail[0] == '-') {
+        tail.remove_prefix(1);
+        const auto plus = tail.find('+');
+        if (!identifiers(tail.substr(0, plus), true)) return invalid();
+        if (plus == std::string_view::npos) return result;
+        tail.remove_prefix(plus);
+    }
+    if (tail.empty() || tail[0] != '+' || !identifiers(tail.substr(1), false)) return invalid();
+    return result;
+}
+
+}  // namespace
+
+std::expected<int, std::string> compare_client_versions(std::string_view lhs, std::string_view rhs) {
+    const auto left = client_version(lhs), right = client_version(rhs);
+    if (!left) return std::unexpected(left.error());
+    if (!right) return std::unexpected(right.error());
+    if (left->parts != right->parts) return left->parts < right->parts ? -1 : 1;
+    if (left->prerelease.empty() != right->prerelease.empty())
+        return left->prerelease.empty() ? 1 : -1;
+    const auto numeric = [](std::string_view value) {
+        return std::ranges::all_of(value, [](char c) { return c >= '0' && c <= '9'; });
+    };
+    const auto& a = left->prerelease;
+    const auto& b = right->prerelease;
+    for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+        if (a[i] == b[i]) continue;
+        const bool an = numeric(a[i]), bn = numeric(b[i]);
+        if (an != bn) return an ? -1 : 1;
+        if (an && a[i].size() != b[i].size()) return a[i].size() < b[i].size() ? -1 : 1;
+        return a[i] < b[i] ? -1 : 1;
+    }
+    return a.size() == b.size() ? 0 : a.size() < b.size() ? -1 : 1;
+}
+
+std::expected<void, std::string> check_client(const Policy& p, std::string_view version) {
+    if (p.min_client.empty()) return {};
+    const auto order = compare_client_versions(version, p.min_client);
+    if (!order) return std::unexpected("E_POLICY_CLIENT: " + order.error());
+    if (*order < 0)
+        return std::unexpected(std::format(
+            "E_POLICY_CLIENT: policy requires xlings >= {}, client is {}; "
+            "upgrade the entry with `xlings self update` before entering", p.min_client, version));
+    return {};
+}
+
 std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
     if (!doc.is_object()) return std::unexpected("policy: not a JSON object");
     auto unknown = [](std::string_view where) {
@@ -248,7 +358,12 @@ std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
         const auto& key = it.key();
         if (key == "extends" || key == "resolved" || free_key(key)) continue;
         const auto& v = it.value();
-        if (key == "isolation") {
+        if (key == "min_client") {
+            if (!v.is_string()) return std::unexpected("policy: min_client must be a version string");
+            p.min_client = v.get<std::string>();
+            if (auto valid = client_version(p.min_client); !valid)
+                return std::unexpected("policy: min_client: " + valid.error());
+        } else if (key == "isolation") {
             if (!v.is_object()) return std::unexpected("policy: isolation must be an object");
             for (auto f = v.begin(); f != v.end(); ++f) {
                 const auto& k = f.key();
@@ -427,6 +542,7 @@ std::expected<Policy, std::string> from_package(const nlohmann::json& doc, std::
 
 nlohmann::json to_json(const Policy& p) {
     nlohmann::json j;
+    if (!p.min_client.empty()) j["min_client"] = p.min_client;
     j["extends"] = p.extends.empty() ? std::string(to_string(p.preset)) : p.extends;
     if (p.package)
         j["resolved"] = {{"from", p.package->from}, {"sha256", p.package->sha256},

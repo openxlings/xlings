@@ -533,13 +533,14 @@ bool ensure_home_layout(const fs::path& home_dir) {
         // `self doctor --fix` by hand -- 172 names on a measured home, every one
         // of them an active program the user cannot invoke.
         //
-        // `self init` runs on install AND on update, so the upgrade that fixes
-        // the cause also repairs what it did. On a healthy home the diff is
-        // empty and this costs one directory scan.
+        // Explicit self init and the install path both rebuild the table.
+        // On a healthy home the diff is empty and costs one directory scan.
         //
         // Not fatal on failure: the table is derived and converges on the next
         // install / use, and a home whose shims are laid out IS laid out.
-        if (auto sync = sync_shim_tables(); sync.changed()) {
+        const auto sync = sync_shim_tables();
+        if (!sync.root_error.empty()) return false;
+        if (sync.changed()) {
             log::info("routing table: +{} -{} ~{} shim(s)",
                       sync.added, sync.removed, sync.repointed);
         }
@@ -691,7 +692,10 @@ ShimSyncSummary sync_shim_tables() {
         if (auto r = subos_root::refresh(Config::paths().homeDir, name, dir, Config::workspace(),
                                          Config::versions(), "workspace change")) {
             if (!*r) {
-                log::warn("the root of subos '{}' was not updated: {}", name, r->error());
+                summary.root_error = std::format("the root of subos '{}' was not updated: {}",
+                                                 name, r->error());
+                log::error("{}", summary.root_error);
+                return summary;
             } else if ((*r)->changed) {
                 log::info("subos '{}': root generation {}{}", name, (*r)->generation,
                           (*r)->conflicts ? std::format(" ({} name conflict(s), see `xlings subos "

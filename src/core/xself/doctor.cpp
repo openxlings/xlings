@@ -959,6 +959,8 @@ Scan detect_(const DoctorState& st, const CoordinateProbe& probe,
     }
 
     for (auto&& f : detect_entry_binary_(st)) add(std::move(f));
+    for (auto&& f : detect_policy_clients_(p.homeDir,
+            entry_binary::version_of(entry_binary::path_of(p.homeDir)))) add(std::move(f));
 
     for (auto&& f : detect_versions_sources_()) add(std::move(f));
 
@@ -4797,6 +4799,10 @@ Counts count_(const Scan& scan) {
                 // the command. The line still prints, with the command that
                 // settles it.
                 break;
+            case FindingKind::PolicyClientUnsupported:
+                if (f.level == FindingLevel::Error) ++c.subos;
+                else ++c.warnings;
+                break;
             case FindingKind::EntryBinaryDrift:
                 // Counts as nothing either: both shapes it reports are states
                 // a user may have chosen on purpose. It must be visible, not
@@ -5199,6 +5205,11 @@ void render_(const Scan& scan, const RepairReport& repair, bool fix,
                     if (!f.remedyNote.empty())
                         add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 }
+                break;
+            case FindingKind::PolicyClientUnsupported:
+                add(glyph::mark(glyph::failed, "policy client"), f.detail);
+                if (!f.remedy.empty()) add("  " + glyph::mark(glyph::remedy, "run"), f.remedy);
+                if (!f.remedyNote.empty()) add("  " + glyph::mark(glyph::note, "note"), f.remedyNote);
                 break;
             case FindingKind::EntryBinaryDrift:
                 // Printed in full, always -- NOT collapsed into the notice

@@ -359,8 +359,13 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     if (!role_allows_(roles::Op::Copy, resolved.selected, stream)) return 1;
     // A rootfs instance's own tree is everything but what the projection and
     // the kernel provide (part 2 §6.1); a view's is its home and /tmp.
-    const bool rootfs = subos_root::kind_of(Config::paths().homeDir, resolved.selected)
-                        == roles::Kind::Rootfs;
+    const auto kind = subos_root::read_kind(Config::paths().homeDir, resolved.selected);
+    if (!kind) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = kind.error(),
+                                .recoverable = false });
+        return 1;
+    }
+    const bool rootfs = *kind == roles::Kind::Rootfs;
     auto mapped = rootfs
         ? model::inside_to_root(Config::subos_dir(resolved.selected) / std::string(rootfs::kTree),
                                 inst.second, Config::paths().homeDir)

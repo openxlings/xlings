@@ -2585,7 +2585,7 @@ bool process_xvm_operations_(const PlanNode& node,
         // project's command names into the global subos's table -- the job
         // `mirror_shim_to_global_bin` used to do, now with an owner
         // (`knownProjects`) and a reclamation path.
-        xself::sync_shim_tables();
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return false;
     }
     return true;
 }
@@ -4364,7 +4364,8 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
     // Same reason as the install path: a removal that took a name out of the
     // workspace must take it out of the table too, or the file stays behind
     // as exactly the kind of unreachable entry this design removes.
-    xself::sync_shim_tables();
+    if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty())
+        return std::unexpected(sync.root_error);
 
     if (catalog_) {
         catalog_->mark_installed(*resolvedMatch, false);

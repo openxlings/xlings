@@ -71,7 +71,7 @@ TEST(Observe, JournalAppendsReadsAndRotates) {
     auto file = dir / "logs" / "events.ndjson";
     o::JournalLimits limits{.max_bytes = 200, .keep = 2};
     for (int i = 0; i < 20; ++i)
-        o::append(file, {.kind = o::Kind::Lifecycle, .fields = {{"n", i}}}, limits);
+        ASSERT_TRUE(o::append_checked(file, {.kind = o::Kind::Lifecycle, .fields = {{"n", i}}}, limits));
     EXPECT_TRUE(fs::exists(file));
     EXPECT_TRUE(fs::exists(fs::path(file.string() + ".1")));
     EXPECT_FALSE(fs::exists(fs::path(file.string() + ".3")));
@@ -87,7 +87,10 @@ TEST(Observe, AppendNeverThrowsOnAnUnwritablePath) {
     // A path whose parent is a regular file cannot be created.
     auto dir = temp_dir("unwritable");
     std::ofstream(dir / "file") << "x";
-    EXPECT_NO_THROW(o::append(dir / "file" / "sub" / "events.ndjson", {.kind = o::Kind::Ops}));
+    const auto file = dir / "file" / "sub" / "events.ndjson";
+    EXPECT_FALSE(o::append_checked(file, {.kind = o::Kind::Ops}));
+    EXPECT_FALSE(o::append_json_checked(file, {{"probe", true}}));
+    EXPECT_NO_THROW(o::append(file, {.kind = o::Kind::Ops}));
     fs::remove_all(dir);
 }
 
@@ -112,4 +115,24 @@ TEST(Observe, DestructiveRecordIsNeverRotatedAndCarriesIdentity) {
     EXPECT_EQ(lines[0]["confirmedBy"], "-y");
     EXPECT_EQ(o::destructive::human_bytes(2048), "2.0 KB");
     fs::remove_all(home);
+}
+
+TEST(Observe, FailedRotationDoesNotPretendToStoreAnEvent) {
+    auto dir = temp_dir("rotation-error");
+    auto file = dir / "events.ndjson";
+    ASSERT_TRUE(o::append_checked(file, {.fields = {{"original", true}}}));
+    fs::create_directories(dir / "events.ndjson.1");
+    std::ofstream(dir / "events.ndjson.1" / "keep") << "existing evidence";
+    EXPECT_FALSE(o::append_checked(file, {.fields = {{"next", true}}},
+                                    {.max_bytes = 1, .keep = 1}));
+    const auto lines = o::read(file, false);
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_TRUE(lines.front().contains("original"));
+    fs::remove_all(dir);
+}
+
+TEST(Observe, ADeviceThatOpensButCannotFlushReportsFailure) {
+    if (!fs::exists("/dev/full")) GTEST_SKIP() << "requires a full-device fixture";
+    EXPECT_FALSE(o::append_json_checked("/dev/full", {{"probe", true}}, {.max_bytes = 0}));
+    EXPECT_NO_THROW(o::append_json("/dev/full", {{"probe", true}}, {.max_bytes = 0}));
 }

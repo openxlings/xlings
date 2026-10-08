@@ -50,8 +50,9 @@ std::vector<Status> probe(const caps::Caps& c) {
             bwrap ? "seccomp user notification (observe=full)" : "needs bwrap");
         add("SessionHost", true, Enforced::Kernel,
             "supervisor + session-init, fork + unix socket + SCM_RIGHTS");
-        add("RootfsRuntime", false, Enforced::None, "not in this release",
-            "bwrap userns with uid 0 mapping (design §20)");
+        add("RootfsRuntime", bwrap, bwrap ? Enforced::Kernel : Enforced::None,
+            bwrap ? "bwrap root tree with uid 0 mapping" : "needs usable bwrap",
+            bwrap ? "" : "xlings self doctor --isolation");
         return out;
     }
 

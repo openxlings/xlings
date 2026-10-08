@@ -841,7 +841,7 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         xlings_bin = p.homeDir / "xlings";
     }
 
-    xself::sync_shim_tables();
+    if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return 1;
 
     // Self-replace: when the user switches to a different version of xlings
     // (or its multicall aliases xim/xvm), physically replace the bootstrap

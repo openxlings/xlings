@@ -1,4 +1,4 @@
-> 更新日期：2026-10-06（含 Part 2：根呈现、系统层、Luban）
+> 更新日期：2026-10-08（含 Part 2：根呈现、系统层、Luban）
 >
 > 总体架构（部署形态、策略、进入与外部执行、可观测性、平台抽象）见
 > `.agents/docs/2026-10-05-subos-architecture-design.md`。本文是落地后的使用与行为说明：
@@ -53,6 +53,9 @@
   `resolved: {from, sha256, base}`，包更新不会悄悄改变策略，`--policy-upgrade` 显式升级并显示差异
   （owner 在包之上做过的修改会出现在差异里）。系统配置的 `subos_policy_sources` 可以限制来源。
 - **fail closed**：策略里出现本版本不认识或不能执行的值（例如 `net: "vpn"`、`fetch: "layer"`）时拒绝进入，不忽略。
+- 新写的策略声明 `min_client`；认识该字段的客户端不足最低版本时拒绝进入。`self doctor`
+  检查 home 中实际 entry 的版本并给升级命令，不会自动降低或删除策略。早于该机制的客户端
+  可能完全忽略策略，使用声明策略的实例前必须先升级 home 的 entry。
 
 ## 沙箱里的 xlings 与 broker
 
@@ -98,7 +101,10 @@ Ubuntu 24.04 默认限制非特权 user namespace（AppArmor）。`xlings self d
 
 ## 可观测性
 
-审计写在沙箱看不到的地方：`<home>/logs/subos/<s>/events.ndjson`（按大小轮转）。
+审计写在沙箱看不到的地方：`<home>/logs/subos/<s>/events.ndjson`（按大小轮转），
+同时保存 `sessions/<id>.ndjson`。默认省略 argv 值，保留程序和参数数量。
+locked 的日志写入失败会拒绝启动或终止会话；exec 的 seccomp 通知在成功记录后才放行。
+其他档位会警告。
 
 | 级别 | 记录 |
 |---|---|

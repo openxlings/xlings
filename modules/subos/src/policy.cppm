@@ -48,6 +48,9 @@ std::expected<Mount, std::string> parse_mount(std::string_view spec, std::string
 inline constexpr std::array<std::string_view, 7> kGrants{
     "display", "audio", "camera", "gpu", "ssh-agent", "dbus", "host-loopback"};
 
+// First client that implements this policy schema; new files carry this floor.
+inline constexpr std::string_view kPolicyMinClient = "2026.10.8.2";
+
 struct Policy {
     Preset preset { Preset::Legacy };
     Net net { Net::Host };
@@ -92,6 +95,7 @@ struct Policy {
         std::string sha256;                  // of the payload's policy.json
     };
     std::optional<Package> package;
+    std::string min_client;                  // empty only in legacy policy files
 };
 
 // `ns:name[@version]`: a policy package, where a preset is one word.
@@ -163,6 +167,11 @@ Policy preset(Preset p);
 // refuse them. Keys starting with "x-" and "comment" are free text.
 std::expected<Policy, std::string> from_json(const nlohmann::json& doc);
 nlohmann::json to_json(const Policy& p);
+
+// Numeric three-part semver (including prerelease/build) or four-part date versions.
+// Invalid input is refused, never compared lexicographically.
+std::expected<int, std::string> compare_client_versions(std::string_view lhs, std::string_view rhs);
+std::expected<void, std::string> check_client(const Policy& p, std::string_view version);
 
 // ── Per-call overrides (design §7.3) ─────────────────────────────────
 //

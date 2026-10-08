@@ -28,7 +28,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.8.1"
+version = "2026.10.8.2"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"

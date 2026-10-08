@@ -103,6 +103,8 @@ select_policy_package_(const std::string& ref, bool upgrade) {
     const auto from = std::format("{}:{}@{}", ns, name, dir->filename().string());
     auto p = policy::from_package(doc, ref, {from, *sha});
     if (!p) return std::unexpected(std::pair{2, std::format("{}: {}", from, p.error())});
+    if (auto supported = policy::check_client(*p, Info::VERSION); !supported)
+        return std::unexpected(std::pair{2, std::format("{}: {}", from, supported.error())});
     return std::move(*p);
 }
 
@@ -201,7 +203,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     name = resolved.selected;
     const auto home = home_view();
 
-    auto current = policy_store::read(home, name);
+    auto current = policy_store::read(home, name, Info::VERSION);
     if (!current) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = current.error(),
                                 .recoverable = true, .hint = "fix the file, or: xlings subos config " + name + " --reset" });
@@ -368,10 +370,15 @@ int run_doctor_(int argc, char* argv[], EventStream& stream,
         // The policy: declared, readable, enforceable by this version.
         policy::Policy pol = policy::legacy();
         auto file = policy_store::read(home, name);
+        bool supported = true;
         if (!file) {
             add("policy", "error", file.error(), "xlings subos config " + name + " --reset");
         } else if (*file) {
             pol = **file;
+            if (auto compatible = policy::check_client(pol, Info::VERSION); !compatible) {
+                supported = false;
+                add("client", "error", compatible.error(), "xlings self update");
+            }
             add("policy", "ok", std::format("{} ({})", home.policy_file(name).string(), policy::to_string(pol.preset)));
         } else {
             add("policy", "ok", "none declared: the instance enters as it always has");
@@ -380,8 +387,8 @@ int run_doctor_(int argc, char* argv[], EventStream& stream,
         // cannot be read: entry refuses rather than guess (fail closed).
         EventStream quiet;
         const auto eff = sandbox::preview(name, pol, quiet);
-        if (!file) {
-            add("enters", "error", "refused until the policy reads", "");
+        if (!file || !supported) {
+            add("enters", "error", "refused until the policy is readable and the client meets min_client", "");
         } else if (eff.value("enters", false)) {
             std::string degraded;
             for (auto& d : eff["spec"]["degraded"])
@@ -489,7 +496,7 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     if (resolved.selected.empty()) return resolved.exitCode;
     name = resolved.selected;
     const auto home = home_view();
-    auto file = policy_store::read(home, name);
+    auto file = policy_store::read(home, name, Info::VERSION);
     nlohmann::json out{{"instance", name}};
     policy::Policy pol = policy::legacy();
     if (!file) {
@@ -502,13 +509,26 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     }
     out["requested"] = policy::to_json(pol);
     EventStream quiet;
-    out["effective"] = sandbox::preview(name, pol, quiet);
+    if (!file) {
+        out["effective"] = {{"enters", false}, {"missing", nlohmann::json::array({
+            {{"dimension", "policy"}, {"reason", file.error()}, {"fix", "xlings self update"}}})}};
+    } else {
+        out["effective"] = sandbox::preview(name, pol, quiet);
+    }
     if (auto live = session::find(home, name)) out["session"] = session::to_json(*live);
     // What it is to this machine (part 2 §3.4): a view, or a root -- its
     // generation, what it would boot, whether it is the host.
     {
-        const auto kind = subos_root::kind_of(home.home, name);
-        const auto role = subos_root::role_of(home.home, name);
+        const auto declared_kind = subos_root::read_kind(home.home, name);
+        const auto declared_role = subos_root::read_role(home.home, name);
+        if (!declared_kind || !declared_role) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                .message = !declared_kind ? declared_kind.error() : declared_role.error(),
+                .recoverable = false });
+            return 1;
+        }
+        const auto kind = *declared_kind;
+        const auto role = *declared_role;
         nlohmann::json root{{"kind", std::string(roles::to_string(kind))}, {"host", role.host},
                             {"boot_entry", role.boot_entry}};
         if (kind == roles::Kind::Rootfs) {

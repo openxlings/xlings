@@ -45,10 +45,13 @@ int exec_listener();
 struct ExecNotice {
     int pid { 0 };
     std::string path;           // empty when it could not be read safely
+    std::uint64_t id { 0 };
 };
-// The next exec the listener holds: its path read from the caller, the call
-// let through. nullopt when there was nothing to read.
+// The next exec the listener holds, still blocked until complete_exec().
+// nullopt when there was nothing to read.
 std::optional<ExecNotice> next_exec(int listener);
+// Audit must be stored before allowing the exec; false denies it with EACCES.
+bool complete_exec(int listener, std::uint64_t id, bool allow);
 }  // namespace seccomp
 
 // ── the filesystem, beneath a root ───────────────────────────────────

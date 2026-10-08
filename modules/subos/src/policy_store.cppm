@@ -23,8 +23,9 @@ bool has_file(const HomeView& home, std::string_view instance);
 
 // The file's policy; nullopt when there is none; an error when it does not
 // parse or names something this version cannot enforce (fail closed).
+// A supplied client_version also enforces min_client; omitted means inspect only.
 std::expected<std::optional<policy::Policy>, std::string>
-read(const HomeView& home, std::string_view instance);
+read(const HomeView& home, std::string_view instance, std::string_view client_version = {});
 
 // Written atomically, outside the instance.
 std::expected<void, std::string> write(const HomeView& home, std::string_view instance,
@@ -34,6 +35,7 @@ int preset_rank(policy::Preset p);
 
 std::expected<policy::Policy, std::string>
 effective(const HomeView& home, std::string_view instance,
-          std::optional<policy::Preset> call_preset, const policy::Overrides& overrides);
+          std::optional<policy::Preset> call_preset, const policy::Overrides& overrides,
+          std::string_view client_version);
 
 }  // namespace xlings::subos::policy_store

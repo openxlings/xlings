@@ -107,24 +107,33 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
     EXPECT_EQ(rf::commit(subos, one, "same").value(), 1) << "an identical plan writes nothing";
     EXPECT_EQ(fs::read_symlink(rf::usr_of(subos) / "bin" / "sh"), t.dir / "a" / "sh");
 
-    // A reader resolving the pointer while generations are committed: the
-    // pointer is always one generation or the other, never missing.
-    std::atomic<bool> stop{false};
-    std::atomic<int> misses{0}, reads{0};
-    std::thread reader([&] {
-        while (!stop) {
+    // Acquire the pointer once, then read that immutable generation. Separate
+    // pathname lookups through a moving symlink are not a snapshot (macOS can
+    // invalidate a name-cache walk during rename); readlink observes the entry.
+    std::atomic<int> misses { 0 }, reads { 0 };
+    std::latch ready { 1 };
+    std::jthread reader([&](std::stop_token stop) {
+        do {
             std::error_code ec;
-            if (!fs::exists(rf::usr_of(subos) / "bin" / "sh", ec)) ++misses;
-            ++reads;
-        }
+            const auto target = fs::read_symlink(subos / rf::kPointer, ec);
+            if (ec || target.parent_path() != rf::kGenerations) {
+                ++misses;
+            } else {
+                const auto program = fs::read_symlink(subos / target / "usr/bin/sh", ec);
+                if (ec || (program != t.dir / "a/sh" && program != t.dir / "b/sh")) ++misses;
+            }
+            if (++reads == 1) ready.count_down();
+        } while (!stop.stop_requested());
     });
+    ready.wait();
     for (int i = 0; i < 40; ++i) {
-        ASSERT_TRUE(rf::commit(subos, i % 2 ? one : two, "flip").has_value());
+        const auto committed = rf::commit(subos, i % 2 ? one : two, "flip");
+        EXPECT_TRUE(committed.has_value());
     }
-    stop = true;
+    reader.request_stop();
     reader.join();
     EXPECT_GT(reads.load(), 0);
-    EXPECT_EQ(misses.load(), 0) << "a reader saw no generation at all";
+    EXPECT_EQ(misses.load(), 0) << "the pointer or its acquired generation was missing or incomplete";
 
     const auto gens = rf::generations(subos);
     ASSERT_GE(gens.size(), 3u);
@@ -138,6 +147,54 @@ XTEST(SubosRootfs, AGenerationSwitchIsOneRenameAndARollbackMovesThePointer,
     EXPECT_FALSE(removed.empty());
     EXPECT_EQ(rf::current(subos), 1) << "the current generation is never pruned";
     EXPECT_EQ(rf::generations(subos).size(), 3u);
+}
+
+XTEST(SubosRootfs, StagingAndPrunePreserveEverythingNotProvenDerived,
+      .area = "subos", .covers = {"ROOT-GEN-ATOMIC", "ROOT-ROLLBACK"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections require symlinks";
+    Tmp t("ownership");
+    const auto subos = t.dir / "subos/box";
+    tk::write_file(subos / "root.gen/.1.partial/user.txt", "mine");
+    tk::write_file(subos / ".root.1", "mine");
+    exe(t.dir / "sh");
+    const rf::Plan first{{{"usr/bin/sh", t.dir / "sh", "x"}}, {}};
+    const auto committed = rf::commit(subos, first, "first");
+    ASSERT_TRUE(committed.has_value());
+    EXPECT_EQ(tk::read_file(subos / "root.gen/.1.partial/user.txt"), "mine");
+    EXPECT_EQ(tk::read_file(subos / ".root.1"), "mine");
+    tk::write_file(subos / "root.gen/2/user.txt", "mine");
+    tk::write_file(subos / "root.gen/1/user.txt", "mine");
+    auto second = first;
+    second.links.push_back({"usr/bin/other", t.dir / "sh", "x"});
+    ASSERT_TRUE(rf::commit(subos, second, "second").has_value());
+    EXPECT_TRUE(rf::prune(subos, 0).empty());
+    EXPECT_EQ(tk::read_file(subos / "root.gen/1/user.txt"), "mine");
+    EXPECT_EQ(tk::read_file(subos / "root.gen/2/user.txt"), "mine");
+    EXPECT_FALSE(rf::switch_to(subos, 1).has_value()) << "a modified tree cannot become a projection";
+}
+
+XTEST(SubosRootfs, UnsafePlansAndForeignPointersAreRefusedWithoutWritingOutsideTheStage,
+      .area = "subos", .covers = {"ROOT-GEN-ATOMIC"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root projections require symlinks";
+    Tmp t("unsafe-plan");
+    const auto subos = t.dir / "subos";
+    fs::create_directory(subos);
+    const rf::Plan escape{{{"../../escaped", t.dir / "target", "x"}}, {}};
+    EXPECT_FALSE(rf::commit(subos, escape, "escape").has_value());
+    EXPECT_FALSE(fs::exists(fs::symlink_status(subos / "escaped")));
+    const auto outside = t.dir / "outside";
+    fs::create_directory(outside);
+    const rf::Plan nested{{{"usr/bin", outside, "x"}, {"usr/bin/injected", outside, "x"}}, {}};
+    EXPECT_FALSE(rf::commit(subos, nested, "nested").has_value());
+    EXPECT_FALSE(fs::exists(fs::symlink_status(outside / "injected")));
+    tk::write_file(subos / "root", "user file");
+    const rf::Plan valid{{{"usr/bin/sh", t.dir / "target", "x"}}, {}};
+    EXPECT_FALSE(rf::commit(subos, valid, "foreign-pointer").has_value());
+    EXPECT_EQ(tk::read_file(subos / "root"), "user file");
+    for (const auto& entry : fs::directory_iterator(subos))
+        EXPECT_FALSE(entry.path().filename().string().starts_with(".xlings-stage-"));
+    for (const auto& entry : fs::directory_iterator(subos / "root.gen"))
+        EXPECT_FALSE(entry.path().filename().string().starts_with(".xlings-stage-"));
 }
 
 XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
@@ -179,6 +236,21 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
     EXPECT_TRUE(passwd.starts_with("alice:x:1000")) << passwd;
     EXPECT_NE(passwd.find("sshd:x:74:74:SSH daemon:/var/empty:/usr/bin/nologin"), std::string::npos) << passwd;
     EXPECT_TRUE(rf::apply_sysusers(root / "etc", usr).empty()) << "nothing twice";
+}
+
+XTEST(SubosRootfs, LayoutPreservesForeignStagingAndReportsMachineStateConflicts,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "root trees require symlinks";
+    Tmp t("layout-conflict");
+    const auto root = t.dir / "root";
+    ASSERT_TRUE(rf::lay_out(root, "/old/usr", "/xlings").has_value());
+    tk::write_file(root / ".usr.new", "user-owned staging name");
+    ASSERT_TRUE(rf::lay_out(root, "/new/usr", "/xlings").has_value());
+    EXPECT_EQ(tk::read_file(root / ".usr.new"), "user-owned staging name");
+    fs::remove(root / "tmp");
+    tk::write_file(root / "tmp", "user-owned file");
+    EXPECT_FALSE(rf::lay_out(root, "/new/usr", "/xlings").has_value());
+    EXPECT_EQ(tk::read_file(root / "tmp"), "user-owned file");
 }
 
 XTEST(SubosBoot, ATrialIsUsedOnceAndAnUnconfirmedDefaultFallsBack,

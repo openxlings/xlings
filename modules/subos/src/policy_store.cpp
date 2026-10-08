@@ -2,54 +2,90 @@ module xlings.subos.policy_store;
 
 import std;
 import xlings.libs.json;
+import xlings.platform;
 import xlings.subos.home_view;
 import xlings.subos.policy;
 
 namespace xlings::subos::policy_store {
 
+namespace {
+
+bool missing(const fs::file_status& status, const std::error_code& error) {
+    return status.type() == fs::file_type::not_found
+        && (!error || error == std::errc::no_such_file_or_directory);
+}
+
+std::expected<std::optional<nlohmann::json>, std::string> read_document(const fs::path& path) {
+    std::error_code ec;
+    const auto status = fs::symlink_status(path, ec);
+    if (missing(status, ec)) return std::optional<nlohmann::json>{};
+    if (ec) return std::unexpected(path.string() + ": " + ec.message());
+    if (!fs::is_regular_file(status))
+        return std::unexpected(path.string() + ": policy must be a regular file, not a symlink or directory -- refusing to enter");
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::unexpected(path.string() + ": cannot read policy -- refusing to enter");
+    std::string text{std::istreambuf_iterator<char>(in), {}};
+    if (in.bad()) return std::unexpected(path.string() + ": policy read failed -- refusing to enter");
+    auto doc = nlohmann::json::parse(text, nullptr, false);
+    if (doc.is_discarded() || !doc.is_object())
+        return std::unexpected(path.string() + ": not a valid JSON object -- refusing to enter rather than guess");
+    return std::optional<nlohmann::json>{std::move(doc)};
+}
+
+}  // namespace
+
 bool has_file(const HomeView& home, std::string_view instance) {
     std::error_code ec;
-    return fs::exists(home.policy_file(instance), ec);
+    const auto status = fs::symlink_status(home.policy_file(instance), ec);
+    return !missing(status, ec);
 }
 
 std::expected<std::optional<policy::Policy>, std::string>
-read(const HomeView& home, std::string_view instance) {
+read(const HomeView& home, std::string_view instance, std::string_view client_version) {
     const auto path = home.policy_file(instance);
-    std::error_code ec;
-    if (!fs::exists(path, ec)) return std::optional<policy::Policy>{};
-    std::ifstream in(path, std::ios::binary);
-    std::string text{std::istreambuf_iterator<char>(in), {}};
-    auto doc = nlohmann::json::parse(text, nullptr, false);
-    if (doc.is_discarded())
-        return std::unexpected(path.string() + ": not valid JSON -- refusing to enter rather than guess");
-    auto p = policy::from_json(doc);
+    auto doc = read_document(path);
+    if (!doc) return std::unexpected(doc.error());
+    if (!*doc) return std::optional<policy::Policy>{};
+    auto p = policy::from_json(**doc);
     if (!p) return std::unexpected(path.string() + ": " + p.error());
+    if (!client_version.empty())
+        if (auto supported = policy::check_client(*p, client_version); !supported)
+            return std::unexpected(path.string() + ": " + supported.error());
     return std::optional<policy::Policy>{std::move(*p)};
 }
 
 std::expected<void, std::string> write(const HomeView& home, std::string_view instance,
                                        const policy::Policy& p) {
     const auto path = home.policy_file(instance);
+    auto existing = read_document(path);
+    if (!existing) return std::unexpected(existing.error());
+    if (*existing)
+        if (auto valid = policy::from_json(**existing); !valid)
+            return std::unexpected(path.string() + ": " + valid.error());
+    policy::Policy saved = p;
+    if (saved.min_client.empty()) saved.min_client = policy::kPolicyMinClient;
+    auto order = policy::compare_client_versions(saved.min_client, policy::kPolicyMinClient);
+    if (!order) return std::unexpected(order.error());
+    if (*order < 0) saved.min_client = policy::kPolicyMinClient;
+    nlohmann::json doc = policy::to_json(saved);
+    if (*existing) {
+        const auto& old = **existing;
+        if (old.contains("min_client")) {
+            const auto old_order = policy::compare_client_versions(old["min_client"].get<std::string>(), saved.min_client);
+            if (!old_order) return std::unexpected(old_order.error());
+            if (*old_order > 0) doc["min_client"] = old["min_client"];
+        }
+        for (auto it = old.begin(); it != old.end(); ++it)
+            if (!doc.contains(it.key())) doc[it.key()] = it.value();
+    }
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
-    // Keep what the file said that this writer does not know (x-*, comment).
-    nlohmann::json doc = policy::to_json(p);
-    if (fs::exists(path, ec)) {
-        std::ifstream in(path, std::ios::binary);
-        auto old = nlohmann::json::parse(in, nullptr, false);
-        if (old.is_object())
-            for (auto it = old.begin(); it != old.end(); ++it)
-                if (!doc.contains(it.key())) doc[it.key()] = it.value();
+    if (ec) return std::unexpected("cannot create " + path.parent_path().string() + ": " + ec.message());
+    try {
+        platform::write_file_atomic(path.string(), doc.dump(2) + '\n');
+    } catch (const std::exception& error) {
+        return std::unexpected(error.what());
     }
-    auto tmp = fs::path(path.string() + ".tmp");
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return std::unexpected("cannot write " + tmp.string());
-        out << doc.dump(2) << '\n';
-        if (!out) return std::unexpected("cannot write " + tmp.string());
-    }
-    fs::rename(tmp, path, ec);
-    if (ec) return std::unexpected("cannot write " + path.string() + ": " + ec.message());
     return {};
 }
 
@@ -65,8 +101,12 @@ int preset_rank(policy::Preset p) {
 
 std::expected<policy::Policy, std::string>
 effective(const HomeView& home, std::string_view instance,
-          std::optional<policy::Preset> call_preset, const policy::Overrides& overrides) {
+          std::optional<policy::Preset> call_preset, const policy::Overrides& overrides,
+          std::string_view client_version) {
     auto file = read(home, instance);
+    if (file && *file)
+        if (auto supported = policy::check_client(**file, client_version); !supported)
+            return std::unexpected(supported.error());
     if (!file) return std::unexpected(file.error());
     policy::Policy p;
     if (*file) {

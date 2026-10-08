@@ -286,6 +286,9 @@ jobs:
           # own, depending on the mcpp version.
           $xdev = Get-ChildItem target, apps\xdev -Recurse -Filter xdev.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $xdev) { Write-Host "::error::mcpp build -p xdev produced no xdev.exe under target/"; exit 1 }
+          $env:XDEV_BIN = $xdev.FullName
+          mcpp test -p xdev
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $xdev.FullName test --out target/xdev/windows-unit
           if ($LASTEXITCODE -ne 0) {
             $status = $LASTEXITCODE

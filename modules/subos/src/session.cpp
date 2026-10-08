@@ -84,19 +84,14 @@ bool write_atomic(const fs::path& path, const std::string& text) {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) return false;
         out << text;
+        out.flush();
         if (!out) return false;
+        out.close();
+        if (out.fail()) return false;
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);
     return !ec;
-}
-
-void audit(const HomeView& home, std::string_view instance, nlohmann::json fields,
-           observe::Kind kind = observe::Kind::Lifecycle) {
-    fields["instance"] = std::string(instance);
-    observe::trace(kind == observe::Kind::Perm ? "broker" : "session", fields.dump());
-    observe::append(home.logs_dir(instance) / "events.ndjson",
-                    observe::Event{ .kind = kind, .fields = std::move(fields) });
 }
 
 bool env_allowed(std::string_view name, const std::vector<std::string>& pass) {
@@ -196,6 +191,57 @@ struct Client {
 
 int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::array<int, 2> ctl,
               int ready_fd) {
+    int pid = -1;
+    bool audit_failed = false;
+    bool audit_warned = false;
+    std::vector<BrokerClient> brokered;
+    auto audit = [&](nlohmann::json fields, observe::Kind kind = observe::Kind::Lifecycle) {
+        if (audit_failed) return false;
+        fields["instance"] = L.instance;
+        observe::trace(kind == observe::Kind::Perm ? "broker" : "session", fields.dump());
+        const auto file = home.logs_dir(L.instance) / "events.ndjson";
+        const observe::Event event{.kind = kind, .ts = observe::utc_now(), .fields = std::move(fields)};
+        auto failed_file = file;
+        bool written = observe::append_checked(file, event);
+        if (written) {
+            failed_file = home.logs_dir(L.instance) / "sessions" / (info.id + ".ndjson");
+            written = observe::append_checked(failed_file, event);
+        }
+        if (!written) {
+            if (!audit_warned)
+                report(std::format("E_AUDIT_WRITE: cannot write {}; {}", failed_file.string(),
+                    L.audit_required ? "locked session refused or terminated"
+                                     : "continuing without a complete audit"));
+            audit_warned = true;
+            if (L.audit_required) {
+                audit_failed = true;
+                if (pid > 0) platform::send_signal(pid, sig::kill);
+                for (auto& b : brokered)
+                    if (b.pid > 0) platform::send_signal(b.pid, sig::kill);
+            }
+        }
+        return written || !L.audit_required;
+    };
+    auto audit_spec = L.spec;
+    if (audit_spec.is_object() && audit_spec.contains("argv")) {
+        const auto& argv = audit_spec["argv"];
+        audit_spec["argc"] = argv.is_array() ? argv.size() : 0;
+        if (argv.is_array() && !argv.empty() && argv[0].is_string())
+            audit_spec["program"] = argv[0];
+        audit_spec.erase("argv");
+    }
+    if (!audit({{"event", "session-start"}, {"session", info.id},
+                {"backend", L.backend}, {"detached", L.detached}, {"ttl", L.ttl},
+                {"exec_trace", L.trace_exec}, {"spec", audit_spec}})) {
+        platform::close_fd(listen_fd);
+        for (int fd : ctl) platform::close_fd(fd);
+        platform::close_fds(L.keep_fds);
+        platform::close_fd(ready_fd);
+        std::error_code ec;
+        fs::remove(sock_path(home, L.instance), ec);
+        return kExitSetup;
+    }
+
     // Like system(): while the sandbox runs, Ctrl-C is the command's. SIGTERM
     // and SIGHUP end the session (forwarded to the sandbox).
     const int signal_fd = platform::route_signals({sig::terminate, sig::hangup},
@@ -203,7 +249,6 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
 
     // The broker's socket exists before the backend starts: bwrap binds it
     // into the sandbox at /run/xlings/broker.sock.
-    std::vector<BrokerClient> brokered;
     int broker_fd = -1;
     if (L.broker_policy) {
         broker_fd = platform::unix_listen(home.broker_socket(L.instance));
@@ -226,7 +271,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     }
     const auto ids = platform::user_ids();
 
-    const int pid = platform::fork_process();
+    pid = platform::fork_process();
     if (pid < 0) {
         report(std::format("fork failed: {}", platform::error_text(platform::last_error())));
         return kExitSetup;
@@ -287,7 +332,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             report(std::format("net=nat: pasta could not set up the network ({})",
                                ready ? std::format("pasta exited {}", pasta_rc)
                                      : std::string("the namespace was not created")));
-            audit(home, L.instance, {{"event", "session-setup-failed"}, {"session", info.id},
+            audit({{"event", "session-setup-failed"}, {"session", info.id},
                                      {"reason", "pasta"}, {"exit", pasta_rc}});
             (void)platform::wait_process(pid, true);
             std::error_code rec;
@@ -308,9 +353,6 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     const auto started = std::chrono::steady_clock::now();
     info.sandbox_pid = pid;
     write_atomic(info_path(home, L.instance), to_json(info).dump(2));
-    audit(home, L.instance, {{"event", "session-start"}, {"session", info.id},
-                             {"backend", L.backend}, {"detached", L.detached}, {"ttl", L.ttl},
-                             {"exec_trace", L.trace_exec}, {"spec", L.spec}});
     if (ready_fd >= 0) {
         (void)platform::write_fd(ready_fd, "1");
         platform::close_fd(ready_fd);
@@ -327,14 +369,15 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
 
     auto finish_client = [&](Client& c, nlohmann::json reply) {
         if (c.timed_out) reply = {{"exit", kExitTimeout}, {"timeout", true}};
-        send_msg(c.fd, reply);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - c.started).count();
         nlohmann::json ev{{"event", "exec-end"}, {"session", info.id}, {"exec", *c.exec_id},
                           {"program", c.argv0}, {"ms", ms}};
         for (auto k : {"exit", "signal", "error", "timeout"})
             if (reply.contains(k)) ev[k] = reply[k];
-        audit(home, L.instance, ev, observe::Kind::Ops);
+        if (!audit(ev, observe::Kind::Ops))
+            reply = {{"error", "E_AUDIT_WRITE: session ended"}, {"phase", "setup"}};
+        send_msg(c.fd, reply);
         platform::close_fd(c.fd);
         c.fd = -1;
     };
@@ -342,7 +385,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
 
     while (true) {
         if (!reaped) {
-            if (auto st = platform::wait_process(pid, false)) { status = *st; reaped = true; }
+            if (auto st = platform::wait_process(pid, false)) { status = *st; reaped = true; pid = -1; }
         }
         for (int s : platform::pending_signals()) {
             if ((s == sig::terminate || s == sig::hangup) && !reaped) platform::send_signal(pid, sig::terminate);
@@ -367,7 +410,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             timed_out = true;
             platform::send_signal(pid, sig::terminate);
             kill_at = now + std::chrono::seconds(2);
-            audit(home, L.instance, {{"event", "session-timeout"}, {"session", info.id}});
+            audit({{"event", "session-timeout"}, {"session", info.id}});
         }
         if (kill_at && !reaped && now >= *kill_at) {
             platform::send_signal(pid, sig::kill);
@@ -386,11 +429,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             auto st = platform::wait_process(b.pid, false);
             if (!st) continue;
             const int code = platform::exit_code(*st);
-            send_msg(b.fd, {{"exit", code}});
-            audit(home, L.instance, {{"event", "broker-done"}, {"session", info.id},
-                                     {"program", b.program}, {"exit", code}}, observe::Kind::Perm);
-            drop(b.fd);
             b.pid = 0;
+            const bool recorded = audit({{"event", "broker-done"}, {"session", info.id},
+                                         {"program", b.program}, {"exit", code}}, observe::Kind::Perm);
+            send_msg(b.fd, recorded ? nlohmann::json{{"exit", code}}
+                                   : nlohmann::json{{"exit", kExitSetup}, {"error", "E_AUDIT_WRITE: session ended"}});
+            drop(b.fd);
         }
         std::erase_if(brokered, [](const BrokerClient& b) { return b.fd < 0; });
 
@@ -398,10 +442,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (!p.readable && !p.closed) continue;
             if (notify_fd >= 0 && p.fd == notify_fd) {
                 if (p.closed && !p.readable) { drop(notify_fd); continue; }
-                if (auto ex = platform::seccomp::next_exec(notify_fd))
-                    audit(home, L.instance, {{"event", "exec"}, {"session", info.id},
-                                             {"path", ex->path.empty() ? std::string("?") : ex->path},
-                                             {"pid", ex->pid}}, observe::Kind::Exec);
+                if (auto ex = platform::seccomp::next_exec(notify_fd)) {
+                    const bool allowed = audit({{"event", "exec"}, {"session", info.id},
+                                                {"path", ex->path.empty() ? std::string("?") : ex->path},
+                                                {"pid", ex->pid}}, observe::Kind::Exec);
+                    (void)platform::seccomp::complete_exec(notify_fd, ex->id, allowed);
+                }
                 continue;
             }
             if (broker_fd >= 0 && p.fd == broker_fd) {
@@ -440,7 +486,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                                            argv[0]);
                 }
                 if (d.action == policy::Action::Deny) {
-                    audit(home, L.instance, ev, observe::Kind::Perm);
+                    audit(ev, observe::Kind::Perm);
                     send_msg(bit->fd, {{"exit", broker::kExitPermission},
                                        {"error", "E_PERMISSION: " + d.reason},
                                        {"hint", d.owner_command.empty() ? std::string{}
@@ -452,7 +498,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                 if (d.action == policy::Action::Ask) {
                     auto id = broker::enqueue(home, L.instance, argv, d.reason);
                     ev["request"] = id;
-                    audit(home, L.instance, ev, observe::Kind::Perm);
+                    audit(ev, observe::Kind::Perm);
                     send_msg(bit->fd, {{"exit", broker::kExitPending},
                                        {"error", "waiting for the owner's approval: request " + id},
                                        {"hint", std::format("outside the sandbox: xlings subos approve {} {}",
@@ -462,7 +508,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     drop(bit->fd);
                     continue;
                 }
-                audit(home, L.instance, ev, observe::Kind::Perm);
+                if (!audit(ev, observe::Kind::Perm)) {
+                    send_msg(bit->fd, {{"exit", kExitSetup}, {"error", "E_AUDIT_WRITE: session ended"}});
+                    platform::close_fds(m->fds);
+                    drop(bit->fd);
+                    continue;
+                }
                 auto full = L.broker_exe;
                 full.insert(full.end(), argv.begin(), argv.end());
                 if (std::ranges::find(full, std::string("-y")) == full.end()) full.push_back("-y");
@@ -507,7 +558,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                         notify_fd = m->fds.front();
                         m->fds.erase(m->fds.begin());
                     } else if (m->fds.empty()) {
-                        audit(home, L.instance, {{"event", "exec-trace-unavailable"}, {"session", info.id},
+                        audit({{"event", "exec-trace-unavailable"}, {"session", info.id},
                                                  {"reason", m->json.value("reason", "")}});
                     }
                     platform::close_fds(m->fds);
@@ -541,7 +592,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                 send_msg(it->fd, to_json(info));
                 platform::close_fds(m->fds);
             } else if (op == "stop") {
-                audit(home, L.instance, {{"event", "session-stop-requested"}, {"session", info.id}});
+                audit({{"event", "session-stop-requested"}, {"session", info.id}});
                 if (!reaped) platform::send_signal(pid, sig::terminate);
                 send_msg(it->fd, {{"ok", true}});
                 platform::close_fds(m->fds);
@@ -577,7 +628,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                                   {"tty", m->json.value("tty", false)}};
                 ev["env"] = nlohmann::json::array();
                 for (auto& [k, v] : env) ev["env"].push_back(k);   // names, never values
-                audit(home, L.instance, ev, observe::Kind::Ops);
+                if (!audit(ev, observe::Kind::Ops)) {
+                    send_msg(it->fd, {{"error", "E_AUDIT_WRITE: session ended"}, {"phase", "setup"}});
+                    platform::close_fds(m->fds);
+                    drop(it->fd);
+                    continue;
+                }
                 send_msg(ctl[0], {{"op", "exec"}, {"id", id}, {"argv", argv_j}, {"env", env},
                                   {"cwd", cwd}, {"tty", m->json.value("tty", false)}},
                          m->fds);
@@ -600,7 +656,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     for (const auto& root : L.rw_paths) {
         auto [files, truncated] = changed_since(root, fs_since, 200);
         if (files.empty()) continue;
-        audit(home, L.instance, {{"event", "changed"}, {"session", info.id}, {"mount", root},
+        audit({{"event", "changed"}, {"session", info.id}, {"mount", root},
                                  {"count", files.size()}, {"truncated", truncated}, {"files", files}},
               observe::Kind::Fs);
     }
@@ -624,12 +680,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     }
     platform::close_fd(listen_fd);
     if (ctl_open) platform::close_fd(ctl[0]);
-    const int code = timed_out ? kExitTimeout : reaped ? platform::exit_code(status) : kExitSetup;
+    const int code = audit_failed ? kExitSetup : timed_out ? kExitTimeout : reaped ? platform::exit_code(status) : kExitSetup;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - started).count();
-    audit(home, L.instance, {{"event", "session-end"}, {"session", info.id}, {"exit", code},
+    audit({{"event", "session-end"}, {"session", info.id}, {"exit", code},
                              {"ms", ms}});
-    return code;
+    return audit_failed ? kExitSetup : code;
 }
 
 }  // namespace

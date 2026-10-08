@@ -995,7 +995,7 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         }
         record_report();
         activate_requested_targets();
-        xself::sync_shim_tables();
+        if (const auto sync = xself::sync_shim_tables(); !sync.root_error.empty()) return 1;
         return 0;
     }
 

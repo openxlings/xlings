@@ -23,6 +23,9 @@ namespace rl = xlings::subos::roles;
 // written, read-only inside, like the policy). Absent is a view: every SubOS
 // made before part 2 keeps behaving as one.
 rl::Kind kind_of(const fs::path& home, std::string_view name);
+// Decision paths must refuse invalid present metadata instead of downgrading
+// a rootfs to a view. Only missing legacy metadata defaults to a view.
+std::expected<rl::Kind, std::string> read_kind(const fs::path& home, std::string_view name);
 std::expected<void, std::string> declare_kind(const fs::path& home, std::string_view name,
                                               rl::Kind kind);
 
@@ -30,7 +33,9 @@ std::expected<void, std::string> declare_kind(const fs::path& home, std::string_
 // machine's system home (deployment R: /etc/xlings/root.json names it and
 // /usr is its projection).
 std::optional<std::string> running_host(const fs::path& home);
+std::expected<std::optional<std::string>, std::string> read_running_host(const fs::path& home);
 rl::Role role_of(const fs::path& home, std::string_view name);
+std::expected<rl::Role, std::string> read_role(const fs::path& home, std::string_view name);
 // Where a SubOS's root tree is: `/` for the running host, else <subos>/rootfs.
 fs::path tree_of(const fs::path& home, std::string_view name);
 

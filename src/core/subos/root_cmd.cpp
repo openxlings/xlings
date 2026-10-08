@@ -53,6 +53,67 @@ std::string read_text_(const fs::path& p) {
     return {std::istreambuf_iterator<char>(in), {}};
 }
 
+// A scratch directory belongs to this operation only after exclusive creation.
+class OwnedStage {
+private:
+    fs::path path_;
+
+public:
+    explicit OwnedStage(fs::path path) : path_{std::move(path)} {}
+    OwnedStage(OwnedStage&& other) noexcept : path_{std::exchange(other.path_, {})} {}
+    OwnedStage(const OwnedStage&) = delete;
+    ~OwnedStage() {
+        if (path_.empty()) return;
+        std::error_code ec;
+        fs::remove_all(path_, ec); // subos-remove-all-ok: exclusively created scratch tree, never an existing output
+    }
+    const fs::path& path() const { return path_; }
+
+    static std::expected<OwnedStage, std::string> create(const fs::path& parent) {
+        std::error_code ec;
+        fs::create_directories(parent, ec);
+        if (ec) return std::unexpected("cannot create output directory: " + ec.message());
+        static std::atomic<unsigned long long> serial { 0 };
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            const auto path = parent / std::format(".xlings-stage-{}-{}",
+                std::chrono::steady_clock::now().time_since_epoch().count(), serial++);
+            if (fs::create_directory(path, ec)) return OwnedStage{path};
+            if (ec && ec != std::errc::file_exists)
+                return std::unexpected("cannot create staging directory: " + ec.message());
+        }
+        return std::unexpected("cannot reserve a staging directory");
+    }
+};
+
+std::expected<void, std::string> require_new_output_(const fs::path& path) {
+    std::error_code ec;
+    const auto status = fs::symlink_status(path, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory)
+        return std::unexpected("cannot inspect output " + path.string() + ": " + ec.message());
+    if (fs::exists(status))
+        return std::unexpected("output already exists: " + path.string());
+    return {};
+}
+
+std::expected<void, std::string> publish_file_(const fs::path& from, const fs::path& to) {
+    return platform::rename_no_replace(from, to);
+}
+
+bool safe_component_(std::string_view value) {
+    return !value.empty() && value != "." && value != ".."
+        && std::ranges::all_of(value, [](unsigned char c) {
+            return std::isalnum(c) || c == '.' || c == '_' || c == '+' || c == '-';
+        });
+}
+
+std::expected<void, std::string> write_json_(const fs::path& path, const nlohmann::json& value) {
+    std::ofstream out(path);
+    out << value.dump(2) << "\n";
+    out.close();
+    if (!out) return std::unexpected("cannot write " + path.string());
+    return {};
+}
+
 // <home>/data/xpkgs/<pkg>/<version> of an absolute path.
 std::optional<fs::path> payload_of_(const fs::path& p, const fs::path& store) {
     const auto rel = p.lexically_relative(store);
@@ -108,6 +169,7 @@ std::set<fs::path> closure_(const std::string& name, const xvm::SubosWorkspace& 
 std::expected<void, std::string> copy_tree_(const fs::path& from, const fs::path& to) {
     std::error_code ec;
     fs::create_directories(to.parent_path(), ec);
+    if (ec) return std::unexpected("cannot create copy destination: " + ec.message());
     fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::copy_symlinks
                            | fs::copy_options::overwrite_existing, ec);
     if (ec) return std::unexpected(std::format("cannot copy {}: {}", from.string(), ec.message()));
@@ -160,13 +222,17 @@ std::vector<std::string> as_root_(std::vector<std::string> argv) {
 // ── shared with the other subos commands ─────────────────────────────
 
 bool enters_sandboxed_(const std::string& name) {
-    return policy_store::has_file(home_view(), name)
-        || subos_root::kind_of(home_dir_(), name) == roles::Kind::Rootfs;
+    const auto kind = subos_root::read_kind(home_dir_(), name);
+    return policy_store::has_file(home_view(), name) || !kind || *kind == roles::Kind::Rootfs;
 }
 
 bool role_allows_(roles::Op op, const std::string& name, EventStream& stream) {
     const auto home = home_dir_();
-    const auto v = roles::check(op, subos_root::kind_of(home, name), subos_root::role_of(home, name), name);
+    const auto kind = subos_root::read_kind(home, name);
+    if (!kind) { error_(stream, kind.error()); return false; }
+    const auto role = subos_root::read_role(home, name);
+    if (!role) { error_(stream, role.error()); return false; }
+    const auto v = roles::check(op, *kind, *role, name);
     if (v.allowed) return true;
     error_(stream, std::format("cannot {} '{}': {}", roles::to_string(op), name, v.reason), v.next);
     return false;
@@ -246,7 +312,11 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
                               EventStream& stream) {
     const auto home = home_dir_();
     // A fork of a root is a root (as a fork of a declared instance keeps its policy).
-    if (!rootfs && exists_(from) && subos_root::kind_of(home, from) == roles::Kind::Rootfs) rootfs = true;
+    if (exists_(from)) {
+        const auto kind = subos_root::read_kind(home, from);
+        if (!kind) { error_(stream, kind.error()); return 1; }
+        rootfs = rootfs || *kind == roles::Kind::Rootfs;
+    }
     // A root made from a template (subos:luban-*): what it declares.
     std::optional<Declared> declared;
     if (!from.empty() && !exists_(from)) {
@@ -268,7 +338,10 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         const auto file = HomeView{home}.instance_file(name);
         auto j = read_json_(file);
         j["init"] = declared->init;
-        std::ofstream(file) << j.dump(2) << "\n";
+        if (auto written = write_json_(file, j); !written) {
+            error_(stream, written.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
     }
     if (declared && !declared->packages.empty()) {
         // Its packages, installed into it: the same install as any other,
@@ -488,11 +561,28 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         return 1;
     }
 
+    const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+    if (auto fresh = require_new_output_(out); !fresh) {
+        error_(stream, fresh.error(), "choose a new output path");
+        return 1;
+    }
+
     const auto home = home_dir_();
     const auto instance = HomeView{home}.instance(name);
     // The image's xlings runs with no host under it: the static release build.
     fs::path entry = home / "bin" / "xlings";
     std::error_code ec;
+    auto check_io = [&]() {
+        if (!ec) return true;
+        error_(stream, "cannot construct exported root: " + ec.message(), {}, ErrorCode::Internal);
+        return false;
+    };
+    auto write_json = [&](const fs::path& path, const nlohmann::json& value) {
+        const auto written = write_json_(path, value);
+        if (written) return true;
+        error_(stream, written.error(), {}, ErrorCode::Internal);
+        return false;
+    };
     if (!fs::exists(entry, ec)) entry = platform::get_executable_path();
     entry = fs::weakly_canonical(entry, ec);
     if (auto info = elfread::read(entry); !info || !info->interpreter.empty()) {
@@ -509,17 +599,9 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         return 1;
     }
 
-    // Stage the image: the target directory itself for --rootfs, else a
-    // scratch directory beside the output.
-    const auto out = !rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk);
-    const fs::path stage = !rootfs_dir.empty()
-        ? fs::absolute(rootfs_dir)
-        : fs::absolute(out).parent_path() / std::format(".{}.stage", out.filename().string());
-    if (!rootfs_dir.empty() && fs::exists(stage, ec) && !fs::is_empty(stage, ec)) {
-        error_(stream, stage.string() + " is not empty", "export into a new directory");
-        return 1;
-    }
-    if (rootfs_dir.empty()) fs::remove_all(stage, ec);
+    auto scratch = OwnedStage::create(out.parent_path());
+    if (!scratch) { error_(stream, scratch.error(), {}, ErrorCode::Internal); return 1; }
+    const auto stage = scratch->path() / "rootfs";
     const auto image_home = stage / home.relative_path();
     const auto image_default = image_home / "subos" / "default";
     log::info("exporting '{}' ...", name);
@@ -531,7 +613,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
     }
-    for (auto& e : fs::directory_iterator(home / "data", ec)) {
+    const bool has_data = fs::exists(home / "data", ec);
+    if (!check_io()) return 1;
+    for (fs::directory_iterator it(has_data ? home / "data" : instance, ec), end;
+         has_data && !ec && it != end; it.increment(ec)) {
+        const auto& e = *it;
         const auto n = e.path().filename().string();
         if (n == "xpkgs" || n == "runtimedir" || n == "stale" || n.starts_with(".")) continue;
         if (auto c = copy_tree_(e.path(), image_home / "data" / n); !c) {
@@ -539,8 +625,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
     }
+    if (!check_io()) return 1;
     fs::create_directories(image_default, ec);
-    for (auto& e : fs::directory_iterator(instance, ec)) {
+    if (!check_io()) return 1;
+    for (fs::directory_iterator it(instance, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto& e = *it;
         const auto n = e.path().filename().string();
         if (n == rf::kTree || n == rf::kPointer || n == rf::kGenerations || n == "home" || n == "tmp"
             || n == "home.img" || n == ".mountpoint")
@@ -550,6 +639,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             return 1;
         }
     }
+    if (!check_io()) return 1;
     // The projection, re-planned for its new name: same payloads, its
     // sysroot now at subos/default.
     {
@@ -565,14 +655,21 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         }
     }
     fs::create_directories(image_home / "subos", ec);
+    if (!check_io()) return 1;
     fs::create_directory_symlink("default", image_home / "subos" / "current", ec);
+    if (!check_io()) return 1;
     fs::create_directories(image_home / "bin", ec);
+    if (!check_io()) return 1;
     fs::copy_file(entry, image_home / "bin" / "xlings", fs::copy_options::overwrite_existing, ec);
+    if (!check_io()) return 1;
     fs::permissions(image_home / "bin" / "xlings", fs::perms::owner_all | fs::perms::group_read
                     | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                     fs::perm_options::replace, ec);
+    if (!check_io()) return 1;
     fs::create_directories(image_home / "boot", ec);
+    if (!check_io()) return 1;
     fs::create_symlink("../bin/xlings", image_home / "boot" / "xlings-init", ec);
+    if (!check_io()) return 1;
     {
         // The home config: this instance's packages, nothing of the builder's.
         auto j = nlohmann::json::parse(read_text_(home / ".xlings.json"), nullptr, false);
@@ -588,15 +685,19 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         j["versions"] = versions;
         j["activeSubos"] = "default";
         for (auto k : {"knownProjects", "subos"}) j.erase(k);
-        std::ofstream(image_home / ".xlings.json") << j.dump(2) << "\n";
+        if (!write_json(image_home / ".xlings.json", j)) return 1;
         const bool multi = home == fs::path("/xlings");
         nlohmann::json marker{{"layout", 2}, {"mode", "root"}, {"root_layout", multi ? "multi" : "single"}};
-        std::ofstream(image_home / ".xlings-home") << marker.dump(2) << "\n";
+        if (!write_json(image_home / ".xlings-home", marker)) return 1;
         fs::create_directories(image_home / "config" / "subos" / "default", ec);
-        std::ofstream(image_home / "config" / "subos" / "default" / "instance.json")
-            << nlohmann::json{{"kind", "rootfs"}}.dump(2) << "\n";
+        if (!check_io()) return 1;
+        if (!write_json(image_home / "config" / "subos" / "default" / "instance.json",
+                        nlohmann::json{{"kind", "rootfs"}})) return 1;
         bt::Config boot;
-        (void)bt::save(image_home / "boot.json", boot);
+        if (auto saved = bt::save(image_home / "boot.json", boot); !saved) {
+            error_(stream, saved.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
     }
 
     // The root around it.
@@ -611,27 +712,51 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         // rest only when asked for.
         fs::copy(tree / "etc", stage / "etc", fs::copy_options::recursive
                  | fs::copy_options::overwrite_existing, ec);
-        if (with_data)
-            for (auto d : {"root", "home", "var", "srv", "opt"})
-                (void)copy_tree_(tree / d, stage / d);
+        if (!check_io()) return 1;
+        if (with_data) {
+            for (auto d : {"root", "home", "var", "srv", "opt"}) {
+                if (auto copied = copy_tree_(tree / d, stage / d); !copied) {
+                    error_(stream, copied.error(), {}, ErrorCode::Internal);
+                    return 1;
+                }
+            }
+        }
         fs::create_directories(stage / "etc" / "xlings", ec);
-        std::ofstream(stage / "etc" / "xlings" / "root.json")
-            << nlohmann::json{{"home", home.generic_string()}}.dump(2) << "\n";
-        if (!fs::exists(stage / "etc" / "resolv.conf", ec)) std::ofstream(stage / "etc" / "resolv.conf");
+        if (!check_io()) return 1;
+        if (!write_json(stage / "etc" / "xlings" / "root.json",
+                        nlohmann::json{{"home", home.generic_string()}})) return 1;
+        const bool has_resolver = fs::exists(stage / "etc" / "resolv.conf", ec);
+        if (!check_io()) return 1;
+        if (!has_resolver) {
+            std::ofstream resolver(stage / "etc" / "resolv.conf");
+            resolver.close();
+            if (!resolver) { error_(stream, "cannot create resolver configuration"); return 1; }
+        }
     }
 
     int rc = 0;
     if (!tarball.empty()) {
         rc = run_tool_(as_root_({host_tool_("tar"), "--numeric-owner", "-C", stage.string(), "-czf",
-                                 fs::absolute(tarball).string(), "."}),
+                                 (scratch->path() / "output").string(), "."}),
                        stream, "writing the tarball");
     } else if (!disk.empty()) {
         rc = run_tool_(as_root_({host_tool_("mkfs.ext4"), "-q", "-F", "-L", "luban", "-d", stage.string(),
-                                 fs::absolute(disk).string(), size}),
+                                 (scratch->path() / "output").string(), size}),
                        stream, "writing the disk image");
     }
-    if (rootfs_dir.empty()) fs::remove_all(stage, ec);
     if (rc != 0) return 1;
+    if (!rootfs_dir.empty()) {
+        if (auto published = platform::rename_no_replace(stage, out); !published) {
+            error_(stream, published.error(), {}, ErrorCode::Internal);
+            return 1;
+        }
+    } else {
+        // Publish a completed file without ever replacing an existing name.
+        if (auto published = publish_file_(scratch->path() / "output", out); !published) {
+            error_(stream, published.error());
+            return 1;
+        }
+    }
     observe::append(HomeView{home}.logs_dir(name) / "events.ndjson", observe::Event{
         .kind = observe::Kind::Lifecycle,
         .fields = {{"event", "export"}, {"instance", name}, {"to", fs::absolute(out).string()},
@@ -670,23 +795,45 @@ int run_pack_(int argc, char* argv[], EventStream& stream, const UsageError& usa
     const auto pkg = as.substr(colon == std::string::npos ? 0 : colon + 1,
                                at - (colon == std::string::npos ? 0 : colon + 1));
     const auto ver = as.substr(at + 1);
+    if (!safe_component_(pkg) || !safe_component_(ver) || as.find('@', at + 1) != std::string::npos
+        || (colon != std::string::npos && (colon >= at || !safe_component_(as.substr(0, colon))))) {
+        usageError("--as expects a package name and version without path separators");
+        return 1;
+    }
     const auto home = home_dir_();
+    const auto kind = subos_root::read_kind(home, name);
+    if (!kind) { error_(stream, kind.error()); return 1; }
+    const auto file = fs::absolute(out_dir) / std::format("{}-{}.tar.gz", pkg, ver);
+    if (auto fresh = require_new_output_(file); !fresh) {
+        error_(stream, fresh.error(), "choose a new package version or output directory");
+        return 1;
+    }
+    auto scratch = OwnedStage::create(fs::absolute(out_dir));
+    if (!scratch) { error_(stream, scratch.error(), {}, ErrorCode::Internal); return 1; }
+    const auto stage = scratch->path() / std::format("{}-{}", pkg, ver);
     std::error_code ec;
-    const auto stage = fs::absolute(out_dir) / std::format("{}-{}", pkg, ver);
-    fs::remove_all(stage, ec);
-    fs::create_directories(stage, ec);
+    fs::create_directory(stage, ec);
+    if (ec) { error_(stream, "cannot create package staging: " + ec.message()); return 1; }
     // What a subos-type xpkg carries: the workspace it declares and, for a
     // root, its kind. Payloads are not packed: they come from the index.
     nlohmann::json j;
     j["workspace"] = nlohmann::json::object();
     for (auto& [t, v] : ws->active) j["workspace"][t] = v;
-    if (subos_root::kind_of(home, name) == roles::Kind::Rootfs) j["subos_kind"] = "rootfs";
-    std::ofstream(stage / ".xlings.json") << j.dump(2) << "\n";
-    const auto file = fs::absolute(out_dir) / std::format("{}-{}.tar.gz", pkg, ver);
-    if (run_tool_({host_tool_("tar"), "-C", fs::absolute(out_dir).string(), "-czf", file.string(),
+    if (*kind == roles::Kind::Rootfs) j["subos_kind"] = "rootfs";
+    {
+        std::ofstream config(stage / ".xlings.json");
+        config << j.dump(2) << "\n";
+        config.close();
+        if (!config) { error_(stream, "cannot write package configuration"); return 1; }
+    }
+    const auto archive = scratch->path() / "output.tar.gz";
+    if (run_tool_({host_tool_("tar"), "-C", scratch->path().string(), "-czf", archive.string(),
                    stage.filename().string()}, stream, "packing") != 0)
         return 1;
-    fs::remove_all(stage, ec);
+    if (auto published = publish_file_(archive, file); !published) {
+        error_(stream, published.error());
+        return 1;
+    }
     log::info("packed '{}' as {}: {}", name, as, file.string());
     log::info("  a recipe: package = {{ name = \"{}\", type = \"subos\", xpm = {{ linux = {{ [\"{}\"] = "
               "{{ url = \"<where you publish it>\", sha256 = \"...\" }} }} }} }}", pkg, ver);

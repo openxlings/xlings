@@ -55,8 +55,7 @@ bool default_config(const PlanNode& node,
     // The routing table follows the workspace this hook just wrote. It
     // replaces a hand-rolled create + mirror-to-global pair: the mirror was
     // a project-scope write into the global bin that nothing recorded.
-    xself::sync_shim_tables();
-    return true;
+    return xself::sync_shim_tables().root_error.empty();
 }
 
 bool default_uninstall(const std::string& name, const std::string& version) {

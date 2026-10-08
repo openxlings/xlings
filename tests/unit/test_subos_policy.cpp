@@ -8,6 +8,7 @@ import std;
 import xlings.libs.json;
 import xlings.subos.home_view;
 import xlings.subos.policy;
+import xlings.subos.policy_store;
 import xlings.subos.caps;
 import xlings.subos.spec;
 import xlings.subos.provider;
@@ -316,4 +317,95 @@ XTEST(SubosPolicy, FetchLayerIsTheRootsOwnScope,
     EXPECT_FALSE(p::fetches_into_layer(p::preset(p::Preset::Dev)));
     // What this version cannot enforce is still refused.
     EXPECT_FALSE(p::from_json(nlohmann::json{{"isolation", {{"net", "vpn"}}}}));
+}
+
+XTEST(SubosPolicy, MinimumClientVersionsCompareNumericallyAndValidateTheirSyntax,
+      .area = "subos", .covers = {"POLICY-MIN-CLIENT"}) {
+    const auto compare = [](std::string_view a, std::string_view b, int expected) {
+        const auto result = pol::compare_client_versions(a, b);
+        ASSERT_TRUE(result) << result.error();
+        EXPECT_EQ(*result, expected) << a << " versus " << b;
+    };
+    compare("2026.10.8.2", "2026.9.30.12", 1);
+    compare("2026.10.8.10", "2026.10.8.2", 1);
+    compare("2026.10.8.2", "2026.10.8.2", 0);
+    compare("0.4.8", "2026.10.8.2", -1);
+    compare("1.2.3-rc.2", "1.2.3-rc.10", -1);
+    compare("1.2.3-rc.10", "1.2.3", -1);
+    compare("1.2.3+build.01", "1.2.3+another", 0);
+    compare("1.2.3-9", "1.2.3-alpha", -1);
+    compare("1.2.3-alpha", "1.2.3-alpha.1", -1);
+    for (std::string_view bad : {"", "latest", "1", "1.2", "v1.2.3", "1.02.3", "1.2.3.",
+                                 "1.2.3-", "1.2.3-01", "1.2.3+a..b", "1.2.3+", "1.2.3 ",
+                                 "2026.13.8.1", "2026.2.30.1", "2026.10.8.1-rc.1", "1.2.3.4.5",
+                                 "18446744073709551616.1.0"})
+        EXPECT_FALSE(pol::compare_client_versions(bad, "2026.10.8.2")) << bad;
+}
+
+XTEST(SubosPolicy, MinimumClientRoundTripsAndRefusesAnOlderClient,
+      .area = "subos", .covers = {"POLICY-MIN-CLIENT"}) {
+    auto p = pol::from_json({{"extends", "dev"}, {"min_client", "2026.10.8.2"}});
+    ASSERT_TRUE(p) << p.error();
+    EXPECT_EQ(pol::to_json(*p)["min_client"], "2026.10.8.2");
+    EXPECT_FALSE(pol::check_client(*p, "2026.10.8.1"));
+    EXPECT_TRUE(pol::check_client(*p, "2026.10.8.2"));
+    EXPECT_TRUE(pol::check_client(*p, "2026.10.9.1"));
+    EXPECT_FALSE(pol::check_client(*p, "unknown"));
+    EXPECT_FALSE(pol::from_json({{"min_client", 42}}));
+    EXPECT_FALSE(pol::from_json({{"min_client", "bad"}}));
+    auto old = pol::from_json({{"extends", "dev"}});
+    ASSERT_TRUE(old);
+    EXPECT_TRUE(old->min_client.empty());
+    EXPECT_TRUE(pol::check_client(*old, "0.4.8"));
+}
+
+XTEST(SubosPolicy, NewFilesDeclareASchemaFloorAndPreserveStricterMinimums,
+      .area = "subos", .covers = {"POLICY-MIN-CLIENT"}) {
+    namespace store = xlings::subos::policy_store;
+    auto temp = xlings::testkit::Home::isolated("policy-client");
+    const HomeView home{temp.dir()};
+    ASSERT_TRUE(store::write(home, "box", pol::preset(pol::Preset::Dev)));
+    auto p = store::read(home, "box");
+    ASSERT_TRUE(p && *p);
+    EXPECT_EQ((**p).min_client, pol::kPolicyMinClient);
+    EXPECT_FALSE(store::effective(home, "box", pol::Preset::Locked, {}, "2026.10.8.1"));
+    EXPECT_TRUE(store::effective(home, "box", pol::Preset::Dev, {}, pol::kPolicyMinClient));
+    auto future = **p;
+    future.min_client = "2099.1.1.1";
+    ASSERT_TRUE(store::write(home, "box", future));
+    ASSERT_TRUE(store::write(home, "box", pol::preset(pol::Preset::Dev)));
+    p = store::read(home, "box");
+    ASSERT_TRUE(p && *p);
+    EXPECT_EQ((**p).min_client, "2099.1.1.1");
+    EXPECT_FALSE(store::read(home, "box", pol::kPolicyMinClient));
+}
+
+XTEST(SubosPolicy, MissingPolicyIsLegacyButPresentInvalidStateRefuses,
+      .area = "subos", .covers = {"POL-UNKNOWN-REFUSED", "POLICY-MIN-CLIENT"}) {
+    namespace store = xlings::subos::policy_store;
+    auto temp = xlings::testkit::Home::isolated("policy-state");
+    const HomeView home{temp.dir()};
+    const auto path = home.policy_file("box");
+    EXPECT_FALSE(store::has_file(home, "box"));
+    auto missing = store::read(home, "box");
+    ASSERT_TRUE(missing);
+    EXPECT_FALSE(*missing);
+    std::filesystem::create_directories(path);
+    EXPECT_TRUE(store::has_file(home, "box"));
+    EXPECT_FALSE(store::read(home, "box"));
+    EXPECT_FALSE(store::write(home, "box", pol::preset(pol::Preset::Dev)));
+    std::filesystem::remove(path);
+    const std::string broken = "{invalid policy";
+    xlings::testkit::write_file(path, broken);
+    EXPECT_FALSE(store::write(home, "box", pol::preset(pol::Preset::Dev)));
+    EXPECT_EQ(xlings::testkit::read_file(path), broken);
+    if constexpr (xlings::testkit::is_posix) {
+        std::filesystem::remove(path);
+        std::filesystem::create_symlink("missing-policy-target", path);
+        EXPECT_TRUE(store::has_file(home, "box"));
+        EXPECT_FALSE(store::read(home, "box"));
+        EXPECT_FALSE(store::effective(home, "box", std::nullopt, {}, pol::kPolicyMinClient));
+        EXPECT_FALSE(store::write(home, "box", pol::preset(pol::Preset::Dev)));
+        EXPECT_EQ(std::filesystem::read_symlink(path), "missing-policy-target");
+    }
 }

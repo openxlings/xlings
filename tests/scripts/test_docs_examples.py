@@ -43,7 +43,7 @@ for match in re.finditer(r"```(?:bash|console)\n(.*?)```", text, re.DOTALL):
         if not line.startswith("xlings "):
             continue
         try:
-            tokens = shlex.split(line)
+            tokens = shlex.split(line, comments=True)
         except ValueError as error:
             raise SystemExit(f"unparseable documented command: {line}: {error}")
         if len(tokens) < 2:

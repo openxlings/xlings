@@ -293,9 +293,14 @@ std::optional<ExecNotice> next_exec(int listener) {
     auto path = read_remote_string(static_cast<pid_t>(req.pid), addr);
     // The read is only trusted while the request is still live.
     if (::ioctl(listener, kNotifIdValid, &req.id) != 0) path.clear();
-    SeccompNotifResp resp{ .id = req.id, .val = 0, .error = 0, .flags = kUserNotifContinue };
-    (void)::ioctl(listener, kNotifSend, &resp);
-    return ExecNotice{ static_cast<int>(req.pid), std::move(path) };
+    return ExecNotice{ static_cast<int>(req.pid), std::move(path), req.id };
+}
+
+bool complete_exec(int listener, std::uint64_t id, bool allow) {
+    if (::ioctl(listener, kNotifIdValid, &id) != 0) return false;
+    SeccompNotifResp resp{ .id = id, .val = 0, .error = allow ? 0 : -EACCES,
+                          .flags = allow ? kUserNotifContinue : 0u };
+    return ::ioctl(listener, kNotifSend, &resp) == 0;
 }
 
 }  // namespace seccomp
@@ -547,6 +552,7 @@ std::vector<std::uint8_t> block_terminal_injection() { return {}; }
 std::size_t instruction_count(std::span<const std::uint8_t> program) { return program.size() / 8; }
 int exec_listener() { return -1; }
 std::optional<ExecNotice> next_exec(int) { return std::nullopt; }
+bool complete_exec(int, std::uint64_t, bool) { return false; }
 }  // namespace seccomp
 
 std::expected<void, std::string> copy_into_beneath(const fs::path& src, const fs::path& root, const fs::path& rel) {

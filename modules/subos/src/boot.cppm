@@ -27,6 +27,7 @@ struct Config {
     std::string booted;
     std::string via;                          // "once" | "default" | "fallback"
     bool good { false };
+    nlohmann::json document { nlohmann::json::object() }; // unknown schema fields survive updates
 };
 
 Config from_json(const nlohmann::json& j);

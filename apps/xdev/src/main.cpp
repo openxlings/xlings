@@ -14,10 +14,12 @@ import std;
 import xlings.libs.json;
 import xlings.testkit;
 import xlings.xdev.toml;
+import xlings.xdev.selection;
 
 namespace fs = std::filesystem;
 namespace tk = xlings::testkit;
 namespace toml = xlings::xdev::toml;
+namespace sel = xlings::xdev::selection;
 using nlohmann::json;
 
 namespace {
@@ -110,6 +112,13 @@ struct TestArgs {
     fs::path out;
     std::string tarball;
     std::vector<std::string> mcpp_args;
+    sel::Options selection;
+    bool selecting { false };
+    bool no_build { false };
+    std::string changed;
+    fs::path discovery;
+    fs::path timings;
+    fs::path write_discovery;
 };
 
 // A script states what it covers and what it needs in one header line, the
@@ -155,7 +164,204 @@ std::optional<tk::Meta> script_meta(const std::string& command, const fs::path& 
     return std::nullopt;
 }
 
-int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
+struct Catalog {
+    std::vector<sel::Test> tests;
+    std::map<std::string, fs::path> binaries;
+    std::set<std::string> impacted;
+};
+
+struct Scratch {
+    fs::path path;
+    Scratch() {
+        static std::atomic<unsigned long long> serial { 0 };
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            auto candidate = fs::temp_directory_path() / std::format("xdev-discovery-{}-{}",
+                std::chrono::steady_clock::now().time_since_epoch().count(), serial++);
+            if (fs::create_directory(candidate)) { path = std::move(candidate); return; }
+        }
+        throw std::runtime_error("cannot reserve discovery scratch directory");
+    }
+    ~Scratch() { std::error_code ec; fs::remove_all(path, ec); }
+};
+
+std::optional<fs::path> find_test_binary(const fs::path& root, const sel::Test& test) {
+    std::error_code ec;
+    if (!fs::is_directory(root / "target", ec)) return std::nullopt;
+    auto name = test.id.substr(test.member.empty() ? 0 : test.member.size() + 1);
+    if constexpr (tk::is_windows) name += ".exe";
+    const auto suffix = "/bin/" + name;
+    const auto memberSuffix = "/bin/" + test.member + "/" + name;
+    std::optional<fs::path> newest;
+    fs::file_time_type stamp { fs::file_time_type::min() };
+    for (fs::recursive_directory_iterator it(root / "target", ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) { if (ec) break; continue; }
+        const auto path = it->path().generic_string();
+        if (!path.ends_with(suffix) && (test.member.empty() || !path.ends_with(memberSuffix))) continue;
+        const auto time = it->last_write_time(ec);
+        if (!ec && time > stamp) { newest = it->path(); stamp = time; }
+    }
+    return newest;
+}
+
+std::vector<sel::Case> listed_cases(std::string_view output, const std::vector<json>& metadata) {
+    std::map<std::string, sel::Case> known;
+    for (const auto& row : metadata) {
+        sel::Case test{.name = row.value("test", ""), .area = row.value("area", ""),
+            .cost = row.value("cost", "fast"), .requires_ = row.value("requires", std::vector<std::string>{})};
+        known[test.name] = std::move(test);
+    }
+    std::istringstream in{std::string(output)};
+    std::vector<sel::Case> cases;
+    std::string suite;
+    for (std::string line; std::getline(in, line);) {
+        if (const auto comment = line.find('#'); comment != line.npos) line.resize(comment);
+        while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) line.pop_back();
+        if (line.empty()) continue;
+        if (line.starts_with("  ") && !suite.empty()) {
+            const auto begin = line.find_first_not_of(' ');
+            const auto name = suite + line.substr(begin);
+            if (const auto found = known.find(name); found != known.end()) cases.push_back(found->second);
+            else cases.push_back({.name = name});
+        } else if (line.ends_with('.')) suite = line;
+    }
+    return cases;
+}
+
+std::expected<Catalog, std::string> catalog(const TestArgs& args, const fs::path& root) {
+    Catalog result;
+    if (args.mcpp) {
+        std::string listed;
+        if (!args.discovery.empty()) {
+            std::ifstream in(args.discovery);
+            if (!in) return std::unexpected("cannot read discovery " + args.discovery.string());
+            listed = {std::istreambuf_iterator<char>(in), {}};
+        } else {
+            const auto discovered = tk::run({.argv = {"mcpp", "test", "--list", "--message-format", "json"},
+                .env = tk::inherited_env(), .cwd = root});
+            if (discovered.exit_code != 0)
+                return std::unexpected("mcpp test discovery failed: " + discovered.transcript());
+            listed = discovered.out;
+        }
+        const auto discovered = sel::discovery(listed, root);
+        if (!discovered) return std::unexpected(discovered.error());
+        result.tests = *discovered;
+        Scratch scratch;
+        for (auto& test : result.tests) {
+            const auto binary = find_test_binary(root, test);
+            if (!binary) continue;
+            result.binaries[test.id] = *binary;
+            if (test.metadata_known) continue;
+            std::error_code ec;
+            // A registry from an older test source is not authoritative.
+            if (fs::last_write_time(*binary, ec) < fs::last_write_time(root / test.source, ec) || ec) continue;
+            const auto registry = scratch.path / "meta.ndjson";
+            fs::remove(registry, ec);
+            auto env = tk::inherited_env();
+            env["XTEST_META_OUT"] = registry.string();
+            env.erase("XTEST_RESULTS_OUT");
+            env.erase("XDEV_LANE_CAPS");
+            const auto listing = tk::run({.argv = {binary->string(), "--gtest_list_tests", "--gtest_color=no"},
+                .env = std::move(env), .cwd = root, .timeout = std::chrono::seconds(15)});
+            if (listing.exit_code != 0) continue;
+            test.cases = listed_cases(listing.out, read_ndjson(registry));
+            test.metadata_known = !test.cases.empty();
+        }
+    }
+    if (!args.suites.empty()) {
+        const auto document = toml::parse_file(root / "tests/suites.toml");
+        if (!document) return std::unexpected(document.error());
+        for (const auto& suite : args.suites) {
+            const auto table = document->tables.find(suite);
+            if (table == document->tables.end()) return std::unexpected("unknown suite " + suite);
+            const auto commands = table->second.find("commands");
+            if (commands == table->second.end() || !commands->second.list())
+                return std::unexpected("suite has no commands: " + suite);
+            std::size_t index { 0 };
+            for (const auto& command : *commands->second.list()) {
+                sel::Test test{.id = std::format("script:{}:{}", suite, index), .source = "tests/suites.toml",
+                    .script = true, .suite = suite, .command_index = index++, .duration_ms = 5000};
+                if (auto platforms = table->second.find("platforms"); platforms != table->second.end() && platforms->second.list())
+                    test.platforms = *platforms->second.list();
+                std::istringstream words(command);
+                for (std::string word; words >> word;)
+                    if (word.ends_with(".sh") || word.ends_with(".py")) { test.source = word; break; }
+                if (const auto metadata = script_meta(command, root)) {
+                    test.metadata_known = true;
+                    test.cases.push_back({.name = test.id, .area = metadata->area,
+                        .cost = std::string(tk::to_string(metadata->cost)), .requires_ = metadata->requires_});
+                }
+                result.tests.push_back(std::move(test));
+            }
+        }
+    }
+    const auto timingFile = args.timings.empty() ? root / "tests/ci-timings.json" : args.timings;
+    if (fs::exists(timingFile)) {
+        const auto timings = json::parse(tk::read_file(timingFile), nullptr, false);
+        if (const auto applied = sel::apply_timings(result.tests, timings); !applied)
+            return std::unexpected(applied.error());
+    } else if (!args.timings.empty()) return std::unexpected("timings file does not exist: " + timingFile.string());
+    if (!args.changed.empty()) {
+        if (args.changed.front() == '-') return std::unexpected("--changed needs a git revision, not an option");
+        std::vector<std::string> argv{"git", "diff", "--name-only", "-z", "--diff-filter=ACDMRTUXB"};
+        argv.push_back(args.changed.find("..") == args.changed.npos ? args.changed + "...HEAD" : args.changed);
+        argv.push_back("--");
+        const auto diff = tk::run({.argv = std::move(argv), .env = tk::inherited_env(), .cwd = root});
+        if (diff.exit_code != 0) return std::unexpected("cannot determine changed files: " + diff.transcript());
+        std::vector<fs::path> changed;
+        std::istringstream paths(diff.out);
+        for (std::string path; std::getline(paths, path, '\0');) if (!path.empty()) changed.emplace_back(path);
+        const auto graph = sel::sources(root);
+        if (!graph) return std::unexpected(graph.error());
+        result.impacted = sel::affected(result.tests, *graph, changed);
+    }
+    return result;
+}
+
+int cmd_plan(const TestArgs& args) {
+    const auto root = repo_root();
+    const auto inventory = catalog(args, root);
+    if (!inventory) { std::println(std::cerr, "xdev: {}", inventory.error()); return 2; }
+    auto options = args.selection;
+    options.changed = !args.changed.empty();
+    options.pattern = args.pattern;
+    try {
+        auto plan = sel::matrix(inventory->tests, options, inventory->impacted);
+        std::vector<std::string> missing;
+        for (const auto& test : inventory->tests)
+            if (!test.metadata_known && !test.script) missing.push_back(test.id);
+        if (!missing.empty())
+            std::println(std::cerr, "xdev: compiled metadata unavailable for {}; selection is conservative (use --require-metadata in CI)", missing);
+        if (!args.write_discovery.empty()) {
+            if (fs::exists(fs::symlink_status(args.write_discovery))) {
+                std::println(std::cerr, "xdev: discovery output already exists: {}", args.write_discovery.string());
+                return 2;
+            }
+            std::ofstream output(args.write_discovery);
+            for (const auto& test : inventory->tests) {
+                if (test.script) continue;
+                json row{{"member", test.member}, {"test", test.id.substr(test.member.empty() ? 0 : test.member.size() + 1)},
+                    {"main", test.source.generic_string()}};
+                if (test.metadata_known) {
+                    row["cases"] = json::array();
+                    for (const auto& testCase : test.cases)
+                        row["cases"].push_back({{"test", testCase.name}, {"area", testCase.area},
+                            {"cost", testCase.cost}, {"requires", testCase.requires_}});
+                }
+                output << row.dump() << '\n';
+            }
+            output.close();
+            if (!output) { std::println(std::cerr, "xdev: cannot write discovery output"); return 2; }
+        }
+        std::println("{}", plan.dump());
+        return 0;
+    } catch (const std::exception& error) {
+        std::println(std::cerr, "xdev: {}", error.what());
+        return 2;
+    }
+}
+
+int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root,
+               const std::set<std::string>* selected = nullptr) {
     if (a.suites.empty()) return 0;
     auto doc = toml::parse_file(root / "tests" / "suites.toml");
     if (!doc) {
@@ -190,6 +396,8 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
         }
         int index = 0;
         for (const auto& templ : *c->second.list()) {
+            const auto commandIndex = index++;
+            if (selected && !selected->contains(std::format("script:{}:{}", suite, commandIndex))) continue;
             auto command = templ;
             auto replace_all = [&](std::string_view from, const std::string& to) {
                 for (std::size_t pos; (pos = command.find(from)) != std::string::npos;)
@@ -197,7 +405,7 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
             };
             replace_all("{xlings}", bin);
             replace_all("{tarball}", a.tarball);
-            auto log = out / "logs" / std::format("{}-{:02}.log", suite, index++);
+            auto log = out / "logs" / std::format("{}-{:02}.log", suite, commandIndex);
             const auto name = suite + ": " + templ;
             if (auto m = script_meta(templ, root)) {
                 append_ndjson(out / "meta.ndjson",
@@ -232,14 +440,43 @@ int run_suites(const TestArgs& a, const fs::path& out, const fs::path& root) {
 }
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, const fs::path& write_to);
+                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to);
 
 int cmd_test(const TestArgs& a) {
     const auto root = repo_root();
+    if (!a.selection.platform.empty() && a.selection.platform != platform_name()) {
+        std::println(std::cerr, "xdev: test runs on {}; --platform belongs to ci plan", platform_name());
+        return 2;
+    }
+    std::optional<Catalog> inventory;
+    std::vector<sel::Selected> selection;
+    std::set<std::string> selectedIds;
+    if (a.selecting || a.no_build) {
+        auto discovered = catalog(a, root);
+        if (!discovered) { std::println(std::cerr, "xdev: {}", discovered.error()); return 2; }
+        inventory = std::move(*discovered);
+        auto options = a.selection;
+        options.platform = platform_name();
+        options.pattern = a.pattern;
+        options.changed = !a.changed.empty();
+        auto chosen = sel::select(inventory->tests, options, inventory->impacted);
+        if (!chosen) { std::println(std::cerr, "xdev: {}", chosen.error()); return 2; }
+        selection = std::move(*chosen);
+        for (const auto& test : selection) selectedIds.insert(test.test.id);
+    }
     auto out = a.out.empty() ? root / "target" / "xdev" / "run" : a.out;
     std::error_code ec;
-    fs::remove_all(out, ec);
-    fs::create_directories(out);
+    if (fs::exists(out, ec) && (!fs::is_directory(out, ec) || !fs::is_empty(out, ec))) {
+        std::println(std::cerr, "xdev: output already exists and is not empty: {} (choose a new --out directory)",
+                     out.string());
+        return 2;
+    }
+    if (ec) {
+        std::println(std::cerr, "xdev: cannot inspect output {}: {}", out.string(), ec.message());
+        return 2;
+    }
+    fs::create_directories(out, ec);
+    if (ec) { std::println(std::cerr, "xdev: {}", ec.message()); return 2; }
     out = fs::absolute(out);
 
     {
@@ -247,7 +484,86 @@ int cmd_test(const TestArgs& a) {
     }
 
     int mcpp_rc = 0;
-    if (a.mcpp) {
+    if (a.mcpp && inventory) {
+        for (const auto& test : selection) {
+            if (test.test.script) continue;
+            std::string buildOutput;
+            if (!a.no_build) {
+                std::vector<std::string> argv{"mcpp", "test", "--no-run", "--message-format", "json"};
+                const auto separator = std::ranges::find(a.mcpp_args, "--");
+                argv.insert(argv.end(), a.mcpp_args.begin(), separator);
+                if (!test.test.member.empty()) { argv.push_back("-p"); argv.push_back(test.test.member); }
+                argv.push_back(test.test.id.substr(test.test.member.empty() ? 0 : test.test.member.size() + 1));
+                const auto build = tk::run({.argv = std::move(argv), .env = tk::inherited_env(), .cwd = root,
+                    .timeout = std::chrono::minutes(30)});
+                buildOutput = build.transcript();
+                if (build.exit_code != 0) {
+                    mcpp_rc = 1;
+                    append_ndjson(out / "mcpp.ndjson", json{{"test", test.test.id}, {"status", "compile_failed"},
+                        {"duration_ms", build.elapsed.count()}, {"compile_output", buildOutput}});
+                    continue;
+                }
+            }
+            const auto binary = find_test_binary(root, test.test);
+            if (!binary) {
+                std::println(std::cerr, "xdev: no built test binary for {} (build tests before --no-build)", test.test.id);
+                return 2;
+            }
+            auto current = test.test;
+            Scratch scratch;
+            auto listingEnv = tk::inherited_env();
+            listingEnv["XTEST_META_OUT"] = (scratch.path / "meta.ndjson").string();
+            listingEnv.erase("XTEST_RESULTS_OUT");
+            listingEnv.erase("XDEV_LANE_CAPS");
+            const auto listing = tk::run({.argv = {binary->string(), "--gtest_list_tests", "--gtest_color=no"},
+                .env = std::move(listingEnv), .cwd = root, .timeout = std::chrono::seconds(15)});
+            if (listing.exit_code == 0) {
+                current.cases = listed_cases(listing.out, read_ndjson(scratch.path / "meta.ndjson"));
+                current.metadata_known = !current.cases.empty();
+            }
+            auto options = a.selection;
+            options.platform = platform_name();
+            options.pattern.clear();
+            options.shards = 1;
+            options.shard = 0;
+            options.changed = !a.changed.empty();
+            // PR's no-network contract needs an actual registry, even on the
+            // first run after building a newly discovered test source.
+            options.require_metadata = options.require_metadata || options.lane == "pr";
+            const auto fresh = sel::select(std::span<const sel::Test>(&current, 1), options, inventory->impacted);
+            if (!fresh) { std::println(std::cerr, "xdev: {}", fresh.error()); return 2; }
+            if (fresh->empty()) {
+                append_ndjson(out / "mcpp.ndjson", json{{"test", test.test.id}, {"status", "skip"},
+                    {"duration_ms", 0}, {"message", "excluded by the compiled case registry"}});
+                continue;
+            }
+            std::vector<std::string> argv{binary->string()};
+            if (a.no_build) {
+                // mcpp arguments before its `--` are build flags; the binary
+                // receives only the arguments after that separator.
+                const auto separator = std::ranges::find(a.mcpp_args, "--");
+                if (separator != a.mcpp_args.end()) argv.insert(argv.end(), separator + 1, a.mcpp_args.end());
+                else if (!a.mcpp_args.empty()) {
+                    std::println(std::cerr, "xdev: --no-build needs test arguments after -- --"); return 2;
+                }
+            } else {
+                const auto separator = std::ranges::find(a.mcpp_args, "--");
+                if (separator != a.mcpp_args.end()) argv.insert(argv.end(), separator + 1, a.mcpp_args.end());
+            }
+            if (!fresh->front().filter.empty()) argv.push_back("--gtest_filter=" + fresh->front().filter);
+            auto env = tk::inherited_env();
+            env["XTEST_META_OUT"] = (out / "meta.ndjson").string();
+            env["XTEST_RESULTS_OUT"] = (out / "cases.ndjson").string();
+            env["XTEST_ARTIFACTS"] = (out / "artifacts").string();
+            const auto run = tk::run({.argv = std::move(argv), .env = std::move(env), .cwd = root,
+                .timeout = std::chrono::minutes(30)});
+            if (run.exit_code != 0) mcpp_rc = 1;
+            append_ndjson(out / "mcpp.ndjson", json{{"test", test.test.id},
+                {"status", run.exit_code == 0 ? "pass" : "fail"}, {"duration_ms", run.elapsed.count()},
+                {"run_output", run.transcript()}, {"compile_output", buildOutput}});
+            if (run.exit_code != 0) std::println(std::cerr, "{}", tail_lines(run.transcript(), 25));
+        }
+    } else if (a.mcpp) {
         tk::set_env("XTEST_META_OUT", (out / "meta.ndjson").string());
         tk::set_env("XTEST_RESULTS_OUT", (out / "cases.ndjson").string());
         tk::set_env("XTEST_ARTIFACTS", (out / "artifacts").string());
@@ -260,12 +576,12 @@ int cmd_test(const TestArgs& a) {
                     + command + " > \"" + (out / "mcpp.ndjson").string() + "\"";
         mcpp_rc = std::system(full.c_str());
     }
-    int script_failures = run_suites(a, out, root);
+    int script_failures = run_suites(a, out, root, inventory ? &selectedIds : nullptr);
     if (script_failures == 2 && a.suites.size() > 0 && !fs::exists(out / "scripts.ndjson")) return 2;
 
     int rc = cmd_report_dirs({out}, env_or("GITHUB_STEP_SUMMARY").size() > 0
                                         && env_or("XDEV_SUMMARY") == "1",
-                             {}, false, out);
+                             {}, false, false, out);
     if (mcpp_rc != 0 && rc == 0) {
         // mcpp itself failed before reporting a test (resolution, build).
         std::println(std::cerr, "xdev: `mcpp test` failed without a failing test record");
@@ -310,10 +626,11 @@ struct Requirement {
 };
 
 int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
-                    const fs::path& requirements, bool fail_uncovered, const fs::path& write_to) {
+                    const fs::path& requirements, bool fail_uncovered, bool fail_unverified, const fs::path& write_to) {
     std::vector<Record> records;
     std::vector<json> lanes;
-    std::map<std::string, json> meta;   // test -> meta
+    using EvidenceKey = std::pair<std::string, std::string>; // lane, test
+    std::map<EvidenceKey, json> meta;
 
     for (const auto& dir : dirs) {
         std::string lane_name = dir.filename().string();
@@ -345,7 +662,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
                                 .message = j.value("message", ""), .lane = lane_name });
         }
         for (auto& j : read_ndjson(dir / "meta.ndjson"))
-            meta[j.value("test", "")] = j;
+            meta[{lane_name, j.value("test", "")}] = j;
     }
 
     auto count = [&](std::string_view kind, std::string_view status) {
@@ -413,6 +730,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
     // Requirement coverage (T5): every ID has a test; isolation IDs need an
     // isolation test; every ID a test names exists.
     int coverage_errors = 0;
+    json coverage = json::object();
     if (!requirements.empty()) {
         auto doc = toml::parse_file(requirements);
         if (!doc) {
@@ -441,30 +759,46 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             reqs.push_back(std::move(r));
         }
         std::map<std::string, std::vector<std::string>> covered_by;   // id -> tests
+        std::map<std::string, std::vector<std::string>> verified_by;
+        std::set<EvidenceKey> passed_tests;
+        for (const auto& record : records)
+            if (record.status == "pass" && record.kind != "binary") passed_tests.emplace(record.lane, record.name);
         std::vector<std::string> unknown;
-        for (auto& [test, m] : meta) {
+        for (auto& [key, m] : meta) {
+            const auto test = key.second + " (" + key.first + ")";
             for (auto& id : m.value("covers", json::array())) {
                 auto sid = id.get<std::string>();
                 auto it = std::ranges::find(reqs, sid, &Requirement::id);
                 if (it == reqs.end()) { unknown.push_back(test + " → " + sid); continue; }
                 if (it->kind == "isolation" && m.value("proves", "flow") != "isolation") continue;
                 covered_by[sid].push_back(test);
+                if (passed_tests.contains(key)) verified_by[sid].push_back(test);
             }
         }
-        std::vector<const Requirement*> uncovered, planned, deferred;
+        std::vector<const Requirement*> uncovered, unverified, planned, deferred;
         std::size_t required = 0;
         for (auto& r : reqs) {
             if (r.status == "planned") { planned.push_back(&r); continue; }
             if (r.status == "deferred") { deferred.push_back(&r); continue; }
             ++required;
             if (!covered_by.contains(r.id)) uncovered.push_back(&r);
+            if (!verified_by.contains(r.id)) unverified.push_back(&r);
+            coverage[r.id] = {{"kind", r.kind}, {"declared_by", covered_by[r.id]},
+                              {"passed_by", verified_by[r.id]}};
         }
-        md += std::format("\n### Requirements\n\n{} required: {} covered, {} uncovered · "
+        md += std::format("\n### Requirements\n\n{} required: {} declared, {} undeclared · "
                           "{} planned · {} deferred · {} unknown IDs in tests\n",
                           required, required - uncovered.size(), uncovered.size(),
                           planned.size(), deferred.size(), unknown.size());
+        md += std::format("\nExecution evidence: {} verified, {} unverified. Skipped tests do not verify a requirement.\n",
+                          required - unverified.size(), unverified.size());
+        if (!unverified.empty()) {
+            md += "\nUnverified (required):\n\n";
+            for (auto* r : unverified)
+                md += std::format("- `{}` ({}) {}\n", r->id, r->kind, r->text);
+        }
         if (!uncovered.empty()) {
-            md += "\nUncovered (required):\n\n";
+            md += "\nUndeclared (required):\n\n";
             for (auto* r : uncovered)
                 md += std::format("- `{}` ({}) {}\n", r->id, r->kind, r->text);
         }
@@ -485,6 +819,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
         }
         if (fail_uncovered) coverage_errors = static_cast<int>(uncovered.size() + unknown.size());
         else coverage_errors = static_cast<int>(unknown.size());
+        if (fail_unverified) coverage_errors += static_cast<int>(unverified.size());
     }
 
     std::println("{}", md);
@@ -492,6 +827,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
         std::ofstream(write_to / "report.md") << md;
         json j;
         j["lanes"] = lanes;
+        j["requirements"] = coverage;
         j["records"] = json::array();
         for (auto& r : records)
             j["records"].push_back({{"kind", r.kind}, {"name", r.name}, {"status", r.status},
@@ -522,12 +858,43 @@ int cmd_doctor() {
     return 0;
 }
 
+bool parse_selection_option(const std::vector<std::string>& args, std::size_t& index, TestArgs& out) {
+    const auto& option = args[index];
+    auto value = [&]() -> std::string {
+        if (index + 1 >= args.size()) throw std::invalid_argument("missing value for " + option);
+        return args[++index];
+    };
+    if (option == "--require-metadata") out.selection.require_metadata = true;
+    else if (option == "--lane") out.selection.lane = value();
+    else if (option == "--platform") out.selection.platform = value();
+    else if (option == "--changed") out.changed = value();
+    else if (option == "--area") out.selection.area = value();
+    else if (option == "--discovery") out.discovery = value();
+    else if (option == "--timings") out.timings = value();
+    else if (option == "--write-discovery") out.write_discovery = value();
+    else if (option == "--shard") {
+        const auto shard = sel::parse_shard(value());
+        if (!shard) throw std::invalid_argument(shard.error());
+        out.selection.shard = shard->first;
+        out.selection.shards = shard->second;
+    } else if (option == "--shards") {
+        const auto count = value();
+        const auto shard = sel::parse_shard("1/" + count);
+        if (!shard) throw std::invalid_argument(shard.error());
+        out.selection.shards = shard->second;
+    } else return false;
+    out.selecting = true;
+    return true;
+}
+
 int usage() {
     std::println(std::cerr,
         "usage: xdev <command>\n"
-        "  test   [pattern] [--suite NAME]... [--no-mcpp] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
-        "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered]\n"
-        "  ci plan\n"
+        "  test   [unit|e2e|perf|pattern] [--lane pr|main|nightly] [--shard i/n] [--changed BASE]\n"
+        "         [--suite NAME]... [--no-mcpp|--no-build] [--out DIR] [--tarball FILE] [-- mcpp args]\n"
+        "  report [--in DIR]... [--summary] [--requirements FILE] [--fail-uncovered] [--fail-unverified]\n"
+        "  ci plan [--lane pr|main|nightly] [--shards N] [--platform OS] [--changed BASE..HEAD]\n"
+        "          [--suite NAME]... [--discovery FILE] [--timings FILE] [--write-discovery FILE] [--require-metadata]\n"
         "  doctor");
     return 2;
 }
@@ -539,23 +906,47 @@ int main(int argc, char** argv) {
     if (args.empty()) return usage();
     const auto cmd = args[0];
 
+    if (cmd == "ci" && args.size() >= 2 && args[1] == "plan") {
+        TestArgs plan;
+        for (std::size_t i = 2; i < args.size(); ++i) {
+            try {
+                if (parse_selection_option(args, i, plan)) continue;
+            } catch (const std::exception& error) { std::println(std::cerr, "xdev: {}", error.what()); return 2; }
+            if (args[i] == "--suite" && i + 1 < args.size()) plan.suites.push_back(args[++i]);
+            else if (args[i] == "--no-mcpp") plan.mcpp = false;
+            else if (!args[i].empty() && args[i][0] != '-' && plan.pattern.empty()) plan.pattern = args[i];
+            else { std::println(std::cerr, "xdev ci plan: unknown option {}", args[i]); return 2; }
+        }
+        if (plan.pattern == "unit" || plan.pattern == "e2e" || plan.pattern == "perf")
+            plan.selection.category = std::exchange(plan.pattern, {});
+        return cmd_plan(plan);
+    }
     if (cmd == "test") {
+        tk::set_env("XDEV_BIN", fs::absolute(argv[0]).string());
         TestArgs a;
         for (std::size_t i = 1; i < args.size(); ++i) {
             const auto& x = args[i];
+            try {
+                if (parse_selection_option(args, i, a)) continue;
+            } catch (const std::exception& error) { std::println(std::cerr, "xdev: {}", error.what()); return 2; }
             if (x == "--suite" && i + 1 < args.size()) a.suites.push_back(args[++i]);
             else if (x == "--no-mcpp") a.mcpp = false;
+            else if (x == "--no-build") { a.no_build = true; a.selecting = true; }
             else if (x == "--out" && i + 1 < args.size()) a.out = args[++i];
             else if (x == "--tarball" && i + 1 < args.size()) a.tarball = args[++i];
             else if (x == "--") { a.mcpp_args.assign(args.begin() + static_cast<long>(i) + 1, args.end()); break; }
             else if (!x.empty() && x[0] != '-' && a.pattern.empty()) a.pattern = x;
             else { std::println(std::cerr, "xdev test: unknown option {}", x); return 2; }
         }
+        if (a.pattern == "unit" || a.pattern == "e2e" || a.pattern == "perf") {
+            a.selection.category = std::exchange(a.pattern, {});
+            a.selecting = true;
+        }
         return cmd_test(a);
     }
     if (cmd == "report") {
         std::vector<fs::path> dirs;
-        bool summary = false, fail_uncovered = false;
+        bool summary = false, fail_uncovered = false, fail_unverified = false;
         fs::path requirements, write_to;
         for (std::size_t i = 1; i < args.size(); ++i) {
             const auto& x = args[i];
@@ -563,11 +954,12 @@ int main(int argc, char** argv) {
             else if (x == "--summary") summary = true;
             else if (x == "--requirements" && i + 1 < args.size()) requirements = args[++i];
             else if (x == "--fail-uncovered") fail_uncovered = true;
+            else if (x == "--fail-unverified") fail_unverified = true;
             else if (x == "--write" && i + 1 < args.size()) write_to = args[++i];
             else { std::println(std::cerr, "xdev report: unknown option {}", x); return 2; }
         }
         if (dirs.empty()) dirs.push_back(repo_root() / "target" / "xdev" / "run");
-        return cmd_report_dirs(dirs, summary, requirements, fail_uncovered, write_to);
+        return cmd_report_dirs(dirs, summary, requirements, fail_uncovered, fail_unverified, write_to);
     }
     if (cmd == "doctor") return cmd_doctor();
     return usage();

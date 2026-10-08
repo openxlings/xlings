@@ -1,4 +1,4 @@
-> 更新日期：2026-10-06
+> 更新日期：2026-10-08
 
 # SubOS 使用指南：环境、沙箱与 Agent
 
@@ -199,7 +199,9 @@ xlings subos cp dev:~/results ./results         # 拷出（~ 是实例的 home�
 
 ## 场景九：审计——它做了什么
 
-审计由宿主侧的 supervisor 写在沙箱看不到的地方（`<home>/logs/subos/<name>/events.ndjson`）：
+审计由宿主侧的 supervisor 写在沙箱看不到的地方（`<home>/logs/subos/<name>/events.ndjson`，
+每个会话另存 `sessions/<id>.ndjson`）。默认记录程序名和参数数量，不记录参数值。
+locked 在审计写入失败时拒绝启动或结束会话（退出码 125）；dev 会警告后继续：
 
 ```bash
 xlings subos log dev                       # 全部事件
@@ -263,6 +265,10 @@ qemu-system-x86_64 -m 1G -nographic \
   或者在 `/xlings` 里构建（multi，推荐多用户；`/xlings` 由 root 拥有）。
 - 定制自己的发行版：`subos new mydistro --rootfs --from subos:luban-core`，装包，
   `subos pack mydistro --as myns:mydistro@1.0` 打成包，发布到你自己的索引。
+
+export 和 pack 的输出目标必须不存在；重用目标会返回错误并保留原文件。临时目录由命令独占创建，
+失败时只清理自己的临时数据。损坏或不可读的实例元数据、启动配置会返回错误，请先修复文件后重试；
+升级不会把它们当作空配置覆盖。
 
 多用户机器上，管理员可以把包装进**系统层**，每个用户都能用、不用复制，自己装的版本优先：
 

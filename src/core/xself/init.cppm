@@ -93,9 +93,9 @@ export xvm::TableReport apply_shim_table(const fs::path& subos_dir,
 // arrive as derived table entries with an owner and a reclamation path,
 // rather than as files nobody records and nothing can remove.
 //
-// Best-effort by design: a failure here means a name is momentarily missing
-// from PATH, not that the install did not happen. Failures are logged, and
-// `self doctor` reports the drift.
+// Shim updates are best-effort and doctor reports drift. A root projection
+// failure is returned to the write command: its /usr must not be reported as
+// updated when it still names the previous generation.
 
 // What a rebuild changed, summed over the scopes it touched. Returned so the
 // callers that run on UPGRADE can say what they repaired -- a repair nobody
@@ -105,6 +105,7 @@ export struct ShimSyncSummary {
     std::size_t removed {};
     std::size_t repointed {};
     std::size_t refused {};   // scopes whose workspace could not be observed
+    std::string root_error;   // a root projection did not converge
 
     [[nodiscard]] bool changed() const {
         return added != 0 || removed != 0 || repointed != 0;

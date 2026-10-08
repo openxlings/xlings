@@ -178,8 +178,10 @@ XTEST(Deployment, TheSystemConfigIsADefaultTheHomeOverrides,
     auto layer = home.root() / "layer";
     tk::write_file(layer / ".xlings-home", R"({"layout":2,"mode":"multi"})");
     const std::map<std::string, std::string> env{
-        {"XLINGS_SYSTEM_CONFIG", sys.string()}, {"XLINGS_SYSTEM_LAYER", layer.string()}};
-    // The isolated home sets its own mirror and no language.
+        {"XLINGS_SYSTEM_CONFIG", sys.string()}, {"XLINGS_SYSTEM_LAYER", layer.string()},
+        {"XLINGS_TEST_MIRROR", ""}, {"XLINGS_RELEASE_MIRROR", ""}};
+    // Fix this fixture's home mirror independently of the lane's CN override.
+    tk::write_file(home.dir() / ".xlings.json", R"({"mirror":"GLOBAL"})");
     auto r = home.xlings({"config"}, env);
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
     EXPECT_NE(r.out.find("zh"), std::string::npos) << "the system's language\n" << r.out;

@@ -11,7 +11,7 @@ import xlings.libs.json;
 //
 // A journal is an NDJSON file. `append()` creates its directory, rotates it
 // when it passes `max_bytes` (file -> file.1 -> ... -> file.<keep>), and
-// swallows every error.
+// reports failures through append_checked(); the compatibility append() ignores them.
 export namespace xlings::observe {
 
 enum class Kind { Ops, Lifecycle, Perm, Exec, Net, Fs, Destructive, Trace };
@@ -34,6 +34,13 @@ struct JournalLimits {
     std::uintmax_t max_bytes { 8u * 1024u * 1024u };
     int keep { 3 };
 };
+
+// Checked writes include directory creation, rotation, writing, flushing and closing.
+// A false result means the caller cannot rely on this record being stored.
+bool append_checked(const std::filesystem::path& file, const Event& event,
+                    JournalLimits limits = {}) noexcept;
+bool append_json_checked(const std::filesystem::path& file, const nlohmann::json& line,
+                         JournalLimits limits = {}) noexcept;
 
 // Never throws, never fails the caller.
 void append(const std::filesystem::path& file, const Event& event,

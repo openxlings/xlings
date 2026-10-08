@@ -2,6 +2,12 @@ module;
 
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <stdio.h>
+#endif
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
@@ -10,6 +16,7 @@ module;
 #else
 #include <io.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #define NOMINMAX
 #include <windows.h>
 #endif
@@ -539,6 +546,26 @@ int run_shell(std::string_view command, bool interactive) {
         return content;
     }
 
+std::expected<void, std::string> rename_no_replace(const std::filesystem::path& from,
+                                                       const std::filesystem::path& to) {
+        std::error_code error;
+#if defined(__linux__)
+        constexpr unsigned NO_REPLACE = 1;  // renameat2 RENAME_NOREPLACE
+        if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), NO_REPLACE) != 0)
+            error = std::error_code(errno, std::generic_category());
+#elif defined(__APPLE__)
+        if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) != 0)
+            error = std::error_code(errno, std::generic_category());
+#elif defined(_WIN32)
+        if (!::MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), MOVEFILE_WRITE_THROUGH))
+            error = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+#else
+        return std::unexpected("atomic publication without replacement is unavailable on this platform");
+#endif
+        if (error) return std::unexpected("cannot publish " + to.string() + ": " + error.message());
+        return {};
+    }
+
 void write_file_atomic(const std::string& filepath, const std::string& content) {
         namespace fs = std::filesystem;
         std::error_code ec;
@@ -559,35 +586,65 @@ void write_file_atomic(const std::string& filepath, const std::string& content) 
         auto dir = target.parent_path();
         if (dir.empty()) dir = fs::path(".");
 
-        auto staging = dir / ("." + target.filename().string() + ".xlings-tmp." +
-                              std::to_string(platform_impl::get_pid()));
-
-        std::FILE* fp = std::fopen(staging.string().c_str(), "wb");
-        if (!fp) {
-            throw std::runtime_error("Failed to write file: " + filepath);
+        fs::path staging;
+        std::FILE* fp = nullptr;
+        std::random_device random;
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            staging = dir / ("." + target.filename().string() + ".xlings-tmp." +
+                             std::to_string(platform_impl::get_pid()) + "." +
+                             std::format("{:08x}{:08x}", random(), random()));
+#if defined(_WIN32)
+            const int fd = ::_wopen(staging.wstring().c_str(),
+                _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE);
+#else
+            const int fd = ::open(staging.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+#endif
+            if (fd < 0) {
+                if (errno == EEXIST) continue;
+                throw std::runtime_error("Failed to create staging file: " + filepath);
+            }
+#if defined(_WIN32)
+            fp = ::_fdopen(fd, "wb");
+            if (!fp) ::_close(fd);
+#else
+            fp = ::fdopen(fd, "wb");
+            if (!fp) ::close(fd);
+#endif
+            if (!fp) {
+                fs::remove(staging, ec);
+                throw std::runtime_error("Failed to open staging file: " + filepath);
+            }
+            break;
         }
+        if (!fp) throw std::runtime_error("Failed to create unique staging file: " + filepath);
         bool ok = std::fwrite(content.data(), 1, content.size(), fp) == content.size();
         if (ok) ok = std::fflush(fp) == 0;
         if (ok) ok = sync_file_handle_(fp);
-        std::fclose(fp);
+        if (std::fclose(fp) != 0) ok = false;
         if (!ok) {
             ec.clear();
             fs::remove(staging, ec);
             throw std::runtime_error("Failed to write file: " + filepath);
         }
 
-        // Carry over the destination's mode. A fresh staging file is created
-        // under the current umask, so without this an overwrite would quietly
-        // drop an executable bit or widen the mode of the file it replaces.
         ec.clear();
         if (auto st = fs::status(target, ec); !ec && fs::exists(st)) {
             std::error_code permEc;
-            fs::permissions(staging, st.permissions(),
-                            fs::perm_options::replace, permEc);
+            fs::permissions(staging, st.permissions(), fs::perm_options::replace, permEc);
+            if (permEc) {
+                fs::remove(staging, ec);
+                throw std::runtime_error("Failed to preserve file permissions: " + filepath);
+            }
         }
 
         ec.clear();
+#if defined(_WIN32)
+        if (!::MoveFileExW(staging.wstring().c_str(), target.wstring().c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            ec = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+#else
         fs::rename(staging, target, ec);
+#endif
         if (ec) {
             std::error_code rmEc;
             fs::remove(staging, rmEc);

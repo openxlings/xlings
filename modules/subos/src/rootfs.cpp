@@ -2,6 +2,7 @@ module xlings.subos.rootfs;
 
 import std;
 import xlings.libs.json;
+import xlings.platform;
 
 namespace xlings::subos::rootfs {
 
@@ -58,6 +59,85 @@ std::string fingerprint(const Plan& p) {
 std::string read_text(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
     return {std::istreambuf_iterator<char>(in), {}};
+}
+
+bool safe_relative_link(const fs::path& path) {
+    if (path.empty() || path.is_absolute() || path.lexically_normal() != path) return false;
+    for (const auto& part : path)
+        if (part == ".." || part == ".") return false;
+    return *path.begin() == "usr" && std::distance(path.begin(), path.end()) > 1;
+}
+
+class OwnedStage {
+private:
+    fs::path path_;
+
+public:
+    explicit OwnedStage(fs::path path) : path_{std::move(path)} {}
+    OwnedStage(OwnedStage&& other) noexcept : path_{std::exchange(other.path_, {})} {}
+    OwnedStage(const OwnedStage&) = delete;
+    ~OwnedStage() {
+        if (path_.empty()) return;
+        std::error_code ec;
+        fs::remove_all(path_, ec); // subos-remove-all-ok: exclusively created staging directory, never a preexisting path
+    }
+    const fs::path& path() const { return path_; }
+
+    static std::expected<OwnedStage, std::string> create(const fs::path& parent) {
+        std::error_code ec;
+        const auto status = fs::symlink_status(parent, ec);
+        if (fs::is_symlink(status)) return std::unexpected("staging parent is a symlink: " + parent.string());
+        fs::create_directories(parent, ec);
+        if (ec) return std::unexpected("cannot create staging parent: " + ec.message());
+        static std::atomic<unsigned long long> serial { 0 };
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            const auto path = parent / std::format(".xlings-stage-{}-{}",
+                std::chrono::steady_clock::now().time_since_epoch().count(), serial++);
+            if (fs::create_directory(path, ec)) return OwnedStage{path};
+            if (ec && ec != std::errc::file_exists)
+                return std::unexpected("cannot create staging directory: " + ec.message());
+        }
+        return std::unexpected("cannot reserve staging directory");
+    }
+};
+
+// Metadata alone is not ownership: every entry must be a recorded projection
+// link, its parent directory, or one of the two metadata files we wrote.
+bool owned_generation(const fs::path& subos, int generation) {
+    const auto dir = generation_dir(subos, generation);
+    std::error_code ec;
+    if (!fs::is_directory(fs::symlink_status(subos / kGenerations, ec)) || ec
+        || !fs::is_directory(fs::symlink_status(dir, ec)) || ec) return false;
+    for (auto name : {"generation.json", "links.tsv"})
+        if (!fs::is_regular_file(fs::symlink_status(dir / name, ec)) || ec) return false;
+    const auto metadata = nlohmann::json::parse(read_text(dir / "generation.json"), nullptr, false);
+    if (!metadata.is_object() || !metadata.contains("number") || !metadata["number"].is_number_integer()
+        || metadata["number"] != generation) return false;
+    std::map<fs::path, fs::path> links;
+    std::set<fs::path> directories {"usr"};
+    std::istringstream records(read_text(dir / "links.tsv"));
+    for (std::string line; std::getline(records, line);) {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) return false;
+        const fs::path rel = line.substr(0, tab);
+        if (!safe_relative_link(rel) || !links.emplace(rel, line.substr(tab + 1)).second) return false;
+        for (auto parent = rel.parent_path(); !parent.empty(); parent = parent.parent_path())
+            directories.insert(parent);
+    }
+    std::size_t seen { 0 };
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto rel = it->path().lexically_relative(dir);
+        const auto status = it->symlink_status(ec);
+        if (ec) return false;
+        if (fs::is_directory(status)) {
+            if (!directories.contains(rel)) return false;
+        } else if (fs::is_symlink(status)) {
+            const auto link = links.find(rel);
+            if (link == links.end() || fs::read_symlink(it->path(), ec) != link->second || ec) return false;
+            ++seen;
+        } else if (rel != "generation.json" && rel != "links.tsv") return false;
+    }
+    return !ec && seen == links.size();
 }
 
 }  // namespace
@@ -149,7 +229,8 @@ std::optional<int> current(const fs::path& subos) {
     const auto name = target.filename().string();
     int k = 0;
     auto [ptr, err] = std::from_chars(name.data(), name.data() + name.size(), k);
-    if (err != std::errc{} || ptr != name.data() + name.size()) return std::nullopt;
+    if (err != std::errc{} || ptr != name.data() + name.size() || k <= 0
+        || target != fs::path(kGenerations) / std::to_string(k)) return std::nullopt;
     return k;
 }
 
@@ -159,67 +240,92 @@ std::optional<GenerationInfo> info(const fs::path& subos, int generation) {
     auto j = nlohmann::json::parse(read_text(generation_dir(subos, generation) / "generation.json"),
                                    nullptr, false);
     if (j.is_discarded() || !j.is_object()) return std::nullopt;
-    GenerationInfo g;
-    g.number = generation;
-    g.created = j.value("created", "");
-    g.reason = j.value("reason", "");
-    g.links = j.value("links", std::size_t{0});
-    for (auto& c : j.value("conflicts", nlohmann::json::array()))
-        g.conflicts.push_back({c.value("path", ""), c.value("kept", ""), c.value("dropped", "")});
-    return g;
+    try {
+        GenerationInfo g;
+        g.number = generation;
+        g.created = j.value("created", "");
+        g.reason = j.value("reason", "");
+        g.links = j.value("links", std::size_t{0});
+        const auto conflicts = j.value("conflicts", nlohmann::json::array());
+        if (!conflicts.is_array()) return std::nullopt;
+        for (const auto& c : conflicts)
+            g.conflicts.push_back({c.value("path", ""), c.value("kept", ""), c.value("dropped", "")});
+        return g;
+    } catch (const nlohmann::json::exception&) {
+        return std::nullopt;
+    }
 }
 
 std::expected<void, std::string> switch_to(const fs::path& subos, int generation) {
     std::error_code ec;
     const auto dir = generation_dir(subos, generation);
-    if (!fs::is_directory(dir / "usr", ec))
-        return std::unexpected(std::format("generation {} does not exist", generation));
-    // A new link beside the pointer, renamed over it: rename(2) replaces the
-    // old link in one step.
-    const auto staged = subos / std::format(".{}.{}", kPointer, generation);
-    fs::remove(staged, ec);
-    fs::create_directory_symlink(fs::path(std::string(kGenerations)) / std::to_string(generation),
-                                 staged, ec);
-    if (ec) return std::unexpected(std::format("cannot link {}: {}", staged.string(), ec.message()));
-    fs::rename(staged, subos / std::string(kPointer), ec);
-    if (ec) {
-        fs::remove(staged);
-        return std::unexpected(std::format("cannot move {}: {}", (subos / kPointer).string(),
-                                           ec.message()));
-    }
+    if (!owned_generation(subos, generation) || !fs::is_directory(dir / "usr", ec))
+        return std::unexpected(std::format("generation {} is absent or is not an intact projection", generation));
+    const auto pointer = subos / std::string(kPointer);
+    const auto status = fs::symlink_status(pointer, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory)
+        return std::unexpected("cannot inspect root pointer: " + ec.message());
+    if (fs::exists(status) && !fs::is_symlink(status))
+        return std::unexpected("root pointer is not a symlink; it is left alone");
+    auto scratch = OwnedStage::create(subos);
+    if (!scratch) return std::unexpected(scratch.error());
+    const auto staged = scratch->path() / "pointer";
+    fs::create_directory_symlink(fs::path(kGenerations) / std::to_string(generation), staged, ec);
+    if (ec) return std::unexpected("cannot stage root pointer: " + ec.message());
+    fs::rename(staged, pointer, ec);
+    if (ec) return std::unexpected("cannot move root pointer: " + ec.message());
     return {};
 }
 
 std::expected<int, std::string> commit(const fs::path& subos, const Plan& p,
                                        std::string_view reason) {
+    std::set<fs::path> names;
+    for (const auto& link : p.links) {
+        const fs::path rel = link.rel;
+        if (!safe_relative_link(rel) || !names.insert(rel).second)
+            return std::unexpected("invalid projection path: " + link.rel);
+        if (link.rel.find_first_of("\t\n\r") != std::string::npos
+            || link.target.generic_string().find_first_of("\t\n\r") != std::string::npos)
+            return std::unexpected("projection path cannot contain record separators");
+    }
+    for (const auto& rel : names)
+        for (auto parent = rel.parent_path(); !parent.empty(); parent = parent.parent_path())
+            if (names.contains(parent)) return std::unexpected("projection link has a link as parent: " + rel.string());
     const auto gens = generations(subos);
     const auto now = current(subos);
     const auto print = fingerprint(p);
-    if (now) {
-        if (read_text(generation_dir(subos, *now) / "links.tsv") == print) return *now;
-    }
+    if (now && owned_generation(subos, *now)
+        && read_text(generation_dir(subos, *now) / "links.tsv") == print) return *now;
+    if (!gens.empty() && gens.back() == std::numeric_limits<int>::max())
+        return std::unexpected("generation numbers are exhausted");
     const int next = gens.empty() ? 1 : gens.back() + 1;
     const auto dir = generation_dir(subos, next);
-    const auto staging = subos / std::string(kGenerations) / std::format(".{}.partial", next);
+    auto scratch = OwnedStage::create(subos / std::string(kGenerations));
+    if (!scratch) return std::unexpected(scratch.error());
+    const auto staging = scratch->path() / "generation";
     std::error_code ec;
-    fs::remove_all(staging, ec);
     fs::create_directories(staging / "usr", ec);
-    if (ec) return std::unexpected(std::format("cannot create {}: {}", staging.string(), ec.message()));
-    for (auto& l : p.links) {
-        const auto at = staging / l.rel;
+    if (ec) return std::unexpected("cannot create generation: " + ec.message());
+    for (const auto& link : p.links) {
+        const auto at = staging / link.rel;
         fs::create_directories(at.parent_path(), ec);
-        fs::create_symlink(l.target, at, ec);
-        if (ec)
-            return std::unexpected(std::format("cannot link {}: {}", l.rel, ec.message()));
+        if (ec) return std::unexpected("cannot create projection directory: " + ec.message());
+        fs::create_symlink(link.target, at, ec);
+        if (ec) return std::unexpected(std::format("cannot link {}: {}", link.rel, ec.message()));
     }
     {
-        std::ofstream(staging / "links.tsv", std::ios::binary) << print;
-        nlohmann::json j{{"number", next}, {"created", utc_now()}, {"reason", std::string(reason)},
-                         {"links", p.links.size()}, {"conflicts", conflicts_json(p.conflicts)}};
-        std::ofstream(staging / "generation.json") << j.dump(2) << "\n";
+        std::ofstream records(staging / "links.tsv", std::ios::binary);
+        records << print;
+        records.close();
+        nlohmann::json metadata{{"number", next}, {"created", utc_now()}, {"reason", std::string(reason)},
+                               {"links", p.links.size()}, {"conflicts", conflicts_json(p.conflicts)}};
+        std::ofstream manifest(staging / "generation.json");
+        manifest << metadata.dump(2) << "\n";
+        manifest.close();
+        if (!records || !manifest) return std::unexpected("cannot write generation metadata");
     }
-    fs::rename(staging, dir, ec);
-    if (ec) return std::unexpected(std::format("cannot place generation {}: {}", next, ec.message()));
+    if (auto placed = platform::rename_no_replace(staging, dir); !placed)
+        return std::unexpected(std::format("cannot place generation {}: {}", next, placed.error()));
     if (auto sw = switch_to(subos, next); !sw) return std::unexpected(sw.error());
     return next;
 }
@@ -234,8 +340,9 @@ std::vector<int> prune(const fs::path& subos, std::size_t keep, std::span<const 
         if (now && k == *now) continue;
         if (std::ranges::find(pinned, k) != pinned.end()) continue;
         if (kept < keep) { ++kept; continue; }
+        if (!owned_generation(subos, k)) continue;
         std::error_code ec;
-        fs::remove_all(generation_dir(subos, k), ec);
+        fs::remove_all(generation_dir(subos, k), ec); // subos-remove-all-ok: intact manifest and complete inventory prove derived generation ownership
         if (!ec) removed.push_back(k);
     }
     std::ranges::sort(removed);
@@ -254,8 +361,9 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
     const auto usr = root / "usr";
     if (fs::is_symlink(usr, ec)) {
         if (fs::read_symlink(usr, ec) != usr_target) {
-            const auto staged = root / ".usr.new";
-            fs::remove(staged, ec);
+            auto scratch = OwnedStage::create(root);
+            if (!scratch) return std::unexpected(scratch.error());
+            const auto staged = scratch->path() / "usr";
             fs::create_directory_symlink(usr_target, staged, ec);
             if (!ec) fs::rename(staged, usr, ec);
             if (ec) return std::unexpected(std::format("cannot repoint {}: {}", usr.string(), ec.message()));
@@ -271,16 +379,30 @@ std::expected<void, std::string> lay_out(const fs::path& root, const fs::path& u
     for (auto [name, target] : {std::pair{"bin", "usr/bin"}, std::pair{"sbin", "usr/bin"},
                                 std::pair{"lib", "usr/lib"}, std::pair{"lib64", "usr/lib64"}}) {
         const auto at = root / name;
-        if (!fs::exists(fs::symlink_status(at, ec))) fs::create_directory_symlink(target, at, ec);
+        const auto status = fs::symlink_status(at, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory)
+            return std::unexpected("cannot inspect root entry: " + ec.message());
+        if (!fs::exists(status)) {
+            fs::create_directory_symlink(target, at, ec);
+            if (ec) return std::unexpected("cannot create merged-usr link: " + ec.message());
+        }
     }
     for (auto d : {"etc", "var/tmp", "var/log", "var/lib", "var/cache", "home", "srv", "tmp", "proc",
                    "sys", "dev", "run", "mnt", "opt", "root"}) {
-        fs::create_directories(root / d, ec);
+        const bool created = fs::create_directories(root / d, ec);
+        if (ec) return std::unexpected(std::format("cannot create root directory {}: {}", d, ec.message()));
+        if (!created) continue;
+        if (std::string_view(d) == "root") {
+            fs::permissions(root / d, fs::perms::owner_all, fs::perm_options::replace, ec);
+        } else if (std::string_view(d) == "tmp" || std::string_view(d) == "var/tmp") {
+            fs::permissions(root / d, fs::perms::all | fs::perms::sticky_bit, fs::perm_options::replace, ec);
+        }
+        if (ec) return std::unexpected("cannot set root directory permissions: " + ec.message());
     }
-    fs::permissions(root / "root", fs::perms::owner_all, fs::perm_options::replace, ec);
-    for (auto d : {"tmp", "var/tmp"})
-        fs::permissions(root / d, fs::perms::all | fs::perms::sticky_bit, fs::perm_options::replace, ec);
-    if (!home.empty()) fs::create_directories(root / home.relative_path(), ec);
+    if (!home.empty()) {
+        fs::create_directories(root / home.relative_path(), ec);
+        if (ec) return std::unexpected("cannot create system home mount point: " + ec.message());
+    }
     return {};
 }
 
