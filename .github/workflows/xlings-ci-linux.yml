@@ -485,7 +485,7 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 2)):
+          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 3)):
               results = [json.loads(line) for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
               assert len(results) == count and all(row['status'] == 'pass' for row in results), results
           PY

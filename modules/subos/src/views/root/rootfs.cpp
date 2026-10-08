@@ -263,32 +263,38 @@ Inventory check_inventory(const fs::path& subos, int generation, fs::path* missi
     const auto text = read_checked_text(inventory_path(subos, generation));
     if (!text) return Inventory::Missing;
     const auto dir = generation_dir(subos, generation);
-    std::istringstream lines(*text);
+    auto number = [](std::string_view v, auto& out) {
+        auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), out);
+        return ec == std::errc{} && ptr == v.data() + v.size();
+    };
     bool sawDir = false;
-    for (std::string line; std::getline(lines, line);) {
-        std::vector<std::string> f;
-        for (std::size_t at = 0;;) {
+    std::string_view rest(*text);
+    while (!rest.empty()) {
+        const auto eol = rest.find('\n');
+        const auto line = rest.substr(0, eol);
+        rest = eol == std::string_view::npos ? std::string_view{} : rest.substr(eol + 1);
+        if (line.empty()) continue;
+        std::array<std::string_view, 5> f{};
+        std::size_t n = 0;
+        for (std::size_t at = 0; n < f.size();) {
             const auto tab = line.find('\t', at);
-            f.push_back(line.substr(at, tab == std::string::npos ? std::string::npos : tab - at));
-            if (tab == std::string::npos) break;
+            f[n++] = line.substr(at, tab == std::string_view::npos ? std::string_view::npos : tab - at);
+            if (tab == std::string_view::npos) break;
             at = tab + 1;
         }
-        if (f.size() == 2 && f[0] == "payload") {
-            std::error_code ec;
-            if (!fs::exists(fs::path(f[1]), ec)) {
-                if (missingPayload) *missingPayload = f[1];
+        if (n == 2 && f[0] == "payload") {
+            // One lstat: a payload root is a directory, never a link.
+            if (!platform::change_stamp(fs::path(f[1]))) {
+                if (missingPayload) *missingPayload = fs::path(f[1]);
                 return Inventory::Differs;
             }
             continue;
         }
-        if (f.size() != 5 || (f[0] != "dir" && f[0] != "file")) return Inventory::Differs;
+        if (n != 5 || (f[0] != "dir" && f[0] != "file")) return Inventory::Differs;
         platform::ChangeStamp want;
-        try {
-            want = {std::stoull(f[2]), std::stoll(f[3]), std::stoll(f[4])};
-        } catch (...) {
+        if (!number(f[2], want.inode) || !number(f[3], want.seconds) || !number(f[4], want.nanoseconds))
             return Inventory::Differs;
-        }
-        const auto have = platform::change_stamp(f[1].empty() ? dir : dir / f[1]);
+        const auto have = platform::change_stamp(f[1].empty() ? dir : dir / fs::path(f[1]));
         if (!have || *have != want) return Inventory::Differs;
         sawDir |= f[0] == "dir" && f[1].empty();
     }
