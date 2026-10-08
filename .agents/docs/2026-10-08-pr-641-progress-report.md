@@ -2,7 +2,27 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 1. 结论
+## 当前交付状态（最终 review 收口中）
+
+后续实现均以追加 commit、普通 push 进入 #641，保留审查历史。main 仍为 `c55d89a`，
+候选版本为 `2026.10.8.2`，尚未合并、发布。
+
+`4daee595` 的 ARM64 与 Linux root 流水线通过；macOS、Windows 的构建及单元测试
+通过，但两个旧 shell/PowerShell fixture 与新入口所有权边界不兼容，已按实际失败
+日志修正 fixture，未降低产品边界。Linux 主测试实际 191 pass、5 fail、4 skip；失败集中于 Lua worker 挂载/审计与私有域
+backend 判定，正在修复。root 闭包隔离回归已实际通过；ASAN 仍在执行。
+
+最终 review 另修复私有域 exec/use 对 `./`、`~/` 挂载源的二次解析；命令分隔符后
+argv 保持原样。开发与静态构建通过，真实隔离回归等待 CI。
+镜像 self update 不再吞掉错误，验证真实旧 payload→候选 archive 下载/安装/激活、
+generation 改变、stage0 SHA/inode 不变及回滚。静态性能测试严格执行 shim <10 ms、
+热 exec 额外 ≤5 ms、冷 exec 相对等价直接 provider 额外 ≤10 ms、rootfs 闭包入口
+额外 ≤100 ms；CI 要求全部实际 pass。报告要求所有 Linux 必需能力都有通过证据；
+Windows 引号契约由 Windows 单独硬验收，WSL1 保留设计明确的尽力验证例外。
+
+下面 §1–10 为初次审查快照，包含当时已知、后来已修复的问题；不能当作当前缺项表。
+
+## 1. 初次审查结论（历史快照）
 
 **两阶段主要代码已落地，当前处于集成与验收收口阶段，还不满足合并、发布条件。**
 
@@ -463,3 +483,29 @@ filesystem 回归覆盖 source 路径变化、同路径升级、WAL 恢复、leg
 两项预算均通过；链接被改成 regular file / 陌生目录也仍拒绝。受影响的注册 case
 49 pass、8 skip、0 fail，另 legacy shim 用例通过。skip 全为本机无 bwrap 的真实隔离
 用例，必须由固定新 head CI 补齐。两项安全 lint 与 whitespace 检查通过。
+
+
+最终 review 的追加验收修正（尚待下一固定 head CI）：
+
+- `a55deb67`：domain exec/use 用外层已解析的 Mount 保留宿主来源；`--` 后命令 argv 不变。
+  产品 dev 构建及 domain fixture 编译通过；namespace 用例本地 skip，未记通过。
+- `64f3e718`：两个客户端 fixture 使用隔离 xim/provider 及实际候选 bytes，符合共享 entry
+  的所有权；remove 三场景本地通过。macOS 默认 Bash 的 UTF-8 fixture 改为 indexed arrays。
+- `da383ed4`：ROOT-SELF-UPDATE 走正式 hooks、真实 HTTP candidate archive；严格验证旧/new
+  payload 版本、generation 切换、stage0 SHA/inode 保留及 rollback，任何失败硬返回非零。
+- `9a24c7f9`：static candidate 的四类 SubOS 性能预算，以及完整 generation 校验预算
+  被 CI 显式执行且必须 pass。相同 blocking runner、交错配对、微秒计时和完整环境隔离；
+  本地编译通过，真实 bwrap 不可用，四项 skip 明示，不算性能验收。
+- `a0d0d725`：测试程序已构建成功时，失败直接报告，不再调用所有 build.ninja 重编译。
+  `4daee595` 的 Linux 单元测试在 05:21 返回，重复编译把 job 拖到 05:29 且淹没现场。
+
+`4daee595` 的实际 root closure 重绑/rollback namespace 回归通过。剩余 worker full
+观测失败已定位为同一线程分别创建 exec/network 两个 NEW_LISTENER，内核拒绝第二个；
+私有域 backend 错判为 resolve_owner_home 对非 shim 也回退到调用者 entry。下一波分别
+复用单一通知 listener 并先分类真实 shim；不削弱审计、网络隔离或扩大宿主挂载。
+
+发布前真实 CN 旧版 home 已准备：正式 `2026.10.8.1` quick install，明确设置镜像 CN，
+安装 GCC 16.1.0 / mcpp 2026.10.5.3 / glibc 2.44.3；原生 C 程序编译运行和 doctor 通过。
+独立 mcpp registry 同样设置 CN，`mcpp new cn-ecosystem`→build（38.48 s）→run 成功，
+使用实际 `import std` 模块 C++23。旧 payload 4448 条字节/链接/权限及四项用户数据
+sentinel 已留快照，待正式候选发布后执行真实 self update 对比；尚未把候选包冒充发布。
