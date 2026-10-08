@@ -489,13 +489,13 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
     // `subos exec` reports a failure before the command started as 125.
     const int kFail = opts.exec_codes ? session::kExitSetup : 1;
 
-    // A session that outlives its shell is a supervisor holding namespaces
-    // (design §16): Linux only. Elsewhere the entry below is an interactive
-    // shell, which is the opposite of detached and waits for input.
-    if (!platform::is_linux && opts.detached) {
+    // A session that outlives its shell needs a session host (design §16,
+    // part 3 §6.3): Linux and macOS. On Windows the entry below is an
+    // interactive shell, the opposite of detached, and waits for input.
+    if (platform::is_windows && opts.detached) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
-            .message = "a detached session (subos start) needs Linux",
+            .message = "a detached session (subos start) needs a session host: Linux or macOS",
             .recoverable = false,
             .hint = std::format("run commands with `xlings subos exec {} -- <cmd>`", name),
         });

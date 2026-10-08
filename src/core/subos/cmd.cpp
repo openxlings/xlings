@@ -2381,9 +2381,9 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --keep / --ttl: the session outlives this shell (design §16, the
         // keeper's replacement). Start it detached, then join it like any
         // later command would.
-        // Linux only, like the keeper it replaces: elsewhere --keep / --ttl
-        // change nothing and the shell below is the whole entry.
-        if (platform::is_linux && sandbox && !no_keep && (keep_forever || ttl_sec > 0)
+        // Wherever there is a session host (Linux, macOS); on Windows --keep /
+        // --ttl change nothing and the shell below is the whole entry.
+        if (!platform::is_windows && sandbox && !no_keep && (keep_forever || ttl_sec > 0)
             && !session::find(home_view(), name)) {
             if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
             use_detail_::apply_subos_env_(name);
