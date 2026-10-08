@@ -37,20 +37,12 @@ bool is_bootstrap_home_root(const fs::path& root) {
     std::error_code ec;
     if (root.empty() || !fs::exists(root / ".xlings.json", ec)) return false;
     if (!fs::exists(root / "bin", ec) || !fs::is_directory(root / "bin", ec)) return false;
-#ifdef _WIN32
-    return fs::exists(root / "bin" / "xlings.exe", ec);
-#else
-    return fs::exists(root / "bin" / "xlings", ec);
-#endif
+    return fs::exists(root / "bin" / ("xlings" + std::string(platform::exe_suffix)), ec);
 }
 
 fs::path xlings_binary_in_home(const fs::path& home_dir) {
-#ifdef _WIN32
-    constexpr std::string_view name = "xlings.exe";
-#else
-    constexpr std::string_view name = "xlings";
-#endif
-    auto bin = home_dir / "bin" / std::string(name);
+    const auto name = "xlings" + std::string(platform::exe_suffix);
+    auto bin = home_dir / "bin" / name;
     if (fs::exists(bin)) return bin;
 
     // Bootstrap layout. Before `self init` runs, the binary sits directly at
@@ -109,19 +101,19 @@ LinkResult create_shim(const fs::path& source, const fs::path& target) {
     }
     ec.clear();
 
-#if !defined(_WIN32)
-    // Unix: prefer relative symlink
-    auto rel = fs::relative(source, target.parent_path(), ec);
-    if (!ec && !rel.empty()) {
-        fs::create_symlink(rel, target, ec);
+    if constexpr (platform::is_posix) {
+        // Unix: prefer relative symlink
+        auto rel = fs::relative(source, target.parent_path(), ec);
+        if (!ec && !rel.empty()) {
+            fs::create_symlink(rel, target, ec);
+            if (!ec) return LinkResult::Symlink;
+        }
+        ec.clear();
+        // Fallback: absolute symlink
+        fs::create_symlink(source, target, ec);
         if (!ec) return LinkResult::Symlink;
+        ec.clear();
     }
-    ec.clear();
-    // Fallback: absolute symlink
-    fs::create_symlink(source, target, ec);
-    if (!ec) return LinkResult::Symlink;
-    ec.clear();
-#endif
 
     // Hardlink (Unix fallback / Windows primary)
     fs::create_hard_link(source, target, ec);

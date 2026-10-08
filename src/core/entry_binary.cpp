@@ -43,13 +43,9 @@ import xlings.libs.sha256;
 namespace xlings::entry_binary {
 
 fs::path path_of(const fs::path& homeDir) {
-#ifdef _WIN32
-    auto p = homeDir / "bin" / "xlings.exe";
-    if (!fs::exists(p)) p = homeDir / "xlings.exe";
-#else
-    auto p = homeDir / "bin" / "xlings";
-    if (!fs::exists(p)) p = homeDir / "xlings";
-#endif
+    const auto name = std::string("xlings") + std::string(platform::exe_suffix);
+    auto p = homeDir / "bin" / name;
+    if (!fs::exists(p)) p = homeDir / name;
     return p;
 }
 

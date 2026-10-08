@@ -1,12 +1,6 @@
 module;
 
-#include <cstdio>
-#include <cstdlib>
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
+#include <cstdio>   // stdout, for println below
 
 export module xlings.platform:windows;
 
@@ -23,19 +17,7 @@ namespace platform_impl {
     // Windows has no LANG/LC_* to read, and `std::locale("")` is the wrong
     // tool everywhere (see get_system_language). GetUserDefaultLocaleName is
     // the documented way to ask, available since Vista.
-    export inline std::string user_ui_language() {
-        wchar_t buf[LOCALE_NAME_MAX_LENGTH] {};
-        const int n = ::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH);
-        if (n <= 0) return {};
-        // The tag is ASCII by definition, so a narrowing copy is exact and
-        // avoids dragging a codepage conversion in for four characters.
-        std::string out;
-        out.reserve(static_cast<std::size_t>(n));
-        for (int i = 0; i < n && buf[i] != L'\0'; ++i) {
-            out += static_cast<char>(buf[i] & 0x7F);
-        }
-        return out;
-    }
+    export std::string user_ui_language();
 
     export class FileLock {
     public:
@@ -58,7 +40,9 @@ namespace platform_impl {
         void release();
 
     private:
-        HANDLE handle_ { INVALID_HANDLE_VALUE };
+        // A HANDLE, stored opaque so this interface needs no <windows.h>;
+        // the sentinel is INVALID_HANDLE_VALUE's value, (HANDLE)-1.
+        void* handle_ { reinterpret_cast<void*>(static_cast<std::intptr_t>(-1)) };
     };
 
     export constexpr char PATH_SEPARATOR = ';';

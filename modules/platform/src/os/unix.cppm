@@ -1,24 +1,5 @@
 module;
 
-#include <cstdio>
-#include <cstdlib>
-#include <cerrno>
-#if defined(__linux__) || defined(__APPLE__)
-#include <unistd.h>
-#include <fcntl.h>
-#include <termios.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <sys/file.h>
-#include <pwd.h>
-#endif
-#if defined(__linux__)
-#include <sys/syscall.h>
-#ifndef RENAME_EXCHANGE
-#define RENAME_EXCHANGE (1u << 1)   // <linux/fs.h>; defined here to avoid header clashes
-#endif
-#endif
-
 export module xlings.platform:unix;
 
 import std;

@@ -7,6 +7,7 @@ module;
 module xlings.core.xim.extract;
 
 import std;
+import xlings.platform;
 
 namespace xlings::xim {
 
@@ -106,16 +107,16 @@ copy_entry_data_(struct archive* src, struct archive* dst) {
 void ensure_archive_locale_() {
     static std::once_flag once;
     std::call_once(once, [] {
-#ifdef _WIN32
-        if (!std::setlocale(LC_CTYPE, ".UTF-8")) {
-            std::setlocale(LC_CTYPE, "");
+        if constexpr (platform::is_windows) {
+            if (!std::setlocale(LC_CTYPE, ".UTF-8")) {
+                std::setlocale(LC_CTYPE, "");
+            }
+        } else {
+            if (!std::setlocale(LC_CTYPE, "C.UTF-8")
+                && !std::setlocale(LC_CTYPE, "en_US.UTF-8")) {
+                std::setlocale(LC_CTYPE, "");
+            }
         }
-#else
-        if (!std::setlocale(LC_CTYPE, "C.UTF-8")
-            && !std::setlocale(LC_CTYPE, "en_US.UTF-8")) {
-            std::setlocale(LC_CTYPE, "");
-        }
-#endif
     });
 }
 

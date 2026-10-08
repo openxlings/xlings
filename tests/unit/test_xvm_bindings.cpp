@@ -6643,6 +6643,10 @@ int run_xvm_registration_production_child_(
     xlings::platform::set_env_variable(
         "XLINGS_ACTIVE_SUBOS", "env-scope");
     xlings::platform::set_env_variable("XLINGS_PROJECT_DIR", "");
+    // The child is a fresh home's global scope, whatever SubOS the test runs
+    // in: an inherited XLINGS_SUBOS_MODE reads as "entered", and the entry is
+    // then (correctly) left alone -- a result about the caller, not the code.
+    xlings::platform::set_env_variable("XLINGS_SUBOS_MODE", "");
     xlings::platform::set_env_variable(
         "XDG_CONFIG_HOME", (root / "config").string());
     xlings::platform::set_env_variable(

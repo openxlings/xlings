@@ -19,6 +19,20 @@ namespace xlings {
 
 namespace platform_impl {
 
+std::string user_ui_language() {
+        wchar_t buf[LOCALE_NAME_MAX_LENGTH] {};
+        const int n = ::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH);
+        if (n <= 0) return {};
+        // The tag is ASCII by definition, so a narrowing copy is exact and
+        // avoids dragging a codepage conversion in for four characters.
+        std::string out;
+        out.reserve(static_cast<std::size_t>(n));
+        for (int i = 0; i < n && buf[i] != L'\0'; ++i) {
+            out += static_cast<char>(buf[i] & 0x7F);
+        }
+        return out;
+    }
+
 std::filesystem::path get_executable_path() {
         wchar_t buf[MAX_PATH];
         DWORD n = ::GetModuleFileNameW(nullptr, buf, MAX_PATH);

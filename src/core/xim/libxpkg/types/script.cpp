@@ -1,6 +1,7 @@
 module xlings.core.xim.libxpkg.types.script;
 
 import std;
+import xlings.platform;
 import xlings.core.xim.libxpkg.types.type;
 import xlings.core.xim.catalog;
 import xlings.core.config;
@@ -83,11 +84,7 @@ bool default_uninstall(const std::string& name, const std::string& version) {
     if (!removal) return false;
 
     auto paths = Config::paths();
-#ifdef _WIN32
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    constexpr std::string_view shim_ext = "";
-#endif
+    constexpr std::string_view shim_ext = platform::exe_suffix;
     std::string shim_name = name;
     if (!shim_ext.empty() && !shim_name.ends_with(shim_ext))
         shim_name += std::string(shim_ext);

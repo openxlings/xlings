@@ -24,7 +24,7 @@ MARK='subos-remove-all-ok:'
 bad=0
 
 lifecycle_files=(
-  src/core/subos.cpp
+  src/core/subos/cmd.cpp
   src/core/xself/install.cpp
   src/core/xself/uninstall.cpp
 )

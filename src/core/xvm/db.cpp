@@ -582,21 +582,21 @@ std::string normalize_subos_paths(const std::string& text,
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     };
     auto path_equal = [](std::string_view a, std::string_view b) {
-#if defined(_WIN32)
         // Windows compares paths case-insensitively and treats / and \ alike.
-        if (a.size() != b.size()) return false;
-        auto fold = [](char c) -> char {
-            if (c == '\\') return '/';
-            if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
-            return c;
-        };
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            if (fold(a[i]) != fold(b[i])) return false;
+        if constexpr (platform::is_windows) {
+            if (a.size() != b.size()) return false;
+            auto fold = [](char c) -> char {
+                if (c == '\\') return '/';
+                if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+                return c;
+            };
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                if (fold(a[i]) != fold(b[i])) return false;
+            }
+            return true;
+        } else {
+            return a == b;
         }
-        return true;
-#else
-        return a == b;
-#endif
     };
 
     std::string out;

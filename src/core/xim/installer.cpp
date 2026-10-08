@@ -702,11 +702,7 @@ std::expected<void, std::string> cleanup_removed_xvm_program_artifacts(
         if (xvm::has_usable_workspace_version(currentDb, installed, target)) {
             continue;
         }
-#ifdef _WIN32
-        constexpr std::string_view shimExtension = ".exe";
-#else
-        constexpr std::string_view shimExtension = "";
-#endif
+        constexpr std::string_view shimExtension = platform::exe_suffix;
         std::string shimName = target;
         if (!shimExtension.empty() && !shimName.ends_with(shimExtension)) {
             shimName += shimExtension;
@@ -2320,16 +2316,11 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
             resolve_xpkg_filesystem_effect(Config::versions(), Config::workspace(), effect);
         if (!resolved || !resolved->active || !xvm::is_xlings_binary(resolved->target))
             continue;
-#ifdef _WIN32
-        const auto entry = Config::paths().homeDir / "bin" / "xlings.exe";
+        const auto entry = Config::paths().homeDir / "bin" / ("xlings" + std::string(platform::exe_suffix));
         auto sourceName = resolved->sourceName;
-        if (!sourceName.ends_with(".exe"))
-            sourceName += ".exe";
+        if (!sourceName.ends_with(platform::exe_suffix))
+            sourceName += platform::exe_suffix;
         const auto source = std::filesystem::path(resolved->path) / sourceName;
-#else
-        const auto entry = Config::paths().homeDir / "bin" / "xlings";
-        const auto source = std::filesystem::path(resolved->path) / resolved->sourceName;
-#endif
         if (std::filesystem::exists(source) &&
             !xself::replace_entry_binary(source, entry, resolved->target + "@" + effect.version,
                                          effect.version,
@@ -4318,15 +4309,7 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
 }
 
 std::string Installer::detect_platform_() {
-    #if defined(__linux__)
-        return "linux";
-    #elif defined(__APPLE__)
-        return "macosx";
-    #elif defined(_WIN32)
-        return "windows";
-    #else
-        return "unknown";
-    #endif
+    return std::string(host_platform_tag());
 }
 
 } // namespace xlings::xim

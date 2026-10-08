@@ -204,7 +204,7 @@ namespace fs = std::filesystem;
 namespace {
 
 // observe depends on nothing of xlings, xlings.platform included.
-#if defined(__linux__)
+#if defined(__linux__)  // platform-if-ok: runtime sits below xlings.platform, which owns is_linux
 constexpr bool kLinux = true;
 #else
 constexpr bool kLinux = false;

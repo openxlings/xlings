@@ -1,6 +1,7 @@
 module xlings.core.xvm.relocation;
 
 import std;
+import xlings.platform;
 import xlings.core.xvm.types;
 
 namespace xlings::xvm {
@@ -18,9 +19,7 @@ constexpr bool is_sep_(char c) { return c == '/' || c == '\\'; }
 // most expensive false positive this module could produce.
 constexpr char fold_(char c) {
     if (is_sep_(c)) return '/';
-#ifdef _WIN32
-    if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
-#endif
+    if (platform::is_windows && c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
     return c;
 }
 

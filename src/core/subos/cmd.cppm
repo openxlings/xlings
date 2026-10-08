@@ -492,11 +492,11 @@ export std::optional<SubosInfo> info(const std::string& name);
 
 // ── Shared by this module's implementation units ─────────────────────
 //
-// src/core/subos.cpp       lifecycle (new / use / list / info / remove) and `run`
+// src/core/subos/cmd.cpp   lifecycle (new / use / list / info / remove) and `run`
 // src/core/subos/run.cpp       exec, start, cp, and the isolation flags
 // src/core/subos/configure.cpp config, status, doctor, policy packages
 // src/core/subos/audit.cpp     requests / approve / deny, report, ps, log
-// src/core/subos/root_cmd.cpp  new --rootfs, rollback, boot, export, diff, pack
+// src/core/subos/root/root_cmd.cpp  new --rootfs, rollback, boot, export, diff, pack
 //
 // Not exported: they are the module's own.
 
@@ -560,7 +560,7 @@ int run_requests_(std::string_view sub, int argc, char* argv[], EventStream& str
 int run_report_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_ps_(int argc, char* argv[], EventStream& stream);
 int run_log_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
-// src/core/subos/root_cmd.cpp: the root projection's commands.
+// src/core/subos/root/root_cmd.cpp: the root projection's commands.
 int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_boot_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError);

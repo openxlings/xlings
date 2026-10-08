@@ -1,27 +1,19 @@
 module;
 
-#include <cstdio>
-#include <cstdlib>
-#if defined(__linux__)
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <fcntl.h>
-#endif
+#include <cstdio>   // stdout, for println below
 
-export module xlings.platform:linux;
+export module xlings.platform:macos;
 
 import std;
 import xlings.runtime.cancellation;
 
-#if defined(__linux__)
+#if defined(__APPLE__)
 
 namespace xlings {
 namespace platform_impl {
 
     export constexpr char PATH_SEPARATOR = ':';
-    export constexpr std::string_view OS_NAME = "linux";
+    export constexpr std::string_view OS_NAME = "macosx";
 
     export std::filesystem::path get_executable_path();
 
@@ -51,7 +43,7 @@ namespace platform_impl {
     export bool create_directory_link(const std::filesystem::path& link,
                                       const std::filesystem::path& target);
 
-    // No-op on Linux — terminal generally supports ANSI natively.
+    // No-op on macOS — terminal generally supports ANSI natively.
     export void init_console_output();
 
     // Check if stdout is a TTY (supports cursor save/restore).
@@ -79,10 +71,10 @@ namespace platform_impl {
 
     export bool is_process_alive(int pid);
 
-    // query_terminal_is_light() lives in :unix — shared with macOS.
+    // query_terminal_is_light() lives in :unix — shared with Linux.
 
 
 } // namespace platform_impl
 }
 
-#endif // defined(__linux__)
+#endif // defined(__APPLE__)

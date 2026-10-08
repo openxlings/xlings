@@ -30,6 +30,8 @@ commands = [
   "bash tests/fresh-install/no_xlings_version_pin_check.sh",
   "bash tools/lint_subos_remove_all.sh",
   "bash tools/lint_platform_headers.sh",
+  "bash tools/lint_platform_branches.sh",
+  "bash tools/lint_layer_deps.sh",
 ]
 
 # The end-to-end shell suite against a release tarball.

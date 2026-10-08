@@ -32,10 +32,6 @@ export struct UninstallOpts {
     bool dryRun   = false;   // --dry-run: print plan, do nothing
 };
 
-#ifdef _WIN32
-
-#endif
-
 
 export int cmd_uninstall(UninstallOpts opts);
 

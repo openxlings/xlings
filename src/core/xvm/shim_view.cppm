@@ -41,7 +41,7 @@ struct ShimView {
     WorkspaceInstalled installed;
     VersionDB slice;
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     ShimView() = default;
     ~ShimView() = default;
     ShimView(const ShimView&) = default;
@@ -58,7 +58,7 @@ struct ShimView {
 #endif
 };
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 // Out-of-line special members to work around GCC module boundary issues
 // (same treatment as VData/VInfo in types.cppm).
 xlings::xvm::ShimView::ShimView() = default;

@@ -19,7 +19,7 @@ hits="$(grep -rnE "$pattern" src modules apps --include='*.cpp' --include='*.cpp
 if [[ -n "$hits" ]]; then
     echo "platform headers outside modules/platform:"
     echo "$hits" | sed 's/^/  /'
-    echo "add what is needed to xlings.platform (a partition under modules/platform/src/platform/)"
+    echo "add what is needed to xlings.platform (a partition under modules/platform/src/<area>/)"
     exit 1
 fi
 echo "platform headers lint: PASS (system headers only in modules/platform)"

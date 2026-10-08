@@ -1265,12 +1265,12 @@ void Config::load_ui_prefs_from_json_(const nlohmann::json& json) {
     auto value = repo.url;
     if (value.rfind("file://", 0) == 0) {
         value.erase(0, 7);
-#ifdef _WIN32
         // file:///C:/path → /C:/path after erase; strip leading '/' before drive letter
-        if (value.size() >= 3 && value[0] == '/' && std::isalpha(static_cast<unsigned char>(value[1])) && value[2] == ':') {
-            value.erase(0, 1);
+        if constexpr (platform::is_windows) {
+            if (value.size() >= 3 && value[0] == '/' && std::isalpha(static_cast<unsigned char>(value[1])) && value[2] == ':') {
+                value.erase(0, 1);
+            }
         }
-#endif
         return fs::path(value).lexically_normal();
     }
     if (value.find("://") != std::string::npos) {

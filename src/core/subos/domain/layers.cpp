@@ -13,7 +13,7 @@ import xlings.core.xim.payload;
 
 namespace xlings::home::layers {
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 Snapshot::Snapshot() : home{}, sourceHome{}, logicalHome{}, scope{}, versions(xvm::empty_version_db()), workspace{} {}
 Snapshot::~Snapshot() {}
 Snapshot::Snapshot(const Snapshot& other) : home(other.home), sourceHome(other.sourceHome), logicalHome(other.logicalHome), scope(other.scope), versions(other.versions), workspace(other.workspace) {}

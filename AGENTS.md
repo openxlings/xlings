@@ -18,12 +18,15 @@ modules/                             # packages linked into xlings, one per resp
 ├── libs/       json, sha256, tinyhttps        nothing of xlings
 ├── runtime/    cancellation, guard, observe   shared by core and SubOS core
 ├── platform/   the OS boundary: every system header and call
-│   └── src/platform/  linux, macos, windows, unix, target,
-│                      process (fork/exec/signals/sockets), isolation (ns/Landlock/seccomp)
+│   └── src/    platform.cppm (declares, includes nothing); os/ (linux, macos,
+│               windows, unix), process/ (spawn, worker, stream), net/,
+│               isolation/ (ns, Landlock, seccomp, mounts), fs/, triple/
 ├── ui/         theme, i18n
-├── subos/      the SubOS core: model, policy, spec, providers, caps, gates,
-│               session (supervisor + session-init), broker, manifest, userdata,
-│               rootfs (the root projection, generations), boot, roles, stage0
+├── subos/      the SubOS core
+│   └── src/    model/ (model, manifest, roles, ports, userdata), policy/,
+│               sandbox/ (spec, caps, gates, providers, network, gpu),
+│               views/root/ (root projection, generations, library cache),
+│               session/ (supervisor + session-init, broker), boot, stage0
 └── testkit/    C++ e2e test library (dev-dependency)
 apps/
 ├── gui/        GUI library half
@@ -35,9 +38,10 @@ src/                                 # not yet separated: core, cli, ui, runtime
 └── core/
     ├── config.cppm                  # 3-layer config (global -> subos -> project)
     ├── home/                        # HomeContext: deployment mode, layout, system config
-    ├── subos.cpp                    # `subos` commands (new/use/exec/start/config/...)
+    ├── subos/cmd.cpp                # `subos` commands (new/use/exec/start/config/...)
     ├── subos/sandbox.cpp            # adapter: policy + caps -> spec -> session
-    ├── subos/root.cpp, root_cmd.cpp # a workspace -> its root projection; rollback/boot/export
+    ├── subos/root/                  # a workspace -> its root projection; rollback/boot/export
+    ├── subos/domain/                # prefix domains, their producer, layers, evidence
     ├── xself/                       # self install/update/doctor
     ├── xim/                         # package management (installer, resolver, index...)
     └── xvm/                         # version management, shims
@@ -85,7 +89,7 @@ For release packaging (static binary):
 
 ### CLI argparse
 
-Manual positional parsing in each subcommand's `run()` function (see `subos.cppm` line ~1700). Pattern:
+Manual positional parsing in each subcommand's `run()` function (see `src/core/subos/cmd.cpp`). Pattern:
 ```cpp
 for (int i = 3; i < argc; ++i) {
     std::string a = argv[i];
@@ -106,11 +110,32 @@ holds the logic and no `#include`. Two exceptions, both outside the
 product: `modules/testkit` (the harness does not share the product's failure
 modes) and `tests/` (a test may call the kernel to check what it does).
 
-Branch on the platform with `if constexpr (platform::is_linux)` (also
-`is_windows`, `is_macos`, `is_posix`): every build then compiles every branch,
-so the Linux CI catches a typo in the macOS one. `#if` is for inside
-`modules/platform`, where the headers are. testkit, which does not import
-the product, carries the same constants under the same names.
+**Platform selection is `if constexpr`, not `#if`.** Branch with
+`if constexpr (platform::is_windows)` (also `is_linux`, `is_macos`,
+`is_posix`; and the values `platform::exe_suffix`, `platform::null_device`):
+every build then compiles every branch, so the Linux CI catches a typo in the
+Windows one, and a branch that only one CI compiles is the branch that breaks.
+A function that only one OS can implement is declared on every platform in
+`modules/platform` and reports "unavailable" elsewhere -- so the caller can
+use `if constexpr` instead of hiding the call behind `#if`.
+
+`#if` on `_WIN32` / `__linux__` / `__APPLE__` / `_MSC_VER` outside
+`modules/platform` needs `// platform-if-ok: <why>` on its line
+(`tools/lint_platform_branches.sh`). The legitimate reasons are few and say
+so: a declaration that differs per COMPILER (the GCC/MSVC module special
+members in `xvm/types.cppm`), or a module below `xlings.platform` that cannot
+import its constants (`runtime/observe.cpp`). Inside `modules/platform`,
+`#if` is for headers and system calls; logic still prefers `if constexpr`.
+
+**Headers stay in the smallest unit that uses them.** A system header is
+included by the implementation unit (`.cpp`) that makes the call, never by an
+interface unit (`.cppm`): the primary interface `platform.cppm` includes
+nothing, and a partition's interface includes at most the C++-wrapped C
+library (`<cstdio>` for `stdout`) its declarations need. A type a declaration
+must name opaquely (`HANDLE`) is stored as `void*` with the sentinel spelled
+out, as `ProcessHandle` and `FileLock` do. The lint checks both rules; testkit
+and `tests/` are outside the product and carry the same constants under the
+same names.
 
 ### Core and interaction surfaces are separate (2026.10, #640)
 

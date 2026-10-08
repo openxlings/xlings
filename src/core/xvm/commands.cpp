@@ -31,16 +31,16 @@ namespace xlings::xvm {
 
 void create_link_(const fs::path& src, const fs::path& dst) {
     std::error_code ec;
-#if defined(_WIN32)
-    if (fs::is_directory(src)) {
-        // Use directory junction on Windows (no admin required)
-        platform::create_directory_link(dst.string(), src.string());
+    if constexpr (platform::is_windows) {
+        if (fs::is_directory(src)) {
+            // Use directory junction on Windows (no admin required)
+            platform::create_directory_link(dst.string(), src.string());
+        } else {
+            fs::create_hard_link(src, dst, ec);
+        }
     } else {
-        fs::create_hard_link(src, dst, ec);
+        fs::create_symlink(src, dst, ec);
     }
-#else
-    fs::create_symlink(src, dst, ec);
-#endif
     if (ec) log::warn("[xvm] link failed: {} -> {}",
                       Config::display_path(dst), Config::display_path(src));
 }
@@ -634,13 +634,8 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
     // get two spellings depending on which path created it, and only one of
     // them dispatches: `shim_dispatch` looks the name up in the workspace,
     // which is keyed by target. `sync_shim_tables` has one spelling.
-#ifdef _WIN32
-    auto xlings_bin = p.homeDir / "bin" / "xlings.exe";
-    constexpr std::string_view shim_ext = ".exe";
-#else
-    auto xlings_bin = p.homeDir / "bin" / "xlings";
-    constexpr std::string_view shim_ext = "";
-#endif
+    constexpr std::string_view shim_ext = platform::exe_suffix;
+    auto xlings_bin = p.homeDir / "bin" / ("xlings" + std::string(shim_ext));
     if (!fs::exists(xlings_bin)) {
         xlings_bin = p.homeDir / "xlings";
     }

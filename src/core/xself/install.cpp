@@ -158,18 +158,14 @@ bool is_under_temp_dir(const fs::path& p) {
     // quick_install uses "xlings-install" in temp dir name — definitive indicator
     if (s.find("xlings-install") != std::string::npos) return true;
     if (s.find("/tmp/") == 0 || s.find("/tmp") == 0) return true;
-#if defined(__APPLE__)
     // macOS: /var/folders/... is system temp; canonical paths may use /private/var
-    if (s.find("/var/folders/") != std::string::npos ||
-        s.find("/private/var/folders/") != std::string::npos)
+    if (platform::is_macos && (s.find("/var/folders/") != std::string::npos ||
+                               s.find("/private/var/folders/") != std::string::npos))
         return true;
-#endif
-#if defined(_WIN32)
     // Windows: match path segments /Temp/ or /Tmp/ (GetTempPath uses these)
-    if (s.find("/Temp/") != std::string::npos || s.find("/Tmp/") != std::string::npos ||
-        s.find("/temp/") != std::string::npos || s.find("/tmp/") != std::string::npos)
+    if (platform::is_windows && (s.find("/Temp/") != std::string::npos || s.find("/Tmp/") != std::string::npos ||
+                                 s.find("/temp/") != std::string::npos || s.find("/tmp/") != std::string::npos))
         return true;
-#endif
     for (const char* env : {"TMPDIR", "TEMP", "TMP", "RUNNER_TEMP"}) {
         if (const char* v = std::getenv(env)) {
             auto prefix = fs::path(v).generic_string();
@@ -177,11 +173,9 @@ bool is_under_temp_dir(const fs::path& p) {
             auto prefixSlash = prefix;
             if (prefixSlash.back() != '/') prefixSlash += '/';
             if (s.starts_with(prefixSlash) || s == prefix) return true;
-#if defined(__APPLE__)
             // macOS: /var resolves to /private/var; canonical paths may have /private prefix
-            if (prefix.starts_with("/var/") && s.starts_with("/private" + prefixSlash))
+            if (platform::is_macos && prefix.starts_with("/var/") && s.starts_with("/private" + prefixSlash))
                 return true;
-#endif
         }
     }
     return false;
@@ -225,12 +219,7 @@ fs::path detect_existing_home() {
         return absolute.lexically_normal();
     }
     auto [rc, out] = platform::run_command_capture(
-#ifdef _WIN32
-        "where xlings 2>nul"
-#else
-        "command -v xlings 2>/dev/null"
-#endif
-    );
+        platform::is_windows ? "where xlings 2>nul" : "command -v xlings 2>/dev/null");
     (void)rc;
     // "where"/"command -v" may return multiple lines; use first valid path
     auto lines = utils::split_string(out, '\n');
@@ -275,8 +264,7 @@ void copy_directory_contents(const fs::path& src, const fs::path& dst) {
     }
 }
 
-void setup_shell_profiles(const fs::path& homeDir) {
-#if defined(__linux__) || defined(__APPLE__)
+void setup_posix_profiles_(const fs::path& homeDir) {
     auto profileSh   = homeDir / "config" / "shell" / "xlings-profile.sh";
     auto profileFish = homeDir / "config" / "shell" / "xlings-profile.fish";
 
@@ -289,19 +277,19 @@ void setup_shell_profiles(const fs::path& homeDir) {
     fs::path rcHome(platform::target_home());
 
     std::vector<fs::path> profiles;
-#if defined(__APPLE__)
-    profiles = {
-        rcHome / ".zshrc",
-        rcHome / ".bashrc",
-        rcHome / ".zprofile",
-    };
-#else
-    profiles = {
-        rcHome / ".bashrc",
-        rcHome / ".zshrc",
-        rcHome / ".profile",
-    };
-#endif
+    if constexpr (platform::is_macos) {
+        profiles = {
+            rcHome / ".zshrc",
+            rcHome / ".bashrc",
+            rcHome / ".zprofile",
+        };
+    } else {
+        profiles = {
+            rcHome / ".bashrc",
+            rcHome / ".zshrc",
+            rcHome / ".profile",
+        };
+    }
 
     bool added = false;
     for (auto& prof : profiles) {
@@ -374,7 +362,9 @@ void setup_shell_profiles(const fs::path& homeDir) {
             std::println("  {}", sourceLine);
         }
     }
-#elif defined(_WIN32)
+}
+
+void setup_windows_profiles_(const fs::path& homeDir) {
     auto xlingsBin = homeDir / "subos" / "current" / "bin";
     std::string setHomeCmd = "powershell -NoProfile -Command \""
         "[System.Environment]::SetEnvironmentVariable('XLINGS_HOME','"
@@ -448,7 +438,11 @@ void setup_shell_profiles(const fs::path& homeDir) {
         std::println("[xlings:self] no PowerShell host was configured, add manually to $PROFILE:");
         std::println("  {}", snippet);
     }
-#endif
+}
+
+void setup_shell_profiles(const fs::path& homeDir) {
+    if constexpr (platform::is_windows) setup_windows_profiles_(homeDir);
+    else setup_posix_profiles_(homeDir);
 }
 
 // Advise when running as root, distinguishing the two failure-prone cases:
@@ -961,12 +955,7 @@ int cmd_install(EventStream& stream) {
 
     setup_shell_profiles(targetHome);
 
-    auto verifyBin = targetHome / "bin" /
-#ifdef _WIN32
-        "xlings.exe";
-#else
-        "xlings";
-#endif
+    auto verifyBin = targetHome / "bin" / ("xlings" + std::string(platform::exe_suffix));
     if (fs::exists(verifyBin)) {
         auto [rc, out] = platform::run_command_capture(
             "\"" + verifyBin.string() + "\" -h");
@@ -974,8 +963,7 @@ int cmd_install(EventStream& stream) {
             log::warn("[xlings:self] verification failed");
     }
 
-#if defined(__linux__)
-    if (fs::exists(verifyBin)) {
+    if (platform::is_linux && fs::exists(verifyBin)) {
         platform::set_env_variable("XLINGS_HOME", targetHome.string());
         auto binDir = (targetHome / "subos" / "current" / "bin").string();
         auto existingPath = std::string(std::getenv("PATH") ? std::getenv("PATH") : "");
@@ -988,7 +976,6 @@ int cmd_install(EventStream& stream) {
             log::warn("  hint: run manually: xlings install xim:patchelf@0.18.0 -y");
         }
     }
-#endif
 
     // Hand the freshly-written ~/.xlings back to the invoking user when we
     // ran via sudo, so a later non-sudo `xlings install` isn't locked out by
@@ -999,11 +986,8 @@ int cmd_install(EventStream& stream) {
     std::println("\n[xlings:self] install: {} ({}) - ok", targetHome.string(), pkgVersion);
     std::println("");
     std::println("  run 'xlings -h' to get started");
-#if defined(__linux__) || defined(__APPLE__)
-    std::println("  restart shell or: source ~/.bashrc");
-#else
-    std::println("  restart terminal to refresh PATH");
-#endif
+    if constexpr (platform::is_posix) std::println("  restart shell or: source ~/.bashrc");
+    else std::println("  restart terminal to refresh PATH");
     std::println("");
     return 0;
 }

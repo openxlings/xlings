@@ -48,11 +48,17 @@ jobs:
       - name: fresh-install must track the published latest
         run: bash tests/fresh-install/no_xlings_version_pin_check.sh
 
-      # A subos home is user data; one function deletes a whole subos, and
-      # only with the user's confirmation. This fails any other remove_all on
-      # a subos path. Milliseconds, no build.
-      - name: subos directories are deleted in one place
-        run: bash tools/lint_subos_remove_all.sh
+      # Repository rules, every tools/lint_*.sh: a subos is deleted in one
+      # place (user data); system headers only in modules/platform; platform
+      # selection is `if constexpr`; package layers import downward only.
+      # Milliseconds, no build. A new lint joins by being a tools/lint_*.sh.
+      - name: repository lints (tools/lint_*.sh)
+        run: |
+          rc=0
+          for lint in tools/lint_*.sh; do
+            echo "::group::$lint"; bash "$lint" || rc=1; echo "::endgroup::"
+          done
+          exit $rc
 
       # ── Phase 1: Configure Environment via xlings ─────────────────
 

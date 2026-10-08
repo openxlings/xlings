@@ -1,17 +1,7 @@
 module;
 
-#include <cstdio>
-#include <cstdlib>
-#if !defined(_WIN32)
-#include <sys/wait.h>
-#include <unistd.h>
-#include <fcntl.h>
-#else
-#include <io.h>
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
+// The primary interface declares; it includes nothing. System headers live
+// in the implementation unit that calls them (AGENTS.md, "System headers").
 
 export module xlings.platform;
 
@@ -55,6 +45,12 @@ namespace platform {
     export inline constexpr bool is_linux = false;
 #endif
     export inline constexpr bool is_posix = !is_windows;
+    // What a file name needs to be an executable here: ".exe" on Windows.
+    export inline constexpr std::string_view exe_suffix = is_windows ? ".exe" : "";
+    // The null device, as a shell redirection target.
+    export inline constexpr std::string_view null_device = is_windows ? "NUL" : "/dev/null";
+    // The calendar fields of `t` in the local time zone (localtime_r / _s).
+    export std::tm local_time(std::time_t t);
     export bool remove_empty_directory(const std::filesystem::path& path);
 
     export using platform_impl::PATH_SEPARATOR;
@@ -292,30 +288,16 @@ namespace platform {
     // the whole new one, and an interruption before the rename leaves the
     // old content untouched.
 
-    // fsync the data we just wrote. Without it the rename can reach the disk
-    // before the staging file's contents do, which on a power loss yields an
-    // atomically-renamed *empty* file — the exact failure we are removing.
-    inline bool sync_file_handle_(std::FILE* fp) {
-#if defined(_WIN32)
-        return ::_commit(::_fileno(fp)) == 0;
-#else
-        return ::fsync(::fileno(fp)) == 0;
-#endif
-    }
+    // Flush a file's data to stable storage (fsync; _commit on Windows).
+    // Without it a rename can reach the disk before the staged contents do,
+    // which on a power loss yields an atomically-renamed *empty* file.
+    export bool sync_file(const std::filesystem::path& path);
 
-    // fsync the directory so the rename itself is durable. Best-effort: not
-    // all filesystems support it, and failing here does not make the result
-    // any less correct than the non-atomic write it replaces.
-    inline void sync_directory_(const std::filesystem::path& dir) {
-#if !defined(_WIN32)
-        int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
-        if (fd < 0) return;
-        ::fsync(fd);
-        ::close(fd);
-#else
-        (void)dir;  // no directory-handle fsync equivalent on Windows
-#endif
-    }
+    // Flush a directory so a rename or link created in it is durable.
+    // Best-effort: Windows has no directory-handle fsync, and some file
+    // systems refuse it; neither makes the result less correct than the
+    // non-durable write it hardens.
+    export void sync_directory(const std::filesystem::path& dir);
 
     // Publish a same-filesystem scratch atomically, refusing every existing destination.
     // No copy or check-then-rename fallback when the OS cannot enforce this.

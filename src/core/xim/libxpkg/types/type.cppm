@@ -148,7 +148,7 @@ struct PlanNode {
 
     // Explicit special members to work around GCC 15 module linker bug
     PlanNode() = default;
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     ~PlanNode() = default;
     PlanNode(const PlanNode&) = default;
     PlanNode& operator=(const PlanNode&) = default;
@@ -163,7 +163,7 @@ struct PlanNode {
 #endif
 };
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 // Out-of-line definitions force GCC to emit symbols in this TU
 PlanNode::~PlanNode() = default;
 PlanNode::PlanNode(const PlanNode&) = default;
@@ -181,7 +181,7 @@ struct InstallPlan {
     std::size_t pending_count() const;
 
     InstallPlan() = default;
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     ~InstallPlan() = default;
     InstallPlan(const InstallPlan&) = default;
     InstallPlan& operator=(const InstallPlan&) = default;
@@ -196,7 +196,7 @@ struct InstallPlan {
 #endif
 };
 
-#if !defined(_MSC_VER)
+#if !defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
 InstallPlan::~InstallPlan() = default;
 InstallPlan::InstallPlan(const InstallPlan&) = default;
 InstallPlan& InstallPlan::operator=(const InstallPlan&) = default;

@@ -3,6 +3,7 @@ module;
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <ctime>
 #if defined(__linux__)
 #include <sys/syscall.h>
 #elif defined(__APPLE__)
@@ -638,7 +639,13 @@ void write_file_atomic(const std::string& filepath, const std::string& content) 
         if (!fp) throw std::runtime_error("Failed to create unique staging file: " + filepath);
         bool ok = std::fwrite(content.data(), 1, content.size(), fp) == content.size();
         if (ok) ok = std::fflush(fp) == 0;
-        if (ok) ok = sync_file_handle_(fp);
+        if (ok) {
+#if defined(_WIN32)
+            ok = ::_commit(::_fileno(fp)) == 0;
+#else
+            ok = ::fsync(::fileno(fp)) == 0;
+#endif
+        }
         if (std::fclose(fp) != 0) ok = false;
         if (!ok) {
             ec.clear();
@@ -669,8 +676,45 @@ void write_file_atomic(const std::string& filepath, const std::string& content) 
             fs::remove(staging, rmEc);
             throw std::runtime_error("Failed to write file: " + filepath);
         }
-        sync_directory_(dir);
+        sync_directory(dir);
     }
+
+bool sync_file(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    const int fd = ::_wopen(path.wstring().c_str(), _O_RDWR | _O_BINARY);
+    if (fd < 0) return false;
+    const bool ok = ::_commit(fd) == 0;
+    ::_close(fd);
+    return ok;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const bool ok = ::fsync(fd) == 0;
+    ::close(fd);
+    return ok;
+#endif
+}
+
+void sync_directory(const std::filesystem::path& dir) {
+#if !defined(_WIN32)
+    const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return;
+    ::fsync(fd);
+    ::close(fd);
+#else
+    (void)dir;  // no directory-handle fsync equivalent on Windows
+#endif
+}
+
+std::tm local_time(std::time_t t) {
+    std::tm tm{};
+#if defined(_WIN32)
+    ::localtime_s(&tm, &t);
+#else
+    ::localtime_r(&t, &tm);
+#endif
+    return tm;
+}
 
 void write_string_to_file(const std::string& filepath, const std::string& content) {
         write_file_atomic(filepath, content);

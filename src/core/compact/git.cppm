@@ -99,7 +99,7 @@ inline void prepend_current_bin_dir_() {
 // index sync works with system git, XLINGS_COMPACT_GIT_BIN overrides, and
 // bootstrap alike. User/CI-set GIT_SSL_CAINFO always wins.
 inline void ensure_ca_env_() {
-#if defined(__linux__)
+    if constexpr (!platform::is_linux) return;
     if (!env_or_empty_("GIT_SSL_CAINFO").empty()) return;
     auto bundle = resolve_ca_bundle([](const std::string& p) {
         std::error_code ec;
@@ -109,7 +109,6 @@ inline void ensure_ca_env_() {
         platform::set_env_variable("GIT_SSL_CAINFO", bundle);
         log::debug("compact::git: GIT_SSL_CAINFO={} (/etc/ssl/cert.pem absent)", bundle);
     }
-#endif
 }
 
 // #599: bound git's network operations.

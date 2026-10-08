@@ -13,7 +13,7 @@ struct Snapshot {
     std::string scope;
     xvm::VersionDB versions;
     xvm::SubosWorkspace workspace;
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     Snapshot() = default;
     ~Snapshot() = default;
     Snapshot(const Snapshot&) = default;
@@ -37,7 +37,7 @@ struct BorrowPlan {
     fs::path requestedPayload;
     xvm::Workspace requestedMembers;
     std::map<std::string, fs::path> payloadCoordinates;
-#if defined(_MSC_VER)
+#if defined(_MSC_VER)  // platform-if-ok: compiler, not platform: GCC/MSVC module special members
     BorrowPlan() = default;
     ~BorrowPlan() = default;
     BorrowPlan(const BorrowPlan&) = default;

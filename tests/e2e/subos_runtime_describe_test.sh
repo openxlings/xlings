@@ -124,7 +124,7 @@ S1_RUNTIME="$(block_field "$H1/subos/default/.xlings.json" runtime)"
 # asserts WHAT the default is. This one asserts the default is not used, so it
 # has to follow the default.
 CURRENT_DEFAULT="$(sed -n 's/.*DEFAULT_RUNTIME_FALLBACK = "\(.*\)".*/\1/p' \
-    "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/modules/subos/src/manifest.cppm" \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/modules/subos/src/model/manifest.cppm" \
     | head -1)"
 [[ -n "$CURRENT_DEFAULT" ]] \
   || note_fail "S1: could not read DEFAULT_RUNTIME_FALLBACK out of manifest.cppm"
