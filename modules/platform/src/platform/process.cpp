@@ -39,10 +39,10 @@ namespace xlings::platform {
 
 namespace sig {
 #if defined(_WIN32)
-extern const int interrupt = 2, quit = 3, terminate = 15, hangup = 1, pipe = 13, kill = 9;
+extern const int interrupt = 2, quit = 3, terminate = 15, hangup = 1, pipe = 13, kill = 9, child = 17;
 #else
 extern const int interrupt = SIGINT, quit = SIGQUIT, terminate = SIGTERM, hangup = SIGHUP,
-          pipe = SIGPIPE, kill = SIGKILL;
+          pipe = SIGPIPE, kill = SIGKILL, child = SIGCHLD;
 #endif
 }  // namespace sig
 
@@ -392,7 +392,15 @@ bool send_message(int sock, std::string_view data, std::span<const int> fds) {
 
 std::optional<Message> receive_message(int sock, std::size_t max) {
     constexpr int kMaxFds = 8;
-    std::vector<char> buf(max);
+    std::size_t capacity = max;
+#if defined(__linux__)
+    ssize_t pending;
+    do { pending = ::recv(sock, nullptr, 0, MSG_PEEK | MSG_TRUNC); }
+    while (pending < 0 && errno == EINTR);
+    if (pending < 0) return std::nullopt;
+    capacity = std::min(max, static_cast<std::size_t>(pending));
+#endif
+    std::vector<char> buf(capacity);
     iovec iov{ buf.data(), buf.size() };
     alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int) * kMaxFds)];
     msghdr msg{};
@@ -407,7 +415,7 @@ std::optional<Message> receive_message(int sock, std::size_t max) {
 #endif
     ssize_t n;
     do { n = ::recvmsg(sock, &msg, flags); } while (n < 0 && errno == EINTR);
-    if (n <= 0) return std::nullopt;
+    if (n < 0) return std::nullopt;
     Message out;
     for (cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
         if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
@@ -418,6 +426,10 @@ std::optional<Message> receive_message(int sock, std::size_t max) {
             if constexpr (flags == 0) cloexec(fd);
             out.fds.push_back(fd);
         }
+    }
+    if (n == 0 || (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) {
+        close_fds(out.fds);
+        return std::nullopt;
     }
     out.data.assign(buf.data(), static_cast<std::size_t>(n));
     return out;

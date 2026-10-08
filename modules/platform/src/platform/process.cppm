@@ -23,6 +23,7 @@ extern const int terminate;   // SIGTERM
 extern const int hangup;      // SIGHUP
 extern const int pipe;        // SIGPIPE
 extern const int kill;        // SIGKILL
+extern const int child;       // SIGCHLD
 }  // namespace sig
 
 bool send_signal(int pid, int signal);

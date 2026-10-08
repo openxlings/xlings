@@ -282,7 +282,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
 
     // Like system(): while the sandbox runs, Ctrl-C is the command's. SIGTERM
     // and SIGHUP end the session (forwarded to the sandbox).
-    const int signal_fd = platform::route_signals({sig::terminate, sig::hangup},
+    const int signal_fd = platform::route_signals({sig::terminate, sig::hangup, sig::child},
                                                   {sig::interrupt, sig::quit, sig::pipe});
 
     // The broker's socket exists before the backend starts: bwrap binds it
@@ -495,10 +495,11 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         // An audit failure ends admission immediately. Draining the normal
         // control channel can wait on a backend blocked by our listeners.
         if (audit_failed || root_failed) break;
+        const auto signals = platform::pending_signals();
         if (!reaped) {
             if (auto st = platform::wait_process(pid, false)) { status = *st; reaped = true; pid = -1; }
         }
-        for (int s : platform::pending_signals()) {
+        for (int s : signals) {
             if ((s == sig::terminate || s == sig::hangup) && !reaped) platform::send_signal(pid, sig::terminate);
         }
         if (reaped && !ctl_open) break;
@@ -1099,10 +1100,15 @@ int session_init(std::span<const std::string> args) {
     int main_pid = -1;
     platform::ExitStatus main_status{};
     bool main_done = main_argv.empty();
+    // A child can finish between reaping and polling. Its signal stays on
+    // the self-pipe until the next reap, rather than waiting for the TTL tick.
+    const int signal_fd = platform::route_signals({sig::child}, {});
+    if (signal_fd < 0) return kExitSetup;
     if (!main_argv.empty()) {
         main_pid = platform::fork_process();
         if (main_pid == 0) {
             platform::close_fd(ctl);
+            platform::reset_signals();
             const int e = platform::exec_program(main_argv, platform::environment());
             std::println(std::cerr, "xlings: {}: {}", main_argv[0], platform::error_text(e));
             platform::exit_now(platform::is_not_found(e) ? kExitNotFound : kExitCannotRun);
@@ -1123,6 +1129,7 @@ int session_init(std::span<const std::string> args) {
     };
 
     while (true) {
+        (void)platform::pending_signals();
         while (auto child = platform::reap_child()) {
             const auto [w, st] = *child;
             if (w == main_pid) {
@@ -1143,13 +1150,9 @@ int session_init(std::span<const std::string> args) {
             if (ttl > 0 && std::chrono::steady_clock::now() - last_activity >= std::chrono::seconds(ttl))
                 return 0;
         }
-        if (!ctl_open) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-
-        platform::PollFd p{ ctl };
-        if (platform::poll_fds(std::span(&p, 1), 200) <= 0) continue;
+        platform::PollFd watched[2]{{ctl_open ? ctl : -1}, {signal_fd}};
+        if (platform::poll_fds(watched, 200) <= 0) continue;
+        if (!ctl_open || (!watched[0].readable && !watched[0].closed)) continue;
         auto m = recv_msg(ctl);
         if (!m) {
             // The supervisor is gone: nothing outside watches any more.

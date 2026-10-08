@@ -82,10 +82,11 @@ std::vector<std::string> command(const fs::path& root, const HomeView& home,
         if (bindings.empty())
             throw std::runtime_error("root library cache needs a checked read-only store closure");
         argv = {bwrap.string(), "--unshare-all", "--die-with-parent", "--uid", "0", "--gid", "0",
-                "--ro-bind", root.string(), "/"};
+                "--ro-bind", root.string(), "/", "--tmpfs", "/run"};
         for (const auto& binding : bindings)
             argv.insert(argv.end(), {"--ro-bind", binding.source.string(), binding.destination.string()});
-        argv.insert(argv.end(), {"--bind", scratch.string(), "/run/xlings-ldcache", "--proc", "/proc", "--dev", "/dev", "--"});
+        argv.insert(argv.end(), {"--bind", scratch.string(), "/run/xlings-ldcache",
+                                "--remount-ro", "/run", "--proc", "/proc", "--dev", "/dev", "--"});
         output = "/run/xlings-ldcache/ld.so.cache";
     }
     argv.insert(argv.end(), {"/usr/bin/ldconfig", "-X", "-i", "-C", output,

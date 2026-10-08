@@ -4,10 +4,13 @@ import xlings.testkit;
 
 import std;
 import xlings.subos.library_cache;
+import xlings.subos.caps;
 import xlings.platform.root_mount;
+import xlings.core.elfread;
 
 namespace tk = xlings::testkit;
 namespace lc = xlings::subos::library_cache;
+namespace fs = std::filesystem;
 
 XTEST(RootLibraryCache, GeneratorSeesTheRootReadOnlyAndWritesOnlyOwnedStaging, .area = "subos",
       .covers = {"ROOT-LDCACHE"}) {
@@ -29,6 +32,96 @@ XTEST(RootLibraryCache, GeneratorSeesTheRootReadOnlyAndWritesOnlyOwnedStaging, .
         has({"--", "/usr/bin/ldconfig", "-X", "-i", "-C", "/run/xlings-ldcache/ld.so.cache"}));
     EXPECT_TRUE(has({"-f", "/etc/ld.so.conf", "/usr/lib", "/usr/lib64"}));
     EXPECT_TRUE(has({"--unshare-all"}));
+    const auto position = [&](std::initializer_list<std::string> words) {
+        return std::ranges::search(argv, words).begin();
+    };
+    ASSERT_TRUE(has({"--tmpfs", "/run"}));
+    ASSERT_TRUE(has({"--remount-ro", "/run"}));
+    EXPECT_LT(position({"--ro-bind", "/owned/root", "/"}), position({"--tmpfs", "/run"}));
+    EXPECT_LT(position({"--tmpfs", "/run"}), position({"--ro-bind", "/private/skeleton", "/owned/home"}));
+    EXPECT_LT(position({"--ro-bind", bindings[1].source.string(), bindings[1].destination.string()}),
+              position({"--bind", "/owned/staging", "/run/xlings-ldcache"}));
+    EXPECT_LT(position({"--bind", "/owned/staging", "/run/xlings-ldcache"}),
+              position({"--remount-ro", "/run"}));
+}
+
+XTEST(RootLibraryCache, RunningRootKeepsItsDirectGeneratorCommand, .area = "subos",
+      .covers = {"ROOT-LDCACHE"}) {
+    const std::vector<std::string> expected{"/usr/bin/ldconfig", "-X", "-i", "-C",
+        "/owned/staging/ld.so.cache", "-f", "/etc/ld.so.conf", "/usr/lib", "/usr/lib64"};
+    EXPECT_EQ(lc::command("/", {"/owned/home"}, "/owned/staging", "/unused/bwrap"), expected);
+}
+
+XTEST(RootLibraryCache, ActualGeneratorUsesPrivateRunAndPreservesMachineState,
+      .area = "subos", .covers = {"ROOT-LDCACHE"}, .requires_ = {"linux", "bwrap"},
+      .resources = {"sandbox"}, .proves = "isolation") {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux mount namespaces";
+    if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
+    fs::path generator;
+    for (const auto* path : {"/usr/sbin/ldconfig.real", "/sbin/ldconfig.real",
+                             "/usr/sbin/ldconfig", "/sbin/ldconfig"}) {
+        const auto elf = xlings::elfread::read(path);
+        if (elf && elf->interpreter.empty()) { generator = fs::canonical(path); break; }
+    }
+    ASSERT_FALSE(generator.empty()) << "this Linux namespace lane needs its static glibc ldconfig";
+    auto home = tk::Home::isolated("library-cache-namespace");
+    const auto root = home.root() / "machine";
+    const auto authority = home.root() / "runtime-authority";
+    const auto listing = tk::run({.argv = {generator.string(), "-p"}, .env = home.env()});
+    ASSERT_EQ(listing.exit_code, 0) << listing.transcript();
+    fs::path libc;
+    std::istringstream lines(listing.out);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto name = line.find_first_not_of(" \t");
+        const auto separator = line.find(" => ");
+        if (name != std::string::npos && line.substr(name).starts_with("libc.so.6 ") &&
+            separator != std::string::npos) {
+            libc = fs::canonical(line.substr(separator + 4));
+            break;
+        }
+    }
+    ASSERT_FALSE(libc.empty()) << listing.transcript();
+    fs::create_directories(root / "usr/bin");
+    fs::create_directories(root / "usr/lib");
+    fs::create_directories(root / "usr/lib64");
+    fs::create_directories(root / "proc");
+    fs::create_directories(root / "dev");
+    fs::create_directory(authority);
+    fs::copy_file(generator, root / "usr/bin/ldconfig");
+    fs::copy_file(libc, authority / "libc.so.6");
+    tk::write_file(root / "etc/ld.so.conf", "/run/xlings-cache-authority\n");
+    tk::write_file(root / "run/user-owned", "retain machine runtime data");
+    const auto sourceBefore = tk::read_file(authority / "libc.so.6");
+    const std::vector<xlings::platform::root_mount::Binding> bindings{
+        {authority, "/run/xlings-cache-authority"}};
+    const auto generated = lc::refresh(root, {home.dir()}, "probe", bindings);
+    ASSERT_TRUE(generated) << generated.error();
+    ASSERT_TRUE(*generated);
+    const auto cache = tk::read_file(root / "etc/ld.so.cache");
+    EXPECT_NE(cache.find("/run/xlings-cache-authority/libc.so.6"), std::string::npos);
+    EXPECT_EQ(tk::read_file(root / "run/user-owned"), "retain machine runtime data");
+    EXPECT_FALSE(fs::exists(root / "run/xlings-ldcache"));
+    EXPECT_FALSE(fs::exists(root / "run/xlings-cache-authority"));
+    EXPECT_EQ(tk::read_file(authority / "libc.so.6"), sourceBefore);
+    const auto backend = xlings::subos::caps::probe({home.dir()}, {});
+    ASSERT_TRUE(backend.bwrap && backend.bwrap->usable);
+    const auto scratch = home.root() / "forbidden-output-staging";
+    ASSERT_TRUE(fs::create_directory(scratch));
+    auto forbidden = lc::command(root, {home.dir()}, scratch, backend.bwrap->bin, bindings);
+    const auto cacheFlag = std::ranges::find(forbidden, "-C");
+    ASSERT_NE(cacheFlag, forbidden.end());
+    *(cacheFlag + 1) = "/run/unowned-cache";
+    const auto denied = tk::run({.argv = std::move(forbidden), .env = home.env()});
+    EXPECT_NE(denied.exit_code, 0) << denied.transcript();
+    EXPECT_FALSE(denied.timed_out) << denied.transcript();
+    EXPECT_EQ(denied.signal, 0) << denied.transcript();
+    EXPECT_FALSE(fs::exists(root / "run/unowned-cache"));
+    EXPECT_FALSE(fs::exists(scratch / "ld.so.cache"));
+    tk::write_file(root / "etc/ld.so.cache", "user replacement");
+    const auto changed = lc::refresh(root, {home.dir()}, "probe", bindings);
+    ASSERT_FALSE(changed);
+    EXPECT_EQ(tk::read_file(root / "etc/ld.so.cache"), "user replacement");
 }
 
 XTEST(RootLibraryCache, MissingGeneratorAndUnknownExistingCacheNeverOverwriteUserFiles,
