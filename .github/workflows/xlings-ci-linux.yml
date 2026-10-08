@@ -324,7 +324,11 @@ jobs:
           # own, depending on the mcpp version.
           xdev="$(find target apps/xdev -path '*musl*' -name xdev -type f -perm -111 2>/dev/null | head -1)"
           [[ -n "$xdev" ]] || { echo "::error::mcpp build -p xdev produced no xdev"; find . -name 'xdev*' -not -path './.git/*' | head; exit 1; }
-          xdev="$GITHUB_WORKSPACE/$xdev"
+          # linux_release.sh cleans the musl target; retain the static runner
+          # outside that tree for candidate acceptance and downstream lanes.
+          mkdir -p target/xdev/runner/bin
+          cp "$xdev" target/xdev/runner/bin/xdev
+          xdev="$GITHUB_WORKSPACE/target/xdev/runner/bin/xdev"
           echo "XDEV=$xdev" >> "$GITHUB_ENV"
           export XDEV_BIN="$xdev"
           mkdir -p target/xdev/linux-xdev
@@ -334,6 +338,14 @@ jobs:
             mcpp test -p xdev
           mcpp test --no-run --message-format json
           "$xdev" test --no-build --out target/xdev/linux-unit
+          # Retain only the already-built candidate acceptance programs.
+          for test in e2e/test_domain_source e2e/test_domain_producer e2e/test_subos_perf unit/test_root_generation_perf; do
+            binary="$(find target -type f -path "*/bin/$test" | head -1)"
+            test -x "$binary"
+            destination="target/xdev/retained/bin/$test"
+            mkdir -p "$(dirname "$destination")"
+            cp -p "$binary" "$destination"
+          done
 
       # A separate step, `if: failure()`, and not an `|| { ... }` on one
       # command.
