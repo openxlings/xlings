@@ -162,6 +162,57 @@ XTEST(LuaWorker, RecipeLogDirectorySymlinkRefusesBeforeRecipeLoad, .area = "xim"
     EXPECT_EQ(std::distance(fs::directory_iterator(outside), fs::directory_iterator{}), 1);
 }
 
+XTEST(LuaWorker, PayloadlessConfigRemovalInspectsReadonlyAndRunsEachHookOnce, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-config-remove");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    for (const auto name : {"config-explicit", "config-bare"}) {
+        tk::write_file(repo / "pkgs/c" / (std::string(name) + ".lua"),
+                       "package={spec='1',name='" + std::string(name) +
+                           "',type='config',archs={'x86_64','aarch64'},"
+                           "xpm={linux={['latest']={ref='1.0.0'},['1.0.0']={}}}}\n"
+                           "function uninstall() print('PAYLOADLESS_UNINSTALL_" +
+                           name + "'); return true end\n");
+    }
+    const auto primary = home.root() / "empty-primary";
+    tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    fs::create_directories(primary / "pkgs");
+    nlohmann::json config = {
+        {"mirror", "GLOBAL"},
+        {"xim", {{"index-repo", primary.generic_string()}}},
+        {"index_repos",
+         nlohmann::json::array(
+             {{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
+              {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
+    const auto initialized = home.xlings({"self", "init"});
+    ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
+    for (const auto name : {"config-explicit", "config-bare"}) {
+        const auto package_parent = home.dir() / "data/xpkgs" / ("fixture-x-" + std::string(name));
+        ASSERT_FALSE(fs::exists(package_parent));
+        const auto coordinate = "fixture:" + std::string(name) +
+                                (std::string_view(name) == "config-explicit" ? "@1.0.0" : "");
+        const auto result =
+            home.xlings({"remove", coordinate, "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+        ASSERT_EQ(result.exit_code, 0) << result.transcript();
+        const auto log =
+            home.dir() / "logs/hooks" / ("fixture-" + std::string(name) + "@1.0.0.uninstall.log");
+        const auto output = tk::read_file(log);
+        const auto marker = "PAYLOADLESS_UNINSTALL_" + std::string(name);
+        const auto first = output.find(marker);
+        ASSERT_NE(first, std::string::npos) << result.transcript() << '\n' << output;
+        EXPECT_EQ(output.find(marker, first + marker.size()), std::string::npos);
+        EXPECT_FALSE(fs::exists(package_parent / "1.0.0"));
+    }
+}
+
 XTEST(LuaWorker, RuntimeInterpreterAliasUnderPrivateTmpRemainsExecutableAndReadonly, .area = "xim",
       .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
       .proves = "isolation") {

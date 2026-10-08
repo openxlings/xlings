@@ -1247,7 +1247,6 @@ selected_payloadless_config_has_uninstall_(
     }
 
     xpkg::ExecutionContext context;
-    context.install_dir = installDir;
     auto executor = lua_boundary::create_executor(recipe, context);
     if (!executor) return std::unexpected(executor.error());
     return executor->has_hook(xpkg::HookType::Uninstall);
