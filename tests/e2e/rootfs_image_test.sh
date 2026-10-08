@@ -61,18 +61,18 @@ grep -q 'XZ Utils' <<<"$out" || fail "xz did not install or run: $out"
 grep -q "$H/data/xpkgs/xim-x-xz/" <<<"$out" || fail "xz is not linked from its payload: $out"
 
 log "3. a host-built program in the root"
-cp "$(command -v true)" "$RUNTIME_DIR/host-true"
+cp /usr/bin/true "$RUNTIME_DIR/host-true"
 out="$(D -v "$RUNTIME_DIR/host-true:/root/host-true:ro" "$IMG" /bin/sh -c \
         '/root/host-true && echo host-binary-ran' 2>&1)" || true
 grep -q host-binary-ran <<<"$out" || fail "a host-built binary did not run against /lib64: $out"
 
 log "4. a half-written /usr, rolled back by the static xlings"
 # A newer generation first, so there is a good one to go back to.
-out="$(D -e H="$H" "$IMG" /bin/sh -c '
-    xlings install -y zlib >/dev/null 2>&1
-    rm -f "$H/subos/default/root/usr/lib/libc.so.6"
-    getconf GNU_LIBC_VERSION >/dev/null 2>&1 && echo still-works || echo broken
-    xlings subos rollback default && getconf GNU_LIBC_VERSION >/dev/null 2>&1 && echo restored' 2>&1)" || true
+out="$(D -e H="$H" -v "$RUNTIME_DIR/host-true:/root/host-true:ro" "$IMG" /bin/sh -c '
+    xlings install -y zlib >/dev/null 2>&1 || exit 1
+    rm -f "$H/subos/default/root/usr/lib/libc.so.6" /etc/ld.so.cache
+    /root/host-true >/dev/null 2>&1 && echo still-works || echo broken
+    xlings subos rollback default && /root/host-true >/dev/null 2>&1 && echo restored' 2>&1)" || true
 grep -q broken <<<"$out" || fail "removing libc from /usr broke nothing: $out"
 grep -q restored <<<"$out" || fail "rollback did not restore the root: $out"
 

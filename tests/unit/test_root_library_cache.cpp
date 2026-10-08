@@ -48,7 +48,8 @@ XTEST(RootLibraryCache, GeneratorSeesTheRootReadOnlyAndWritesOnlyOwnedStaging, .
 XTEST(RootLibraryCache, RunningRootKeepsItsDirectGeneratorCommand, .area = "subos",
       .covers = {"ROOT-LDCACHE"}) {
     const std::vector<std::string> expected{"/usr/bin/ldconfig", "-X", "-i", "-C",
-        "/owned/staging/ld.so.cache", "-f", "/etc/ld.so.conf", "/usr/lib", "/usr/lib64"};
+        (fs::path("/owned/staging") / "ld.so.cache").string(), "-f", "/etc/ld.so.conf",
+        "/usr/lib", "/usr/lib64"};
     EXPECT_EQ(lc::command("/", {"/owned/home"}, "/owned/staging", "/unused/bwrap"), expected);
 }
 
