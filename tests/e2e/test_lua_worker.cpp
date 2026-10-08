@@ -6,6 +6,7 @@ import std;
 import mcpplibs.xpkg.executor;
 import xlings.platform.worker;
 import xlings.core.xim.lua_protocol;
+import xlings.core.elfread;
 import xlings.libs.json;
 
 namespace tk = xlings::testkit;
@@ -119,6 +120,87 @@ XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area
     EXPECT_EQ(result.exit_code, 0) << result.transcript();
     EXPECT_EQ(tk::read_file(forbidden), "host original");
     EXPECT_TRUE(fs::is_symlink(script.parent_path()));
+}
+
+XTEST(LuaWorker, RuntimeInterpreterAliasUnderPrivateTmpRemainsExecutableAndReadonly, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    const auto runtime = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(runtime);
+    if (runtime->interpreter.empty())
+        GTEST_SKIP() << "static entry has no PT_INTERP alias to exercise";
+    auto home = tk::Home::isolated("lua-loader");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+
+    struct LoaderStage {
+        fs::path root;
+        ~LoaderStage() {
+            if (!root.empty()) {
+                std::error_code error;
+                fs::remove_all(root, error); // exclusively reserved fixture directory
+            }
+        }
+    } stage;
+    std::random_device random;
+    for (int attempt = 0; attempt != 32; ++attempt) {
+        const auto candidate = fs::path("/tmp") / std::format("lw{:08x}", random());
+        if (fs::create_directory(candidate)) {
+            stage.root = candidate;
+            break;
+        }
+    }
+    ASSERT_FALSE(stage.root.empty());
+    const auto loader = stage.root / "l" / "ld";
+    fs::create_directory(stage.root / "s");
+    fs::create_directory(stage.root / "f");
+    fs::copy_file(fs::canonical(runtime->interpreter), stage.root / "f" / "ld");
+    fs::create_symlink(stage.root / "f" / "ld", stage.root / "s" / "ld");
+    fs::create_directory_symlink("s", stage.root / "l");
+    ASSERT_LE(loader.generic_string().size(), runtime->interpreter.size());
+    const auto original_loader = tk::read_file(loader);
+    auto entry_bytes = tk::read_file(tk::xlings_binary());
+    const auto position = entry_bytes.find(runtime->interpreter + '\0');
+    ASSERT_NE(position, std::string::npos);
+    const auto replacement = loader.generic_string();
+    entry_bytes.replace(position, runtime->interpreter.size(),
+                        replacement +
+                            std::string(runtime->interpreter.size() - replacement.size(), '\0'));
+    const auto entry = home.root() / "entry" / "xlings";
+    fs::create_directories(entry.parent_path());
+    fs::copy_file(tk::xlings_binary(), entry);
+    tk::write_file(entry, entry_bytes);
+    const auto patched = xlings::elfread::read(entry);
+    ASSERT_TRUE(patched);
+    ASSERT_EQ(patched->interpreter, replacement);
+    auto environment = home.env();
+    environment["XLINGS_ACTIVE_SUBOS"] = "box";
+    const auto host =
+        tk::run({.argv = {entry.string(), "--version"}, .env = environment, .cwd = home.root()});
+    ASSERT_EQ(host.exit_code, 0) << host.transcript();
+    const auto secret = stage.root / "unrelated-host-data";
+    tk::write_file(secret, "host secret");
+    const auto script = home.root() / "script.lua";
+    tk::write_file(script, "assert(io.open([[" + secret.generic_string() +
+                               "]], 'r') == nil, 'runtime mount exposed its parent')\n"
+                               "assert(io.open([[" +
+                               replacement +
+                               "]], 'w') == nil, 'runtime loader is writable')\n"
+                               "function xpkg_main() os.execute('uname >/dev/null') end\n");
+    for (const auto preset : {"dev", "locked"}) {
+        ASSERT_EQ(
+            home.xlings({"subos", "config", "box", "--sandbox=" + std::string(preset)}).exit_code,
+            0);
+        const auto result = tk::run({.argv = {entry.string(), "script", script.string()},
+                                     .env = environment,
+                                     .cwd = home.root()});
+        EXPECT_EQ(result.exit_code, 0) << preset << '\n' << result.transcript();
+    }
+    EXPECT_EQ(tk::read_file(loader), original_loader);
+    EXPECT_EQ(tk::read_file(secret), "host secret");
+    EXPECT_TRUE(fs::is_symlink(stage.root / "l"));
+    const auto journal = tk::read_file(home.dir() / "logs" / "subos" / "box" / "events.ndjson");
+    EXPECT_NE(journal.find("uname"), std::string::npos);
 }
 
 XTEST(LuaWorker, FullObservationAuditsHookSubprocessesWithoutArgumentValues, .area = "xim",

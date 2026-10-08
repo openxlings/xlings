@@ -508,6 +508,30 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                 sandbox.mounts.push_back({subos::spec::MountKind::Bind, canonical.generic_string(),
                                           canonical.generic_string()});
             };
+            auto runtime_ro = [&](const fs::path& path) {
+                const auto destination = fs::absolute(path).lexically_normal();
+                const auto source = fs::canonical(destination);
+                ro(source);
+                if (source == destination)
+                    return;
+                // Keep aliases already provided by a home/userland mount. A
+                // masked runtime directory instead needs its literal INTERP
+                // or RPATH spelling, as well as the canonical library target.
+                for (const auto& mount : sandbox.mounts | std::views::reverse) {
+                    const auto relative = destination.lexically_relative(fs::path(mount.dst));
+                    if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+                        continue;
+                    if (mount.kind == subos::spec::MountKind::RoBind ||
+                        mount.kind == subos::spec::MountKind::Bind) {
+                        std::error_code error;
+                        if (fs::equivalent(fs::path(mount.src) / relative, source, error))
+                            return;
+                    }
+                    break;
+                }
+                sandbox.mounts.push_back({subos::spec::MountKind::RoBind, source.generic_string(),
+                                          destination.generic_string()});
+            };
             ro(executable);
             if (auto runtime = elfread::read(executable)) {
                 std::set<fs::path> runtimeDirectories;
@@ -534,8 +558,10 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                         continue;
                     // A dev build's managed loader and libraries can be outside
                     // host_userland(), under the home that this worker masks.
-                    ro(directory);
+                    runtime_ro(directory);
                 }
+                if (!runtime->interpreter.empty())
+                    runtime_ro(runtime->interpreter);
             } else if (elfread::is_elf(executable)) {
                 return std::unexpected("cannot read the Lua worker ELF runtime: " +
                                        executable.string());
