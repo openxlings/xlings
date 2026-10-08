@@ -534,6 +534,7 @@ bool enters_sandboxed_(const std::string& name);
 // The role table (part 2 §8.3), asked by every command that could hurt the
 // running system: false after emitting the refusal and what to do instead.
 bool role_allows_(roles::Op op, const std::string& name, EventStream& stream);
+bool role_allows_at_(const fs::path& home, roles::Op op, const std::string& name, EventStream& stream);
 // A subos-type xpkg's payload (its template), installed when missing; empty
 // after emitting why it could not be.
 fs::path resolve_base_package_(const std::string& spec, EventStream& stream);

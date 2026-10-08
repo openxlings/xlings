@@ -1508,6 +1508,7 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
     }
     if (*scope) {
         const auto& actual = **scope;
+        if (!role_allows_at_(actual.domain.physicalHome, roles::Op::Remove, name, stream)) return 1;
         auto preflight = xlings::home::domain_producer::check_control_removal(actual, name);
         if (!preflight) {
             stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = preflight.error(), .recoverable = false });
@@ -1540,6 +1541,7 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
         return 0;
     }
 
+    if (!role_allows_(roles::Op::Remove, name, stream)) return 1;
     auto dir = Config::subos_dir(name);
     if (fs::exists(dir)) {
         // A SubOS's home is where its user works -- an agent's clone, a
@@ -2221,7 +2223,6 @@ int run(int argc, char* argv[], EventStream& stream) {
             target = pick_subos_or_fail_("remove|rm", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
-        if (!role_allows_(roles::Op::Remove, target, stream)) return 1;
         return remove(target, yesGiven, "-y", stream);
     }
     if (sub == "info")   return run_info_(argc > 3 ? argv[3] : "", stream);

@@ -192,6 +192,10 @@ bool role_allows_(roles::Op op, const std::string& name, EventStream& stream) {
                "export is available through the namespace producer; the outer control directory is not the package workspace");
         return false;
     }
+    return role_allows_at_(home, op, name, stream);
+}
+
+bool role_allows_at_(const fs::path& home, roles::Op op, const std::string& name, EventStream& stream) {
     const auto kind = subos_root::read_kind(home, name);
     if (!kind) { error_(stream, kind.error()); return false; }
     const auto role = subos_root::read_role(home, name);

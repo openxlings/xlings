@@ -412,7 +412,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     const auto logicalHome = *scope ? (**scope).domain.logicalHome : Config::paths().homeDir;
     auto user = utils::get_env_or_default(platform::is_windows ? "USERNAME" : "USER");
     if (user.empty()) user = "user";
-    if (!role_allows_(roles::Op::Copy, resolved.selected, stream)) return 1;
+    if (!role_allows_at_(instanceHome, roles::Op::Copy, resolved.selected, stream)) return 1;
     // A rootfs instance's own tree is everything but what the projection and
     // the kernel provide (part 2 §6.1); a view's is its home and /tmp.
     const auto kind = subos_root::read_kind(instanceHome, resolved.selected);

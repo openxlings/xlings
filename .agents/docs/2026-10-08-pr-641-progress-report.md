@@ -5,7 +5,7 @@
 ## 当前交付状态（系统模板借用配置修复待最新 CI）
 
 后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
-候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§24；以下保留历史轮次证据。
+候选版本为 `2026.10.8.2`，尚未合并、发布。 最新固定head的结果见§25；以下保留历史轮次证据。
 
 `8e8638fc` 的 macOS（147 pass、0 fail、2 skip）、Windows（105/0/44）、
 Linux root 完整流水线通过。ARM64 首次 qemu version 检查退出 139，同一 head
@@ -752,3 +752,38 @@ ASAN实际107程序pass、0fail，1572.62s（build1521.52s/run50.05s），无san
 
 用户最新要求：技术验收和综合自审完成后先汇报，用户review决定是否合入；本轮
 不合入、不发布。发布/CN latest实测保留为获准后的步骤，不冒充已完成。
+
+## 25. 私有域复制/删除的 role 路由与独立 CI 验收
+
+`4793f887` 的 Windows、macOS、ARM64 和 Linux root 全流水线通过。
+Linux 静态 DomainSourceProducer 与 RootExport 两例实际通过，DomainProducer 已通过
+运行时单文件授权、UID/capabilities、相对挂载、session 复用等断言，随后在 `cp` 和
+未确认 `remove` 的 outer role guard 失败；性能及发行版下游尚未执行，ASAN 仍运行。
+这不能报告为当前 head 达到合入标准。
+
+`cp` 已有 physical producer 的 beneath-copy 适配，`remove` 已有控制目录所有权预检、
+用户确认、namespace 内实际删除及仅清理已证明控制数据的适配。错误在于调用这两条
+路径前仍使用一律拒绝 private domain 的 outer role guard。现在显式对实际 physical
+HOME 调用同一个 strict kind/role/roles::check，并将 Remove 检查放入公共 `remove()`，
+让 CLI 和 interface 都保护 running root、boot entry；其他未经适配入口仍拒绝 domain。
+用户确认退出 2、未知控制文件拒绝、共享 payload 与日志保留不变。
+
+fixture 的复制结果、escape symlink 和 fork 结果三处改读 `rootfs/tmp`；`root` 是
+immutable generation 指针，不能用于机器用户数据。新无 namespace 依赖的回归用例
+通过实际 CLI/interface 验证 private scope copy、未确认删除、producer boot-entry
+保护、损坏 role 状态和未知 outer 控制文件拒绝。已有损坏 boot 状态回归新增 CLI 与
+interface 删除断言，均保留 instance。
+
+本地开发构建 31.42 s、静态构建 25.77 s；两组 SubosState 共 9 例实际 pass、0 fail、
+0 skip（private adapter 539 ms）；legacy fork 四个场景实际 pass。完整 DomainProducer
+在本地因无可用 bwrap 明确 skip，必须等新 head 的静态 CI 实际 pass。
+删除 lint、平台头文件 lint、diff check 通过。
+
+CI 先保存通过 cold-home 的候选 archive，再分别执行 domain 与六项性能预算。
+保留三个 domain 与六项性能实际 pass 的原断言，任何失败/跳过/缺失仍在最终 hard
+verdict 将 build job 置为失败。下游基于已验证候选是否存在继续执行，避免早期失败
+遮蔽 E2E、isolation、Arch 和 distro 的独立结果。修改的 YAML/bash 解析通过，真实
+hard-verdict shell 对 125 个 outcome 组合验证仅全部 success 返回 0。
+
+仍保持 draft，后续全部追加提交、普通 push。按用户最新要求，全部必需 CI 通过并
+完成最终审查后先报告交给用户 review，未经用户确定不合入、不发布。
