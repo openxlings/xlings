@@ -1132,6 +1132,7 @@ int new_from(const std::string& name, const fs::path& customDir,
 // the back-compat single-arg `use()` both route here.
 int use_global(const std::string& name, EventStream& stream) {
     if (auto rc = use_detail_::validate_subos_(name, stream); rc != 0) return rc;
+    if (reject_unrouted_domain_(name, "global activation", stream)) return 1;
 
     auto& p = Config::paths();
     // The window here is short, but a full-document rewrite is a full-document
@@ -1516,6 +1517,7 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
             stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = cleaned.error(), .recoverable = true });
             return 1;
         }
+        stream.emit(DataEvent{"subos_removed", nlohmann::json{{"name", name}}.dump()});
         return 0;
     }
 

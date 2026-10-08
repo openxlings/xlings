@@ -408,3 +408,27 @@ RootView、domain/source、entry、materialize、observe/network；skip 保留�
 xdev 全部 **6 程序 / 22 case pass、0 skip**。自动生成命令参考/help parity、27 条
 文档命令路径与 NDJSON、平台 header lint、SubOS 删除 lint、CI YAML 和 diff whitespace
 检查通过。旧完整回归 107 程序的证据保持独立；新固定 head 的 CI 和实际生态仍待完成。
+
+
+追加提交 `0c9f395f` 已普通 push，新 head 的五个主 CI workflow 已启动。PR 描述同步到
+当前行为和验收状态。本地静态 dist（GCC 16.1 musl）构建 1m05s 通过；使用该静态
+候选执行 `RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions` 实际通过，0 skip，
+证明 native mixed-home 导出的 owned metadata、精确逻辑 slot、仅作用域版本及来源不变。
+证据为 `final-static-build.log` 和 `mixed-source-static-local.log`。
+
+复核 Part 2 §4 / §16：跨前缀实例迁移未被要求，不是本方案交付阻塞；原约束是仅相同
+前缀共享 payload。新前缀用 package-coordinate producer 重新制作，直接搬移旧绝对路径
+payload 拒绝并保留用户数据。同域 fork、确认后删除、双向复制仍需本次实际 CI 验收。
+
+
+接口复核确认 stdout 全程由 interface 的 StdoutCapture 和子进程 stream framing 保护，
+没有原始输出污染 NDJSON；但 SubosEvents 读外层日志、switch_subos 越过私有域全局激活
+限制以及删除成功 DataEvent 丢失确实存在。已使用严格 descriptor 选择实际 home、在共享
+use_global 路径拒绝域激活并补回父 stream 的 subos_removed；真实 domain fixture 加入
+NDJSON 单结果、错误日志来源拒绝、两次复用同一 session 的 exec 断言。
+产品构建 29.94 s 与 interface protocol 回归通过；domain producer 重新编译通过但本机
+bwrap 仍 skip。原运行中的 ARM workflow 已通过；新接口波次需要追加提交验收。
+
+session join 只通过 Unix socket / SCM 传递命令，由原 session_init 在原 namespace 内
+fork/exec；新 producer 不是跨 sibling userns setns。因此没有为假设的 namespace 权限
+问题改代码，保留实际 session 复用测试验证。

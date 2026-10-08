@@ -663,6 +663,8 @@ xlings-res：bash、coreutils；glibc sysconfdir revision（C34）；内核（�
 | C41 | 三平台先一次构建测试再由 xdev 执行；实际能力门禁拒绝 skip；声明覆盖与同车道执行证据分开 | 完整本地回归 107 程序 pass、54 具体 case skip；新固定 head CI 尚未完成 |
 
 私有 domain 已接 confirmed remove、typed physical cp 和同域 fork；源码冻结后仍需真实隔离验收。
-跨域 fork 当前拒绝直接复制绝对路径，需要 producer 闭包重建，不能宣称整个设计已经交付。性能已实测 300 payload 的
+跨前缀实例迁移不是 §4 / §16 的验收项；不同前缀不能共享绝对路径 payload。新前缀通过
+`new --rootfs --domain <HOME> --from <包坐标>` 重新制作，原实例用户数据保留。设计验收仍以
+真实 namespace/source/broker/export CI 为准。性能已实测 300 payload 的
 生成/切换预算；stage-0 四次真实启动预算待 boot 车道。最终自审、合入、客户端发布和 CN
 fresh install/self update 仍待完成。后续提交只追加 commit、普通 push，保留 PR 历史。

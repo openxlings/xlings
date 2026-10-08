@@ -13,6 +13,7 @@ import xlings.core.xim.repo;
 import xlings.core.xvm.commands;
 import xlings.core.config;
 import xlings.core.home_config;
+import xlings.core.home.domain_producer;
 import xlings.core.subos;
 import xlings.core.subos.sandbox;
 import xlings.core.xself;
@@ -650,6 +651,13 @@ namespace xlings::capabilities {
 
 namespace {
 
+std::expected<subos::HomeView, std::string> scope_home_(std::string_view name) {
+    const auto owner = subos::home_view();
+    auto scope = home::domain_producer::read_scope(owner.home, name);
+    if (!scope) return std::unexpected(scope.error());
+    return *scope ? subos::HomeView{(**scope).domain.physicalHome} : owner;
+}
+
 // `xlings subos ...` as a child of this process, its stdout and stderr
 // captured. The interface's own stdout is the NDJSON channel: a command's
 // output must never reach it unframed, so it runs in a process of its own and
@@ -769,7 +777,12 @@ auto SubosEvents::execute(Params params, EventStream& stream) -> Result {
     const auto kind = json.value("kind", "");
     const auto session = json.value("session", "");
     const auto limit = static_cast<std::size_t>(std::max(1, json.value("limit", 200)));
-    auto events = observe::read(subos::home_view().logs_dir(name) / "events.ndjson");
+    const auto home = scope_home_(name);
+    if (!home) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = home.error(), .recoverable = false });
+        return exit_result(1);
+    }
+    auto events = observe::read(home->logs_dir(name) / "events.ndjson");
     std::vector<nlohmann::json> shown;
     for (auto& e : events) {
         if (!kind.empty() && e.value("kind", "") != kind) continue;

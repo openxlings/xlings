@@ -78,6 +78,10 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     auto scope = xlings::home::domain_producer::read_scope(home.dir(), "domain-root");
     ASSERT_TRUE(scope) << scope.error(); ASSERT_TRUE(*scope);
     EXPECT_EQ((**scope).producerInstance, privateHome / "subos/domain-root");
+    const auto beforeSwitch = tk::read_file(home.dir() / ".xlings.json");
+    auto switched = home.xlings({"interface", "switch_subos", "--args", Json{{"name", "domain-root"}}.dump()});
+    EXPECT_NE(switched.exit_code, 0) << switched.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / ".xlings.json"), beforeSwitch);
     const xlings::subos::HomeView producer{privateHome};
     const xlings::subos::HomeView outer{home.dir()};
     auto info = home.xlings({"subos", "info", "domain-root"});
@@ -112,6 +116,28 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     ASSERT_EQ(logged.exit_code, 0) << logged.transcript();
     EXPECT_EQ(Json::parse(logged.out)["event"], "domain-route-probe");
 
+    const auto eventArguments = Json{{"name", "domain-root"}, {"session", "--global"}}.dump();
+    auto interfaceEvents = home.xlings({"interface", "subos_events", "--args", eventArguments});
+    ASSERT_EQ(interfaceEvents.exit_code, 0) << interfaceEvents.transcript();
+    std::istringstream eventLines(interfaceEvents.out);
+    std::string eventLine;
+    int dataCount = 0, resultCount = 0;
+    while (std::getline(eventLines, eventLine)) {
+        const auto event = Json::parse(eventLine);
+        if (event["kind"] == "data") {
+            ++dataCount;
+            EXPECT_EQ(event["dataKind"], "subos_event");
+            EXPECT_EQ(event["payload"]["event"], "domain-route-probe");
+        } else if (event["kind"] == "result") {
+            ++resultCount;
+            EXPECT_EQ(event["exitCode"], 0);
+            EXPECT_EQ(event["data"]["count"], 1);
+        }
+    }
+    EXPECT_EQ(dataCount, 1);
+    EXPECT_EQ(resultCount, 1);
+    EXPECT_EQ(interfaceEvents.out.find("outer-control-probe"), std::string::npos);
+
     auto generations = home.xlings({"subos", "rollback", "domain-root", "--list"});
     EXPECT_EQ(generations.exit_code, 0) << generations.transcript();
     EXPECT_NE(generations.transcript().find("subos new --rootfs"), std::string::npos);
@@ -130,6 +156,13 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     ASSERT_EQ(started.exit_code, 0) << started.transcript();
     EXPECT_TRUE(fs::is_regular_file(producer.run_dir("domain-root") / "session.json"));
     EXPECT_FALSE(fs::exists(outer.run_dir("domain-root") / "session.json"));
+    const auto sessionBefore = tk::read_file(producer.run_dir("domain-root") / "session.json");
+    for (int call = 0; call < 2; ++call) {
+        const auto joined = home.xlings({"subos", "exec", "domain-root", "--", "/xlings/bin/xlings", "--version"});
+        EXPECT_EQ(joined.exit_code, 0) << joined.transcript();
+        EXPECT_NE(joined.out.find("xlings "), std::string::npos);
+        EXPECT_EQ(tk::read_file(producer.run_dir("domain-root") / "session.json"), sessionBefore);
+    }
     auto running = home.xlings({"subos", "ps", "domain-root", "--json"});
     ASSERT_EQ(running.exit_code, 0) << running.transcript();
     EXPECT_EQ(Json::parse(running.out)["instance"], "domain-root");
@@ -182,13 +215,29 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
     EXPECT_EQ(tk::read_file(outer.instance("domain-root") / "user-owned"), "preserve foreign control data");
     fs::remove(outer.instance("domain-root") / "user-owned");
     tk::write_file(outer.instance_file("domain-root"), "{bad JSON");
+    const auto corruptEvents = home.xlings({"interface", "subos_events", "--args", eventArguments});
+    EXPECT_NE(corruptEvents.exit_code, 0) << corruptEvents.transcript();
+    EXPECT_NE(corruptEvents.out.find("E_INVALID_INPUT"), std::string::npos);
+    EXPECT_EQ(corruptEvents.out.find("outer-control-probe"), std::string::npos);
     EXPECT_NE(home.xlings({"subos", "remove", "domain-root", "-y"}).exit_code, 0);
     EXPECT_TRUE(fs::is_directory(producer.instance("domain-root")));
     tk::write_file(outer.instance_file("domain-root"), controlBefore);
     const auto payload = privateHome / "data/xpkgs/fixture-x-domain-base/1.0.0";
     const auto payloadBefore = tk::read_file(payload / "produced-prefix");
-    auto removed = home.xlings({"subos", "remove", "domain-root", "-y"});
+    auto removed = home.xlings({"interface", "remove_subos", "--args", Json{{"name", "domain-root"}, {"yes", true}}.dump()});
     ASSERT_EQ(removed.exit_code, 0) << removed.transcript();
+    int removedData = 0, removedResults = 0;
+    std::istringstream removalLines(removed.out);
+    while (std::getline(removalLines, eventLine)) {
+        const auto event = Json::parse(eventLine);
+        if (event["kind"] == "data" && event["dataKind"] == "subos_removed") {
+            ++removedData;
+            EXPECT_EQ(event["payload"]["name"], "domain-root");
+        }
+        if (event["kind"] == "result") ++removedResults;
+    }
+    EXPECT_EQ(removedData, 1);
+    EXPECT_EQ(removedResults, 1);
     EXPECT_FALSE(fs::exists(producer.instance("domain-root")));
     EXPECT_FALSE(fs::exists(outer.instance("domain-root")));
     EXPECT_FALSE(fs::exists(outer.instance_file("domain-root")));
