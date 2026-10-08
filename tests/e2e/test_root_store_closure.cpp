@@ -56,7 +56,7 @@ struct NamespaceProbe {
             {"added", fs::exists(added)},
             {"projected", fs::exists(home / "subos/box/root/usr/bin/root-new")},
             {"root_pointer", fs::read_symlink(home / "subos/box/root").generic_string()}};
-        tk::write_file("/root-view-result/result.json", result.dump());
+        tk::write_file("/run/root-view-result/result.json", result.dump());
         std::_Exit(0);
     }
 } namespaceProbe;
@@ -162,7 +162,7 @@ struct RunningView {
             argv.insert(argv.end(),
                         {"--ro-bind", binding.source.string(), binding.destination.string()});
         argv.insert(argv.end(),
-                    {"--bind", (home.root() / "results").string(), "/root-view-result", "--bind",
+                    {"--bind", (home.root() / "results").string(), "/run/root-view-result", "--bind",
                      xlings::subos::HomeView{home.dir()}.broker_socket("box").string(),
                      std::string(xlings::subos::broker::kSocketInside), "--",
                      p::get_executable_path().string()});
@@ -250,7 +250,9 @@ XTEST(RootStoreClosureIsolation, BrokerSuccessPublishesNewPayloadAndProjectionBe
     ASSERT_FALSE(bwrap.empty());
     RunningView running;
     ASSERT_NO_THROW(running.setup());
-    ASSERT_EQ(running.start(bwrap, false), 0);
+    ASSERT_EQ(running.start(bwrap, false), 0)
+        << tk::read_file(running.home.dir() / "logs/subos/box/session.log")
+        << tk::read_file(running.home.dir() / "logs/subos/box/events.ndjson");
     const auto visible = running.home.dir() / "data/xpkgs/fixture-x-old-visible/1.0.0";
     fs::rename(visible, running.home.root() / "parked-old-payload");
     tk::write_file(visible / "bin/old-visible", "replacement at the same payload path");
@@ -299,7 +301,9 @@ XTEST(RootStoreClosureIsolation, FailedNamespaceRefreshReturns125AndEndsTheSessi
         GTEST_SKIP() << *why;
     RunningView running;
     ASSERT_NO_THROW(running.setup());
-    ASSERT_EQ(running.start(backend(), true), 0);
+    ASSERT_EQ(running.start(backend(), true), 0)
+        << tk::read_file(running.home.dir() / "logs/subos/box/session.log")
+        << tk::read_file(running.home.dir() / "logs/subos/box/events.ndjson");
     const auto reply = running.install();
     EXPECT_EQ(reply.value("exit", -1), 125) << reply;
     EXPECT_FALSE(reply.value("error", "").empty());
