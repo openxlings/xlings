@@ -840,3 +840,68 @@ materializer10pass，HomeContext12pass，cache5pass/1本机bwrap skip。
 
 按用户再次明确的要求：全部追加提交、普通push；达到技术标准并综合自审后先汇报
 给用户review决定是否合入，本轮不合入、不发布。
+
+
+## 27. 8cf6ebd0 全流水线结果与后续实际失败修复（2026-10-09）
+
+该固定 head 已跑完，尚未达到合入标准。macOS、ARM64、Linux root 全流程通过。
+Windows 唯一失败是 RunningRoot cache 测试把 POSIX 分隔符写死；修正为 native
+filesystem 路径拼接，保留该 case，不跳过 Windows。
+
+Linux 主 job 实际通过：107 个测试程序 pass，XTEST 216pass/0fail/5skip；
+三个静态 domain/source/export case 均实际 pass，DomainProducer 16355ms，包含用户
+报告的未确认删除退出2、copy/fork/确认删除与 host 数据保留；六个静态性能 case
+均实际 pass。非 instrumented 中位额外耗时：shim 1384us、hot exec 4174us、
+cold exec 6354us、root entry 4357us；300 payload generation build 65925us、
+checked switch 9037us。未修改预算。
+
+ASAN 109 个测试程序通过，1949.87s（build1891.64s/run55.87s）。旧 E2E 报告
+141pass/0fail/0skip（包含 wrapper 汇总行，非141个独立 case），Arch、isolation、
+plan-distro、QEMU boot、WSL job 通过；未读取 WSL 实际环境日志，不以 best-effort
+job green 断言 WSL1 实际执行。两项 distro 仍失败：rootfs_instance 的 scope
+metadata/ELF closure、rootfs_image 的 shell builtin `true` 取值。最终需求报告为
+146 required、133 verified、13 unverified，两个明确例外外仍有11项阻塞。
+
+### 27.1 scope 发布使用既有 canonical writer 的一致性规则
+
+真实 core 日志显示：active-only 的 gcc-specs-config 旧登记在 Config 内存中存在，
+installed[] 缺失；既有 writer 在保存时补齐 installed[]，严格读回对比因此拒绝。
+现在注册批处理与 removal 发布都先通过唯一的 SubosWorkspace JSON writer/reader
+做 canonical normalization；严格写后读回检查保留，未把失败变为警告。
+新增 legacy active-only + 无关新登记回归，在修复前实际失败；修复后完整 xvm
+220 cases 实际通过（固定依赖验证621ms）。
+
+### 27.2 shared payload 闭包与 root runtime datasets
+
+完整隔离复现先发现 CI 尾部摘要掩盖的更早错误：libxpkg 0.0.61 无条件把 installing
+SubOS 的 lib 目录加到 shared payload RPATH。精确 root closure 正确拒绝这种路径，
+不能靠扩大 HOME 挂载解决。上游 libxpkg #47 移除该隐式 fallback，保持 self 与
+resolved runtime dep 库目录、显式 deps override、build dep 排除。新回归在修复前
+对两个不同 scope 都失败；修复后4个测试程序通过，executor 97 cases pass。
+上游 CI 已通过。该 PR 保持待 review，未合入、未发布。
+
+客户端候选依赖暂固定为 upstream commit 7c202104625a072b5e6553603cc18859c3e29b47，
+不是本地 path override；正式版本交付仍待上游 review 和发布。固定 git 来源的
+static dist 构建51.36s通过，后续 root share 增量构建24.23s通过。
+
+真实 Luban core 新 HOME 创建及 GCC 编译/执行通过。完整 rootfs fixture 接着通过
+core/cache、144 ELF executable 闭包、无 shell shim、fetch=layer，但 desktop
+失败：root view 未提供已登记的 <scope>/share EGL vendor JSON。现在 scope facade
+补入 share，root projection 合并 scope share 与 usr/share 的子目录；相关13个
+unit case 通过。相同真实 desktop fixture 在修复前 no-display，修复后 Mesa
+llvmpipe 实际渲染 PIXEL=336699、RESULT=ok，全部 GL 对象来自该 HOME。
+完整 rootfs fixture 的新二进制复验仍在运行，不能以单个渲染探针替代全流程。
+
+### 27.3 镜像夹具必须真正制造并观察损坏
+
+`command -v true` 返回 shell builtin，改为复制 /usr/bin/true。后续 S4 的 getconf
+带 payload RPATH，移除 /usr 的 libc link 不能证明程序失败。改用 S3 的 host ELF，
+移除损坏 generation 的 libc link 和 derived cache。真实探针已观察到找不到
+libc.so.6、broken，再由 static xlings rollback 得到 restored。完整镜像流程仍
+在运行，self update 与 multi 布局尚不能据此宣布通过。
+
+本地 Docker 复验用私有测试 HOME；repo、bwrap 来源只读。最初临时目录 mode700
+导致清 capabilities 后不能穿越 ancestor，以及本地 index URL 不随 image 迁移，
+均记为本地夹具问题；修正夹具后用正式索引继续。未改变 host sysctl/AppArmor。
+最终客户端新 head 的五平台 CI 与146需求 hard gate 仍须重新验收；本轮只追加
+commit/普通 push。达到技术标准后先向用户汇报 review，不合入、不发布。

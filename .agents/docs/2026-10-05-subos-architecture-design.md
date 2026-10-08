@@ -836,4 +836,3 @@ plan ──► build（每个 OS × profile 只构建一次；mcpp 全局缓存�
 | `self install --user` | `self update --user` | 系统包的 `/usr/bin/xlings` 不是发布包目录，`self install` 无从安装；`self update --user` 走现有的安装路径 |
 
 需求与测试的对应关系在 `tests/requirements.toml`，`xdev report --requirements --fail-uncovered` 在 CI 中校验。
-
