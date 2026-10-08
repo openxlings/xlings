@@ -196,8 +196,8 @@ int run(int argc, char* argv[]) {
             say(laid.error());
             continue;
         }
-        (void)rootfs::fill_machine_etc("/etc", dir);
-        (void)rootfs::apply_sysusers("/etc", rootfs::usr_of(dir));
+        if (auto etc = rootfs::fill_machine_etc("/etc", dir); !etc) recover("machine /etc: " + etc.error());
+        if (auto users = rootfs::apply_sysusers("/etc", rootfs::usr_of(dir)); !users) recover("machine /etc: " + users.error());
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         const auto next = boot::record_boot(*config, candidate);
         if (auto saved = boot::save(home.boot_file(), next); !saved) recover(saved.error());

@@ -230,10 +230,13 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
     tk::write_file(factory / "hostname", "luban\n");
     tk::write_file(factory / "ssl" / "certs" / "ca-certificates.crt", "pem");
     auto added = rf::fill_etc(root / "etc", factory);
-    EXPECT_EQ(added, std::vector<std::string>{"ssl/certs/ca-certificates.crt"});
+    ASSERT_TRUE(added.has_value()) << added.error();
+    EXPECT_EQ(*added, std::vector<std::string>{"ssl/certs/ca-certificates.crt"});
     EXPECT_EQ(tk::read_file(root / "etc" / "hostname"), "mine\n") << "the machine's file stays";
     EXPECT_TRUE(fs::is_symlink(root / "etc" / "ssl" / "certs" / "ca-certificates.crt"));
-    EXPECT_TRUE(rf::fill_etc(root / "etc", factory).empty()) << "a second fill adds nothing";
+    auto again = rf::fill_etc(root / "etc", factory);
+    ASSERT_TRUE(again.has_value()) << again.error();
+    EXPECT_TRUE(again->empty()) << "a second fill adds nothing";
 
     // sysusers: root always, declared users appended once, existing ones kept.
     const auto usr = t.dir / "usr";
@@ -241,12 +244,15 @@ XTEST(SubosRootfs, MachineStateIsFilledNeverOverwritten,
                    "# comment\ng ssh 74\nu sshd 74 \"SSH daemon\" /var/empty /usr/bin/nologin\n");
     tk::write_file(root / "etc" / "passwd", "alice:x:1000:1000::/home/alice:/bin/sh\n");
     auto users = rf::apply_sysusers(root / "etc", usr);
-    EXPECT_NE(std::ranges::find(users, "user root"), users.end());
-    EXPECT_NE(std::ranges::find(users, "user sshd"), users.end());
+    ASSERT_TRUE(users.has_value()) << users.error();
+    EXPECT_NE(std::ranges::find(*users, "user root"), users->end());
+    EXPECT_NE(std::ranges::find(*users, "user sshd"), users->end());
     const auto passwd = tk::read_file(root / "etc" / "passwd");
     EXPECT_TRUE(passwd.starts_with("alice:x:1000")) << passwd;
     EXPECT_NE(passwd.find("sshd:x:74:74:SSH daemon:/var/empty:/usr/bin/nologin"), std::string::npos) << passwd;
-    EXPECT_TRUE(rf::apply_sysusers(root / "etc", usr).empty()) << "nothing twice";
+    auto usersAgain = rf::apply_sysusers(root / "etc", usr);
+    ASSERT_TRUE(usersAgain.has_value()) << usersAgain.error();
+    EXPECT_TRUE(usersAgain->empty()) << "nothing twice";
 }
 
 XTEST(SubosRootfs, LayoutPreservesForeignStagingAndReportsMachineStateConflicts,
@@ -262,6 +268,121 @@ XTEST(SubosRootfs, LayoutPreservesForeignStagingAndReportsMachineStateConflicts,
     tk::write_file(root / "tmp", "user-owned file");
     EXPECT_FALSE(rf::lay_out(root, "/new/usr", "/xlings").has_value());
     EXPECT_EQ(tk::read_file(root / "tmp"), "user-owned file");
+}
+
+XTEST(SubosRootfs, MachineEtcRefusesSymlinkAncestorsAndPreservesExternalData,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "anchored root machine writes require POSIX";
+    Tmp t("etc-escape");
+    const auto root = t.dir / "root";
+    const auto outside = t.dir / "outside";
+    const auto factory = t.dir / "factory";
+    tk::write_file(outside / "sentinel", "external user bytes");
+    tk::write_file(factory / "new-file", "factory bytes");
+    fs::create_directories(root);
+    fs::create_directory_symlink(outside, root / "etc");
+    EXPECT_FALSE(rf::fill_etc(root / "etc", factory).has_value());
+    EXPECT_FALSE(rf::fill_machine_etc(root / "etc", t.dir / "scope").has_value());
+    EXPECT_FALSE(rf::apply_sysusers(root / "etc", t.dir / "usr").has_value());
+    EXPECT_FALSE(rf::lay_out(root, "/xlings/subos/box/root/usr", "/xlings").has_value());
+    EXPECT_EQ(tk::read_file(outside / "sentinel"), "external user bytes");
+    EXPECT_FALSE(fs::exists(outside / "new-file"));
+    EXPECT_FALSE(fs::exists(outside / "passwd"));
+    EXPECT_FALSE(fs::exists(outside / "group"));
+
+    fs::remove(root / "etc");
+    fs::create_directories(root / "etc");
+    tk::write_file(factory / "ssl" / "certs" / "new-certificate", "pem");
+    fs::create_directory_symlink(outside, root / "etc" / "ssl");
+    EXPECT_FALSE(rf::fill_etc(root / "etc", factory).has_value());
+    EXPECT_FALSE(fs::exists(outside / "certs"));
+    EXPECT_EQ(tk::read_file(outside / "sentinel"), "external user bytes");
+
+    fs::remove(root / "etc" / "ssl");
+    fs::create_directory_symlink(outside, root / "var");
+    EXPECT_FALSE(rf::lay_out(root, "/xlings/subos/box/root/usr", "/xlings").has_value());
+    EXPECT_FALSE(fs::exists(outside / "log"));
+    EXPECT_FALSE(fs::exists(outside / "lib"));
+    // The tree's parent is also part of the authority, not canonicalized
+    // away as if an arbitrary user alias were a trusted filesystem root.
+    fs::create_directory_symlink(outside, t.dir / "alias");
+    EXPECT_FALSE(rf::fill_etc(t.dir / "alias" / "root" / "etc", factory).has_value());
+    EXPECT_FALSE(fs::exists(outside / "root"));
+}
+
+XTEST(SubosRootfs, FactoryProjectionLeavesUseLexicalDestinationsAndPrivateAccountCopies,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "anchored root machine writes require POSIX";
+    Tmp t("factory-source-link");
+    const auto root = t.dir / "root";
+    const auto factory = t.dir / "factory";
+    const auto payload = t.dir / "payload";
+    fs::create_directories(factory);
+    tk::write_file(payload / "hostname", "payload hostname");
+    tk::write_file(payload / "passwd", "alice:x:1000:1000::/home/alice:/bin/sh\n");
+    fs::create_symlink(payload / "hostname", factory / "hostname");
+    fs::create_symlink(payload / "passwd", factory / "passwd");
+    auto filled = rf::fill_etc(root / "etc", factory);
+    ASSERT_TRUE(filled.has_value()) << filled.error();
+    EXPECT_TRUE(fs::is_symlink(root / "etc" / "hostname"));
+    EXPECT_EQ(fs::read_symlink(root / "etc" / "hostname"), factory / "hostname");
+    EXPECT_FALSE(fs::exists(root / "payload")) << "source resolution must not manufacture ../ destinations";
+    EXPECT_FALSE(fs::is_symlink(root / "etc" / "passwd"));
+    EXPECT_EQ(tk::read_file(root / "etc" / "passwd"), tk::read_file(payload / "passwd"));
+    auto users = rf::apply_sysusers(root / "etc", t.dir / "usr");
+    ASSERT_TRUE(users.has_value()) << users.error();
+    EXPECT_NE(tk::read_file(root / "etc" / "passwd").find("root:x:0:0:"), std::string::npos);
+    EXPECT_EQ(tk::read_file(payload / "passwd"), "alice:x:1000:1000::/home/alice:/bin/sh\n");
+    EXPECT_EQ(tk::read_file(payload / "hostname"), "payload hostname");
+    const auto machine_passwd = tk::read_file(root / "etc" / "passwd");
+    fs::remove(factory / "passwd");
+    fs::create_symlink(payload / "missing-default", factory / "passwd");
+    auto reused = rf::fill_etc(root / "etc", factory);
+    ASSERT_TRUE(reused.has_value()) << reused.error();
+    EXPECT_TRUE(reused->empty()) << "an existing account database does not read its factory default";
+    EXPECT_EQ(tk::read_file(root / "etc" / "passwd"), machine_passwd);
+}
+
+XTEST(SubosRootfs, SysusersRefusesUnknownLinksAndSharedFilesWithoutChangingTheirTargets,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "anchored root machine writes require POSIX";
+    Tmp t("sysusers-links");
+    const auto etc = t.dir / "root" / "etc";
+    const auto external = t.dir / "external-passwd";
+    tk::write_file(external, "external:x:900:900::/:/bin/sh\n");
+    fs::create_directories(etc);
+    fs::create_symlink(external, etc / "passwd");
+    EXPECT_FALSE(rf::apply_sysusers(etc, t.dir / "usr").has_value());
+    EXPECT_TRUE(fs::is_symlink(etc / "passwd"));
+    EXPECT_FALSE(fs::exists(etc / "group"));
+    EXPECT_EQ(tk::read_file(external), "external:x:900:900::/:/bin/sh\n");
+    fs::remove(etc / "passwd");
+    fs::create_hard_link(external, etc / "passwd");
+    EXPECT_FALSE(rf::apply_sysusers(etc, t.dir / "usr").has_value());
+    EXPECT_EQ(tk::read_file(external), "external:x:900:900::/:/bin/sh\n");
+    EXPECT_FALSE(fs::exists(etc / "group"));
+}
+
+XTEST(SubosRootfs, AnchoredMachineDirectoryKeepsItsAuthorityWhenThePathIsReplaced,
+      .area = "subos", .covers = {"ROOT-ETC-FACTORY"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "anchored root machine writes require POSIX";
+    Tmp t("etc-anchored");
+    const auto etc = t.dir / "root" / "etc";
+    const auto outside = t.dir / "outside";
+    fs::create_directories(etc);
+    tk::write_file(outside / "sentinel", "external");
+    auto directory = xlings::platform::machine_etc::Directory::open(etc);
+    ASSERT_TRUE(directory.has_value()) << directory.error();
+    fs::rename(etc, t.dir / "original-etc");
+    fs::create_directory_symlink(outside, etc);
+    auto result = directory->write_missing("created", "anchored");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_TRUE(*result);
+    EXPECT_EQ(tk::read_file(t.dir / "original-etc" / "created"), "anchored");
+    EXPECT_FALSE(fs::exists(outside / "created"));
+    EXPECT_EQ(tk::read_file(outside / "sentinel"), "external");
+    EXPECT_FALSE(directory->write_missing("../escaped", "reject").has_value());
+    EXPECT_FALSE(fs::exists(t.dir / "root" / "escaped"));
 }
 
 XTEST(SubosBoot, ATrialIsUsedOnceAndAnUnconfirmedDefaultFallsBack,

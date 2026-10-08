@@ -237,8 +237,12 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
                 return failed(laid.error());
         }
         const auto usr = rf::usr_of(subos_dir);
-        out.etc_added = rf::fill_machine_etc(tree / "etc", subos_dir);
-        out.users_added = rf::apply_sysusers(tree / "etc", usr);
+        auto etc = rf::fill_machine_etc(tree / "etc", subos_dir);
+        if (!etc) return failed("machine /etc " + (tree / "etc").string() + ": " + etc.error());
+        out.etc_added = std::move(*etc);
+        auto users = rf::apply_sysusers(tree / "etc", usr);
+        if (!users) return failed("machine /etc " + (tree / "etc").string() + ": " + users.error());
+        out.users_added = std::move(*users);
         if (auto cache = refresh_cache(home, name); !cache)
             return failed(cache.error());
     } catch (const std::exception& error) {
