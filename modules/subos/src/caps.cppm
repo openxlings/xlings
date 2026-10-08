@@ -62,7 +62,7 @@ std::optional<Backend> locate_proot(const HomeView& home, const Ports& ports);
 // usual paths when it is not a shim. Usable only with /dev/net/tun.
 std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, std::string& why_not);
 
-// `bwrap --ro-bind / / -- /bin/true`; fills usable / probe_output.
+// `bwrap --unshare-user --ro-bind / / -- /bin/true`; fills usable / probe_output.
 void probe_bwrap(Backend& b);
 
 // Locate and probe everything. Cheap enough to run per entry today; the

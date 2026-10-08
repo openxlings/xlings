@@ -54,21 +54,45 @@ std::string read_line(const char* path) {
 // AppArmor profile can change, a reboot resets both), and the binary itself
 // -- its bytes, and its owner and mode: dropping a setuid bit or handing the
 // file to root changes what it can do and not its mtime.
-std::string cache_key(const Backend& b) {
+std::optional<std::string> probe_context() {
+    std::error_code ec;
+    const auto userns = platform::read_symlink("/proc/self/ns/user", ec);
+    if (ec) return std::nullopt;
+    const auto mountns = platform::read_symlink("/proc/self/ns/mnt", ec);
+    if (ec) return std::nullopt;
+    std::ifstream status("/proc/self/status");
+    if (!status) return std::nullopt;
+    std::string credentials, line;
+    while (std::getline(status, line))
+        if (line.starts_with("Uid:") || line.starts_with("Gid:") || line.starts_with("CapEff:") ||
+            line.starts_with("NoNewPrivs:") || line.starts_with("Seccomp:") ||
+            line.starts_with("Seccomp_filters:")) credentials += line + '|';
+    if (status.bad() || credentials.empty()) return std::nullopt;
+    return userns.string() + '|' + mountns.string() + '|' + credentials;
+}
+
+std::string cache_key(const Backend& b, std::string_view context) {
     std::error_code ec;
     auto size = fs::file_size(b.bin, ec);
     auto mtime = fs::last_write_time(b.bin, ec).time_since_epoch().count();
     const auto own = platform::file_ownership(b.bin).value_or(platform::FileOwnership{});
     const unsigned mode = own.mode, uid = own.uid;
-    return std::format("{}|{}|{}|{:o}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
+    return std::format("userns-v2|{}|{}|{}|{:o}|{}|{}|{}|{}|{}", b.bin.string(), size, mtime, mode, uid,
                        read_line("/proc/sys/kernel/osrelease"),
                        read_line("/proc/sys/kernel/random/boot_id"),
-                       read_line("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"));
+                       read_line("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"), context);
 }
 
 // state/isolation-caps.json (design §18): probe results per key. A probe
 // is a process start per candidate per entry; on the hot path it is not.
 void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
+    // Host and producer have different namespace/credential authority, even
+    // when their backend bytes match. An unobserved context is never cached.
+    const auto context = probe_context();
+    if (!context) {
+        for (auto& backend : all) probe_bwrap(backend);
+        return;
+    }
     const auto file = home.caps_cache();
     std::error_code ec;
     nlohmann::json cache = nlohmann::json::object();
@@ -79,7 +103,7 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
     }
     bool dirty = false;
     for (auto& b : all) {
-        const auto key = cache_key(b);
+        const auto key = cache_key(b, *context);
         if (auto it = cache.find(key); it != cache.end() && it->is_object()) {
             b.usable = it->value("usable", false);
             b.probe_output = it->value("output", "");
@@ -95,7 +119,7 @@ void probe_cached(std::vector<Backend>& all, const HomeView& home, bool fresh) {
     fs::create_directories(file.parent_path(), ec);
     // Bounded: entries for binaries and boots long gone are not worth keeping.
     if (cache.size() > 32) cache = nlohmann::json::object();
-    for (auto& b : all) cache[cache_key(b)] = {{"usable", b.usable}, {"output", b.probe_output}};
+    for (auto& b : all) cache[cache_key(b, *context)] = {{"usable", b.usable}, {"output", b.probe_output}};
     auto tmp = fs::path(file.string() + ".tmp");
     std::ofstream(tmp) << cache.dump();
     fs::rename(tmp, file, ec);
@@ -173,7 +197,7 @@ std::optional<fs::path> locate_pasta(const HomeView& home, const Ports& ports, s
 }
 
 void probe_bwrap(Backend& b) {
-    auto cmd = platform::shell_quote(b.bin.string()) + " --ro-bind / / -- /bin/true";
+    auto cmd = platform::shell_quote(b.bin.string()) + " --unshare-user --ro-bind / / -- /bin/true";
     auto [status, output] = platform::run_command_capture(cmd);
     b.usable = status == 0;
     b.probe_output = b.usable ? std::string{} : std::move(output);
