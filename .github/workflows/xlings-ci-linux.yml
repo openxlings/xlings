@@ -35,6 +35,8 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
+    outputs:
+      release_ready: ${{ steps.candidate.outcome == 'success' }}
 
     steps:
       - name: Checkout
@@ -409,22 +411,35 @@ jobs:
           cp "$tarball" build/release.tar.gz
 
       - name: Candidate cold-home lifecycle
+        id: candidate
         run: |
           sha256sum build/release.tar.gz > build/release.tar.gz.sha256
           bash tests/candidate-install/smoke.sh \
             build/release.tar.gz build/release.tar.gz.sha256
 
+      - name: Attach artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: xlings-linux-x86_64
+          path: |
+            build/release.tar.gz
+            build/xlings-*-linux-x86_64.tar.gz
+
       - name: Static domain lifecycle, checked system source and image export
+        id: static_domain
+        continue-on-error: true
         env:
           XDEV_LANE: linux-static-domain
         run: |
           candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
           test -x "$candidate"
           export XLINGS_BIN="$candidate"
+          status=0
           "$XDEV" test e2e/test_domain_source --no-build --require-metadata \
-            --out target/xdev/linux-static-domain
+            --out target/xdev/linux-static-domain || status=$?
           "$XDEV" test e2e/test_domain_producer --no-build --require-metadata \
-            --out target/xdev/linux-static-domain-producer
+            --out target/xdev/linux-static-domain-producer || status=$?
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -436,39 +451,30 @@ jobs:
               checked = [row for row in results if row.get('test') == case]
               assert len(checked) == 1 and checked[0]['status'] == 'pass', f'{case} must actually pass'
           PY
+          exit "$status"
 
       - name: Static SubOS performance budgets
+        id: static_perf
+        continue-on-error: true
         env:
           XDEV_LANE: linux-static-perf
         run: |
           candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
           test -x "$candidate"
           export XLINGS_BIN="$candidate"
+          status=0
           "$XDEV" test e2e/test_subos_perf --no-build --require-metadata \
-            --out target/xdev/linux-static-perf
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          results = [json.loads(line) for line in Path('target/xdev/linux-static-perf/cases.ndjson').read_text().splitlines()]
-          assert len(results) == 4 and all(row['status'] == 'pass' for row in results), results
-          PY
+            --out target/xdev/linux-static-perf || status=$?
           "$XDEV" test unit/test_root_generation_perf --no-build --require-metadata \
-            --out target/xdev/linux-static-generation-perf
+            --out target/xdev/linux-static-generation-perf || status=$?
           python3 - <<'PY'
           import json
           from pathlib import Path
-          results = [json.loads(line) for line in Path('target/xdev/linux-static-generation-perf/cases.ndjson').read_text().splitlines()]
-          assert len(results) == 2 and all(row['status'] == 'pass' for row in results), results
+          for directory, count in (('linux-static-perf', 4), ('linux-static-generation-perf', 2)):
+              results = [json.loads(line) for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
+              assert len(results) == count and all(row['status'] == 'pass' for row in results), results
           PY
-
-      - name: Attach artifact
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: xlings-linux-x86_64
-          path: |
-            build/release.tar.gz
-            build/xlings-*-linux-x86_64.tar.gz
+          exit "$status"
 
       - name: Attach xdev and its runs
         uses: actions/upload-artifact@v4
@@ -480,9 +486,21 @@ jobs:
             target/xdev/
           if-no-files-found: ignore
 
+      - name: Require every static acceptance gate
+        if: always()
+        env:
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          DOMAIN_OUTCOME: ${{ steps.static_domain.outcome }}
+          PERF_OUTCOME: ${{ steps.static_perf.outcome }}
+        run: |
+          for outcome in "$CANDIDATE_OUTCOME" "$DOMAIN_OUTCOME" "$PERF_OUTCOME"; do
+            [[ "$outcome" == success ]] || { echo "::error::static acceptance is incomplete or failed"; exit 1; }
+          done
+
   # The shell e2e suite, against the artifact built above.
   e2e:
     needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     env:
       XDEV_LANE: linux-e2e
@@ -545,6 +563,7 @@ jobs:
   # has a runner of its own.
   isolation-fix:
     needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     env:
       XDEV_LANE: linux-isolation-fix
@@ -592,6 +611,7 @@ jobs:
   # config/aur changed and built a 0.4.14 download.
   arch-package:
     needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
@@ -635,6 +655,7 @@ jobs:
   # exported image's xlings runs with no host under it).
   plan-distro:
     needs: build-and-test
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' }}
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -663,6 +684,7 @@ jobs:
 
   distro:
     needs: [build-and-test, plan-distro]
+    if: ${{ !cancelled() && needs.build-and-test.outputs.release_ready == 'true' && needs.plan-distro.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan-distro.outputs.matrix) }}
