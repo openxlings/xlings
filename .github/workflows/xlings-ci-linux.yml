@@ -402,7 +402,7 @@ jobs:
           bash tests/candidate-install/smoke.sh \
             build/release.tar.gz build/release.tar.gz.sha256
 
-      - name: Checked system-source domain and image export
+      - name: Static domain lifecycle, checked system source and image export
         env:
           XDEV_LANE: linux-static-domain
         run: |
@@ -411,12 +411,16 @@ jobs:
           export XLINGS_BIN="$candidate"
           "$XDEV" test e2e/test_domain_source --no-build --require-metadata \
             --out target/xdev/linux-static-domain
+          "$XDEV" test e2e/test_domain_producer --no-build --require-metadata \
+            --out target/xdev/linux-static-domain-producer
           python3 - <<'PY'
           import json
           from pathlib import Path
-          results = [json.loads(line) for line in Path('target/xdev/linux-static-domain/cases.ndjson').read_text().splitlines()]
+          results = [json.loads(line) for directory in ('linux-static-domain', 'linux-static-domain-producer')
+                     for line in Path(f'target/xdev/{directory}/cases.ndjson').read_text().splitlines()]
           for case in ('DomainSourceProducer.ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage',
-                       'RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions'):
+                       'RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions',
+                       'DomainProducer.InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostData'):
               checked = [row for row in results if row.get('test') == case]
               assert len(checked) == 1 and checked[0]['status'] == 'pass', f'{case} must actually pass'
           PY

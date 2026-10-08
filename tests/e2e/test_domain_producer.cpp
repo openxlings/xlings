@@ -18,6 +18,10 @@ XTEST(DomainProducer, InstallsAtLogicalPrefixInsideANamespaceAndPreservesHostDat
       .resources = {"sandbox"}, .proves = "isolation") {
     if constexpr (!tk::is_linux) GTEST_SKIP() << "Linux namespaces";
     if (const auto why = tk::probe("bwrap")) GTEST_SKIP() << *why;
+    const auto executable = xlings::elfread::read(tk::xlings_binary());
+    ASSERT_TRUE(executable) << "cannot read the candidate ELF executable";
+    if (!executable->interpreter.empty())
+        GTEST_SKIP() << "domain root runtime requires the static release candidate; the development client has an ELF interpreter";
     auto home = tk::Home::isolated("domain-producer");
     const auto hostSentinel = home.root() / "host-sentinel";
     tk::write_file(hostSentinel, "host must remain intact");
