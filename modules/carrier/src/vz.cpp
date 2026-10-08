@@ -48,8 +48,10 @@ Probe probe(const subos::HomeView& home) {
         return {.supported = false, .reason = "the vz carrier exists on macOS", .route = "--carrier local"};
     const auto h = helper(home);
     if (!h)
-        return {.supported = false, .reason = "the VM helper (xlings-vm) is not installed",
-                .route = "xlings install xlings-vm"};
+        return {.supported = false,
+                .reason = "the vz carrier needs xlings-vm, a signed Virtualization.framework helper -- not "
+                          "installed (and not published yet: design part 3 §5.4)",
+                .route = "xlings install xlings-vm  (once it is published)"};
     auto r = run(*h, {"probe"});
     if (r.rc != 0)
         return {.supported = false, .reason = "this Mac cannot run the carrier's VM: " + trimmed(r.out),
