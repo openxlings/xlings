@@ -9,6 +9,8 @@ import std;
 import xlings.core.destructive_log;
 import xlings.core.config;
 import xlings.core.home_config;
+import xlings.core.home;
+import xlings.core.home.layers;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -366,6 +368,15 @@ std::vector<std::string> find_subos_pinning_version(
 }
 
 int gc(const fs::path& xlingsHome, bool dryRun) {
+    const auto shared = home::shares_store(xlingsHome);
+    if (!shared) {
+        std::println("[xlings:store] gc refused: {}", shared.error());
+        return 1;
+    }
+    if (*shared) {
+        std::println("[xlings:store] shared store retained: read-only borrowers may reference its payloads");
+        return 0;
+    }
     auto references = collect_subos_references_(xlingsHome);
     if (!references) {
         std::println("[xlings:store] gc refused: {}", references.error());
@@ -376,6 +387,15 @@ int gc(const fs::path& xlingsHome, bool dryRun) {
     const auto& referenced = *references;
 
     auto pkgDir = xlingsHome / "data" / "xpkgs";
+    std::error_code inspected;
+    for (const auto& directory : {pkgDir.parent_path(), pkgDir}) {
+        const auto status = fs::symlink_status(directory, inspected);
+        if ((inspected && inspected != std::errc::no_such_file_or_directory)
+            || (fs::exists(status) && !fs::is_directory(status))) {
+            std::println("[xlings:store] gc refused: store ownership cannot be proved at {}", directory.string());
+            return 1;
+        }
+    }
     if (!fs::exists(pkgDir)) {
         std::println("[xlings:store] xpkgs not found, nothing to gc");
         return 0;
@@ -385,9 +405,12 @@ int gc(const fs::path& xlingsHome, bool dryRun) {
     int removedCount = 0;
 
     for (auto& pkgEntry : platform::dir_entries(pkgDir)) {
+        if (fs::is_symlink(pkgEntry.symlink_status())) continue;
         if (!pkgEntry.is_directory()) continue;
         auto pkgName = pkgEntry.path().filename().string();
         for (auto& verEntry : platform::dir_entries(pkgEntry)) {
+            if (fs::is_symlink(verEntry.symlink_status())
+                || !home::layers::owns_payload(xlingsHome, verEntry.path())) continue;
             if (!verEntry.is_directory()) continue;
             auto ver = verEntry.path().filename().string();
             auto key = pkgName + "/" + ver;

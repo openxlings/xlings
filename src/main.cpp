@@ -1,6 +1,7 @@
 import std;
 
 import xlings.cli;
+import xlings.core.xim.lua_boundary;
 import xlings.core.config;
 import xlings.core.log;
 import xlings.platform;
@@ -18,6 +19,8 @@ import xlings.core.xself.compat;
 
 
 int main(int argc, char* argv[]) {
+    if (argc >= 2 && std::string_view(argv[1]) == "__xpkg-worker")
+        return xlings::xim::lua_boundary::worker_main(argc, argv);
     // A machine's first process when its root is a SubOS (design part 2
     // §8.2): before anything reads a home -- /proc is not even mounted yet.
     if (argc >= 1 && std::filesystem::path(argv[0]).filename() == xlings::subos::stage0::kName)

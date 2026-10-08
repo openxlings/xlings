@@ -27,7 +27,9 @@ namespace xlings::interface {
 // producer sends at most one per 100 ms per stream plus the final one; the
 // renderer keeps its own frame state, so `prevLines` is deprecated and always
 // 0 (it stays until 2.0 because a minor version only adds).
-export constexpr const char* kProtocolVersion = "1.5";
+// 1.6: subos_exec emits bounded stdout/stderr chunks before the command ends.
+// Invalid UTF-8 chunks use encoding=base64; cancellation reaps the child.
+export constexpr const char* kProtocolVersion = "1.6";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

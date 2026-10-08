@@ -30,6 +30,7 @@ import xlings.subos.model;
 import xlings.core.subos.ports;
 import xlings.subos.session;
 import xlings.subos.policy;
+import xlings.subos.network;
 import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
@@ -119,6 +120,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     std::optional<std::string> package;          // --sandbox ns:name[@version]
     bool upgrade = false;                        // --policy-upgrade
     std::optional<policy::Net> net;
+    std::optional<std::string> proxy;
     std::optional<policy::Fetch> fetch, index_update;
     std::optional<policy::Observe> observe;
     std::optional<bool> no_degrade;
@@ -162,6 +164,13 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         else if ((v = value_of(i, a, "--net"))) {
             net = policy::net_from_string(*v);
             if (!net) { usageError("--net expects host, nat, none or proxy"); return 1; }
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--proxy"))) {
+            const auto endpoint = network::parse_proxy(*v);
+            if (!endpoint) { usageError(endpoint.error()); return 1; }
+            proxy = *v;
+            net = policy::Net::Proxy;
             changed = true;
         }
         else if ((v = value_of(i, a, "--fetch"))) {
@@ -275,6 +284,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
         after = policy::preset(policy::Preset::Dev);
     }
     if (net) after.net = *net;
+    if (proxy) after.proxy = *proxy;
     if (fetch) after.fetch = *fetch;
     if (index_update) after.index_update = *index_update;
     if (observe) after.observe = *observe;

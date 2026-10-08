@@ -37,6 +37,7 @@ import xlings.core.xvm.lock;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.commands;
+import xlings.core.xvm.materialize;
 import xlings.core.compact;
 import xlings.core.config;
 import xlings.core.home_config;
@@ -544,7 +545,10 @@ TEST_F(XvmHeaderSymlinkTest, InstallAndRemoveHeaders) {
 
     // Install headers
     auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
-    xlings::xvm::install_headers(srcInclude.string(), sysrootInclude);
+    auto installed = xlings::xvm::install_headers(srcInclude.string(), sysrootInclude);
+    ASSERT_TRUE(installed) << installed.error();
+    std::vector<xlings::xvm::materialize::AssetClaim> claims;
+    for (const auto& proof : *installed) claims.push_back({proof.source, proof.destination});
 
     // Verify links created (symlinks on Unix, hard links/copies on Windows)
     EXPECT_TRUE(fs::exists(sysrootInclude / "stdio.h"));
@@ -556,7 +560,7 @@ TEST_F(XvmHeaderSymlinkTest, InstallAndRemoveHeaders) {
 #endif
 
     // Remove headers
-    xlings::xvm::remove_headers(srcInclude.string(), sysrootInclude);
+    ASSERT_TRUE(xlings::xvm::remove_headers(srcInclude.string(), sysrootInclude, claims));
 
     // Verify links removed
     EXPECT_FALSE(fs::exists(sysrootInclude / "stdio.h"));
@@ -611,7 +615,10 @@ TEST_F(XvmHeaderSymlinkTest, InstallHeadersOverwrite) {
     auto sysrootInclude = testDir_ / "sysroot" / "usr" / "include";
 
     // Install first, then overwrite with second
-    xlings::xvm::install_headers(srcInclude1.string(), sysrootInclude);
+    auto first = xlings::xvm::install_headers(srcInclude1.string(), sysrootInclude);
+    ASSERT_TRUE(first) << first.error();
+    std::vector<xlings::xvm::materialize::AssetClaim> claims;
+    for (const auto& proof : *first) claims.push_back({proof.source, proof.destination});
     EXPECT_TRUE(fs::exists(sysrootInclude / "common.h"));
 #if !defined(_WIN32)
     EXPECT_TRUE(fs::is_symlink(sysrootInclude / "common.h"));
@@ -619,7 +626,7 @@ TEST_F(XvmHeaderSymlinkTest, InstallHeadersOverwrite) {
               (srcInclude1 / "common.h").string());
 #endif
 
-    xlings::xvm::install_headers(srcInclude2.string(), sysrootInclude);
+    ASSERT_TRUE(xlings::xvm::install_headers(srcInclude2.string(), sysrootInclude, claims));
     EXPECT_TRUE(fs::exists(sysrootInclude / "common.h"));
 #if !defined(_WIN32)
     EXPECT_TRUE(fs::is_symlink(sysrootInclude / "common.h"));
@@ -659,17 +666,19 @@ TEST_F(XvmHeaderSymlinkTest, ADestinationPrefixDecidesWhereHeadersLand) {
         .destinationPrefix = "c++/15.1.0",
     };
 
-    xlings::xvm::install_headers(asset, sysrootInclude);
+    auto installed = xlings::xvm::install_headers(asset, sysrootInclude);
+    ASSERT_TRUE(installed) << installed.error();
+    std::vector<xlings::xvm::materialize::AssetClaim> claims;
+    for (const auto& proof : *installed) claims.push_back({proof.source, proof.destination});
     EXPECT_TRUE(fs::exists(sysrootInclude / "c++" / "15.1.0" / "vector"));
     EXPECT_FALSE(fs::exists(sysrootInclude / "vector"))
         << "the prefix was ignored and the headers were flattened into the "
            "include root";
 
-    xlings::xvm::remove_headers(asset, sysrootInclude);
+    ASSERT_TRUE(xlings::xvm::remove_headers(asset, sysrootInclude, claims));
     EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "15.1.0" / "vector"));
-    // The prefix directory only ever held this release's links, so it goes
-    // too rather than accumulating as litter.
-    EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "15.1.0"));
+    // A leaf proof cannot prove ownership of a pre-existing directory.
+    EXPECT_TRUE(fs::exists(sysrootInclude / "c++" / "15.1.0"));
 }
 
 TEST_F(XvmHeaderSymlinkTest, APrefixDirectoryWithOtherContentSurvivesRemoval) {
@@ -685,14 +694,17 @@ TEST_F(XvmHeaderSymlinkTest, APrefixDirectoryWithOtherContentSurvivesRemoval) {
         .sourceDir = srcInclude.string(),
         .destinationPrefix = "c++",
     };
-    xlings::xvm::install_headers(asset, sysrootInclude);
+    auto installed = xlings::xvm::install_headers(asset, sysrootInclude);
+    ASSERT_TRUE(installed) << installed.error();
+    std::vector<xlings::xvm::materialize::AssetClaim> claims;
+    for (const auto& proof : *installed) claims.push_back({proof.source, proof.destination});
 
     // Something else lives under the same prefix -- another package's
     // headers, or a file the user put there.
     xlings::platform::write_string_to_file(
         (sysrootInclude / "c++" / "keep.h").string(), "/* not ours */");
 
-    xlings::xvm::remove_headers(asset, sysrootInclude);
+    ASSERT_TRUE(xlings::xvm::remove_headers(asset, sysrootInclude, claims));
     EXPECT_FALSE(fs::exists(sysrootInclude / "c++" / "vector"));
     EXPECT_TRUE(fs::exists(sysrootInclude / "c++" / "keep.h"))
         << "removing a header asset deleted a directory it did not own";

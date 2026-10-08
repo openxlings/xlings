@@ -128,8 +128,8 @@ ftxui      = "6.1.9"
 libarchive = "3.8.7"
 
 [dependencies.mcpplibs]
+xpkg = "0.0.61"
 cmdline = "0.0.2"
-xpkg = "0.0.60"
 capi.lua = "0.0.3"
 
 [dev-dependencies]

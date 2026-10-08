@@ -1,10 +1,10 @@
-> 编写日期: 2026-05-17 | 版本: 2026.9.28.2
+> 编写日期: 2026-05-17 | 更新: 2026-10-08 | 版本: 2026.10.8.2
 
-# NDJSON 接口协议规范 v1.5
+# NDJSON 接口协议规范 v1.6
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.5**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.6**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
@@ -14,6 +14,7 @@
 | 1.3 | 2026.9.28.2 起 | 增补：`download_progress` 的 `stream` 字段与发送频率的上限（§6.3.2）；`prevLines` 废弃，恒为 0 |
 | 1.4 | 2026.9.29.1 起 | 增补：`install_packages` 的 `reconfig` 字段（§7.3）与 `configure` 进度事件（§6.1.2）；已在本 scope 按当前 revision 配置过的包不再重跑 config |
 | 1.5 | 2026.9.30.1 起 | 增补：`install_packages` 的 `hook` 进度事件（§6.1.2）；安装 hook 启动的命令的输出写入 hook 日志，不再以 `[stray stdout]` 转发到 stderr（§5）；下载因本地写入失败（磁盘满、无权限）时错误码为 `E_DISK_FULL`（§6.1.3） |
+| 1.6 | 2026.10.8.2 起 | `subos_exec_output` 在命令运行中发送独立 stdout/stderr 字节片段；无效 UTF-8 片段以 `encoding: base64` 编码；取消请求回收子进程 |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -46,7 +47,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.5"}
+{"protocol_version":"1.6"}
 ```
 
 ### 3.2 查询可用能力
@@ -519,3 +520,17 @@ stdout 输出（每行一个 JSON）：
 ```
 
 客户端收到 `kind: result` 后即可关闭 stdin 并退出。
+
+## SubOS 命令输出
+
+`subos_exec` 接受 `argv`，输出片段通过 `dataKind: subos_exec_output` 发送。
+`payload.stream` 为 `stdout` 或 `stderr`，`payload.data` 为本片段内容，片段可能没有换行。
+普通片段为 UTF-8；带 `payload.encoding: base64` 的片段须先解码再按对应 stream 拼接字节。
+跨片段的 UTF-8 字符应在拼接后解码。终端 `result.exitCode` 是命令退出码；
+stdin 不交给命令，控制通道的 cancel 终止本次调用并返回 `E_CANCELLED` 与 130。
+
+```json
+{"kind":"data","dataKind":"subos_exec_output","payload":{"stream":"stdout","data":"ready"}}
+{"kind":"data","dataKind":"subos_exec_output","payload":{"stream":"stderr","encoding":"base64","data":"/w=="}}
+{"kind":"result","exitCode":0}
+```

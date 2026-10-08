@@ -13,12 +13,13 @@ std::string_view to_string(Mode m) {
     case Mode::Portable: return "portable";
     case Mode::System:   return "system";
     case Mode::Multi:    return "multi";
+    case Mode::Root:     return "root";
     default:             return "user";
     }
 }
 
 std::optional<Mode> mode_from_string(std::string_view s) {
-    for (auto m : {Mode::User, Mode::Custom, Mode::Portable, Mode::System, Mode::Multi})
+    for (auto m : {Mode::User, Mode::Custom, Mode::Portable, Mode::System, Mode::Multi, Mode::Root})
         if (to_string(m) == s) return m;
     return std::nullopt;
 }
@@ -114,18 +115,45 @@ nlohmann::json read_system_config() {
     return j.is_object() ? j : nlohmann::json::object();
 }
 
-std::optional<fs::path> system_layer() {
+std::expected<bool, std::string> shares_store(const fs::path& home) {
+    auto marker = read_json_for_update(home_identity::marker_path(home));
+    if (!marker) return std::unexpected(marker.error());
+    if (marker->empty()) return false;
+    auto mode = marker->find("mode");
+    if (mode == marker->end()) return false;
+    if (!mode->is_string() || !mode_from_string(mode->get<std::string>()))
+        return std::unexpected(home.string() + ": invalid declared home mode");
+    const auto declared = mode->get<std::string>();
+    const auto layout = marker->find("layout");
+    if (declared == "root") {
+        if (layout == marker->end() || !layout->is_string() ||
+            (layout->get<std::string>() != "multi" && layout->get<std::string>() != "single"))
+            return std::unexpected(home.string() + ": root layout must be single or multi");
+        return layout->get<std::string>() == "multi";
+    }
+    if (layout != marker->end() && (!layout->is_number_integer() || *layout < 1 || *layout > kLayout))
+        return std::unexpected(home.string() + ": unsupported home layout");
+    return declared == "multi";
+}
+
+std::expected<std::optional<fs::path>, std::string> read_system_layer() {
     fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
     if (layer.empty()) {
         if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";
         else layer = "/xlings";
     }
-    auto marker = read_marker(layer);
-    if (!marker) return std::nullopt;
-    auto it = marker->find("mode");
-    if (it == marker->end() || !it->is_string() || it->get<std::string>() != to_string(Mode::Multi))
-        return std::nullopt;
-    return layer;
+    auto shared = shares_store(layer);
+    if (!shared) return std::unexpected(shared.error());
+    if (!*shared) return std::optional<fs::path>{};
+    std::error_code ec;
+    auto canonical = fs::canonical(layer, ec);
+    if (ec) return std::unexpected(layer.string() + ": " + ec.message());
+    return std::optional<fs::path>{std::move(canonical)};
+}
+
+std::optional<fs::path> system_layer() {
+    auto layer = read_system_layer();
+    return layer ? *layer : std::nullopt;
 }
 
 HomeContext describe(const fs::path& home, Source source) {
@@ -140,6 +168,8 @@ HomeContext describe(const fs::path& home, Source source) {
         }
         if (auto it = marker->find("layout"); it != marker->end() && it->is_number_integer())
             ctx.layout = it->get<int>();
+        if (auto it = marker->find("layout"); ctx.mode == Mode::Root &&
+            it != marker->end() && it->is_string()) ctx.rootLayout = it->get<std::string>();
         if (auto it = marker->find("id"); it != marker->end() && it->is_string())
             ctx.id = it->get<std::string>();
     }
@@ -149,8 +179,11 @@ HomeContext describe(const fs::path& home, Source source) {
 std::expected<void, std::string> declare(const fs::path& home,
                                          std::optional<Mode> mode,
                                          std::optional<int> layout) {
-    auto marker = read_marker(home);
-    if (!marker) return std::unexpected("no .xlings-home marker in " + home.string());
+    auto marker = read_json_for_update(home_identity::marker_path(home));
+    if (!marker) return std::unexpected(marker.error());
+    if (marker->empty()) return std::unexpected("no .xlings-home marker in " + home.string());
+    if (marker->contains("mode") && !(*marker)["mode"].is_string())
+        return std::unexpected("invalid home mode in " + home.string());
     bool changed = false;
     if (mode) {
         auto want = std::string(to_string(*mode));
@@ -159,7 +192,10 @@ std::expected<void, std::string> declare(const fs::path& home,
             changed = true;
         }
     }
-    if (layout) {
+    if (layout && marker->value("mode", std::string()) != "root") {
+        auto prior = marker->find("layout");
+        if (prior != marker->end() && !prior->is_number_integer())
+            return std::unexpected("invalid home layout in " + home.string());
         int have = marker->value("layout", 1);
         if (*layout > have) {        // one way
             (*marker)["layout"] = *layout;
@@ -168,28 +204,26 @@ std::expected<void, std::string> declare(const fs::path& home,
     }
     if (!changed) return {};
     auto path = home_identity::marker_path(home);
-    auto tmp = fs::path(path.string() + ".tmp");
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return std::unexpected("cannot write " + tmp.string());
-        out << marker->dump(2) << '\n';
-        if (!out) return std::unexpected("cannot write " + tmp.string());
-    }
-    std::error_code ec;
-    fs::rename(tmp, path, ec);
-    if (ec) {
-        fs::remove(tmp, ec);
-        return std::unexpected("cannot write " + path.string());
+    try {
+        platform::write_file_atomic(path.string(), marker->dump(2) + "\n");
+    } catch (const std::exception& error) {
+        return std::unexpected(path.string() + ": " + error.what());
     }
     return {};
 }
 
 std::expected<nlohmann::json, std::string> read_json_for_update(const fs::path& path) {
     std::error_code ec;
-    if (!fs::exists(path, ec)) return nlohmann::json::object();
+    auto status = fs::symlink_status(path, ec);
+    if (status.type() == fs::file_type::not_found &&
+        (!ec || ec == std::errc::no_such_file_or_directory)) return nlohmann::json::object();
+    if (ec) return std::unexpected(path.string() + ": " + ec.message());
+    if (!fs::is_regular_file(path, ec) || ec)
+        return std::unexpected(path.string() + ": not a readable regular JSON file");
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::unexpected(path.string() + ": cannot be read");
     std::string text{std::istreambuf_iterator<char>(in), {}};
+    if (in.bad()) return std::unexpected(path.string() + ": read failed");
     auto j = nlohmann::json::parse(text, nullptr, false);
     if (j.is_discarded() || !j.is_object())
         return std::unexpected(path.string() + ": could not be parsed as a JSON object");

@@ -129,6 +129,7 @@ class SubosExec : public Capability {
 public:
     auto spec() const -> CapabilitySpec override;
     auto execute(Params params, EventStream& stream) -> Result override;
+    auto execute(Params params, EventStream& stream, CancellationToken* cancel) -> Result override;
 };
 
 class SubosStart : public Capability {

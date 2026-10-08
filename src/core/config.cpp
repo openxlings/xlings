@@ -1511,7 +1511,7 @@ void Config::save_versions() {
         // database, never an authority.)
         json["dbIndex"] = xvm::program_index_to_json(versions);
     }
-    platform::write_string_to_file(configPath.string(), json.dump(2));
+    platform::write_file_atomic(configPath.string(), json.dump(2));
 
     if (useGlobal) {
         // The DB file gets its own copy of the versions map, wrapped with a
@@ -1919,35 +1919,9 @@ void Config::save_workspace() {
     // is never followed by a spurious write failure (issue #471).
     fs::create_directories(subosConfigPath.parent_path());
 
-    nlohmann::json json = nlohmann::json::object();
-    if (fs::exists(subosConfigPath)) {
-        bool parsedOk = false;
-        try {
-            auto content = platform::read_file_to_string(subosConfigPath.string());
-            auto parsed = nlohmann::json::parse(content, nullptr, false);
-            if (!parsed.is_discarded() && parsed.is_object()) {
-                json = std::move(parsed);
-                parsedOk = true;
-            }
-        } catch (...) { /* parsedOk stays false */ }
-        if (!parsedOk) {
-            // Refuse rather than replace: an unreadable file is not an
-            // empty one. Blanking it here would discard `subos_info`, envs,
-            // and anything else this write does not itself own -- turning
-            // "this subos could not be read" into "this subos is now
-            // empty", the one failure mode a repair cannot walk back.
-            // profile::save_subos_workspace already makes this same
-            // promise for every OTHER subos's file (doctor's cross-subos
-            // repairs write through it); this is THIS subos's own writer,
-            // reached on nearly every install/remove/use, making it too.
-            log::warn(
-                "{}: could not be parsed as JSON; leaving it untouched "
-                "rather than overwriting it with a blank workspace. Run "
-                "`xlings self doctor` to see what needs repair.",
-                display_path(subosConfigPath));
-            return;
-        }
-    }
+    const auto observed = home::read_json_for_update(subosConfigPath);
+    if (!observed) throw std::runtime_error(observed.error() + "; workspace left untouched");
+    nlohmann::json json = *observed;
 
     // All four destination paths above target subos-side files
     // (named project subos, anonymous project subos / state file, or
@@ -1985,7 +1959,7 @@ void Config::save_workspace() {
     } else {
         json["configured"] = sws.configured;
     }
-    platform::write_string_to_file(subosConfigPath.string(), json.dump(2));
+    platform::write_file_atomic(subosConfigPath.string(), json.dump(2));
 }
 
 // The map `save_workspace` writes for the scope this command acts on -- the

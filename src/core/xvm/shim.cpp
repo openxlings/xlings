@@ -20,8 +20,37 @@ import xlings.core.xvm.shim_table;
 import xlings.core.xvm.shim_view;
 import xlings.core.home_config;
 import xlings.core.home_identity;
+import xlings.subos.rootfs;
+import xlings.platform.target;
 
 namespace xlings::xvm {
+
+std::expected<std::string, std::string> root_compiler_alias(std::string alias,
+    const VData& data, const std::filesystem::path& scope, const std::filesystem::path& root) {
+    if constexpr (platform::OS_NAME != "linux") return alias;
+    if (!data.bindingGroup || data.bindingGroup->provider != "xim:gcc"
+        || data.bindingGroup->rootTarget != "xim-gnu-gcc") return alias;
+    const auto end = alias.find_first_of(" \t");
+    const auto driver = std::filesystem::path(alias.substr(0, end)).filename().string();
+    const bool compiler = driver == "gcc" || driver == "g++" || driver == "cc" || driver == "c++"
+        || driver.ends_with("-gcc") || driver.ends_with("-g++") || driver.ends_with("-c++");
+    if (!compiler || !subos::rootfs::running_projection(root, scope)) return alias;
+    const auto flag = "--sysroot=" + scope.string();
+    const auto found = alias.find(flag);
+    if (found == alias.npos || (found > 0 && alias[found - 1] != ' ' && alias[found - 1] != '\t')
+        || (found + flag.size() != alias.size() && alias[found + flag.size()] != ' '
+            && alias[found + flag.size()] != '\t')) return alias;
+    std::string loader;
+    if constexpr (platform::build_arch() == "x86_64") loader = "/lib64/ld-linux-x86-64.so.2";
+    else if constexpr (platform::build_arch() == "aarch64") loader = "/lib/ld-linux-aarch64.so.1";
+    else return std::unexpected("this GCC root has no supported logical loader for its architecture");
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(root / std::filesystem::path(loader).relative_path(), ec) || ec)
+        return std::unexpected("the GCC root has no logical glibc loader " + loader + "; install glibc in this scope");
+    alias.replace(found, flag.size(), "--sysroot=/");
+    alias += " -Wl,--dynamic-linker," + loader;
+    return alias;
+}
 
 bool is_xlings_binary(std::string_view name) {
     return name == "xlings";
@@ -1141,6 +1170,9 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
         // is the only layer that knows which subos this process resolved to
         // -- which is exactly why the answer was not in the database.
         alias_cmd = expand_subos_placeholder(alias_cmd, active_subos_dir);
+        const auto root_alias = root_compiler_alias(alias_cmd, *vdata, active_subos_dir);
+        if (!root_alias) { log::error("xlings: {}", root_alias.error()); return 1; }
+        alias_cmd = *root_alias;
 
         // Refuse rather than hand a vanishing reference to the shell.
         //

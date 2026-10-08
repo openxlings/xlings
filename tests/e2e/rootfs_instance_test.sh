@@ -19,7 +19,7 @@
 #   9. luban-desktop, `from` core: a GL program compiled inside renders a
 #      frame offscreen (llvmpipe), every GL object from the payloads.
 #
-# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ISO-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY,LUBAN-DESKTOP-RENDER requires=linux,bwrap,network proves=isolation
+# xtest: covers=ROOT-PROJECT,INST-ROOTFS,ISO-ROOTFS,ROOT-NO-HOST,ROOT-ROLE-TABLE,ROOT-ROLLBACK,LUBAN-TINY,LUBAN-CORE,LUBAN-FROM-CHAIN,ECO-HOST-INDEPENDENT,SHIM-NO-SHELL,DOM-PREFIX,PERM-FETCH-LAYER,ROOT-ETC-FACTORY,ROOT-LIBSEARCH,LUBAN-DESKTOP-RENDER requires=linux,bwrap,network proves=isolation
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -106,6 +106,40 @@ grep -q 'hello from luban-core' <<<"$out" || fail "the program did not run: $out
 foreign="$(grep '^/' <<<"$out" | grep -v "^$H/\|^/root/\|^/usr/" || true)"
 [[ -z "$foreign" ]] || fail "mapped from outside the root: $foreign"
 
+log "5a. root compiler uses the logical loader and the root cache"
+# A library outside the projection and payload RUNPATHs can only be found
+# through this machine's /etc/ld.so.conf and its generated cache.
+mkdir -p "$C/rootfs/opt/cache-probe"
+cat > "$C/rootfs/root/cache-library.c" <<'EOF'
+int cache_probe_641(void) { return 641; }
+EOF
+cat > "$C/rootfs/root/cache-main.c" <<'EOF'
+#include <stdio.h>
+extern int cache_probe_641(void);
+int main(void) { printf("cache-probe=%d\n", cache_probe_641()); return cache_probe_641() == 641 ? 0 : 1; }
+EOF
+printf '/opt/cache-probe\n' > "$C/rootfs/etc/ld.so.conf"
+out="$(X subos exec core -- /bin/sh -ec '
+    cd /root
+    gcc -shared -fPIC cache-library.c -Wl,-soname,libcache_probe_641.so -o /opt/cache-probe/libcache_probe_641.so
+    gcc cache-main.c -L/opt/cache-probe -lcache_probe_641 -o cache-main
+    xlings install -y --reconfig glibc >/tmp/cache-config.log 2>&1 || { cat /tmp/cache-config.log; exit 1; }
+    env -u LD_LIBRARY_PATH -u LD_PRELOAD ./cache-main' 2>&1)" \
+  || fail "logical loader/cache: $out"
+grep -qx 'cache-probe=641' <<<"$out" || fail "the root cache did not supply the private library: $out"
+interp="$(readelf -lW "$C/rootfs/root/cache-main" | sed -n 's/.*interpreter: \(.*\)]/\1/p')"
+case "$(uname -m)" in
+  aarch64) expected_interp=/lib/ld-linux-aarch64.so.1 ;;
+  x86_64) expected_interp=/lib64/ld-linux-x86-64.so.2 ;;
+  *) fail "unsupported root consumer architecture" ;;
+esac
+[[ "$interp" == "$expected_interp" ]] || fail "root gcc selected $interp instead of $expected_interp"
+[[ -s "$C/rootfs/etc/ld.so.cache" ]] || fail "no root ld.so.cache was published"
+managed_loader="$(readlink -f "$C/root/usr/lib/$(basename "$expected_interp")")"
+out="$(X subos exec core -- "$managed_loader" --list /root/cache-main 2>&1)" && \
+  fail "the managed loader unexpectedly searched the root cache: $out"
+grep -q 'libcache_probe_641.so' <<<"$out" || fail "managed-loader failure did not identify the private library: $out"
+
 log "6. closures in an empty root; the gcc shim without a shell"
 loader="$(readlink -f "$C/root/usr/lib64/ld-linux-x86-64.so.2")"
 checked=0
@@ -161,9 +195,7 @@ grep -q "system scope" <<<"$out" || fail "no reason given: $out"
 log "9. luban-desktop renders offscreen"
 rootfs_new desk subos:luban-desktop "$RUNTIME_DIR/new-desk.log" || fail "subos new --from subos:luban-desktop"
 cp "$ROOT_DIR/tests/e2e/fixtures/glprobe.c" "$H/subos/desk/rootfs/root/glprobe.c"
-# -rpath /usr/lib: a program built in a root links the payload loader (gcc's
-# specs), whose default directory is the payload's, not the root's /usr/lib.
-out="$(X subos exec desk -- /bin/sh -c 'cd /root && gcc glprobe.c -o glprobe -lEGL -lGL -Wl,-rpath,/usr/lib && ./glprobe' 2>&1)" \
+out="$(X subos exec desk -- /bin/sh -c 'cd /root && gcc glprobe.c -o glprobe -lEGL -lGL && ./glprobe' 2>&1)" \
   || fail "desktop: $out"
 grep -q '^RESULT=ok' <<<"$out" || fail "desktop: no frame rendered: $out"
 grep -q '^PIXEL=336699' <<<"$out" || fail "desktop: the pixel is not the one asked for: $out"

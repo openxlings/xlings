@@ -24,6 +24,9 @@ struct BindingIntegrityIssue {
 
 struct VData {
     std::string path;
+    std::string sourceHome;  // borrowed registration provenance; empty means this home
+    std::string sourceScope;
+    std::string layerMetadata;  // retain unknown provenance keys on load/save
     std::string kind;
     std::string sourceName;
     std::string destinationName;

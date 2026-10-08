@@ -7,6 +7,7 @@ module;
 
 module xlings.cli;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import mcpplibs.cmdline;
 import mcpplibs.capi.lua;
@@ -2036,11 +2037,6 @@ int dispatch_(int argc, char* argv[]) {
             }
             namespace fs = std::filesystem;
             fs::path scriptFile = fargv[2];
-            auto execResult = mcpplibs::xpkg::create_executor(scriptFile);
-            if (!execResult) {
-                log::error("failed to load script: {}", execResult.error());
-                return 1;
-            }
             mcpplibs::xpkg::ExecutionContext ctx;
             ctx.platform = std::string(platform::OS_NAME);
             ctx.bin_dir = Config::paths().binDir;
@@ -2049,6 +2045,11 @@ int dispatch_(int argc, char* argv[]) {
             ctx.xpkg_dir = Config::paths().dataDir / "xpkgs";
             for (int i = 3; i < fargc; ++i) {
                 ctx.args.emplace_back(fargv[i]);
+            }
+            auto execResult = xim::lua_boundary::create_executor(scriptFile, ctx);
+            if (!execResult) {
+                log::error("failed to load script: {}", execResult.error());
+                return 1;
             }
             auto result = execResult->run_script(ctx);
             if (!result.success) {

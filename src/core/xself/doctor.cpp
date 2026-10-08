@@ -26,6 +26,7 @@ import xlings.core.xvm.relocation;
 // prune_empty_asset_dirs: `--fix` deletes the same links the removal path
 // deletes and must leave the same shape behind.
 import xlings.core.xvm.commands;
+import xlings.core.xvm.materialize;
 import xlings.core.xself.repair;
 import xlings.core.xim.catalog;
 import xlings.core.xim.payload;
@@ -3019,12 +3020,15 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                                      Config::display_path(source)));
                     continue;
                 }
-                xvm::place_asset(source, f.shimPath);
-                // Verified, not assumed. place_asset is best-effort by
-                // design (it logs and returns on a source that vanished
-                // mid-run), so trusting it here would let "re-pointed but
-                // still dangling" print as a repair -- the exact shape this
-                // whole change exists to remove.
+                const auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
+                    Config::paths().subosDir, Config::paths().libDir, st.homeStr);
+                const auto placed = claims
+                    ? xvm::place_asset(source, f.shimPath, *claims)
+                    : xvm::MaterializationResult(std::unexpected(claims.error()));
+                if (!placed) {
+                    note(glyph::mark(glyph::failed, "sysroot repair failed"), placed.error());
+                    continue;
+                }
                 ec.clear();
                 if (fs::exists(f.shimPath, ec)) {
                     note(glyph::mark(glyph::bullet, "link repointed"),
@@ -3107,7 +3111,15 @@ void repair_local_(const DoctorState& st, const Scan& scan,
                                  Config::display_path(source)));
                 continue;
             }
-            xvm::place_asset(source, f.shimPath);
+            const auto claims = xvm::materialize::collect_claims(st.db, st.wsInstalled,
+                Config::paths().subosDir, Config::paths().libDir, st.homeStr);
+            const auto placed = claims
+                ? xvm::place_asset(source, f.shimPath, *claims)
+                : xvm::MaterializationResult(std::unexpected(claims.error()));
+            if (!placed) {
+                note(glyph::mark(glyph::failed, "sysroot repair failed"), placed.error());
+                continue;
+            }
             std::error_code pec;
             if (fs::exists(f.shimPath, pec)) {
                 note(glyph::mark(glyph::bullet, "link placed"),

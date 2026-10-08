@@ -19,6 +19,7 @@ import xlings.core.config;
 import xlings.core.xvm.types;
 import xlings.core.xvm.bindings;
 import xlings.core.xvm.commands;
+import xlings.core.xvm.materialize;
 import xlings.core.xvm.switch_plan;
 import xlings.core.xvm.removal;
 import xlings.core.xim.installer;
@@ -251,11 +252,12 @@ TEST(ReclaimDeclaredAssets, RemovesWhatNothingActiveDeclares) {
 
     VersionDB db;   // the record is gone: this is a full uninstall
     xlings::xvm::reclaim_declared_assets(
-        subos, root / "store", {"usr/include/demo/a.h"}, db, Workspace{});
+        subos, root / "store", {"usr/include/demo/a.h"}, db, Workspace{},
+        std::vector<xlings::xvm::materialize::AssetClaim>{{payload / "include/a.h", subos / "usr/include/demo/a.h"}});
 
     EXPECT_FALSE(present_(subos / "usr" / "include" / "demo" / "a.h"));
-    // The directory only existed to hold it.
-    EXPECT_FALSE(fs::exists(subos / "usr" / "include" / "demo"));
+    // Only the old leaf was proved owned; its real parent is retained.
+    EXPECT_TRUE(fs::exists(subos / "usr" / "include" / "demo"));
     // The sysroot's own shape stays: a compiler configured with --sysroot
     // cares that this exists.
     EXPECT_TRUE(fs::exists(subos / "usr" / "include"));
@@ -299,7 +301,8 @@ TEST(ReclaimDeclaredAssets, RePointsADestinationAnotherActiveReleaseDeclares) {
                                 {"staying.files.1", "2.0.0"}};
 
     xlings::xvm::reclaim_declared_assets(
-        subos, storeRoot, {"usr/include/scsi.h"}, db, activeAfter);
+        subos, storeRoot, {"usr/include/scsi.h"}, db, activeAfter,
+        std::vector<xlings::xvm::materialize::AssetClaim>{{goingPayload / "include/scsi.h", subos / "usr/include/scsi.h"}});
 
     ASSERT_TRUE(present_(subos / "usr" / "include" / "scsi.h"));
     // What the destination now SERVES, not how it is wired. The wiring is
@@ -343,7 +346,8 @@ TEST(ReclaimDeclaredAssets, RemovesWhenTheSurvivingClaimIsNotActiveHere) {
                      {{"include/x.h", "usr/include/x.h"}});
 
     xlings::xvm::reclaim_declared_assets(
-        subos, storeRoot, {"usr/include/x.h"}, db, Workspace{});
+        subos, storeRoot, {"usr/include/x.h"}, db, Workspace{},
+        std::vector<xlings::xvm::materialize::AssetClaim>{{payload / "include/x.h", subos / "usr/include/x.h"}});
 
     EXPECT_FALSE(present_(subos / "usr" / "include" / "x.h"));
 
@@ -463,7 +467,8 @@ TEST(PlaceAsset, DoesNotWriteThroughAPayloadDirectoryLink) {
 
     xlings::xvm::place_asset(
         (newcomer / "arriving.h").string(),
-        subos / "usr" / "include" / "scsi" / "arriving.h");
+        subos / "usr" / "include" / "scsi" / "arriving.h",
+        std::vector<xlings::xvm::materialize::AssetClaim>{{owner, subos / "usr/include/scsi", true}});
 
     EXPECT_FALSE(fs::exists(owner / "arriving.h"))
         << "the placement wrote into another package's payload";
@@ -555,14 +560,16 @@ TEST(CleanupRemovedFileArtifacts, ReclaimsExactlyTheRemovedFilesEntries) {
     // the file members are ignored by the program cleanup.
     const VersionDB after;
 
-    xlings::xim::cleanup_removed_xvm_file_artifacts(
+    const std::vector<xlings::xvm::materialize::AssetClaim> claims{
+        {payload / "include" / "a.h", subos / "usr" / "include" / "going" / "a.h"}};
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_file_artifacts(
         subos, storeRoot, before, after, Workspace{},
         xlings::xvm::RemovalBatchResult{
             .removed = {{"going", "1.0.0"},
-                        {"going.files.1", "1.0.0"}}});
+                        {"going.files.1", "1.0.0"}}}, claims));
 
     EXPECT_FALSE(present_(subos / "usr" / "include" / "going" / "a.h"));
-    EXPECT_FALSE(fs::exists(subos / "usr" / "include" / "going"));
+    EXPECT_TRUE(fs::exists(subos / "usr" / "include" / "going"));
     EXPECT_TRUE(fs::exists(subos / "usr" / "include"));
 
     std::error_code ec;
@@ -586,10 +593,10 @@ TEST(CleanupRemovedFileArtifacts, RefusesADestinationTheRulesWouldNotAllow) {
                      {{"x", "usr/include/x"}});
     before["going.files.1"].versions["1.0.0"].fileDst = "../outside/victim";
 
-    xlings::xim::cleanup_removed_xvm_file_artifacts(
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_file_artifacts(
         subos, root / "store", before, VersionDB{}, Workspace{},
         xlings::xvm::RemovalBatchResult{
-            .removed = {{"going.files.1", "1.0.0"}}});
+            .removed = {{"going.files.1", "1.0.0"}}}));
 
     EXPECT_TRUE(fs::exists(outside / "victim"));
 
@@ -656,7 +663,8 @@ TEST(PlaceAsset, UnwrapsSubdirectoriesRatherThanRelinkingThem) {
 
     xlings::xvm::place_asset(
         (newcomer / "arriving.h").string(),
-        subos / "usr" / "include" / "sub" / "arriving.h");
+        subos / "usr" / "include" / "sub" / "arriving.h",
+        std::vector<xlings::xvm::materialize::AssetClaim>{{owner, subos / "usr/include/sub", true}});
 
     std::error_code ec;
     const auto deep = subos / "usr" / "include" / "sub" / "deep";

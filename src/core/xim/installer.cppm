@@ -17,6 +17,7 @@ import xlings.core.log;
 import xlings.platform;
 import xlings.platform.target;
 import xlings.core.config;
+import xlings.core.home.layers;
 import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
@@ -30,6 +31,7 @@ import xlings.core.xvm.registration;
 import xlings.core.xvm.errors;
 import xlings.subos.manifest;
 import xlings.core.xvm.commands;
+import xlings.core.xvm.materialize;
 import xlings.core.xvm.shim;
 import xlings.core.xim.libxpkg.types.script;
 import xlings.core.xim.libxpkg.types.subos;
@@ -201,26 +203,28 @@ apply_xpkg_xvm_metadata_batch(
         const XpkgRegistrationPlan& registration,
         const xvm::RemovalBatchOptions& removalOptions = {});
 
-void cleanup_removed_xvm_library_artifacts(
+std::expected<void, std::string> cleanup_removed_xvm_library_artifacts(
         const std::filesystem::path& libDir,
         const xvm::VersionDB& dbBeforeRemoval,
         const xvm::VersionDB& currentDb,
-        const xvm::RemovalBatchResult& removalResult);
+        const xvm::RemovalBatchResult& removalResult,
+        std::span<const xvm::materialize::AssetClaim> claims = {});
 
-void cleanup_removed_xvm_program_artifacts(
+std::expected<void, std::string> cleanup_removed_xvm_program_artifacts(
         const std::filesystem::path& binDir,
         const xvm::VersionDB& dbBeforeRemoval,
         const xvm::VersionDB& currentDb,
         const xvm::WorkspaceInstalled& installed,
         const xvm::RemovalBatchResult& removalResult);
 
-void cleanup_removed_xvm_file_artifacts(
+std::expected<void, std::string> cleanup_removed_xvm_file_artifacts(
         const std::filesystem::path& subosDir,
         const std::filesystem::path& payloadRoot,
         const xvm::VersionDB& dbBeforeRemoval,
         const xvm::VersionDB& currentDb,
         const xvm::Workspace& currentWorkspace,
-        const xvm::RemovalBatchResult& removalResult);
+        const xvm::RemovalBatchResult& removalResult,
+        std::span<const xvm::materialize::AssetClaim> claims = {});
 
 bool evict_invalid_archive_cache_(
         const std::filesystem::path& archive,
@@ -510,11 +514,8 @@ bool is_version_referenced_anywhere_(PackageScope scope,
                                      const std::filesystem::path& excludePath = {},
                                      bool force = false);
 
-void remove_target_shims_(const std::string& target, const std::string& version);
-
-void detach_current_subos_(const std::string& target,
-                           const std::string& version,
-                           bool persist = true);
+std::expected<void, std::string> detach_current_subos_(const std::string& target,
+                                                       const std::string& version);
 
 // Record a package's `subos.env` declarations into the subos it installs into.
 //
@@ -532,7 +533,8 @@ bool apply_subos_env_ops_(const std::vector<mcpplibs::xpkg::XvmOp>& operations,
 bool process_xvm_operations_(const PlanNode& node,
                              const std::filesystem::path& dataDir,
                              mcpplibs::xpkg::PackageExecutor& executor,
-                             bool useAfterInstall);
+                             bool useAfterInstall,
+                             const home::layers::BorrowPlan* borrowed = nullptr);
 
 bool run_config_hook_(const PlanNode& node,
                       const std::filesystem::path& dataDir,
@@ -540,7 +542,8 @@ bool run_config_hook_(const PlanNode& node,
                       mcpplibs::xpkg::ExecutionContext& ctx,
                       std::function<void(const InstallStatus&)> onStatus,
                       bool useAfterInstall,
-                      std::string* failureMessage = nullptr);
+                      std::string* failureMessage = nullptr,
+                      const home::layers::BorrowPlan* borrowed = nullptr);
 
 // A package that promised programs and delivered none of them.
 //

@@ -35,6 +35,7 @@ import xlings.core.xim.catalog;
 import xlings.core.xim.resolver;
 import xlings.core.xim.downloader;
 import xlings.core.xim.installer;
+import xlings.core.xvm.materialize;
 import xlings.core.xim.commands;
 import xlings.core.xim.repo;
 import xlings.core.xim.extract;
@@ -6694,7 +6695,8 @@ int run_xvm_registration_production_child_(
             std::string name,
             std::string version,
             const fs::path& installDir,
-            bool useAfterInstall) {
+            bool useAfterInstall,
+            std::string namespaceName = {}) {
         auto executor = mcpplibs::xpkg::create_executor(recipe);
         if (!executor) {
             std::cerr << executor.error() << '\n';
@@ -6702,7 +6704,11 @@ int run_xvm_registration_production_child_(
         }
         xlings::xim::PlanNode node;
         node.name = std::move(name);
-        node.canonicalName = node.name;
+        node.namespaceName = std::move(namespaceName);
+        node.canonicalName = node.namespaceName.empty()
+            ? node.name : node.namespaceName + ":" + node.name;
+        if (!node.namespaceName.empty())
+            node.storeRoot = home / "data" / "xpkgs";
         node.version = std::move(version);
         mcpplibs::xpkg::ExecutionContext context;
         context.pkg_name = node.name;
@@ -6795,7 +6801,7 @@ int run_xvm_registration_production_child_(
             selfRecipe, "xlings", "xlings-real")) {
         return fail(12, "failed to write self-replace recipe");
     }
-    const auto selfPayload = payload / "self";
+    const auto selfPayload = home / "data" / "xpkgs" / "xim-x-xlings" / "2.0.0";
     const auto selfSource =
         selfPayload / "bin"
         / ("xlings-real"
@@ -6813,10 +6819,11 @@ int run_xvm_registration_production_child_(
         fs::perm_options::replace);
     if (!run_config(
             selfRecipe,
-            "task3b-self-provider",
+            "xlings",
             "2.0.0",
             selfPayload,
-            true)) {
+            true,
+            "xim")) {
         return fail(14, "force-global self config hook failed");
     }
     if (!xlings::Config::global_versions().contains("xlings")
@@ -7344,8 +7351,10 @@ TEST(XimXvmRemovalArtifactTest,
     ASSERT_TRUE(removalResult.has_value())
         << removalResult.error().message;
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, db, *removalResult);
+    const std::vector<xlings::xvm::materialize::AssetClaim> claims{
+        {oldSource, libDir / destinationName}};
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, db, *removalResult, claims));
 
     EXPECT_FALSE(fs::exists(libDir / destinationName));
     ASSERT_TRUE(fs::exists(libDir / target));
@@ -7404,8 +7413,10 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, {}, removalResult);
+    const std::vector<xlings::xvm::materialize::AssetClaim> claims{
+        {sourceDir / filename, libDir / filename}};
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, {}, removalResult, claims));
 
     EXPECT_FALSE(fs::exists(libDir / filename));
     std::error_code ec;
@@ -7447,8 +7458,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_library_artifacts(
-        libDir, dbBefore, currentDb, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_library_artifacts(
+        libDir, dbBefore, currentDb, removalResult));
 
     ASSERT_TRUE(fs::exists(libDir / filename));
     EXPECT_EQ(
@@ -7494,8 +7505,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_program_artifacts(
-        binDir, dbBefore, currentDb, installed, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, currentDb, installed, removalResult));
 
     EXPECT_TRUE(fs::exists(shim));
     EXPECT_EQ(
@@ -7535,8 +7546,8 @@ TEST(XimXvmRemovalArtifactTest,
         },
     };
 
-    xlings::xim::cleanup_removed_xvm_program_artifacts(
-        binDir, dbBefore, {}, {}, removalResult);
+    ASSERT_TRUE(xlings::xim::cleanup_removed_xvm_program_artifacts(
+        binDir, dbBefore, {}, {}, removalResult));
 
     EXPECT_TRUE(fs::exists(shim));
     EXPECT_EQ(

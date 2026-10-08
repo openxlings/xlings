@@ -1,0 +1,233 @@
+#include <gtest/gtest.h>
+import xlings.testkit;
+#include "xlings/xtest.hpp"
+
+import std;
+import mcpplibs.xpkg.executor;
+import xlings.platform.worker;
+import xlings.core.xim.lua_protocol;
+import xlings.libs.json;
+
+namespace tk = xlings::testkit;
+namespace fs = std::filesystem;
+namespace xp = mcpplibs::xpkg;
+namespace protocol = xlings::xim::lua_protocol;
+namespace transport = xlings::platform::worker;
+
+XTEST(LuaWorker, DedicatedControlPipesPreserveOneLuaStateAndCumulativeEffects, .area = "xim",
+      .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("lua-worker-protocol");
+    const auto recipe = home.root() / "worker.lua";
+    tk::write_file(recipe, R"LUA(
+        io.stdout:write('raw top-level output is never a control message\n')
+        import('xim.libxpkg.xvm')
+        import('xim.libxpkg.pkgmanager')
+        local configured = false
+        function install()
+            configured = true
+            xvm.add('first', {version='1.0.0', args={'space value'}})
+            pkgmanager.install('fixture:extra@1.0.0')
+            return true
+        end
+        function config()
+            assert(configured, 'Lua state was reloaded')
+            xvm.add('second', {type='files', src='share/data', dst='usr/share/data'})
+            pkgmanager.remove('fixture:old')
+            return true
+        end
+    )LUA");
+    auto process = transport::Process::launch({tk::xlings_binary().string(), "__xpkg-worker",
+                                               std::string(transport::kReadToken),
+                                               std::string(transport::kWriteToken)},
+                                              home.env());
+    ASSERT_TRUE(process) << process.error();
+    auto invoke = [&](xp::HookInvocation request) {
+        nlohmann::json input = {{"protocol", xp::kHookBoundaryProtocol},
+                                {"operation", "executor"},
+                                {"invocation", protocol::encode(request)},
+                                {"environment", nlohmann::json::object()},
+                                {"cwd", home.root().generic_string()},
+                                {"capture_log", (home.root() / "recipe.log").generic_string()}};
+        auto wire = process->exchange(input.dump());
+        if (!wire)
+            throw std::runtime_error(wire.error());
+        auto answer = nlohmann::json::parse(*wire);
+        if (!answer.at("ok").get<bool>())
+            throw std::runtime_error(answer.at("error").get<std::string>());
+        return protocol::response(answer.at("value"));
+    };
+    auto executor = xp::create_executor(recipe, invoke);
+    ASSERT_TRUE(executor) << executor.error();
+    EXPECT_NE(tk::read_file(home.root() / "recipe.log").find("raw top-level output"),
+              std::string::npos);
+    xp::ExecutionContext context;
+    context.install_dir = home.root() / "payload";
+    context.pkg_name = "worker";
+    context.version = "1.0.0";
+    ASSERT_TRUE(executor->run_hook(xp::HookType::Install, context).success);
+    ASSERT_EQ(executor->xvm_operations().size(), 1u);
+    ASSERT_TRUE(executor->run_hook(xp::HookType::Config, context).success);
+    ASSERT_EQ(executor->xvm_operations().size(), 2u);
+    EXPECT_EQ(executor->xvm_operations()[0].args, (std::vector<std::string>{"space value"}));
+    ASSERT_EQ(executor->install_requests().size(), 2u);
+    EXPECT_EQ(executor->install_requests()[1].target, "fixture:old");
+}
+
+XTEST(LuaWorker, MalformedPolicyStopsBeforeAnyRecipeTopLevelCode, .area = "xim",
+      .requires_ = {"xlings-bin"}) {
+    auto home = tk::Home::isolated("lua-worker-no-fallback");
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    const auto marker = home.root() / "host-top-level";
+    const auto script = home.root() / "script.lua";
+    tk::write_file(script, "local f=assert(io.open([[" + marker.generic_string() +
+                               "]],'w')); f:write('host');f:close()\nfunction xpkg_main() end\n");
+    tk::write_file(home.dir() / "config" / "subos" / "box" / "policy.json", "{invalid policy");
+    const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(result.exit_code, 0) << result.transcript();
+    EXPECT_FALSE(fs::exists(marker));
+    EXPECT_NE(result.transcript().find("policy"), std::string::npos);
+}
+
+XTEST(LuaWorker, DeclaredPolicyIsolatesWholeLuaIncludingIoExecuteAndPopen, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-worker-isolation");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=dev"}).exit_code, 0);
+    const auto forbidden = home.root() / "host-secret";
+    const auto script = home.root() / "script.lua";
+    tk::write_file(forbidden, "host original");
+    const auto quoted = "'" + forbidden.generic_string() + "'";
+    tk::write_file(script, "local f=io.open([[" + forbidden.generic_string() +
+                               "]],'w'); if f then f:write('virtual top-level'); f:close() end\n"
+                               "function xpkg_main()\n"
+                               " os.execute([[printf escaped > " +
+                               quoted +
+                               "]])\n"
+                               " local p=assert(io.popen([[printf escaped > " +
+                               quoted +
+                               "; printf alive]])); assert(p:read('*a')=='alive'); p:close()\n"
+                               "end\n");
+    const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_EQ(result.exit_code, 0) << result.transcript();
+    EXPECT_EQ(tk::read_file(forbidden), "host original");
+}
+
+XTEST(LuaWorker, FullObservationAuditsHookSubprocessesWithoutArgumentValues, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-worker-full-observe");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=locked"}).exit_code, 0);
+    const auto script = home.root() / "script.lua";
+    tk::write_file(script,
+                   "os.execute('true')\nfunction xpkg_main(argument)\n"
+                   " os.execute('uname >/dev/null')\n"
+                   " os.execute([[bash -c 'echo probe >/dev/tcp/127.0.0.1/9' >/dev/null 2>&1]])\n"
+                   "end\n");
+    const std::string secret = "ARGUMENT_VALUE_MUST_NOT_BE_AUDITED";
+    const auto result =
+        home.xlings({"script", script.string(), secret}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    ASSERT_EQ(result.exit_code, 0) << result.transcript();
+    const auto journal = tk::read_file(home.dir() / "logs" / "subos" / "box" / "events.ndjson");
+    EXPECT_NE(journal.find("uname"), std::string::npos);
+    EXPECT_NE(journal.find("net-attempt"), std::string::npos);
+    EXPECT_NE(journal.find("127.0.0.1"), std::string::npos);
+    EXPECT_NE(journal.find("\"result\":\"unknown\""), std::string::npos);
+    EXPECT_NE(journal.find("\"worker\":\"lua\""), std::string::npos);
+    EXPECT_EQ(journal.find(secret), std::string::npos);
+}
+
+XTEST(LuaWorker, LockedAuditFailureRefusesLuaBeforeItsTopLevelRuns, .area = "xim",
+      .requires_ = {"linux", "sandbox", "xlings-bin"}, .resources = {"sandbox"},
+      .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-worker-locked-audit");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=locked"}).exit_code, 0);
+    const auto journal = home.dir() / "logs" / "subos" / "box" / "events.ndjson";
+    std::error_code ec;
+    fs::remove(journal, ec);
+    fs::create_directories(journal);
+    const auto script = home.root() / "script.lua";
+    tk::write_file(script, "error('RECIPE_TOP_LEVEL_MUST_NOT_RUN')\nfunction xpkg_main() end\n");
+    const auto result = home.xlings({"script", script.string()}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    EXPECT_NE(result.exit_code, 0) << result.transcript();
+    EXPECT_NE(result.transcript().find("audit"), std::string::npos);
+    EXPECT_EQ(result.transcript().find("RECIPE_TOP_LEVEL_MUST_NOT_RUN"), std::string::npos);
+}
+
+XTEST(LuaWorker, HostEffectsRejectHostSourcesTraversalAndSymlinksButAcceptOwnedPayloadAssets,
+      .area = "xim", .cost = tk::Cost::Medium, .requires_ = {"linux", "sandbox", "xlings-bin"},
+      .resources = {"sandbox"}, .proves = "isolation") {
+    auto home = tk::Home::isolated("lua-worker-host-effects");
+    ASSERT_TRUE(home.seed_sandbox_backend());
+    const auto secret = home.root() / "private-user-file";
+    tk::write_file(secret, "never expose this host data through a recipe declaration");
+    const auto repo = home.root() / "index";
+    tk::write_file(repo / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
+    tk::write_file(
+        repo / "pkgs" / "f" / "fixture.lua",
+        R"LUA(
+        package = {
+            spec = '1', name = 'fixture', type = 'package', archs = {'x86_64','aarch64'},
+            xpm = {linux = {['1.0.0']={}, ['2.0.0']={}, ['3.0.0']={}, ['4.0.0']={}}}
+        }
+        import('xim.libxpkg.pkginfo')
+        import('xim.libxpkg.xvm')
+        function install()
+            os.mkdir(pkginfo.install_dir())
+            io.writefile(path.join(pkginfo.install_dir(), 'asset'), 'owned payload')
+            if pkginfo.version() == '2.0.0' then
+    )LUA" + std::string("os.execute('ln -s ' .. string.format('%q', [[") +
+            secret.generic_string() +
+            "]]) .. ' ' .. string.format('%q', path.join(pkginfo.install_dir(), 'escape')))\n" +
+            R"LUA(
+            end
+            return true
+        end
+        function config()
+            local dir = pkginfo.install_dir()
+            xvm.add('fixture', {type='group'})
+            if pkginfo.version() == '1.0.0' then
+    )LUA" + std::string("xvm.add('escape', {type='files', bindir=[[") +
+            secret.parent_path().generic_string() +
+            "]], src='private-user-file', dst='usr/share/forbidden'})\n" + R"LUA(
+            elseif pkginfo.version() == '2.0.0' then
+                xvm.add('escape', {type='files', src='escape', dst='usr/share/forbidden'})
+            elseif pkginfo.version() == '3.0.0' then
+                xvm.add('escape', {type='files', src='../private-user-file', dst='usr/share/forbidden'})
+            else
+                xvm.add('owned', {type='files', src='asset', dst='usr/share/owned'})
+            end
+            return true
+        end
+    )LUA");
+    nlohmann::json config = {
+        {"mirror", "GLOBAL"},
+        {"index_repos", {{{"name", "fixture"}, {"url", repo.generic_string()}}}}};
+    tk::write_file(home.dir() / ".xlings.json", config.dump());
+    fs::create_directories(home.dir() / "bin");
+    fs::copy_file(tk::xlings_binary(), home.dir() / "bin" / "xlings");
+    const auto initialized = home.xlings({"self", "init"});
+    ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    ASSERT_EQ(home.xlings({"subos", "new", "box"}).exit_code, 0);
+    ASSERT_EQ(home.xlings({"subos", "config", "box", "--sandbox=locked"}).exit_code, 0);
+    for (const auto version : {"1.0.0", "2.0.0", "3.0.0"}) {
+        const auto result =
+            home.xlings({"install", "fixture:fixture@" + std::string(version), "-y"},
+                        {{"XLINGS_ACTIVE_SUBOS", "box"}});
+        EXPECT_NE(result.exit_code, 0) << result.transcript();
+        EXPECT_NE(result.transcript().find("unsafe Lua host effect"), std::string::npos)
+            << result.transcript();
+        EXPECT_FALSE(fs::exists(home.dir() / "subos" / "box" / "usr" / "share" / "forbidden"));
+    }
+    const auto allowed =
+        home.xlings({"install", "fixture:fixture@4.0.0", "-y"}, {{"XLINGS_ACTIVE_SUBOS", "box"}});
+    ASSERT_EQ(allowed.exit_code, 0) << allowed.transcript();
+    EXPECT_EQ(tk::read_file(home.dir() / "subos" / "box" / "usr" / "share" / "owned"),
+              "owned payload");
+    EXPECT_EQ(tk::read_file(secret), "never expose this host data through a recipe declaration");
+}

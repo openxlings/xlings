@@ -1846,9 +1846,16 @@ int run(int argc, char* argv[], EventStream& stream) {
         std::optional<policy::Preset> declared;
         // --rootfs: the instance can be presented as `/` (design part 2 §3.1).
         bool rootfs = false;
+        std::string domain;
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
             if (a == "--rootfs") { rootfs = true; continue; }
+            if (a == "--domain") {
+                if (i + 1 >= argc || !domain.empty()) { usageError("--domain expects one absolute home path"); return 1; }
+                domain = argv[++i];
+                if (domain.empty() || domain[0] != '/') { usageError("--domain expects an absolute home path"); return 1; }
+                continue;
+            }
             if (a == "--sandbox" || a.starts_with("--sandbox=")) {
                 std::string v = a == "--sandbox" ? std::string("dev") : a.substr(10);
                 if (a == "--sandbox" && i + 1 < argc) {
@@ -1906,12 +1913,14 @@ int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
+        const auto domain_ready = preflight_domain_at_creation_(name, rootfs, domain, fromSpec);
+        if (!domain_ready) { usageError(domain_ready.error()); return 1; }
         const int rc = !fromSpec.empty()
             ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream)
             : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
         if (rc != 0) return rc;
         if (auto r = declare_isolation_at_creation_(name, declared, fromSpec, stream); r != 0) return r;
-        return declare_root_at_creation_(name, rootfs, fromSpec, stream);
+        return declare_root_at_creation_(name, rootfs, fromSpec, stream, domain);
     }
     if (sub == "use") {
         // Flags supported:

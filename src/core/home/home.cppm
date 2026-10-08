@@ -36,7 +36,7 @@ namespace fs = std::filesystem;
 
 inline constexpr int kLayout = 2;
 
-enum class Mode { User, Custom, Portable, System, Multi };
+enum class Mode { User, Custom, Portable, System, Multi, Root };
 enum class Source { Anchored, Env, SelfContained, Default };
 
 std::string_view to_string(Mode m);
@@ -49,6 +49,7 @@ struct HomeContext {
     Mode mode { Mode::User };
     bool modeDeclared { false };     // from .xlings-home, not inferred
     int layout { 1 };
+    std::string rootLayout;          // root deployments: single or multi
     std::string id;                  // the marker's id, when there is one
 
     bool writable() const { return layout <= kLayout; }
@@ -74,7 +75,7 @@ Mode infer_mode(const fs::path& home, Source source);
 //    a configuration file, and updates the entry through its package manager.
 // M: S plus a root-owned system LAYER, a home a package manager maintains for
 //    every user (/xlings), declared `"mode": "multi"` in its .xlings-home.
-//    Read here; resolving packages from it is not implemented yet.
+//    Borrowing reads its registration and checked runtime dependency closure.
 
 struct Entry {
     fs::path path;               // the binary this process is
@@ -92,8 +93,11 @@ fs::path system_config_path();
 nlohmann::json read_system_config();
 
 // The system layer when one is installed: /xlings (%ProgramData%\xlings\home)
-// or XLINGS_SYSTEM_LAYER, and only if its marker declares mode "multi".
+// or XLINGS_SYSTEM_LAYER, with mode=multi or mode=root/layout=multi.
 std::optional<fs::path> system_layer();
+std::expected<std::optional<fs::path>, std::string> read_system_layer();
+// Whether this home publishes its store to readers outside its own scopes.
+std::expected<bool, std::string> shares_store(const fs::path& home);
 
 // For read-only commands only: the commands an unknown-layout home allows.
 bool is_read_only_command(std::span<const std::string_view> argv);

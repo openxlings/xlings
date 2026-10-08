@@ -8,13 +8,13 @@
 #   2. inside, xlings installs with the root's own tools (busybox, patchelf):
 #      nothing of a host under it;
 #   3. a host-built program (PT_INTERP /lib64/ld-linux-x86-64.so.2) finds its
-#      libraries through /lib64; ours never read a cache;
+#      libraries through /lib64 and the logical-root loader;
 #   4. a half-written /usr (libc gone from the current generation): programs
 #      fail, the static xlings rolls the root back, they run again;
 #   5. no patchelf and no way to get one: an install fails and says why,
 #      instead of reporting a payload it could not relocate as installed;
 #   6. both layouts: single (the builder's home path) and multi (/xlings,
-#      built with sudo), each recorded in the image and running;
+#      built in an owner-private namespace), each recorded in the image and running;
 #   7. self update in deployment R is a new generation: /usr/bin/xlings
 #      becomes the published payload, and a rollback brings the previous back.
 #
@@ -77,10 +77,9 @@ grep -q 'rc=0' <<<"$out" && fail "zlib reported installed without a patchelf to 
 grep -q 'patchelf' <<<"$out" || fail "the failure does not name patchelf: $out"
 
 log "6. the multi layout: the system home at /xlings"
-sudo -n rm -rf /xlings
-sudo -n mkdir /xlings && sudo -n chown "$(id -u):$(id -g)" /xlings
-rootfs_home /xlings
-rootfs_new luban subos:luban-tiny "$RUNTIME_DIR/new-multi.log" || fail "multi: subos new"
+rootfs_home "$RUNTIME_DIR/domain-owner"
+X subos new luban --rootfs --domain /xlings --from subos:luban-tiny >"$RUNTIME_DIR/new-multi.log" 2>&1 \
+  || { cat "$RUNTIME_DIR/new-multi.log"; fail "multi: namespace producer"; }
 X subos export luban --tar "$RUNTIME_DIR/multi.tar.gz" >/dev/null 2>&1 || fail "multi: export"
 docker import "$RUNTIME_DIR/multi.tar.gz" "$IMG-multi" >/dev/null
 out="$(D --network none "$IMG-multi" /bin/sh -c 'cat /etc/xlings/root.json /xlings/.xlings-home; readlink /usr; xz --version 2>/dev/null; ls /usr/bin/sh' 2>&1)" \
@@ -91,7 +90,6 @@ grep -q '^/xlings/subos/default/root/usr' <<<"$out" || fail "multi: /usr: $out"
 grep -q '"root_layout": "single"' "$H/.xlings-home" 2>/dev/null && fail "the builder's home was marked"
 marker="$(tar -xzOf "$RUNTIME_DIR/tiny.tar.gz" ".${H}/.xlings-home" 2>/dev/null || true)"
 grep -q '"root_layout": "single"' <<<"$marker" || fail "single: the first image is not marked single"
-sudo -n rm -rf /xlings
 
 log "7. self update is a generation"
 out="$(D "$IMG" /bin/sh -c '

@@ -12,6 +12,7 @@ import xlings.subos.rootfs;
 import xlings.subos.roles;
 import xlings.subos.boot;
 import xlings.subos.home_view;
+import xlings.subos.library_cache;
 
 namespace xlings::subos_root {
 
@@ -196,16 +197,30 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
     out.generation = *gen;
     out.changed = !before || *before != *gen;
 
+    const auto failed = [&](std::string error) -> std::expected<Refreshed, std::string> {
+        if (before && out.changed) {
+            if (auto restored = rf::switch_to(subos_dir, *before); !restored)
+                error += "; cannot restore prior generation: " + restored.error();
+        }
+        return std::unexpected(std::move(error));
+    };
+
     // The machine state of the root this SubOS is: the instance's own tree,
     // or `/` when it is the running host.
-    const auto tree = tree_of(home, name);
-    if (tree != "/") {
-        if (auto laid = rf::lay_out(tree, rf::usr_of(subos_dir), home); !laid)
-            return std::unexpected(laid.error());
+    try {
+        const auto tree = tree_of(home, name);
+        if (tree != "/") {
+            if (auto laid = rf::lay_out(tree, rf::usr_of(subos_dir), home); !laid)
+                return failed(laid.error());
+        }
+        const auto usr = rf::usr_of(subos_dir);
+        out.etc_added = rf::fill_machine_etc(tree / "etc", subos_dir);
+        out.users_added = rf::apply_sysusers(tree / "etc", usr);
+        if (auto cache = subos::library_cache::refresh(tree, {home}, name); !cache)
+            return failed(cache.error());
+    } catch (const std::exception& error) {
+        return failed(error.what());
     }
-    const auto usr = rf::usr_of(subos_dir);
-    out.etc_added = rf::fill_machine_etc(tree / "etc", subos_dir);
-    out.users_added = rf::apply_sysusers(tree / "etc", usr);
     return out;
 }
 

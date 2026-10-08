@@ -101,6 +101,10 @@ struct PlanNode {
     std::string repoName;
     std::filesystem::path pkgFile;
     std::filesystem::path storeRoot;
+    // A checked system-layer choice, never a writable installation target.
+    std::filesystem::path borrowedPayload;
+    std::filesystem::path sourceHome;
+    std::string sourceScope;
     // Effective union of runtime + build deps (kept for legacy callers
     // that don't yet distinguish; populated by resolver as `runtime ∪
     // build`).

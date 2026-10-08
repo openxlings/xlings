@@ -1,5 +1,6 @@
 module xlings.core.xim.index;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import mcpplibs.xpkg;
 import mcpplibs.xpkg.loader;
@@ -171,11 +172,11 @@ CacheResult load_index_cache(const std::filesystem::path& cacheFile,
 namespace xlings::xim {
 
 std::expected<xpkg::Package, std::string>
-load_native_recipe(const std::filesystem::path& path) {
-    return xpkg::load_package(path, {
+load_native_recipe(const std::filesystem::path& path, const std::string& formal_provider) {
+    return lua_boundary::metadata(path, {
         .platform = std::string(platform::build_os()),
         .arch = std::string(platform::build_arch()),
-    });
+    }, formal_provider);
 }
 
 std::optional<BracketedStep> parse_bracketed_step(std::string_view line) {
@@ -314,7 +315,9 @@ std::expected<void, std::string> IndexManager::rebuild() {
     const auto label = defaultNamespace_.empty()
         ? repoDir_.filename().string() : defaultNamespace_;
     BuildTranscript_ transcript(label);
-    auto result = xpkg::build_index(repoDir_, defaultNamespace_,
+    auto result = lua_boundary::build_index(repoDir_, defaultNamespace_,
+        {.platform = std::string(platform::build_os()),
+         .arch = std::string(platform::build_arch())},
         [&transcript](std::string_view text) { transcript.feed(text); });
     transcript.finish();
     if (transcript.steps() > 0) {
@@ -404,7 +407,7 @@ std::expected<xpkg::Package, std::string> IndexManager::load_package(const std::
     if (it == index_.entries.end()) {
         return std::unexpected(std::format("package '{}' not found in index", name));
     }
-    return load_native_recipe(it->second.path);
+    return load_native_recipe(it->second.path, it->second.canonicalName);
 }
 
 const xpkg::IndexEntry* IndexManager::find_entry(const std::string& name) const {

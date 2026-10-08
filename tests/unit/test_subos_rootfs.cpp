@@ -329,3 +329,30 @@ XTEST(SubosRoles, EveryOperationOnEveryKindAndRoleHasOneAnswer,
     EXPECT_EQ(rl::kind_from_string("rootfs"), rl::Kind::Rootfs);
     EXPECT_FALSE(rl::kind_from_string("vm").has_value());
 }
+
+XTEST(SubosRootfs, RunningProjectionAcceptsAPinnedGenerationAndRejectsAnUnrelatedUsr,
+      .area = "subos", .covers = {"ROOT-LIBSEARCH", "ROOT-GEN-ATOMIC"}) {
+    if constexpr (!tk::is_posix) GTEST_SKIP() << "requires directory symlinks";
+    Tmp t("running-projection");
+    const auto scope = t.dir / "home/subos/box";
+    const auto machine = t.dir / "machine";
+    fs::create_directories(machine);
+    const auto first = rf::commit(scope, {}, "first");
+    ASSERT_TRUE(first) << first.error();
+    fs::create_directory_symlink(scope / "root.gen" / std::to_string(*first) / "usr", machine / "usr");
+    const auto payload = t.dir / "payload/probe";
+    exe(payload);
+    const auto second = rf::commit(scope, {.links = {{"usr/bin/probe", payload, "test"}}}, "second");
+    ASSERT_TRUE(second) << second.error();
+    ASSERT_NE(*first, *second);
+    EXPECT_EQ(rf::running_projection(machine, scope), *first);
+    const auto other = t.dir / "home/subos/other";
+    ASSERT_TRUE(rf::commit(other, {}, "other"));
+    EXPECT_FALSE(rf::running_projection(machine, other));
+    fs::remove(machine / "usr");
+    fs::create_directory_symlink(scope / "root/usr", machine / "usr");
+    EXPECT_EQ(rf::running_projection(machine, scope), *second);
+    fs::remove(machine / "usr");
+    fs::create_directory(machine / "usr");
+    EXPECT_FALSE(rf::running_projection(machine, scope));
+}

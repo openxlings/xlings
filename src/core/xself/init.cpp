@@ -13,6 +13,7 @@ import xlings.subos.manifest;
 import xlings.core.xim.commands;
 import xlings.core.xvm.types;
 import xlings.core.xvm.db;
+import xlings.core.xvm.owner;
 import xlings.core.xvm.shim;
 import xlings.core.xvm.shim_table;
 import xlings.core.xvm.shim_identity;
@@ -950,19 +951,75 @@ RepointSummary repoint_stale_shims(const fs::path& home) {
 
 bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
                           std::string_view coordinate,
-                          std::string_view toVersion) {
+                          std::string_view toVersion,
+                          const PackageEntryActivation& activation) {
+    const auto home = entry.parent_path().filename() == "bin"
+                          ? entry.parent_path().parent_path()
+                          : entry.parent_path();
     // The system home of a machine whose root is a SubOS (deployment R,
     // part 2 §5): its /usr/bin/xlings is a link of the current generation
     // into this payload, so the version that runs moves with the generation
     // and a rollback brings the previous one back. The entry is stage-0's
     // and stays the build the machine booted with.
     {
-        const auto home = entry.parent_path().parent_path();
         if (subos_root::running_host(home)) {
             log::info("xlings {}: /usr/bin/xlings follows the root's generation; the entry "
                       "({}) stays as stage-0", toVersion, Config::display_path(entry));
             return true;
         }
+    }
+    try {
+        if (activation.provider != "xim:xlings" && activation.provider != "xlings") {
+            log::error("shared entry activation requires the xlings package provider");
+            return false;
+        }
+        const auto root = fs::canonical(home);
+        const auto scope = Config::subos_scope();
+        std::error_code ec;
+        const auto declared = fs::symlink_status(
+            root / "config" / "subos" / scope.name / "policy.json", ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+            log::error("shared entry activation cannot inspect scope policy: {}", ec.message());
+            return false;
+        }
+        const auto entered = std::getenv("XLINGS_SUBOS_MODE");
+        const bool borrowed = !activation.source_home.empty() &&
+                              fs::canonical(activation.source_home) != root;
+        if (Config::workspace_config_path().lexically_normal() !=
+                (Config::global_subos_dir() / ".xlings.json").lexically_normal() || borrowed ||
+            declared.type() != fs::file_type::not_found || (entered && *entered)) {
+            log::info("xlings {} is active in this scope; the home owner's shared entry stays {}",
+                      toVersion, Config::display_path(entry));
+            return true;
+        }
+        const auto source = fs::canonical(payloadBinary);
+        const auto store = root / "data" / "xpkgs";
+        const auto relative = source.lexically_relative(store);
+        const auto owner = xvm::coordinate_from_payload_path(source.generic_string());
+        if (!owner || owner->package != "xlings" ||
+            (!owner->ns.empty() && owner->ns != "xim") || relative.empty() ||
+            relative.is_absolute() ||
+            (relative.begin()->string() != "xim-x-xlings" && relative.begin()->string() != "xlings")) {
+            log::error("shared entry activation requires this home's xlings package payload");
+            return false;
+        }
+        if (!Config::home_context().writable()) {
+            log::error("shared entry activation refused: this home's layout is read-only");
+            return false;
+        }
+        if constexpr (platform::is_posix) {
+            const auto home_owner = platform::file_ownership(root);
+            const auto entry_owner = platform::file_ownership(entry);
+            const auto uid = platform::user_ids().uid;
+            if (!home_owner || !entry_owner ||
+                (uid != 0 && (home_owner->uid != uid || entry_owner->uid != uid))) {
+                log::error("shared entry activation requires the home owner's authority");
+                return false;
+            }
+        }
+    } catch (const std::exception& error) {
+        log::error("shared entry activation refused: {}", error.what());
+        return false;
     }
     if (!entry_binary::replace_with(payloadBinary, entry, coordinate,
                                     toVersion)) {
@@ -970,9 +1027,6 @@ bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
     }
     // `<home>/bin/xlings`, or `<home>/xlings` in the bootstrap layout
     // (`xlings_binary_in_home` accepts both, so this must too).
-    const auto home = entry.parent_path().filename() == "bin"
-        ? entry.parent_path().parent_path()
-        : entry.parent_path();
     const auto summary = repoint_stale_shims(home);
     if (summary.repointed != 0) {
         log::info("re-pointed {} shim(s) to the new entry binary",

@@ -373,6 +373,9 @@ VInfo vinfo_from_json(const nlohmann::json& j);
 
 nlohmann::json versions_to_json(const VersionDB& db);
 
+// Construct in the database module to avoid foreign-module map default-constructor instantiation.
+VersionDB empty_version_db();
+
 VersionDB versions_from_json(const nlohmann::json& j);
 
 // The home config's cheap index of the DB's keys: {program: filename-stem}.

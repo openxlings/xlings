@@ -5,6 +5,8 @@ module xlings.core.subos;
 
 import std;
 import xlings.core.config;
+import xlings.core.home;
+import xlings.core.home.prefix_domain;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -16,6 +18,7 @@ import xlings.core.subos.root;
 import xlings.subos.home_view;
 import xlings.subos.policy_store;
 import xlings.subos.rootfs;
+import xlings.subos.library_cache;
 import xlings.subos.roles;
 import xlings.subos.boot;
 import xlings.observe;
@@ -308,9 +311,40 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
 
 }  // namespace
 
+std::expected<void, std::string> preflight_domain_at_creation_(std::string_view, bool rootfs,
+    std::string_view domain, std::string_view fromSpec) {
+    if (domain.empty()) return {};
+    if (!rootfs) return std::unexpected("--domain requires --rootfs");
+    if constexpr (!platform::is_linux) return std::unexpected("prefix-domain root producers require Linux namespaces");
+    auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(domain));
+    if (!selected) return std::unexpected(selected.error());
+    // A cross-prefix install must be performed inside its target namespace.
+    // Refuse before new_from can install anything in the owner's old prefix.
+    if (selected->privateHome) return std::unexpected(
+        "the /xlings private-domain producer is not connected yet; refusing to install " +
+        (fromSpec.empty() ? std::string("in the owner's host prefix") : std::string(fromSpec) + " in the owner's host prefix"));
+    return {};
+}
+
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
-                              EventStream& stream) {
+                              EventStream& stream, std::string_view domain) {
     const auto home = home_dir_();
+    if (auto ready = preflight_domain_at_creation_(name, rootfs, domain, from); !ready) {
+        error_(stream, ready.error());
+        return 1;
+    }
+    if (!domain.empty()) {
+        auto selected = xlings::home::prefix_domain::resolve(home, fs::path(domain));
+        if (!selected) { error_(stream, selected.error()); return 1; }
+        const auto file = HomeView{home}.instance_file(name);
+        auto doc = xlings::home::read_json_for_update(file);
+        if (!doc) { error_(stream, doc.error()); return 1; }
+        (*doc)["prefix_domain"] = nlohmann::json::parse(xlings::home::prefix_domain::serialize(*selected));
+        if (auto written = write_json_(file, *doc); !written) {
+            error_(stream, written.error());
+            return 1;
+        }
+    }
     // A fork of a root is a root (as a fork of a declared instance keeps its policy).
     if (exists_(from)) {
         const auto kind = subos_root::read_kind(home, from);
@@ -421,6 +455,15 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
     }
     if (auto sw = rf::switch_to(dir, *to); !sw) {
         error_(stream, sw.error(), "xlings subos rollback " + name + " --list");
+        return 1;
+    }
+    if (auto cache = subos::library_cache::refresh(subos_root::tree_of(home_dir_(), name),
+                                                  {home_dir_()}, name); !cache) {
+        if (now) {
+            if (auto restored = rf::switch_to(dir, *now); !restored)
+                error_(stream, "cannot restore prior generation: " + restored.error());
+        }
+        error_(stream, cache.error());
         return 1;
     }
     observe::append(HomeView{home_dir_()}.logs_dir(name) / "events.ndjson", observe::Event{

@@ -165,10 +165,16 @@ export std::string entry_command(const fs::path& home, std::string_view args);
 // changes the entry's file object is the one that knows every hard-link shim
 // just detached from it, so the repair lives with the change rather than
 // with each caller remembering it.
+export struct PackageEntryActivation {
+    std::string provider;
+    fs::path source_home;
+};
+
 export bool replace_entry_binary(const fs::path& payloadBinary,
                                  const fs::path& entry,
                                  std::string_view coordinate,
-                                 std::string_view toVersion);
+                                 std::string_view toVersion,
+                                 const PackageEntryActivation& activation);
 
 bool is_builtin_shim(std::string_view name);
 

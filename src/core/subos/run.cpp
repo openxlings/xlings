@@ -80,6 +80,14 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
         x.sandbox = true;
         return 1;
     }
+    if (a == "--proxy" || a.starts_with("--proxy=")) {
+        auto v = value("--proxy");
+        if (!v || v->empty()) { err = "--proxy expects socks5h://HOST:PORT"; return -1; }
+        x.overrides.proxy = *v;
+        x.overrides.net = policy::Net::Proxy;
+        x.sandbox = true;
+        return 1;
+    }
     if (a == "--fetch" || a.starts_with("--fetch=")) {
         auto v = value("--fetch");
         auto f = v ? policy::fetch_from_string(*v) : std::nullopt;

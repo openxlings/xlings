@@ -2,6 +2,7 @@ module xlings.capabilities;
 
 import std;
 import xlings.platform;
+import xlings.platform.stream;
 import xlings.runtime.event;
 import xlings.runtime.event_stream;
 import xlings.runtime.capability;
@@ -653,25 +654,35 @@ namespace {
 // captured. The interface's own stdout is the NDJSON channel: a command's
 // output must never reach it unframed, so it runs in a process of its own and
 // comes back as events.
-int run_subos_child_(std::vector<std::string> args, EventStream& stream, std::string_view kind) {
-    auto self = platform::get_executable_path().string();
-    std::string cmd = platform::shell_quote(self);
-    for (auto& a : args) cmd += " " + platform::shell_quote(a);
-    if constexpr (platform::is_windows) {
-        auto [status, output] = platform::run_command_capture(cmd);
-        if (!output.empty())
-            stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "stdout"}, {"data", output}}.dump()});
-        return status;
-    } else {
-        cmd += " </dev/null";
-        auto [status, output] = platform::run_command_capture(cmd);
-        if (!output.empty())
-            stream.emit(DataEvent{std::string(kind), nlohmann::json{{"stream", "output"}, {"data", output}}.dump()});
-        // A wait status, not an exit code: decode it the way a shell does.
-        if (status < 0) return 125;
-        if ((status & 0x7f) != 0) return 128 + (status & 0x7f);
-        return (status >> 8) & 0xff;
-    }
+int run_subos_child_(std::vector<std::string> args, EventStream& stream, std::string_view kind,
+                      CancellationToken* cancel = nullptr) {
+    args.insert(args.begin(), platform::get_executable_path().string());
+    const auto base64 = [](std::string_view bytes) {
+        constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string encoded;
+        unsigned value{}, bits{};
+        for (const unsigned char byte : bytes) {
+            value = (value << 8) | byte;
+            bits += 8;
+            while (bits >= 6) { bits -= 6; encoded += alphabet[(value >> bits) & 63]; }
+        }
+        if (bits) encoded += alphabet[(value << (6 - bits)) & 63];
+        while (encoded.size() % 4) encoded += '=';
+        return encoded;
+    };
+    const auto code = platform::stream::run(args, [&](std::string_view channel, std::string_view bytes) {
+        nlohmann::json payload{{"stream", channel}, {"data", std::string(bytes)}};
+        std::string content;
+        try { content = payload.dump(); }
+        catch (const nlohmann::json::type_error&) {
+            payload["encoding"] = "base64";
+            payload["data"] = base64(bytes);
+            content = payload.dump();
+        }
+        stream.emit(DataEvent{std::string(kind), std::move(content)});
+    }, [&] { return cancel && cancel->is_cancelled(); });
+    if (cancel) cancel->throw_if_cancelled();
+    return code;
 }
 
 }  // namespace
@@ -687,6 +698,10 @@ auto SubosExec::spec() const -> CapabilitySpec {
 }
 
 auto SubosExec::execute(Params params, EventStream& stream) -> Result {
+    return execute(params, stream, nullptr);
+}
+
+auto SubosExec::execute(Params params, EventStream& stream, CancellationToken* cancel) -> Result {
     auto json = nlohmann::json::parse(params, nullptr, false);
     std::vector<std::string> args{"subos", "exec"};
     if (json.value("temp", false)) args.push_back("--temp");
@@ -702,7 +717,7 @@ auto SubosExec::execute(Params params, EventStream& stream) -> Result {
     args.push_back("--");
     for (auto& a : json.value("argv", nlohmann::json::array()))
         if (a.is_string()) args.push_back(a.get<std::string>());
-    return exit_result(run_subos_child_(std::move(args), stream, "subos_exec_output"));
+    return exit_result(run_subos_child_(std::move(args), stream, "subos_exec_output", cancel));
 }
 
 auto SubosStart::spec() const -> CapabilitySpec {

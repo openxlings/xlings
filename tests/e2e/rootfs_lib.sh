@@ -8,9 +8,9 @@
 # exported image's xlings runs with no host under it).
 rootfs_home() {
     local dir="$1"
-    # Emptied rather than removed: /xlings is made by root and lent to us.
+    # The caller creates a new private test home; never empty an existing home.
+    [[ ! -e "$dir" ]] || fail "test home already exists: $dir"
     mkdir -p "$dir"
-    find "$dir" -mindepth 1 -delete
     mkdir -p "$dir/bin"
     cp "$BIN" "$dir/bin/xlings"
     # XLINGS_TEST_INDEX: an index to use instead of the published one (a

@@ -11,6 +11,7 @@ module;
 
 module xlings.core.xim.commands;
 
+import xlings.core.xim.lua_boundary;
 import std;
 import xlings.core.xim.index;
 import xlings.core.xim.libxpkg.types.type;
@@ -1245,7 +1246,9 @@ selected_payloadless_config_has_uninstall_(
             "uninstall recipe is not a local file: {}", recipe.string()));
     }
 
-    auto executor = xpkg::create_executor(recipe);
+    xpkg::ExecutionContext context;
+    context.install_dir = installDir;
+    auto executor = lua_boundary::create_executor(recipe, context);
     if (!executor) return std::unexpected(executor.error());
     return executor->has_hook(xpkg::HookType::Uninstall);
 }

@@ -538,8 +538,10 @@ bool role_allows_(roles::Op op, const std::string& name, EventStream& stream);
 // after emitting why it could not be.
 fs::path resolve_base_package_(const std::string& spec, EventStream& stream);
 // `subos new --rootfs`, and a fork of a root (part 2 §11).
+std::expected<void, std::string> preflight_domain_at_creation_(std::string_view name, bool rootfs,
+    std::string_view domain, std::string_view fromSpec);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
-                              EventStream& stream);
+                              EventStream& stream, std::string_view domain = {});
 
 using UsageError = std::function<void(std::string_view)>;
 int run_exec_(int argc, char* argv[], EventStream& stream);

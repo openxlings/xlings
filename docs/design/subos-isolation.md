@@ -67,6 +67,14 @@
 - 只有 owner 能做的事（`self update`、改策略、动别的实例）在沙箱里返回 `13`，并给出在外面执行的命令；
 - `fetch=ask` 的请求进入队列（exit `75`），由 owner 在外面 `subos requests / approve / deny`。
 
+带执行策略的 recipe 由持久 Lua worker 加载、读取 metadata、构建计划并执行 hook，
+使用独立的控制管道；stdout/stderr 属于日志或显式 tty。Linux 强边界将实际 scope、
+索引及依赖只读绑定，只允许写目标 payload 的私有副本、scratch 和当前 hook 日志。
+宿主在校验声明的源路径及运行时闭包后，将结果复制到独占 staging 再发布；
+hook 持有的旧文件描述符不能继续修改新发布的 payload。头文件、库、版本和环境声明
+由宿主消费，声明不能将 scratch 的可变路径或另一个 scope 的文件直接带进视图。
+隔离能力不足且策略要求强边界时拒绝执行，并报告缺失能力。
+
 ## 后端
 
 | 后端 | 机制 | 能给的 | 给不了的 | 选择方式 |
@@ -89,7 +97,26 @@ Ubuntu 24.04 默认限制非特权 user namespace（AppArmor）。`xlings self d
 | `host` | 共享宿主网络（抽象 unix socket 也可达） | 可达 | 宿主 |
 | `nat` | 预先建好的 user+net namespace + pasta 接入；`--publish 8080:80`；`--allow host-loopback` 才能访问宿主本机服务 | 不可达 | 宿主 IP |
 | `none` | net namespace，只有 lo | 不可达 | 无 |
-| `proxy` | 未实现（见最后一节） | — | — |
+| `proxy` | 只有 lo、无外部路由的 net namespace；回环 SOCKS5h 入口经私有 fd 桥交给 supervisor | 不可直连 | 声明的 SOCKS5h 代理 |
+
+代理可由实例所有者声明，或在未固定代理的实例上单次选择：
+
+```bash
+xlings subos config box --sandbox private --proxy socks5h://127.0.0.1:1080
+xlings subos exec box -- curl https://example.com
+```
+
+沙箱内 `ALL_PROXY` / `all_proxy` 指向本命名空间的 `socks5h://127.0.0.1:1080`。
+回环入口只接受 SOCKS5 CONNECT；接受的连接经私有 SCM_RIGHTS 通道交给宿主侧 supervisor，
+后者只连接配置中的代理。目标域名原样发给代理，不调用宿主解析器；声明的代理地址为域名时，
+supervisor 单独解析该端点，并以 `proxy-endpoint-resolved` 事件标明。TCP CONNECT 请求和代理响应
+在写入 net 审计后才继续。nat 的 seccomp 通知记录 `net-attempt`，表示 connect/sendto/sendmsg 请求，
+不表示内核已经成功建立连接。
+
+客户端必须支持 SOCKS5h；不支持代理的 DNS 查询、直接 IP 连接及 UDP 不能通过这扇门。
+清空代理变量不会恢复宿主网络，也没有到 nat/host 的自动回退。当前代理入口不支持认证、BIND、
+UDP ASSOCIATE 或透明 IP 转发；含凭据的 URL 会被拒绝。macOS / Windows 的代理网络仍返回不可用。
+已固定代理的实例拒绝以单次 `--proxy` 更换出口；实例所有者可通过 `subos config` 更新声明。
 
 中性身份：用户名 `user`、主机名 = 实例名、`TZ=UTC`、`LANG=C.UTF-8`，`/etc/passwd` 等来自实例的 `etc-neutral/`。
 
@@ -98,6 +125,10 @@ Ubuntu 24.04 默认限制非特权 user namespace（AppArmor）。`xlings self d
 - 非交互命令放进新会话，没有控制终端；交互 shell 保留终端以支持作业控制，并加载 seccomp 过滤器拦截 `TIOCSTI`（F8）。
 - 会话由宿主侧的 supervisor 托管：`SIGTERM` / `SIGHUP` 结束会话；等待期间 `Ctrl-C` 属于命令。
 - 环境变量默认清空，只放行 `kBaseEnvPass` 和策略的 `env_pass`（名字，或 `NAME*` 前缀）。
+
+`interface subos_exec` 使用 argv 子进程，运行中分开输出 stdout/stderr 的 NDJSON 片段，
+不等命令结束。控制通道可取消执行；无效 UTF-8 片段标记为 base64，客户端按 stream
+拼接字节后解码。stdin 保留给控制协议，命令读取到 EOF。
 
 ## 可观测性
 
@@ -133,9 +164,19 @@ locked 的日志写入失败会拒绝启动或终止会话；exec 的 seccomp �
   和 `subos_policy_sources`，home 自己的 `.xlings.json` 覆盖它。`self doctor` 报告实际在用的 entry 和系统文件。
 - **系统包（S）的 home**：用户第一次执行写命令（或 `self init`、`doctor --fix`）时，home 的 `bin/xlings` 被建成
   指向系统 entry 的链接——没有它，shim 表不会建立，装的包就不在 PATH 上。包管理器升级本体，所有用户跟着升级。
-- **系统层（M）**：`sudo xlings install --system <pkg>` 装进 `/xlings`（root 拥有，`.xlings-home` 声明 `mode: multi`；
-  `XLINGS_SYSTEM_LAYER` 可指定别处）。用户的 shell profile 把它的程序放在用户自己的之后、宿主之前：
-  不复制，用户自己的版本优先，用户写不了它。
+- **系统层（M）**：`sudo xlings install --system <pkg>` 装进 `/xlings`（root 拥有，`.xlings-home` 声明
+  `mode: multi` 或 `mode: root, layout: multi`；`XLINGS_SYSTEM_LAYER` 可指定别处）。
+  用户的 `use` 优先选择自己拥有的版本；系统层候选读取其注册表和 `default` 的安装记录，校验整个绑定组及
+  `.xlings-resolution.json` 中记录的运行时依赖闭包，再把带来源 home/作用域的元数据写入用户注册表，
+  将头文件、库和程序激活到用户视图。payload 保留在系统层，不复制到用户 store；系统层的 `configured`
+  记录也不复制。缺少旧 payload 的闭包记录时，系统层所有者必须显式 `install --reconfig`，读取失败不视为空闭包。
+  与用户拥有的依赖注册发生冲突时拒绝借用，要求在用户作用域安装完整闭包。用户 shell profile 同时把系统层
+  的程序放在用户自己的之后、宿主之前；用户写不了系统层。
+
+头文件、库和声明的文件资产使用同一批预检与发布事务。旧作用域的登记加实际链接目标／文件对象身份才能证明旧资产的所有权；仅仅指向 payload store 不构成证明。未知的普通文件、目录和链接保留并拒绝覆盖。目录链接需要与其他包合并时，先在独占暂存目录构造叶子链接再发布，后续更新逐个验证叶子，避免写进共享 payload。旧资产在元数据保存、回读验证及 root 刷新完成前保留作回滚；失败恢复旧工作区与旧视图。没有目录创建证明的真实父目录保留，即使它已经变空。Windows 无法建立跨盘硬链接时会明确失败。
+
+  共享系统 store 的自动 GC 保留 payload：系统层无法观察其他用户的只读引用，不能以本 home
+  没有引用为删除依据。损坏或未知的 home 声明也使 GC 拒绝；普通用户 home 不跟随 store 符号链接清理外部数据。
 - **根（R）**：一台机器的整个用户态就是一个 SubOS（见下一节）。系统 home 是 `/xlings`（multi）或构建它的
   home 的路径（single，这个用户等价于 root）；`/etc/xlings/root.json` 是 stage-0 找到它的锚点。
 
@@ -154,7 +195,8 @@ locked 的日志写入失败会拒绝启动或终止会话；exec 的 seccomp �
 | `fetch=layer` | 沙箱里装的包进这个根自己的作用域；视图实例（没有根）拒绝进入 |
 | 导出 | `subos export --rootfs/--tar/--disk`：实例成为镜像的 `default`，带上闭包里的 payload（工作区、已安装、每个 ELF 的 loader 与搜索路径）、静态 xlings、`root.json`、`boot/xlings-init` |
 | 启动 | 内核 `init=<home>/boot/xlings-init`：stage-0 挂载内核文件系统，按 `boot.json`（试启动 once、默认、计数用尽后 fallback）选 SubOS，把 `/usr` 指过去，exec 它的 init；init 起不来就试下一个。`subos boot <n> --now`：busybox init 的 restart 重新执行 stage-0，不重启内核 |
-| 库搜索 | xlings 的包按自己的 RUNPATH 闭包找库，从不读 cache；外来程序（`PT_INTERP=/lib64/ld-linux…`）的默认目录是 `/lib64` = 根的 `/usr/lib`（实测） |
+| 库搜索 | managed loader 使用自己的 RUNPATH/私有 `etc`，不读宿主 cache；glibc 2.44.3 revision 2 的根 loader 从逻辑 interpreter 根读取 `/etc/ld.so.cache` 与 preload，默认目录是 `/lib64` = 根的 `/usr/lib` |
+| 根 cache | 存在根内 `ldconfig` 时，refresh、rollback 与 stage-0 重新生成 cache；只读输入、独占 staging、写前记录旧/新 digest。未知或外部修改的 cache 保留并报错；不采用宿主 cache |
 
 ## 跨平台
 
@@ -176,11 +218,8 @@ bwrap 后端默认只暴露最小 `/dev`。`--gpu`（等价于 `--allow gpu`）�
 
 | 项 | 现状 |
 |---|---|
-| `net=proxy` | 拒绝（fail closed）；需要沙箱内转发器和 supervisor 桥接 |
-| 根自己的 `/etc/ld.so.cache` | loader 从它 payload 的 `etc/` 读 cache；让它跟随调用路径需要 glibc 新 revision（xlings-res）。`/lib64 = /usr/lib` 已覆盖 cache 的用途 |
 | 在 macOS / Windows 上呈现根 | 返回 unavailable；Windows 用 `subos export --tar` + `wsl --import` |
 | 根里编译的程序默认在 `/usr/lib` 找库 | gcc 的 specs 用的是 payload 的 loader，它的默认目录是 payload 的而不是根的 `/usr/lib`；只在 `/usr/lib` 的库需要 `-Wl,-rpath,/usr/lib`（luban-desktop 的场景就是这样做的）。根里的 gcc 改用 `/lib64` 的 loader 需要 gcc recipe 支持按作用域的 specs |
-| 通过 broker 安装时的 hook 沙箱 | hook 在宿主侧按 owner 权限运行 |
 | 加入会话的交互 shell 的作业控制 | 加入时提示：作业控制留在第一个 shell |
 | interface 的 `subos_exec` 实时流式输出 | 结束后返回输出与退出码 |
 
