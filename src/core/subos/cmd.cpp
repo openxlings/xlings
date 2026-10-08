@@ -26,6 +26,7 @@ import xlings.core.confirm;
 import xlings.core.destructive_log;
 import xlings.subos.userdata;
 import xlings.carrier;
+import xlings.core.subos.carrier_image;
 import xlings.subos.caps;
 import xlings.subos.model;
 import xlings.core.subos.ports;
@@ -1705,6 +1706,7 @@ int forward_to_carrier_(const CarrierBinding_& b, std::vector<std::string> args,
                                .recoverable = true, .hint = probed.route});
         return 125;
     }
+    subos_carrier::install();
     auto at = c->ensure(home_view());
     if (!at) {
         stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = at.error(), .recoverable = true});
@@ -2004,6 +2006,10 @@ int run(int argc, char* argv[], EventStream& stream) {
                 fs::remove(home_view().instance_file(a), ec);
                 fs::remove(home_view().config_dir(a), ec);
                 fs::remove(Config::subos_dir(a), ec);
+                (void)update_home_config(Config::paths().homeDir, [&](nlohmann::json& json) {
+                    if (!json.contains("subos") || !json["subos"].is_object()) return false;
+                    return json["subos"].erase(a) > 0;
+                });
             }
             return rc;
         }
@@ -2133,6 +2139,15 @@ int run(int argc, char* argv[], EventStream& stream) {
             fs::create_directories(Config::subos_dir(name), ec);
             if (auto recorded = record_carrier_(name, binding); !recorded) {
                 stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = recorded.error(), .recoverable = true});
+                return 1;
+            }
+            auto registered = update_home_config(Config::paths().homeDir, [&](nlohmann::json& json) {
+                if (!json.contains("subos") || !json["subos"].is_object()) json["subos"] = nlohmann::json::object();
+                json["subos"][name] = nlohmann::json{{"dir", ""}};
+                return true;
+            });
+            if (!registered) {
+                stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = registered.error(), .recoverable = true});
                 return 1;
             }
             return 0;

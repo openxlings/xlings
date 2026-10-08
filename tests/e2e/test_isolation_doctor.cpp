@@ -12,7 +12,7 @@ namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
 
 XTEST(IsolationDoctor, ReportsEveryBackendItFoundAndWhatTheProbeSaid,
-      .area = "subos", .cost = tk::Cost::Medium, .covers = {"DOC-ISOLATION", "F10"},
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"DOC-ISOLATION", "F10", "CARRIER-LOCAL"},
       .requires_ = {"linux", "xlings-bin"}) {
     auto home = tk::Home::isolated("doctor-iso");
     home.seed_sandbox_backend();
@@ -21,6 +21,11 @@ XTEST(IsolationDoctor, ReportsEveryBackendItFoundAndWhatTheProbeSaid,
     ASSERT_FALSE(j.is_discarded()) << r.transcript();
     EXPECT_EQ(j["gates"].size(), 8u);
     EXPECT_TRUE(j["sysctl"].contains("kernel.apparmor_restrict_unprivileged_userns"));
+    // Where a SubOS can run here: Linux has its own kernel (part 3 §5).
+    ASSERT_TRUE(j["carriers"].is_array()) << j.dump();
+    ASSERT_FALSE(j["carriers"].empty());
+    EXPECT_EQ(j["carriers"][0]["name"], "local");
+    EXPECT_TRUE(j["carriers"][0]["supported"].get<bool>());
     // Root-owned first, then the system's, then the payload -- each probed.
     std::vector<std::string> order;
     for (auto& b : j["bwrap"]) order.push_back(b["source"].get<std::string>());

@@ -5,6 +5,7 @@ import xlings.libs.json;
 import xlings.platform;
 import xlings.platform.stream;
 import xlings.subos.home_view;
+import xlings.carrier.wsl2;
 
 namespace xlings::carrier {
 
@@ -27,13 +28,15 @@ Carrier local() {
 std::vector<std::string> command(const Endpoint& at, std::span<const std::string> args,
                                  const std::map<std::string, std::string>& env) {
     std::vector<std::string> argv = at.launcher;
-    if (!at.launcher.empty() && !env.empty()) {
-        // There is a Linux userland (a WSL2 distribution, a VM): env(1)
-        // carries the variables across the launcher, which may not.
-        argv.push_back("/usr/bin/env");
-        for (const auto& [k, v] : env) argv.push_back(k + "=" + v);
-    }
     argv.push_back(at.xlings);
+    if (!at.launcher.empty() && !env.empty()) {
+        // A launcher may not carry variables across (wsl.exe does not), and
+        // a guest has no userland of its own to do it (no env(1)): the xlings
+        // there sets them and goes on as `xlings <args>`.
+        argv.push_back("__carrier-env");
+        for (const auto& [k, v] : env) argv.push_back(k + "=" + v);
+        argv.push_back("--");
+    }
     argv.insert(argv.end(), args.begin(), args.end());
     return argv;
 }
@@ -41,9 +44,19 @@ std::vector<std::string> command(const Endpoint& at, std::span<const std::string
 }  // namespace
 
 std::span<const Carrier> carriers() {
-    static const std::vector<Carrier> all{local()};
+    static const std::vector<Carrier> all{local(), wsl2::make()};
     return all;
 }
+
+namespace {
+ImageSource& image_source_slot() {
+    static ImageSource source;
+    return source;
+}
+}  // namespace
+
+void set_image_source(ImageSource source) { image_source_slot() = std::move(source); }
+const ImageSource& image_source() { return image_source_slot(); }
 
 const Carrier* find(std::string_view name) {
     for (const auto& c : carriers())
@@ -54,6 +67,9 @@ const Carrier* find(std::string_view name) {
 std::vector<std::string_view> carriers_of(std::string_view platform) {
     if (platform == "windows") return {"local", "wsl2"};
     if (platform == "macos") return {"local", "vz"};
+    // XLINGS_WSL_EXE (a stand-in wsl.exe) lets the wsl2 carrier's lifecycle
+    // be exercised on a Linux CI host; nothing else enables it here.
+    if (const char* seam = std::getenv("XLINGS_WSL_EXE"); seam && *seam) return {"local", "wsl2"};
     return {"local"};
 }
 

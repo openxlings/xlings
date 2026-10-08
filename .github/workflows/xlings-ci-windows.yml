@@ -387,6 +387,11 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\tests\e2e\release_subos_smoke_test.ps1" "build\release.zip"
 
+      - name: "E2E-08: SubOS on the wsl2 carrier (or refused with its route)"
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tests\e2e\windows_carrier_wsl2_test.ps1" "build\release.zip"
+
       - name: "E2E-05: Project Shim Mirror"
         shell: pwsh
         run: |

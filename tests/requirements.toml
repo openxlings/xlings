@@ -692,15 +692,15 @@ status = "required"
 
 [CARRIER-WSL-LIFECYCLE]
 text = "a wsl2 carrier is created per home on first need, reached through wsl.exe, stopped when idle, unregistered only by a confirmed removal"
-status = "planned"
+status = "required"
 
 [CARRIER-WSL-INTEROP-OFF]
 text = "inside a wsl2 carrier, Windows executables cannot run and /mnt/c is not mounted"
-status = "planned"
+status = "required"
 
 [CARRIER-WSL-GRANT]
 text = "only granted host directories are visible in a wsl2 carrier, and only for the session"
-status = "planned"
+status = "required"
 
 [CARRIER-UNAVAILABLE]
 text = "without a usable carrier a Must refuses with the route and a native SubOS is unaffected"
@@ -708,7 +708,8 @@ status = "required"
 
 [VIEW-CARRIER-EQ]
 text = "one content declaration yields the same root view on every carrier"
-status = "planned"
+status = "deferred"
+why = "needs a real guest kernel (WSL2 or a VZ VM): hosted runners have no nested virtualization, and the stand-in wsl.exe runs on the host kernel -- it proves routing, not the guest root; tests/e2e/windows_carrier_wsl2_test.ps1 runs it wherever WSL2 exists"
 
 [SESSION-NATIVE-SUPERVISED]
 text = "a native-ABI SubOS on macOS / Windows runs under a supervisor: join, timeout, exit codes as on Linux"

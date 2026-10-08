@@ -82,4 +82,24 @@ std::expected<Choice, Refused> choose(std::string_view platform, const Want& wan
 // The carriers a platform has, in preference order (the first is native).
 std::vector<std::string_view> carriers_of(std::string_view platform);
 
+// ── a guest's image ──────────────────────────────────────────────────
+//
+// What a guest carrier imports the first time: the Linux build of this
+// release at /xlings/bin/xlings (a static binary: no userland needed to run
+// it, and it is the home's package manager there), and the few machine files
+// a carrier declares. Built by the xlings core (it knows the index and the
+// downloader), declared here (the carrier knows its machine).
+struct ImageFile {
+    std::string path;            // inside the image, relative ("etc/wsl.conf")
+    std::string content;         // a regular file's bytes
+    unsigned mode { 0644 };
+    std::string link;            // non-empty: a symbolic link to this target
+    bool directory { false };
+};
+// Returns the image tarball (root-owned entries) for `files` plus the Linux
+// xlings at xlings/bin/xlings.
+using ImageSource = std::function<std::expected<fs::path, std::string>(const HomeView&, std::span<const ImageFile>)>;
+void set_image_source(ImageSource source);
+const ImageSource& image_source();
+
 }  // namespace xlings::carrier

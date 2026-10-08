@@ -52,4 +52,18 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
                                               ArchiveOwner owner,
                                               std::string_view prefix = ".");
 
+// An archive written from a description rather than a directory: what a
+// guest image is (part 3 §5.3) on a host that may not be able to make the
+// symlinks it holds (Windows without developer mode). Every entry root's.
+struct TarEntry {
+    std::string path;                       // inside, relative
+    std::string content;                    // a regular file's bytes, or...
+    std::filesystem::path from;             // ...the host file streamed as its bytes
+    unsigned mode { 0644 };
+    std::string link;                       // non-empty: a symbolic link
+    bool directory { false };
+};
+std::expected<void, std::string> write_tar_gz_entries(const std::filesystem::path& output,
+                                                      std::span<const TarEntry> entries);
+
 } // namespace xlings::xim

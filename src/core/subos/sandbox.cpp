@@ -32,6 +32,7 @@ import xlings.core.subos.root_view;
 import xlings.subos.roles;
 import xlings.subos.elevation;
 import xlings.subos.tools;
+import xlings.carrier;
 import xlings.subos.userdata;
 
 namespace xlings::subos::sandbox {
@@ -1037,6 +1038,15 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
                              {"source", subos::tools::to_string(found->source)}}
             : nlohmann::json{{"name", tool.name}, {"path", nullptr},
                              {"install", subos::tools::install_hint(tool.name)}});  // tool-ok: a JSON key
+    }
+    // Where a SubOS can run on this machine (design part 3 §5): each carrier
+    // this platform has, measured.
+    report["carriers"] = nlohmann::json::array();
+    for (const auto name : carrier::carriers_of(caps::platform_name())) {
+        const auto* c = carrier::find(name);
+        const auto p = c ? c->probe(home) : carrier::Probe{.reason = "not in this build"};
+        report["carriers"].push_back({{"name", name}, {"supported", p.supported}, {"reason", p.reason},
+                                      {"route", p.route}, {"evidence", p.evidence}});
     }
     auto host_caps = caps::probe(home, ports);
     report["backend"] = host_caps.bwrap && host_caps.bwrap->usable

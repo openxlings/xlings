@@ -10,6 +10,7 @@ import xlings.core.home_identity;
 import xlings.core.home;
 import xlings.subos.session;
 import xlings.subos.stage0;
+import xlings.carrier.wsl2;
 import xlings.observe;
 import xlings.core.xvm.lock;
 import xlings.core.destructive_log;
@@ -19,6 +20,27 @@ import xlings.core.xself.compat;
 
 
 int main(int argc, char* argv[]) {
+    // `xlings __carrier-env K=V ... -- <args>`: a carrier's launcher carries
+    // no variables and its guest has no env(1) (design part 3 §5.1). Set
+    // them and go on as `xlings <args>`.
+    std::vector<char*> carried;
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-env") {
+        int i = 2;
+        for (; i < argc && std::string_view(argv[i]) != "--"; ++i) {
+            const std::string_view kv(argv[i]);
+            const auto eq = kv.find('=');
+            if (eq == std::string_view::npos || eq == 0) {
+                std::println(std::cerr, "xlings __carrier-env: expected K=V, got '{}'", kv);
+                return 2;
+            }
+            xlings::platform::set_env_variable(std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1)));
+        }
+        carried.push_back(argv[0]);
+        for (++i; i < argc; ++i) carried.push_back(argv[i]);
+        carried.push_back(nullptr);
+        argc = static_cast<int>(carried.size()) - 1;
+        argv = carried.data();
+    }
     if (argc >= 2 && std::string_view(argv[1]) == "__xpkg-worker")
         return xlings::xim::lua_boundary::worker_main(argc, argv);
     // A machine's first process when its root is a SubOS (design part 2
@@ -29,6 +51,13 @@ int main(int argc, char* argv[]) {
     // The first process inside a SubOS sandbox (xlings.subos.session). Before
     // everything: it must not read, adopt or write any home -- inside, the
     // home is the sandbox's view of it -- and it is not a shim.
+    // Inside a carrier's machine (design part 3 §5.3): mount one granted
+    // Windows directory. Run there by the xlings on the host, as root.
+    if (argc >= 2 && std::string_view(argv[1]) == "__carrier-grant") {
+        std::vector<std::string> args(argv + 2, argv + argc);
+        return xlings::carrier::wsl2::guest_grant(args);
+    }
+
     if (argc >= 2 && std::string_view(argv[1]) == "__session-init") {
         std::vector<std::string> args(argv + 2, argv + argc);
         return xlings::subos::session::session_init(args);
