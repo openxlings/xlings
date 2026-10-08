@@ -2,10 +2,21 @@
 
 评估日期：2026-10-08。评估对象：[xlings PR #641](https://github.com/openxlings/xlings/pull/641)，以及 SubOS 总体架构设计 Part 1、Part 2。§1–10 保存最初 rebase 后的审查基线，§11 起记录后续实施与对应提交的验证。本文结合设计、代码、测试声明、远端 CI 和本地验证；实施记录中的“本地实测”属于原作者的记录，不等同于本轮复验。
 
-## 当前交付状态（首次 payload 挂载与静态域验收收口中）
+## 当前交付状态（最终写入边界与 CI 工具保留收口中）
 
-后续实现均以追加 commit、普通 push 进入 #641，保留审查历史。main 仍为 `c55d89a`，
+后续实现均追加 commit、普通 push，保留审查历史。main 仍为 `c55d89a`，
 候选版本为 `2026.10.8.2`，尚未合并、发布。
+
+`1019d353` 的 macOS、Windows、ARM64 和 Linux root 完整 CI 已实际通过；
+Linux 单元为 198 pass、0 fail、5 skip，静态 release 和 candidate cold-home 通过。
+静态 domain 硬验收启动前因 release 清理 musl target 同时删除 xdev 而失败；
+domain、性能与下游发行版尚未执行，ASAN 仍运行。CI 将静态 xdev 和四个已经构建的
+candidate 验收程序保留到 target/xdev 下，避免 release 清理，并保留 actual-pass 要求。
+
+最终只读审查发现 payloadless config remove 预检误申请 payload write context，以及
+factory/sysusers 沿用户目录 symlink 写到机器根外部的路径。两项已完成最小调用修复及
+anchored FD 写入实现，正在串行构建和有限复验；新 head 的完整 CI、发布和真实 CN
+fresh install/self update 仍未完成，不能以旧 head 的四平台 green 替代。
 
 `476fc244` 的 macOS、Windows、ARM64 和 Linux root 已实际通过；Linux 主车道为
 196 pass、3 fail、4 skip，ASAN 仍运行。worker 的 dev/locked、loader alias、完整
@@ -615,3 +626,31 @@ mount、session、NDJSON、用户数据和只读来源断言保留。本批尚�
 两项安全 lint、CI YAML parse 和 whitespace 通过；lock 仅重排且语义相同，已恢复。
 首次 payload 隔离、带来源 metadata 和静态 domain 全生命周期仍须新 head 实际 pass。
 未将本机 capability skip 计作完成证据，全部更改继续追加 commit / 普通 push。
+
+
+最终审查补充：payloadless config 的 has_hook 仅 Load/读取函数表，移除多余
+install_dir，不为 metadata 查询创建 package 父目录或 shadow。新增 dev scope 下
+显式版本与裸坐标两种卸载回归，要求各 uninstall 在独立 hook log 中实际一次。
+
+机器 /etc 的目录写入从 filesystem root 逐级 openat(O_DIRECTORY|O_NOFOLLOW) 锚定，
+目录创建、factory 链接和独立账号文件通过该 FD 操作；passwd/group 同一锁定 regular
+FD 检查 nlink=1 后读写。合法 generation→payload factory 叶链接保留，目的名称改用
+lexically_relative，source 解析不再制造 ../ 目的路径。既有机器账号文件不读取 factory
+默认值；未知账号 symlink/hardlink 明确拒绝并保留。fill/refresh 返回 expected，失败
+沿现有 generation 回切及 stage0 recovery 路径传播。外部 sentinel、嵌套 symlink、
+root 父目录、var、账号共享 inode 和路径置换均有真实 filesystem 回归，待本批复验。
+
+已核实 146 required（0 planned / deferred）以及 actual passing-evidence 门禁；门禁
+存在不等于尚未执行的需求已通过。默认观测仅记录命令路径和环境名、不保存 argv
+值；草案 R12 的 raw opt-out 尚未提供。PR ≤15 min 是当前未达到的墙钟目标，不能
+由静态产品性能预算 pass 推导满足。无 policy/无借用系统层的 recipe 保留 legacy
+执行，macOS/Windows 的 dev 是 advisory；Must 无能力拒绝。旧 entry 不认识新的
+min_client，doctor 核实实际入口；不声称旧版能追溯执行新 schema。
+
+本批有限复验完成：dev 33.92 s、dist static 45.90 s 构建通过；109 程序一次
+编译通过（267.721 s）。四个相关程序均 exit0，注册用例 18 pass、7 capability
+skip、0 fail；其中 rootfs 13 项全部实际通过，含四组新增真实文件系统边界回归。
+模拟 release 删除 triple target 后，实际 retained xdev ci plan 与四个 candidate
+验收程序的 listing 均正常启动。两项 safety lint、Linux CI YAML/脚本语法、
+whitespace 通过；lock 重排语义一致，已恢复。真实 namespace 卸载、静态 domain、
+性能、boot/self update 与 ASAN 仍须下一固定 head CI，不以本地 skip 计完成。

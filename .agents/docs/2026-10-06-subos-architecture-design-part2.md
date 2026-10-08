@@ -701,3 +701,12 @@ root domain 的完整生命周期使用静态 release candidate 验收；dynamic
 首次 writable payload 只在已声明 managed store 下安全准备单 package 父 mountpoint，
 版本内容仍由 private shadow 提交，其他 package 保持只读。系统层 fixture 从首次 index
 metadata 读取起声明该层，避免把未声明策略下的 legacy setup 执行误归于受限安装。
+
+
+机器 `/etc` 写入使用 anchored POSIX directory/file FD，逐级拒绝 symlink；factory
+目的使用 lexical 相对路径，保留真实投影叶链接。`passwd`/`group` 的默认值独立复制，
+既有文件优先；sysusers 仅通过锁定的 regular、single-link FD 追加。未知账号 symlink
+或共享 inode 保留拒绝，路径或写入失败返回到 generation rollback / stage0 recovery。
+外部 sentinel、路径置换和账号 hardlink 回归须实际通过，Windows 不支持该 root writer。
+release 清理 triple target 前保留静态 xdev 和已构建的四个专项程序，避免把工具缺失
+误归于 domain 功能；三项 domain 与六项静态预算仍必须实际 pass。
