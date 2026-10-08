@@ -22,6 +22,63 @@ void derived(const fs::path& source, const fs::path& destination) {
 }
 }
 
+XTEST(XvmMaterialize, RecordedHeaderClaimsSurviveMissingSourcesButIncomingAssetsRequireThem,
+      .area = "xvm", .covers = {"HOME-LAYER-RESOLVE"}) {
+    auto home = tk::Home::isolated("asset-missing-source");
+    const auto scope = home.dir() / "subos/default";
+    const auto include = home.dir() / "data/xpkgs/demo/1/include";
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(db, "tool", "1", include.parent_path().string());
+    db["tool"].versions["1"].includedir = include.string();
+    const xlings::xvm::WorkspaceInstalled installed{{"tool", {"1"}}};
+    const auto recorded = m::collect_claims(db, installed, scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(recorded) << recorded.error();
+    ASSERT_EQ(recorded->size(), 1);
+    EXPECT_EQ(recorded->front().source, include);
+    EXPECT_TRUE(recorded->front().descendants);
+    EXPECT_FALSE(m::collect_claims(db, installed, scope, scope / "lib", home.dir().string(),
+        m::ClaimSource::Present));
+}
+
+XTEST(XvmMaterialize, ReplacedPayloadRepairsProvenDanglingHeadersAndPreservesUnknownSiblings,
+      .area = "xvm", .covers = {"HOME-LAYER-RESOLVE"}) {
+    if constexpr (xlings::platform::is_windows) GTEST_SKIP() << "deleted sources cannot prove Windows hardlink ownership";
+    auto home = tk::Home::isolated("asset-dangling-header");
+    const auto scope = home.dir() / "subos/default";
+    const auto old = home.dir() / "data/xpkgs/demo/1/gen1/include";
+    const auto fresh = home.dir() / "data/xpkgs/demo/1/gen2/include";
+    const auto destination = scope / "usr/include";
+    tk::write_file(old / "owned.h", "old");
+    tk::write_file(old / "obsolete.h", "obsolete");
+    tk::write_file(fresh / "owned.h", "fresh");
+    fs::create_directories(destination);
+    derived(old / "owned.h", destination / "owned.h");
+    derived(old / "obsolete.h", destination / "obsolete.h");
+    tk::write_file(destination / "user.h", "user header");
+    fs::remove_all(old);
+    xlings::xvm::VersionDB db;
+    xlings::xvm::add_version(db, "tool", "1", old.parent_path().string());
+    db["tool"].versions["1"].includedir = old.string();
+    auto recorded = m::collect_claims(db, {{"tool", {"1"}}}, scope, scope / "lib", home.dir().string());
+    ASSERT_TRUE(recorded) << recorded.error();
+    const auto& claims = *recorded;
+    const std::vector<m::AssetClaim> desired{{fresh / "owned.h", destination / "owned.h"}};
+    auto obsolete = m::obsolete_assets(claims, desired);
+    ASSERT_TRUE(obsolete) << obsolete.error();
+    ASSERT_EQ(obsolete->size(), 1);
+    EXPECT_EQ(obsolete->front().destination, destination / "obsolete.h");
+    auto changes = std::move(*obsolete);
+    changes.push_back({desired.front().source, desired.front().destination});
+    auto prepared = m::preflight_materialization(changes, claims, scope);
+    ASSERT_TRUE(prepared) << prepared.error();
+    auto applied = prepared->execute();
+    ASSERT_TRUE(applied) << applied.error();
+    ASSERT_TRUE(applied->commit());
+    EXPECT_EQ(tk::read_file(destination / "owned.h"), "fresh");
+    EXPECT_EQ(tk::read_file(destination / "user.h"), "user header");
+    EXPECT_FALSE(fs::is_symlink(destination / "obsolete.h"));
+}
+
 XTEST(XvmMaterialize, PreflightPreservesUnknownFilesDirectoriesAndLinks, .area = "xvm",
       .covers = {"HOME-LAYER-RESOLVE"}) {
     auto home = tk::Home::isolated("asset-user-data");

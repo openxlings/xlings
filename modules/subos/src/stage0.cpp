@@ -146,6 +146,7 @@ int run(int argc, char* argv[]) {
         say("runs as a machine's first process (the kernel's init=); this is not PID 1");
         return 1;
     }
+    const auto started = std::chrono::steady_clock::now();
     for (auto [type, target] : {std::pair{"proc", "/proc"}, std::pair{"sysfs", "/sys"},
                                 std::pair{"devtmpfs", "/dev"}, std::pair{"tmpfs", "/run"}}) {
         if (!platform::mount_kernel_fs(type, target))
@@ -200,8 +201,11 @@ int run(int argc, char* argv[]) {
         if (auto cache = library_cache::refresh("/", home, candidate.subos); !cache) recover(cache.error());
         const auto next = boot::record_boot(*config, candidate);
         if (auto saved = boot::save(home.boot_file(), next); !saved) recover(saved.error());
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
         log_event(home, {{"event", "boot"}, {"subos", candidate.subos}, {"via", candidate.via},
-                         {"generation", rootfs::current(dir).value_or(0)}, {"init", (*init)->string()}});
+                         {"generation", rootfs::current(dir).value_or(0)}, {"init", (*init)->string()},
+                         {"stage0_elapsed_us", elapsed}});
         say(std::format("booting '{}' ({}), generation {}", candidate.subos, candidate.via,
                         rootfs::current(dir).value_or(0)));
         const std::map<std::string, std::string> env{

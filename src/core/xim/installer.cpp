@@ -21,6 +21,7 @@ import xlings.core.config;
 import xlings.core.home;
 import xlings.core.home.layers;
 import xlings.core.home.evidence;
+import xlings.core.home.domain_producer_source;
 import xlings.core.semver;
 import xlings.core.entry_binary;
 import xlings.core.elf_same_source;
@@ -1743,34 +1744,28 @@ publish_removal_state_(xvm::VersionDB candidateDb, xvm::Workspace candidateWorks
     xvm::WorkspaceInstalled activeOnly;
     for (const auto& [name, key] : candidateWorkspace)
         activeOnly[name] = {key};
-    auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir);
+    auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
     if (!desired)
         return std::unexpected(desired.error());
-    std::vector<mat::AssetChange> changes;
-    for (const auto& old : *claims) {
-        const bool retained = std::ranges::any_of(*desired, [&](const auto& next) {
-            const auto relative = next.destination.lexically_relative(old.destination);
-            return next.destination == old.destination ||
-                   (old.descendants && !relative.empty() && *relative.begin() != "..");
-        });
-        if (!retained)
-            changes.push_back({old.source, old.destination, true});
-    }
+    auto obsolete = mat::obsolete_assets(*claims, *desired);
+    if (!obsolete) return std::unexpected(obsolete.error());
+    auto changes = std::move(*obsolete);
     for (const auto& next : *desired)
         changes.push_back({next.source, next.destination, false});
     for (const auto& op : operations) {
         if (op.op != "remove_headers")
             continue;
         const auto source = std::filesystem::path(xvm::expand_path(op.includedir, homeDir));
+        std::vector<mat::AssetClaim> selected;
         for (const auto& old : *claims) {
             const auto relative = old.source.lexically_relative(source);
             if (relative.empty() || *relative.begin() == "..")
                 continue;
-            const bool retained = std::ranges::any_of(
-                *desired, [&](const auto& next) { return next.destination == old.destination; });
-            if (!retained)
-                changes.push_back({old.source, old.destination, true});
+            selected.push_back(old);
         }
+        auto removedHeaders = mat::obsolete_assets(selected, *desired);
+        if (!removedHeaders) return std::unexpected(removedHeaders.error());
+        changes.insert(changes.end(), removedHeaders->begin(), removedHeaders->end());
     }
     auto prepared = mat::preflight_materialization(changes, *claims, root);
     if (!prepared)
@@ -2099,7 +2094,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     const bool declarativeBorrow =
         borrowed && xvmOps.empty() && (node.pkgType == 1 || node.pkgType == 4);
     if (borrowed) {
-        auto source = home::layers::read_snapshot(node.sourceHome, node.sourceScope);
+        auto source = home::layers::read_source_snapshot(node.sourceHome, node.sourceScope);
         if (!source) {
             log::error("{}", source.error());
             return false;
@@ -2185,19 +2180,12 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
         xvm::WorkspaceInstalled activeOnly;
         for (const auto& [target, key] : active)
             activeOnly[target] = {key};
-        auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir);
+        auto desired = mat::collect_claims(candidateDb, activeOnly, root, root / "lib", homeDir, mat::ClaimSource::Present);
         if (!desired)
             return std::unexpected(desired.error());
-        std::vector<mat::AssetChange> changes;
-        for (const auto& old : *claims) {
-            const bool retained = std::ranges::any_of(*desired, [&](const auto& next) {
-                const auto relative = next.destination.lexically_relative(old.destination);
-                return next.destination == old.destination ||
-                       (old.descendants && !relative.empty() && *relative.begin() != "..");
-            });
-            if (!retained)
-                changes.push_back({old.source, old.destination, true});
-        }
+        auto obsolete = mat::obsolete_assets(*claims, *desired);
+        if (!obsolete) return std::unexpected(obsolete.error());
+        auto changes = std::move(*obsolete);
         for (const auto& next : *desired)
             changes.push_back({next.source, next.destination, false});
         return mat::preflight_materialization(changes, *claims, root);
@@ -2220,7 +2208,7 @@ bool process_xvm_operations_(const PlanNode& node, const std::filesystem::path& 
     const auto pinning = profile::find_subos_pinning_version(Config::paths().homeDir, node.name,
                                                              node.version, &unreadable);
     for (const auto& name : unreadable)
-        log::warn("{}: unreadable workspace; its sysroot was not refreshed", name);
+        log::warn("{}: unreadable workspace; its sysroot was not refreshed; run xlings self doctor --subos {}", name, name);
     for (const auto& name : pinning) {
         if (name == Config::paths().activeSubos)
             continue;
@@ -2521,7 +2509,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     if (*systemLayer) {
         std::error_code ec;
         if (!std::filesystem::equivalent(**systemLayer, Config::paths().homeDir, ec)) {
-            auto snapshot = home::layers::read_snapshot(**systemLayer);
+            auto physicalHome = home::domain_producer_source::persisted_home(**systemLayer);
+            if (!physicalHome) return std::unexpected(physicalHome.error());
+            auto snapshot = home::layers::read_source_snapshot(*physicalHome);
             if (!snapshot) return std::unexpected(snapshot.error());
             systemSnapshot.emplace(std::move(*snapshot));
         }
@@ -2534,7 +2524,9 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             const auto localStatus = std::filesystem::symlink_status(localPayload, ec);
             if (ec && ec != std::errc::no_such_file_or_directory)
                 return std::unexpected(localPayload.string() + ": " + ec.message());
-            if (localStatus.type() != std::filesystem::file_type::not_found) continue;
+            auto sourceMount = home::domain_producer_source::borrowed_mount(localPayload);
+            if (!sourceMount) return std::unexpected(sourceMount.error());
+            if (localStatus.type() != std::filesystem::file_type::not_found && !*sourceMount) continue;
             const auto provider = node.canonicalName.empty()
                 ? canonical_package_name(node.namespaceName, node.name) : node.canonicalName;
             auto choice = home::layers::plan_borrow_package(
@@ -2552,7 +2544,7 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             if (stamped_incomplete(selected.requestedPayload))
                 return std::unexpected(provider + ": system payload has a recorded failure; its owner must --reconfig");
             node.borrowedPayload = selected.requestedPayload;
-            node.sourceHome = systemSnapshot->home;
+            node.sourceHome = systemSnapshot->sourceHome;
             node.sourceScope = systemSnapshot->scope;
             node.storeRoot = selected.requestedPayload.parent_path().parent_path();
             borrowedPlans.emplace(detail_::plan_key_(node), std::move(selected));
@@ -3554,6 +3546,17 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             }
         }
 
+        if (!borrowedPayload && node.pkgType != 3 /* Config */ && (!payloadInstalled || reconfig)) {
+            if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
+                log::error("failed to record resolution for {}: {}", node.name, evidence.error());
+                write_payload_failure_marker(ctx.install_dir, node.version, evidence.error());
+                if (onStatus) {
+                    onStatus({node.name, InstallPhase::Failed, 0.0f, evidence.error()});
+                }
+                continue;
+            }
+        }
+
         std::size_t appliedInstallRequests = 0;
         // Process deferred pkgmanager.install()/remove() requests synchronously
         // before config hook, so config can access sub-dependencies
@@ -3630,17 +3633,6 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 allRequests.begin() + static_cast<std::ptrdiff_t>(appliedInstallRequests),
                 allRequests.end());
             onInstallRequests(pendingRequests);
-        }
-
-        if (!borrowedPayload && node.pkgType != 3 /* Config */ && (!payloadInstalled || reconfig)) {
-            if (auto evidence = detail_::save_resolution_(node, ctx); !evidence) {
-                log::error("failed to record resolution for {}: {}", node.name, evidence.error());
-                write_payload_failure_marker(ctx.install_dir, node.version, evidence.error());
-                if (onStatus) {
-                    onStatus({node.name, InstallPhase::Failed, 0.0f, evidence.error()});
-                }
-                continue;
-            }
         }
 
         if (!borrowedPayload && node.pkgType != 3 /* Config */) {
@@ -3926,11 +3918,13 @@ std::expected<Installer::UninstallOutcome, std::string> Installer::uninstall(con
                               executingProvider || owner->version != executingProviderVersion ||
                 data.sourceHome.empty())
                 continue;
+            auto executionHome = home::domain_producer_source::execution_home(data.sourceHome);
+            if (!executionHome) return std::unexpected(executionHome.error());
             auto physical = home::evidence::physical_store_root(
-                data.sourceHome, xvm::expand_path(data.path, Config::paths().homeDir.string()));
+                *executionHome, xvm::expand_path(data.path, executionHome->string()));
             if (!physical)
                 return std::unexpected(physical.error());
-            auto source = home::layers::read_snapshot(data.sourceHome, data.sourceScope);
+            auto source = home::layers::read_source_snapshot(data.sourceHome, data.sourceScope);
             if (!source)
                 return std::unexpected(source.error());
             auto proof = home::layers::plan_borrow_package(

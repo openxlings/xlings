@@ -191,7 +191,8 @@ locked 的日志写入失败会拒绝启动或终止会话；exec 的 seccomp �
 | `/usr` | 一代 = 一棵链接树：已注册的程序和库优先，再是各激活包 payload 的 `bin/`、`lib/`（普通发行版的语义，busybox 的 applet 就这样进 `/usr/bin`）；带 alias 的程序保留 shim；`usr/lib/modules/<ver>` 来自内核包 |
 | 代 | `<subos>/root -> root.gen/<k>`，一次 rename 切换；工作区的每次变动（install / use / remove）产生新的一代；`subos rollback` 只切指针 |
 | 机器状态 | `/etc` 只补缺（factory：`usr/share/factory/etc` 和 sysroot 的 `etc/`），sysusers 只追加；`/home`、`/var`、`/root` 不随代变化 |
-| 进入实例 | bwrap：实例的树作为 `/`，uid 0，home 只读挂在原路径，实例本身同时是嵌套根的 `default`——里面的 xlings 就是这个根的包管理器；安装经 broker，立即出现在 `/usr` |
+| 进入实例 | bwrap：实例的树作为 `/`，uid 0。owner-private home 视图只读绑定经过校验的 metadata、依赖闭包内的 payload 和 generation；实例本身同时是嵌套根的 `default`。安装经 broker，精确挂载刷新完成后才回复成功，失败结束会话 |
+| 私有前缀域 | `new --rootfs --domain <HOME>` 在用户拥有的 namespace 内构建；逻辑 home 与物理存储分别记录。系统来源通过只读 metadata facade 与精确 payload slot 映射，payload 字节不改写。按名字访问该实例的命令重新进入对应域 |
 | `fetch=layer` | 沙箱里装的包进这个根自己的作用域；视图实例（没有根）拒绝进入 |
 | 导出 | `subos export --rootfs/--tar/--disk`：实例成为镜像的 `default`，带上闭包里的 payload（工作区、已安装、每个 ELF 的 loader 与搜索路径）、静态 xlings、`root.json`、`boot/xlings-init` |
 | 启动 | 内核 `init=<home>/boot/xlings-init`：stage-0 挂载内核文件系统，按 `boot.json`（试启动 once、默认、计数用尽后 fallback）选 SubOS，把 `/usr` 指过去，exec 它的 init；init 起不来就试下一个。`subos boot <n> --now`：busybox init 的 restart 重新执行 stage-0，不重启内核 |

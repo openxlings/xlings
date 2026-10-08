@@ -28,6 +28,7 @@ export import :tcp;
 export import :network;
 export import :net_notify;
 export import :asset_paths;
+export import :domain_mount;
 // The kernel's isolation mechanisms: namespaces, Landlock, seccomp, beneath.
 export import :isolation;
 

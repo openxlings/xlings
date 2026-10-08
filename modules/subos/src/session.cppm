@@ -92,12 +92,17 @@ struct Launch {
     // observe>=standard: host paths mapped read-write; what changed in them
     // during the session is listed when it ends.
     std::vector<std::string> rw_paths;
+    // Trusted owner code refreshes a root's checked mount view before a
+    // successful broker result becomes visible inside the sandbox.
+    std::function<std::expected<void, std::string>(std::span<const int, 3>)> refresh_root;
+    std::function<void()> finalize_root;
 };
 
 // The environment variables session-init reads its control socket and its
 // idle TTL from. `host` sets both; the caller does not.
 inline constexpr std::string_view kControlFdEnv = "XLINGS_SESSION_FD";
 inline constexpr std::string_view kTtlEnv = "XLINGS_SESSION_TTL";
+inline constexpr std::string_view kRootViewEnv = "XLINGS_SESSION_ROOT_VIEW";
 // --sandbox landlock: the writable paths, one per line; session-init fences
 // itself with them before it starts anything.
 inline constexpr std::string_view kLandlockRwEnv = "XLINGS_SESSION_LANDLOCK_RW";

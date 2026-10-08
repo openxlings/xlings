@@ -4,6 +4,7 @@ import std;
 import xlings.core.home;
 import xlings.core.home.evidence;
 import xlings.core.home.layers;
+import xlings.core.home.domain_producer_source;
 import xlings.core.xvm.owner;
 import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
@@ -12,6 +13,52 @@ import xlings.subos.rootfs;
 
 namespace xlings::subos_root::store_closure {
 namespace ev = home::evidence;
+namespace source_view = home::domain_producer_source;
+
+Inputs::Inputs() : versions(xvm::empty_version_db()) {
+}
+Inputs::~Inputs() = default;
+Inputs::Inputs(const Inputs& other)
+    : home(other.home), scope(other.scope), instance(other.instance), root(other.root),
+      versions(other.versions), active(other.active), installed(other.installed),
+      logicalHome(other.logicalHome), controlInstance(other.controlInstance) {
+}
+Inputs& Inputs::operator=(const Inputs& other) {
+    if (this != &other) {
+        home = other.home;
+        scope = other.scope;
+        instance = other.instance;
+        root = other.root;
+        versions = other.versions;
+        active = other.active;
+        installed = other.installed;
+        logicalHome = other.logicalHome;
+        controlInstance = other.controlInstance;
+    }
+    return *this;
+}
+Inputs::Inputs(Inputs&& other)
+    : home(std::move(other.home)), scope(std::move(other.scope)),
+      instance(std::move(other.instance)), root(std::move(other.root)),
+      versions(std::move(other.versions)), active(std::move(other.active)),
+      installed(std::move(other.installed)), logicalHome(std::move(other.logicalHome)),
+      controlInstance(std::move(other.controlInstance)) {
+}
+Inputs& Inputs::operator=(Inputs&& other) {
+    if (this != &other) {
+        home = std::move(other.home);
+        scope = std::move(other.scope);
+        instance = std::move(other.instance);
+        root = std::move(other.root);
+        versions = std::move(other.versions);
+        active = std::move(other.active);
+        installed = std::move(other.installed);
+        logicalHome = std::move(other.logicalHome);
+        controlInstance = std::move(other.controlInstance);
+    }
+    return *this;
+}
+
 namespace {
 bool within(const fs::path& root, const fs::path& path) {
     const auto relative = path.lexically_relative(root);
@@ -37,7 +84,12 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
             if (std::ranges::find(versions, key) == versions.end())
                 versions.push_back(key);
         }
+        auto mapping = source_view::read();
+        if (!mapping)
+            return std::unexpected(mapping.error());
         std::map<fs::path, ev::OwnedPayload> allowed;
+        std::map<fs::path, fs::path> guestHomes;
+        std::map<std::pair<fs::path, std::string>, SourceScope> sources;
         std::set<std::pair<std::string, std::string>> checked;
         xvm::BindingSelectionResolver resolver(inputs.versions);
         for (const auto& [target, keys] : installed) {
@@ -58,8 +110,31 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                             member + ": root closure needs a formal package registration");
                     const auto sourceHome =
                         data->sourceHome.empty() ? canonicalHome : fs::path(data->sourceHome);
-                    const auto expanded = xvm::expand_path(data->path, canonicalHome.string());
-                    auto physical = ev::physical_store_root(sourceHome, expanded);
+                    const auto recordedHome =
+                        inputs.logicalHome.empty() ? canonicalHome : inputs.logicalHome;
+                    fs::path expanded = xvm::expand_path(data->path, recordedHome.string());
+                    if (data->sourceHome.empty() &&
+                        within(recordedHome, expanded.lexically_normal()))
+                        expanded = canonicalHome /
+                                   expanded.lexically_normal().lexically_relative(recordedHome);
+                    auto executionHome = data->sourceHome.empty()
+                                             ? std::expected<fs::path, std::string>(canonicalHome)
+                                             : source_view::execution_home(sourceHome);
+                    if (!executionHome)
+                        return std::unexpected(executionHome.error());
+                    const bool mappedSource = !data->sourceHome.empty() && *mapping &&
+                                              (**mapping).physicalHome == sourceHome;
+                    if (mappedSource) {
+                        auto mapped = source_view::map_path(**mapping, expanded.lexically_normal(),
+                                                            *executionHome);
+                        if (!mapped)
+                            return std::unexpected(mapped.error());
+                        expanded = *mapped;
+                    }
+                    if (!data->sourceHome.empty() && *executionHome == canonicalHome)
+                        return std::unexpected(
+                            member + ": borrowed source must be distinct from the owning home");
+                    auto physical = ev::physical_store_root(*executionHome, expanded);
                     if (!physical)
                         return std::unexpected(physical.error());
                     if (*owner != physical->coordinate)
@@ -70,13 +145,29 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                         if (data->sourceScope.empty())
                             return std::unexpected(member + ": missing borrowed source scope");
                         auto source =
-                            home::layers::read_snapshot(physical->home, data->sourceScope);
+                            home::layers::read_source_snapshot(sourceHome, data->sourceScope);
                         if (!source)
                             return std::unexpected(source.error());
                         auto proof = home::layers::plan_borrow(*source, {}, member, memberKey);
                         if (!proof || proof->requestedPayload != physical->root)
                             return std::unexpected(
                                 member + ": borrowed source no longer proves this payload");
+                    }
+                    if (data->sourceHome.empty()) {
+                        physical->recordedHome = recordedHome;
+                        guestHomes[physical->root] = recordedHome;
+                    } else {
+                        physical->recordedHome = physical->home;
+                        const auto guest = mappedSource ? (**mapping).logicalHome : physical->home;
+                        guestHomes[physical->root] = guest;
+                        auto& source = sources[{physical->home, data->sourceScope}];
+                        source.physicalHome = sourceHome;
+                        source.executionHome = physical->home;
+                        source.guestHome = guest;
+                        source.scope = data->sourceScope;
+                        auto& keys = source.installed[member];
+                        if (std::ranges::find(keys, memberKey) == keys.end())
+                            keys.push_back(memberKey);
                     }
                     allowed[physical->root] = std::move(*physical);
                     checked.insert({member, memberKey});
@@ -85,12 +176,20 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
         }
         auto recorded_source =
             [&](const fs::path& path) -> std::expected<ev::OwnedPayload, std::string> {
-            const auto actual = fs::canonical(path, ec);
-            if (ec)
-                return std::unexpected(path.string() + ": recorded dependency path is unreadable");
-            for (const auto& [root, authority] : allowed)
-                if (within(root, actual))
+            for (const auto& [root, authority] : allowed) {
+                auto physicalPath = path.lexically_normal();
+                if (!authority.recordedHome.empty() && within(authority.recordedHome, physicalPath))
+                    physicalPath =
+                        authority.home / physicalPath.lexically_relative(authority.recordedHome);
+                if (*mapping && authority.home == (**mapping).recordedHome &&
+                    within((**mapping).logicalHome, physicalPath))
+                    physicalPath =
+                        authority.home / physicalPath.lexically_relative((**mapping).logicalHome);
+                const auto actual = fs::canonical(physicalPath, ec);
+                if (!ec && within(root, actual))
                     return authority;
+                ec.clear();
+            }
             return std::unexpected(path.string() +
                                    ": recorded runtime dependency is not opted into this root "
                                    "scope; run owner install --reconfig");
@@ -124,14 +223,25 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
                 return std::unexpected(resolution.error());
         }
         Closure result;
-        for (const auto& [root, authority] : allowed)
+        for (const auto& [root, authority] : allowed) {
             result.payloads.push_back(root);
+            const auto guestHome = guestHomes.at(root);
+            result.mounts.push_back({root, guestHome / root.lexically_relative(authority.home),
+                                     authority.home, guestHome});
+        }
+        for (auto& [identity, source] : sources)
+            result.sources.push_back(std::move(source));
         auto permitted_elf_path = [&](const fs::path& path) {
-            const auto actual = fs::weakly_canonical(path, ec);
-            if (ec)
-                return false;
-            return std::ranges::any_of(result.payloads,
-                                       [&](const auto& root) { return within(root, actual); });
+            for (const auto& mount : result.mounts) {
+                auto candidate = path.lexically_normal();
+                if (within(mount.destination, candidate))
+                    candidate = mount.source / candidate.lexically_relative(mount.destination);
+                const auto actual = fs::weakly_canonical(candidate, ec);
+                if (!ec && within(mount.source, actual))
+                    return true;
+                ec.clear();
+            }
+            return false;
         };
         for (const auto& root : result.payloads) {
             for (auto it = fs::recursive_directory_iterator(root, ec);
@@ -187,13 +297,26 @@ std::expected<Closure, std::string> collect(const Inputs& inputs) {
             result.metadata.push_back(path);
         }
         const auto config = canonicalHome / "config/subos" / inputs.scope;
-        if (fs::exists(config, ec)) {
-            if (ec || !fs::is_directory(fs::symlink_status(config, ec)))
+        const auto configStatus = fs::symlink_status(config, ec);
+        if (configStatus.type() != fs::file_type::not_found ||
+            (ec && ec != std::errc::no_such_file_or_directory)) {
+            if (ec || !fs::is_directory(configStatus))
                 return std::unexpected(config.string() +
                                        ": root policy metadata is not a real directory");
-            result.metadata.push_back(config);
+            const auto policy = config / "policy.json";
+            const auto status = fs::symlink_status(policy, ec);
+            if (status.type() != fs::file_type::not_found ||
+                (ec && ec != std::errc::no_such_file_or_directory)) {
+                if (ec || !fs::is_regular_file(status))
+                    return std::unexpected(policy.string() + ": root policy is not a regular file");
+                result.metadata.push_back(policy);
+            }
         }
         if (auto generation = subos::rootfs::current(inputs.instance)) {
+            if (auto valid = subos::rootfs::validate_generation(inputs.instance, *generation);
+                !valid)
+                return std::unexpected(valid.error());
+            result.generation = *generation;
             const auto path = inputs.instance / std::string(subos::rootfs::kGenerations) /
                               std::to_string(*generation) / "usr";
             result.generationUsr = fs::canonical(path, ec);

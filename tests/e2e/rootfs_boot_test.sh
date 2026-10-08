@@ -17,7 +17,7 @@
 # And the tree of /usr is the same in the bwrap instance, the container and
 # the booted machine.
 #
-# xtest: covers=BOOT-STAGE0,BOOT-ONCE-FALLBACK,BOOT-NOW,EXPORT-DISK,ROOT-SAME-TREE,LUBAN-TINY requires=linux,qemu,bwrap,docker,network
+# xtest: covers=BOOT-STAGE0,BOOT-ONCE-FALLBACK,BOOT-NOW,EXPORT-DISK,ROOT-SAME-TREE,LUBAN-TINY,PERF-STAGE0 requires=linux,qemu,bwrap,docker,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rootfs_lib.sh"
@@ -45,7 +45,8 @@ state=$(cat /root/.stage 2>/dev/null || echo 0)
 boot=$(xlings subos boot 2>/dev/null | sed -n 's/^this boot \([^ ]*\) via \([^ ,]*\).*/\1:\2/p')
 tree=$(cd /usr && for f in bin/* lib/*; do printf "%s %s\n" "$f" "$(readlink "$f")"; done \
        | sed -E "s|/subos/[^/]+/|/subos/*/|g" | md5sum | cut -d' ' -f1)
-echo "LUBAN-BOOT stage=$state boot=$boot tree=$tree"
+elapsed=$(grep '"event":"boot"' "$XLINGS_HOME/logs/boot.ndjson" | tail -1 | sed -n 's/.*"stage0_elapsed_us":\([0-9][0-9]*\).*/\1/p')
+echo "LUBAN-BOOT stage=$state boot=$boot tree=$tree stage0_us=$elapsed"
 case "$state" in
   0) echo 1 > /root/.stage; xlings subos boot trial --once >/dev/null 2>&1 ;;
   1) echo 2 > /root/.stage; sync
@@ -107,6 +108,14 @@ grep -q "LUBAN-BOOT stage=2 boot=default:once" <<<"$b2" || fail "boot 2: --now d
 log "boot 3: the trial was not made the default"
 b3="$(qemu_boot 3)"; echo "$b3" | sed 's/^/      | /'
 grep -q "LUBAN-BOOT stage=3 boot=default:default" <<<"$b3" || fail "boot 3: not default"
+
+log "stage-0 budget: startup through preparing exec init <= 200 ms"
+samples="$(printf '%s\n' "$b1" "$b2" "$b3" | sed -n 's/.*LUBAN-BOOT .* stage0_us=\([0-9][0-9]*\).*/\1/p')"
+[[ "$(wc -l <<<"$samples")" -eq 4 ]] || fail "every boot, including --now, must report stage-0 timing"
+while IFS= read -r elapsed; do
+  [[ "$elapsed" =~ ^[0-9]+$ && "$elapsed" -le 200000 ]] \
+    || fail "stage-0 exceeded 200 ms: ${elapsed} us"
+done <<<"$samples"
 
 log "the same tree: instance, container, machine"
 X subos export tiny --tar "$RUNTIME_DIR/tiny.tar.gz" >/dev/null 2>&1 || fail "export --tar"

@@ -983,8 +983,7 @@ bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
             return false;
         }
         const auto entered = std::getenv("XLINGS_SUBOS_MODE");
-        const bool borrowed = !activation.source_home.empty() &&
-                              fs::canonical(activation.source_home) != root;
+        const bool borrowed = !activation.source_home.empty();
         if (Config::workspace_config_path().lexically_normal() !=
                 (Config::global_subos_dir() / ".xlings.json").lexically_normal() || borrowed ||
             declared.type() != fs::file_type::not_found || (entered && *entered)) {

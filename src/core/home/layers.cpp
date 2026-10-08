@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.core.home;
 import xlings.core.home.evidence;
+import xlings.core.home.domain_producer_source;
 import xlings.core.home_config;
 import xlings.core.xvm.db;
 import xlings.core.xvm.bindings;
@@ -13,22 +14,26 @@ import xlings.core.xim.payload;
 namespace xlings::home::layers {
 
 #if !defined(_MSC_VER)
-Snapshot::Snapshot() : home{}, scope{}, versions(xvm::empty_version_db()), workspace{} {}
+Snapshot::Snapshot() : home{}, sourceHome{}, logicalHome{}, scope{}, versions(xvm::empty_version_db()), workspace{} {}
 Snapshot::~Snapshot() {}
-Snapshot::Snapshot(const Snapshot& other) : home(other.home), scope(other.scope), versions(other.versions), workspace(other.workspace) {}
+Snapshot::Snapshot(const Snapshot& other) : home(other.home), sourceHome(other.sourceHome), logicalHome(other.logicalHome), scope(other.scope), versions(other.versions), workspace(other.workspace) {}
 Snapshot& Snapshot::operator=(const Snapshot& other) {
     if (this != &other) {
         home = other.home;
+        sourceHome = other.sourceHome;
+        logicalHome = other.logicalHome;
         scope = other.scope;
         versions = other.versions;
         workspace = other.workspace;
     }
     return *this;
 }
-Snapshot::Snapshot(Snapshot&& other) : home(std::move(other.home)), scope(std::move(other.scope)), versions(std::move(other.versions)), workspace(std::move(other.workspace)) {}
+Snapshot::Snapshot(Snapshot&& other) : home(std::move(other.home)), sourceHome(std::move(other.sourceHome)), logicalHome(std::move(other.logicalHome)), scope(std::move(other.scope)), versions(std::move(other.versions)), workspace(std::move(other.workspace)) {}
 Snapshot& Snapshot::operator=(Snapshot&& other) {
     if (this != &other) {
         home = std::move(other.home);
+        sourceHome = std::move(other.sourceHome);
+        logicalHome = std::move(other.logicalHome);
         scope = std::move(other.scope);
         versions = std::move(other.versions);
         workspace = std::move(other.workspace);
@@ -148,9 +153,10 @@ xvm::VData borrowed_(const xvm::VData& input, const Snapshot& source) {
     value.includedir = path(value.includedir);
     value.libdir = path(value.libdir);
     for (auto& header : value.bindingHeaders) header.sourceDir = path(header.sourceDir);
-    for (auto& alias : value.alias) alias = xvm::pin_subos_paths(path(alias), home);
-    for (auto& [name, env] : value.envs) env = xvm::pin_subos_paths(path(env), home);
-    value.sourceHome = source.home.string();
+    const auto logical = source.logicalHome.empty() ? home : source.logicalHome.string();
+    for (auto& alias : value.alias) alias = xvm::pin_subos_paths(xvm::expand_path(alias, logical), logical);
+    for (auto& [name, env] : value.envs) env = xvm::pin_subos_paths(xvm::expand_path(env, logical), logical);
+    value.sourceHome = source.sourceHome.empty() ? source.home.string() : source.sourceHome.string();
     value.sourceScope = source.scope;
     return value;
 }
@@ -158,6 +164,17 @@ xvm::VData borrowed_(const xvm::VData& input, const Snapshot& source) {
 
 bool owns_payload(const fs::path& home, const fs::path& payload) {
     return payload_root_(home, payload).has_value();
+}
+
+bool owns_source_payload(const fs::path& physicalHome, const fs::path& payload) {
+    auto view = domain_producer_source::execution_home(physicalHome);
+    return view && owns_payload(*view, payload);
+}
+
+std::expected<Snapshot, std::string> read_source_snapshot(const fs::path& physicalHome, std::string_view scope) {
+    auto view = domain_producer_source::execution_home(physicalHome);
+    if (!view) return std::unexpected(view.error());
+    return read_snapshot(*view, scope);
 }
 
 std::expected<Snapshot, std::string> read_snapshot(const fs::path& home, std::string_view scope) {
@@ -185,6 +202,11 @@ std::expected<Snapshot, std::string> read_snapshot(const fs::path& home, std::st
     if (!valid) return std::unexpected(scopePath.string() + ": " + valid.error());
     Snapshot result;
     result.home = canonical;
+    auto context = domain_producer_source::read();
+    if (!context) return std::unexpected(context.error());
+    const bool mapped = *context && (**context).recordedHome == canonical;
+    result.sourceHome = mapped ? (**context).physicalHome : canonical;
+    result.logicalHome = mapped ? (**context).logicalHome : canonical;
     result.scope = scope;
     result.versions = xvm::versions_from_json(*json);
     result.workspace = xvm::subos_workspace_from_json(workspace);
@@ -251,6 +273,7 @@ std::expected<BorrowPlan, std::string> plan_borrow(const Snapshot& source,
         return {};
     };
     payload = [&](const fs::path& root) -> std::expected<void, std::string> {
+        if (auto source = domain_producer_source::validate_payload(root); !source) return source;
         const auto seen = visited.find(root);
         if (seen != visited.end()) {
             if (seen->second == 1) return std::unexpected(root.string() + ": cyclic runtime resolution evidence");

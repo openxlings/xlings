@@ -272,9 +272,13 @@ std::expected<SandboxSpec, Refusal> compile(const policy::Policy& policy,
         s.mounts.push_back({MountKind::Bind, posix(r.root), "/"});
         s.mounts.push_back({MountKind::Dev, "", "/dev"});
         s.mounts.push_back({MountKind::Proc, "", "/proc"});
-        home_view_ro(s.mounts, home, r);
-        if (r.instance != "default")
-            s.mounts.push_back({MountKind::Bind, posix(r.instance_dir), posix(home.instance("default"))});
+        if (r.root_mounts.empty() || std::ranges::any_of(r.root_mounts, [](const MountOp& mount) {
+                return mount.kind != MountKind::RoBind;
+            }))
+            return std::unexpected(Refusal{.missing = {Unmet{
+                "root", "a root needs an owner-checked read-only store closure",
+                "run owner `xlings install --reconfig` and retry", policy::Need::Must}}});
+        s.mounts.insert(s.mounts.end(), r.root_mounts.begin(), r.root_mounts.end());
         if (policy.net != policy::Net::None && exists(r, "/etc/resolv.conf"))
             s.mounts.push_back({MountKind::RoBind, "/etc/resolv.conf", "/etc/resolv.conf"});
         s.unshare_user = true;

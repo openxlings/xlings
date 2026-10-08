@@ -26,11 +26,13 @@ import xlings.subos.userdata;
 import xlings.subos.model;
 import xlings.core.subos.ports;
 import xlings.subos.session;
+import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
+import xlings.core.home.domain_producer;
 import xlings.libs.sha256;
 import xlings.core.subos.root;
 import xlings.subos.rootfs;
@@ -93,6 +95,14 @@ int parse_isolation_flag_(std::string_view a, int& i, int argc, char* argv[],
         auto f = v ? policy::fetch_from_string(*v) : std::nullopt;
         if (!f) { err = "--fetch expects auto, ask or deny"; return -1; }
         x.overrides.fetch = *f;
+        return 1;
+    }
+    if (a == "--observe" || a.starts_with("--observe=")) {
+        auto v = value("--observe");
+        auto level = v ? policy::observe_from_string(*v) : std::nullopt;
+        if (!level) { err = "--observe expects off, basic, standard or full"; return -1; }
+        x.overrides.observe = *level;
+        x.sandbox = true;
         return 1;
     }
     if (a == "--allow" || a.starts_with("--allow=")) {
@@ -206,6 +216,12 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
         }
     }
 
+    if (!temp) {
+        std::vector<std::string> domainArgs{"subos", "exec"};
+        domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+    }
+
     const auto started = std::chrono::steady_clock::now();
     int rc = 0;
     std::string mode;
@@ -281,25 +297,40 @@ int run_exec_(int argc, char* argv[], EventStream& stream) {
 int run_start_(int argc, char* argv[], EventStream& stream,
                const std::function<void(std::string_view)>& usageError) {
     std::string name;
+    int nameIndex = 0;
+    std::vector<std::pair<int, std::string>> normalizedMounts;
     IsolationArgs iso;     // a session is a sandbox, whatever was said
     int ttl = 0;
     for (int i = 3; i < argc; ++i) {
         std::string a = argv[i];
         std::string err;
-        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) continue;
+        if (auto r = parse_isolation_flag_(a, i, argc, argv, iso, err); r == 1) {
+            if (a == "--mount" || a.starts_with("--mount=")) {
+                const auto& mount = iso.overrides.mounts.back();
+                auto spec = mount.src + (mount.dst.empty() ? "" : ":" + mount.dst);
+                if (mount.mode_given) spec += mount.rw ? ":rw" : ":ro";
+                normalizedMounts.emplace_back(i, a == "--mount" ? spec : "--mount=" + spec);
+            }
+            continue;
+        }
         else if (r < 0) { usageError(err); return 1; }
         if (a == "--ttl" && i + 1 < argc) {
             auto d = model::parse_duration(argv[++i]);
             if (!d) { usageError("--ttl expects seconds or 30s / 10m / 2h"); return 1; }
             ttl = static_cast<int>(*d);
         }
-        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::move(a);
+        else if (!a.empty() && a[0] != '-' && name.empty()) { name = std::move(a); nameIndex = i; }
         else { usageError("unknown option for `xlings subos start`: " + a); return 1; }
     }
     if (name.empty()) { usageError("missing <name> for: xlings subos start"); return 1; }
     auto resolved = resolve_use_name_(name, stream);
     if (resolved.selected.empty()) return resolved.exitCode;
     name = resolved.selected;
+    std::vector<std::string> domainArgs{"subos", "start"};
+    domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+    domainArgs[nameIndex - 1] = name;
+    for (const auto& [index, spec] : normalizedMounts) domainArgs[index - 1] = spec;
+    if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
     if (auto live = session::find(home_view(), name)) {
         log::info("'{}' is already running (session {})", name, live->id);
         return 0;
@@ -362,12 +393,20 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     const auto& inst = src ? *src : *dst;
     auto resolved = resolve_use_name_(inst.first, stream);
     if (resolved.selected.empty()) return resolved.exitCode;
+    auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, resolved.selected);
+    if (!scope) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = scope.error(), .recoverable = false });
+        return 1;
+    }
+    const auto instance = *scope ? (**scope).producerInstance : Config::subos_dir(resolved.selected);
+    const auto instanceHome = *scope ? (**scope).domain.physicalHome : Config::paths().homeDir;
+    const auto logicalHome = *scope ? (**scope).domain.logicalHome : Config::paths().homeDir;
     auto user = utils::get_env_or_default(platform::is_windows ? "USERNAME" : "USER");
     if (user.empty()) user = "user";
     if (!role_allows_(roles::Op::Copy, resolved.selected, stream)) return 1;
     // A rootfs instance's own tree is everything but what the projection and
     // the kernel provide (part 2 §6.1); a view's is its home and /tmp.
-    const auto kind = subos_root::read_kind(Config::paths().homeDir, resolved.selected);
+    const auto kind = subos_root::read_kind(instanceHome, resolved.selected);
     if (!kind) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = kind.error(),
                                 .recoverable = false });
@@ -375,9 +414,9 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     }
     const bool rootfs = *kind == roles::Kind::Rootfs;
     auto mapped = rootfs
-        ? model::inside_to_root(Config::subos_dir(resolved.selected) / std::string(rootfs::kTree),
-                                inst.second, Config::paths().homeDir)
-        : model::inside_to_host(Config::subos_dir(resolved.selected), user, inst.second);
+        ? model::inside_to_root(instance / std::string(rootfs::kTree),
+                                inst.second, logicalHome)
+        : model::inside_to_host(instance, user, inst.second);
     if (!mapped) {
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
             .message = rootfs ? inst.second + " is not the root's own (/usr, /proc, /sys, /dev, /run and "
@@ -388,8 +427,8 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
     }
     // Paths inside are resolved beneath the instance's root and never
     // through a link it made (platform::copy_into_beneath).
-    const auto root = rootfs ? Config::subos_dir(resolved.selected) / std::string(rootfs::kTree)
-                             : Config::subos_dir(resolved.selected);
+    const auto root = rootfs ? instance / std::string(rootfs::kTree)
+                             : instance;
     const auto rel = mapped->lexically_relative(root);
     std::expected<void, std::string> done;
     if (src) {
@@ -411,7 +450,7 @@ int run_cp_(int argc, char* argv[], EventStream& stream,
             .message = "copy failed: " + done.error(), .recoverable = false });
         return 1;
     }
-    observe::append(home_view().logs_dir(resolved.selected) / "events.ndjson", observe::Event{
+    observe::append(xlings::subos::HomeView{instanceHome}.logs_dir(resolved.selected) / "events.ndjson", observe::Event{
         .kind = observe::Kind::Fs,
         .fields = {{"event", "cp"}, {"instance", resolved.selected},
                    {"direction", src ? "out" : "in"}, {"path", inst.second}}});

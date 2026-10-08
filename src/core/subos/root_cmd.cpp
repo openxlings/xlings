@@ -7,6 +7,9 @@ import std;
 import xlings.core.config;
 import xlings.core.home;
 import xlings.core.home.prefix_domain;
+import xlings.core.home.domain_producer;
+import xlings.core.home.domain_producer_source;
+import xlings.core.subos.store_closure;
 import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
@@ -17,6 +20,7 @@ import xlings.core.elfread;
 import xlings.core.subos.root;
 import xlings.subos.home_view;
 import xlings.subos.policy_store;
+import xlings.subos.policy;
 import xlings.subos.rootfs;
 import xlings.subos.library_cache;
 import xlings.subos.roles;
@@ -118,56 +122,6 @@ std::expected<void, std::string> write_json_(const fs::path& path, const nlohman
 }
 
 // <home>/data/xpkgs/<pkg>/<version> of an absolute path.
-std::optional<fs::path> payload_of_(const fs::path& p, const fs::path& store) {
-    const auto rel = p.lexically_relative(store);
-    if (rel.empty() || *rel.begin() == "..") return std::nullopt;
-    auto it = rel.begin();
-    if (it == rel.end()) return std::nullopt;
-    auto pkg = *it;
-    if (++it == rel.end()) return std::nullopt;
-    return store / pkg / *it;
-}
-
-// Every payload an instance needs to run without the home it came from: what
-// its workspace names, what it installed, and -- to a fixed point -- every
-// payload an ELF in those names as its loader or in its search path.
-std::set<fs::path> closure_(const std::string& name, const xvm::SubosWorkspace& ws) {
-    const auto home = home_dir_();
-    const auto store = home / "data" / "xpkgs";
-    const auto db = Config::versions();
-    std::set<fs::path> out;
-    std::deque<fs::path> todo;
-    auto add = [&](const fs::path& p) {
-        if (auto root = payload_of_(p, store); root && out.insert(*root).second) todo.push_back(*root);
-    };
-    auto add_target = [&](const std::string& target, const std::string& version) {
-        auto it = db.find(target);
-        if (it == db.end()) return;
-        auto v = it->second.versions.find(version);
-        if (v == it->second.versions.end()) return;
-        add(xvm::expand_path(v->second.path, home.string()));
-    };
-    for (auto& [t, v] : ws.active) add_target(t, v);
-    for (auto& [t, vs] : ws.installed)
-        for (auto& v : vs) add_target(t, v);
-    for (auto& p : subos_root::inputs(home, HomeView{home}.instance(name), ws.active, db).payloads) add(p);
-    while (!todo.empty()) {
-        const auto payload = todo.front();
-        todo.pop_front();
-        std::error_code ec;
-        for (fs::recursive_directory_iterator it(payload, ec), end; !ec && it != end; it.increment(ec)) {
-            std::error_code sec;
-            if (!it->is_regular_file(sec) || it->is_symlink(sec)) continue;
-            if (!elfread::is_elf(it->path())) continue;
-            auto info = elfread::read(it->path());
-            if (!info) continue;
-            if (!info->interpreter.empty()) add(info->interpreter);
-            for (auto& sp : info->searchPaths) add(sp);
-        }
-    }
-    return out;
-}
-
 // A copy that keeps links as links (a payload is full of them).
 std::expected<void, std::string> copy_tree_(const fs::path& from, const fs::path& to) {
     std::error_code ec;
@@ -231,6 +185,13 @@ bool enters_sandboxed_(const std::string& name) {
 
 bool role_allows_(roles::Op op, const std::string& name, EventStream& stream) {
     const auto home = home_dir_();
+    const auto domainScope = xlings::home::domain_producer::read_scope(home, name);
+    if (!domainScope) { error_(stream, domainScope.error()); return false; }
+    if (*domainScope) {
+        error_(stream, std::format("cannot {} '{}': this operation requires the prefix-domain scope adapter", roles::to_string(op), name),
+               "export is available through the namespace producer; the outer control directory is not the package workspace");
+        return false;
+    }
     const auto kind = subos_root::read_kind(home, name);
     if (!kind) { error_(stream, kind.error()); return false; }
     const auto role = subos_root::read_role(home, name);
@@ -311,19 +272,82 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
 
 }  // namespace
 
-std::expected<void, std::string> preflight_domain_at_creation_(std::string_view, bool rootfs,
+std::expected<void, std::string> preflight_domain_at_creation_(std::string_view name, bool rootfs,
     std::string_view domain, std::string_view fromSpec) {
     if (domain.empty()) return {};
     if (!rootfs) return std::unexpected("--domain requires --rootfs");
     if constexpr (!platform::is_linux) return std::unexpected("prefix-domain root producers require Linux namespaces");
     auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(domain));
     if (!selected) return std::unexpected(selected.error());
-    // A cross-prefix install must be performed inside its target namespace.
-    // Refuse before new_from can install anything in the owner's old prefix.
-    if (selected->privateHome) return std::unexpected(
-        "the /xlings private-domain producer is not connected yet; refusing to install " +
-        (fromSpec.empty() ? std::string("in the owner's host prefix") : std::string(fromSpec) + " in the owner's host prefix"));
+    if (selected->privateHome) {
+        if (name.empty() || name == "." || name == ".." || name == "current" || name.find_first_of("/\\") != std::string_view::npos)
+            return std::unexpected("invalid prefix-domain instance name");
+        auto registry = xlings::home::read_json_for_update(home_dir_() / ".xlings.json");
+        if (!registry) return std::unexpected(registry.error());
+        if (registry->contains("subos") && (!(*registry)["subos"].is_object() || (*registry)["subos"].contains(std::string(name))))
+            return std::unexpected("prefix-domain control registry is invalid or already claims this name");
+        if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance(name)); !fresh) return fresh;
+        if (auto fresh = require_new_output_(HomeView{home_dir_()}.instance_file(name)); !fresh) return fresh;
+        if (auto fresh = require_new_output_(HomeView{home_dir_()}.config_dir(name)); !fresh) return fresh;
+        if (auto fresh = require_new_output_(HomeView{selected->physicalHome}.instance(name)); !fresh) return fresh;
+        if (!fromSpec.empty() && fromSpec.find_first_of(":@") == std::string_view::npos)
+            return std::unexpected("cross-prefix producer --from requires a package coordinate; host-scope forks need an explicit domain import");
+    }
     return {};
+}
+
+std::optional<int> produce_domain_at_creation_(const std::string& name, bool,
+    std::string_view domain, std::span<const std::string> arguments, EventStream& stream) {
+    auto selected = xlings::home::prefix_domain::resolve(home_dir_(), fs::path(domain));
+    if (!selected) { error_(stream, selected.error()); return 1; }
+    if (!selected->privateHome) return std::nullopt;
+    const auto entry = platform::get_executable_path();
+    if (auto prepared = xlings::home::domain_producer::prepare(*selected, entry); !prepared) {
+        error_(stream, prepared.error()); return 1;
+    }
+    const std::vector<std::string> initialize{"self", "init"};
+    auto init = xlings::home::domain_producer::run(*selected, initialize);
+    if (!init || *init != 0) {
+        error_(stream, init ? std::format("prefix-domain initialization failed (exit {}); private domain retained", *init) : init.error());
+        return init ? *init : 1;
+    }
+    auto produced = xlings::home::domain_producer::run(*selected, arguments);
+    if (!produced || *produced != 0) {
+        error_(stream, produced ? std::format("namespace producer failed (exit {}); private domain retained", *produced) : produced.error());
+        return produced ? *produced : 1;
+    }
+    if (auto published = xlings::home::domain_producer::publish_scope(*selected, name); !published) {
+        error_(stream, published.error()); return 1;
+    }
+    log::info("'{}' was produced inside {} (owner-private home {})", name, selected->logicalHome.string(), selected->physicalHome.string());
+    return 0;
+}
+
+std::optional<int> run_domain_operation_(const std::string& name,
+    std::span<const std::string> arguments, EventStream& stream) {
+    auto scope = xlings::home::domain_producer::read_scope(home_dir_(), name);
+    if (!scope) { error_(stream, scope.error()); return 1; }
+    if (!*scope) return std::nullopt;
+    if (arguments.size() >= 2 && arguments[0] == "subos" && arguments[1] == "use") {
+        for (std::size_t i = 2; i < arguments.size(); ++i) {
+            if (arguments[i] == "--cmd") { ++i; continue; }
+            if (arguments[i] == "--shell" || arguments[i].starts_with("--shell=") || arguments[i] == "--global") {
+                error_(stream, "a private prefix-domain root requires an entered namespace; shell environment/global activation cannot expose its logical prefix");
+                return 1;
+            }
+        }
+    }
+    const auto* callerMode = std::getenv("XLINGS_SUBOS_MODE");
+    if (callerMode && std::string_view(callerMode) == "sandbox" && arguments.size() >= 2 && arguments[1] == "config" &&
+        std::ranges::any_of(arguments.subspan(2), [](const std::string& value) { return value.starts_with("--") && value != "--json"; })) {
+        const auto decision = policy::decide(policy::legacy(), {.kind = "policy_change", .from_inside = true, .instance = name});
+        stream.emit(ErrorEvent{ .code = ErrorCode::Permission, .message = "E_PERMISSION: " + decision.reason,
+            .recoverable = false, .hint = "outside the sandbox: " + decision.owner_command });
+        return 13;
+    }
+    auto result = xlings::home::domain_producer::run((**scope).domain, arguments, std::nullopt, true);
+    if (!result) { error_(stream, result.error()); return 1; }
+    return *result;
 }
 
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
@@ -427,6 +451,11 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else { usageError("unknown option for `xlings subos rollback`: " + a); return 1; }
     }
+    if (!name.empty()) {
+        std::vector<std::string> domainArgs{"subos", "rollback"};
+        domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+    }
     if (!exists_(name)) { usageError("usage: xlings subos rollback <name> [--to <generation>] [--list]"); return 1; }
     if (!role_allows_(roles::Op::Rollback, name, stream)) return 1;
     const auto dir = HomeView{home_dir_()}.instance(name);
@@ -457,8 +486,7 @@ int run_rollback_(int argc, char* argv[], EventStream& stream, const UsageError&
         error_(stream, sw.error(), "xlings subos rollback " + name + " --list");
         return 1;
     }
-    if (auto cache = subos::library_cache::refresh(subos_root::tree_of(home_dir_(), name),
-                                                  {home_dir_()}, name); !cache) {
+    if (auto cache = subos_root::refresh_cache(home_dir_(), name); !cache) {
         if (now) {
             if (auto restored = rf::switch_to(dir, *now); !restored)
                 error_(stream, "cannot restore prior generation: " + restored.error());
@@ -597,6 +625,29 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                    "[--size 4G] [--with-data]");
         return 1;
     }
+    auto domainScope = xlings::home::domain_producer::read_scope(home_dir_(), name);
+    if (!domainScope) { error_(stream, domainScope.error()); return 1; }
+    if (*domainScope) {
+        const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+        if (auto fresh = require_new_output_(out); !fresh) { error_(stream, fresh.error()); return 1; }
+        auto scratch = OwnedStage::create(out.parent_path());
+        if (!scratch) { error_(stream, scratch.error()); return 1; }
+        const fs::path guest = "/run/xlings-domain-output";
+        std::vector<std::string> arguments{"subos", "export", name,
+            !rootfs_dir.empty() ? "--rootfs" : (!tarball.empty() ? "--tar" : "--disk"), (guest / "output").string()};
+        if (!disk.empty()) arguments.insert(arguments.end(), {"--size", size});
+        if (with_data) arguments.push_back("--with-data");
+        auto exported = xlings::home::domain_producer::run((**domainScope).domain, arguments,
+            xlings::home::domain_producer::OutputBinding{scratch->path(), guest});
+        if (!exported || *exported != 0) {
+            error_(stream, exported ? std::format("namespace export failed (exit {})", *exported) : exported.error());
+            return exported ? *exported : 1;
+        }
+        if (auto published = platform::rename_no_replace(scratch->path() / "output", out); !published) {
+            error_(stream, published.error()); return 1;
+        }
+        return 0;
+    }
     if (!exists_(name)) { error_(stream, "no SubOS named '" + name + "'"); return 1; }
     if (!role_allows_(roles::Op::Export, name, stream)) return 1;
     if constexpr (!platform::is_linux) {
@@ -642,6 +693,60 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         return 1;
     }
 
+    auto closureInputs = subos_root::store_closure::read_scope(home, name, subos_root::tree_of(home, name));
+    if (!closureInputs) { error_(stream, closureInputs.error()); return 1; }
+    auto checkedClosure = subos_root::store_closure::collect(*closureInputs);
+    if (!checkedClosure) { error_(stream, checkedClosure.error()); return 1; }
+    auto sourceMapping = xlings::home::domain_producer_source::read();
+    if (!sourceMapping) { error_(stream, sourceMapping.error()); return 1; }
+    const auto originalVersions = Config::versions();
+    auto exportedVersions = originalVersions;
+    const auto selectedKey = [&](const std::string& target, const std::string& key) {
+        const auto installed = ws->installed.find(target);
+        const auto active = ws->active.find(target);
+        return (installed != ws->installed.end() && std::ranges::find(installed->second, key) != installed->second.end()) ||
+               (active != ws->active.end() && active->second == key);
+    };
+    const auto imagePath = [&](const fs::path& path) -> std::expected<fs::path, std::string> {
+        const auto normalized = path.lexically_normal();
+        if (!normalized.is_absolute()) return normalized;
+        for (const auto& mount : checkedClosure->mounts) {
+            const auto slot = mount.source.lexically_relative(mount.home);
+            std::vector<fs::path> sources{mount.source, mount.destination};
+            if (*sourceMapping && mount.home == (**sourceMapping).recordedHome)
+                sources.push_back((**sourceMapping).physicalHome / slot);
+            for (const auto& source : sources) {
+                const auto relative = normalized.lexically_relative(source);
+                if (!relative.empty() && !relative.is_absolute() && *relative.begin() != "..") {
+                    auto mapped = (home / slot / relative).lexically_normal();
+                    if (mapped.filename().empty() && mapped != mapped.root_path()) mapped = mapped.parent_path();
+                    return mapped;
+                }
+            }
+        }
+        return std::unexpected(normalized.string() + ": export path is outside the checked payload closure");
+    };
+    for (auto target = exportedVersions.begin(); target != exportedVersions.end();) {
+        for (auto version = target->second.versions.begin(); version != target->second.versions.end();) {
+            if (!selectedKey(target->first, version->first)) {
+                version = target->second.versions.erase(version); continue;
+            }
+            auto& data = version->second;
+            const auto mapField = [&](std::string& text) -> bool {
+                if (text.empty()) return true;
+                auto mapped = imagePath(fs::path(xvm::expand_path(text, home.string())));
+                if (!mapped) { error_(stream, mapped.error()); return false; }
+                text = mapped->generic_string(); return true;
+            };
+            if (!mapField(data.path) || !mapField(data.includedir) || !mapField(data.libdir) || !mapField(data.fileSrc)) return 1;
+            for (auto& header : data.bindingHeaders) if (!mapField(header.sourceDir)) return 1;
+            data.sourceHome.clear(); data.sourceScope.clear(); data.layerMetadata.clear();
+            ++version;
+        }
+        if (target->second.versions.empty()) target = exportedVersions.erase(target);
+        else ++target;
+    }
+
     auto scratch = OwnedStage::create(out.parent_path());
     if (!scratch) { error_(stream, scratch.error(), {}, ErrorCode::Internal); return 1; }
     const auto stage = scratch->path() / "rootfs";
@@ -650,10 +755,50 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     log::info("exporting '{}' ...", name);
 
     // The image's own system home: this instance is its `default`.
-    for (auto& payload : closure_(name, *ws)) {
-        if (auto c = copy_tree_(payload, image_home / payload.lexically_relative(home)); !c) {
-            error_(stream, c.error(), {}, ErrorCode::Internal);
-            return 1;
+    std::set<fs::path> copiedSlots;
+    for (const auto& mount : checkedClosure->mounts) {
+        const auto relative = mount.source.lexically_relative(mount.home);
+        if (relative.empty() || relative.is_absolute() || *relative.begin() == ".." ||
+            !copiedSlots.insert(relative).second) {
+            error_(stream, "export closure has conflicting or unproved payload destinations"); return 1;
+        }
+        const auto copied = image_home / relative;
+        if (auto c = copy_tree_(mount.source, copied); !c) {
+            error_(stream, c.error(), {}, ErrorCode::Internal); return 1;
+        }
+        // ELF interpreters and recipe aliases retain their logical source
+        // prefix. Only the checked slot is exposed there; bytes live once in
+        // the image's owned store and no external source home is needed.
+        const auto ownedSlot = home / relative;
+        if (mount.destination != ownedSlot) {
+            const auto logicalSlot = stage / mount.destination.relative_path();
+            fs::create_directories(logicalSlot.parent_path(), ec);
+            if (!check_io()) return 1;
+            fs::create_directory_symlink(ownedSlot, logicalSlot, ec);
+            if (!check_io()) return 1;
+        }
+        {
+            auto evidence = xlings::home::read_json_for_update(copied / ".xlings-resolution.json");
+            if (!evidence) { error_(stream, evidence.error()); return 1; }
+            if (!evidence->contains("deps") || !(*evidence)["deps"].is_array()) {
+                error_(stream, "exported payload has no checked runtime evidence"); return 1;
+            }
+            for (auto& dependency : (*evidence)["deps"]) {
+                const auto mapField = [&](nlohmann::json& field) -> bool {
+                    if (!field.is_string()) { error_(stream, "invalid exported runtime dependency path"); return false; }
+                    const fs::path path(field.get<std::string>());
+                    if (!path.is_absolute()) return true;
+                    auto mapped = imagePath(path);
+                    if (!mapped) { error_(stream, mapped.error()); return false; }
+                    field = mapped->generic_string(); return true;
+                };
+                if (!dependency.contains("install_dir") || !mapField(dependency["install_dir"])) return 1;
+                if (dependency.contains("libdirs")) {
+                    if (!dependency["libdirs"].is_array()) { error_(stream, "invalid exported runtime libdirs"); return 1; }
+                    for (auto& libdir : dependency["libdirs"]) if (!mapField(libdir)) return 1;
+                }
+            }
+            if (!write_json(copied / ".xlings-resolution.json", *evidence)) return 1;
         }
     }
     const bool has_data = fs::exists(home / "data", ec);
@@ -686,7 +831,7 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     // The projection, re-planned for its new name: same payloads, its
     // sysroot now at subos/default.
     {
-        auto plan = rf::plan(subos_root::inputs(home, instance, ws->active, Config::versions()));
+        auto plan = rf::plan(subos_root::inputs(home, instance, ws->active, exportedVersions));
         const auto from = instance.generic_string(), to = (home / "subos" / "default").generic_string();
         for (auto& l : plan.links) {
             auto t = l.target.generic_string();
@@ -719,18 +864,34 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         if (!j.is_object()) j = nlohmann::json::object();
         nlohmann::json versions = nlohmann::json::object();
         if (j.contains("versions") && j["versions"].is_object()) {
-            std::set<std::string> keep;
-            for (auto& [t, _] : ws->active) keep.insert(t);
-            for (auto& [t, _] : ws->installed) keep.insert(t);
-            for (auto it = j["versions"].begin(); it != j["versions"].end(); ++it)
-                if (keep.contains(it.key())) versions[it.key()] = it.value();
+            for (auto target = j["versions"].begin(); target != j["versions"].end(); ++target) {
+                const auto normalizedTarget = exportedVersions.find(target.key());
+                if (normalizedTarget == exportedVersions.end()) continue;
+                auto encodedTarget = target.value();
+                auto& entries = encodedTarget["versions"];
+                for (auto version = entries.begin(); version != entries.end();) {
+                    const auto normalized = normalizedTarget->second.versions.find(version.key());
+                    if (normalized == normalizedTarget->second.versions.end()) {
+                        version = entries.erase(version); continue;
+                    }
+                    const auto encoded = xvm::vdata_to_json(normalized->second);
+                    for (const auto* field : {"path", "includedir", "libdir", "fileSrc", "bindingHeaders"})
+                        if (encoded.contains(field)) version.value()[field] = encoded[field];
+                    version.value().erase("layer");
+                    ++version;
+                }
+                versions[target.key()] = std::move(encodedTarget);
+            }
         }
         j["versions"] = versions;
+        j.erase("dbIndex");
+        fs::remove(image_home / "data/versions.json", ec);
+        if (!check_io()) return 1;
         j["activeSubos"] = "default";
         for (auto k : {"knownProjects", "subos"}) j.erase(k);
         if (!write_json(image_home / ".xlings.json", j)) return 1;
         const bool multi = home == fs::path("/xlings");
-        nlohmann::json marker{{"layout", 2}, {"mode", "root"}, {"root_layout", multi ? "multi" : "single"}};
+        nlohmann::json marker{{"layout", multi ? "multi" : "single"}, {"mode", "root"}, {"root_layout", multi ? "multi" : "single"}};
         if (!write_json(image_home / ".xlings-home", marker)) return 1;
         fs::create_directories(image_home / "config" / "subos" / "default", ec);
         if (!check_io()) return 1;

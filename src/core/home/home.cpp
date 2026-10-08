@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.core.home_identity;
+import xlings.core.home.domain_producer_source;
 
 namespace xlings::home {
 
@@ -126,10 +127,16 @@ std::expected<bool, std::string> shares_store(const fs::path& home) {
     const auto declared = mode->get<std::string>();
     const auto layout = marker->find("layout");
     if (declared == "root") {
-        if (layout == marker->end() || !layout->is_string() ||
-            (layout->get<std::string>() != "multi" && layout->get<std::string>() != "single"))
+        std::string rootLayout;
+        if (layout != marker->end() && layout->is_string()) rootLayout = layout->get<std::string>();
+        else if (layout != marker->end() && layout->is_number_integer() && *layout == 2 &&
+                 marker->contains("root_layout") && (*marker)["root_layout"].is_string())
+            rootLayout = (*marker)["root_layout"].get<std::string>(); // Known exported-image format before domain producers.
+        if (rootLayout != "multi" && rootLayout != "single")
             return std::unexpected(home.string() + ": root layout must be single or multi");
-        return layout->get<std::string>() == "multi";
+        if (marker->contains("root_layout") && (*marker)["root_layout"] != rootLayout)
+            return std::unexpected(home.string() + ": contradictory root layout declarations");
+        return rootLayout == "multi";
     }
     if (layout != marker->end() && (!layout->is_number_integer() || *layout < 1 || *layout > kLayout))
         return std::unexpected(home.string() + ": unsupported home layout");
@@ -137,6 +144,9 @@ std::expected<bool, std::string> shares_store(const fs::path& home) {
 }
 
 std::expected<std::optional<fs::path>, std::string> read_system_layer() {
+    auto source = domain_producer_source::read();
+    if (!source) return std::unexpected(source.error());
+    if (*source) return std::optional<fs::path>{(**source).recordedHome};
     fs::path layer = env_or_empty("XLINGS_SYSTEM_LAYER");
     if (layer.empty()) {
         if constexpr (platform::is_windows) layer = program_data() / "xlings" / "home";
@@ -170,6 +180,10 @@ HomeContext describe(const fs::path& home, Source source) {
             ctx.layout = it->get<int>();
         if (auto it = marker->find("layout"); ctx.mode == Mode::Root &&
             it != marker->end() && it->is_string()) ctx.rootLayout = it->get<std::string>();
+        if (ctx.mode == Mode::Root && ctx.rootLayout.empty() && marker->contains("layout") &&
+            (*marker)["layout"].is_number_integer() && (*marker)["layout"] == 2 &&
+            marker->contains("root_layout") && (*marker)["root_layout"].is_string())
+            ctx.rootLayout = (*marker)["root_layout"].get<std::string>();
         if (auto it = marker->find("id"); it != marker->end() && it->is_string())
             ctx.id = it->get<std::string>();
     }
@@ -185,6 +199,14 @@ std::expected<void, std::string> declare(const fs::path& home,
     if (marker->contains("mode") && !(*marker)["mode"].is_string())
         return std::unexpected("invalid home mode in " + home.string());
     bool changed = false;
+    if (marker->value("mode", std::string()) == "root") {
+        auto valid = shares_store(home);
+        if (!valid) return std::unexpected(valid.error());
+        if (marker->contains("layout") && (*marker)["layout"].is_number_integer() && (*marker)["layout"] == 2) {
+            (*marker)["layout"] = (*marker)["root_layout"];
+            changed = true;
+        }
+    }
     if (mode) {
         auto want = std::string(to_string(*mode));
         if (marker->value("mode", std::string()) != want) {

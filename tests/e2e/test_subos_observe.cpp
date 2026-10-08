@@ -172,7 +172,9 @@ XTEST(SubosObserve, LockedEndsALiveSessionWhenTheAuditBecomesUnwritable,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"OBS-AUDIT-FAIL", "OBS-LIFECYCLE", "OBS-LOG"},
       .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {
     Box box;
-    auto start = box.home.xlings({"subos", "start", "box", "--sandbox=locked"});
+    auto declared = box.home.xlings({"subos", "config", "box", "--sandbox", "locked"});
+    ASSERT_EQ(declared.exit_code, 0) << declared.transcript();
+    auto start = box.home.xlings({"subos", "start", "box"});
     ASSERT_EQ(start.exit_code, 0) << start.transcript();
     const auto journal = box.home.dir() / "logs" / "subos" / "box" / "events.ndjson";
     ASSERT_TRUE(fs::is_regular_file(journal));
@@ -180,6 +182,7 @@ XTEST(SubosObserve, LockedEndsALiveSessionWhenTheAuditBecomesUnwritable,
     fs::create_directory(journal);
     auto r = box.home.xlings({"subos", "exec", "box", "--", "/bin/sh", "-c", "echo AUDIT_COMMAND_RAN"});
     EXPECT_EQ(r.exit_code, 125) << r.transcript();
+    EXPECT_NE(r.err.find("E_AUDIT_WRITE"), std::string::npos) << r.transcript();
     EXPECT_EQ(r.out.find("AUDIT_COMMAND_RAN"), std::string::npos);
     const auto session = box.home.dir() / "run" / "subos" / "box" / "session.json";
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);

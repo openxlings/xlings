@@ -618,3 +618,28 @@ status = "required"
 text = "Reports retain per-platform execution trends, flag intermittent results, and export measured shard weights"
 kind = "flow"
 status = "required"
+
+[ROOT-STORE-CLOSURE]
+text = "Root sessions expose only checked runtime payloads and immutable generations, with synchronous broker refresh"
+kind = "isolation"
+status = "required"
+
+[DOM-SOURCE]
+text = "A private logical-prefix domain borrows only proved read-only system payloads and exports its checked closure as image-owned data"
+kind = "isolation"
+status = "required"
+
+[PERF-GEN-BUILD]
+text = "Building a root generation from 300 package payloads takes at most one second"
+kind = "flow"
+status = "required"
+
+[PERF-GEN-SWITCH]
+text = "Switching an existing root generation takes at most ten milliseconds"
+kind = "flow"
+status = "required"
+
+[PERF-STAGE0]
+text = "Real PID 1 startup through preparing exec init takes at most 200 milliseconds, including fallback and boot --now"
+kind = "flow"
+status = "required"

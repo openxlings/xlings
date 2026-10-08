@@ -70,7 +70,7 @@ bool sysroot_source_is_local_(const fs::path& src) {
     const auto versions = Config::versions();
     for (const auto& [target, info] : versions)
         for (const auto& [version, data] : info.versions)
-            if (!data.sourceHome.empty() && home::layers::owns_payload(data.sourceHome, src)) return true;
+            if (!data.sourceHome.empty() && home::layers::owns_source_payload(data.sourceHome, src)) return true;
     return false;
 }
 
@@ -338,9 +338,9 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         auto declared = home::read_system_layer();
         if (!declared) { log::error("{}", declared.error()); return 1; }
         if (*declared) {
-            auto layer = home::layers::read_snapshot(**declared);
+            auto layer = home::layers::read_source_snapshot(**declared);
             if (!layer) { log::error("{}", layer.error()); return 1; }
-            if (existing && existing->sourceHome != layer->home.string()) {
+            if (existing && existing->sourceHome != layer->sourceHome.string()) {
                 log::error("{}: borrowed registration belongs to a different system layer", target);
                 return 1;
             }
@@ -551,19 +551,18 @@ int cmd_use(const std::string& target, const std::string& version, EventStream& 
         p.subosDir, p.libDir, p.homeDir.string());
     WorkspaceInstalled selected;
     for (const auto& [name, key] : candidateActive) selected[name] = {key};
-    auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string());
+    auto desired = materialize::collect_claims(db, selected, p.subosDir, p.libDir, p.homeDir.string(),
+        materialize::ClaimSource::Present);
     if (!oldClaims || !desired) {
         log::error("{}", !oldClaims ? oldClaims.error() : desired.error());
         return 1;
     }
-    std::vector<materialize::AssetChange> changes;
-    std::set<fs::path> desiredDestinations;
+    auto obsolete = materialize::obsolete_assets(*oldClaims, *desired);
+    if (!obsolete) { log::error("{}", obsolete.error()); return 1; }
+    auto changes = std::move(*obsolete);
     for (const auto& claim : *desired) {
         changes.push_back({claim.source, claim.destination, false});
-        desiredDestinations.insert(claim.destination);
     }
-    for (const auto& claim : *oldClaims)
-        if (!desiredDestinations.contains(claim.destination)) changes.push_back({claim.source, claim.destination, true});
     auto prepared = materialize::preflight_materialization(changes, *oldClaims, p.subosDir);
     if (!prepared) { log::error("{}", prepared.error()); return 1; }
     auto applied = prepared->execute();

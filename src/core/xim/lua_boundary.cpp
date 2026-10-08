@@ -543,7 +543,6 @@ launch(const subos::policy::Policy& declared, const fs::path& package,
                     {subos::spec::MountKind::Bind, path.generic_string(), path.generic_string()});
             }
             command = subos::provider::bwrap_argv(sandbox);
-            command.insert(command.begin() + 1, {"--preserve-fds", full_trace ? "3" : "2"});
         } else {
             // compile() refused all Must dimensions; this is the documented advisory
             // platform path, still an external worker with no in-process fallback.

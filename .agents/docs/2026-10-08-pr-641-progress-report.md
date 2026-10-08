@@ -333,3 +333,78 @@ broker 完成后的真实挂载更新仍在接线。D3 `new --domain /xlings` �
 producer，本地 prefix 6 用例通过；真实 namespace 用例因本机 bwrap 能力跳过，不能算验收。
 已有只读 systemSource 桥、runtime scope 路由及旧镜像 reader 仍在实现。最终 CI、
 Root/Luban/性能真实场景、自审、合入与发布链尚未完成。后续继续仅追加提交与普通 push。
+
+## 15. 根视图源码检查点与性能预算（2026-10-08）
+
+`33bd4499` 的 ARM/Linux musl CI 暴露旧 SDK 没有 seccomp notification UAPI。
+追加 `777dccf5` 将网络通知和 exec 审计收口到同一稳定 ABI 定义；本地原生平台构建
+1.94 s、ARM musl 16.1 交叉构建 8.12 s 均通过。该 head 的全平台 CI 尚待结果。
+
+D2 已接 trusted init 的三 FD（userns/mntns/root）传递、监督 ready 前握手、owner-private
+RootView、逐 payload/generation/metadata RO mount，以及 broker 成功后同步 refresh。
+refresh 完成前不回复成功；失败回复 125 并结束 session。初次检查点编译发现 array FD
+误用 vector-only close API，修复后依赖源码和两项 RootView/闭包 unit 通过。
+两项真实 namespace/broker 回归已编译，但本机 bwrap 不可用而 skip；仍需 CI 验证行为。
+
+D3 source reader/facade 源码检查点已编译：typed physical/recorded/logical mapping、RO mount
+与 marker inode 证明、限定 schema 路径的 metadata facade、exact payload slot 和外置 ownership
+清单、已知 legacy layout 2 reader。producer/runtime/export 的完整桥接仍在继续，尚未验收。
+
+新 generation 性能断言实际使用 300 个不同 payload、至少 600 个链接，测量 plan+commit
+及完整 checked switch。三次样本中位数为生成 26,876 us、切换 4,939 us，分别满足
+1 s / 10 ms 预算，`test_root_generation_perf-checkpoint-2.ndjson` 为通过证据。
+stage-0 在 boot audit 记录 `stage0_elapsed_us`；真实 boot 场景要求四次启动（含 fallback
+和 `--now`）均有记录且 ≤200 ms。该启动预算尚未执行，不能用本地 unit 代替。
+
+## 16. D2/D3 集成与实际能力门禁（2026-10-08）
+
+本批已完成 RootView exact closure、broker 同步更新、inode 替换检测、source facade、
+私有 prefix producer 和 export 的源码接线。完整 GCC 16.1 产品构建通过；随后一次
+完整客户端运行 `d2-d3-full-regression.ndjson` 为 **107 程序 pass、0 fail、54 具体用例 skip**。
+RootView/闭包 3 项、source reader 3 项、prefix domain 7 项和 materialize 8 项 unit 通过；
+namespace/broker/source export 仍因本机能力跳过，不计为实际隔离证明。
+此次 300 payload 性能中位数为生成 36.592 ms、checked switch 5.394 ms，预算通过。
+
+审查确认 locked 的 FD 捕获需要额外规范化：bubblewrap 完成挂载后，`--disable-userns`
+创建第二层 user namespace。因此由外层 supervisor 从可信 mount FD 派生真实 owner，
+检查捕获 userns 的祖先链，再在 ready 前替换 owner FD；update 保持精确 owner 核验。
+相应普通/locked 的真实回归已加入，仍需 Linux CI 成功证据。
+依据：[bubblewrap v0.11.2 官方源码](https://raw.githubusercontent.com/containers/bubblewrap/v0.11.2/bubblewrap.c)。
+
+`777dccf5` 的 ARM cross/QEMU、native ARM、Linux root 和 ASAN 已通过。
+Windows 失败为 fixture 错把 `/etc` 形式的 root-relative path 当作普通相对路径，已改
+`has_root_path()`，本地相关断言通过。macOS 单元和 xdev 全通过，后续 e2e 暴露旧
+header 来源消失会阻止其他 scope 刷新。现已区分 Recorded ownership 与 Present 新资产，
+从目标树逐条证明并清理过期链接，保留未知 sibling，修复路径尾斜杠的归属比较；原
+e2e 的 S1–S4 已通过，S5 提示契约的修复待本批复验。
+
+Linux 主车道实际执行隔离后失败，不能用本地 107 pass 覆盖：worker 传入 upstream
+bubblewrap 不存在的 `--preserve-fds`，网络 exec 未识别 `--observe`，root mount 更新
+返回 EINVAL。locked cleanup 用例原先 start/exec 的策略不同，125 是隔离 digest 拒绝，
+没有触发审计故障；测试改为先持久声明 locked，并检查 `E_AUDIT_WRITE` 后验证清理。
+上述失败分别修复、复验后继续普通 push，最终结果以新固定 head 为准。
+
+新增 `DOM-SOURCE` 隔离验收项。Linux 在静态 release candidate 生成后实际执行
+checked 系统来源借用和镜像导出，必须产生 pass，skip 使该步骤失败。三平台先一次
+`mcpp test --no-run` 构建，再让 xdev 用已建 artifact 执行，避免每个测试程序反复
+启动完整构建图。完整 CI、实际启动/生态、最终自审、合入与发布仍待完成。
+
+
+本批产品构建 `domain-wave-final-build.log` 29.57 s 通过；macOS 同类旧 header 场景的
+本地实际 S1–S5 全部通过，`sysroot-pinning-final.log`。owned entry 的 install/use 四种
+实际替换场景通过，`entry-owned-replacement-final.log`。命令参考已重新生成，help parity
+检查通过；此后新增 config proxy 说明需再次生成。
+
+最终自审发现并继续修复两项：同 destination 重装叠加 mount，后续 remove 会露出旧
+payload；native mixed-home export 没有规范借用来源、按 target 误保留未导出的版本。
+前者改为有精确旧 tree 回滚的 replacement 事务，后者统一按 checked closure 规范
+image-owned metadata，并保留 ELF/alias 所需的精确逻辑 slot。新增实际回归仍待编译和 CI。
+私有域生命周期已接确认后删除、双向安全复制和同域 fork；跨域 fork 仍需闭包重建。
+
+
+最终集成构建 `final-wave-build-2.log` 5.78 s 通过（首次缺少 HomeView import，已修）。
+本批针对性回归 **13 个程序 pass、0 fail、17 具体 case skip**，覆盖 replacement 事务、
+RootView、domain/source、entry、materialize、observe/network；skip 保留为缺隔离证据。
+xdev 全部 **6 程序 / 22 case pass、0 skip**。自动生成命令参考/help parity、27 条
+文档命令路径与 NDJSON、平台 header lint、SubOS 删除 lint、CI YAML 和 diff whitespace
+检查通过。旧完整回归 107 程序的证据保持独立；新固定 head 的 CI 和实际生态仍待完成。

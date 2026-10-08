@@ -266,6 +266,18 @@ qemu-system-x86_64 -m 1G -nographic \
 - 定制自己的发行版：`subos new mydistro --rootfs --from subos:luban-core`，装包，
   `subos pack mydistro --as myns:mydistro@1.0` 打成包，发布到你自己的索引。
 
+Linux 上，普通用户可以用 `--domain` 指定镜像的 home 路径。xlings 在用户拥有的私有
+namespace 中构建，把包安装在这个逻辑路径，数据保存在用户 home 内：
+
+```bash
+xlings subos new mydistro --rootfs --domain /xlings --from subos:luban-tiny
+xlings subos exec mydistro -- bash
+xlings subos export mydistro --tar mydistro.tar
+```
+
+这需要可用的 bubblewrap 和 user namespace。系统层借用的 payload 在构建时只读，
+导出时复制镜像需要的完整依赖闭包，因此镜像运行不依赖构建机器的系统层。
+
 export 和 pack 的输出目标必须不存在；重用目标会返回错误并保留原文件。临时目录由命令独占创建，
 失败时只清理自己的临时数据。损坏或不可读的实例元数据、启动配置会返回错误，请先修复文件后重试；
 升级不会把它们当作空配置覆盖。
@@ -315,13 +327,13 @@ SubOS 的 home 是用户数据：只有用户发起并确认的删除才会删�
 | `subos exec <name>\|--temp [--sandbox[=preset]] [--timeout D] -- argv` | 执行一条命令，返回它的退出码 |
 | `subos config <name> [--sandbox=preset\|ns:pkg] [--net] [--fetch] [--allow] [--mount] ...` | 声明策略 |
 | `subos status <name>` / `subos doctor [<name>]` | 生效的隔离 / 健康检查 |
-| `subos start <name> [--ttl D]` / `subos stop <name>` / `subos ps` | 会话 |
+| `subos start <name> [--ttl D]` / `subos stop <name>` / `subos ps [<name>]` | 会话 |
 | `subos requests / approve / deny <name> [id]` | 处理沙箱里的请求 |
 | `subos log <name> [--kind K] [-f]` / `subos report <name>` | 审计 |
 | `subos cp <src> <dst>` | 拷入 / 拷出（一端写成 `<name>:<path>`） |
 | `subos list` / `subos info <name>` / `subos remove <name>` | 列出 / 详情 / 删除 |
 | `self doctor --isolation [--fix]` | 这台机器能怎样隔离，以及修复 |
-| `subos new <name> --rootfs [--from subos:luban-*]` | 一个根：作为 `/` 进入、导出、启动 |
+| `subos new <name> --rootfs [--domain <HOME>] [--from subos:luban-*]` | 一个根：作为 `/` 进入、导出、启动 |
 | `subos rollback <name> [--to N] [--list]` | 根回到某一代 |
 | `subos export <name> --rootfs <dir>\|--tar <file>\|--disk <file>` | 导出为目录 / tar 包 / 磁盘镜像 |
 | `subos boot [<name>] [--once\|--fallback\|--now\|--mark-good]` | 机器启动哪个 SubOS |

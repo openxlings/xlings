@@ -647,3 +647,22 @@ xlings-res：bash、coreutils；glibc sysconfdir revision（C34）；内核（�
 本地实测（CI 之外）：luban-tiny 从导出的 ext4 镜像由 Ubuntu 6.8 内核启动三次——跳过没有 init 的试启动、试启动一次、
 `--now` 切回、未确认的试启动不成为默认；bwrap 实例与启动后的机器 `/usr` 树哈希一致；luban-core 里 144 个形态 X
 可执行文件的闭包在空根里完整；luban-desktop 里编译的 GL 程序用 llvmpipe 离屏渲染出期望的像素。
+
+
+## 20. 后续实施记录（2026-10-08，PR #641）
+
+§19 保留初次实现的现场。本节记录后续接线；源码存在、本地测试通过与真实隔离验收分别记录，
+不能把本机缺少 bwrap 而跳过的用例视为完成。
+
+| checkpoint | 后续实现 | 验收状态 |
+|---|---|---|
+| C30 / C30a | `new --rootfs --domain <HOME>` 由普通用户的 private namespace producer 构建；physical/recorded/logical home 分开，安装发生在实际逻辑前缀 | 本地 prefix unit 已通过；真实 producer 及生命周期路由待新 head CI |
+| C34 | glibc 2.44.3 revision 2 接入 root loader 的 cache/preload；根 cache 独立生成与 ownership 检查 | x86_64/aarch64 资源、CN GET/SHA 和索引 CI 已通过；客户端真实根场景待 CI |
+| C35 | owner-private RootView 只绑定精确依赖闭包、generation 和过滤后的 metadata；trusted init 捕获 user/mount/root 三 FD；broker 更新挂载后回复 | 本地闭包 unit 通过；普通/locked namespace、inode 替换与失败回滚待新 head CI |
+| C36 / C37 | source facade 对限定 schema 路径做映射，来源 payload 不改写；镜像导出复制借用的完整闭包并改为镜像自有 metadata | 本地 source reader unit 通过；静态 candidate 的 DOM-SOURCE 实际隔离门禁待 CI |
+| C41 | 三平台先一次构建测试再由 xdev 执行；实际能力门禁拒绝 skip；声明覆盖与同车道执行证据分开 | 完整本地回归 107 程序 pass、54 具体 case skip；新固定 head CI 尚未完成 |
+
+私有 domain 已接 confirmed remove、typed physical cp 和同域 fork；源码冻结后仍需真实隔离验收。
+跨域 fork 当前拒绝直接复制绝对路径，需要 producer 闭包重建，不能宣称整个设计已经交付。性能已实测 300 payload 的
+生成/切换预算；stage-0 四次真实启动预算待 boot 车道。最终自审、合入、客户端发布和 CN
+fresh install/self update 仍待完成。后续提交只追加 commit、普通 push，保留 PR 历史。

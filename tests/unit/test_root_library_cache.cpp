@@ -4,21 +4,29 @@ import xlings.testkit;
 
 import std;
 import xlings.subos.library_cache;
+import xlings.platform.root_mount;
 
 namespace tk = xlings::testkit;
 namespace lc = xlings::subos::library_cache;
 
-XTEST(RootLibraryCache, GeneratorSeesTheRootReadOnlyAndWritesOnlyOwnedStaging,
-      .area = "subos", .covers = {"ROOT-LDCACHE"}) {
-    const auto argv = lc::command("/owned/root", {"/owned/home"}, "/owned/staging", "/measured/bwrap");
+XTEST(RootLibraryCache, GeneratorSeesTheRootReadOnlyAndWritesOnlyOwnedStaging, .area = "subos",
+      .covers = {"ROOT-LDCACHE"}) {
+    const std::vector<xlings::platform::root_mount::Binding> bindings{
+        {"/private/skeleton", "/owned/home"},
+        {"/owned/home/data/xpkgs/xim-x-glibc/2.42", "/owned/home/data/xpkgs/xim-x-glibc/2.42"}};
+    const auto argv =
+        lc::command("/owned/root", {"/owned/home"}, "/owned/staging", "/measured/bwrap", bindings);
     const auto has = [&](std::initializer_list<std::string> words) {
         return std::ranges::search(argv, words).begin() != argv.end();
     };
     EXPECT_TRUE(has({"--ro-bind", "/owned/root", "/"}));
-    EXPECT_TRUE(has({"--ro-bind", "/owned/home", "/owned/home"}));
+    EXPECT_TRUE(has({"--ro-bind", "/private/skeleton", "/owned/home"}));
+    EXPECT_FALSE(has({"--ro-bind", "/owned/home", "/owned/home"}));
+    EXPECT_TRUE(has({"--ro-bind", bindings[1].source.string(), bindings[1].destination.string()}));
     EXPECT_TRUE(has({"--bind", "/owned/staging", "/run/xlings-ldcache"}));
     EXPECT_FALSE(has({"--bind", "/owned/root", "/"}));
-    EXPECT_TRUE(has({"--", "/usr/bin/ldconfig", "-X", "-i", "-C", "/run/xlings-ldcache/ld.so.cache"}));
+    EXPECT_TRUE(
+        has({"--", "/usr/bin/ldconfig", "-X", "-i", "-C", "/run/xlings-ldcache/ld.so.cache"}));
     EXPECT_TRUE(has({"-f", "/etc/ld.so.conf", "/usr/lib", "/usr/lib64"}));
     EXPECT_TRUE(has({"--unshare-all"}));
 }
@@ -39,8 +47,8 @@ XTEST(RootLibraryCache, MissingGeneratorAndUnknownExistingCacheNeverOverwriteUse
     EXPECT_FALSE(std::filesystem::exists(home.root() / "run/subos/probe"));
 }
 
-XTEST(RootLibraryCache, ARecognisableCacheStillNeedsProofThatXlingsOwnsIt,
-      .area = "subos", .covers = {"ROOT-LDCACHE"}) {
+XTEST(RootLibraryCache, ARecognisableCacheStillNeedsProofThatXlingsOwnsIt, .area = "subos",
+      .covers = {"ROOT-LDCACHE"}) {
     auto home = tk::Home::isolated("unowned-library-cache");
     const auto root = home.root() / "root";
     const auto bytes = std::string("glibc-ld.so.cache1.1") + std::string(64, '\0');
@@ -51,4 +59,10 @@ XTEST(RootLibraryCache, ARecognisableCacheStillNeedsProofThatXlingsOwnsIt,
     EXPECT_NE(result.error().find("ownership record"), std::string::npos);
     EXPECT_EQ(tk::read_file(root / "etc/ld.so.cache"), bytes);
     EXPECT_FALSE(std::filesystem::exists(root / "etc/xlings/ldcache.json"));
+}
+
+XTEST(RootLibraryCache, NonRootGeneratorRefusesAnUnprovedHomeBinding, .area = "subos",
+      .covers = {"ROOT-LDCACHE"}) {
+    EXPECT_THROW(lc::command("/owned/root", {"/owned/home"}, "/owned/staging", "/measured/bwrap"),
+                 std::runtime_error);
 }

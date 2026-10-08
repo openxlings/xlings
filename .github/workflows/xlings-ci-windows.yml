@@ -294,7 +294,9 @@ jobs:
           mcpp test -p xdev
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item Env:XTEST_META_OUT, Env:XTEST_RESULTS_OUT
-          & $xdev.FullName test --out target/xdev/windows-unit
+          mcpp test --no-run --message-format json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $xdev.FullName test --no-build --out target/xdev/windows-unit
           if ($LASTEXITCODE -ne 0) {
             $status = $LASTEXITCODE
             Write-Host "::group::mcpp build diagnostics"

@@ -74,14 +74,18 @@ std::expected<void, std::string> check_ownership(const fs::path& record,
 }  // namespace
 
 std::vector<std::string> command(const fs::path& root, const HomeView& home,
-                                 const fs::path& scratch, const fs::path& bwrap) {
+                                 const fs::path& scratch, const fs::path& bwrap,
+                                 std::span<const platform::root_mount::Binding> bindings) {
     std::vector<std::string> argv;
     std::string output = (scratch / "ld.so.cache").string();
     if (root != "/") {
+        if (bindings.empty())
+            throw std::runtime_error("root library cache needs a checked read-only store closure");
         argv = {bwrap.string(), "--unshare-all", "--die-with-parent", "--uid", "0", "--gid", "0",
-                "--ro-bind", root.string(), "/", "--ro-bind", home.home.string(), home.home.string(),
-                "--bind", scratch.string(), "/run/xlings-ldcache", "--proc", "/proc", "--dev", "/dev",
-                "--"};
+                "--ro-bind", root.string(), "/"};
+        for (const auto& binding : bindings)
+            argv.insert(argv.end(), {"--ro-bind", binding.source.string(), binding.destination.string()});
+        argv.insert(argv.end(), {"--bind", scratch.string(), "/run/xlings-ldcache", "--proc", "/proc", "--dev", "/dev", "--"});
         output = "/run/xlings-ldcache/ld.so.cache";
     }
     argv.insert(argv.end(), {"/usr/bin/ldconfig", "-X", "-i", "-C", output,
@@ -90,7 +94,8 @@ std::vector<std::string> command(const fs::path& root, const HomeView& home,
 }
 
 std::expected<bool, std::string> refresh(const fs::path& root, const HomeView& home,
-                                        std::string_view instance) {
+                                        std::string_view instance,
+                                        std::span<const platform::root_mount::Binding> bindings) {
     try {
         std::error_code ec;
         if (!fs::exists(root / "usr/bin/ldconfig", ec)) {
@@ -136,7 +141,7 @@ std::expected<bool, std::string> refresh(const fs::path& root, const HomeView& h
         if (directory.empty()) return std::unexpected("cannot reserve library cache staging");
         Staging staging{directory};
         fs::permissions(directory, fs::perms::owner_all, fs::perm_options::replace);
-        const auto argv = command(root, home, directory, backend);
+        const auto argv = command(root, home, directory, backend, bindings);
         const auto exit = platform::run_argv_with_timeout(argv, std::chrono::minutes(2));
         if (exit != 0) return std::unexpected(std::format("root ldconfig failed (exit {})", exit));
         const auto bytes = read_cache(directory / "ld.so.cache");

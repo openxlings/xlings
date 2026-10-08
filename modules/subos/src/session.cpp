@@ -4,6 +4,7 @@ import std;
 import xlings.libs.json;
 import xlings.observe;
 import xlings.platform;
+import xlings.platform.root_mount;
 import xlings.subos.home_view;
 import xlings.subos.policy;
 import xlings.subos.broker;
@@ -192,7 +193,20 @@ struct Client {
 
 int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::array<int, 2> ctl,
               int ready_fd) {
+    struct RootContext {
+        Launch& launch;
+        std::array<int, 3> descriptors{-1, -1, -1};
+        ~RootContext() {
+            for (const int descriptor : descriptors)
+                platform::close_fd(descriptor);
+            if (launch.finalize_root) {
+                try { launch.finalize_root(); }
+                catch (...) { report("private root view cleanup failed"); }
+            }
+        }
+    } rootContext{L};
     int pid = -1;
+    bool root_failed = false;
     bool audit_failed = false;
     bool audit_warned = false;
     std::vector<BrokerClient> brokered;
@@ -391,6 +405,52 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         }
     }
 
+    if (L.refresh_root) {
+        platform::PollFd control{ctl[0]};
+        auto message = platform::poll_fds(std::span(&control, 1), 10000) > 0
+            ? recv_msg(ctl[0]) : std::nullopt;
+        const bool valid = message && message->json.value("op", "") == "root-mount-context" &&
+                           message->fds.size() == 3;
+        std::string namespaceFailure;
+        if (valid) {
+            std::ranges::copy(message->fds, rootContext.descriptors.begin());
+            message->fds.clear();
+            if (auto normalized = platform::root_mount::normalize(rootContext.descriptors); !normalized)
+                namespaceFailure = normalized.error();
+        }
+        if (!valid || !namespaceFailure.empty()) {
+            const auto reason = !namespaceFailure.empty() ? namespaceFailure :
+                message ? message->json.value("error", "invalid namespace descriptors")
+                        : "trusted init did not supply namespace descriptors";
+            if (message)
+                platform::close_fds(message->fds);
+            report("cannot supervise root mount refresh: " + reason);
+            (void)audit({{"event", "root-refresh-unavailable"}, {"reason", reason},
+                         {"session", info.id}});
+            platform::send_signal(pid, sig::kill);
+            (void)platform::wait_process(pid, true);
+            platform::close_fd(listen_fd);
+            platform::close_fd(ctl[0]);
+            platform::close_fd(broker_fd);
+            platform::close_fd(ready_fd);
+            if (proxyRelay) proxyRelay->stop();
+            if (proxyBridge) platform::close_fd((*proxyBridge)[0]);
+            std::error_code ignored;
+            if (nat) {
+                std::ifstream file(pasta_pidfile);
+                int helper = 0;
+                if (file >> helper && helper > 0)
+                    platform::send_signal(helper, sig::terminate);
+                fs::remove(pasta_pidfile, ignored);
+            }
+            fs::remove(sock_path(home, L.instance), ignored);
+            fs::remove(home.broker_socket(L.instance), ignored);
+            return kExitSetup;
+        }
+        for (const int descriptor : rootContext.descriptors)
+            platform::set_inheritable(descriptor, false);
+    }
+
     // observe=full: session-init installs the exec filter inside and sends its
     // listener over the control socket (handled in the loop below). Inside,
     // so bwrap itself never runs under no_new_privs -- which would keep an
@@ -435,7 +495,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     while (true) {
         // An audit failure ends admission immediately. Draining the normal
         // control channel can wait on a backend blocked by our listeners.
-        if (audit_failed) break;
+        if (audit_failed || root_failed) break;
         if (!reaped) {
             if (auto st = platform::wait_process(pid, false)) { status = *st; reaped = true; pid = -1; }
         }
@@ -491,18 +551,44 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (b.pid <= 0) continue;
             auto st = platform::wait_process(b.pid, false);
             if (!st) continue;
-            const int code = platform::exit_code(*st);
+            int code = platform::exit_code(*st);
             b.pid = 0;
+            std::string refreshError;
+            if (code == 0 && L.refresh_root) {
+                try {
+                    if (auto refreshed = L.refresh_root(rootContext.descriptors); !refreshed)
+                        refreshError = refreshed.error();
+                } catch (const std::exception& error) {
+                    refreshError = error.what();
+                } catch (...) {
+                    refreshError = "owner root refresh failed";
+                }
+                if (!refreshError.empty()) {
+                    code = kExitSetup;
+                    root_failed = true;
+                    report("root refresh refused: " + refreshError);
+                    (void)audit({{"event", "root-refresh-failed"}, {"session", info.id},
+                                 {"reason", refreshError}}, observe::Kind::Ops);
+                    if (pid > 0) platform::send_signal(pid, sig::kill);
+                    for (const auto& pending : brokered)
+                        if (pending.pid > 0) platform::send_signal(pending.pid, sig::kill);
+                } else {
+                    (void)audit({{"event", "root-refresh-done"}, {"session", info.id}}, observe::Kind::Ops);
+                }
+            }
             const bool recorded = audit({{"event", "broker-done"}, {"session", info.id},
                                          {"program", b.program}, {"exit", code}}, observe::Kind::Perm);
-            send_msg(b.fd, recorded ? nlohmann::json{{"exit", code}}
-                                   : nlohmann::json{{"exit", kExitSetup}, {"error", "E_AUDIT_WRITE: session ended"}});
+            auto reply = recorded ? nlohmann::json{{"exit", code}}
+                                  : nlohmann::json{{"exit", kExitSetup}, {"error", "E_AUDIT_WRITE: session ended"}};
+            if (!refreshError.empty()) reply["error"] = refreshError;
+            send_msg(b.fd, reply);
             drop(b.fd);
         }
         std::erase_if(brokered, [](const BrokerClient& b) { return b.fd < 0; });
+        if (root_failed || audit_failed) break;
 
         for (auto& p : pfds) {
-            if (audit_failed) break;
+            if (audit_failed || root_failed) break;
             if (!p.readable && !p.closed) continue;
             if (proxyBridge && p.fd == (*proxyBridge)[0]) {
                 const auto client = platform::receive_message(p.fd, 128);
@@ -648,6 +734,13 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
                     ctl_open = false;
                     continue;
                 }
+                if (m->json.value("op", "") == "root-mount-context") {
+                    platform::close_fds(m->fds);
+                    report("duplicate root namespace context refused");
+                    root_failed = true;
+                    if (pid > 0) platform::send_signal(pid, sig::kill);
+                    continue;
+                }
                 if (m->json.value("op", "") == "net-listener") {
                     if (!m->fds.empty() && net_notify_fd < 0) {
                         net_notify_fd = m->fds.front();
@@ -783,6 +876,8 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     fs::remove(info_path(home, L.instance), ec);
     if (broker_fd >= 0) {
         for (auto& b : brokered) {
+            if ((root_failed || audit_failed) && b.pid > 0)
+                platform::send_signal(b.pid, sig::kill);
             if (b.pid > 0) (void)platform::wait_process(b.pid, true);
             platform::close_fd(b.fd);
         }
@@ -791,7 +886,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     }
     platform::close_fd(listen_fd);
     if (ctl_open) platform::close_fd(ctl[0]);
-    if (audit_failed && !reaped && pid > 0) {
+    if ((audit_failed || root_failed) && !reaped && pid > 0) {
         platform::send_signal(pid, sig::kill);
         if (const auto exit = platform::wait_process(pid, true)) {
             status = *exit;
@@ -799,12 +894,12 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             pid = -1;
         }
     }
-    const int code = audit_failed ? kExitSetup : timed_out ? kExitTimeout : reaped ? platform::exit_code(status) : kExitSetup;
+    const int code = (audit_failed || root_failed) ? kExitSetup : timed_out ? kExitTimeout : reaped ? platform::exit_code(status) : kExitSetup;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                   std::chrono::steady_clock::now() - started).count();
     audit({{"event", "session-end"}, {"session", info.id}, {"exit", code},
                              {"ms", ms}});
-    return audit_failed ? kExitSetup : code;
+    return (audit_failed || root_failed) ? kExitSetup : code;
 }
 
 }  // namespace
@@ -831,6 +926,8 @@ int host(const HomeView& home, Launch L) {
     }
     L.env[std::string(kControlFdEnv)] = std::to_string((*ctl)[1]);
     L.env[std::string(kTtlEnv)] = std::to_string(L.ttl);
+    if (L.refresh_root) L.env[std::string(kRootViewEnv)] = "1";
+    else L.env.erase(std::string(kRootViewEnv));
     if (L.trace_exec) L.env["XLINGS_SESSION_TRACE"] = "1";
     if (L.trace_net) L.env["XLINGS_SESSION_NET_TRACE"] = "1";
 
@@ -954,6 +1051,22 @@ int session_init(std::span<const std::string> args) {
     // Neither variable means anything to the commands that run here.
     platform::unset_env_variable(std::string(kControlFdEnv));
     platform::unset_env_variable(std::string(kTtlEnv));
+
+    const bool rootView = env_int(kRootViewEnv, 0) == 1;
+    platform::unset_env_variable(std::string(kRootViewEnv));
+    if (rootView) {
+        auto captured = platform::root_mount::capture();
+        if (!captured) {
+            if (ctl >= 0)
+                (void)send_msg(ctl, {{"op", "root-mount-context"}, {"error", captured.error()}});
+            return kExitSetup;
+        }
+        const bool sent = ctl >= 0 && send_msg(ctl, {{"op", "root-mount-context"}}, *captured);
+        for (const int descriptor : *captured)
+            platform::close_fd(descriptor);
+        if (!sent)
+            return kExitSetup;
+    }
 
     // --sandbox landlock: the write fence, before anything is started, so
     // everything here and everything that joins later is inside it. Failing

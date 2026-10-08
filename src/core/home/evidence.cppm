@@ -10,6 +10,7 @@ struct OwnedPayload {
     fs::path home;
     fs::path root;
     xvm::InstallCoordinate coordinate;
+    fs::path recordedHome; // Set only by a caller that proved a namespace mapping.
 };
 struct Dependency {
     std::string spec;

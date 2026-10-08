@@ -26,6 +26,8 @@ import xlings.core.confirm;
 import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.subos.root;
+import xlings.core.subos.store_closure;
+import xlings.core.subos.root_view;
 import xlings.subos.roles;
 
 namespace xlings::subos::sandbox {
@@ -374,8 +376,19 @@ constexpr std::string_view kSessionInitPath = "/run/xlings/xlings";
 
 // What a sandbox must be compared on to decide whether a call may join the
 // running session: everything that isolates, nothing that varies per call.
-std::string spec_digest_(const spec::SandboxSpec& sb) {
-    auto j = sb.describe();
+std::string spec_digest_(const spec::SandboxSpec& sb, const spec::Request& request, const policy::Policy& pol) {
+    auto stable = sb;
+    if (!request.root.empty()) {
+        std::erase_if(stable.mounts, [&](const spec::MountOp& mount) {
+            return std::ranges::find(request.root_mounts, mount) != request.root_mounts.end();
+        });
+    }
+    auto j = stable.describe();
+    if (!request.root.empty()) {
+        j["root_scope"] = request.instance;
+        j["root_instance"] = request.instance_dir.generic_string();
+        j["root_policy"] = policy::to_json(pol);
+    }
     for (auto k : {"argv", "env", "cwd", "degraded"}) j.erase(k);
     return std::format("{:016x}", std::hash<std::string>{}(j.dump()));
 }
@@ -554,6 +567,15 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         return kFail;
     }
 
+    struct RootViewLifetime {
+        std::shared_ptr<subos_root::root_view::View> view;
+        bool transferred { false };
+        ~RootViewLifetime() {
+            if (view && !transferred)
+                view->close();
+        }
+    } rootView;
+
     spec::Request request{
         .instance = name,
         .instance_dir = subos_dir,
@@ -634,6 +656,25 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             auto mp_home = image_mountpoint / user;
             fs::create_directories(mp_home);
             write_sandbox_rc_(mp_home);
+        }
+
+        if (rootfs) {
+            auto scope = subos_root::store_closure::read_scope(p.homeDir, name, request.root);
+            if (!scope) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = scope.error(),
+                                       .recoverable = false});
+                return kFail;
+            }
+            auto prepared = subos_root::root_view::prepare(*scope);
+            if (!prepared) {
+                stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = prepared.error(),
+                                       .recoverable = false});
+                return kFail;
+            }
+            rootView.view = std::move(*prepared);
+            for (const auto& binding : rootView.view->bindings())
+                request.root_mounts.push_back({spec::MountKind::RoBind, binding.source.generic_string(),
+                                              binding.destination.generic_string()});
         }
 
         auto host_caps = caps::probe(home, ports);
@@ -726,7 +767,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
 
         const auto backend_name = std::string(spec::to_string(sb.backend));
         log::debug("sandbox backend: {} storage: {}", backend_name, storage_to_string_(storage));
-        const auto digest = spec_digest_(sb);
+        const auto digest = spec_digest_(sb, request, pol);
 
         // One session per instance (design §12.1): a running one is JOINED --
         // same /tmp, processes and network as the terminal that started it.
@@ -780,7 +821,28 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         // session-init is this very binary, read-only at a fixed path inside; a
         // dynamically linked build brings its loader and library directories.
         auto launched = sb;
-        for (auto& m : self_exe_mounts_()) launched.mounts.push_back(std::move(m));
+        for (auto& mount : self_exe_mounts_()) {
+            if (rootfs && mount.dst != kSessionInitPath) {
+                const auto& bindings = rootView.view->bindings();
+                const auto path = fs::path(mount.src).lexically_normal();
+                const bool permitted = std::ranges::any_of(bindings, [&](const auto& binding) {
+                    if (binding.source != binding.destination)
+                        return false;
+                    const auto relative = path.lexically_relative(binding.source);
+                    return path == binding.source || (!relative.empty() && !relative.is_absolute() &&
+                                                       *relative.begin() != "..");
+                });
+                if (!permitted) {
+                    stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                        .message = "the session client needs a runtime directory outside this root's checked closure: " + mount.src,
+                        .recoverable = false,
+                        .hint = "use a static release client, or install its recorded runtime closure into this root"});
+                    return kFail;
+                }
+                continue;
+            }
+            launched.mounts.push_back(std::move(mount));
+        }
         // The broker's socket, made by the supervisor before the backend starts.
         const bool brokered = sb.backend == spec::Backend::Bwrap || sb.backend == spec::Backend::Landlock;
         if (sb.backend == spec::Backend::Bwrap)
@@ -837,7 +899,15 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             .broker_env = broker_env_(request.host_env, p.homeDir, name),
             .trace_exec = pol.observe == policy::Observe::Full && sb.backend == spec::Backend::Bwrap,
             .rw_paths = rw_mount_sources_(pol),
+            .refresh_root = rootView.view
+                ? std::function<std::expected<void, std::string>(std::span<const int, 3>)>{
+                    [view = rootView.view](std::span<const int, 3> target) { return view->refresh(target); }}
+                : std::function<std::expected<void, std::string>(std::span<const int, 3>)>{},
+            .finalize_root = rootView.view ? std::function<void()>{[view = rootView.view] { view->close(); }}
+                                         : std::function<void()>{},
         });
+        if (opts.detached && rc == 0)
+            rootView.transferred = true;
         if (storage == StorageMode::Image) unmount_image_(image_mountpoint);
         return rc;
     } else {

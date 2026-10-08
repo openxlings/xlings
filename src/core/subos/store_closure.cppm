@@ -1,7 +1,7 @@
 export module xlings.core.subos.store_closure;
 
 import std;
-import xlings.core.xvm.types;
+export import xlings.core.xvm.types;
 
 export namespace xlings::subos_root::store_closure {
 namespace fs = std::filesystem;
@@ -14,11 +14,36 @@ struct Inputs {
     xvm::VersionDB versions;
     xvm::Workspace active;
     xvm::WorkspaceInstalled installed;
+    fs::path logicalHome;
+    fs::path controlInstance;
+
+    Inputs();
+    ~Inputs();
+    Inputs(const Inputs&);
+    Inputs& operator=(const Inputs&);
+    Inputs(Inputs&&);
+    Inputs& operator=(Inputs&&);
+};
+struct PayloadMount {
+    fs::path source;
+    fs::path destination;
+    fs::path home;
+    fs::path guestHome;
+};
+struct SourceScope {
+    fs::path physicalHome;
+    fs::path executionHome;
+    fs::path guestHome;
+    std::string scope;
+    xvm::WorkspaceInstalled installed;
 };
 struct Closure {
     std::vector<fs::path> payloads;
+    std::vector<PayloadMount> mounts;
     std::vector<fs::path> metadata;
+    std::vector<SourceScope> sources;
     fs::path generationUsr;
+    int generation{0};
 };
 
 // Scope registration and checked evidence determine membership. ELF paths

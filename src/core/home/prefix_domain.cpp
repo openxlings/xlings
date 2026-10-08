@@ -48,9 +48,12 @@ std::expected<void, std::string> validate_private_(const Domain& domain) {
     auto doc = read_json_for_update(marker);
     if (!doc) return std::unexpected(doc.error());
     auto expected = json_(domain);
-    for (const auto* key : {"schema", "owner_home", "physical_home", "logical_home", "layout", "private_home"})
+    for (const auto* key : {"schema", "owner_home", "physical_home", "logical_home", "layout", "private_home", "system_candidate"})
         if (!doc->contains(key) || (*doc)[key] != expected[key])
             return std::unexpected(marker.string() + ": missing or contradictory domain ownership; existing data preserved");
+    if (doc->contains("system_source") != expected.contains("system_source") ||
+        (expected.contains("system_source") && (*doc)["system_source"] != expected["system_source"]))
+        return std::unexpected(marker.string() + ": system domain source changed; existing data preserved");
     auto shared = shares_store(domain.physicalHome);
     if (!shared || !*shared) return std::unexpected(shared ? marker.string() + ": private domain home is not root/multi" : shared.error());
     return {};
@@ -81,6 +84,8 @@ std::expected<Domain, std::string> resolve(const fs::path& ownerHome, const fs::
         return std::unexpected("prefix domain must be an absolute normalized path");
     const auto originalOwner = fs::absolute(ownerHome, ec).lexically_normal();
     if (ec) return std::unexpected(ownerHome.string() + ": cannot resolve the owner's logical prefix");
+    auto ownerMarker = shares_store(owner);
+    if (!ownerMarker) return std::unexpected(ownerMarker.error());
     if (logicalHome == owner || logicalHome == originalOwner)
         return Domain{owner, owner, logicalHome, "single", std::nullopt, false, {}};
     if (logicalHome != fs::path("/xlings"))

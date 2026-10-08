@@ -16,9 +16,9 @@
 | xdev CI 计划与选择 | 核心实现，本地回归通过 | 共享 C++ 选择及 9 个 app 用例；三平台 CI 加入 app 自测；distro 接入动态三分片，执行结果待 CI |
 | proxy / net 事件 | 主体实现，隔离验证待 CI | SOCKS5h 单出口、独立 netns、native syscall 通知；本地 3 个 unit 通过，2 个隔离 e2e 跳过 |
 | hook sandbox | 主体实现，隔离验证待 CI | 正式 libxpkg 0.0.61；persistent worker、独立协议、payload shadow、输出日志、先审计后放行；本地 2 个 worker flow 通过，3 个隔离用例跳过 |
-| 系统层解析 / store 闭包 | 实施中 | 严格层读取与 resolution evidence；随后收口逐 payload 挂载及 prefix domain |
+| 系统层解析 / store 闭包 | 主链已接，真实隔离验收待 CI | RootView 精确 RO closure、inode 刷新、broker ready/同步回执、SourceMapping/facade 与 prefix producer/export；完整本地回归 107 程序通过，隔离 skip 不计验收 |
 | glibc cache / Luban 生态 | 两架构资源已发布，客户端验证实施中 | 索引 PR #940 原生 x86_64/aarch64 loader/cache/preload、三平台检查通过；GitHub/GitCode 资源完整 GET+SHA 验证；客户端接入待本批 CI |
-| fixture HTTP / 资源锁 | 主体实现，本地通过 | 17 个 xdev app 用例通过；loopback HTTP、跨进程锁、选择后并行执行；三平台 evidence 纳入报告 |
+| fixture HTTP / 资源锁 | 主体实现，本地通过 | 6 个 xdev app 程序 / 22 用例通过；默认真实 HTTP mirror 与 checked 下载；Windows root-relative 路径修复待新 head CI |
 | 性能与升级矩阵 | 趋势工具已本地通过，产品矩阵待完成 | xdev member/platform 历史及下一轮实际 shard 权重通过；不以 skip 替代产品性能证据 |
 | 完整 CI、自审、合入、release、GitCode、索引 | 待完成 | 每个环节绑定同一 head；资源出现立即本地补 CN |
 | 真实镜像设置 | 完成 | 实际 entry 执行 `xlings config --mirror CN` 返回 `mirror = CN` |
@@ -43,3 +43,30 @@ worker/network 5 个真实隔离用例因本机 bwrap 不可用跳过。后续 c
 D2 的 exact mounts 与 broker 更新、D3 真实 namespace producer 仍需完成；strict domain
 预检会在生产器未接通时创建前拒绝，镜像测试不再删除宿主 `/xlings`。NDJSON 1.6
 stream/cancel 与 root compiler unit 已通过；真实 namespace/GCC consumer 仍待 CI。
+
+最新追加提交：`6a1df938`、`d968ee47`、`0faff256`、`562cfbd9`、`d420d81d`、
+`33bd4499`、`777dccf5`，均普通 push。CI 修复已接新版 mcpp、可移植 kernel ABI 和
+Windows 头处理；以最新 head 的远端结果为准，不沿用此前 green。
+testkit 默认真实 HTTP mirror、下载/校验/解包和缺包拒绝已端到端通过；xdev 完整
+6 程序 / 22 用例 pass、0 skip。隔离旧 home 的 N-1→candidate dispatcher 升级、CN、
+self init 和 glibc 再安装通过，1462 个 payload 文件和 workspace/configured 状态保留。
+D2 session/RootView 源码检查点与两项 unit 通过，真实 namespace 两用例本机 skip；
+D3 source mapping/facade 检查点编译通过，producer/runtime/export 全链仍在接。
+300 payload 的 generation build/switch 实测中位数 26.876 / 4.939 ms，预算通过；
+stage-0 timing 审计及真实四次 boot 预算已加入，尚待 boot 车道。完整交付与发布仍未结束。
+
+最新完整客户端回归：107 程序 pass、0 fail、54 具体用例 skip；源码构建通过。
+Windows fixture、macOS 旧 header refresh、Linux worker FD/observe/root mount 及审计
+验证契约的修复进入下一追加提交，不能沿用旧 head 的 CI 通过结果。
+DOM-SOURCE 静态 candidate 实际导出与隔离证明门禁已接线。
+
+
+后续同一源码波次已冻结：私有域 start/stop/具名 ps/log/info/config/doctor/rollback/runtime，
+确认后 remove、typed cp、同域 fork；跨域 fork 暂拒绝裸复制，仍需 producer 重建。
+自审发现的 same-path mount 叠层与 mixed-home export 已修，真实回归进入新 CI。
+实际旧 header S1–S5 和 owned entry install/use 四种替换的 shell 场景全部通过。
+最终批次正在串行构建与针对性回归；无需再次跑没有新依据的完整 107 程序。
+
+最终波次已本地构建通过；受影响 13 程序 pass、17 case skip；xdev 6 程序/22 case
+pass、0 skip。命令参考、文档示例及两个lint通过。下一步追加提交并普通push，以新固定
+head的真实隔离/三平台CI验收，随后继续处理跨域重建与最终发布链。

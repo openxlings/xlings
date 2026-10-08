@@ -115,6 +115,8 @@ select_policy_package_(const std::string& ref, bool upgrade) {
 int run_config_(int argc, char* argv[], EventStream& stream,
                 const std::function<void(std::string_view)>& usageError) {
     std::string name;
+    int nameIndex = 0;
+    std::vector<std::pair<int, std::string>> normalizedMounts;
     bool json = false, reset = false;
     std::optional<policy::Preset> preset;
     std::optional<std::string> package;          // --sandbox ns:name[@version]
@@ -197,19 +199,27 @@ int run_config_(int argc, char* argv[], EventStream& stream,
             auto m = policy::parse_mount(*v, utils::get_env_or_default("HOME"),
                                          fs::current_path(ec).generic_string());
             if (!m) { usageError(m.error()); return 1; }
+            auto spec = m->src + (m->dst.empty() ? "" : ":" + m->dst);
+            if (m->mode_given) spec += m->rw ? ":rw" : ":ro";
+            normalizedMounts.emplace_back(i, a == "--mount" ? spec : "--mount=" + spec);
             mounts.push_back(std::move(*m));
             changed = true;
         }
         else if ((v = value_of(i, a, "--unmount"))) { unmounts.insert(*v); changed = true; }
         else if (a == "--no-degrade") { no_degrade = true; changed = true; }
         else if (a == "--degrade") { no_degrade = false; changed = true; }
-        else if (!a.empty() && a[0] != '-' && name.empty()) name = std::string(a);
+        else if (!a.empty() && a[0] != '-' && name.empty()) { name = std::string(a); nameIndex = i; }
         else { usageError("unknown option for `xlings subos config`: " + std::string(a)); return 1; }
     }
     if (name.empty()) { usageError("missing <name> for: xlings subos config"); return 1; }
     auto resolved = resolve_use_name_(name, stream);
     if (resolved.selected.empty()) return resolved.exitCode;
     name = resolved.selected;
+    std::vector<std::string> domainArgs{"subos", "config"};
+    domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+    domainArgs[nameIndex - 1] = name;
+    for (const auto& [index, spec] : normalizedMounts) domainArgs[index - 1] = spec;
+    if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
     const auto home = home_view();
 
     auto current = policy_store::read(home, name, Info::VERSION);
@@ -340,18 +350,23 @@ int run_config_(int argc, char* argv[], EventStream& stream,
 int run_doctor_(int argc, char* argv[], EventStream& stream,
                 const std::function<void(std::string_view)>& usageError) {
     std::string only;
+    int nameIndex = 0;
     bool json = false, fix = false;
     for (int i = 3; i < argc; ++i) {
         std::string_view a = argv[i];
         if (a == "--json") json = true;
         else if (a == "--fix") fix = true;
-        else if (!a.empty() && a[0] != '-' && only.empty()) only = std::string(a);
+        else if (!a.empty() && a[0] != '-' && only.empty()) { only = std::string(a); nameIndex = i; }
         else { usageError("unknown option for `xlings subos doctor`: " + std::string(a)); return 1; }
     }
     std::vector<std::string> names;
     if (!only.empty()) {
         auto resolved = resolve_use_name_(only, stream);
         if (resolved.selected.empty()) return resolved.exitCode;
+        std::vector<std::string> domainArgs{"subos", "doctor"};
+        domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        domainArgs[nameIndex - 1] = resolved.selected;
+        if (auto result = run_domain_operation_(resolved.selected, domainArgs, stream)) return *result;
         names.push_back(resolved.selected);
     } else {
         for (auto& n : Config::list_subos_names()) if (n != "current") names.push_back(n);
@@ -505,6 +520,9 @@ int run_status_(int argc, char* argv[], EventStream& stream,
     auto resolved = resolve_use_name_(name, stream);
     if (resolved.selected.empty()) return resolved.exitCode;
     name = resolved.selected;
+    std::vector<std::string> domainArgs{"subos", "status", name};
+    if (json) domainArgs.push_back("--json");
+    if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
     const auto home = home_view();
     auto file = policy_store::read(home, name, Info::VERSION);
     nlohmann::json out{{"instance", name}};

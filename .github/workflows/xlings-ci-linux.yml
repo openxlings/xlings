@@ -332,7 +332,8 @@ jobs:
           XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
             mcpp test -p xdev
-          "$xdev" test --out target/xdev/linux-unit || {
+          mcpp test --no-run --message-format json
+          "$xdev" test --no-build --out target/xdev/linux-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"
 
@@ -419,6 +420,25 @@ jobs:
           sha256sum build/release.tar.gz > build/release.tar.gz.sha256
           bash tests/candidate-install/smoke.sh \
             build/release.tar.gz build/release.tar.gz.sha256
+
+      - name: Checked system-source domain and image export
+        env:
+          XDEV_LANE: linux-static-domain
+        run: |
+          candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
+          test -x "$candidate"
+          export XLINGS_BIN="$candidate"
+          "$XDEV" test e2e/test_domain_source --no-build --require-metadata \
+            --out target/xdev/linux-static-domain
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          results = [json.loads(line) for line in Path('target/xdev/linux-static-domain/cases.ndjson').read_text().splitlines()]
+          for case in ('DomainSourceProducer.ReusesOnlyCheckedReadonlyBytesAndExportsAnOwnedImage',
+                       'RootExport.OwnsBorrowedClosureAndOmitsOtherScopeVersions'):
+              checked = [row for row in results if row.get('test') == case]
+              assert len(checked) == 1 and checked[0]['status'] == 'pass', f'{case} must actually pass'
+          PY
 
       - name: Attach artifact
         uses: actions/upload-artifact@v4

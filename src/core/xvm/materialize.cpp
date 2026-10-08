@@ -12,7 +12,10 @@ namespace {
 fs::path normal_(const fs::path& path) {
     std::error_code ec;
     auto absolute = fs::absolute(path, ec);
-    return (ec ? path : absolute).lexically_normal();
+    auto normalized = (ec ? path : absolute).lexically_normal();
+    while (normalized != normalized.root_path() && normalized.filename().empty())
+        normalized = normalized.parent_path();
+    return normalized;
 }
 bool below_(const fs::path& root, const fs::path& path) {
     auto r = root.begin(), p = path.begin();
@@ -196,7 +199,7 @@ const std::vector<Proof>& Applied::proofs() const { return state_->proof; }
 
 std::expected<std::vector<AssetClaim>, std::string> collect_claims(const VersionDB& db,
     const WorkspaceInstalled& installed, const fs::path& subosRoot,
-    const fs::path& libraryRoot, const std::string& home) {
+    const fs::path& libraryRoot, const std::string& home, ClaimSource source) {
     std::vector<AssetClaim> result;
     std::set<std::pair<fs::path, fs::path>> seen;
     for (const auto& [target, keys] : installed) {
@@ -206,6 +209,16 @@ std::expected<std::vector<AssetClaim>, std::string> collect_claims(const Version
             const auto prefix = data->sourceHome.empty() ? home : data->sourceHome;
             for (auto header : group_header_assets(db, target, version)) {
                 header.sourceDir = expand_path(header.sourceDir, prefix);
+                const auto relative = fs::path(header.destinationPrefix);
+                if (relative.is_absolute()) return std::unexpected("header destination must be relative");
+                for (const auto& part : relative)
+                    if (part == "..") return std::unexpected("header destination escapes its scope");
+                if (source == ClaimSource::Recorded) {
+                    const auto destination = subosRoot / "usr/include" / relative;
+                    if (!header.sourceDir.empty() && seen.emplace(header.sourceDir, destination).second)
+                        result.push_back({header.sourceDir, destination, true});
+                    continue;
+                }
                 std::vector<AssetChange> entries;
                 auto expanded = append_headers(entries, header, subosRoot / "usr/include");
                 if (!expanded) return std::unexpected(expanded.error());
@@ -221,9 +234,50 @@ std::expected<std::vector<AssetClaim>, std::string> collect_claims(const Version
             const auto file = file_placement(db, target, version, prefix);
             if (!file.empty() && seen.emplace(file.source, subosRoot / file.destination).second) {
                 std::error_code ec;
-                result.push_back({file.source, subosRoot / file.destination, fs::is_directory(file.source, ec)});
+                result.push_back({file.source, subosRoot / file.destination,
+                    source == ClaimSource::Recorded || fs::is_directory(file.source, ec)});
             }
         }
+    }
+    return result;
+}
+
+std::expected<std::vector<AssetChange>, std::string> obsolete_assets(
+    std::span<const AssetClaim> claims, std::span<const AssetClaim> desired) {
+    std::vector<AssetChange> result;
+    std::set<fs::path> visited;
+    const auto inspect = [&](const auto& self, const fs::path& entry, int depth)
+        -> std::expected<void, std::string> {
+        if (depth > 64) return std::unexpected(entry.string() + ": directory asset exceeds 64 levels");
+        if (!visited.insert(normal_(entry)).second) return {};
+        auto present = present_(entry);
+        if (!present) return std::unexpected(present.error());
+        if (!*present) return {};
+        const auto owner = owner_(entry, entry, claims);
+        if (owner) {
+            const bool retained = std::ranges::any_of(desired, [&](const auto& next) {
+                return normal_(next.destination) == normal_(entry)
+                    || below_(normal_(entry), normal_(next.destination))
+                    || (next.descendants && below_(normal_(next.destination), normal_(entry)));
+            });
+            if (!retained) result.push_back({*owner, entry, true});
+            return {};
+        }
+        std::error_code ec;
+        const auto status = fs::symlink_status(entry, ec);
+        if (ec) return std::unexpected(entry.string() + ": " + ec.message());
+        if (!fs::is_directory(status)) return {};
+        auto entries = entries_(entry);
+        if (!entries) return std::unexpected(entries.error());
+        for (const auto& child : *entries) {
+            auto checked = self(self, child, depth + 1);
+            if (!checked) return checked;
+        }
+        return {};
+    };
+    for (const auto& claim : claims) {
+        auto checked = inspect(inspect, claim.destination, 0);
+        if (!checked) return std::unexpected(checked.error());
     }
     return result;
 }

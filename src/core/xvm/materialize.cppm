@@ -21,11 +21,16 @@ struct Proof {
     fs::path destination;
 };
 
+enum class ClaimSource { Recorded, Present };
+
 // Claims come from the scope's installed registrations, never from merely
 // discovering a symlink whose target happens to be inside a store.
 std::expected<std::vector<AssetClaim>, std::string> collect_claims(const VersionDB& db,
     const WorkspaceInstalled& installed, const fs::path& subosRoot,
-    const fs::path& libraryRoot, const std::string& home);
+    const fs::path& libraryRoot, const std::string& home,
+    ClaimSource source = ClaimSource::Recorded);
+std::expected<std::vector<AssetChange>, std::string> obsolete_assets(
+    std::span<const AssetClaim> claims, std::span<const AssetClaim> desired);
 std::expected<void, std::string> append_headers(std::vector<AssetChange>& changes,
     const HeaderAsset& asset, const fs::path& includeRoot, bool remove = false);
 

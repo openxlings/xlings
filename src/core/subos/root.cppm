@@ -42,6 +42,8 @@ fs::path tree_of(const fs::path& home, std::string_view name);
 subos::rootfs::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
                              const xvm::Workspace& workspace, const xvm::VersionDB& db);
 
+std::expected<bool, std::string> refresh_cache(const fs::path& home, std::string_view name);
+
 struct Refreshed {
     int generation { 0 };
     bool changed { false };

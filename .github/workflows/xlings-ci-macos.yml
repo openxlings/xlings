@@ -294,7 +294,8 @@ jobs:
           XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/meta.ndjson" \
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/cases.ndjson" \
             mcpp test -p xdev
-          "$xdev" test --out target/xdev/macos-unit || {
+          mcpp test --no-run --message-format json
+          "$xdev" test --no-build --out target/xdev/macos-unit || {
             status=$?
             echo "::group::mcpp build diagnostics"
 

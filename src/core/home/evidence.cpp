@@ -13,6 +13,14 @@ bool within(const fs::path& root, const fs::path& candidate) {
     return candidate == root ||
            (!relative.empty() && !relative.is_absolute() && *relative.begin() != "..");
 }
+fs::path physical_path(const OwnedPayload& owner, const fs::path& recorded) {
+    if (owner.recordedHome.empty() || owner.recordedHome == owner.home)
+        return recorded;
+    const auto normalized = recorded.lexically_normal();
+    if (within(owner.recordedHome, normalized))
+        return owner.home / normalized.lexically_relative(owner.recordedHome);
+    return normalized;
+}
 std::string provider(const xvm::InstallCoordinate& coordinate) {
     return coordinate.ns.empty() ? coordinate.package : coordinate.ns + ":" + coordinate.package;
 }
@@ -87,8 +95,9 @@ read_checked_resolution(const OwnedPayload& owner, const SourceResolver& resolve
             dependency.source = entry.at("source").get<std::string>();
             if (!specs.insert(dependency.spec).second)
                 return std::unexpected(path.string() + ": duplicate dependency spec");
-            dependency.installDir =
-                xvm::expand_path(entry.at("install_dir").get<std::string>(), owner.home.string());
+            dependency.installDir = xvm::expand_path(
+                entry.at("install_dir").get<std::string>(),
+                (owner.recordedHome.empty() ? owner.home : owner.recordedHome).string());
             if (!dependency.installDir.is_absolute())
                 return std::unexpected(path.string() +
                                        ": recorded dependency path is not absolute");
@@ -100,9 +109,10 @@ read_checked_resolution(const OwnedPayload& owner, const SourceResolver& resolve
                 return std::unexpected(path.string() +
                                        ": dependency coordinate contradicts its recorded payload");
             dependency.payload = std::move(*source);
-            dependency.installDir = fs::canonical(dependency.installDir, ec);
-            if (ec)
-                return std::unexpected(path.string() + ": recorded dependency path is unreadable");
+            dependency.installDir =
+                fs::canonical(physical_path(dependency.payload, dependency.installDir), ec);
+            if (ec || !within(dependency.payload.root, dependency.installDir))
+                return std::unexpected(path.string() + ": recorded dependency path escapes its proved payload");
             const auto& directories = entry.at("libdirs");
             if (!directories.is_array())
                 return std::unexpected(path.string() + ": invalid dependency library provenance");
@@ -115,7 +125,7 @@ read_checked_resolution(const OwnedPayload& owner, const SourceResolver& resolve
                     return std::unexpected(path.string() + ": empty dependency library directory");
                 if (!libdir.is_absolute())
                     libdir = dependency.installDir / libdir;
-                libdir = fs::canonical(libdir, ec);
+                libdir = fs::canonical(physical_path(dependency.payload, libdir), ec);
                 if (ec || !within(dependency.payload.root, libdir))
                     return std::unexpected(
                         path.string() +

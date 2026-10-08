@@ -1,13 +1,15 @@
 export module xlings.core.home.layers;
 
 import std;
-import xlings.core.xvm.types;
+export import xlings.core.xvm.types;
 
 export namespace xlings::home::layers {
 namespace fs = std::filesystem;
 
 struct Snapshot {
     fs::path home;
+    fs::path sourceHome; // Physical authority; home is the execution view.
+    fs::path logicalHome;
     std::string scope;
     xvm::VersionDB versions;
     xvm::SubosWorkspace workspace;
@@ -56,6 +58,9 @@ struct BorrowPlan {
 // document is an error, while a genuinely absent document is observed empty.
 std::expected<Snapshot, std::string> read_snapshot(const fs::path& home,
                                                   std::string_view scope = "default");
+std::expected<Snapshot, std::string> read_source_snapshot(const fs::path& physicalHome,
+                                                         std::string_view scope = "default");
+bool owns_source_payload(const fs::path& physicalHome, const fs::path& payload);
 // Resolves every release and every recorded runtime dependency before the
 // caller changes state. Missing old evidence requires explicit --reconfig.
 std::expected<BorrowPlan, std::string> plan_borrow(const Snapshot& source,

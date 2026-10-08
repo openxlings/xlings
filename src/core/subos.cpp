@@ -31,6 +31,7 @@ import xlings.subos.policy_store;
 import xlings.subos.broker;
 import xlings.observe;
 import xlings.core.home;
+import xlings.core.home.domain_producer;
 import xlings.libs.sha256;
 import xlings.core.version_order;
 
@@ -455,6 +456,15 @@ bool reject_empty_subos_name_(std::string_view what, const std::string& name,
     return true;
 }
 
+bool reject_unrouted_domain_(const std::string& name, std::string_view operation, EventStream& stream) {
+    auto scope = xlings::home::domain_producer::read_scope(Config::paths().homeDir, name);
+    if (scope && !*scope) return false;
+    stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+        .message = scope ? std::format("{} of a private prefix-domain instance is not supported yet", operation)
+                         : scope.error(), .recoverable = false });
+    return true;
+}
+
 int create(const std::string& name, const fs::path& customDir,
                   sandbox::StorageMode storage, const std::string& imageSize,
                   const std::string& runtime,
@@ -470,6 +480,7 @@ int create(const std::string& name, const fs::path& customDir,
     auto& p = Config::paths();
 
     if (reject_empty_subos_name_("create a subos", name, stream)) return 1;
+    if (reject_unrouted_domain_(name, "replacement", stream)) return 1;
 
     if (name == "current") {
         stream.emit(ErrorEvent{
@@ -1002,6 +1013,7 @@ int new_from(const std::string& name, const fs::path& customDir,
         if (baseDir.empty()) return 1;
     } else {
         // ── local fork path: source is an existing subos by name ──────
+        if (reject_unrouted_domain_(fromSpec, "forking", stream)) return 1;
         baseDir = p.homeDir / "subos" / fromSpec;
         if (!fs::is_directory(baseDir)) {
             stream.emit(ErrorEvent{
@@ -1469,6 +1481,44 @@ int remove(const std::string& name, bool yes, std::string_view yesSpelling,
         return 1;
     }
 
+    auto scope = xlings::home::domain_producer::read_scope(p.homeDir, name);
+    if (!scope) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = scope.error(), .recoverable = false });
+        return 1;
+    }
+    if (*scope) {
+        const auto& actual = **scope;
+        auto preflight = xlings::home::domain_producer::check_control_removal(actual, name);
+        if (!preflight) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput, .message = preflight.error(), .recoverable = false });
+            return 1;
+        }
+        const auto what = userdata::describe(userdata::census(actual.producerInstance));
+        auto asked = confirm::ask(stream, "subos_remove",
+            std::format("remove subos '{}'? This deletes {} ({}) and cannot be undone", name,
+                        actual.producerInstance.string(), what), yes, yesSpelling);
+        if (asked.outcome == confirm::Outcome::Declined) return 0;
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+                .message = "removing '" + name + "' requires confirmation; nothing was removed", .recoverable = true,
+                .hint = userdata::needs_confirmation_hint(yesSpelling, "remove_subos") });
+            return 2;
+        }
+        const std::vector<std::string> arguments{"subos", "remove", name, "-y"};
+        auto removed = xlings::home::domain_producer::run(actual.domain, arguments, std::nullopt, true);
+        if (!removed) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = removed.error(), .recoverable = true });
+            return 1;
+        }
+        if (*removed != 0) return *removed;
+        auto cleaned = xlings::home::domain_producer::remove_control(actual, name);
+        if (!cleaned) {
+            stream.emit(ErrorEvent{ .code = ErrorCode::Internal, .message = cleaned.error(), .recoverable = true });
+            return 1;
+        }
+        return 0;
+    }
+
     auto dir = Config::subos_dir(name);
     if (fs::exists(dir)) {
         // A SubOS's home is where its user works -- an agent's clone, a
@@ -1689,6 +1739,10 @@ nlohmann::json graphics_fields_(const fs::path& subosDir) {
 int run_info_(const std::string& name, EventStream& stream) {
     auto& p = Config::paths();
     auto target = name.empty() ? p.activeSubos : name;
+    if (!name.empty()) {
+        const std::vector<std::string> domainArgs{"subos", "info", name};
+        if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+    }
     auto si = info(target);
     if (!si) {
         stream.emit(ErrorEvent{
@@ -1913,8 +1967,41 @@ int run(int argc, char* argv[], EventStream& stream) {
             usageError("missing <name> for: xlings subos new");
             return 1;
         }
+        if (!fromSpec.empty() && fromSpec.find_first_of(":@") == std::string::npos) {
+            auto source = xlings::home::domain_producer::read_scope(Config::paths().homeDir, fromSpec);
+            if (!source) { usageError(source.error()); return 1; }
+            if (*source) {
+                const auto& sourceDomain = (**source).domain;
+                if (!domain.empty() && fs::path(domain).lexically_normal() != sourceDomain.logicalHome) {
+                    usageError("a different prefix domain requires rebuilding from package coordinates; an instance's absolute payload paths cannot be copied across prefixes");
+                    return 1;
+                }
+                domain = sourceDomain.logicalHome.string();
+                const auto fresh = preflight_domain_at_creation_(name, true, domain, {});
+                if (!fresh) { usageError(fresh.error()); return 1; }
+                std::vector<std::string> arguments{"subos", "new"};
+                for (int i = 3; i < argc; ++i) {
+                    if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
+                    arguments.emplace_back(argv[i]);
+                }
+                if (!rootfs) arguments.push_back("--rootfs");
+                if (yesGiven) arguments.push_back("-y");
+                auto forked = produce_domain_at_creation_(name, true, domain, arguments, stream);
+                if (!forked) { usageError("private domain fork did not select its namespace producer"); return 1; }
+                return *forked;
+            }
+        }
         const auto domain_ready = preflight_domain_at_creation_(name, rootfs, domain, fromSpec);
         if (!domain_ready) { usageError(domain_ready.error()); return 1; }
+        if (!domain.empty()) {
+            std::vector<std::string> producerArgs{"subos", "new"};
+            for (int i = 3; i < argc; ++i) {
+                if (std::string_view(argv[i]) == "--domain") { ++i; continue; }
+                producerArgs.emplace_back(argv[i]);
+            }
+            if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
+                return *result;
+        }
         const int rc = !fromSpec.empty()
             ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream)
             : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
@@ -1975,7 +2062,7 @@ int run(int argc, char* argv[], EventStream& stream) {
                 shell_kind = a.substr(8);
             }
             else if (std::string err;
-                     a.starts_with("--sandbox") || a.starts_with("--net") || a.starts_with("--allow")
+                     a.starts_with("--sandbox") || a.starts_with("--net") || a.starts_with("--proxy") || a.starts_with("--observe") || a.starts_with("--allow")
                      || a.starts_with("--fetch") || a.starts_with("--publish") || a.starts_with("--mount")
                      || a == "--no-degrade") {
                 auto r = parse_isolation_flag_(a, i, argc, argv, iso, err);
@@ -2057,6 +2144,10 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (resolved.selected.empty()) return resolved.exitCode;
         name = std::move(resolved.selected);
 
+        std::vector<std::string> domainArgs{"subos", "use"};
+        domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+        if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+
         if (mode == "global") {
             if (!cmd.empty()) {
                 usageError("--cmd is incompatible with --global "
@@ -2115,6 +2206,9 @@ int run(int argc, char* argv[], EventStream& stream) {
             target = pick_subos_or_fail_("stop", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
+        std::vector<std::string> domainArgs{"subos", "stop", target};
+        if (argc > 4) domainArgs.insert(domainArgs.end(), argv + 4, argv + argc);
+        if (auto result = run_domain_operation_(target, domainArgs, stream)) return *result;
         const bool had = session::find(home_view(), target).has_value();
         if (had && !session::stop(home_view(), target)) {
             stream.emit(ErrorEvent{
@@ -2129,7 +2223,35 @@ int run(int argc, char* argv[], EventStream& stream) {
         else log::info("'{}' has no running session", target);
         return 0;
     }
-    if (sub == "ps") return run_ps_(argc, argv, stream);
+    if (sub == "ps") {
+        std::string name;
+        bool json = false, valid = true;
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view arg = argv[i];
+            if (arg == "--json") json = true;
+            else if (!arg.empty() && arg[0] != '-' && name.empty()) name = arg;
+            else valid = false;
+        }
+        if (name.empty()) return run_ps_(argc, argv, stream);
+        if (!valid) { usageError("usage: xlings subos ps [name] [--json]"); return 1; }
+        auto resolved = resolve_use_name_(name, stream);
+        if (resolved.selected.empty()) return resolved.exitCode;
+        name = resolved.selected;
+        std::vector<std::string> domainArgs{"subos", "ps", name};
+        if (json) domainArgs.push_back("--json");
+        if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+        const auto live = session::find(home_view(), name);
+        if (json) {
+            if (live) std::println(std::cout, "{}", session::to_json(*live).dump());
+        } else if (!live) log::info("'{}' has no running session", name);
+        else {
+            nlohmann::json table{{"headers", {"SUBOS", "SESSION", "BACKEND", "STARTED", "PID", "MODE"}},
+                {"rows", nlohmann::json::array({{live->instance, live->id, live->backend, live->started,
+                    std::to_string(live->supervisor_pid), live->detached ? std::format("detached, ttl {}s", live->ttl) : "attached"}})}};
+            stream.emit(DataEvent{"table", table.dump()});
+        }
+        return 0;
+    }
     if (sub == "exec") return run_exec_(argc, argv, stream);
     if (sub == "report") return run_report_(argc, argv, stream, usageError);
     if (sub == "requests" || sub == "approve" || sub == "deny")
@@ -2139,7 +2261,27 @@ int run(int argc, char* argv[], EventStream& stream) {
     if (sub == "doctor") return run_doctor_(argc, argv, stream, usageError);
     if (sub == "start") return run_start_(argc, argv, stream, usageError);
     if (sub == "cp") return run_cp_(argc, argv, stream, usageError);
-    if (sub == "log") return run_log_(argc, argv, stream, usageError);
+    if (sub == "log") {
+        std::string name;
+        bool valid = true;
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view arg = argv[i];
+            if (arg == "--json" || arg == "-f" || arg == "--follow") continue;
+            if (arg == "--kind" || arg == "--session" || arg == "-n" || arg == "--lines") {
+                if (++i >= argc) { valid = false; break; }
+                if (arg == "-n" || arg == "--lines") {
+                    try { (void)std::stoul(argv[i]); } catch (...) { valid = false; break; }
+                }
+            } else if (!arg.empty() && arg[0] != '-' && name.empty()) name = arg;
+            else { valid = false; break; }
+        }
+        if (valid && !name.empty()) {
+            std::vector<std::string> domainArgs{"subos", "log"};
+            domainArgs.insert(domainArgs.end(), argv + 3, argv + argc);
+            if (auto result = run_domain_operation_(name, domainArgs, stream)) return *result;
+        }
+        return run_log_(argc, argv, stream, usageError);
+    }
     if (sub == "rollback") return run_rollback_(argc, argv, stream, usageError);
     if (sub == "boot") return run_boot_(argc, argv, stream, usageError);
     if (sub == "export") return run_export_(argc, argv, stream, usageError);
@@ -2183,6 +2325,9 @@ int run(int argc, char* argv[], EventStream& stream) {
             target = pick_subos_or_fail_("runtime", stream, usageError, &rc);
             if (target.empty()) return rc;
         }
+        std::vector<std::string> domainArgs{"subos", "runtime", binding, target};
+        if (argc > 5) domainArgs.insert(domainArgs.end(), argv + 5, argv + argc);
+        if (auto result = run_domain_operation_(target, domainArgs, stream)) return *result;
         const auto dir = Config::subos_dir(target);
         auto doc = manifest::read_document(dir);
         if (!doc) {

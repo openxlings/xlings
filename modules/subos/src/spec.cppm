@@ -72,6 +72,7 @@ struct Request {
     fs::path root;
     // Host facts the compiler must not read itself, so a test can pin them.
     std::function<bool(std::string_view)> host_exists;
+    std::vector<MountOp> root_mounts; // Owner-checked, private skeleton and exact RO leaves.
 };
 
 struct SandboxSpec {

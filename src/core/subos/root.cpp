@@ -13,6 +13,8 @@ import xlings.subos.roles;
 import xlings.subos.boot;
 import xlings.subos.home_view;
 import xlings.subos.library_cache;
+import xlings.core.subos.store_closure;
+import xlings.core.subos.root_view;
 
 namespace xlings::subos_root {
 
@@ -181,6 +183,27 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     return in;
 }
 
+std::expected<bool, std::string> refresh_cache(const fs::path& home, std::string_view name) {
+    const auto tree = tree_of(home, name);
+    if (tree == "/")
+        return subos::library_cache::refresh(tree, {home}, name);
+    std::error_code ec;
+    if (!fs::exists(tree / "usr/bin/ldconfig", ec)) {
+        if (ec)
+            return std::unexpected("cannot inspect root ldconfig: " + ec.message());
+        return false;
+    }
+    auto scope = store_closure::read_scope(home, std::string(name), tree);
+    if (!scope)
+        return std::unexpected(scope.error());
+    auto view = root_view::prepare(*scope);
+    if (!view)
+        return std::unexpected(view.error());
+    const auto result = subos::library_cache::refresh(tree, {home}, name, (*view)->bindings());
+    (*view)->close();
+    return result;
+}
+
 std::optional<std::expected<Refreshed, std::string>>
 refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         const xvm::Workspace& workspace, const xvm::VersionDB& db, std::string_view reason) {
@@ -216,7 +239,7 @@ refresh(const fs::path& home, std::string_view name, const fs::path& subos_dir,
         const auto usr = rf::usr_of(subos_dir);
         out.etc_added = rf::fill_machine_etc(tree / "etc", subos_dir);
         out.users_added = rf::apply_sysusers(tree / "etc", usr);
-        if (auto cache = subos::library_cache::refresh(tree, {home}, name); !cache)
+        if (auto cache = refresh_cache(home, name); !cache)
             return failed(cache.error());
     } catch (const std::exception& error) {
         return failed(error.what());

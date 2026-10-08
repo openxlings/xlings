@@ -25,7 +25,7 @@ std::optional<std::filesystem::path> request_path(std::string_view url) {
         decoded += static_cast<char>(byte);
     }
     const std::filesystem::path path{decoded};
-    if (path.empty() || path.is_absolute()) return std::nullopt;
+    if (path.empty() || path.has_root_path()) return std::nullopt;
     for (const auto& part : path) if (part == ".." || part == ".") return std::nullopt;
     return path;
 }
