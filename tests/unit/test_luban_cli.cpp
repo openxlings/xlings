@@ -9,6 +9,7 @@ import luban.cli;
 import xlings.core.config;
 
 namespace cli = luban::cli;
+namespace tk = xlings::testkit;
 using V = std::vector<std::string>;
 
 namespace {
@@ -45,11 +46,11 @@ XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers =
 XTEST(LubanCli, AnImageFormatFollowsItsNameAndAnUnknownNameIsRefused, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
     EXPECT_EQ(x({"export", "box", "box.iso"}), (V{"subos", "export", "box", "--iso", "box.iso"}));
     EXPECT_EQ(x({"export", "box", "box.img", "--size", "8G"}),
-              (V{"subos", "export", "box", "--disk", "box.img", "--size", "8G"}));
+              (V{"subos", "export", "box", "--drive", "box.img", "--size", "8G"}));
     EXPECT_EQ(x({"export", "box", "box.qcow2"}), (V{"subos", "export", "box", "--qcow2", "box.qcow2"}));
     EXPECT_EQ(x({"export", "box", "box.tar.zst"}), (V{"subos", "export", "box", "--tar", "box.tar.zst"}));
     EXPECT_EQ(x({"export", "box", "out/"}), (V{"subos", "export", "box", "--rootfs", "out/"}));
-    EXPECT_EQ(x({"export", "box", "box.bin", "--format", "img"}), (V{"subos", "export", "box", "--disk", "box.bin"}));
+    EXPECT_EQ(x({"export", "box", "box.bin", "--format", "img"}), (V{"subos", "export", "box", "--drive", "box.bin"}));
     const auto refused = x({"export", "box", "box.bin"});
     ASSERT_EQ(refused.front(), "ERROR");
     EXPECT_NE(refused[1].find("--format"), std::string::npos) << refused[1];
@@ -67,4 +68,40 @@ XTEST(LubanCli, AMissingWordIsAUsageErrorThatSaysWhatIsMissing, .area = "luban",
 XTEST(LubanCli, LubanIsReleasedAsTheXlingsItDrives, .area = "luban", .covers = {"LUBAN-TOOL-SHIPPED"}) {
     EXPECT_EQ(cli::kVersion, xlings::Info::VERSION)
         << "bump luban/src/cli/cli.cppm kVersion with mcpp.toml and src/core/config.cppm";
+}
+
+XTEST(LubanCli, ADriveIsWrittenOnlyWhenItIsAWholeDriveNobodyUses, .area = "luban", .covers = {"LUBAN-WRITE-SAFE"}) {
+    auto home = tk::Home::isolated("drives");
+    const auto sys = home.root() / "sys";
+    const auto block = sys / "class/block";
+    auto drive = [&](std::string name, std::string sectors, std::string model, std::string serial) {
+        tk::write_file(block / name / "size", sectors + "\n");
+        tk::write_file(block / name / "device/model", model + "   \n");
+        if (!serial.empty()) tk::write_file(block / name / "device/serial", serial + "\n");
+        std::filesystem::create_directories(block / name / "holders");
+    };
+    drive("sdb", "62914560", "SanDisk Ultra", "4C530001");   // 32 GB stick
+    drive("sda", "1953525168", "Samsung SSD", "S4EV");
+    tk::write_file(block / "sda/sda2/partition", "2\n");     // its partition
+    tk::write_file(block / "sda2/partition", "2\n");
+    drive("loop3", "204800", "", "");
+    drive("sdc", "100", "held", "X");
+    tk::write_file(block / "sdc/holders/dm-0", "");
+    const auto mounts = home.root() / "mounts";
+    tk::write_file(mounts, "/dev/sda2 / ext4 rw 0 0\nproc /proc proc rw 0 0\n");
+
+    auto stick = cli::inspect_drive("/dev/sdb", sys, mounts);
+    EXPECT_TRUE(stick.refused.empty()) << stick.refused;
+    EXPECT_EQ(stick.bytes, 62914560ull * 512);
+    EXPECT_EQ(stick.model, "SanDisk Ultra");
+    EXPECT_EQ(stick.serial, "4C530001");
+    EXPECT_NE(cli::inspect_drive("/dev/sda", sys, mounts).refused.find("mounted"), std::string::npos)
+        << "the drive this system runs from";
+    EXPECT_NE(cli::inspect_drive("/dev/sda2", sys, mounts).refused.find("partition"), std::string::npos);
+    EXPECT_NE(cli::inspect_drive("/dev/sdc", sys, mounts).refused.find("held"), std::string::npos);
+    EXPECT_NE(cli::inspect_drive("/dev/nvme9n9", sys, mounts).refused.find("not a drive"), std::string::npos);
+    EXPECT_NE(cli::inspect_drive("/tmp/sdb", sys, mounts).refused.find("not a drive"), std::string::npos);
+    auto loop = cli::inspect_drive("/dev/loop3", sys, mounts);
+    EXPECT_TRUE(loop.refused.empty()) << loop.refused;
+    EXPECT_EQ(loop.serial, "loop3") << "no serial: its name is what --serial must say";
 }

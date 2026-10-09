@@ -79,6 +79,18 @@ status = "required"
 text = "an environment exports as a live ISO (limine, the root as initramfs) that boots to its init; BIOS in-process, BIOS+UEFI with xorriso"
 status = "required"
 
+[LUBAN-WRITE-SAFE]
+text = "luban write refuses a partition, a mounted or held drive (the system's own) and anything that is not a drive; an agent must name the drive's serial"
+status = "required"
+
+[LUBAN-TRY]
+text = "luban try boots an environment or an image in a local virtual machine; with --proxy its only network is the proxy"
+status = "required"
+
+[LUBAN-DRIVE]
+text = "an environment exports as a drive image (GPT, a FAT system partition with limine, an ext4 root by PARTUUID) that boots on BIOS and UEFI"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

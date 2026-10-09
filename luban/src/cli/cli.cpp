@@ -5,6 +5,10 @@ import xlings.cli.model;
 import xlings.libs.json;
 import xlings.platform;
 import xlings.platform.stream;
+import xlings.subos.home_view;
+import xlings.subos.ports;
+import xlings.subos.tools;
+import xlings.subos.elevation;
 
 namespace luban::cli {
 
@@ -26,7 +30,7 @@ const std::map<std::string, std::string, std::less<>>& equivalents() {
         {"config", "xlings subos config <name> --<key> <value>"},
         {"history", "xlings subos rollback <name> --list"},
         {"rollback", "xlings subos rollback <name> [--to <N>]"},
-        {"export", "xlings subos export <name> --iso|--disk|--tar|--rootfs <file>"},
+        {"export", "xlings subos export <name> --iso|--drive|--qcow2|--tar|--rootfs <file>"},
         {"rm", "xlings subos remove <name>"},
         {"setup", "xlings self doctor --isolation --fix"},
         {"boot", "xlings subos boot [name] [--once|--fallback|--mark-good|--now]"},
@@ -207,7 +211,11 @@ const spec::CommandSpec& tree() {
              .options = {{"--serial <SERIAL>", "The drive's serial (required with --agent)"}},
              .level = Level::More},
             {.name = "try", .description = "Boot an environment or an image in a local virtual machine",
-             .arguments = {{"source", "An environment or an image file", true}}, .level = Level::More},
+             .arguments = {{"source", "An environment or an image file", true}},
+             .options = {{"--proxy <URL>", "Its only network is this proxy (a private machine)"},
+                         {"--memory <MB>", "Its memory (default 2048)"},
+                         {"--nographic", "Its console in this terminal"}},
+             .level = Level::More},
             {.name = "rm", .description = "Remove an environment (asks first)", .aliases = {"remove"},
              .arguments = {{"name", "Which", true}}, .level = Level::More},
             {.name = "setup", .description = "This host's one-time setup (isolation)", .level = Level::More},
@@ -357,7 +365,7 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
             return std::unexpected(std::format("cannot tell the format from '{}': name it .iso, .img, .qcow2, .tar, "
                                                ".tar.zst or end it with / (a directory), or give --format", positional[1]));
         static const std::map<std::string, std::string, std::less<>> flag_of{
-            {"iso", "--iso"}, {"img", "--disk"}, {"qcow2", "--qcow2"}, {"tar", "--tar"}, {"dir", "--rootfs"}};  // tool-ok: format names, not programs
+            {"iso", "--iso"}, {"img", "--drive"}, {"qcow2", "--qcow2"}, {"tar", "--tar"}, {"dir", "--rootfs"}};  // tool-ok: format names, not programs
         auto f = flag_of.find(format);
         if (f == flag_of.end()) return std::unexpected(std::format("no format '{}': iso, img, qcow2, tar, dir", format));
         x = {"subos", "export", positional[0], f->second, positional[1]};
@@ -393,6 +401,251 @@ fs::path xlings_path() {
     return "xlings" + exe;
 }
 
+namespace {
+
+std::string trim_(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+    return s;
+}
+
+fs::path home_dir_() {
+    if (const char* h = std::getenv("XLINGS_HOME"); h && *h) return h;
+    if (const char* u = std::getenv("HOME"); u && *u) return fs::path(u) / ".xlings";
+    return ".xlings";
+}
+
+std::string human_size_(std::uintmax_t bytes) {
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = static_cast<double>(bytes);
+    int u = 0;
+    while (v >= 1000 && u < 4) { v /= 1000; ++u; }
+    return std::format("{:.1f} {}", v, units[u]);
+}
+
+// One option's value from luban's argv (`--x v` or `--x=v`).
+std::optional<std::string> option_(std::span<const std::string> args, std::string_view name) {
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == name && i + 1 < args.size()) return args[i + 1];
+        if (args[i].starts_with(std::string(name) + "=")) return args[i].substr(name.size() + 1);
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> positionals_(std::span<const std::string> args, std::set<std::string, std::less<>> valued) {
+    std::vector<std::string> out;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (valued.contains(args[i])) { ++i; continue; }
+        if (args[i].starts_with('-')) continue;
+        out.push_back(args[i]);
+    }
+    return out;
+}
+
+// An environment's image in a temporary file, made by xlings; removed with
+// this object.
+struct Exported {
+    fs::path file;
+    ~Exported() { if (!file.empty()) { std::error_code ec; fs::remove(file, ec); } }
+};
+
+std::expected<fs::path, int> source_image_(const std::string& source, std::string_view flag, std::string_view ext,
+                                           Exported& keep) {
+    std::error_code ec;
+    if (fs::is_regular_file(source, ec)) return fs::absolute(source);
+    keep.file = fs::temp_directory_path() / std::format("luban-{}-{}{}", source, xlings::platform::get_pid(), ext);
+    std::println(std::cerr, "luban: making an image of '{}' ...", source);
+    const int rc = xlings::platform::run_argv({xlings_path().string(), "subos", "export", source,
+                                              std::string(flag), keep.file.string()});
+    if (rc != 0) return std::unexpected(rc);
+    return keep.file;
+}
+
+// The raw copy, run by `luban write` itself or -- when the drive is not
+// writable -- through the one door for administrator rights.
+int raw_write_(const fs::path& from, const fs::path& to) {
+    std::ifstream in(from, std::ios::binary);
+    std::ofstream out(to, std::ios::binary | std::ios::in | std::ios::out);
+    if (!in || !out) {
+        std::println(std::cerr, "luban: cannot open {} for writing", to.string());
+        return 1;
+    }
+    std::error_code ec;
+    const auto total = fs::file_size(from, ec);
+    std::vector<char> buffer(4u << 20);
+    std::uintmax_t done = 0;
+    int shown = -1;
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto n = in.gcount();
+        if (n <= 0) break;
+        out.write(buffer.data(), n);
+        if (!out) { std::println(std::cerr, "luban: writing {} failed", to.string()); return 1; }
+        done += static_cast<std::uintmax_t>(n);
+        const int pct = total ? static_cast<int>(done * 100 / total) : 100;
+        if (pct / 10 != shown / 10) { std::print(std::cerr, "\r  {:3}%  {}", pct, human_size_(done)); shown = pct; }
+    }
+    out.flush();
+    out.close();
+    if (!xlings::platform::sync_file(to)) { std::println(std::cerr, "\nluban: {} did not flush", to.string()); return 1; }
+    std::println(std::cerr, "\r  100%  {} written and flushed", human_size_(done));
+    return 0;
+}
+
+int write_cmd_(std::span<const std::string> rest, bool json, bool agent, bool yes) {
+    if constexpr (!xlings::platform::is_linux) {
+        std::println(std::cerr, "luban: writing a drive is Linux-only in this version -- `luban export <name> x.iso` "
+                                "here, then write the ISO with this system's own drive writer");
+        return 1;
+    }
+    const auto pos = positionals_(rest, {"--serial"});
+    if (pos.size() != 2) return usage("`luban write <image or environment> <drive>`", json);
+    auto drive = inspect_drive(pos[1]);
+    if (!drive.refused.empty()) {
+        if (json) std::println("{}", nlohmann::json{{"error", "drive"}, {"device", pos[1]}, {"message", drive.refused}}.dump());
+        else std::println(std::cerr, "luban: {}: {}", pos[1], drive.refused);
+        return 1;
+    }
+    // An environment becomes a drive that boots it (and keeps what it
+    // writes); an image file is written as it is.
+    Exported keep;
+    std::error_code ec;
+    const bool file = fs::is_regular_file(pos[0], ec);
+    const std::string summary = std::format("{} ({}, {}{})", drive.dev.string(), drive.model.empty() ? "drive" : drive.model,
+                                            human_size_(drive.bytes),
+                                            drive.serial != drive.name ? ", serial " + drive.serial : std::string{});
+    // Asked before anything is made: the drive is erased.
+    const bool can_ask = !agent && xlings::platform::stdin_is_terminal();
+    const auto given = option_(rest, "--serial");
+    if (!can_ask || yes) {
+        if (!yes || !given || *given != drive.serial) {
+            const auto cmd = std::format("luban write {} {} -y --serial {}", pos[0], pos[1], drive.serial);
+            if (json) std::println("{}", nlohmann::json{{"error", "confirm"}, {"message", "erases " + summary},
+                                                        {"command", cmd}}.dump());
+            else std::println(std::cerr, "luban: this erases {}; to go ahead without a question:\n  {}", summary, cmd);
+            return 2;
+        }
+    } else {
+        std::println("this erases everything on {}", summary);
+        std::print("type the drive's name ({}) to go ahead: ", drive.name);
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (trim_(answer) != drive.name) { std::println("nothing written"); return 1; }
+    }
+    auto image = source_image_(pos[0], "--drive", ".img", keep);
+    if (!image) return image.error();
+    const auto size = fs::file_size(*image, ec);
+    if (size > drive.bytes) {
+        std::println(std::cerr, "luban: the image ({}) is larger than {} ({})", human_size_(size), drive.dev.string(),
+                     human_size_(drive.bytes));
+        return 1;
+    }
+    std::println("writing {} to {} ...", file ? pos[0] : "'" + pos[0] + "'", drive.dev.string());
+    std::ofstream probe(drive.dev, std::ios::binary | std::ios::in | std::ios::out);
+    if (probe) {
+        probe.close();
+        return raw_write_(*image, drive.dev);
+    }
+    // Not this user's to write: the one door, recorded.
+    const auto self = xlings::platform::get_executable_path();
+    return xlings::subos::elevation::run(xlings::subos::HomeView{home_dir_()},
+                                         {self.string(), "__write", image->string(), drive.dev.string()},
+                                         "luban write: a boot drive");
+}
+
+int try_cmd_(std::span<const std::string> rest, bool json) {
+    const auto pos = positionals_(rest, {"--proxy", "--memory"});
+    if (pos.size() != 1) return usage("`luban try <environment or image>`", json);
+    std::string arch = "x86_64";
+    if (auto m = read_first_line("/proc/sys/kernel/arch"); !m.empty()) arch = m;
+    if (arch != "x86_64")
+        return usage(std::format("`luban try` runs x86_64 images in this version (this machine is {})", arch), json);
+    const xlings::subos::HomeView home{home_dir_()};
+    auto qemu = xlings::subos::tools::first("qemu-system-x86_64", home, xlings::subos::Ports{});
+    if (!qemu) {
+        std::println(std::cerr, "luban: trying needs qemu -- {}", xlings::subos::tools::install_hint("qemu-system-x86_64"));
+        return 1;
+    }
+    Exported keep;
+    auto image = source_image_(pos[0], "--iso", ".iso", keep);
+    if (!image) return image.error();
+    std::vector<std::string> q{qemu->bin.string(), "-m", option_(rest, "--memory").value_or("2048"), "-smp", "2"};
+    std::error_code ec;
+    // A character device this user may open, never a file made by asking.
+    if (std::fstream kvm; fs::is_character_file("/dev/kvm", ec)
+        && (kvm.open("/dev/kvm", std::ios::in | std::ios::out), kvm.is_open()))
+        q.insert(q.end(), {"-enable-kvm", "-cpu", "host"});
+    else std::println(std::cerr, "luban: no KVM here -- it runs, slowly (emulated)");
+    const auto ext = image->extension().string();
+    if (ext == ".iso") q.insert(q.end(), {"-cdrom", image->string(), "-boot", "d"});
+    else q.insert(q.end(), {"-drive", std::format("file={},format={},if=virtio", image->string(),
+                                                  ext == ".qcow2" ? "qcow2" : "raw")});
+    // Its network: the machine's NAT, or -- for a private one -- nothing but
+    // the proxy (Luban design §C5 L3): restrict=on keeps every other route
+    // out, and the guest reaches the proxy at 10.0.2.100:1080.
+    if (auto proxy = option_(rest, "--proxy")) {
+        const auto at = proxy->find("://");
+        const auto endpoint = at == std::string::npos ? *proxy : proxy->substr(at + 3);
+        q.insert(q.end(), {"-nic", std::format("user,restrict=on,guestfwd=tcp:10.0.2.100:1080-tcp:{}", endpoint)});
+        std::println(std::cerr, "luban: its only network is the proxy, at socks5h://10.0.2.100:1080 inside");
+    } else {
+        q.insert(q.end(), {"-nic", "user"});
+    }
+    const char* display = std::getenv("DISPLAY");
+    const char* wayland = std::getenv("WAYLAND_DISPLAY");
+    if (flag(rest, "--nographic") || !((display && *display) || (wayland && *wayland))) {
+        q.push_back("-nographic");
+        std::println(std::cerr, "luban: its console is this terminal; Ctrl-A X leaves");
+    }
+    return xlings::platform::run_argv(q);
+}
+
+}  // namespace
+
+Drive inspect_drive(const fs::path& dev, const fs::path& sys, const fs::path& mounts) {
+    Drive d;
+    d.dev = dev;
+    d.name = dev.filename().string();
+    std::error_code ec;
+    const auto block = sys / "class" / "block" / d.name;
+    if (dev.parent_path() != "/dev" || !fs::exists(block, ec)) { d.refused = "not a drive this machine has"; return d; }
+    if (fs::exists(block / "partition", ec)) {
+        d.refused = "a partition, not a drive -- name the whole drive";
+        return d;
+    }
+    d.bytes = 512 * static_cast<std::uintmax_t>(std::strtoull(read_first_line(block / "size").c_str(), nullptr, 10));
+    d.model = trim_(read_first_line(block / "device" / "model"));
+    d.serial = trim_(read_first_line(block / "device" / "serial"));
+    if (d.serial.empty()) d.serial = d.name;
+    // In use: it, or one of its partitions, is mounted or held (LVM, RAID,
+    // dm-crypt) -- which is how the drive this system runs from is refused.
+    std::vector<std::string> names{d.name};
+    for (fs::directory_iterator it(block, ec), end; !ec && it != end; it.increment(ec))
+        if (fs::exists(it->path() / "partition")) names.push_back(it->path().filename().string());
+    for (const auto& n : names) {
+        const auto holders = (n == d.name ? block : block / n) / "holders";
+        if (fs::exists(holders, ec) && !fs::is_empty(holders, ec)) {
+            d.refused = std::format("in use ({} is held by another device)", n);
+            return d;
+        }
+    }
+    std::ifstream table(mounts);
+    for (std::string line; std::getline(table, line);) {
+        const auto source = line.substr(0, line.find(' '));
+        if (!source.starts_with("/dev/")) continue;
+        auto real = source;
+        if (auto c = fs::weakly_canonical(source, ec); !ec) real = c.string();
+        const auto name = fs::path(real).filename().string();
+        if (std::ranges::find(names, name) != names.end()) {
+            const auto rest = line.substr(line.find(' ') + 1);
+            d.refused = std::format("mounted ({} on {})", source, rest.substr(0, rest.find(' ')));
+            return d;
+        }
+    }
+    if (d.bytes == 0) d.refused = "it reports no size (no medium?)";
+    return d;
+}
+
 int run(int argc, char* argv[]) {
     std::vector<std::string> args(argv + 1, argv + argc);
     // Global options, wherever they are (before `--`).
@@ -412,6 +665,8 @@ int run(int argc, char* argv[]) {
 
     if (rest.empty()) return overview(json);
     const auto& cmd = rest.front();
+    // Internal: the raw copy, as `luban write` runs it with administrator rights.
+    if (cmd == "__write" && rest.size() == 3) return raw_write_(rest[1], rest[2]);
     if (cmd == "--version" || cmd == "-V") {
         std::println("luban {}", kVersion);
         return 0;
@@ -431,8 +686,10 @@ int run(int argc, char* argv[]) {
         return 0;
     }
     if (node->name == "status" && rest.size() == 1) return host_status(json);
-    if (node->name == "write" || node->name == "try" || node->name == "install")
-        return usage(std::format("`luban {}` is not in this build yet", node->name), json);
+    if (node->name == "write") return write_cmd_(rest, json, agent, yes);
+    if (node->name == "try") return try_cmd_(rest, json);
+    if (node->name == "install")
+        return usage("`luban install` is not in this build yet", json);
 
     std::vector<std::string> forwarded(rest.begin(), rest.end());
     forwarded.front() = node->name;

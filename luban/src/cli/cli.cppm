@@ -39,6 +39,19 @@ std::filesystem::path xlings_path();
 // (YYYY.M.D.N). tests/unit/test_luban_cli.cpp holds the two equal.
 inline constexpr std::string_view kVersion = "2026.10.9.2";
 
+// A drive `luban write` may write (Linux): what it is, read from sysfs and the
+// mount table (parameters, so a test can hand it a made-up machine).
+struct Drive {
+    std::string name;            // sdb, nvme0n1, loop3
+    std::filesystem::path dev;   // /dev/sdb
+    std::uintmax_t bytes { 0 };
+    std::string model;
+    std::string serial;          // what --serial must say; the name when it reports none
+    std::string refused;         // non-empty: why it must not be written
+};
+Drive inspect_drive(const std::filesystem::path& dev, const std::filesystem::path& sys = "/sys",
+                    const std::filesystem::path& mounts = "/proc/self/mounts");
+
 // The lowest xlings interface protocol this luban speaks.
 inline constexpr std::string_view kMinProtocol = "1.6";
 
