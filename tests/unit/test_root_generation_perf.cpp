@@ -119,6 +119,12 @@ XTEST(RootGenerationPerf, ThreeThousandPayloadsSwitchWithinTheSameBudget, .area 
     GTEST_SKIP() << "instrumented workload validated; runtime timing budgets require the mandatory "
                    "static performance lane";
 #endif
+    // A budget is asserted where timings mean something: the static
+    // performance lane runs this case alone (XLINGS_PERF_BUDGETS=1). A lane
+    // that runs the suite in parallel measures its own contention -- the same
+    // binary read 11.9 ms and 25.3 ms on two runs of one runner.
+    if (const char* on = std::getenv("XLINGS_PERF_BUDGETS"); !on || std::string_view(on) != "1")
+        GTEST_SKIP() << "workload validated; the timing budget is the static performance lane's";
     // Ten times the payloads within twice the 300-payload budget: the check
     // stats every payload root once (a rollback must not land on a deleted
     // one), so it grows with the payloads, not with their links. Measured:

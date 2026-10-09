@@ -492,6 +492,8 @@ jobs:
           candidate="$(find "$GITHUB_WORKSPACE/build" -path '*/bin/xlings' -type f | head -1)"
           test -x "$candidate"
           export XLINGS_BIN="$candidate"
+          # Timing budgets are asserted here, where each case runs alone.
+          export XLINGS_PERF_BUDGETS=1
           status=0
           "$XDEV" test e2e/test_subos_perf --no-build --require-metadata \
             --out target/xdev/linux-static-perf || status=$?
