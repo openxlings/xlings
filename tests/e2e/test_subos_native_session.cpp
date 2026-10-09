@@ -8,6 +8,11 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 
 import std;
+import xlings.subos.caps;
+import xlings.subos.home_view;
+import xlings.subos.policy;
+import xlings.subos.spec;
+import xlings.confine;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -28,6 +33,28 @@ struct Box {
 };
 
 }  // namespace
+
+XTEST(NativeSession, TheHomeRedirectLaunchesAsTheSupervisorsSessionInit,
+      .area = "subos", .covers = {"SESSION-NATIVE-SUPERVISED"}) {
+    // The mechanism the macOS supervisor stands on, on any host: a home
+    // redirect is started as this binary's __session-init with its command
+    // after it -- the same entry a Linux sandbox's supervisor starts.
+    namespace sp = xlings::subos::spec;
+    xlings::subos::caps::Caps mac;
+    mac.platform = "macos";
+    sp::Request r;
+    r.instance = "box";
+    r.instance_dir = "/h/subos/box";
+    r.user = "u";
+    r.argv = {"/bin/echo", "hi"};
+    auto compiled = xlings::confine::compile(xlings::subos::policy::legacy(), xlings::subos::HomeView{"/h"}, mac, r);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->backend, sp::Backend::HomeRedirect);
+    auto launched = *compiled;
+    launched.argv = {"/run/xlings/xlings", "__session-init", "--", "/bin/echo", "hi"};
+    EXPECT_EQ(xlings::confine::launch_argv(launched, std::nullopt, "/Applications/x/bin/xlings"),
+              (std::vector<std::string>{"/Applications/x/bin/xlings", "__session-init", "--", "/bin/echo", "hi"}));
+}
 
 XTEST(NativeSession, MacosRunsTheHomeRedirectUnderTheSupervisor,
       .area = "subos", .cost = tk::Cost::Medium,

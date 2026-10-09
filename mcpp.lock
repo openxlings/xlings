@@ -5,17 +5,10 @@
 # file must not change depending on which command ran last.
 version = 2
 
-[package."compat.mbedtls"]
-namespace = "compat"
-version = "3.6.1"
-source  = "index+compat@3.6.1"
-hash    = "fnv1a:bb700e69e973ccd0"
-
-[package."tinyhttps"]
-namespace = "mcpplibs"
-version = "0.2.9"
-source  = "index+mcpplibs@0.2.9"
-hash    = "fnv1a:a01132893163f775"
+[package."mcpplibs.xpkg"]
+version = "912720f7aa2204a4c48f0d989331af993bb3c1e4"
+source  = "git+https://github.com/openxlings/libxpkg.git#rev=912720f7aa2204a4c48f0d989331af993bb3c1e4"
+hash    = "fnv1a:84ad1e27eb935f69"
 
 [package."compat.bzip2"]
 namespace = "compat"
@@ -47,6 +40,12 @@ version = "1.10.0"
 source  = "index+compat@1.10.0"
 hash    = "fnv1a:c1f0fef08251ee13"
 
+[package."compat.mbedtls"]
+namespace = "compat"
+version = "3.6.1"
+source  = "index+compat@3.6.1"
+hash    = "fnv1a:bb700e69e973ccd0"
+
 [package."compat.xz"]
 namespace = "compat"
 version = "5.8.3"
@@ -65,20 +64,21 @@ version = "1.5.7"
 source  = "index+compat@1.5.7"
 hash    = "fnv1a:cc855914d41f9bfb"
 
-[package."mcpplibs.capi.lua"]
-namespace = "mcpplibs.capi"
-version = "0.0.3"
-source  = "index+mcpplibs.capi@0.0.3"
-hash    = "fnv1a:f3031630d0b22d94"
-
 [package."mcpplibs.cmdline"]
 namespace = "mcpplibs"
 version = "0.0.2"
 source  = "index+mcpplibs@0.0.2"
 hash    = "fnv1a:aad61299abc2c4b7"
 
-[package."mcpplibs.xpkg"]
-version = "912720f7aa2204a4c48f0d989331af993bb3c1e4"
-source  = "git+https://github.com/openxlings/libxpkg.git#rev=912720f7aa2204a4c48f0d989331af993bb3c1e4"
-hash    = "fnv1a:84ad1e27eb935f69"
+[package."tinyhttps"]
+namespace = "mcpplibs"
+version = "0.2.9"
+source  = "index+mcpplibs@0.2.9"
+hash    = "fnv1a:a01132893163f775"
+
+[package."mcpplibs.capi.lua"]
+namespace = "mcpplibs.capi"
+version = "0.0.3"
+source  = "index+mcpplibs.capi@0.0.3"
+hash    = "fnv1a:f3031630d0b22d94"
 
