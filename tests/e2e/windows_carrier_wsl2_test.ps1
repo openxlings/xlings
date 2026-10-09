@@ -60,3 +60,4 @@ if (Test-Path "$PKG_DIR\subos\carrierbox") { Fail "a refused carrier SubOS left 
 if ($LASTEXITCODE -ne 0) { Fail "a native SubOS could not be made after the carrier was refused" }
 & xlings subos remove nativebox -y | Out-Null
 Write-Host "PASS: wsl2 carrier unavailable here -> refused with its route; native SubOS unaffected"
+exit 0
