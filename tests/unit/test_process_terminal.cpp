@@ -9,6 +9,7 @@ import xlings.testkit;
 
 #if !defined(_WIN32)   // a terminal job is a POSIX notion (Windows: a Job Object, no foreground group)
 #include <fcntl.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
