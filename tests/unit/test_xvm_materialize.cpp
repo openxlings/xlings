@@ -300,3 +300,27 @@ XTEST(XvmMaterialize, UseConflictDoesNotPublishMetadataOrDeleteUserHeaders, .are
     EXPECT_EQ(tk::read_file(scope / "usr/include/shared.h.xlings-new/sentinel"), "user staging");
     EXPECT_EQ(nlohmann::json::parse(tk::read_file(scope / ".xlings.json")), scopeConfig);
 }
+
+XTEST(XvmMaterialize, AnAssetThePayloadDoesNotShipIsNotPlacedAndDoesNotRefuseTheRest,
+      .area = "xvm", .covers = {"HOME-LAYER-RESOLVE"}) {
+    // gcc 15.1.0's recipe declares lib64/libasan.so, which that build does
+    // not ship. The 2026.10.9.1 materializer refused the whole update over it
+    // (fresh-install, gcc suite); an absent source is skipped, as it was
+    // before -- the others are placed.
+    auto home = tk::Home::isolated("asset-absent-source");
+    const auto scope = home.dir() / "subos/default";
+    const auto payload = home.dir() / "data/xpkgs/xim-x-gcc/15.1.0/lib64";
+    tk::write_file(payload / "libstdc++.so.6", "present");
+    const std::vector<m::AssetChange> changes{
+        {payload / "libstdc++.so.6", scope / "lib/libstdc++.so.6", false},
+        {payload / "libasan.so", scope / "lib/libasan.so", false},
+    };
+    auto prepared = m::preflight_materialization(changes, {}, scope);
+    ASSERT_TRUE(prepared) << prepared.error();
+    auto applied = prepared->execute();
+    ASSERT_TRUE(applied) << applied.error();
+    ASSERT_TRUE(applied->commit());
+    EXPECT_TRUE(fs::exists(scope / "lib/libstdc++.so.6"));
+    std::error_code ec;
+    EXPECT_FALSE(fs::exists(fs::symlink_status(scope / "lib/libasan.so", ec))) << "absent: not placed";
+}
