@@ -340,7 +340,7 @@ jobs:
           echo "XDEV=$xdev" >> "$GITHUB_ENV"
           export XDEV_BIN="$xdev"
           mkdir -p target/xdev/linux-xdev
-          printf '%s\n' '{"name":"linux-xdev","platform":"linux","probes":{}}' > target/xdev/linux-xdev/lane.json
+          printf '{"name":"linux-xdev","platform":"linux","run":"%s:%s","probes":{}}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > target/xdev/linux-xdev/lane.json
           XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/meta.ndjson" \
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/linux-xdev/cases.ndjson" \
             mcpp test -p xdev
@@ -826,7 +826,7 @@ jobs:
           $dir = "target/xdev/windows-wsl"
           New-Item -ItemType Directory -Force $dir | Out-Null
           $name = "wsl: subos export --tar imports with wsl --import (WSL1)"
-          '{"name":"windows-wsl","platform":"windows","probes":{}}' | Set-Content "$dir/lane.json"
+          ('{"name":"windows-wsl","platform":"windows","run":"' + $env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT + '","probes":{}}') | Set-Content "$dir/lane.json"
           ('{"test":"' + $name + '","area":"scenario","covers":["EXPORT-WSL"],"requires":[],"proves":"flow"}') | Set-Content "$dir/meta.ndjson"
           if ("${{ steps.run.outcome }}" -eq "success") { $st = "pass"; $msg = "" }
           elseif ("${{ steps.setup.outcome }}" -ne "success") { $st = "skip"; $msg = "WSL1 could not be set up on this runner" }

@@ -395,13 +395,29 @@ std::expected<Prepared, std::string> preflight_materialization(
             if (!expanded) return std::unexpected(expanded.error());
         }
     }
+    // An asset a recipe declares that this payload does not have is not
+    // placed -- as before this materializer: recipes declare their assets
+    // across versions, and a version without one (gcc 15.1.0 ships no
+    // libasan.so) is not a broken install. What exists and cannot be read
+    // still refuses: that is not "absent".
+    for (auto it = operations.begin(); it != operations.end();) {
+        if (it->second.change.remove) { ++it; continue; }
+        std::error_code ec;
+        const auto status = fs::status(it->second.change.source, ec);
+        if (status.type() == fs::file_type::not_found
+            && (!ec || ec == std::errc::no_such_file_or_directory)) {
+            log::debug("[xvm] asset source missing, not placed: {}", it->second.change.source.string());
+            it = operations.erase(it);
+            continue;
+        }
+        if (ec) return std::unexpected(it->second.change.source.string() + ": asset source is unreadable: " + ec.message());
+        ++it;
+    }
     // A declared directory and another package's descendant must merge into
     // a real directory, never write through the existing payload link.
     for (auto& [destination, operation] : operations) {
         if (operation.change.remove) continue;
         std::error_code ec;
-        if (!fs::exists(operation.change.source, ec) || ec)
-            return std::unexpected(operation.change.source.string() + ": asset source is missing or unreadable");
         if (fs::is_directory(operation.change.source, ec)) {
             for (const auto& [child, nested] : operations)
                 if (!nested.change.remove && below_(destination, child)) operation.unwrap = true;
