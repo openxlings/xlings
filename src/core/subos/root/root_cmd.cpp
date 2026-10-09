@@ -605,9 +605,132 @@ int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usa
 
 // ── export ───────────────────────────────────────────────────────────
 
+namespace {
+
+// A path of the image as the image sees it, resolved component by component
+// through the image's own links (an absolute link names a path of the
+// image, not of this machine) -- what the kernel does inside a chroot.
+fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops) {
+    fs::path current = "/";
+    std::error_code ec;
+    for (const auto& part : inside.relative_path()) {
+        if (part == ".") continue;
+        if (part == "..") { current = current.parent_path(); continue; }
+        const auto next = current / part;
+        const auto here = stage / next.relative_path();
+        if (fs::is_symlink(here, ec) && ++hops < 40) {
+            const auto target = fs::read_symlink(here, ec);
+            if (ec) return next;
+            current = inside_stage_(stage, (target.is_absolute() ? target : current / target).lexically_normal(), hops);
+        } else {
+            current = next;
+        }
+    }
+    return current;
+}
+
+fs::path in_stage_(const fs::path& stage, const fs::path& inside) {
+    int hops = 0;
+    return stage / inside_stage_(stage, inside, hops).relative_path();
+}
+
+// Where limine's boot files are: beside the limine this home or this
+// machine has (the tool table), a limine payload, the machine's share.
+std::optional<fs::path> limine_data_(const fs::path& home, EventStream& stream) {
+    std::vector<fs::path> candidates;
+    auto ports = subos::make_ports(stream);
+    if (auto found = subos::tools::first("limine", home_view(), ports))
+        candidates.push_back(found->bin.parent_path().parent_path() / "share" / "limine");
+    std::error_code ec;
+    for (fs::directory_iterator it(home / "data" / "xpkgs" / "xim-x-limine", ec), end; !ec && it != end; it.increment(ec))
+        candidates.push_back(it->path() / "share" / "limine");
+    candidates.insert(candidates.end(), {"/usr/share/limine", "/usr/local/share/limine"});
+    for (const auto& d : candidates)
+        if (fs::is_regular_file(d / "limine-bios-cd.bin", ec) && fs::is_regular_file(d / "limine-bios.sys", ec))
+            return d;
+    return std::nullopt;
+}
+
+// A live ISO of the image in `stage` (Luban design §A9): limine boots the
+// kernel with the whole root as its initramfs -- the kernel unpacks it into
+// memory and runs stage-0 there, nothing to mount and no module to load. A
+// BIOS+UEFI hybrid with xorriso, BIOS-only in-process without; made
+// bootable from a drive too (`limine bios-install`) when limine's tool is
+// here.
+std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
+    const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const fs::path& scratch,
+    EventStream& stream) {
+    std::error_code ec;
+    fs::path kernel = kernel_file;
+    if (kernel.empty()) {
+        const auto modules = in_stage_(stage, "/usr/lib/modules");
+        for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / it->path().filename() / "vmlinuz");
+            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; break; }
+        }
+    }
+    if (kernel.empty() || !fs::is_regular_file(kernel, ec))
+        return std::unexpected(std::pair{
+            std::string("a bootable image needs a kernel, and this root has none"),
+            std::string("install one into it (xlings install linux-kernel --subos <name>), or give --kernel <vmlinuz>")});
+    auto limine = limine_data_(home, stream);
+    if (!limine)
+        return std::unexpected(std::pair{std::string("limine's boot files are not here"),
+                                         subos::tools::install_hint("limine")});
+    const auto iso = scratch / "iso";
+    for (const auto* d : {"boot/limine", "EFI/BOOT"}) fs::create_directories(iso / d, ec);
+    fs::copy_file(kernel, iso / "boot" / "vmlinuz", ec);
+    if (ec) return std::unexpected(std::pair{"cannot copy the kernel: " + ec.message(), std::string{}});
+    log::info("packing the root as the live system's memory image ...");
+    if (auto packed = xim::write_archive(stage, iso / "boot" / "initramfs.img", xim::ArchiveFormat::CpioNewcGz); !packed)
+        return std::unexpected(std::pair{"writing the live image: " + packed.error(), std::string{}});
+    bool uefi = true;
+    for (const auto* f : {"limine-bios-cd.bin", "limine-bios.sys", "limine-uefi-cd.bin"}) {
+        if (!fs::is_regular_file(*limine / f, ec)) { uefi = false; continue; }
+        fs::copy_file(*limine / f, iso / "boot" / "limine" / f, ec);
+    }
+    if (fs::is_regular_file(*limine / "BOOTX64.EFI", ec)) fs::copy_file(*limine / "BOOTX64.EFI", iso / "EFI/BOOT/BOOTX64.EFI", ec);
+    else uefi = false;
+    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    {
+        std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
+        conf << "# A live Luban system (xlings subos export --iso)\n"
+             << "timeout: 3\n\n/Luban\n    protocol: linux\n    path: boot():/boot/vmlinuz\n"
+             << "    module_path: boot():/boot/initramfs.img\n"
+             << std::format("    cmdline: console=tty0 console=ttyS0 rdinit={}/boot/{}\n", home.generic_string(), init);
+        if (!conf) return std::unexpected(std::pair{std::string("cannot write limine.conf"), std::string{}});
+    }
+    const auto output = scratch / "output";
+    auto ports = subos::make_ports(stream);
+    if (auto xorriso = subos::tools::first("xorriso", home_view(), ports); xorriso && uefi) {
+        if (run_tool_({xorriso->bin.string(), "-as", "mkisofs", "-quiet", "-R", "-r", "-J", "-V", "LUBAN",
+                       "-b", "boot/limine/limine-bios-cd.bin", "-no-emul-boot", "-boot-load-size", "4",
+                       "-boot-info-table", "--efi-boot", "boot/limine/limine-uefi-cd.bin", "-efi-boot-part",
+                       "--efi-boot-image", "--protective-msdos-label", iso.string(), "-o", output.string()},
+                      stream, "writing the ISO") != 0)
+            return std::unexpected(std::pair{std::string("xorriso could not write the ISO"), std::string{}});
+    } else {
+        if (uefi) log::info("  BIOS boot only: a UEFI one too needs xorriso ({})", subos::tools::install_hint("xorriso"));
+        if (auto written = xim::write_archive(iso, output, xim::ArchiveFormat::Iso9660,
+                                              xim::ArchiveOptions{.boot = "boot/limine/limine-bios-cd.bin"});
+            !written)
+            return std::unexpected(std::pair{"writing the ISO: " + written.error(), std::string{}});
+    }
+    if (auto tool = subos::tools::first("limine", home_view(), ports)) {
+        if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it bootable from a drive") != 0)
+            log::warn("the ISO boots from a CD; from a drive it needs `limine bios-install` to work here");
+    } else {
+        log::info("  boots from a CD (and qemu -cdrom); from a USB drive it also needs limine's tool ({})",
+                  subos::tools::install_hint("limine"));
+    }
+    return {};
+}
+
+}  // namespace
+
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
     std::string name;
-    fs::path rootfs_dir, tarball, disk;
+    fs::path rootfs_dir, tarball, disk, iso, qcow2, kernel_file;
     std::string size = "4G";
     bool with_data = false;
     for (int i = 3; i < argc; ++i) {
@@ -615,28 +738,34 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         if (a == "--rootfs" && i + 1 < argc) rootfs_dir = argv[++i];
         else if (a == "--tar" && i + 1 < argc) tarball = argv[++i];
         else if (a == "--disk" && i + 1 < argc) disk = argv[++i];
+        else if (a == "--iso" && i + 1 < argc) iso = argv[++i];
+        else if (a == "--qcow2" && i + 1 < argc) qcow2 = argv[++i];
+        else if (a == "--kernel" && i + 1 < argc) kernel_file = argv[++i];
         else if (a == "--size" && i + 1 < argc) size = argv[++i];
         else if (a == "--with-data") with_data = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else { usageError("unknown option for `xlings subos export`: " + a); return 1; }
     }
-    const int outputs = !rootfs_dir.empty() + !tarball.empty() + !disk.empty();
+    const int outputs = !rootfs_dir.empty() + !tarball.empty() + !disk.empty() + !iso.empty() + !qcow2.empty();
     if (name.empty() || outputs != 1) {
-        usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> "
-                   "[--size 4G] [--with-data]");
+        usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> | "
+                   "--qcow2 <file> | --iso <file> [--size 4G] [--kernel <vmlinuz>] [--with-data]");
         return 1;
     }
+    // The flag and the file, whichever was asked for.
+    const auto [flag, target] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
+        : !tarball.empty() ? std::pair{"--tar", tarball} : !disk.empty() ? std::pair{"--disk", disk}
+        : !iso.empty() ? std::pair{"--iso", iso} : std::pair{"--qcow2", qcow2};
     auto domainScope = xlings::home::domain_producer::read_scope(home_dir_(), name);
     if (!domainScope) { error_(stream, domainScope.error()); return 1; }
     if (*domainScope) {
-        const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+        const auto out = fs::absolute(target);
         if (auto fresh = require_new_output_(out); !fresh) { error_(stream, fresh.error()); return 1; }
         auto scratch = OwnedStage::create(out.parent_path());
         if (!scratch) { error_(stream, scratch.error()); return 1; }
         const fs::path guest = "/run/xlings-domain-output";
-        std::vector<std::string> arguments{"subos", "export", name,
-            !rootfs_dir.empty() ? "--rootfs" : (!tarball.empty() ? "--tar" : "--disk"), (guest / "output").string()};
-        if (!disk.empty()) arguments.insert(arguments.end(), {"--size", size});
+        std::vector<std::string> arguments{"subos", "export", name, flag, (guest / "output").string()};
+        if (!disk.empty() || !qcow2.empty()) arguments.insert(arguments.end(), {"--size", size});
         if (with_data) arguments.push_back("--with-data");
         auto exported = xlings::home::domain_producer::run((**domainScope).domain, arguments,
             xlings::home::domain_producer::OutputBinding{scratch->path(), guest});
@@ -656,7 +785,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         return 1;
     }
 
-    const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+    const auto out = fs::absolute(target);
+    if (!kernel_file.empty() && iso.empty()) {
+        error_(stream, "--kernel names the kernel a live ISO boots; a disk boots the kernel given to it");
+        return 1;
+    }
     if (auto fresh = require_new_output_(out); !fresh) {
         error_(stream, fresh.error(), "choose a new output path");
         return 1;
@@ -962,13 +1095,24 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
             error_(stream, "writing the tarball: " + written.error(), {}, ErrorCode::Internal);
             return 1;
         }
-    } else if (!disk.empty()) {
+    } else if (!disk.empty() || !qcow2.empty()) {
         auto mkfs = tool_("mkfs.ext4", stream);
         if (!mkfs) return 1;
-        auto argv = as_root_({*mkfs, "-q", "-F", "-L", "luban", "-d", stage.string(),
-                              (scratch->path() / "output").string(), size}, stream);
+        const auto raw = scratch->path() / (disk.empty() ? "raw" : "output");
+        auto argv = as_root_({*mkfs, "-q", "-F", "-L", "luban", "-d", stage.string(), raw.string(), size}, stream);
         if (!argv) return 1;
         rc = run_tool_(*argv, stream, "writing the disk image");
+        if (rc == 0 && !qcow2.empty()) {
+            auto img = tool_("qemu-img", stream);
+            if (!img) return 1;
+            rc = run_tool_({*img, "convert", "-q", "-f", "raw", "-O", "qcow2", raw.string(),
+                            (scratch->path() / "output").string()}, stream, "converting to qcow2");
+        }
+    } else if (!iso.empty()) {
+        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(), stream); !made) {
+            error_(stream, made.error().first, made.error().second);
+            return 1;
+        }
     }
     if (rc != 0) return 1;
     if (!rootfs_dir.empty()) {
@@ -992,9 +1136,12 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (!tarball.empty())
         log::info("  docker import {} luban:{}   |   wsl --import <distro> <dir> {}", out.string(), name,
                   out.string());
-    if (!disk.empty())
+    if (!disk.empty() || !qcow2.empty())
         log::info("  boots with init={}/boot/{} root=/dev/vda", home.string(),
                   fs::exists(home / "bin" / "luban-init") ? "luban-init" : "xlings-init");
+    if (!iso.empty())
+        log::info("  a live system: it runs from memory; write it to a drive with `luban write {} <device>`, "
+                  "try it with `luban try {}`", out.string(), out.string());
     return 0;
 }
 

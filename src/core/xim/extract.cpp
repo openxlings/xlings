@@ -331,6 +331,13 @@ namespace xlings::xim {
 std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
                                               const std::filesystem::path& output,
                                               ArchiveOwner owner, std::string_view prefix) {
+    return write_archive(root, output, ArchiveFormat::TarGz,
+                         ArchiveOptions{.owner = owner, .prefix = std::string(prefix)});
+}
+
+std::expected<void, std::string> write_archive(const std::filesystem::path& root,
+                                               const std::filesystem::path& output,
+                                               ArchiveFormat format, const ArchiveOptions& options) {
     namespace fs = std::filesystem;
     struct Handles {
         struct archive* disk { ::archive_read_disk_new() };
@@ -349,14 +356,35 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
     };
     ::archive_read_disk_set_symlink_physical(h.disk);   // store links, never follow them
     ::archive_read_disk_set_standard_lookup(h.disk);
-    if (::archive_write_add_filter_gzip(h.out) != ARCHIVE_OK) return failed(h.out, "gzip");
-    if (::archive_write_set_format_pax_restricted(h.out) != ARCHIVE_OK) return failed(h.out, "tar format");
+    switch (format) {
+    case ArchiveFormat::TarGz:
+        if (::archive_write_add_filter_gzip(h.out) != ARCHIVE_OK) return failed(h.out, "gzip");
+        if (::archive_write_set_format_pax_restricted(h.out) != ARCHIVE_OK) return failed(h.out, "tar format");
+        break;
+    case ArchiveFormat::CpioNewcGz:
+        if (::archive_write_add_filter_gzip(h.out) != ARCHIVE_OK) return failed(h.out, "gzip");
+        if (::archive_write_set_format_cpio_newc(h.out) != ARCHIVE_OK) return failed(h.out, "cpio format");
+        break;
+    case ArchiveFormat::Iso9660: {
+        if (::archive_write_set_format_iso9660(h.out) != ARCHIVE_OK) return failed(h.out, "iso9660 format");
+        std::string opts = "rockridge,joliet,volume-id=" + options.volume;
+        if (!options.boot.empty())
+            opts += ",boot=" + options.boot + ",boot-type=no-emulation,boot-load-size=4,boot-info-table";
+        if (::archive_write_set_options(h.out, opts.c_str()) != ARCHIVE_OK) return failed(h.out, "iso9660 options");
+        break;
+    }
+    }
     if (::archive_write_open_filename(h.out, output.string().c_str()) != ARCHIVE_OK)
         return failed(h.out, "cannot create " + output.string());
     if (::archive_read_disk_open(h.disk, root.string().c_str()) != ARCHIVE_OK)
         return failed(h.disk, "cannot read " + root.string());
 
+    // An initramfs's entries are named as the kernel unpacks them: relative,
+    // no "./", and no entry for the root itself.
+    const bool initramfs = format == ArchiveFormat::CpioNewcGz;
+    const bool iso = format == ArchiveFormat::Iso9660;
     const auto base = root.lexically_normal();
+    bool console = false;
     std::vector<char> buffer(1 << 20);
     for (;;) {
         ::archive_entry_clear(h.entry);
@@ -366,11 +394,18 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
         ::archive_read_disk_descend(h.disk);
         const fs::path source = ::archive_entry_sourcepath(h.entry);
         const auto rel = source.lexically_normal().lexically_relative(base);
-        std::string name = rel.empty() || rel == "." ? std::string(prefix)
-                                                     : (fs::path(std::string(prefix)) / rel).generic_string();
-        if (::archive_entry_filetype(h.entry) == AE_IFDIR && !name.ends_with('/')) name += '/';
+        std::string name;
+        if (initramfs || iso) {
+            if (rel.empty() || rel == ".") continue;
+            name = rel.generic_string();
+        } else {
+            name = rel.empty() || rel == "." ? options.prefix
+                                             : (fs::path(options.prefix) / rel).generic_string();
+            if (::archive_entry_filetype(h.entry) == AE_IFDIR && !name.ends_with('/')) name += '/';
+        }
+        if (name == "dev/console") console = true;
         ::archive_entry_copy_pathname(h.entry, name.c_str());
-        if (owner == ArchiveOwner::Root) {
+        if (options.owner == ArchiveOwner::Root) {
             ::archive_entry_set_uid(h.entry, 0);
             ::archive_entry_set_gid(h.entry, 0);
             ::archive_entry_copy_uname(h.entry, "root");
@@ -390,6 +425,26 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
                 return failed(h.out, "writing " + name);
         }
         if (in.bad()) return std::unexpected("cannot read " + source.string());
+    }
+    if (initramfs && !console) {
+        // The kernel opens /dev/console for the first process before anything
+        // mounts devtmpfs; without it stage-0 runs with no stdio.
+        for (const auto* dir : {"dev"}) {
+            ::archive_entry_clear(h.entry);
+            ::archive_entry_copy_pathname(h.entry, dir);
+            ::archive_entry_set_filetype(h.entry, AE_IFDIR);
+            ::archive_entry_set_perm(h.entry, 0755);
+            ::archive_entry_set_size(h.entry, 0);
+            if (::archive_write_header(h.out, h.entry) != ARCHIVE_OK) return failed(h.out, "writing dev");
+        }
+        ::archive_entry_clear(h.entry);
+        ::archive_entry_copy_pathname(h.entry, "dev/console");
+        ::archive_entry_set_filetype(h.entry, AE_IFCHR);
+        ::archive_entry_set_perm(h.entry, 0600);
+        ::archive_entry_set_rdevmajor(h.entry, 5);
+        ::archive_entry_set_rdevminor(h.entry, 1);
+        ::archive_entry_set_size(h.entry, 0);
+        if (::archive_write_header(h.out, h.entry) != ARCHIVE_OK) return failed(h.out, "writing dev/console");
     }
     if (::archive_write_close(h.out) != ARCHIVE_OK) return failed(h.out, "finishing " + output.string());
     return {};

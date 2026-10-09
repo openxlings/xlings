@@ -174,7 +174,7 @@ Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it whe
 
 Export a root SubOS as a directory, a tarball or a disk image
 
-Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--qcow2 <FILE>` — The disk image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
 
 ## `xlings subos diff <a> <b>`
 

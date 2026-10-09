@@ -75,6 +75,10 @@ status = "required"
 text = "inside a private environment nothing of the host's identity planted as a sentinel is visible: locale, secrets, host name, machine-id, devices"
 status = "required"
 
+[LUBAN-ISO]
+text = "an environment exports as a live ISO (limine, the root as initramfs) that boots to its init; BIOS in-process, BIOS+UEFI with xorriso"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

@@ -52,6 +52,27 @@ std::expected<void, std::string> write_tar_gz(const std::filesystem::path& root,
                                               ArchiveOwner owner,
                                               std::string_view prefix = ".");
 
+// What a directory becomes (Luban design §A9).
+//   TarGz        a root tarball (docker import, wsl --import)
+//   CpioNewcGz   a Linux initramfs: the kernel unpacks it into memory and
+//                runs its init -- a live system with nothing to mount. A
+//                /dev/console is added when the tree has none, so the first
+//                process has somewhere to speak.
+//   Iso9660      a CD image with Rock Ridge names and, when `boot` names a
+//                file of the tree, an El Torito no-emulation boot record for
+//                it (BIOS; a 4-sector load with a boot-info table, as limine's
+//                CD stage expects). `volume` is its label.
+enum class ArchiveFormat { TarGz, CpioNewcGz, Iso9660 };
+struct ArchiveOptions {
+    ArchiveOwner owner { ArchiveOwner::Root };
+    std::string prefix { "." };
+    std::string boot;          // Iso9660: path inside the tree
+    std::string volume { "LUBAN" };
+};
+std::expected<void, std::string> write_archive(const std::filesystem::path& root,
+                                               const std::filesystem::path& output,
+                                               ArchiveFormat format, const ArchiveOptions& options = {});
+
 // An archive written from a description rather than a directory: what a
 // guest image is (part 3 §5.3) on a host that may not be able to make the
 // symlinks it holds (Windows without developer mode). Every entry root's.
