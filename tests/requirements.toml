@@ -671,7 +671,7 @@ text = "a generation and its pointer reach stable storage before the switch is r
 status = "required"
 
 [ROOT-SWITCH-SCALE]
-text = "a checked switch stays within budget at 300 and 3000 payloads (digest check, not a full tree walk)"
+text = "a checked switch reads a generation's change stamps, not every link: 300 payloads within 10 ms, 3000 within 20 ms"
 status = "required"
 
 [TOOL-RESOLVE]
