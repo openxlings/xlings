@@ -232,6 +232,21 @@ XTEST(XdevCli, TrendArtifactsPreserveMemberAndPlatformAndFeedFutureShardPlans,
         "--trend", (failure / "trend.json").string(), "--write", (fixture.home.root() / "repeat").string()});
     EXPECT_EQ(duplicate.exit_code, 1);
     EXPECT_EQ(json::parse(tk::read_file(fixture.home.root() / "repeat/trend.json"))["observations"].size(), 3);
+    // A lane that does not name its execution is reported, never sampled:
+    // its directory is the same in every CI run.
+    const auto unnamed = fixture.home.root() / "input-unnamed";
+    tk::write_file(unnamed / "lane.json", json{{"name", "linux-xdev"}, {"platform", "linux"}}.dump());
+    tk::write_file(unnamed / "cases.ndjson", json{{"program", "xdev"}, {"test", "Loopback.Case"},
+        {"status", "pass"}, {"ms", 7}}.dump() + "\n");
+    for (int again = 0; again != 2; ++again) {
+        const auto out = fixture.home.root() / std::format("unnamed-{}", again);
+        const auto rendered = fixture.run({"report", "--in", unnamed.string(), "--trend",
+            (failure / "trend.json").string(), "--write", out.string()});
+        EXPECT_EQ(rendered.exit_code, 0) << rendered.transcript();
+        EXPECT_EQ(json::parse(tk::read_file(out / "trend.json"))["observations"].size(), 3);
+        tk::write_file(unnamed / "cases.ndjson", json{{"program", "xdev"}, {"test", "Loopback.Case"},
+            {"status", "pass"}, {"ms", 9}}.dump() + "\n");
+    }
     tk::write_file(fixture.home.root() / "tests/unit/slow.cpp", "import std;");
     const auto inventory = fixture.discovery({json{{"member", "xdev"}, {"test", "unit/slow"},
         {"main", "tests/unit/slow.cpp"}, {"cases", json::array({test_case("Slow.Check")})}}});

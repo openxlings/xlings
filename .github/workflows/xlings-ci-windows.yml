@@ -288,7 +288,7 @@ jobs:
           if (-not $xdev) { Write-Host "::error::mcpp build -p xdev produced no xdev.exe under target/"; exit 1 }
           $env:XDEV_BIN = $xdev.FullName
           New-Item -ItemType Directory -Force target/xdev/windows-xdev | Out-Null
-          '{"name":"windows-xdev","platform":"windows","probes":{}}' | Set-Content target/xdev/windows-xdev/lane.json
+          ('{"name":"windows-xdev","platform":"windows","run":"' + $env:GITHUB_RUN_ID + ':' + $env:GITHUB_RUN_ATTEMPT + '","probes":{}}') | Set-Content target/xdev/windows-xdev/lane.json
           $env:XTEST_META_OUT = "$env:GITHUB_WORKSPACE/target/xdev/windows-xdev/meta.ndjson"
           $env:XTEST_RESULTS_OUT = "$env:GITHUB_WORKSPACE/target/xdev/windows-xdev/cases.ndjson"
           mcpp test -p xdev

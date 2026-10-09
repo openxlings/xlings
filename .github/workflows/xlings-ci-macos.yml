@@ -290,7 +290,7 @@ jobs:
           xdev="$GITHUB_WORKSPACE/$xdev"
           export XDEV_BIN="$xdev"
           mkdir -p target/xdev/macos-xdev
-          printf '%s\n' '{"name":"macos-xdev","platform":"macosx","probes":{}}' > target/xdev/macos-xdev/lane.json
+          printf '{"name":"macos-xdev","platform":"macos","run":"%s:%s","probes":{}}\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > target/xdev/macos-xdev/lane.json
           XTEST_META_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/meta.ndjson" \
           XTEST_RESULTS_OUT="$GITHUB_WORKSPACE/target/xdev/macos-xdev/cases.ndjson" \
             mcpp test -p xdev

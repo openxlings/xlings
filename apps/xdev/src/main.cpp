@@ -696,11 +696,15 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             lanes.push_back(l);
         }
         const auto first = records.size();
-        std::string execution = fs::absolute(dir).lexically_normal().string();
+        // A trend sample needs the execution it came from. A lane that does
+        // not say (a hand-written lane.json) is reported but never sampled:
+        // its directory names the same place in every CI run, so it would read
+        // as one execution with two results.
+        std::string execution;
         std::string platform;
         if (!lanes.empty() && lanes.back().value("name", "") == lane_name) {
             platform = lanes.back().value("platform", "");
-            execution = lanes.back().value("run", execution);
+            execution = lanes.back().value("run", "");
         }
         for (auto& j : read_ndjson(dir / "mcpp.ndjson")) {
             if (!j.contains("test")) continue;
@@ -735,7 +739,7 @@ int cmd_report_dirs(const std::vector<fs::path>& dirs, bool summary,
             if (!program.empty()) j["test"] = program + ":" + name;
             meta[{lane_name, j.value("test", "")}] = j;
         }
-        if (!platform.empty())
+        if (!platform.empty() && !execution.empty())
             for (auto i = first; i < records.size(); ++i) {
                 const auto& r = records[i];
                 observations.push_back({r.kind, r.name, platform, lane_name, execution, r.status, r.ms});
