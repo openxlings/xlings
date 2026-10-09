@@ -361,6 +361,7 @@ ORPHAN_EXEMPT=(
     "rootfs_instance_test.sh"               # xlings-ci-linux.yml (distro)
     "rootfs_image_test.sh"                  # xlings-ci-linux.yml (distro, docker + sudo)
     "rootfs_boot_test.sh"                   # xlings-ci-linux.yml (distro, qemu)
+    "luban_init_test.sh"                    # tests/suites.toml e2e-shell (the release tarball)
     # Sub-tests invoked by project_e2e_test.sh (E2E-05), not standalone.
     "project_global_fallback_test.sh"
     "project_home_test.sh"
