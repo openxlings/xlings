@@ -7,18 +7,23 @@
 import xlings.testkit;
 #include "xlings/xtest.hpp"
 
+#if !defined(_WIN32)   // a terminal job is a POSIX notion (Windows: a Job Object, no foreground group)
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#endif
 
 import std;
 import xlings.platform;
 
 XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBack,
       .area = "platform", .covers = {"PROCESS-TERMINAL-JOB"}, .requires_ = {"posix"}) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "a POSIX terminal's process groups";
+#else
     const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
     ASSERT_GE(master, 0);
     ASSERT_EQ(::grantpt(master), 0);
@@ -57,4 +62,5 @@ XTEST(ProcessTerminal, AChildInItsOwnGroupMayUseTheTerminalAndTheTerminalComesBa
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0)
         << "99: the terminal did not come back; 100+N: the child exited N (124: stopped until the deadline)";
+#endif
 }
