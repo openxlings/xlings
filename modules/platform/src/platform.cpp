@@ -35,6 +35,15 @@ namespace platform {
 
 std::string gRundir = std::filesystem::current_path().string();
 
+bool is_quota_exceeded(std::error_code ec) {
+#if defined(EDQUOT)
+    return ec.category() == std::generic_category() && ec.value() == EDQUOT;
+#else
+    (void)ec;
+    return false;
+#endif
+}
+
 bool remove_empty_directory(const std::filesystem::path& path) {
 #if defined(_WIN32)
     return ::RemoveDirectoryW(path.c_str()) != 0;

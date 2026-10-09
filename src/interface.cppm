@@ -29,7 +29,11 @@ namespace xlings::interface {
 // 0 (it stays until 2.0 because a minor version only adds).
 // 1.6: subos_exec emits bounded stdout/stderr chunks before the command ends.
 // Invalid UTF-8 chunks use encoding=base64; cancellation reaps the child.
-export constexpr const char* kProtocolVersion = "1.6";
+// 1.7 (2026.10.10.2, additive): `install_packages` reports an archive being
+// unpacked as `extract` progress events; an extraction that cannot write
+// carries E_PERMISSION or E_DISK_FULL by its errno; a node whose dependency
+// failed is reported failed for that reason and nothing of it runs.
+export constexpr const char* kProtocolVersion = "1.7";
 
 // Convert any Event variant to one NDJSON line (no trailing newline).
 // Returns "" for events not surfaced to wire (e.g. CompletedEvent — the

@@ -1062,6 +1062,11 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
         std::ranges::count_if(plan.nodes, node_has_work));
     // Atomic: a hook's heartbeat reads it from its own thread.
     std::atomic<std::size_t> nodesDone = 0;
+    // An extraction's progress reaches the interface at every percent; the
+    // terminal gets a line on the hook heartbeat's cadence (after 10 s, then
+    // every 30 s), so a short extraction prints nothing.
+    struct ExtractClock { std::chrono::steady_clock::time_point start, next; };
+    std::map<std::string, ExtractClock> extractClocks;
 
     // Confirm via EventStream prompt
     if (!allAlreadyInstalled && !yes) {
@@ -1117,13 +1122,37 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
             switch (status.phase) {
                 case InstallPhase::Downloading:
                     break;  // TUI progress bar handles this
+                case InstallPhase::Extracting: {
+                    if (status.message.empty()) break;  // the phase's start
+                    const auto& what = status.planKey.empty()
+                        ? status.name : status.planKey;
+                    const auto done = nodesDone.load();
+                    const auto total = std::max<std::size_t>(
+                        std::max(nodesWithWork, done), 1);
+                    stream.emit(ProgressEvent{
+                        .phase = "extract",
+                        .percent = static_cast<float>(done)
+                                 / static_cast<float>(total),
+                        .message = std::format("{} {}", what, status.message),
+                    });
+                    const auto now = std::chrono::steady_clock::now();
+                    auto it = extractClocks.try_emplace(
+                        what, ExtractClock{ now, now + std::chrono::seconds(10) }).first;
+                    if (now >= it->second.next) {
+                        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                            now - it->second.start).count();
+                        log::println("  … {} {} ({}s)", what, status.message, secs);
+                        it->second.next = now + std::chrono::seconds(30);
+                    }
+                    break;
+                }
                 case InstallPhase::Installing: {
                     if (status.message.empty()) {
                         log::debug("[{}] installing...", status.name);
                         break;
                     }
                     // A hook still running (the installer's heartbeat: after
-                    // 15 s, then every 60 s). Its commands' own output is in
+                    // 10 s, then every 30 s). Its commands' own output is in
                     // the hook's log, not on this terminal.
                     const auto& what = status.planKey.empty()
                         ? status.name : status.planKey;

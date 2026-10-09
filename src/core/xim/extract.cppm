@@ -4,9 +4,15 @@ import std;
 
 export namespace xlings::xim {
 
+// Why an extraction failed. A local write failure is classified by its
+// errno: "the disk is full" and "this directory is not writable" ask the
+// user for different things, and every other write failure (an I/O error,
+// a name the filesystem cannot hold) asks for neither.
 enum class ExtractErrorKind {
     InvalidInputArchive,
-    LocalWriteFailure,
+    LocalWriteFailure,   // a write failed for a reason other than the two below
+    NoSpace,             // ENOSPC, EDQUOT
+    PermissionDenied,    // EACCES, EPERM, EROFS
     Internal,
 };
 
@@ -15,9 +21,42 @@ struct ExtractError {
     std::string message;
 };
 
+// How far an extraction has read into its archive, in bytes of the archive
+// file (compressed): what a progress line can honestly show without a first
+// pass over the archive to count its entries.
+struct ExtractProgress {
+    std::uint64_t consumed { 0 };
+    std::uint64_t total { 0 };
+};
+
+struct ExtractOptions {
+    // How a hard-link entry is materialised.
+    //   Auto  link it; where the filesystem refuses links (Android's app
+    //         sandbox, FAT and exFAT, a link count at its limit), copy the
+    //         file it links to instead, with its permissions and times.
+    //   Copy  always copy -- what Auto falls back to.
+    enum class HardLinks { Auto, Copy };
+    HardLinks hardLinks { HardLinks::Auto };
+    // Called each time the consumed share of the archive crosses another
+    // whole percent; at most 101 calls per archive.
+    std::function<void(const ExtractProgress&)> onProgress;
+    // Called once per archive, after the last entry, when Auto copied files
+    // because links were refused: the count and the refusal.
+    std::function<void(std::string_view)> onNote;
+};
+
 std::expected<std::filesystem::path, ExtractError>
 extract_archive_detailed(const std::filesystem::path& archive,
-                         const std::filesystem::path& destDir);
+                         const std::filesystem::path& destDir,
+                         const ExtractOptions& options = {});
+
+// The class of a failed local write, from its error code (exported for the
+// installer's wire mapping and for tests).
+ExtractErrorKind write_failure_kind(std::error_code ec);
+
+// Whether a failed hard-link creation is the filesystem refusing links, so
+// that a copy can stand in for the link.
+bool hard_link_refused(std::error_code ec);
 
 // In-process archive extraction backed by libarchive.
 //

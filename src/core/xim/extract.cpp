@@ -95,6 +95,65 @@ la_int64_t const_root_lookup_uid_(void*, const char*, la_int64_t) { return 0; }
 
 la_int64_t const_root_lookup_gid_(void*, const char*, la_int64_t) { return 0; }
 
+// The class and the full text of a failure libarchive reported on `a`.
+// libarchive's own text names the file ("Can't create '…'") but not the
+// reason; the errno it recorded is the reason, and it decides the class.
+ExtractError write_failure_(struct archive* a, std::string what) {
+    const int err = ::archive_errno(a);
+    auto message = std::move(what) + ": " + libarchive_error_(a);
+    if (err == 0) return { ExtractErrorKind::LocalWriteFailure, std::move(message) };
+    const std::error_code ec(err, std::generic_category());
+    message += " (" + ec.message() + ")";
+    return { write_failure_kind(ec), std::move(message) };
+}
+
+// Inside `root`, after every symlink on the way is resolved.
+bool contained_(const std::filesystem::path& p, const std::filesystem::path& root) {
+    std::error_code ec;
+    auto real = std::filesystem::weakly_canonical(p, ec);
+    if (ec) return false;
+    auto rel = real.lexically_relative(root);
+    return !rel.empty() && *rel.begin() != "..";
+}
+
+// A hard-link entry materialised as a copy of the file it links to. The
+// target is an earlier entry of the same archive (tar stores the first
+// occurrence as the file and later ones as links to it), so it is on disk;
+// one that is not, or that is not a regular file inside the destination,
+// is a malformed archive -- following it could copy a file from outside.
+std::expected<void, ExtractError>
+copy_linked_file_(const std::filesystem::path& target,
+                  const std::filesystem::path& path,
+                  const std::filesystem::path& root) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::symlink_status(target, ec).type() != fs::file_type::regular
+        || !contained_(target, root)
+        || !contained_(path.parent_path(), root)) {
+        return std::unexpected(ExtractError{
+            ExtractErrorKind::InvalidInputArchive,
+            std::format("hard link {} -> {}: the target is not a regular file "
+                        "extracted earlier from this archive",
+                        path.string(), target.string())});
+    }
+    auto failed = [&](std::string_view step) {
+        return std::unexpected(ExtractError{
+            write_failure_kind(ec),
+            std::format("copying {} to {} for a refused hard link: {}: {}",
+                        target.string(), path.string(), step, ec.message())});
+    };
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return failed("create_directories");
+    fs::copy_file(target, path, fs::copy_options::overwrite_existing, ec);
+    if (ec) return failed("copy_file");
+    fs::permissions(path, fs::status(target).permissions(), ec);
+    if (ec) return failed("permissions");
+    auto mtime = fs::last_write_time(target, ec);
+    if (!ec) fs::last_write_time(path, mtime, ec);
+    if (ec) return failed("last_write_time");
+    return {};
+}
+
 // Read each block of an entry's payload from `src` and write to `dst`.
 std::expected<void, ExtractError>
 copy_entry_data_(struct archive* src, struct archive* dst) {
@@ -111,9 +170,7 @@ copy_entry_data_(struct archive* src, struct archive* dst) {
         }
         r = ::archive_write_data_block(dst, buff, size, offset);
         if (r < ARCHIVE_OK) {
-            return std::unexpected(ExtractError{
-                ExtractErrorKind::LocalWriteFailure,
-                "write_data_block: " + libarchive_error_(dst)});
+            return std::unexpected(write_failure_(dst, "write_data_block"));
         }
     }
 }
@@ -136,9 +193,26 @@ void ensure_archive_locale_() {
 
 }
 
+ExtractErrorKind write_failure_kind(std::error_code ec) {
+    if (ec == std::errc::no_space_on_device) return ExtractErrorKind::NoSpace;
+    if (platform::is_quota_exceeded(ec)) return ExtractErrorKind::NoSpace;
+    if (ec == std::errc::permission_denied || ec == std::errc::operation_not_permitted
+        || ec == std::errc::read_only_file_system)
+        return ExtractErrorKind::PermissionDenied;
+    return ExtractErrorKind::LocalWriteFailure;
+}
+
+bool hard_link_refused(std::error_code ec) {
+    return ec == std::errc::operation_not_permitted || ec == std::errc::permission_denied
+        || ec == std::errc::cross_device_link || ec == std::errc::too_many_links
+        || ec == std::errc::not_supported || ec == std::errc::operation_not_supported
+        || ec == std::errc::function_not_supported;
+}
+
 std::expected<std::filesystem::path, ExtractError>
 extract_archive_detailed(const std::filesystem::path& archive,
-                         const std::filesystem::path& destDir) {
+                         const std::filesystem::path& destDir,
+                         const ExtractOptions& options) {
     namespace fs = std::filesystem;
     detail_::ensure_archive_locale_();
 
@@ -146,7 +220,7 @@ extract_archive_detailed(const std::filesystem::path& archive,
     fs::create_directories(destDir, ec);
     if (ec) {
         return std::unexpected(ExtractError{
-            ExtractErrorKind::LocalWriteFailure,
+            write_failure_kind(ec),
             std::format("create_directories({}) failed: {}",
                         destDir.string(), ec.message())});
     }
@@ -223,7 +297,27 @@ extract_archive_detailed(const std::filesystem::path& archive,
             ExtractErrorKind::InvalidInputArchive, std::move(err)});
     }
 
+    // Progress is the share of the archive FILE read so far: known without a
+    // first pass, and monotonic. Reported only when it crosses a percent.
+    const auto totalBytes = static_cast<std::uint64_t>(fs::file_size(archive, ec));
+    int reportedPercent = -1;
+    auto report_progress = [&] {
+        if (!options.onProgress || totalBytes == 0) return;
+        const auto consumed = static_cast<std::uint64_t>(
+            std::max<la_int64_t>(0, ::archive_filter_bytes(src, -1)));
+        const auto percent = static_cast<int>(
+            std::min<std::uint64_t>(100, consumed * 100 / totalBytes));
+        if (percent == reportedPercent) return;
+        reportedPercent = percent;
+        options.onProgress({ .consumed = std::min(consumed, totalBytes), .total = totalBytes });
+    };
+
+    // Hard links the filesystem refused and that were copied instead (X1).
+    std::size_t copiedLinks = 0;
+    std::string refusal;
+
     for (;;) {
+        report_progress();
         struct archive_entry* entry = nullptr;
         int r = ::archive_read_next_header(src, &entry);
         if (r == ARCHIVE_EOF) break;
@@ -252,6 +346,7 @@ extract_archive_detailed(const std::filesystem::path& archive,
         // relative to the symlink (not vetted here); SECURE_SYMLINKS
         // prevents following them during extraction.
         auto hardlink = detail_::entry_hardlink_(entry);
+        std::string rebasedHl;
         if (!hardlink.empty()) {
             auto safeHl = detail_::check_safe_pathname_(hardlink.c_str());
             if (!safeHl) {
@@ -260,9 +355,12 @@ extract_archive_detailed(const std::filesystem::path& archive,
                     ExtractErrorKind::InvalidInputArchive,
                     std::move(safeHl).error()});
             }
-            auto rebasedHl = (canonicalDest / *safeHl).lexically_normal().string();
+            rebasedHl = (canonicalDest / *safeHl).lexically_normal().string();
             ::archive_entry_set_hardlink(entry, rebasedHl.c_str());
         }
+        // A link entry that carries no data of its own is the file it names:
+        // if no link can be made, a copy of that file is the same content.
+        const bool dataless_link = !hardlink.empty() && ::archive_entry_size(entry) <= 0;
 
         // Harden permissions: strip setuid / setgid / world-writable bits
         // from every entry before it hits disk. Package payloads have no
@@ -279,18 +377,39 @@ extract_archive_detailed(const std::filesystem::path& archive,
             ::archive_entry_set_perm(entry, perm & ~kStrip);
         }
 
+        if (dataless_link && options.hardLinks == ExtractOptions::HardLinks::Copy) {
+            if (auto copied = detail_::copy_linked_file_(rebasedHl, rebased, canonicalDest); !copied) {
+                cleanup();
+                return std::unexpected(std::move(copied).error());
+            }
+            continue;
+        }
+
         r = ::archive_write_header(dst, entry);
         if (r < ARCHIVE_OK) {
             // Write may complain on platform mismatch (e.g., trying to
             // chown on Windows) but still extract the file. Treat
             // non-fatal warnings as recoverable.
+            //
+            // A refused hard link (ARCHIVE_FAILED leaves the writer ready
+            // for the next header) becomes a copy of the linked file. The
+            // parent directories were made, under SECURE_SYMLINKS, before
+            // the link was attempted.
+            if (r == ARCHIVE_FAILED && dataless_link
+                && hard_link_refused({::archive_errno(dst), std::generic_category()})) {
+                if (refusal.empty())
+                    refusal = std::error_code(::archive_errno(dst), std::generic_category()).message();
+                if (auto copied = detail_::copy_linked_file_(rebasedHl, rebased, canonicalDest); !copied) {
+                    cleanup();
+                    return std::unexpected(std::move(copied).error());
+                }
+                ++copiedLinks;
+                continue;
+            }
             if (r < ARCHIVE_WARN) {
-                std::string err = std::format(
-                    "write_header({}): {}",
-                    rebased, detail_::libarchive_error_(dst));
+                auto err = detail_::write_failure_(dst, std::format("write_header({})", rebased));
                 cleanup();
-                return std::unexpected(ExtractError{
-                    ExtractErrorKind::LocalWriteFailure, std::move(err)});
+                return std::unexpected(std::move(err));
             }
         }
 
@@ -302,16 +421,18 @@ extract_archive_detailed(const std::filesystem::path& archive,
         }
 
         if (::archive_write_finish_entry(dst) < ARCHIVE_WARN) {
-            std::string err = std::format(
-                "finish_entry({}): {}",
-                rebased, detail_::libarchive_error_(dst));
+            auto err = detail_::write_failure_(dst, std::format("finish_entry({})", rebased));
             cleanup();
-            return std::unexpected(ExtractError{
-                ExtractErrorKind::LocalWriteFailure, std::move(err)});
+            return std::unexpected(std::move(err));
         }
     }
 
     cleanup();
+    if (copiedLinks > 0 && options.onNote) {
+        options.onNote(std::format(
+            "the filesystem refused hard links ({}); {} linked file(s) were copied instead",
+            refusal, copiedLinks));
+    }
     return canonicalDest;
 }
 

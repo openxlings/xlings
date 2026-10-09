@@ -1261,6 +1261,118 @@ TEST(Extract, RejectsPathTraversal) {
     EXPECT_FALSE(fs::exists(out.parent_path() / "escape.txt"));
 }
 
+// ── Hard-link entries (X1) ──────────────────────────────────────────
+//
+// Android's app sandbox refuses link(2) with EACCES, and so do FAT and
+// exFAT; a payload with a hard-link entry then failed to extract at all
+// ("write_header(...): Can't create"). Auto falls back to a copy of the
+// linked file; Copy is that fallback, forced, so it runs on any host.
+
+namespace {
+// src/a.txt (0750) and src/b.txt, one inode: tar stores b.txt as a link.
+std::filesystem::path make_hard_link_tar_(const ExtractFixture& fx) {
+    namespace fs = std::filesystem;
+    std::ofstream(fx.tmp / "src/a.txt") << "linked-content\n";
+    fs::permissions(fx.tmp / "src/a.txt", fs::perms::owner_all | fs::perms::group_read
+                                              | fs::perms::group_exec);
+    fs::create_hard_link(fx.tmp / "src/a.txt", fx.tmp / "src/b.txt");
+    auto out = fx.tmp / "links.tar.gz";
+    int rc = ExtractFixture::run_in_(fx.tmp, [] {
+        return ExtractFixture::host_sys_("tar czf links.tar.gz src");
+    });
+    if (rc != 0) throw std::runtime_error("failed to create the hard-link fixture");
+    return out;
+}
+} // namespace
+
+TEST(Extract, HardLinkEntryIsALinkWhereLinksAreAllowed) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the fixture is made with POSIX tar";
+#endif
+    ExtractFixture fx;
+    auto r = xlings::xim::extract_archive_detailed(make_hard_link_tar_(fx), fx.tmp / "out_auto");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(std::filesystem::hard_link_count(*r / "src/b.txt"), 2u);
+}
+
+TEST(Extract, HardLinkEntryBecomesACopyWithTheSamePermissionsAndTime) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the fixture is made with POSIX tar";
+#endif
+    namespace fs = std::filesystem;
+    ExtractFixture fx;
+    std::vector<std::string> notes;
+    xlings::xim::ExtractOptions options;
+    options.hardLinks = xlings::xim::ExtractOptions::HardLinks::Copy;
+    options.onNote = [&](std::string_view n) { notes.emplace_back(n); };
+    auto r = xlings::xim::extract_archive_detailed(make_hard_link_tar_(fx), fx.tmp / "out_copy",
+                                                   options);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    const auto a = *r / "src/a.txt", b = *r / "src/b.txt";
+    ASSERT_TRUE(fs::is_regular_file(b));
+    EXPECT_EQ(fs::hard_link_count(b), 1u);
+    EXPECT_TRUE(file_has_(b, "linked-content"));
+    EXPECT_EQ(fs::status(b).permissions(), fs::status(a).permissions());
+    EXPECT_EQ(fs::last_write_time(b), fs::last_write_time(a));
+    // Forced copies are not refusals: nothing to report.
+    EXPECT_TRUE(notes.empty());
+}
+
+TEST(Extract, AHardLinkToASymlinkIsNotCopiedThroughIt) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the fixture is made with POSIX tar and ln";
+#endif
+    // A copy reads the file the link names. If that is a symlink, the copy
+    // would read whatever it points at -- possibly outside the destination.
+    ExtractFixture fx;
+    namespace fs = std::filesystem;
+    fs::create_symlink("hello.txt", fx.tmp / "src/sym");
+    ASSERT_EQ(ExtractFixture::run_in_(fx.tmp, [] {
+        return ExtractFixture::host_sys_("ln -P src/sym src/hl && tar czf symlink-link.tar.gz src");
+    }), 0);
+    xlings::xim::ExtractOptions options;
+    options.hardLinks = xlings::xim::ExtractOptions::HardLinks::Copy;
+    auto r = xlings::xim::extract_archive_detailed(fx.tmp / "symlink-link.tar.gz",
+                                                   fx.tmp / "out_symlink_link", options);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().kind, xlings::xim::ExtractErrorKind::InvalidInputArchive);
+}
+
+TEST(Extract, WriteFailuresAreClassifiedByErrno) {
+    using K = xlings::xim::ExtractErrorKind;
+    auto kind = [](std::errc e) { return xlings::xim::write_failure_kind(std::make_error_code(e)); };
+    EXPECT_EQ(kind(std::errc::no_space_on_device), K::NoSpace);
+    EXPECT_EQ(kind(std::errc::permission_denied), K::PermissionDenied);
+    EXPECT_EQ(kind(std::errc::operation_not_permitted), K::PermissionDenied);
+    EXPECT_EQ(kind(std::errc::read_only_file_system), K::PermissionDenied);
+    EXPECT_EQ(kind(std::errc::io_error), K::LocalWriteFailure);
+
+    auto refused = [](std::errc e) { return xlings::xim::hard_link_refused(std::make_error_code(e)); };
+    EXPECT_TRUE(refused(std::errc::permission_denied));    // Android app sandbox
+    EXPECT_TRUE(refused(std::errc::operation_not_permitted));
+    EXPECT_TRUE(refused(std::errc::cross_device_link));
+    EXPECT_TRUE(refused(std::errc::too_many_links));
+    EXPECT_TRUE(refused(std::errc::operation_not_supported));
+    EXPECT_FALSE(refused(std::errc::no_space_on_device));
+    EXPECT_FALSE(refused(std::errc::no_such_file_or_directory));
+}
+
+TEST(Extract, ProgressIsMonotonicAndEndsAtTheWholeArchive) {
+    ExtractFixture fx;
+    auto archive = fx.make_tar_gz();
+    std::vector<xlings::xim::ExtractProgress> seen;
+    xlings::xim::ExtractOptions options;
+    options.onProgress = [&](const xlings::xim::ExtractProgress& p) { seen.push_back(p); };
+    auto r = xlings::xim::extract_archive_detailed(archive, fx.tmp / "out_progress", options);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    ASSERT_FALSE(seen.empty());
+    EXPECT_LE(seen.size(), 101u);
+    for (std::size_t i = 1; i < seen.size(); ++i)
+        EXPECT_GE(seen[i].consumed, seen[i - 1].consumed);
+    EXPECT_EQ(seen.back().total, std::filesystem::file_size(archive));
+    EXPECT_EQ(seen.back().consumed, seen.back().total);
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  TUI: theme icon byte sequences
 // ═══════════════════════════════════════════════════════════════

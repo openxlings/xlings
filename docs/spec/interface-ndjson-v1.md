@@ -1,10 +1,10 @@
 > 编写日期: 2026-05-17 | 更新: 2026-10-09 | 版本: 2026.10.9.1
 
-# NDJSON 接口协议规范 v1.6
+# NDJSON 接口协议规范 v1.7
 
 ## 1. 概述
 
-`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.6**，基于 NDJSON（Newline-Delimited JSON）。
+`xlings interface` 提供面向程序的结构化 API，使外部客户端（IDE 插件、CI 脚本、AI agent 等）可通过标准 IO 与 xlings 交互。协议版本为 **1.7**，基于 NDJSON（Newline-Delimited JSON）。
 
 | 协议版本 | xlings | 变化 |
 |----------|--------|------|
@@ -15,6 +15,7 @@
 | 1.4 | 2026.9.29.1 起 | 增补：`install_packages` 的 `reconfig` 字段（§7.3）与 `configure` 进度事件（§6.1.2）；已在本 scope 按当前 revision 配置过的包不再重跑 config |
 | 1.5 | 2026.9.30.1 起 | 增补：`install_packages` 的 `hook` 进度事件（§6.1.2）；安装 hook 启动的命令的输出写入 hook 日志，不再以 `[stray stdout]` 转发到 stderr（§5）；下载因本地写入失败（磁盘满、无权限）时错误码为 `E_DISK_FULL`（§6.1.3） |
 | 1.6 | 2026.10.9.1 起 | `subos_exec_output` 在命令运行中发送独立 stdout/stderr 字节片段；无效 UTF-8 片段以 `encoding: base64` 编码；取消请求回收子进程 |
+| 1.7 | 2026.10.10.2 起 | 增补：`install_packages` 的 `extract` 进度事件，`hook` 事件改为 10 秒后首次、之后每 30 秒（§6.1.2）；解包写入失败按原因给出 `E_DISK_FULL` 或 `E_PERMISSION`；依赖失败的节点以该原因报告失败，其 hook 不运行（§6.1.4） |
 
 次版本号的变化只做增补，1.0 客户端无需修改即可读取 1.1 的输出。客户端应通过**探测能力**
 判断服务端是否提供某项功能（例如 `install_targets` 事件是否出现），而不是比较版本号。
@@ -47,7 +48,7 @@ xlings interface --version
 服务端输出一行后退出：
 
 ```json
-{"protocol_version":"1.6"}
+{"protocol_version":"1.7"}
 ```
 
 ### 3.2 查询可用能力
@@ -181,11 +182,15 @@ libxpkg 的 `BuildOutput` 直接交给 xlings，不再经过进程的 stdout；�
 `percent` 为已完成数 / 本次预计要做事的节点数。已在本 scope 按当前 revision 配置过的节点
 不做任何事，也不报告（见 §7.3）。CLI 前端把同一件事打印成一行 `  [i/n] installed …`。
 
-1.5 起，一个 install / config hook 运行较久时还会出现：
+1.5 起，一个 install / config hook 运行较久时还会出现 `hook` 事件；1.7 起，解包一个归档时还会出现 `extract` 事件：
 
 | phase | 何时出现 | message |
 |-------|---------|---------|
-| `hook` | hook 已运行 15 秒，之后每 60 秒一次，直到它结束 | `<ns:name@version> <hook> hook running <耗时>[: <日志最后一行>]` |
+| `hook` | hook 已运行 10 秒，之后每 30 秒一次，直到它结束（1.5、1.6 为 15 秒与 60 秒） | `<ns:name@version> <hook> hook running <耗时>[: <日志最后一行>]` |
+| `extract` | 归档文件每多读入 1%（按压缩后的字节计）一次 | `<ns:name@version> extracting <百分比>%` |
+
+CLI 前端把 `extract` 打印成一行 `  … <ns:name@version> extracting <百分比>% (<秒>s)`，与 hook 心跳的节奏相同：
+解包 10 秒后首次，之后每 30 秒一次；10 秒内完成的解包不打印。
 
 `percent` 与 `configure` 事件相同（已完成数 / 预计节点数）。hook 启动的命令的输出写入
 `<XLINGS_HOME>/logs/hooks/<ns>-<name>@<version>.<hook>.log`（每次运行重写）；此前它们由 §5
@@ -198,6 +203,24 @@ libxpkg 的 `BuildOutput` 直接交给 xlings，不再经过进程的 stdout；�
 为空的事件，和一个 `download artifact missing`）。原因在本机——写入失败、磁盘上的文件比收到的
 短、或按服务器给出的大小判断磁盘放不下——时 `code` 为 `E_DISK_FULL`，`hint` 给出下载目录；此时
 不会再尝试其他镜像（它们写的是同一块磁盘）。
+
+#### 6.1.4 解包与依赖失败（1.7 起）
+
+解包一个归档失败时，`error` 事件的 `code` 由失败原因决定：
+
+| 原因 | code | hint |
+|------|------|------|
+| 归档损坏或含不支持的条目 | `E_INVALID_INPUT` | 缓存已删除，重试会重新下载 |
+| 写入时空间不足（`ENOSPC`、`EDQUOT`） | `E_DISK_FULL` | 释放 xlings home 所在文件系统的空间 |
+| 写入被拒绝（`EACCES`、`EPERM`、`EROFS`） | `E_PERMISSION` | 检查 message 中那个文件所在目录的所有者与权限 |
+| 其他写入失败 | `E_INTERNAL` | message 的括号中是系统给出的原因 |
+
+1.6 及以前，后三种都报 `E_DISK_FULL`。文件系统拒绝创建硬链接（Android 应用沙箱、FAT、exFAT）不再是失败：
+归档中的硬链接条目改为复制它所指的文件，权限与修改时间相同。
+
+一个节点失败后，计划中依赖它的节点（直接或间接）各报告一次失败，message 为
+`not installed: its dependency <ns:name@version> failed`，`code` 与那个依赖的相同；它们的 hook 不运行，
+也不再报告 “installed but registered none of its declared programs”。
 
 ### 6.2 log
 
