@@ -55,6 +55,7 @@ Intent lower(const policy::Policy& policy, const HomeView& home, const spec::Req
     in.id.home_inside = "/home/" + in.id.user;
     in.id.etc_dir = r.instance_dir / (in.id.neutral ? "etc-neutral" : "etc");
     in.id.tz = policy.tz;
+    in.id.hostname = r.hostname;
     in.storage = r.storage;
     in.image_mountpoint = r.image_mountpoint;
     in.root = r.root;

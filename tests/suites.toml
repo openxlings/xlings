@@ -62,6 +62,7 @@ commands = [
   "bash tests/e2e/rootfs_instance_test.sh",
   "bash tests/e2e/rootfs_image_test.sh",
   "bash tests/e2e/rootfs_boot_test.sh",
+  "bash tests/e2e/luban_image_test.sh",
 ]
 
 # Deployment S as a distribution packages it: the AUR recipe built from the

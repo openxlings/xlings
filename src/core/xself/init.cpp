@@ -1016,6 +1016,27 @@ bool replace_entry_binary(const fs::path& payloadBinary, const fs::path& entry,
                                     toVersion)) {
         return false;
     }
+    // The binaries released with this xlings travel with its entry: luban
+    // (the Luban tool, which drives the xlings next to it) and luban-init
+    // (stage-0, which an export copies from beside the entry). Left behind,
+    // an upgraded home ran a luban older than the xlings it drives.
+    for (const auto* companion : {"luban", "luban-init"}) {
+        const auto name = std::string(companion) + std::string(platform::exe_suffix);
+        const auto from = payloadBinary.parent_path() / name;
+        std::error_code ec;
+        if (!fs::is_regular_file(from, ec)) continue;
+        const auto to = entry.parent_path() / name;
+        const auto staged = entry.parent_path() / (name + ".new");
+        fs::copy_file(from, staged, fs::copy_options::overwrite_existing, ec);
+        if (!ec) fs::permissions(staged, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec
+                                 | fs::perms::others_read | fs::perms::others_exec, fs::perm_options::replace, ec);
+        if (!ec) fs::rename(staged, to, ec);
+        if (ec) {
+            fs::remove(staged, ec);
+            log::warn("could not update {} next to the entry -- `xlings self init` places it",
+                      Config::display_path(to));
+        }
+    }
     // `<home>/bin/xlings`, or `<home>/xlings` in the bootstrap layout
     // (`xlings_binary_in_home` accepts both, so this must too).
     const auto summary = repoint_stale_shims(home);

@@ -35,6 +35,82 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[LUBAN-CLI-LEVELS]
+text = "a command tree is declared once; help shows the common commands and says how to see more, then everything"
+status = "required"
+
+[LUBAN-CLI-SUGGEST]
+text = "a mistyped command or option is answered with the nearest names"
+status = "required"
+
+[LUBAN-TOOL-SHIPPED]
+text = "the release ships luban (one static binary, also luban-init), versioned as the xlings beside it"
+status = "required"
+
+[LUBAN-CLI-MAP]
+text = "each luban command is the xlings command it names; edition short names and image formats are luban's"
+status = "required"
+
+[LUBAN-CLI-E2E]
+text = "luban against a real xlings: where it is, a new environment from a template, listed and described, removed"
+status = "required"
+
+[UX-AGENT-NO-PROMPT]
+text = "in agent mode a question nobody can answer is exit 2 with the answer spelled; nothing waits for input"
+status = "required"
+
+[LUBAN-WS-POLICY-AT-NEW]
+text = "a template's declared policy and `new --proxy` are selected and locked when the environment is made, before its first entry"
+status = "required"
+
+[PRIVACY-PERSONA-STABLE]
+text = "a neutral identity is a persona made once per instance (host name, machine-id) and the same on every entry; a fork gets its own"
+status = "required"
+
+[PRIVACY-TZ-PROXY]
+text = "a neutral identity's zone is UTC, a chosen name, or the proxy's exit asked through the proxy; a failure is UTC, never the host's zone"
+status = "required"
+
+[PRIVACY-LEAK-PROBE]
+text = "inside a private environment nothing of the host's identity planted as a sentinel is visible: locale, secrets, host name, machine-id, devices"
+status = "required"
+
+[LUBAN-ISO]
+text = "an environment exports as a live ISO (limine, the root as initramfs) that boots to its init; BIOS in-process, BIOS+UEFI with xorriso"
+status = "required"
+
+[LUBAN-WRITE-SAFE]
+text = "luban write refuses a partition, a mounted or held drive (the system's own) and anything that is not a drive; an agent must name the drive's serial"
+status = "required"
+
+[LUBAN-TRY]
+text = "luban try boots an environment or an image in a local virtual machine; with --proxy its only network is the proxy"
+status = "required"
+
+[LUBAN-DRIVE]
+text = "an environment exports as a drive image (GPT, a FAT system partition with limine, an ext4 root by PARTUUID) that boots on BIOS and UEFI"
+status = "required"
+
+[LUBAN-ABI]
+text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
+status = "required"
+
+[UX-NO-HANG]
+text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
+status = "required"
+
+[UX-ONE-PLAN]
+text = "subos new from a template chain shows one plan (the declared packages), one creation line, and no hint to switch to the version it installed"
+status = "required"
+
+[UX-PREFLIGHT]
+text = "a root a host cannot run is refused (or its one-time setup asked) before the packages it declares are fetched"
+status = "required"
+
+[PROCESS-TERMINAL-JOB]
+text = "a child run with a deadline in its own process group holds the caller's terminal while it runs, and the terminal comes back"
+status = "required"
+
 [TK-HOME]
 text = "an isolated home lives outside the user's home and is removed"
 status = "required"

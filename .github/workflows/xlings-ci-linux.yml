@@ -323,6 +323,9 @@ jobs:
             echo "::warning::mcpp build failed (likely stale index entry); retrying after auto-refresh"
             mcpp build
           }
+          # luban, beside the xlings the e2e tests run (tests/e2e/test_luban.cpp
+          # finds bin/luban-tool/luban next to bin/xlings).
+          mcpp build -p luban-tool
           # xdev runs `mcpp test` and renders the report; the step summary is
           # rendered once, by the report job, from every lane. Built static
           # (musl) so the e2e and report jobs can run this same binary: a glibc
@@ -743,7 +746,7 @@ jobs:
       - name: Lane capabilities (bwrap, qemu, kvm)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs
+          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs ovmf xorriso fdisk build-essential
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # KVM when the runner has it: a boot in seconds instead of a minute.
           if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm; fi

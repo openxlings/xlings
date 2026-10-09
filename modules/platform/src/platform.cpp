@@ -548,6 +548,45 @@ int run_shell(std::string_view command, bool interactive) {
         return run_shell_command(command, interactive);
     }
 
+[[nodiscard]] std::optional<std::vector<std::string>> split_plain_words(std::string_view cmd) {
+    std::vector<std::string> words;
+    std::string word;
+    bool in_word = false;
+    for (std::size_t i = 0; i < cmd.size(); ++i) {
+        const char c = cmd[i];
+        if (c == ' ' || c == '\t') {
+            if (in_word) { words.push_back(std::move(word)); word.clear(); in_word = false; }
+            continue;
+        }
+        in_word = true;
+        if (c == '\'') {
+            const auto end = cmd.find('\'', i + 1);
+            if (end == std::string_view::npos) return std::nullopt;
+            word.append(cmd.substr(i + 1, end - i - 1));
+            i = end;
+        } else if (c == '"') {
+            for (++i;; ++i) {
+                if (i >= cmd.size()) return std::nullopt;
+                if (cmd[i] == '"') break;
+                if (cmd[i] == '$' || cmd[i] == '`') return std::nullopt;
+                if (cmd[i] == '\\' && i + 1 < cmd.size() && std::string_view("\"\\$`").contains(cmd[i + 1])) ++i;
+                word += cmd[i];
+            }
+        } else if (c == '\\') {
+            if (i + 1 >= cmd.size()) return std::nullopt;
+            word += cmd[++i];
+        } else if (std::string_view("|&;<>()$`*?[]{}~#!\n=").contains(c) && !(c == '=' && !words.empty())) {
+            // Shell syntax -- and `NAME=value cmd`, an assignment only a shell makes.
+            return std::nullopt;
+        } else {
+            word += c;
+        }
+    }
+    if (in_word) words.push_back(std::move(word));
+    if (words.empty()) return std::nullopt;
+    return words;
+}
+
 [[nodiscard]] std::string shell_quote(const std::string& arg) {
 #if defined(_WIN32)
         if (!arg.empty() && arg.find_first_of(" \t\n\"") == std::string::npos)

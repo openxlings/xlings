@@ -68,6 +68,15 @@ fi
 BIN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/xlings' -type f -perm -111 -exec ls -t {} + | head -1)"
 [[ -f "$BIN_SRC" ]] || fail "C++ binary not found at $BIN_SRC"
 
+# luban (Luban design §A1.1): the Luban OS tool, its own package (it links
+# luban and modules/, nothing of the frontend). Here it manages Luban
+# environments on this Mac; stage-0 (luban-init) is a Linux machine's.
+LUBAN_ARGS=(build -p luban-tool --profile dist)
+if [[ -n "${MCPP_TARGET:-}" ]]; then LUBAN_ARGS+=(--target "$MCPP_TARGET"); fi
+"$MCPP_BIN" "${LUBAN_ARGS[@]}" 2>&1 || fail "mcpp build -p luban-tool failed"
+LUBAN_SRC="$(find "$PROJECT_DIR/target" -path '*/bin/luban-tool/luban' -type f -perm -111 -exec ls -t {} + | head -1)"
+[[ -f "$LUBAN_SRC" ]] || fail "luban not found"
+
 info "Verifying no LLVM toolchain dependency..."
 if otool -L "$BIN_SRC" | grep -q "llvm"; then
     otool -L "$BIN_SRC"
@@ -134,6 +143,7 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin"
 
 cp "$BIN_SRC"          "$OUT_DIR/bin/xlings"
+cp "$LUBAN_SRC"        "$OUT_DIR/bin/luban"
 chmod +x "$OUT_DIR/bin/"*
 
 # .xlings.json — release packages default to GLOBAL. Users can switch mirror
@@ -170,7 +180,7 @@ info "Package assembled: $OUT_DIR"
 # ── 4. Verification ─────────────────────────────────────────────
 info "=== Verification ==="
 
-for f in bin/xlings; do
+for f in bin/xlings bin/luban; do
   [[ -x "$OUT_DIR/$f" ]] || fail "$f is missing or not executable"
 done
 info "OK: all binaries present and executable"
@@ -178,6 +188,8 @@ info "OK: all binaries present and executable"
 OTOOL_OUT="$(otool -L "$OUT_DIR/bin/xlings")"
 echo "$OTOOL_OUT" | grep -q "llvm" && fail "packaged bin/xlings still links against LLVM runtime dylibs"
 info "OK: packaged bin/xlings has no LLVM runtime dependency"
+otool -L "$OUT_DIR/bin/luban" | grep -q "llvm" && fail "packaged bin/luban links against LLVM runtime dylibs"
+"$OUT_DIR/bin/luban" --version | grep -q "^luban $VERSION" || fail "bin/luban does not report $VERSION"
 
 [[ -f "$OUT_DIR/.xlings.json" ]] || fail ".xlings.json missing"
 info "OK: .xlings.json present"

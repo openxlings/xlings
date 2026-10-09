@@ -30,6 +30,7 @@ import xlings.subos.model;
 import xlings.core.subos.ports;
 import xlings.subos.session;
 import xlings.subos.policy;
+import xlings.subos.persona;
 import xlings.subos.network;
 import xlings.subos.policy_store;
 import xlings.subos.broker;
@@ -123,6 +124,7 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     bool upgrade = false;                        // --policy-upgrade
     std::optional<policy::Net> net;
     std::optional<std::string> proxy;
+    std::optional<std::string> tz;               // --tz utc|proxy|<Area/City>
     std::optional<policy::Fetch> fetch, index_update;
     std::optional<policy::Observe> observe;
     std::optional<bool> no_degrade;
@@ -173,6 +175,14 @@ int run_config_(int argc, char* argv[], EventStream& stream,
             if (!endpoint) { usageError(endpoint.error()); return 1; }
             proxy = *v;
             net = policy::Net::Proxy;
+            changed = true;
+        }
+        else if ((v = value_of(i, a, "--tz"))) {
+            // A neutral identity's zone (Luban design §C4): UTC, the proxy's
+            // exit ("proxy"), or an IANA name.
+            if (*v == "proxy") tz = "proxy";
+            else if (auto zone = subos::persona::normalize_zone(*v); !zone.empty()) tz = zone;
+            else { usageError("--tz expects utc, proxy or a zone name such as Asia/Tokyo"); return 1; }
             changed = true;
         }
         else if ((v = value_of(i, a, "--fetch"))) {
@@ -295,6 +305,12 @@ int run_config_(int argc, char* argv[], EventStream& stream,
     }
     if (net) after.net = *net;
     if (proxy) after.proxy = *proxy;
+    if (tz) {
+        after.tz = *tz;
+        if (after.identity != policy::Identity::Neutral)
+            log::info("--tz takes effect with a neutral identity (the private and locked presets); "
+                      "'{}' keeps the host's for now", name);
+    }
     if (fetch) after.fetch = *fetch;
     if (index_update) after.index_update = *index_update;
     if (observe) after.observe = *observe;
@@ -575,6 +591,26 @@ int run_status_(int argc, char* argv[], EventStream& stream,
         }
         out["root"] = std::move(root);
     }
+    // Who it is to the outside, and what a sandbox sharing this kernel cannot
+    // hide -- said, not implied (Luban design §C2, §C5).
+    if (pol.identity == policy::Identity::Neutral) {
+        nlohmann::json id;
+        std::error_code ec;
+        if (fs::exists(home.persona_file(name), ec)) {
+            if (auto persona = subos::persona::read_or_make(home, name)) {
+                id["hostname"] = persona->hostname;
+                if (!persona->tz_zone.empty())
+                    id["tz_resolved"] = {{"zone", persona->tz_zone}, {"proxy", persona->tz_proxy}};
+            } else {
+                id["persona_error"] = persona.error();
+            }
+        }
+        id["tz"] = !pol.tz.empty() ? pol.tz : pol.net == policy::Net::Proxy ? std::string("proxy") : std::string("UTC");
+        id["exposed"] = nlohmann::json::array({"the kernel version (uname)", "the CPU model (/proc/cpuinfo)",
+                                               "the host paths of what is bound in (/proc/self/mountinfo)"});
+        id["route"] = "a machine view runs it on a kernel of its own";
+        out["identity"] = std::move(id);
+    }
     if (json) {
         std::println(std::cout, "{}", out.dump());
         return 0;
@@ -614,6 +650,14 @@ int run_status_(int argc, char* argv[], EventStream& stream,
                      g.value("supported", false) ? g.value("enforced", "") : "no",
                      g.value("reason", ""),
                      g.value("route", "").empty() || g.value("supported", false) ? "" : "  -> " + g.value("route", ""));
+    }
+    if (out.contains("identity")) {
+        const auto& id = out["identity"];
+        std::string tz = id.value("tz", "UTC");
+        if (id.contains("tz_resolved")) tz += " -> " + id["tz_resolved"].value("zone", "");
+        std::println(std::cout, "  identity   hostname={} tz={}", id.value("hostname", "(made on first entry)"), tz);
+        std::println(std::cout, "  not hidden on a shared kernel: the kernel version, the CPU model, the host "
+                                "paths of what is bound in -- {}", id.value("route", ""));
     }
     if (out.contains("session"))
         std::println(std::cout, "  session    {} ({})", out["session"].value("id", ""),

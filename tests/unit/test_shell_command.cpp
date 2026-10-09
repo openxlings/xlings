@@ -37,3 +37,15 @@ TEST(ShellCommand, XlingsShellOverridesOnEveryPlatform) {
         xlings::platform::set_env_variable("XLINGS_SHELL", saved);
     }
 }
+
+// Luban design §A4: a shim's alias that is plain words runs without a shell.
+TEST(ShellCommand, PlainWordsSplitAndShellSyntaxDoesNot) {
+    using V = std::vector<std::string>;
+    const auto split = [](std::string_view c) { return xlings::platform::split_plain_words(c); };
+    EXPECT_EQ(split("/opt/gcc/bin/gcc --sysroot=/x/y -B /a"), (V{"/opt/gcc/bin/gcc", "--sysroot=/x/y", "-B", "/a"}));
+    EXPECT_EQ(split("prog 'a b' \"c d\" e\\ f"), (V{"prog", "a b", "c d", "e f"}));
+    EXPECT_EQ(split("prog \"a \\\"q\\\" b\""), (V{"prog", "a \"q\" b"}));
+    for (const auto* shell : {"prog | tee x", "prog > out", "prog $HOME", "prog \"$HOME\"", "a; b", "prog *.c",
+                              "FOO=1 prog", "prog `id`", "prog 'unclosed", ""})
+        EXPECT_FALSE(split(shell)) << shell;
+}

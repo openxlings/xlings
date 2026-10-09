@@ -34,6 +34,8 @@ import xlings.subos.elevation;
 import xlings.subos.tools;
 import xlings.carrier;
 import xlings.subos.userdata;
+import xlings.subos.persona;
+import xlings.platform.stream;
 
 namespace xlings::subos::sandbox {
 
@@ -482,6 +484,59 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     return enter(name, stream, EnterOptions{ .backend = preferred_backend, .gpu = gpu, .cmd = cmd });
 }
 
+namespace {
+std::string read_first_line_(const fs::path& file) {
+    std::ifstream in(file);
+    std::string line;
+    std::getline(in, line);
+    return line;
+}
+}  // namespace
+
+// The zone a neutral identity's TZ names (Luban design §C4). "proxy" -- or
+// nothing chosen, with a proxy for the network -- is the proxy's exit: asked
+// THROUGH the proxy (curl, from the tool table), cached in the persona per
+// proxy for a day. Anything that fails is UTC, never the host's zone.
+std::string resolve_zone_(const HomeView& home, const subos::Ports& ports, std::string_view name,
+                          const policy::Policy& pol, subos::persona::Persona& persona) {
+    const bool via_proxy = pol.tz == "proxy" || (pol.tz.empty() && pol.net == policy::Net::Proxy);
+    if (!via_proxy) {
+        const auto zone = subos::persona::normalize_zone(pol.tz);
+        return zone.empty() ? std::string("UTC") : zone;
+    }
+    if (pol.proxy.empty()) return "UTC";
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (persona.tz_proxy == pol.proxy && !persona.tz_zone.empty() && now - persona.tz_at < 86400)
+        return persona.tz_zone;
+    const auto curl = subos::tools::first("curl", home, ports);
+    if (!curl) {
+        log::warn("time zone: UTC -- the proxy's exit cannot be asked without curl ({})",
+                  subos::tools::install_hint("curl"));
+        return "UTC";
+    }
+    const auto url = pol.geo_lookup.empty() ? std::string("https://ipinfo.io/timezone") : pol.geo_lookup;
+    std::string out;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const int rc = platform::stream::run(
+        {curl->bin.string(), "-fsS", "--max-time", "8", "--proxy", pol.proxy, url},
+        [&](std::string_view channel, std::string_view bytes) { if (channel == "stdout") out.append(bytes); },
+        [&] { return std::chrono::steady_clock::now() > deadline; });
+    while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+    const auto zone = rc == 0 ? subos::persona::normalize_zone(out) : std::string{};
+    if (zone.empty()) {
+        log::warn("time zone: UTC -- the proxy's exit could not be asked ({}): {}", url,
+                  rc == 0 ? "not a zone: " + out.substr(0, 40) : std::format("exit {}", rc));
+        return "UTC";
+    }
+    persona.tz_proxy = pol.proxy;
+    persona.tz_zone = zone;
+    persona.tz_at = now;
+    if (auto w = subos::persona::write(home, name, persona); !w) log::warn("{}", w.error());
+    log::debug("time zone: {} (the exit of {})", zone, pol.proxy);
+    return zone;
+}
+
 int enter(const std::string& name, EventStream& stream, const EnterOptions& opts) {
     const auto& preferred_backend = opts.backend;
     const bool gpu = opts.gpu;
@@ -578,7 +633,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                                 .recoverable = false });
         return kFail;
     }
-    const auto pol = std::move(*effective);
+    auto pol = std::move(*effective);
     if (policy::fetches_into_layer(pol) && !rootfs) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
@@ -627,6 +682,25 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         request.root = subos_root::tree_of(p.homeDir, name);
         if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
         request.shell = "/bin/sh";
+    }
+
+    // A neutral identity is a persona (Luban design §C4): the same host name
+    // and machine-id every time this instance is entered, and a time zone
+    // that is the proxy's exit unless one was chosen.
+    if (pol.identity == policy::Identity::Neutral) {
+        auto persona = subos::persona::read_or_make(home, name);
+        if (!persona) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = persona.error(), .recoverable = false});
+            return kFail;
+        }
+        request.hostname = persona->hostname;
+        pol.tz = resolve_zone_(home, ports, name, pol, *persona);
+        if (rootfs) {
+            const auto machine_id = request.root / "etc" / "machine-id";
+            std::error_code ec;
+            if (fs::is_directory(machine_id.parent_path(), ec) && read_first_line_(machine_id) != persona->machine_id)
+                platform::write_string_to_file(machine_id.string(), persona->machine_id + "\n");
+        }
     }
 
     nlohmann::json payload;
@@ -1007,6 +1081,103 @@ nlohmann::json preview(const std::string& name, const policy::Policy& pol, Event
 }
 
 
+namespace {
+// The one repair that needs root (self doctor --isolation --fix, and the
+// first root a host makes): a root-owned copy of a bwrap at
+// /usr/lib/xlings/bwrap with an AppArmor profile that grants it user
+// namespaces and nothing else. Asked once; the commands are printed; run
+// through the one door for administrator rights (sudo asks for the password
+// at the terminal).
+int repair_isolation_(const HomeView& home, const subos::Ports& ports,
+                      const std::vector<caps::Backend>& candidates, bool yes, EventStream& stream,
+                      std::string_view question) {
+    auto read_sysctl = [](const char* path) -> std::string {
+        std::ifstream in(path);
+        std::string v;
+        std::getline(in, v);
+        return v.empty() ? std::string("(absent)") : v;
+    };
+    // The repair: only for the case it fixes -- AppArmor restricting
+    // unprivileged user namespaces for unconfined programs.
+    if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+            .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
+                       "changes would help",
+            .recoverable = false,
+            .hint = "the kernel disables them outright (see the sysctl values above); "
+                    "--sandbox proot works without them" });
+        return 1;
+    }
+    std::optional<fs::path> source;
+    for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
+    if (!source) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
+            .message = "no bwrap to install", .recoverable = true,
+            .hint = "xlings install bwrap, then run this again" });
+        return 1;
+    }
+    const std::string profile =
+        "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
+        "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
+        "abi <abi/4.0>,\n"
+        "include <tunables/global>\n\n"
+        "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
+        "  userns,\n\n"
+        "  include if exists <local/xlings-bwrap>\n"
+        "}\n";
+    const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
+    platform::write_string_to_file(tmp.string(), profile);
+    // Each step runs through elevation::run below (tool-ok on each line).
+    const std::vector<std::vector<std::string>> steps{
+        {"install", "-D", "-o", "root", "-g", "root", "-m", "0755", source->string(),  // tool-ok: elevated below
+         std::string(caps::kRootOwnedBwrap)},
+        {"install", "-D", "-o", "root", "-g", "root", "-m", "0644", tmp.string(),  // tool-ok: elevated below
+         "/etc/apparmor.d/xlings-bwrap"},
+        {"apparmor_parser", "-r", "/etc/apparmor.d/xlings-bwrap"},  // tool-ok: elevated below
+    };
+    auto spelled = [](const std::vector<std::string>& argv) {
+        std::string line;
+        for (const auto& a : argv) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
+        return line;
+    };
+    std::string plan = "this runs, as root:";
+    for (auto& c : steps) plan += "\n    " + spelled(c);
+    log::info("{}", plan);
+    auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
+                              std::string(question), yes, "-y");
+    if (asked.outcome != confirm::Outcome::Confirmed) {
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            log::error("nothing changed: this needs confirmation -- re-run with -y");
+            return 2;
+        }
+        log::info("nothing changed");
+        return 1;
+    }
+    for (auto& c : steps) {
+        log::info("$ {}", spelled(c));
+        if (subos::elevation::run(home, c, "self doctor --isolation --fix") != 0) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            log::error("failed: {}", spelled(c));
+            return 1;
+        }
+    }
+    std::error_code ec;
+    fs::remove(tmp, ec);
+    auto after = caps::locate_bwrap(home, ports);
+    if (after && after->usable && after->source == "root-owned") {
+        log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
+                  after->bin.string());
+        return 0;
+    }
+    log::error("installed, but the probe still fails: {}",
+               after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
+    return 1;
+}
+}  // namespace
+
 // `xlings self doctor --isolation [--fix]` (design §18, §20; #640 F10, F12).
 //
 // What this host can isolate with, measured: each bwrap found and what its
@@ -1034,6 +1205,20 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             {"kernel.unprivileged_userns_clone", read_sysctl("/proc/sys/kernel/unprivileged_userns_clone")},
             {"user.max_user_namespaces", read_sysctl("/proc/sys/user/max_user_namespaces")},
         };
+        // Whose answer this is. A process confined by an AppArmor profile
+        // that allows user namespaces (Ubuntu's `busybox` one, inherited from
+        // whatever started it) succeeds where a shell started normally is
+        // refused -- measured on 2026-10-09: the same machine said yes in one
+        // terminal and no in another.
+        for (const char* attr : {"/proc/self/attr/apparmor/current", "/proc/self/attr/current"}) {
+            std::ifstream in(attr);
+            std::string label;
+            if (in && std::getline(in, label) && !label.empty()) {
+                while (!label.empty() && (label.back() == '\n' || label.back() == '\0')) label.pop_back();
+                report["apparmor_label"] = label;
+                break;
+            }
+        }
         candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
         report["bwrap"] = nlohmann::json::array();
         for (auto& b : candidates) {
@@ -1082,6 +1267,13 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
         if (report.contains("sysctl"))
             for (auto it = report["sysctl"].begin(); it != report["sysctl"].end(); ++it)
                 std::println(std::cout, "  {:<46} {}", it.key(), it.value().get<std::string>());
+        if (report.contains("apparmor_label")) {
+            const auto label = report["apparmor_label"].get<std::string>();
+            std::println(std::cout, "  {:<46} {}", "apparmor label of this process", label);
+            if (label != "unconfined")
+                std::println(std::cout, "    (inherited from what started it: a shell started normally is "
+                                        "`unconfined`, and the probes below may differ there)");
+        }
         if (report.contains("bwrap")) {
             if (report["bwrap"].empty()) std::println(std::cout, "  bwrap: none found");
             for (auto& b : report["bwrap"])
@@ -1104,84 +1296,8 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     }
 
     if constexpr (platform::is_linux) {
-        // The repair: only for the case it fixes -- AppArmor restricting
-        // unprivileged user namespaces for unconfined programs.
-        if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
-            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-                .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
-                           "changes would help",
-                .recoverable = false,
-                .hint = "the kernel disables them outright (see the sysctl values above); "
-                        "--sandbox proot works without them" });
-            return 1;
-        }
-        std::optional<fs::path> source;
-        for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
-        if (!source) {
-            stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
-                .message = "no bwrap to install", .recoverable = true,
-                .hint = "xlings install bwrap, then run this again" });
-            return 1;
-        }
-        const std::string profile =
-            "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
-            "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
-            "abi <abi/4.0>,\n"
-            "include <tunables/global>\n\n"
-            "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
-            "  userns,\n\n"
-            "  include if exists <local/xlings-bwrap>\n"
-            "}\n";
-        const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
-        platform::write_string_to_file(tmp.string(), profile);
-        // Each step runs through elevation::run below (tool-ok on each line).
-        const std::vector<std::vector<std::string>> steps{
-            {"install", "-D", "-o", "root", "-g", "root", "-m", "0755", source->string(),  // tool-ok: elevated below
-             std::string(caps::kRootOwnedBwrap)},
-            {"install", "-D", "-o", "root", "-g", "root", "-m", "0644", tmp.string(),  // tool-ok: elevated below
-             "/etc/apparmor.d/xlings-bwrap"},
-            {"apparmor_parser", "-r", "/etc/apparmor.d/xlings-bwrap"},  // tool-ok: elevated below
-        };
-        auto spelled = [](const std::vector<std::string>& argv) {
-            std::string line;
-            for (const auto& a : argv) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
-            return line;
-        };
-        std::string plan = "this runs, as root:";
-        for (auto& c : steps) plan += "\n    " + spelled(c);
-        log::info("{}", plan);
-        auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
-                                  "install the root-owned bwrap and its AppArmor profile?", yes, "-y");
-        if (asked.outcome != confirm::Outcome::Confirmed) {
-            std::error_code ec;
-            fs::remove(tmp, ec);
-            if (asked.outcome == confirm::Outcome::NobodyToAsk) {
-                log::error("nothing changed: this needs confirmation -- re-run with -y");
-                return 2;
-            }
-            log::info("nothing changed");
-            return 1;
-        }
-        for (auto& c : steps) {
-            log::info("$ {}", spelled(c));
-            if (subos::elevation::run(home, c, "self doctor --isolation --fix") != 0) {
-                std::error_code ec;
-                fs::remove(tmp, ec);
-                log::error("failed: {}", spelled(c));
-                return 1;
-            }
-        }
-        std::error_code ec;
-        fs::remove(tmp, ec);
-        auto after = caps::locate_bwrap(home, ports);
-        if (after && after->usable && after->source == "root-owned") {
-            log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
-                      after->bin.string());
-            return 0;
-        }
-        log::error("installed, but the probe still fails: {}",
-                   after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
-        return 1;
+        return repair_isolation_(home, ports, candidates, yes, stream,
+                                 "install the root-owned bwrap and its AppArmor profile?");
     } else {
         (void)yes;
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
@@ -1189,6 +1305,37 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             .recoverable = false });
         return 1;
     }
+}
+
+int prepare_root_host(bool yes, EventStream& stream) {
+    if constexpr (!platform::is_linux) return 0;   // a root elsewhere is refused where it is made
+    // root is not who the restriction is for (unprivileged user namespaces).
+    if (platform::user_ids().euid == 0) return 0;
+    const auto home = subos::home_view();
+    const auto ports = subos::make_ports(stream);
+    auto candidates = caps::bwrap_candidates(home, ports);
+    if (std::ranges::any_of(candidates, [](const caps::Backend& b) { return b.usable; })) return 0;
+    std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    std::string restricted;
+    std::getline(sysctl, restricted);
+    if (candidates.empty() || restricted != "1") {
+        // Nothing the one-time setup changes: the root is still worth making
+        // (an export, an image for another machine) -- said now, not after
+        // the download, and entering it will say the same.
+        log::warn("this host cannot enter a root yet: {}",
+                  candidates.empty() ? std::string("there is no bwrap (xlings install bwrap)")
+                                     : classify_bwrap_probe_error_(candidates.front().probe_output,
+                                                                   candidates.front().bin));
+        return 0;
+    }
+    // The restriction most desktops ship (Ubuntu 23.10+), on a bwrap that is
+    // here: lifted once, for this machine, by one narrow profile -- before
+    // anything is fetched.
+    log::println("this machine needs a one-time setup before it can run a root:");
+    log::println("  AppArmor keeps programs without a profile from making the sandbox a root runs in.");
+    log::println("  The setup installs a root-owned bwrap and one AppArmor profile that allows it");
+    log::println("  exactly that -- once, for every user of this machine.");
+    return repair_isolation_(home, ports, candidates, yes, stream, "do it now? (sudo)");
 }
 
 }

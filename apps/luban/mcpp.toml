@@ -1,0 +1,22 @@
+# luban: the Luban OS management tool, and stage-0 (Luban design §A1.1).
+#
+# One binary, two names. Started as `luban-init` (a machine's init=, or the
+# boot link a root carries) it is stage-0: luban.stage0, which reads nothing
+# before /proc is mounted. Started as anything else it is the luban command:
+# luban.cli, which drives the xlings next to it. Its own package, so what it
+# links is luban and the shared modules/ -- never the xlings frontend: a
+# package's binaries link every source of that package.
+[package]
+namespace = "luban"
+name      = "luban-tool"
+version   = "0.1.0"
+
+[targets.luban]
+kind = "bin"
+main = "src/main.cpp"
+
+[dependencies]
+luban = { path = "../../luban" }
+
+[build]
+include_dirs = ["../../modules/libs/src/json"]

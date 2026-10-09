@@ -68,7 +68,7 @@ Manage SubOS environments
 
 Create a SubOS
 
-Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux
+Options: `--sandbox [PRESET]` — Declare its isolation once: dev (default), private or locked; `--storage <MODE>` — shared, tmpfs or image; `--image-size <SIZE>` — Image size; `--from <SOURCE>` — Fork source; `--runtime <SPEC>` — Runtime binding, e.g. glibc@2.44; `--rootfs` — Make it a root: entered, exported or booted as /; `--proxy <URL>` — Its network goes only through this SOCKS5h proxy, from the first entry; `--domain <HOME>` — Build a rootfs at this logical home prefix in an owned namespace; `--carrier <NAME>` — Where it runs: local, wsl2 (Windows) or vz (macOS); default chosen by what it is; `--abi <ABI>` — native (this machine's programs) or linux
 
 ## `xlings subos use [name]`
 
@@ -112,7 +112,7 @@ Copy files into or out of a SubOS
 
 Show or change what a SubOS may do (its policy)
 
-Options: `--sandbox <PRESET>` — Start from a preset (dev, private, locked) or a policy package (ns:name[@version]); `--policy-upgrade` — Move to the newest version of the selected policy package; `--net <MODE>` — host, nat, none or proxy; `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--fetch <ACTION>` — Installing a missing package from inside: auto, ask or deny; `--index-update <ACTION>` — Updating the index from inside: auto, ask or deny; `--observe <LEVEL>` — off, basic, standard or full; `--allow <GRANT>` — Grant display, audio, camera, gpu, ssh-agent, dbus or host-loopback; `--disallow <GRANT>` — Withdraw a grant; `--grants-allowed <LIST>` — Grants a single call may add; `--env-pass <NAME>` — Let this host variable in; NAME* for a prefix; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host path into the SubOS, every time it is entered; `--unmount <PATH>` — Stop mapping it; `--no-degrade` — Refuse to enter when anything asked for is missing; `--degrade` — Enter and report what is missing; `--reset` — Remove the policy file; `--json` — Machine-readable output
+Options: `--sandbox <PRESET>` — Start from a preset (dev, private, locked) or a policy package (ns:name[@version]); `--policy-upgrade` — Move to the newest version of the selected policy package; `--net <MODE>` — host, nat, none or proxy; `--proxy <URL>` — SOCKS5h endpoint for net=proxy; `--tz <ZONE>` — A neutral identity's time zone: utc, proxy (the proxy's exit) or a name such as Asia/Tokyo; `--fetch <ACTION>` — Installing a missing package from inside: auto, ask or deny; `--index-update <ACTION>` — Updating the index from inside: auto, ask or deny; `--observe <LEVEL>` — off, basic, standard or full; `--allow <GRANT>` — Grant display, audio, camera, gpu, ssh-agent, dbus or host-loopback; `--disallow <GRANT>` — Withdraw a grant; `--grants-allowed <LIST>` — Grants a single call may add; `--env-pass <NAME>` — Let this host variable in; NAME* for a prefix; `--mount <HOST[:INSIDE][:ro|rw]>` — Map a host path into the SubOS, every time it is entered; `--unmount <PATH>` — Stop mapping it; `--no-degrade` — Refuse to enter when anything asked for is missing; `--degrade` — Enter and report what is missing; `--reset` — Remove the policy file; `--json` — Machine-readable output
 
 ## `xlings subos status [name]`
 
@@ -174,7 +174,7 @@ Options: `--once` — Only the next boot (a trial); `--fallback` — Boot it whe
 
 Export a root SubOS as a directory, a tarball or a disk image
 
-Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
+Options: `--rootfs <DIR>` — A root directory (chroot, bwrap, nspawn); `--tar <FILE>` — A root tarball (docker import, podman import, wsl --import); `--disk <FILE>` — An ext4 disk image to boot; `--drive <FILE>` — A drive image that boots a machine (GPT, UEFI and BIOS, an ext4 root); `--qcow2 <FILE>` — The drive image as qcow2 (qemu, clouds); `--iso <FILE>` — A live ISO: boots from a CD or a drive and runs from memory; `--kernel <VMLINUZ>` — The kernel a live ISO boots (default: the root's own); `--size <SIZE>` — Disk size (default 4G); `--with-data` — Include /root, /home, /var, /srv, /opt
 
 ## `xlings subos diff <a> <b>`
 

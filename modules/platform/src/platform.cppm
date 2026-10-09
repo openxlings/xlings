@@ -277,6 +277,13 @@ namespace platform {
     // Escape a single argument for safe embedding in a shell command string.
     export [[nodiscard]] std::string shell_quote(const std::string& arg);
 
+    // A command line that is plain words -- quoted with ' or ", backslash
+    // escapes -- split into argv, so it runs without a shell (a Luban root may
+    // have none: Luban design §A4). Nothing when it uses shell syntax
+    // (expansion, redirection, pipes, globs, several commands): only a shell
+    // means that.
+    export [[nodiscard]] std::optional<std::vector<std::string>> split_plain_words(std::string_view cmd);
+
     export [[nodiscard]] std::string read_file_to_string(const std::string& filepath);
 
     // ── Atomic state-file replace ────────────────────────────────────

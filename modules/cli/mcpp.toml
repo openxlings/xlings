@@ -1,0 +1,21 @@
+# The command-line model, as its own package (Luban design §B3).
+#
+# A command tree declared once -- commands, arguments, options, aliases, and
+# how far into the help each one is shown (common / more / expert) -- and
+# what is derived from it: argv validation, help, the JSON reference, shell
+# completion. Both front ends declare their tree with it: xlings (src/cli)
+# and luban (apps/luban), which may not link src/. Parsing proper stays with
+# mcpplibs.cmdline; nothing here knows a command by name.
+[package]
+namespace = "xlings"
+name      = "cli"
+version   = "0.1.0"
+
+[targets.cli]
+kind = "lib"
+
+[dependencies]
+libs = { path = "../libs" }   # json
+
+[build]
+include_dirs = ["../libs/src/json"]

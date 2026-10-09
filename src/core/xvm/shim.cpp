@@ -1241,7 +1241,17 @@ int shim_dispatch(const std::string& program_name, int argc, char* argv[]) {
             }
         }
 
-        // Build command: resolved alias + original args, run via platform::exec
+        // An alias that is plain words runs as argv, replacing this process --
+        // no shell, which a Luban root may not have (Luban design §A4). Shell
+        // syntax in it (the recipe asked for a shell) goes through one.
+        if constexpr (platform::is_posix) {
+            if (auto words = platform::split_plain_words(alias_cmd)) {
+                for (int i = 1; i < argc; ++i) words->emplace_back(argv[i]);
+                (void)platform::exec_program(*words, platform::environment());
+                log::error("xlings: failed to exec '{}'", words->front());
+                return 127;
+            }
+        }
         std::string cmd = alias_cmd;
         for (int i = 1; i < argc; ++i) {
             cmd += " ";

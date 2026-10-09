@@ -174,6 +174,11 @@ rf::Inputs inputs(const fs::path& home, const fs::path& subos_dir,
     in.programs.push_back({"xlings-init", entry_of(home)});
     if (std::error_code ec; fs::exists(home / "bin" / "luban-init", ec))
         in.programs.push_back({"luban-init", home / "bin" / "luban-init"});
+    // The Luban tool, in every root: `luban` inside a root says where it is
+    // and manages it, as it does on the host (Luban design §A1).
+    if (std::error_code ec; std::ranges::none_of(in.programs, [](const auto& p) { return p.name == "luban"; })
+                            && fs::exists(home / "bin" / "luban", ec))
+        in.programs.push_back({"luban", home / "bin" / "luban"});
     return in;
 }
 

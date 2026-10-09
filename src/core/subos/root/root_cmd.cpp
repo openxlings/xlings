@@ -29,6 +29,9 @@ import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.xself;
 import xlings.core.xim.extract;
+import xlings.core.xim.commands;
+import luban.image;
+import xlings.platform.target;
 import xlings.subos.tools;
 import xlings.subos.caps;
 
@@ -229,7 +232,44 @@ struct Declared {
     bool rootfs { false };
     std::vector<std::string> packages;
     std::string init;
+    // What its payloads are built for (Luban design §A5): an architecture,
+    // a kernel ABI, a libc family and its floor -- no libc is assumed.
+    nlohmann::json abi = nlohmann::json::object();
+    // The kernel a machine of it boots, and the least one its userland
+    // needs (§A6) -- hints for an image, never installed into the root.
+    nlohmann::json boot = nlohmann::json::object();
 };
+
+// An `abi` as an object, or the triple it abbreviates ("x86_64-linux-gnu").
+nlohmann::json abi_of_(const nlohmann::json& v) {
+    if (v.is_object()) return v;
+    if (!v.is_string()) return nlohmann::json::object();
+    const auto t = v.get<std::string>();
+    std::vector<std::string> parts;
+    for (const auto part : std::views::split(t, '-')) parts.emplace_back(part.begin(), part.end());
+    nlohmann::json j = nlohmann::json::object();
+    if (!parts.empty()) j["arch"] = parts[0];
+    if (parts.size() > 1) j["kernel"] = parts[1];
+    j["libc"] = parts.size() > 2 ? parts[2] : std::string("none");
+    return j;
+}
+
+// Whether this machine can make (and run) a root of that ABI here; the
+// reason when it cannot. The model takes any libc; the index publishes gnu.
+std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
+    const auto arch = abi.value("arch", std::string());
+    const auto host = platform::host().arch;
+    if (!arch.empty() && arch != host)
+        return std::format("it is built for {}, and this machine is {}", arch, host);
+    const auto kernel = abi.value("kernel", std::string());
+    if (!kernel.empty() && kernel != "linux")
+        return std::format("its kernel ABI is {}; this machine runs linux (a carrier that provides {} runs it)",
+                           kernel, kernel);
+    const auto libc = abi.value("libc", std::string());
+    if (!libc.empty() && libc != "gnu" && libc != "none")
+        return std::format("its payloads are for libc={}; the index publishes gnu ones today", libc);
+    return std::nullopt;
+}
 
 std::optional<Declared> declared_by_template_(const fs::path& instance, EventStream& stream) {
     Declared d;
@@ -267,14 +307,23 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
             if (!by_key.contains(key)) order.push_back(key);
             by_key[key] = p.get<std::string>();
         }
-        if (auto b = it->find("boot"); b != it->end() && b->is_object())
+        if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
+            for (const auto* k : {"kernel", "kernel_min"})
+                if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
+        }
+        if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);
     }
     for (auto& k : order) d.packages.push_back(by_key[k]);
     return d;
 }
 
 }  // namespace
+
+std::optional<std::string> root_abi_refusal_(const nlohmann::json& manifest) {
+    if (!manifest.is_object() || !manifest.contains("abi")) return std::nullopt;
+    return abi_refusal_(abi_of_(manifest["abi"]));
+}
 
 std::expected<void, std::string> preflight_domain_at_creation_(std::string_view name, bool rootfs,
     std::string_view domain, std::string_view fromSpec) {
@@ -396,10 +445,19 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         error_(stream, d.error(), {}, ErrorCode::Internal);
         return 1;
     }
-    if (declared && !declared->init.empty()) {
+    if (declared && !declared->abi.empty()) {
+        if (auto refused = abi_refusal_(declared->abi)) {
+            error_(stream, std::format("'{}' cannot be a root here: {}", name, *refused),
+                   "an edition built for this machine, or `luban try` with an image of it");
+            return 1;
+        }
+    }
+    if (declared && (!declared->init.empty() || !declared->abi.empty() || !declared->boot.empty())) {
         const auto file = HomeView{home}.instance_file(name);
         auto j = read_json_(file);
-        j["init"] = declared->init;
+        if (!declared->init.empty()) j["init"] = declared->init;
+        if (!declared->abi.empty()) j["root_abi"] = declared->abi;
+        if (!declared->boot.empty()) j["boot"] = declared->boot;
         if (auto written = write_json_(file, j); !written) {
             error_(stream, written.error(), {}, ErrorCode::Internal);
             return 1;
@@ -408,12 +466,8 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
     if (declared && !declared->packages.empty()) {
         // Its packages, installed into it: the same install as any other,
         // so the generation that follows is the usual one.
-        auto bin = xself::xlings_binary_in_home(home);
-        if (bin.empty()) bin = platform::get_executable_path();
-        std::vector<std::string> argv{bin.string(), "install", "-y", "--subos", name};
-        argv.insert(argv.end(), declared->packages.begin(), declared->packages.end());
-        log::info("installing what '{}' declares: {} package(s)", name, declared->packages.size());
-        if (run_tool_(argv, stream, "installing the declared packages") != 0) {
+        log::debug("installing what '{}' declares: {} package(s)", name, declared->packages.size());
+        if (xim::cmd_install_step(declared->packages, name, stream, /*plumbing=*/false) != 0) {
             std::string list;
             for (auto& p : declared->packages) list += " " + p;
             log::info("'{}' is made but not complete: `xlings install -y --subos {}{}` finishes it, "
@@ -608,9 +662,266 @@ int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usa
 
 // ── export ───────────────────────────────────────────────────────────
 
+namespace {
+
+bool same_bytes_(const fs::path& a, const fs::path& b) {
+    std::error_code ec;
+    if (!fs::is_regular_file(a, ec) || !fs::is_regular_file(b, ec) || fs::file_size(a, ec) != fs::file_size(b, ec))
+        return false;
+    std::ifstream x(a, std::ios::binary), y(b, std::ios::binary);
+    std::vector<char> p(1 << 16), q(1 << 16);
+    while (x && y) {
+        x.read(p.data(), static_cast<std::streamsize>(p.size()));
+        y.read(q.data(), static_cast<std::streamsize>(q.size()));
+        if (x.gcount() != y.gcount() || !std::equal(p.begin(), p.begin() + x.gcount(), q.begin())) return false;
+    }
+    return true;
+}
+
+// A path of the image as the image sees it, resolved component by component
+// through the image's own links (an absolute link names a path of the
+// image, not of this machine) -- what the kernel does inside a chroot.
+fs::path inside_stage_(const fs::path& stage, const fs::path& inside, int& hops) {
+    fs::path current = "/";
+    std::error_code ec;
+    for (const auto& part : inside.relative_path()) {
+        if (part == ".") continue;
+        if (part == "..") { current = current.parent_path(); continue; }
+        const auto next = current / part;
+        const auto here = stage / next.relative_path();
+        if (fs::is_symlink(here, ec) && ++hops < 40) {
+            const auto target = fs::read_symlink(here, ec);
+            if (ec) return next;
+            current = inside_stage_(stage, (target.is_absolute() ? target : current / target).lexically_normal(), hops);
+        } else {
+            current = next;
+        }
+    }
+    return current;
+}
+
+fs::path in_stage_(const fs::path& stage, const fs::path& inside) {
+    int hops = 0;
+    return stage / inside_stage_(stage, inside, hops).relative_path();
+}
+
+// Where limine's boot files are: beside the limine this home or this
+// machine has (the tool table), a limine payload, the machine's share.
+std::optional<fs::path> limine_data_(const fs::path& home, EventStream& stream) {
+    std::vector<fs::path> candidates;
+    auto ports = subos::make_ports(stream);
+    if (auto found = subos::tools::first("limine", home_view(), ports))
+        candidates.push_back(found->bin.parent_path().parent_path() / "share" / "limine");
+    std::error_code ec;
+    for (fs::directory_iterator it(home / "data" / "xpkgs" / "xim-x-limine", ec), end; !ec && it != end; it.increment(ec))
+        candidates.push_back(it->path() / "share" / "limine");
+    candidates.insert(candidates.end(), {"/usr/share/limine", "/usr/local/share/limine"});
+    for (const auto& d : candidates)
+        if (fs::is_regular_file(d / "limine-bios-cd.bin", ec) && fs::is_regular_file(d / "limine-bios.sys", ec))
+            return d;
+    return std::nullopt;
+}
+
+// The kernel an image boots: --kernel, or the root's own (followed through
+// the image's links). None is refused with the route.
+// "6.8.0-71-generic" / "5.10" -> {6, 8, 0} / {5, 10}: what is compared.
+std::vector<int> version_parts_(std::string_view v) {
+    std::vector<int> out;
+    for (std::size_t i = 0; i < v.size() && out.size() < 3;) {
+        int n = 0;
+        auto [p, e] = std::from_chars(v.data() + i, v.data() + v.size(), n);
+        if (e != std::errc{}) break;
+        out.push_back(n);
+        i = static_cast<std::size_t>(p - v.data());
+        if (i >= v.size() || v[i] != '.') break;
+        ++i;
+    }
+    return out;
+}
+
+// The kernel an image boots: --kernel, or the root's own (followed through
+// the image's links). None is refused with the route -- the kernel its
+// edition recommends (boot.kernel) when it names one -- and one older than
+// what its userland needs (boot.kernel_min) is refused too (§A6).
+std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs::path& stage, const fs::path& given,
+                                                                        const nlohmann::json& boot, std::string_view name) {
+    std::error_code ec;
+    fs::path kernel = given;
+    std::string version;
+    if (kernel.empty()) {
+        const auto modules = in_stage_(stage, "/usr/lib/modules");
+        for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / it->path().filename() / "vmlinuz");
+            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; version = it->path().filename().string(); break; }
+        }
+    }
+    if (kernel.empty() || !fs::is_regular_file(kernel, ec)) {
+        const auto recommended = boot.is_object() ? boot.value("kernel", std::string("linux-kernel")) : std::string("linux-kernel");
+        return std::unexpected(std::pair{
+            std::string("a bootable image needs a kernel, and this root has none"),
+            std::format("install one into it (xlings install {} --subos {}), or give --kernel <vmlinuz>", recommended, name)});
+    }
+    const auto floor = boot.is_object() ? boot.value("kernel_min", std::string()) : std::string();
+    if (!floor.empty() && !version.empty() && version_parts_(version) < version_parts_(floor))
+        return std::unexpected(std::pair{
+            std::format("its kernel is {}, and its userland needs {} or newer", version, floor),
+            std::format("a newer kernel: xlings install {} --subos {}",
+                        boot.value("kernel", std::string("linux-kernel")), name)});
+    return kernel;
+}
+
+std::uint64_t size_bytes_(std::string_view size) {
+    std::uint64_t n = 0;
+    auto [p, e] = std::from_chars(size.data(), size.data() + size.size(), n);
+    if (e != std::errc{}) return 0;
+    switch (p < size.data() + size.size() ? std::toupper(static_cast<unsigned char>(*p)) : 'B') {
+    case 'K': return n << 10;
+    case 'M': return n << 20;
+    case 'G': return n << 30;
+    case 'T': return n << 40;
+    default: return n;
+    }
+}
+
+// A drive image of the image in `stage` (Luban design §A9): GPT, a FAT
+// system partition with limine (UEFI, and BIOS when limine's tool is here),
+// the kernel and limine.conf, and an ext4 root the kernel mounts by its
+// PARTUUID -- a drive that boots on a machine as on qemu, and keeps what it
+// writes. The GPT and the FAT are written in-process (luban.image).
+std::expected<void, std::pair<std::string, std::string>> write_drive_(
+    const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const std::string& size,
+    const fs::path& scratch, const fs::path& output, const nlohmann::json& boot, std::string_view name,
+    EventStream& stream) {
+    auto kernel = kernel_of_(stage, kernel_file, boot, name);
+    if (!kernel) return std::unexpected(kernel.error());
+    auto limine = limine_data_(home, stream);
+    std::error_code ec;
+    if (!limine || !fs::is_regular_file(*limine / "BOOTX64.EFI", ec))
+        return std::unexpected(std::pair{std::string("limine's boot files are not here"), subos::tools::install_hint("limine")});
+    const std::uint64_t esp_bytes = 64ull << 20;
+    const std::uint64_t root_bytes = size_bytes_(size);
+    if (root_bytes < (64ull << 20)) return std::unexpected(std::pair{"--size " + size + ": too small for a root", std::string{}});
+    const auto root_uuid = luban::image::random_guid();
+    // BIOS boot (limine's second stage), the system partition, the root.
+    const std::uint64_t bios_bytes = 1ull << 20;
+    const std::array<std::uint64_t, 3> sizes{bios_bytes, esp_bytes, root_bytes};
+    const auto starts = luban::image::layout(sizes);
+    // The root filesystem, as --disk makes it.
+    auto mkfs = tool_("mkfs.ext4", stream);
+    if (!mkfs) return std::unexpected(std::pair{std::string("mkfs.ext4 is not available"), subos::tools::install_hint("mkfs.ext4")});
+    const auto rootfs = scratch / "root.ext4";
+    auto argv = as_root_({*mkfs, "-q", "-F", "-L", "luban", "-d", stage.string(), rootfs.string(), size}, stream);
+    if (!argv) return std::unexpected(std::pair{std::string("cannot write the root filesystem"), std::string{}});
+    if (run_tool_(*argv, stream, "writing the root filesystem") != 0)
+        return std::unexpected(std::pair{std::string("mkfs.ext4 failed"), std::string{}});
+    // The system partition.
+    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    const std::string conf = std::format(
+        "# A Luban drive (xlings subos export --drive)\ntimeout: 3\n\n/Luban\n    protocol: linux\n"
+        "    path: boot():/boot/vmlinuz\n"
+        "    cmdline: root=PARTUUID={} rw rootwait console=tty0 console=ttyS0 init={}/boot/{}\n",
+        luban::image::to_string(root_uuid), home.generic_string(), init);
+    std::vector<luban::image::File> files{
+        {.path = "EFI/BOOT/BOOTX64.EFI", .from = *limine / "BOOTX64.EFI"},
+        {.path = "boot/vmlinuz", .from = *kernel},
+        {.path = "boot/limine/limine.conf", .content = conf},
+        {.path = "boot/limine/limine-bios.sys", .from = *limine / "limine-bios.sys"},
+    };
+    const auto esp = scratch / "esp.fat";
+    if (auto w = luban::image::write_fat(esp, esp_bytes, files, static_cast<std::uint32_t>(starts[1]), "LUBANESP"); !w)
+        return std::unexpected(std::pair{"the system partition: " + w.error(), std::string{}});
+    const std::array<luban::image::Partition, 3> parts{
+        luban::image::Partition{.name = "BIOS boot", .type = luban::image::kBiosBootType,
+                                .uuid = luban::image::random_guid(), .content = {}, .bytes = bios_bytes},
+        luban::image::Partition{.name = "EFI system", .type = luban::image::kEspType,
+                                .uuid = luban::image::random_guid(), .content = esp, .bytes = esp_bytes},
+        luban::image::Partition{.name = "luban", .type = luban::image::kLinuxType, .uuid = root_uuid,
+                                .content = rootfs, .bytes = root_bytes}};
+    if (auto w = luban::image::write_gpt_disk(output, parts); !w)
+        return std::unexpected(std::pair{"the drive: " + w.error(), std::string{}});
+    fs::remove(esp, ec);
+    fs::remove(rootfs, ec);
+    auto ports = subos::make_ports(stream);
+    if (auto tool = subos::tools::first("limine", home_view(), ports)) {
+        if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it boot on BIOS too") != 0)
+            log::warn("the drive boots with UEFI; BIOS boot needs `limine bios-install` to work here");
+    } else {
+        log::info("  boots with UEFI; on BIOS too with limine's tool ({})", subos::tools::install_hint("limine"));
+    }
+    return {};
+}
+
+// A live ISO of the image in `stage` (Luban design §A9): limine boots the
+// kernel with the whole root as its initramfs -- the kernel unpacks it into
+// memory and runs stage-0 there, nothing to mount and no module to load. A
+// BIOS+UEFI hybrid with xorriso, BIOS-only in-process without; made
+// bootable from a drive too (`limine bios-install`) when limine's tool is
+// here.
+std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
+    const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const fs::path& scratch,
+    const nlohmann::json& boot, std::string_view name, EventStream& stream) {
+    std::error_code ec;
+    auto found = kernel_of_(stage, kernel_file, boot, name);
+    if (!found) return std::unexpected(found.error());
+    const auto kernel = *found;
+    auto limine = limine_data_(home, stream);
+    if (!limine)
+        return std::unexpected(std::pair{std::string("limine's boot files are not here"),
+                                         subos::tools::install_hint("limine")});
+    const auto iso = scratch / "iso";
+    for (const auto* d : {"boot/limine", "EFI/BOOT"}) fs::create_directories(iso / d, ec);
+    fs::copy_file(kernel, iso / "boot" / "vmlinuz", ec);
+    if (ec) return std::unexpected(std::pair{"cannot copy the kernel: " + ec.message(), std::string{}});
+    log::info("packing the root as the live system's memory image ...");
+    if (auto packed = xim::write_archive(stage, iso / "boot" / "initramfs.img", xim::ArchiveFormat::CpioNewcGz); !packed)
+        return std::unexpected(std::pair{"writing the live image: " + packed.error(), std::string{}});
+    bool uefi = true;
+    for (const auto* f : {"limine-bios-cd.bin", "limine-bios.sys", "limine-uefi-cd.bin"}) {
+        if (!fs::is_regular_file(*limine / f, ec)) { uefi = false; continue; }
+        fs::copy_file(*limine / f, iso / "boot" / "limine" / f, ec);
+    }
+    if (fs::is_regular_file(*limine / "BOOTX64.EFI", ec)) fs::copy_file(*limine / "BOOTX64.EFI", iso / "EFI/BOOT/BOOTX64.EFI", ec);
+    else uefi = false;
+    const auto init = fs::exists(stage / home.relative_path() / "boot" / "luban-init", ec) ? "luban-init" : "xlings-init";
+    {
+        std::ofstream conf(iso / "boot" / "limine" / "limine.conf");
+        conf << "# A live Luban system (xlings subos export --iso)\n"
+             << "timeout: 3\n\n/Luban\n    protocol: linux\n    path: boot():/boot/vmlinuz\n"
+             << "    module_path: boot():/boot/initramfs.img\n"
+             << std::format("    cmdline: console=tty0 console=ttyS0 rdinit={}/boot/{}\n", home.generic_string(), init);
+        if (!conf) return std::unexpected(std::pair{std::string("cannot write limine.conf"), std::string{}});
+    }
+    const auto output = scratch / "output";
+    auto ports = subos::make_ports(stream);
+    if (auto xorriso = subos::tools::first("xorriso", home_view(), ports); xorriso && uefi) {
+        if (run_tool_({xorriso->bin.string(), "-as", "mkisofs", "-quiet", "-R", "-r", "-J", "-V", "LUBAN",
+                       "-b", "boot/limine/limine-bios-cd.bin", "-no-emul-boot", "-boot-load-size", "4",
+                       "-boot-info-table", "--efi-boot", "boot/limine/limine-uefi-cd.bin", "-efi-boot-part",
+                       "--efi-boot-image", "--protective-msdos-label", iso.string(), "-o", output.string()},
+                      stream, "writing the ISO") != 0)
+            return std::unexpected(std::pair{std::string("xorriso could not write the ISO"), std::string{}});
+    } else {
+        if (uefi) log::info("  BIOS boot only: a UEFI one too needs xorriso ({})", subos::tools::install_hint("xorriso"));
+        if (auto written = xim::write_archive(iso, output, xim::ArchiveFormat::Iso9660,
+                                              xim::ArchiveOptions{.boot = "boot/limine/limine-bios-cd.bin"});
+            !written)
+            return std::unexpected(std::pair{"writing the ISO: " + written.error(), std::string{}});
+    }
+    if (auto tool = subos::tools::first("limine", home_view(), ports)) {
+        if (run_tool_({tool->bin.string(), "bios-install", output.string()}, stream, "making it bootable from a drive") != 0)
+            log::warn("the ISO boots from a CD; from a drive it needs `limine bios-install` to work here");
+    } else {
+        log::info("  boots from a CD (and qemu -cdrom); from a USB drive it also needs limine's tool ({})",
+                  subos::tools::install_hint("limine"));
+    }
+    return {};
+}
+
+}  // namespace
+
 int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& usageError) {
     std::string name;
-    fs::path rootfs_dir, tarball, disk;
+    fs::path rootfs_dir, tarball, disk, drive, iso, qcow2, kernel_file;
     std::string size = "4G";
     bool with_data = false;
     for (int i = 3; i < argc; ++i) {
@@ -618,28 +929,37 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         if (a == "--rootfs" && i + 1 < argc) rootfs_dir = argv[++i];
         else if (a == "--tar" && i + 1 < argc) tarball = argv[++i];
         else if (a == "--disk" && i + 1 < argc) disk = argv[++i];
+        else if (a == "--iso" && i + 1 < argc) iso = argv[++i];
+        else if (a == "--drive" && i + 1 < argc) drive = argv[++i];
+        else if (a == "--qcow2" && i + 1 < argc) qcow2 = argv[++i];
+        else if (a == "--kernel" && i + 1 < argc) kernel_file = argv[++i];
         else if (a == "--size" && i + 1 < argc) size = argv[++i];
         else if (a == "--with-data") with_data = true;
         else if (!a.empty() && a[0] != '-' && name.empty()) name = a;
         else { usageError("unknown option for `xlings subos export`: " + a); return 1; }
     }
-    const int outputs = !rootfs_dir.empty() + !tarball.empty() + !disk.empty();
+    const int outputs = !rootfs_dir.empty() + !tarball.empty() + !disk.empty() + !drive.empty() + !iso.empty()
+                        + !qcow2.empty();
     if (name.empty() || outputs != 1) {
-        usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> "
-                   "[--size 4G] [--with-data]");
+        usageError("usage: xlings subos export <name> --rootfs <dir> | --tar <file> | --disk <file> | "
+                   "--drive <file> | --qcow2 <file> | --iso <file> [--size 4G] [--kernel <vmlinuz>] [--with-data]");
         return 1;
     }
+    // The flag and the file, whichever was asked for.
+    const auto [flag, target] = !rootfs_dir.empty() ? std::pair{"--rootfs", rootfs_dir}
+        : !tarball.empty() ? std::pair{"--tar", tarball} : !disk.empty() ? std::pair{"--disk", disk}
+        : !drive.empty() ? std::pair{"--drive", drive} : !iso.empty() ? std::pair{"--iso", iso}
+        : std::pair{"--qcow2", qcow2};
     auto domainScope = xlings::home::domain_producer::read_scope(home_dir_(), name);
     if (!domainScope) { error_(stream, domainScope.error()); return 1; }
     if (*domainScope) {
-        const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+        const auto out = fs::absolute(target);
         if (auto fresh = require_new_output_(out); !fresh) { error_(stream, fresh.error()); return 1; }
         auto scratch = OwnedStage::create(out.parent_path());
         if (!scratch) { error_(stream, scratch.error()); return 1; }
         const fs::path guest = "/run/xlings-domain-output";
-        std::vector<std::string> arguments{"subos", "export", name,
-            !rootfs_dir.empty() ? "--rootfs" : (!tarball.empty() ? "--tar" : "--disk"), (guest / "output").string()};
-        if (!disk.empty()) arguments.insert(arguments.end(), {"--size", size});
+        std::vector<std::string> arguments{"subos", "export", name, flag, (guest / "output").string()};
+        if (!disk.empty() || !drive.empty() || !qcow2.empty()) arguments.insert(arguments.end(), {"--size", size});
         if (with_data) arguments.push_back("--with-data");
         auto exported = xlings::home::domain_producer::run((**domainScope).domain, arguments,
             xlings::home::domain_producer::OutputBinding{scratch->path(), guest});
@@ -659,7 +979,11 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         return 1;
     }
 
-    const auto out = fs::absolute(!rootfs_dir.empty() ? rootfs_dir : (!tarball.empty() ? tarball : disk));
+    const auto out = fs::absolute(target);
+    if (!kernel_file.empty() && iso.empty() && drive.empty() && qcow2.empty()) {
+        error_(stream, "--kernel names the kernel an ISO or a drive boots; a --disk boots the kernel given to it");
+        return 1;
+    }
     if (auto fresh = require_new_output_(out); !fresh) {
         error_(stream, fresh.error(), "choose a new output path");
         return 1;
@@ -858,11 +1182,21 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                     fs::perm_options::replace, ec);
     if (!check_io()) return 1;
-    // Stage-0's own binary travels with the client it belongs to (part 3 §8).
-    if (const auto init = entry.parent_path() / "luban-init"; fs::is_regular_file(init, ec)) {
-        fs::copy_file(init, image_home / "bin" / "luban-init", fs::copy_options::overwrite_existing, ec);
+    // Stage-0's own binary and the Luban tool travel with the client they
+    // belong to (part 3 §8; Luban design §A1).
+    for (const auto* companion : {"luban", "luban-init"}) {
+        const auto from = entry.parent_path() / companion;
+        if (!fs::is_regular_file(from, ec)) { ec.clear(); continue; }
+        // One binary under two names (Luban design §A1.1): in an image --
+        // a live one is held in memory -- the second name is a link.
+        if (std::string_view(companion) == "luban-init" && same_bytes_(from, entry.parent_path() / "luban")) {
+            fs::create_symlink("luban", image_home / "bin" / companion, ec);
+            if (!check_io()) return 1;
+            continue;
+        }
+        fs::copy_file(from, image_home / "bin" / companion, fs::copy_options::overwrite_existing, ec);
         if (!check_io()) return 1;
-        fs::permissions(image_home / "bin" / "luban-init", fs::perms::owner_all | fs::perms::group_read
+        fs::permissions(image_home / "bin" / companion, fs::perms::owner_all | fs::perms::group_read
                         | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                         fs::perm_options::replace, ec);
         if (!check_io()) return 1;
@@ -969,6 +1303,27 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                               (scratch->path() / "output").string(), size}, stream);
         if (!argv) return 1;
         rc = run_tool_(*argv, stream, "writing the disk image");
+    } else if (!drive.empty() || !qcow2.empty()) {
+        const auto raw = scratch->path() / (drive.empty() ? "drive.raw" : "output");
+        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw,
+                                     read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
+                                     name, stream); !made) {
+            error_(stream, made.error().first, made.error().second);
+            return 1;
+        }
+        if (!qcow2.empty()) {
+            auto img = tool_("qemu-img", stream);
+            if (!img) return 1;
+            rc = run_tool_({*img, "convert", "-q", "-f", "raw", "-O", "qcow2", raw.string(),
+                            (scratch->path() / "output").string()}, stream, "converting to qcow2");
+        }
+    } else if (!iso.empty()) {
+        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(),
+                                        read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
+                                        name, stream); !made) {
+            error_(stream, made.error().first, made.error().second);
+            return 1;
+        }
     }
     if (rc != 0) return 1;
     if (!rootfs_dir.empty()) {
@@ -995,6 +1350,12 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (!disk.empty())
         log::info("  boots with init={}/boot/{} root=/dev/vda", home.string(),
                   fs::exists(home / "bin" / "luban-init") ? "luban-init" : "xlings-init");
+    if (!drive.empty() || !qcow2.empty())
+        log::info("  a drive: `luban write {} <device>` puts it on one, `luban try {}` boots it here",
+                  out.string(), out.string());
+    if (!iso.empty())
+        log::info("  a live system: it runs from memory; write it to a drive with `luban write {} <device>`, "
+                  "try it with `luban try {}`", out.string(), out.string());
     return 0;
 }
 

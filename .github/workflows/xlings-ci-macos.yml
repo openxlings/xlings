@@ -282,6 +282,7 @@ jobs:
           XDEV_SUMMARY: "1"
         run: |
           mcpp build
+          mcpp build -p luban-tool
           mcpp build -p xdev
           # A member's binary lands under the root's target/ or the member's
           # own, depending on the mcpp version.

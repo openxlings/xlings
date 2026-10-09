@@ -22,6 +22,7 @@ modules/                             # packages linked into xlings, one per resp
 │               windows, unix), process/ (spawn, worker, stream), net/,
 │               isolation/ (ns, Landlock, seccomp, mounts), fs/, triple/
 ├── ui/         theme, i18n
+├── cli/        the command-line model: a declared tree, validation, help by level, completion
 ├── store/      what keeps a payload alive: GC roots (retained generations), the retained ledger
 ├── subos/      the SubOS core
 │   └── src/    model/ (model, manifest, roles, ports, userdata), policy/, intent/ (policy -> Intent),
@@ -32,11 +33,13 @@ modules/                             # packages linked into xlings, one per resp
 │               the selector, the compile skeleton, provider argv, the platform matrix
 ├── carrier/    where a SubOS runs: local, wsl2, vz; choose(); terminal/control over NDJSON
 └── testkit/    C++ e2e test library (dev-dependency)
-luban/                               # only what a SubOS that is a MACHINE needs (luban.*)
-└── src/        boot (boot entries), stage0 (first process), machine (/etc, sysusers)
+luban/                               # Luban: the OS model and its tool (luban.*)
+└── src/        boot (boot entries), stage0 (first process), machine (/etc, sysusers),
+                cli (the luban command), image (GPT and FAT, in-process)
 apps/
 ├── gui/        GUI library half
-├── luban-init/ stage-0 as its own binary (links luban + modules/, never src/)
+├── luban/     the luban binary: the Luban tool, and stage-0 when started as
+│               luban-init (links luban + modules/, never src/)
 └── xdev/       dev tool: tests, report, requirement map (not shipped)
 src/                                 # not yet separated: core, cli, ui, runtime
 ├── main.cpp                         # entry point
@@ -166,7 +169,7 @@ Rules that came with it:
   administrator argv outside `elevation::run`.
 * **Package layers import downward** (`tools/lint_layer_deps.sh`): `luban/`
   -> `modules/`; `modules/` never imports `luban.*` or the frontend. A binary
-  that must not carry the frontend is its OWN package (`apps/luban-init`): a
+  that must not carry the frontend is its OWN package (`apps/luban`): a
   package's binaries link every source of that package.
 * **A retained generation is a GC root.** `remove` completes and keeps the
   payload in `<data>/retained.json` while a generation links into it; a prune
@@ -175,6 +178,45 @@ Rules that came with it:
 * **The sandbox a policy compiles to is a golden** (`tests/fixtures/intent-eq`,
   INTENT-EQ). A change to it is a change to what a sandbox IS: regenerate with
   `XLINGS_INTENT_GOLDEN_WRITE=1` only on purpose, and say so in the commit.
+
+### Luban: the OS model, its tool, its images (2026.10.10.1)
+
+`.agents/docs/2026-10-09-luban-os-and-agent-private-design.md`; the user's
+guide is `docs/quick-start/luban.md`. What to keep in mind near it:
+
+* **luban is one implementation over xlings, never a second one.** Each
+  environment command is the xlings command it names, run on the same
+  terminal (`luban <cmd> --help` says which); luban's own is where it runs,
+  the overview, edition names, image formats, drives, the machine. Package
+  management stays `xlings install`. A command luban adds is declared in its
+  tree (`luban.cli`, levels common / more / expert) -- the help, the
+  suggestions and the tests come from it.
+* **luban is released as the xlings beside it.** Bumping the version edits
+  mcpp.toml, src/core/config.cppm AND luban/src/cli/cli.cppm (kVersion);
+  `test_luban_cli` fails when they differ. Luban editions and policies in
+  the index are date-versioned too, and a published version's manifest
+  never changes.
+* **One command, one plan, no child xlings on a terminal.** An install that
+  is a step of another command is `xim::cmd_install_step` (in process; a
+  template's plan and summary are not shown). A child in its own process
+  group that touches the terminal is stopped by the kernel (SIGTTOU) --
+  `run_argv_with_timeout` hands it the terminal, but do not rely on that for
+  a new nested install.
+* **Check the host before the download.** A root is preflighted
+  (`sandbox::prepare_root_host`) and an edition's ABI is checked when its
+  template is read; the one-time setup is asked there, through the one door
+  for administrator rights. Nobody to ask is exit 2 with the command.
+* **An edition does not carry a kernel.** `boot.kernel` / `kernel_min` are
+  hints an image export uses; the kernel is installed into the root only to
+  make an image. `export --iso` (the root as initramfs, limine) and
+  `--drive` (GPT, FAT system partition, ext4 root by PARTUUID; written
+  in-process by `luban.image`) boot on BIOS and UEFI --
+  tests/e2e/luban_image_test.sh boots both under qemu.
+* **A neutral identity is a persona** (`xlings.subos.persona`): the same
+  host name and machine-id on every entry, made once per instance, never
+  copied by a fork; its zone is UTC, a chosen one, or the proxy's exit asked
+  through the proxy -- never the host's. A policy whose zone is unchosen does
+  not write "UTC".
 
 ### Core and interaction surfaces are separate (2026.10, #640)
 

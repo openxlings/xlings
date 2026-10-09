@@ -991,17 +991,12 @@ fs::path resolve_base_package_(const std::string& fromSpec, EventStream& stream)
     }
 
     if (baseDir.empty()) {
-        // Auto-install (E5a): invoke `xlings install <spec>` so the
-        // base lands at xpkgs/<ns>-x-<name>/<ver>/. We use the host
-        // xlings binary (same process binary) so the install runs
-        // with the same context (XLINGS_HOME, mirror config, etc.).
-        log::info("base subos pkg '{}' not installed; auto-installing...",
-                  fromSpec);
-        auto xlings_bin = xself::xlings_binary_in_home(p.homeDir);
-        if (xlings_bin.empty()) xlings_bin = platform::get_executable_path();
-
-        auto rc = platform::run_argv({xlings_bin.string(), "install", "-y", fromSpec});
-        if (rc != 0) {
+        // Auto-install (E5a): the template is plumbing -- the user named a
+        // SubOS, not a package -- so it is installed in this process, its
+        // progress and errors shown, its own plan and summary not.
+        log::debug("base subos pkg '{}' not installed; installing it", fromSpec);
+        const std::vector<std::string> targets{fromSpec};
+        if (xim::cmd_install_step(targets, "", stream, /*plumbing=*/true) != 0) {
             stream.emit(ErrorEvent{
                 .code = ErrorCode::Internal,
                 .message = "auto-install of base '" + fromSpec
@@ -1062,10 +1057,37 @@ int new_from(const std::string& name, const fs::path& customDir,
         return 1;
     }
 
+    // A template that declares a root: the host is checked now, before the
+    // packages it declares are fetched.
+    if (new_from_detail_::is_pkg_spec_(fromSpec)) {
+        std::ifstream manifestIn(baseDir / ".xlings.json");
+        auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        if (auto refused = root_abi_refusal_(manifest.is_discarded() ? nlohmann::json() : manifest)) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("'{}' cannot be made here from {}: {}", name, fromSpec, *refused),
+                                   .recoverable = false,
+                                   .hint = "an edition built for this machine"});
+            return 1;
+        }
+        if (!manifest.is_discarded() && manifest.is_object() && manifest.value("subos_kind", "") == "rootfs")
+            if (auto r = sandbox::prepare_root_host(yes, stream); r != 0) return r;
+    }
+
     // Create target subos via standard `create`. This sets up
     // bin/lib/usr/generations, writes initial .xlings.json, optionally
-    // creates home.img, and registers the subos.
-    if (auto rc = create(name, customDir, storage, imageSize, runtime, yes, "-y", stream);
+    // creates home.img, and registers the subos. Its own "created" report is
+    // not shown: this command reports once, at the end, with the base it
+    // came from (subos_forked) -- two reports of one creation, the second
+    // naming the template's directory as if it were the subos's, read as two
+    // subos.
+    EventStream inner;
+    inner.set_can_confirm(stream.can_confirm());
+    inner.set_can_select(stream.interactive());
+    inner.on_event([&](const Event& e) {
+        if (const auto* d = std::get_if<DataEvent>(&e); d && d->kind == "subos_created") return;
+        stream.emit(e);
+    });
+    if (auto rc = create(name, customDir, storage, imageSize, runtime, yes, "-y", inner);
         rc != 0) {
         return rc;
     }
@@ -1146,6 +1168,7 @@ int new_from(const std::string& name, const fs::path& customDir,
     payload["name"]    = name;
     payload["from"]    = fromSpec;
     payload["base"]    = baseDir.string();
+    payload["dir"]     = dstDir.string();
     payload["storage"] = sandbox::storage_to_string_(storage);
     stream.emit(DataEvent{"subos_forked", payload.dump()});
     return 0;
@@ -1926,6 +1949,25 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
 // named, else -- forked from a local instance -- that instance's policy, so
 // a copy is isolated as its source was. Written outside the instance and
 // audited, as `subos config` does.
+// A template's `policy` (`"policy": "xim:agent-private@2026.10.10.1"`) and
+// `subos new --proxy`: `subos config <name> --sandbox <policy> --net proxy
+// --proxy <url>`, in this process.
+int apply_declared_policy_(const std::string& name, const std::string& proxy, EventStream& stream,
+                           const std::function<void(std::string_view)>& usageError) {
+    std::ifstream in(home_view().instance(name) / ".xlings.json");
+    auto manifest = nlohmann::json::parse(in, nullptr, false);
+    const std::string declared = manifest.is_object() && manifest.contains("policy") && manifest["policy"].is_string()
+        ? manifest["policy"].get<std::string>() : std::string{};
+    if (declared.empty() && proxy.empty()) return 0;
+    std::vector<std::string> words{"xlings", "subos", "config", name};
+    if (!declared.empty()) words.insert(words.end(), {"--sandbox", declared});
+    if (!proxy.empty()) words.insert(words.end(), {"--net", "proxy", "--proxy", proxy});
+    std::vector<char*> argv;
+    for (auto& w : words) argv.push_back(w.data());
+    argv.push_back(nullptr);
+    return run_config_(static_cast<int>(words.size()), argv.data(), stream, usageError);
+}
+
 int declare_isolation_at_creation_(const std::string& name, std::optional<policy::Preset> preset,
                                    const std::string& from, EventStream& stream) {
     const auto home = home_view();
@@ -2055,9 +2097,14 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --carrier / --abi (design part 3 §5.6): where it runs. Default:
         // this machine's kernel unless what it is needs another one.
         std::string requestedCarrier, abi = "native";
+        // --proxy <URL> (Luban design §C3): its network goes only through
+        // this SOCKS5h proxy, from the first time it is entered.
+        std::string proxy;
         std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
+            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; forwardArgs.insert(forwardArgs.end(), {a, proxy}); continue; }
+            if (a.starts_with("--proxy=")) { proxy = a.substr(8); forwardArgs.push_back(a); continue; }
             if ((a == "--carrier" || a == "--abi") && i + 1 < argc) {
                 (a == "--carrier" ? requestedCarrier : abi) = argv[++i];
                 continue;
@@ -2201,12 +2248,37 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
                 return *result;
         }
+        // A root is checked for before it costs a download (`--rootfs`; a
+        // template that declares one is checked once it is read, in new_from).
+        if (rootfs && fromSpec.empty())
+            if (auto r = sandbox::prepare_root_host(yesGiven, stream); r != 0) return r;
+        // "created" is said once, last: after the root and what it declares
+        // are in place. Said first, it was followed by the template chain and
+        // the package plan, and a failure there read as a SubOS that exists.
+        std::vector<Event> report;
+        EventStream made;
+        made.set_can_confirm(stream.can_confirm());
+        made.set_can_select(stream.interactive());
+        made.on_event([&](const Event& e) {
+            if (const auto* d = std::get_if<DataEvent>(&e);
+                d && (d->kind == "subos_created" || d->kind == "subos_forked")) {
+                report.push_back(e);
+                return;
+            }
+            stream.emit(e);
+        });
         const int rc = !fromSpec.empty()
-            ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, stream)
-            : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", stream);
+            ? new_from(name, {}, storage, imageSize, fromSpec, runtime, yesGiven, made)
+            : create(name, {}, storage, imageSize, runtime, yesGiven, "-y", made);
         if (rc != 0) return rc;
         if (auto r = declare_isolation_at_creation_(name, declared, fromSpec, stream); r != 0) return r;
         if (auto r = declare_root_at_creation_(name, rootfs, fromSpec, stream, domain); r != 0) return r;
+        // The policy its template declares, and the proxy asked for here:
+        // selected and locked before the first entry, through the same code
+        // as `subos config` -- so a workspace that is private is private from
+        // the start, with no window between "made" and "made private".
+        if (auto r = apply_declared_policy_(name, proxy, stream, usageError); r != 0) return r;
+        for (auto& e : report) stream.emit(std::move(e));
         if (!requestedCarrier.empty() || abi != "native") {
             if (auto recorded = record_carrier_(name, {"local", abi}); !recorded) {
                 stream.emit(ErrorEvent{.code = ErrorCode::Internal, .message = recorded.error(), .recoverable = true});

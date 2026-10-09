@@ -30,6 +30,10 @@ struct HomeView {
     fs::path policy_file(std::string_view name) const { return config_dir(name) / "policy.json"; }
     // What the instance IS, declared when it was made (part 2 §3.4: its kind).
     fs::path instance_file(std::string_view name) const { return config_dir(name) / "instance.json"; }
+    // Who an instance with a neutral identity is to the outside: its host
+    // name, machine-id and the time zone its proxy's exit resolved to
+    // (xlings.subos.persona). Made once; never copied with a fork.
+    fs::path persona_file(std::string_view name) const { return config_dir(name) / "persona.json"; }
     // Which SubOS this home boots (part 2 §8), when it is a machine's root.
     fs::path boot_file() const { return home / "boot.json"; }
     fs::path logs_dir(std::string_view name) const { return home / "logs" / "subos" / name; }

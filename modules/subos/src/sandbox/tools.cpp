@@ -45,6 +45,27 @@ const std::vector<Entry>& table() {
          {{Source::Payload, "sbin"}, {Source::Payload, "bin"},
           {Source::Host, "/usr/sbin/mkfs.ext4"}, {Source::Host, "/sbin/mkfs.ext4"},
           {Source::Host, "/usr/bin/mkfs.ext4"}}},
+        // Where a proxy's exit is (identity tz = proxy, Luban design §C4):
+        // asked THROUGH the proxy, so the answer names the exit and the
+        // question does not leave from here.
+        {{"curl", "curl"}, "xim-x-curl",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/curl"}, {Source::Host, "/usr/local/bin/curl"}}},
+        // A Luban image, made and tried (Luban design §A9, §B3.5).
+        {{"mksquashfs", "squashfs-tools"}, "xim-x-squashfs-tools",
+         {{Source::Payload, "bin"}, {Source::Payload, "sbin"},
+          {Source::Host, "/usr/bin/mksquashfs"}, {Source::Host, "/usr/sbin/mksquashfs"}}},
+        {{"xorriso", "xorriso"}, "xim-x-xorriso",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/xorriso"}, {Source::Host, "/usr/local/bin/xorriso"}}},
+        {{"limine", "limine"}, "xim-x-limine",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/limine"}, {Source::Host, "/usr/local/bin/limine"}}},
+        {{"qemu-system-x86_64", "qemu"}, "xim-x-qemu",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-x86_64"},
+          {Source::Host, "/usr/local/bin/qemu-system-x86_64"}}},
+        {{"qemu-system-aarch64", "qemu"}, "xim-x-qemu",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-system-aarch64"},
+          {Source::Host, "/usr/local/bin/qemu-system-aarch64"}}},
+        {{"qemu-img", "qemu"}, "xim-x-qemu",
+         {{Source::Payload, "bin"}, {Source::Host, "/usr/bin/qemu-img"}, {Source::Host, "/usr/local/bin/qemu-img"}}},
     };
     return t;
 }
@@ -98,7 +119,13 @@ std::vector<Found> candidates(std::string_view tool, const HomeView& home, const
     const auto* e = entry(tool);
     if (!e) return out;
     std::error_code ec;
+    // XLINGS_TOOLS_SEARCH=home: only what the home holds -- no root-owned
+    // copy, no machine path. A test seam: a host whose own bwrap works can
+    // still show what happens on one where none does.
+    const char* search = std::getenv("XLINGS_TOOLS_SEARCH");
+    const bool home_only = search && std::string_view(search) == "home";
     for (const auto& loc : e->order) {
+        if (home_only && (loc.source == Source::RootOwned || loc.source == Source::Host)) continue;
         switch (loc.source) {
         case Source::RootOwned: {
             if constexpr (!platform::is_linux) break;

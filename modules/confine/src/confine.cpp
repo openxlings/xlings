@@ -77,9 +77,24 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
 
     // ── filesystem ───────────────────────────────────────────────────
     const bool rootfs = !i.root.empty();
-    if (rootfs && !impl.presents_root)
+    if (rootfs && !impl.presents_root) {
+        // The cause first: a root needs bwrap, and what stands between this
+        // host and one. Naming the fallback that was tried instead ("proot
+        // cannot present a root") sent the user to a second command to learn
+        // that AppArmor was the reason.
+        if (caps.platform == "linux" && !r.preferred && caps.bwrap && !caps.bwrap->usable) {
+            auto why = caps.bwrap->probe_output.substr(0, caps.bwrap->probe_output.find('\n'));
+            return refuse({"root", "a rootfs SubOS needs bwrap, and bwrap cannot make a sandbox here"
+                                       + (why.empty() ? std::string{} : ": " + why),
+                           "xlings self doctor --isolation --fix  (one sudo: a root-owned bwrap with a narrow "
+                           "AppArmor profile)", policy::Need::Must});
+        }
+        if (caps.platform == "linux" && !r.preferred && !caps.bwrap)
+            return refuse({"root", "a rootfs SubOS needs bwrap, and this host has none",
+                           "xlings install bwrap", policy::Need::Must});
         return refuse({"root", std::string(sp::to_string(s.backend)) + " cannot present a root: a rootfs SubOS needs bwrap",
                        "xlings self doctor --isolation", policy::Need::Must});
+    }
     if (auto refused = impl.view(i, home, s)) return refuse(*refused);
 
     // ── processes and terminal (S0, design §16) ──────────────────────
@@ -115,7 +130,9 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
             unmet.push_back({"net", "net=proxy requires a Linux network namespace", "--net none",
                              policy::Need::Must});
         } else if (const auto proxy = network::parse_proxy(i.net.proxy); !proxy) {
-            unmet.push_back({"net", proxy.error(), "set isolation.proxy to socks5h://HOST:PORT", policy::Need::Must});
+            unmet.push_back({"net", proxy.error(),
+                             std::format("xlings subos config {} --proxy socks5h://HOST:PORT", i.instance),
+                             policy::Need::Must});
         } else {
             s.unshare_net = true;
             s.net_proxy = true;
@@ -126,7 +143,7 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
         unmet.push_back({"publish", "--publish needs net=nat (a private network to publish from)",
                          "--net nat", i.need("publish")});
     if (i.id.neutral) {
-        if (kernel) s.hostname = i.instance;
+        if (kernel) s.hostname = i.id.hostname.empty() ? i.instance : i.id.hostname;
         else unmet.push_back({"identity", "the host name cannot be changed without namespaces", "",
                               i.need("identity")});
     }

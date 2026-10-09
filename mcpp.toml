@@ -5,6 +5,8 @@
 #   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
 #   platform  -> runtime: the OS boundary -- every system header and call
 #   ui        -> platform: theme and i18n
+#   cli       -> libs: the command-line model (a declared command tree;
+#                validation, tiered help, completion), shared by xlings and luban
 #   store     -> libs, platform: what keeps a payload alive (GC roots, the
 #                retained ledger)
 #   subos     -> libs, runtime, platform, store: the SubOS core
@@ -13,7 +15,7 @@
 #   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
 #                xlings reaches it
 #   luban     -> modules: what exists only when a SubOS is a machine --
-#                boot entries, stage-0 (apps/luban-init), the machine's /etc
+#                boot entries, stage-0 and the luban command (apps/luban), the machine's /etc
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -28,12 +30,13 @@ members = [
     "modules/runtime",
     "modules/platform",
     "modules/ui",
+    "modules/cli",
     "modules/store",
     "modules/subos",
     "modules/confine",
     "modules/carrier",
     "luban",
-    "apps/luban-init",
+    "apps/luban",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",
@@ -41,7 +44,7 @@ members = [
 
 [package]
 name = "xlings"
-version = "2026.10.9.2"
+version = "2026.10.10.1"
 description = "Universal package management infrastructure tool with SubOS isolation"
 license = "Apache-2.0"
 repo = "https://github.com/openxlings/xlings"
@@ -134,6 +137,7 @@ libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
 ui       = { path = "modules/ui" }
+cli      = { path = "modules/cli" }
 store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }

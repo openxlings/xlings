@@ -85,6 +85,8 @@ void root_finish(const in::Intent& i, const HomeView& home, const std::map<std::
     if (i.id.neutral) {
         s.env["TZ"] = i.id.tz.empty() ? "UTC" : i.id.tz;
         s.env["LANG"] = "C.UTF-8";
+        // As the view of the host does: a host's LC_* is where it is.
+        std::erase_if(s.env, [](const auto& kv) { return kv.first.starts_with("LC_"); });
     }
     for (auto& [k, v] : grant_env) s.env[k] = v;
     s.env.erase("XLINGS_ACTIVE_SUBOS");
