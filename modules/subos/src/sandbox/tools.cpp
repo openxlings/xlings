@@ -98,7 +98,13 @@ std::vector<Found> candidates(std::string_view tool, const HomeView& home, const
     const auto* e = entry(tool);
     if (!e) return out;
     std::error_code ec;
+    // XLINGS_TOOLS_SEARCH=home: only what the home holds -- no root-owned
+    // copy, no machine path. A test seam: a host whose own bwrap works can
+    // still show what happens on one where none does.
+    const char* search = std::getenv("XLINGS_TOOLS_SEARCH");
+    const bool home_only = search && std::string_view(search) == "home";
     for (const auto& loc : e->order) {
+        if (home_only && (loc.source == Source::RootOwned || loc.source == Source::Host)) continue;
         switch (loc.source) {
         case Source::RootOwned: {
             if constexpr (!platform::is_linux) break;

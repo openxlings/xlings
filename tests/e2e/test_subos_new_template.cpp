@@ -39,13 +39,8 @@ end
 )LUA", name, Json(manifest.dump()).dump());
 }
 
-}  // namespace
-
-XTEST(SubosNewTemplate, AtATerminalTheChainAndItsPackagesAreOnePlanAndNothingHangs,
-      .area = "subos", .cost = tk::Cost::Medium,
-      .covers = {"UX-NO-HANG", "UX-ONE-PLAN"}, .requires_ = {"linux", "xlings-bin"}) {
-    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
-    auto home = tk::Home::isolated("subos-new-template");
+tk::Home fixture_home(std::string_view name) {
+    auto home = tk::Home::isolated(name);
     const auto primary = home.root() / "primary";
     const auto repo = home.root() / "index";
     tk::write_file(primary / "xim-indexrepos.lua", "xim_indexrepos = {}\n");
@@ -74,13 +69,28 @@ end
     fs::create_directories(home.dir() / "bin");
     fs::copy_file(tk::xlings_binary(), home.dir() / "bin/xlings");
     auto initialized = home.xlings({"self", "init"});
-    ASSERT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    EXPECT_EQ(initialized.exit_code, 0) << initialized.transcript();
+    return home;
+}
 
+}  // namespace
+
+XTEST(SubosNewTemplate, AtATerminalTheChainAndItsPackagesAreOnePlanAndNothingHangs,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"UX-NO-HANG", "UX-ONE-PLAN"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    auto home = fixture_home("subos-new-template");
+    // Whatever this machine's own bwrap can do, the home's says yes: the
+    // host check is the other test's subject, not this one's.
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
     // A terminal, as a person has one: the nested installs must neither be
     // stopped for touching it nor print a plan of their own.
     tk::RunOptions run;
     run.argv = {"subos", "new", "box", "--from", "fixture:t-top@1.0.0"};
     run.pty = true;
+    run.env = {{"XLINGS_TOOLS_SEARCH", "home"}};
     run.timeout = std::chrono::seconds(90);
     auto created = home.xlings(run);
     ASSERT_FALSE(created.timed_out) << "subos new did not finish:\n" << created.transcript();
@@ -90,4 +100,34 @@ end
     EXPECT_EQ(count(created.out, "still resolves to"), 0u) << created.out;
     EXPECT_EQ(count(created.out, "subos created"), 1u) << created.out;
     EXPECT_TRUE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello/1.0.0/bin/hello"));
+}
+
+XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
+      .area = "subos", .cost = tk::Cost::Medium,
+      .covers = {"UX-PREFLIGHT"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    auto home = fixture_home("subos-new-preflight");
+    // The only bwrap this home can see fails the way Ubuntu's AppArmor
+    // restriction makes it fail.
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\necho 'bwrap: setting up uid map: Permission denied' >&2\nexit 1\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    // Nobody at a terminal (an agent): the one-time setup cannot be asked.
+    auto created = home.xlings({"subos", "new", "box", "--from", "fixture:t-top@1.0.0"},
+                               {{"XLINGS_TOOLS_SEARCH", "home"}}, std::chrono::seconds(90));
+    ASSERT_FALSE(created.timed_out) << created.transcript();
+    EXPECT_NE(created.exit_code, 0) << created.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello"))
+        << "the declared packages were fetched for a root this host cannot run\n" << created.transcript();
+    std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    std::string restricted;
+    std::getline(sysctl, restricted);
+    if (restricted == "1") {
+        EXPECT_EQ(created.exit_code, 2) << "a question nobody can answer: exit 2\n" << created.transcript();
+        EXPECT_NE(created.transcript().find("one-time setup"), std::string::npos) << created.transcript();
+        EXPECT_NE(created.transcript().find("-y"), std::string::npos) << "the answer, spelled\n" << created.transcript();
+    } else {
+        EXPECT_NE(created.transcript().find("setting up uid map"), std::string::npos)
+            << "the cause, first\n" << created.transcript();
+    }
 }

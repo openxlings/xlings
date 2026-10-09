@@ -1007,6 +1007,103 @@ nlohmann::json preview(const std::string& name, const policy::Policy& pol, Event
 }
 
 
+namespace {
+// The one repair that needs root (self doctor --isolation --fix, and the
+// first root a host makes): a root-owned copy of a bwrap at
+// /usr/lib/xlings/bwrap with an AppArmor profile that grants it user
+// namespaces and nothing else. Asked once; the commands are printed; run
+// through the one door for administrator rights (sudo asks for the password
+// at the terminal).
+int repair_isolation_(const HomeView& home, const subos::Ports& ports,
+                      const std::vector<caps::Backend>& candidates, bool yes, EventStream& stream,
+                      std::string_view question) {
+    auto read_sysctl = [](const char* path) -> std::string {
+        std::ifstream in(path);
+        std::string v;
+        std::getline(in, v);
+        return v.empty() ? std::string("(absent)") : v;
+    };
+    // The repair: only for the case it fixes -- AppArmor restricting
+    // unprivileged user namespaces for unconfined programs.
+    if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+            .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
+                       "changes would help",
+            .recoverable = false,
+            .hint = "the kernel disables them outright (see the sysctl values above); "
+                    "--sandbox proot works without them" });
+        return 1;
+    }
+    std::optional<fs::path> source;
+    for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
+    if (!source) {
+        stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
+            .message = "no bwrap to install", .recoverable = true,
+            .hint = "xlings install bwrap, then run this again" });
+        return 1;
+    }
+    const std::string profile =
+        "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
+        "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
+        "abi <abi/4.0>,\n"
+        "include <tunables/global>\n\n"
+        "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
+        "  userns,\n\n"
+        "  include if exists <local/xlings-bwrap>\n"
+        "}\n";
+    const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
+    platform::write_string_to_file(tmp.string(), profile);
+    // Each step runs through elevation::run below (tool-ok on each line).
+    const std::vector<std::vector<std::string>> steps{
+        {"install", "-D", "-o", "root", "-g", "root", "-m", "0755", source->string(),  // tool-ok: elevated below
+         std::string(caps::kRootOwnedBwrap)},
+        {"install", "-D", "-o", "root", "-g", "root", "-m", "0644", tmp.string(),  // tool-ok: elevated below
+         "/etc/apparmor.d/xlings-bwrap"},
+        {"apparmor_parser", "-r", "/etc/apparmor.d/xlings-bwrap"},  // tool-ok: elevated below
+    };
+    auto spelled = [](const std::vector<std::string>& argv) {
+        std::string line;
+        for (const auto& a : argv) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
+        return line;
+    };
+    std::string plan = "this runs, as root:";
+    for (auto& c : steps) plan += "\n    " + spelled(c);
+    log::info("{}", plan);
+    auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
+                              std::string(question), yes, "-y");
+    if (asked.outcome != confirm::Outcome::Confirmed) {
+        std::error_code ec;
+        fs::remove(tmp, ec);
+        if (asked.outcome == confirm::Outcome::NobodyToAsk) {
+            log::error("nothing changed: this needs confirmation -- re-run with -y");
+            return 2;
+        }
+        log::info("nothing changed");
+        return 1;
+    }
+    for (auto& c : steps) {
+        log::info("$ {}", spelled(c));
+        if (subos::elevation::run(home, c, "self doctor --isolation --fix") != 0) {
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            log::error("failed: {}", spelled(c));
+            return 1;
+        }
+    }
+    std::error_code ec;
+    fs::remove(tmp, ec);
+    auto after = caps::locate_bwrap(home, ports);
+    if (after && after->usable && after->source == "root-owned") {
+        log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
+                  after->bin.string());
+        return 0;
+    }
+    log::error("installed, but the probe still fails: {}",
+               after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
+    return 1;
+}
+}  // namespace
+
 // `xlings self doctor --isolation [--fix]` (design §18, §20; #640 F10, F12).
 //
 // What this host can isolate with, measured: each bwrap found and what its
@@ -1034,6 +1131,20 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             {"kernel.unprivileged_userns_clone", read_sysctl("/proc/sys/kernel/unprivileged_userns_clone")},
             {"user.max_user_namespaces", read_sysctl("/proc/sys/user/max_user_namespaces")},
         };
+        // Whose answer this is. A process confined by an AppArmor profile
+        // that allows user namespaces (Ubuntu's `busybox` one, inherited from
+        // whatever started it) succeeds where a shell started normally is
+        // refused -- measured on 2026-10-09: the same machine said yes in one
+        // terminal and no in another.
+        for (const char* attr : {"/proc/self/attr/apparmor/current", "/proc/self/attr/current"}) {
+            std::ifstream in(attr);
+            std::string label;
+            if (in && std::getline(in, label) && !label.empty()) {
+                while (!label.empty() && (label.back() == '\n' || label.back() == '\0')) label.pop_back();
+                report["apparmor_label"] = label;
+                break;
+            }
+        }
         candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
         report["bwrap"] = nlohmann::json::array();
         for (auto& b : candidates) {
@@ -1082,6 +1193,13 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
         if (report.contains("sysctl"))
             for (auto it = report["sysctl"].begin(); it != report["sysctl"].end(); ++it)
                 std::println(std::cout, "  {:<46} {}", it.key(), it.value().get<std::string>());
+        if (report.contains("apparmor_label")) {
+            const auto label = report["apparmor_label"].get<std::string>();
+            std::println(std::cout, "  {:<46} {}", "apparmor label of this process", label);
+            if (label != "unconfined")
+                std::println(std::cout, "    (inherited from what started it: a shell started normally is "
+                                        "`unconfined`, and the probes below may differ there)");
+        }
         if (report.contains("bwrap")) {
             if (report["bwrap"].empty()) std::println(std::cout, "  bwrap: none found");
             for (auto& b : report["bwrap"])
@@ -1104,84 +1222,8 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
     }
 
     if constexpr (platform::is_linux) {
-        // The repair: only for the case it fixes -- AppArmor restricting
-        // unprivileged user namespaces for unconfined programs.
-        if (read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") != "1") {
-            stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
-                .message = "user namespaces are not restricted by AppArmor here; nothing this repair "
-                           "changes would help",
-                .recoverable = false,
-                .hint = "the kernel disables them outright (see the sysctl values above); "
-                        "--sandbox proot works without them" });
-            return 1;
-        }
-        std::optional<fs::path> source;
-        for (auto& b : candidates) if (b.source != "root-owned") { source = b.bin; break; }
-        if (!source) {
-            stream.emit(ErrorEvent{ .code = ErrorCode::NotFound,
-                .message = "no bwrap to install", .recoverable = true,
-                .hint = "xlings install bwrap, then run this again" });
-            return 1;
-        }
-        const std::string profile =
-            "# xlings: grant user namespaces to the root-owned bwrap xlings uses for SubOS\n"
-            "# sandboxes (xlings self doctor --isolation --fix). Nothing else.\n"
-            "abi <abi/4.0>,\n"
-            "include <tunables/global>\n\n"
-            "profile xlings-bwrap /usr/lib/xlings/bwrap flags=(unconfined) {\n"
-            "  userns,\n\n"
-            "  include if exists <local/xlings-bwrap>\n"
-            "}\n";
-        const auto tmp = fs::temp_directory_path() / std::format("xlings-bwrap-profile-{}", platform::get_pid());
-        platform::write_string_to_file(tmp.string(), profile);
-        // Each step runs through elevation::run below (tool-ok on each line).
-        const std::vector<std::vector<std::string>> steps{
-            {"install", "-D", "-o", "root", "-g", "root", "-m", "0755", source->string(),  // tool-ok: elevated below
-             std::string(caps::kRootOwnedBwrap)},
-            {"install", "-D", "-o", "root", "-g", "root", "-m", "0644", tmp.string(),  // tool-ok: elevated below
-             "/etc/apparmor.d/xlings-bwrap"},
-            {"apparmor_parser", "-r", "/etc/apparmor.d/xlings-bwrap"},  // tool-ok: elevated below
-        };
-        auto spelled = [](const std::vector<std::string>& argv) {
-            std::string line;
-            for (const auto& a : argv) line += (line.empty() ? "" : " ") + platform::shell_quote(a);
-            return line;
-        };
-        std::string plan = "this runs, as root:";
-        for (auto& c : steps) plan += "\n    " + spelled(c);
-        log::info("{}", plan);
-        auto asked = confirm::ask(stream, "self.doctor.isolation.fix",
-                                  "install the root-owned bwrap and its AppArmor profile?", yes, "-y");
-        if (asked.outcome != confirm::Outcome::Confirmed) {
-            std::error_code ec;
-            fs::remove(tmp, ec);
-            if (asked.outcome == confirm::Outcome::NobodyToAsk) {
-                log::error("nothing changed: this needs confirmation -- re-run with -y");
-                return 2;
-            }
-            log::info("nothing changed");
-            return 1;
-        }
-        for (auto& c : steps) {
-            log::info("$ {}", spelled(c));
-            if (subos::elevation::run(home, c, "self doctor --isolation --fix") != 0) {
-                std::error_code ec;
-                fs::remove(tmp, ec);
-                log::error("failed: {}", spelled(c));
-                return 1;
-            }
-        }
-        std::error_code ec;
-        fs::remove(tmp, ec);
-        auto after = caps::locate_bwrap(home, ports);
-        if (after && after->usable && after->source == "root-owned") {
-            log::info("sandboxes now use {} (root-owned, AppArmor profile xlings-bwrap)",
-                      after->bin.string());
-            return 0;
-        }
-        log::error("installed, but the probe still fails: {}",
-                   after ? after->probe_output.substr(0, after->probe_output.find('\n')) : std::string("no bwrap"));
-        return 1;
+        return repair_isolation_(home, ports, candidates, yes, stream,
+                                 "install the root-owned bwrap and its AppArmor profile?");
     } else {
         (void)yes;
         stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
@@ -1189,6 +1231,40 @@ int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream) {
             .recoverable = false });
         return 1;
     }
+}
+
+int prepare_root_host(bool yes, EventStream& stream) {
+    if constexpr (!platform::is_linux) return 0;   // a root elsewhere is refused where it is made
+    const auto home = subos::home_view();
+    const auto ports = subos::make_ports(stream);
+    auto found = caps::locate_bwrap(home, ports);
+    if (found && found->usable) return 0;
+    std::ifstream sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns");
+    std::string restricted;
+    std::getline(sysctl, restricted);
+    if (restricted != "1") {
+        // Not the restriction the repair lifts: say what is in the way.
+        stream.emit(ErrorEvent{ .code = ErrorCode::InvalidInput,
+            .message = found ? classify_bwrap_probe_error_(found->probe_output, found->bin)
+                             : std::string("a root needs bwrap, and this host has none"),
+            .recoverable = true,
+            .hint = found ? "nothing was downloaded; see `xlings self doctor --isolation`"
+                          : "xlings install bwrap" });
+        return 1;
+    }
+    // The restriction most desktops ship (Ubuntu 23.10+). It is lifted once,
+    // for this machine, by one narrow profile -- before anything is fetched.
+    auto candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
+    if (std::ranges::none_of(candidates, [](const caps::Backend& b) { return b.source != "root-owned"; })) {
+        const std::vector<std::string> bwrap{"bwrap"};
+        if (xim::cmd_install_step(bwrap, "", stream, /*plumbing=*/true) != 0) return 1;
+        candidates = caps::bwrap_candidates(home, ports, /*fresh=*/true);
+    }
+    log::println("this machine needs a one-time setup before it can run a root:");
+    log::println("  AppArmor keeps programs without a profile from making the sandbox a root runs in.");
+    log::println("  The setup installs a root-owned bwrap and one AppArmor profile that allows it");
+    log::println("  exactly that -- once, for every user of this machine.");
+    return repair_isolation_(home, ports, candidates, yes, stream, "do it now? (sudo)");
 }
 
 }

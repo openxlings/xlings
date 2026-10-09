@@ -192,6 +192,10 @@ export nlohmann::json preview(const std::string& name, const policy::Policy& pol
 
 // `xlings self doctor --isolation [--fix] [--json]`.
 export int doctor_isolation(bool fix, bool yes, bool json, EventStream& stream);
+// Before a rootfs SubOS costs a download: can this host present a root? 0
+// when it can (perhaps after the one-time setup, asked here); otherwise the
+// command stops with the cause and the route, nothing fetched.
+export int prepare_root_host(bool yes, EventStream& stream);
 
 export int enter(const std::string& name, EventStream& stream,
                       const std::string& preferred_backend = "",

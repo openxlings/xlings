@@ -77,9 +77,24 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
 
     // ── filesystem ───────────────────────────────────────────────────
     const bool rootfs = !i.root.empty();
-    if (rootfs && !impl.presents_root)
+    if (rootfs && !impl.presents_root) {
+        // The cause first: a root needs bwrap, and what stands between this
+        // host and one. Naming the fallback that was tried instead ("proot
+        // cannot present a root") sent the user to a second command to learn
+        // that AppArmor was the reason.
+        if (caps.platform == "linux" && !r.preferred && caps.bwrap && !caps.bwrap->usable) {
+            auto why = caps.bwrap->probe_output.substr(0, caps.bwrap->probe_output.find('\n'));
+            return refuse({"root", "a rootfs SubOS needs bwrap, and bwrap cannot make a sandbox here"
+                                       + (why.empty() ? std::string{} : ": " + why),
+                           "xlings self doctor --isolation --fix  (one sudo: a root-owned bwrap with a narrow "
+                           "AppArmor profile)", policy::Need::Must});
+        }
+        if (caps.platform == "linux" && !r.preferred && !caps.bwrap)
+            return refuse({"root", "a rootfs SubOS needs bwrap, and this host has none",
+                           "xlings install bwrap", policy::Need::Must});
         return refuse({"root", std::string(sp::to_string(s.backend)) + " cannot present a root: a rootfs SubOS needs bwrap",
                        "xlings self doctor --isolation", policy::Need::Must});
+    }
     if (auto refused = impl.view(i, home, s)) return refuse(*refused);
 
     // ── processes and terminal (S0, design §16) ──────────────────────

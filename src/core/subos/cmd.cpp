@@ -1057,6 +1057,15 @@ int new_from(const std::string& name, const fs::path& customDir,
         return 1;
     }
 
+    // A template that declares a root: the host is checked now, before the
+    // packages it declares are fetched.
+    if (new_from_detail_::is_pkg_spec_(fromSpec)) {
+        std::ifstream manifestIn(baseDir / ".xlings.json");
+        auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        if (!manifest.is_discarded() && manifest.is_object() && manifest.value("subos_kind", "") == "rootfs")
+            if (auto r = sandbox::prepare_root_host(yes, stream); r != 0) return r;
+    }
+
     // Create target subos via standard `create`. This sets up
     // bin/lib/usr/generations, writes initial .xlings.json, optionally
     // creates home.img, and registers the subos. Its own "created" report is
@@ -2208,6 +2217,10 @@ int run(int argc, char* argv[], EventStream& stream) {
             if (auto result = produce_domain_at_creation_(name, rootfs, domain, producerArgs, stream))
                 return *result;
         }
+        // A root is checked for before it costs a download (`--rootfs`; a
+        // template that declares one is checked once it is read, in new_from).
+        if (rootfs && fromSpec.empty())
+            if (auto r = sandbox::prepare_root_host(yesGiven, stream); r != 0) return r;
         // "created" is said once, last: after the root and what it declares
         // are in place. Said first, it was followed by the template chain and
         // the package plan, and a failure there read as a SubOS that exists.

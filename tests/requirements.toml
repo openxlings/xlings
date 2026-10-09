@@ -43,6 +43,10 @@ status = "required"
 text = "subos new from a template chain shows one plan (the declared packages), one creation line, and no hint to switch to the version it installed"
 status = "required"
 
+[UX-PREFLIGHT]
+text = "a root a host cannot run is refused (or its one-time setup asked) before the packages it declares are fetched"
+status = "required"
+
 [PROCESS-TERMINAL-JOB]
 text = "a child run with a deadline in its own process group holds the caller's terminal while it runs, and the terminal comes back"
 status = "required"
