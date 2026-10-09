@@ -90,6 +90,39 @@ XTEST(SubosSession, ASecondCommandJoinsTheRunningSession,
     EXPECT_EQ((*end)["exit"], 4);
 }
 
+// An interactive command that joins a running session gets a terminal of its
+// own, made inside the session, as its controlling terminal: a shell there has
+// job control. Before, it was handed the caller's terminal, which already
+// belongs to the caller's session; it ran without job control, and fish
+// refused to run at all ("tcgetpgrp failed").
+XTEST(SubosSession, AnInteractiveJoinHasATerminalOfItsOwn,
+      .area = "subos", .cost = tk::Cost::Medium, .covers = {"SES-JOIN"},
+      .requires_ = {"linux", "xlings-bin", "sandbox", "pty"}, .resources = {"sandbox"}) {
+    Box box;
+    // Both on a terminal: a session is joined only by a request of the same
+    // isolation, and an interactive one is not the same as a script's.
+    auto on_terminal = [&](std::string cmd) {
+        tk::RunOptions o;
+        o.argv = {"subos", "use", box.name, "--sandbox", "--cmd", std::move(cmd)};
+        o.pty = true;
+        o.timeout = std::chrono::seconds(60);
+        return box.home.xlings(o);
+    };
+    tk::RunResult first;
+    std::thread t([&] { first = on_terminal("sleep 4"); });
+    ASSERT_TRUE(wait_for([&] { return box.running(); })) << "the first session never started";
+    // Fields of /proc/<pid>/stat: 5 the process group, 7 the controlling
+    // terminal (0 = none), 8 the terminal's foreground process group.
+    auto joined = on_terminal(
+        R"(set -- $(cat /proc/$$/stat); if [ "$7" != 0 ] && [ "$8" = "$5" ]; )"
+        R"(then echo JOB-CONTROL; else echo "NO-JOB-CONTROL tty=$7 pgrp=$5 fg=$8"; fi)");
+    t.join();
+    EXPECT_EQ(joined.exit_code, 0) << joined.transcript();
+    EXPECT_NE(joined.out.find("JOB-CONTROL"), std::string::npos) << joined.transcript();
+    EXPECT_EQ(joined.out.find("NO-JOB-CONTROL"), std::string::npos) << joined.transcript();
+    EXPECT_EQ(first.exit_code, 0) << first.transcript();
+}
+
 XTEST(SubosSession, PsListsAndStopEndsASession,
       .area = "subos", .cost = tk::Cost::Medium, .covers = {"SES-START-STOP", "OBS-LOG"},
       .requires_ = {"linux", "xlings-bin", "sandbox"}, .resources = {"sandbox"}) {

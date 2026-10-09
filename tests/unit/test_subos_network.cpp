@@ -32,7 +32,9 @@ XTEST(SubosNetwork, ProxyUrlsRejectCredentialsAndNonRemoteDnsSchemes,
     EXPECT_TRUE(policy::apply(pinned, {.proxy = pinned.proxy}));
 }
 
-XTEST(SubosNetwork, CompilerAndProviderKeepTheAlreadyCreatedProxyNamespace,
+// bwrap makes the proxy's network namespace (only lo): on a host restricting
+// unprivileged user namespaces only the bwrap its setup exempts may.
+XTEST(SubosNetwork, BwrapMakesTheProxyNamespaceAndTheCompilerRoutesThroughTheGateway,
       .area = "subos") {
     auto requested = policy::preset(policy::Preset::Dev);
     requested.net = policy::Net::Proxy;
@@ -50,7 +52,7 @@ XTEST(SubosNetwork, CompilerAndProviderKeepTheAlreadyCreatedProxyNamespace,
     EXPECT_FALSE(compiled->net_nat);
     EXPECT_EQ(compiled->env.at("ALL_PROXY"), "socks5h://127.0.0.1:1080");
     const auto argv = xlings::confine::provider::bwrap_argv(*compiled);
-    EXPECT_EQ(std::ranges::find(argv, "--unshare-net"), argv.end());
+    EXPECT_NE(std::ranges::find(argv, "--unshare-net"), argv.end());
     EXPECT_EQ(compiled->describe()["net"]["dns"], "remote");
     for (const auto* other : {"macos", "windows"}) {
         caps.platform = other;

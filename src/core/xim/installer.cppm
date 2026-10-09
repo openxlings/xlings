@@ -259,7 +259,7 @@ std::string log_last_line_(const std::filesystem::path& log,
 // Says that a hook is still running: a status after `first`, then every
 // `every`, until destroyed. Lines rather than a redrawn frame, because a
 // frame shares the terminal with every line the hook's own work prints.
-// XLINGS_HOOK_HEARTBEAT=<first>:<every> (seconds) overrides the 15 s / 60 s
+// XLINGS_HOOK_HEARTBEAT=<first>:<every> (seconds) overrides the 10 s / 30 s
 // defaults; `off` disables it.
 class HookHeartbeat_ {
 public:
@@ -566,7 +566,8 @@ bool run_config_hook_(const PlanNode& node,
 // recipes routinely declare one cross-platform program list and register the
 // subset that exists on this host. Zero out of N is what never has a benign
 // reading -- the package cannot do the thing it exists to do.
-std::vector<std::string> unfulfilled_program_promises_(const InstallPlan& plan);
+std::vector<std::string> unfulfilled_program_promises_(
+    const InstallPlan& plan, const std::unordered_set<std::string>& failed = {});
 
 }  // namespace detail_
 

@@ -52,6 +52,9 @@ namespace platform {
     // The calendar fields of `t` in the local time zone (localtime_r / _s).
     export std::tm local_time(std::time_t t);
     export bool remove_empty_directory(const std::filesystem::path& path);
+    // A disk quota ran out (EDQUOT): std::errc has no name for it, and to the
+    // user it is a full disk. False where the system has no quotas.
+    export bool is_quota_exceeded(std::error_code ec);
 
     export using platform_impl::PATH_SEPARATOR;
     export using platform_impl::OS_NAME;

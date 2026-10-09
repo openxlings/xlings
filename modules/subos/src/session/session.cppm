@@ -103,6 +103,12 @@ struct Launch {
 inline constexpr std::string_view kControlFdEnv = "XLINGS_SESSION_FD";
 inline constexpr std::string_view kTtlEnv = "XLINGS_SESSION_TTL";
 inline constexpr std::string_view kRootViewEnv = "XLINGS_SESSION_ROOT_VIEW";
+// net=proxy: the descriptor of the bridge to the supervisor's relay.
+// session-init -- inside bwrap's network namespace, where only lo exists --
+// runs the loopback gateway on it. The namespace is bwrap's: on hosts that
+// restrict unprivileged user namespaces (Ubuntu 23.10+) only the bwrap the
+// one-time setup exempts may make one, never this client.
+inline constexpr std::string_view kProxyFdEnv = "XLINGS_SESSION_PROXY_FD";
 // --sandbox landlock: the writable paths, one per line; session-init fences
 // itself with them before it starts anything.
 inline constexpr std::string_view kLandlockRwEnv = "XLINGS_SESSION_LANDLOCK_RW";

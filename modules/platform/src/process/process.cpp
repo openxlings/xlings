@@ -16,6 +16,7 @@ module;
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <crt_externs.h>
@@ -362,6 +363,85 @@ bool read_exact(int fd, void* buf, std::size_t size) {
     return true;
 }
 
+std::optional<std::array<int, 2>> open_pty(int size_from) {
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0) return std::nullopt;
+    const char* name = (::grantpt(master) == 0 && ::unlockpt(master) == 0) ? ::ptsname(master) : nullptr;
+    const int slave = name ? ::open(name, O_RDWR | O_NOCTTY) : -1;
+    if (slave < 0) { ::close(master); return std::nullopt; }
+    cloexec(master);
+    cloexec(slave);
+    if (size_from >= 0) (void)copy_window_size(size_from, master);
+    return std::array<int, 2>{master, slave};
+}
+
+bool copy_window_size(int from, int to) {
+    struct winsize have{}, want{};
+    if (::ioctl(from, TIOCGWINSZ, &want) != 0) return false;
+    if (::ioctl(to, TIOCGWINSZ, &have) == 0 && have.ws_row == want.ws_row
+        && have.ws_col == want.ws_col && have.ws_xpixel == want.ws_xpixel
+        && have.ws_ypixel == want.ws_ypixel)
+        return false;
+    // Setting it on the master signals SIGWINCH to the terminal's foreground
+    // process group, which is what a resize means to the program there.
+    return ::ioctl(to, TIOCSWINSZ, &want) == 0;
+}
+
+std::optional<std::string> make_terminal_raw(int fd) {
+    if (!::isatty(fd)) return std::nullopt;
+    struct termios saved{};
+    if (::tcgetattr(fd, &saved) != 0) return std::nullopt;
+    struct termios raw = saved;
+    ::cfmakeraw(&raw);
+    if (::tcsetattr(fd, TCSANOW, &raw) != 0) return std::nullopt;
+    return std::string(reinterpret_cast<const char*>(&saved), sizeof(saved));
+}
+
+void restore_terminal(int fd, const std::string& saved) {
+    if (saved.size() != sizeof(struct termios)) return;
+    struct termios t{};
+    std::memcpy(&t, saved.data(), sizeof(t));
+    (void)::tcsetattr(fd, TCSADRAIN, &t);
+}
+
+void relay_terminal(int master, int in, int out) {
+    // No allocation in this loop: it runs as a thread of a process that
+    // forks, and a child forked while this thread held the allocator's lock
+    // would deadlock before it reached exec.
+    char buf[16384];
+    bool input_open = in >= 0;
+    auto write_all = [](int fd, const char* p, ::ssize_t n) {
+        while (n > 0) {
+            const auto w = ::write(fd, p, static_cast<std::size_t>(n));
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) return false;
+            p += w;
+            n -= w;
+        }
+        return true;
+    };
+    while (true) {
+        struct pollfd p[2] = {{master, POLLIN, 0}, {input_open ? in : -1, POLLIN, 0}};
+        const int r = ::poll(p, 2, 250);
+        if (r < 0 && errno != EINTR) return;
+        if (input_open) (void)copy_window_size(in, master);
+        if (r <= 0) continue;
+        if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            const auto n = ::read(master, buf, sizeof(buf));
+            if (n < 0 && errno == EINTR) continue;
+            // EIO: every descriptor of the terminal's other side is closed,
+            // which is the end of what ran on it.
+            if (n <= 0) return;
+            if (!write_all(out, buf, n)) return;
+        }
+        if (input_open && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+            const auto n = ::read(in, buf, sizeof(buf));
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0 || !write_all(master, buf, n)) input_open = false;
+        }
+    }
+}
+
 int open_null() {
     const int fd = ::open("/dev/null", O_RDWR);
     cloexec(fd);
@@ -658,6 +738,11 @@ void unset_env_variable(const std::string& name) { set_env_variable(name, ""); }
 bool set_inheritable(int, bool) { return false; }
 std::optional<std::array<int, 2>> make_pipe(bool) { return std::nullopt; }
 bool read_exact(int, void*, std::size_t) { return false; }
+std::optional<std::array<int, 2>> open_pty(int) { return std::nullopt; }
+bool copy_window_size(int, int) { return false; }
+std::optional<std::string> make_terminal_raw(int) { return std::nullopt; }
+void restore_terminal(int, const std::string&) {}
+void relay_terminal(int, int, int) {}
 int open_null() { return -1; }
 int open_for_append(const std::filesystem::path&) { return -1; }
 int poll_fds(std::span<PollFd>, int) { return 0; }

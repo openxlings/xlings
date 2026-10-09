@@ -786,9 +786,20 @@ ExtractWireError extract_wire_error_(const ExtractError& error) {
             return { "E_INVALID_INPUT",
                      "the archive is corrupt or contains unsupported entries; "
                      "its cache entry was dropped, so a retry re-downloads it" };
-        case ExtractErrorKind::LocalWriteFailure:
+        // A write failure is classified by its errno (extract.cppm). Each
+        // class asks for one thing; "check free space and permissions" for
+        // every one of them sent a user with a full disk and a user whose
+        // filesystem refuses hard links to the same wrong place.
+        case ExtractErrorKind::NoSpace:
             return { "E_DISK_FULL",
-                     "check free space and permissions on the cache directory" };
+                     "free space on the filesystem that holds the xlings home, then retry" };
+        case ExtractErrorKind::PermissionDenied:
+            return { "E_PERMISSION",
+                     "the file named above could not be written: check the owner and "
+                     "permissions of its directory (one left by a `sudo` install is a common cause)" };
+        case ExtractErrorKind::LocalWriteFailure:
+            return { "E_INTERNAL",
+                     "the file named above could not be written; the reason is in parentheses" };
         default:
             return { "E_INTERNAL", "" };
     }
@@ -823,6 +834,29 @@ std::optional<std::filesystem::path> store_version_dir_from_recorded_path_(
     if (!coord) return std::nullopt;
     return dataDir / "xpkgs" / package_store_name(coord->ns, coord->package)
         / coord->version;
+}
+
+// What an extraction tells the user while it runs (X3) and once it is done.
+// The installer reported Extracting once, at the start; a payload that takes
+// minutes to unpack on a slow phone was then indistinguishable from a hang.
+// Progress is forwarded each time another percent of the archive is read;
+// how often a frontend shows it is the frontend's choice.
+ExtractOptions extract_options_(const std::function<void(const InstallStatus&)>& onStatus,
+                                const std::string& name) {
+    ExtractOptions options;
+    if (onStatus) {
+        options.onProgress = [&onStatus, name](const ExtractProgress& p) {
+            const auto fraction = static_cast<float>(p.consumed) / static_cast<float>(p.total);
+            InstallStatus status;
+            status.name = name;
+            status.phase = InstallPhase::Extracting;
+            status.progress = fraction;
+            status.message = std::format("extracting {}%", static_cast<int>(fraction * 100.0f));
+            onStatus(status);
+        };
+    }
+    options.onNote = [name](std::string_view note) { log::debug("{}: {}", name, note); };
+    return options;
 }
 
 std::filesystem::path hook_log_path_(std::string_view coordinate,
@@ -891,7 +925,7 @@ std::string log_last_line_(const std::filesystem::path& log, std::size_t maxByte
 HookHeartbeat_::HookHeartbeat_(std::function<void(const InstallStatus&)> onStatus,
                                std::string name, std::string planKey,
                                std::string hook, std::filesystem::path log) {
-    int firstSec = 15, everySec = 60;
+    int firstSec = 10, everySec = 30;
     if (const char* e = std::getenv("XLINGS_HOOK_HEARTBEAT"); e && *e) {
         std::string_view v = e;
         if (v == "off" || v == "0") return;
@@ -2404,7 +2438,8 @@ bool run_config_hook_(const PlanNode& node, const std::filesystem::path& dataDir
 // grow with payload size. It cannot see a build-host path that happens to be
 // syntactically valid; only the marker assertion inside the rewrite can, and
 // re-deriving that here would be the second answerer this avoids.
-std::vector<std::string> unfulfilled_program_promises_(const InstallPlan& plan) {
+std::vector<std::string> unfulfilled_program_promises_(
+        const InstallPlan& plan, const std::unordered_set<std::string>& failed) {
     std::vector<std::string> broken;
     // By value, per Config::versions()'s contract -- it merges global and
     // project state into a fresh map, so a reference into the temporary would
@@ -2415,6 +2450,7 @@ std::vector<std::string> unfulfilled_program_promises_(const InstallPlan& plan) 
         // Build-only deps are intentionally never registered or shimmed.
         if (node.kind == DepKind::Build) continue;
         if (node.programs.empty()) continue;
+        if (failed.contains(plan_key_(node))) continue;
 
         const bool anyRegistered = std::ranges::any_of(
             node.programs,
@@ -2498,12 +2534,21 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // one plan carries two versions of a package, and "forgot to set it at one
     // of eighteen sites" is the same defect with a narrower blast radius.
     std::string currentPlanKey;
+    // The plan keys that failed in this run, each with the code it failed
+    // with. A node one of whose dependencies is here is not installed: its
+    // hooks would run against a payload that is not there, and what they
+    // report ("glibc not found", "installed but registered none of its
+    // programs") buries the one failure that matters under its consequences.
+    std::unordered_map<std::string, std::string> failedThisRun;
     if (onStatus) {
-        onStatus = [inner = std::move(onStatus), &currentPlanKey]
+        onStatus = [inner = std::move(onStatus), &currentPlanKey, &failedThisRun]
                    (const InstallStatus& raw) {
-            if (!raw.planKey.empty() || currentPlanKey.empty()) { inner(raw); return; }
             auto filled = raw;
-            filled.planKey = currentPlanKey;
+            if (filled.planKey.empty()) filled.planKey = currentPlanKey;
+            // Only the installing thread reports failures; a hook heartbeat
+            // (another thread) reports Installing and never reaches this.
+            if (filled.phase == InstallPhase::Failed && !filled.planKey.empty())
+                failedThisRun.try_emplace(filled.planKey, filled.errorCode);
             inner(filled);
         };
     }
@@ -2762,6 +2807,38 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
         if (cancel && cancel->is_cancelled()) {
             return std::unexpected(std::string("cancelled"));
         }
+        // A dependency failed earlier in this run (the plan is in topological
+        // order, so every dependency has been tried): this node is reported
+        // failed for that reason, with that code, and nothing of it runs.
+        {
+            std::string failedDep;
+            for (const auto& spec : node.deps) {   // runtime and build
+                const auto* dep = detail_::dep_node_for_(plan, node, spec);
+                if (!dep) continue;
+                const auto key = detail_::plan_key_(*dep);
+                if (failedThisRun.contains(key) || refusedNodes.contains(key)
+                    || downloadFailed.contains(key)) {
+                    failedDep = key;
+                    break;
+                }
+            }
+            if (!failedDep.empty()) {
+                const auto it = failedThisRun.find(failedDep);
+                const auto code = it == failedThisRun.end() ? std::string{} : it->second;
+                const auto message = std::format("not installed: its dependency {} failed", failedDep);
+                if (onStatus) {
+                    onStatus({ .name = node.name,
+                               .phase = InstallPhase::Failed,
+                               .progress = 0.0f,
+                               .message = message,
+                               .errorCode = code });
+                } else {
+                    log::error("{}: {}", node.name, message);
+                }
+                failedThisRun.try_emplace(currentPlanKey, code);
+                continue;
+            }
+        }
         if (onStatus) {
             onStatus({ node.name, InstallPhase::Installing, 0.5f, "" });
         }
@@ -3001,7 +3078,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
                 // Extract into the same runtime dir as the download.
                 auto runtimeDir = ctx.install_file.parent_path();
                 auto extracted = extract_archive_detailed(
-                    ctx.install_file, runtimeDir);
+                    ctx.install_file, runtimeDir,
+                    detail_::extract_options_(onStatus, node.name));
                 if (!extracted) {
                     auto error = std::move(extracted).error();
                     if (evict_invalid_archive_cache_(
@@ -3396,7 +3474,8 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
             detail_::ScopedStageDir_ stageGuard(stageDir);
 
             auto extracted = extract_archive_detailed(
-                dlIt->second.localFile, stageDir);
+                dlIt->second.localFile, stageDir,
+                detail_::extract_options_(onStatus, node.name));
             if (!extracted) {
                 auto error = std::move(extracted).error();
                 if (evict_invalid_archive_cache_(
@@ -3774,7 +3853,12 @@ std::expected<void, std::string> Installer::execute(const InstallPlan& requested
     // Every hook returned success; that is not the same as the packages
     // being usable. Fail the install rather than let a checkmark stand for
     // a package that registered none of the programs it promised.
-    if (auto broken = detail_::unfulfilled_program_promises_(plan);
+    // A node that failed has already said so; that it registered nothing is
+    // a consequence, not a second failure.
+    std::unordered_set<std::string> failedKeys(refusedNodes.begin(), refusedNodes.end());
+    failedKeys.insert(downloadFailed.begin(), downloadFailed.end());
+    for (const auto& [key, code] : failedThisRun) failedKeys.insert(key);
+    if (auto broken = detail_::unfulfilled_program_promises_(plan, failedKeys);
         !broken.empty()) {
         for (const auto& name : broken) {
             if (onStatus) {

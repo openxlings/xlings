@@ -95,6 +95,10 @@ status = "required"
 text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
 status = "required"
 
+[PROXY-NET-RESTRICTED-HOST]
+text = "net=proxy enters on a host that restricts unprivileged user namespaces once its one-time setup is done: bwrap makes the namespace"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

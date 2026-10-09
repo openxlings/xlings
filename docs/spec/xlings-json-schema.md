@@ -240,7 +240,7 @@ subos 下指向 payload store 的链接集合 − 本 subos active 声明的 `fi
 |------|------|------|
 | `XLINGS_DOWNLOAD_SPACE_CHECK` | 开 | 服务器给出大小后,若下载目录所在磁盘放不下剩余字节,在传输开始时就以本地失败(`E_DISK_FULL`)停止,而不是下载到一半写不进去。读不到剩余空间时不拦截。`off` 关闭(报告的剩余空间不准的文件系统) |
 | `XLINGS_HOOK_OUTPUT` | 写日志 | 安装 hook 启动的命令的输出写入 `<XLINGS_HOME>/logs/hooks/<ns>-<name>@<version>.<hook>.log`(每次运行重写),hook 失败时打印最后 20 行和日志路径。`inherit` 让它们直接输出到终端(`-v` 同样)。interface 与 TUI 下始终写日志 |
-| `XLINGS_HOOK_HEARTBEAT` | `15:60` | hook 运行满 `<首次秒>` 后打一行 `… <包> <hook> hook running <耗时>: <日志最后一行>`,之后每 `<间隔秒>` 一行;`off` 关闭 |
+| `XLINGS_HOOK_HEARTBEAT` | `10:30` | hook 运行满 `<首次秒>` 后打一行 `… <包> <hook> hook running <耗时>: <日志最后一行>`,之后每 `<间隔秒>` 一行;`off` 关闭 |
 
 下载失败按原因分三类处理:内容不对(sha256 不符)或来源拒绝——换下一个候选并降级该主机;
 没收全——同一来源下一轮重试;本机写不进去——立即停止(换镜像写的还是同一块盘),不降级任何
