@@ -24,6 +24,7 @@ macOS/Windows 的重定向不是不受信代码的安全边界。
   - [2.3 SubOS 使用指南（场景与示例）](quick-start/subos-and-agent.md)
   - [2.4 自定义包索引](quick-start/custom-index.md)
   - [2.5 自我管理与修复](quick-start/self-management.md)
+  - [2.6 Luban：环境、镜像与 agent 私有工作区](quick-start/luban.md)
 - **[三、高级主题](#三高级主题)**
   - [3.1 架构](#31-架构)
   - [3.2 设计](#32-设计)

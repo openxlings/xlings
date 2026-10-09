@@ -221,10 +221,6 @@ const spec::CommandSpec& tree() {
             {.name = "setup", .description = "This host's one-time setup (isolation)", .level = Level::More},
             {.name = "help", .description = "Help; --all for every command",
              .options = {{"--all", "Every command"}, {"--expert", "And the expert ones"}}, .level = Level::More},
-            {.name = "install", .description = "Install this system onto a drive (from a live ISO)",
-             .arguments = {{"device", "The drive", true}},
-             .options = {{"--serial <SERIAL>", "The drive's serial (required with --agent)"}},
-             .level = Level::Expert},
             {.name = "boot", .description = "This machine's boot entries", .arguments = {{"name", "An environment"}},
              .options = {{"--once", "Only the next boot (a trial)"}, {"--fallback", "When the default fails"},
                          {"--mark-good", "This boot worked"}, {"--now", "Switch to it now"}},
@@ -747,8 +743,6 @@ int run(int argc, char* argv[]) {
     if (node->name == "status" && rest.size() == 1) return host_status(json);
     if (node->name == "write") return write_cmd_(rest, json, agent, yes);
     if (node->name == "try") return try_cmd_(rest, json);
-    if (node->name == "install")
-        return usage("`luban install` is not in this build yet", json);
 
     std::vector<std::string> forwarded(rest.begin(), rest.end());
     forwarded.front() = node->name;

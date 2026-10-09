@@ -644,3 +644,36 @@ Windows 和 macOS 上命令相同。
 - 多用户 Luban 机器上 agent workspace 的归属和配额；
 - luban 的 TUI；
 - Windows 和 macOS 上的 `write` 与 `install`。
+
+---
+
+# F 实施记录（2026-10-10，xlings PR #650 / xim-pkgindex PR #945，版本 2026.10.10.1）
+
+## F1 已实现（按检查点）
+
+| 检查点 | 内容 | 验证 |
+|---|---|---|
+| X1 | 子进程组在运行期间接管终端（`run_argv_with_timeout`） | `test_process_terminal`：修复前停在截止时间，修复后 40 ms |
+| X2 | `subos new --from` 一个进程、一份计划（`xim::cmd_install_step`），"created" 只报一次；"still resolves to" 的命名空间误报 | `test_subos_new_template`（伪终端） |
+| X3 | 先检查宿主再下载（`prepare_root_host`），当场询问一次性设置；根的拒绝先说根本原因；doctor 报告 AppArmor 标签 | `test_subos_new_template`；INTENT-EQ golden 1 例 |
+| X5 | `modules/cli`：命令规格、校验、分级帮助、拼写建议、补全 | `test_cli_model`、参考文档与 parity 脚本 |
+| X6–X8 | `luban`：一个二进制两个名字（luban / luban-init），命令映射到 xlings，位置感知、概要、JSON、接口握手；随 xlings 发布、self update 一起更新、每个根和镜像都带 | `test_luban_cli`、`test_luban`、`luban_init_test.sh` |
+| X10 | 中性身份 = persona（主机名、machine-id，复制时重新生成）；时区 utc / 名字 / proxy（经代理查询，缓存，失败用 UTC）；根视图丢弃 `LC_*`；`subos status` 报告无法隐藏的项 | `test_persona`、`test_agent_privacy`（CI）；INTENT-EQ golden 22 例 |
+| X11 | 模板声明 `policy`、`subos new --proxy`，在第一次进入前选定并锁定 | `test_luban`（AWorkspaceIsPrivateWhenItIsMadeNotAfter） |
+| X12–X13 | edition 的 `abi`（架构 × 内核 × libc × 下限）在读取模板时检查；`boot.kernel` / `kernel_min` 记录为提示，导出时使用 | `test_subos_new_template`（ABI） |
+| X14 | shim 的别名是普通单词时不经 shell 执行（nano 没有 sh） | `test_shell_command` |
+| X15 | `export --iso`（根作为 initramfs，limine；xorriso 时 BIOS+UEFI，否则进程内 BIOS）；`--drive`（GPT + FAT + ext4，进程内 `luban.image`，BIOS+UEFI）；`--qcow2`；`luban write`（驱动器安全检查、提权入口）；`luban try`（qemu；`--proxy` 时网络只有代理，`luban __pipe` 每个连接一条） | `test_luban_image`、`test_archive_formats`、`luban_image_test.sh`（qemu：ISO 与驱动器在 SeaBIOS 和 OVMF 下都启动到 init） |
+| I1–I6 | 索引：日期版本的 edition（nano、tiny 不带内核、core 不含 claude、agent-workspace）、agent-private / agent-confined、limine、验收脚本改用 luban | xim-pkgindex 静态测试；`luban-agent-workspace.yml` 真实验收 |
+
+## F2 与设计的差异（如实记录）
+
+1. **没有单独的 `xim:luban` 包。** luban 随 xlings 的发布包一起分发（同一版本），每个根和镜像都由投影带上它；单独一个包只会是同一文件的第二个来源。
+2. **ISO 不用 squashfs。** 根整个作为 initramfs 由内核解压到内存：不需要挂载、不需要内核模块，也不需要 mksquashfs。代价是内存：live 系统需要大约根大小两倍的内存（`luban try` 默认 2 GB）。
+3. **没有 `luban install <设备>`。** 把一个环境装到驱动器上是 `luban write <环境> <驱动器>`（导出驱动器镜像再写入，持久）。从 live 系统安装它自己，需要在没有 bwrap 的机器上以 root 走完导出流程，留到下一步。
+4. **根视图的 store 仍是宿主路径，不是 `/xlings`（A7 未做）。** 根内链接和导出的镜像带着构建者的 home 路径。要做出路径中性的镜像，现有的路线是私有前缀域（`subos new --rootfs --domain /xlings`）。L2 下 `/proc/self/mountinfo` 会露出绑定进来的宿主路径，`subos status` 已如实列出。
+5. **根视图中 agent 仍以 root（在用户命名空间内）运行**，没有改为 sysusers 的 `agent` 用户；persona 的主机名与 machine-id 已经与宿主无关。
+6. **L3 没有 `--view machine` 的 `new`。** 私有机器是 `luban try <环境> --proxy`（同一个 edition 在自己的内核上，网络只有代理）。没有加入 linux-kernel-virt，用的是现有的 generic 内核。
+7. **DMI 和磁盘 ID 不需要额外屏蔽**：bwrap 视图本来就没有 `/sys`，`/dev` 是最小集合；全泄漏面探针验证这一点。
+8. **proot**：降低优先级，自动回退时总会警告（与 part 2 兼容）；私有策略和根视图从不使用它。
+9. **nano 与 shell**：xlings 和 luban 运行自己的路径不需要 sh（shim 别名直接 exec）；recipe 的 hook 如果用 shell，在 nano 根里需要该 edition 带上 sh——没有自动推导这个依赖。
+10. **出口位置查询**默认 `https://ipinfo.io/timezone`，可由 `identity.geo_lookup` 配置；只有给了代理且没选时区时才查询。
