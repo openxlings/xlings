@@ -163,7 +163,10 @@ XTEST(SubosPolicyE2E, NatGivesAPrivateNetworkThroughPasta,
         "echo ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\\n' ,); "
         "echo host=$(hostname)"});
     ASSERT_EQ(r.exit_code, 0) << r.transcript();
-    EXPECT_NE(r.out.find("host=box"), std::string::npos) << r.out;
+    // The persona's host name, never the instance's (Luban design §C4).
+    const auto persona = nlohmann::json::parse(
+        tk::read_file(box.home.dir() / "config" / "subos" / "box" / "persona.json"));
+    EXPECT_NE(r.out.find("host=" + persona["hostname"].get<std::string>()), std::string::npos) << r.out;
     // lo and pasta's tap: a network of its own, not the host's interfaces.
     auto line = r.out.substr(r.out.find("ifaces="));
     EXPECT_NE(line.find("lo,"), std::string::npos) << r.out;

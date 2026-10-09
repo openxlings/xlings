@@ -54,15 +54,16 @@ XTEST(AgentPrivacy, NothingTheHostPlantsIsVisibleAndThePersonaHolds,
     const auto persona = Json::parse(tk::read_file(home.dir() / "config/subos/agent/persona.json"));
     const auto name = persona["hostname"].get<std::string>();
     EXPECT_NE(first.out.find("HOST=" + name), std::string::npos) << first.out;
-    auto second = home.xlings({"subos", "use", "agent", "--cmd", "hostname"});
-    EXPECT_EQ(second.out.substr(0, second.out.find('\n')), name) << "the same persona on every entry";
+    auto second = home.xlings({"subos", "use", "agent", "--cmd", "echo HOST=$(hostname)"});
+    EXPECT_NE(second.out.find("HOST=" + name), std::string::npos) << "the same persona on every entry\n" << second.out;
 
     // A fork is another instance, with a persona of its own.
     ASSERT_EQ(home.xlings({"subos", "new", "agent2", "--from", "agent"}).exit_code, 0);
     ASSERT_EQ(home.xlings({"subos", "config", "agent2", "--sandbox=locked"}).exit_code, 0);
-    auto fork = home.xlings({"subos", "use", "agent2", "--cmd", "hostname"});
+    auto fork = home.xlings({"subos", "use", "agent2", "--cmd", "echo HOST=$(hostname)"});
     ASSERT_EQ(fork.exit_code, 0) << fork.transcript();
-    EXPECT_NE(fork.out.substr(0, fork.out.find('\n')), name) << "a fork carried its source's identity";
+    EXPECT_NE(fork.out.find("HOST="), std::string::npos) << fork.out;
+    EXPECT_EQ(fork.out.find("HOST=" + name), std::string::npos) << "a fork carried its source's identity\n" << fork.out;
 
     auto status = home.xlings({"subos", "status", "agent", "--json"});
     const auto s = Json::parse(status.out);
