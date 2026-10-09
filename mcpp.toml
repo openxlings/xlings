@@ -5,6 +5,8 @@
 #   runtime   -> libs: cancellation, guard (confirmation), observe (journal)
 #   platform  -> runtime: the OS boundary -- every system header and call
 #   ui        -> platform: theme and i18n
+#   cli       -> libs: the command-line model (a declared command tree;
+#                validation, tiered help, completion), shared by xlings and luban
 #   store     -> libs, platform: what keeps a payload alive (GC roots, the
 #                retained ledger)
 #   subos     -> libs, runtime, platform, store: the SubOS core
@@ -28,6 +30,7 @@ members = [
     "modules/runtime",
     "modules/platform",
     "modules/ui",
+    "modules/cli",
     "modules/store",
     "modules/subos",
     "modules/confine",
@@ -134,6 +137,7 @@ libs     = { path = "modules/libs" }
 runtime  = { path = "modules/runtime" }
 platform = { path = "modules/platform" }
 ui       = { path = "modules/ui" }
+cli      = { path = "modules/cli" }
 store    = { path = "modules/store" }
 subos    = { path = "modules/subos" }
 confine  = { path = "modules/confine" }

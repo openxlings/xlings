@@ -160,199 +160,25 @@ const CommandSpec& root() {
     return value;
 }
 
-const CommandSpec* find(std::span<const std::string_view> path) {
-    const CommandSpec* current = &root();
-    for (const auto part : path) {
-        const auto found = std::ranges::find_if(current->children,
-            [&](const CommandSpec& child) {
-                return child.name == part
-                    || std::ranges::find(child.aliases, part) != child.aliases.end();
-            });
-        if (found == current->children.end()) return nullptr;
-        current = &*found;
-    }
-    return current;
-}
-
-std::vector<std::string_view> option_aliases(const OptionSpec& option) {
-    std::vector<std::string_view> aliases;
-    for (const auto piece : std::views::split(option.syntax, ',')) {
-        auto alias = std::string_view{piece.begin(), piece.end()};
-        while (!alias.empty() && alias.front() == ' ') alias.remove_prefix(1);
-        alias = alias.substr(0, alias.find_first_of(" <[="));
-        if (!alias.empty()) aliases.push_back(alias);
-    }
-    return aliases;
-}
+const CommandSpec* find(std::span<const std::string_view> path) { return find_in(root(), path); }
 
 const std::vector<const OptionSpec*>& global_options() {
-    static const std::vector<const OptionSpec*> value = [] {
-        std::vector<const OptionSpec*> options;
-        for (const auto& option : root().options) {
-            if (option.global) options.push_back(&option);
-        }
-        return options;
-    }();
+    static const std::vector<const OptionSpec*> value = global_options_of(root());
     return value;
 }
 
 bool is_global_option(std::string_view token) {
     const auto name = token.substr(0, token.find('='));
-    for (const auto* option : global_options()) {
-        for (const auto alias : option_aliases(*option)) {
+    for (const auto* option : global_options())
+        for (const auto alias : option_aliases(*option))
             if (alias == name) return true;
-        }
-    }
     return false;
-}
-
-namespace detail_ {
-
-std::size_t free_tokens_(std::span<const std::string_view> argv,
-                         std::size_t from) {
-    std::size_t count = 0;
-    for (std::size_t i = from; i < argv.size(); ++i) {
-        if (!argv[i].starts_with('-')) ++count;
-    }
-    return count;
-}
-
-std::expected<ParsedManualArgs, CliError> validate_(
-    const CommandSpec& command,
-    std::span<const std::string_view> argv,
-    // Full invocation path, so a diagnostic names the command the user typed.
-    // `command.name` alone turns `xlings subos use` into `xlings use` -- a
-    // different, existing command -- and `xlings self doctor` into
-    // `xlings doctor`, which does not exist at all.
-    const std::string& path) {
-    if (!command.children.empty() && !argv.empty()
-        && !argv.front().starts_with('-')) {
-        if (const auto* child = find(std::array<std::string_view, 2>{
-                command.name, argv.front()})) {
-            return validate_(*child, argv.subspan(1),
-                             path + " " + std::string(argv.front()));
-        }
-        return std::unexpected(CliError{std::format(
-            "unknown subcommand for `{}`: {}", path, argv.front())});
-    }
-
-    const auto required = static_cast<std::size_t>(
-        std::ranges::count_if(command.arguments,
-            [](const auto& argument) { return argument.required; }));
-
-    ParsedManualArgs parsed;
-    for (std::size_t i = 0; i < argv.size(); ++i) {
-        const auto token = argv[i];
-        // `--` ends the options: what follows is a command line of its own
-        // (`subos exec <s> -- sh -c ...`), taken verbatim.
-        if (token == "--") {
-            for (++i; i < argv.size(); ++i) parsed.positional.emplace_back(argv[i]);
-            break;
-        }
-        if (!token.starts_with('-')) {
-            parsed.positional.emplace_back(token);
-            continue;
-        }
-
-        const auto equals = token.find('=');
-        const auto optionName = token.substr(0, equals);
-        const OptionSpec* matched = nullptr;
-        for (const auto& option : command.options) {
-            for (const auto alias : option_aliases(option)) {
-                if (alias == optionName) { matched = &option; break; }
-            }
-            if (matched) break;
-        }
-        if (!matched) {
-            for (const auto* option : global_options()) {
-                for (const auto alias : option_aliases(*option)) {
-                    if (alias == optionName) { matched = option; break; }
-                }
-                if (matched) break;
-            }
-        }
-        if (!matched) {
-            return std::unexpected(CliError{std::format(
-                "unknown option for `{}`: {}", path, token)});
-        }
-        parsed.options.insert(std::string(optionName));
-
-        const bool requiresValue = matched->syntax.contains('<');
-        const bool optionalValue = matched->syntax.contains('[');
-        if (equals != std::string_view::npos) {
-            if (token.substr(equals + 1).empty()) {
-                return std::unexpected(CliError{std::format(
-                    "missing value for option: {}", optionName)});
-            }
-            continue;
-        }
-        if (requiresValue) {
-            if (i + 1 >= argv.size() || argv[i + 1].starts_with('-')) {
-                return std::unexpected(CliError{std::format(
-                    "missing value for option: {}", optionName)});
-            }
-            ++i;
-            continue;
-        }
-        if (optionalValue && i + 1 < argv.size()
-            && !argv[i + 1].starts_with('-')) {
-            // Take the next token as this option's value unless a required
-            // positional still needs it. Deciding by a whitelist of known
-            // values instead would mean every new shell kind, sandbox backend
-            // or storage mode the parser learns silently reappears here as a
-            // "surplus positional argument" -- which is exactly how
-            // `--shell powershell` became an exit-2 error while the parser
-            // that runs it accepted the word.
-            if (parsed.positional.size()
-                    + detail_::free_tokens_(argv, i + 2) >= required) {
-                ++i;
-            }
-        }
-    }
-
-    const bool variadic = !command.arguments.empty()
-        && command.arguments.back().variadic;
-    if (parsed.positional.size() < required) {
-        return std::unexpected(CliError{std::format(
-            "missing argument for `{}`", path)});
-    }
-    if (!variadic && parsed.positional.size() > command.arguments.size()) {
-        return std::unexpected(CliError{std::format(
-            "surplus positional argument for `{}`: {}", path,
-            parsed.positional[command.arguments.size()])});
-    }
-    return parsed;
-}
-
 }
 
 std::expected<ParsedManualArgs, CliError> validate_manual_argv(
     const CommandSpec& command,
     std::span<const std::string_view> argv) {
-    return detail_::validate_(command, argv, "xlings " + command.name);
-}
-
-nlohmann::json help_json(const CommandSpec& command) {
-    nlohmann::json value;
-    value["name"] = command.name;
-    value["description"] = command.description;
-    value["arguments"] = nlohmann::json::array();
-    value["options"] = nlohmann::json::array();
-    value["subcommands"] = nlohmann::json::array();
-    for (const auto& argument : command.arguments) {
-        value["arguments"].push_back({{"name", argument.name},
-            {"description", argument.description}, {"required", argument.required},
-            {"variadic", argument.variadic}});
-    }
-    for (const auto& option : command.options) {
-        value["options"].push_back({{"syntax", option.syntax},
-                                     {"description", option.description},
-                                     {"global", option.global}});
-    }
-    for (const auto& child : command.children) {
-        value["subcommands"].push_back(help_json(child));
-    }
-    return value;
+    return validate_in(root(), command, argv, "xlings " + command.name);
 }
 
 nlohmann::json reference_json() { return help_json(root()); }
