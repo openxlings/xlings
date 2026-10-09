@@ -302,7 +302,8 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     const bool nat = !L.pasta.empty();
     const bool proxy = proxyRelay.has_value();
     std::optional<std::array<int, 2>> ready_pipe, go_pipe;
-    if (nat || proxy) {
+    if (proxy) L.env[std::string(kProxyFdEnv)] = std::to_string((*proxyBridge)[1]);
+    if (nat) {
         ready_pipe = platform::make_pipe();
         go_pipe = platform::make_pipe();
         if (!ready_pipe || !go_pipe) {
@@ -322,29 +323,15 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
         platform::close_fd(listen_fd);
         platform::close_fd(ctl[0]);
         platform::close_fd(broker_fd);
-        if (nat || proxy) {
-            // The only interfaces proxy receives are lo; no route or pasta.
+        if (proxy) {
+            // bwrap makes the network namespace (only lo); session-init runs
+            // the gateway inside it on this end of the bridge.
+            platform::close_fd((*proxyBridge)[0]);
+            platform::set_inheritable((*proxyBridge)[1], true);
+        }
+        if (nat) {
+            // pasta attaches to a namespace made here, before bwrap starts.
             if (!platform::enter_private_network(ids.uid, ids.gid)) platform::exit_now(kExitSetup);
-            if (proxy) {
-                platform::close_fd((*proxyBridge)[0]);
-                if (!platform::network::enable_loopback()) platform::exit_now(kExitSetup);
-                const auto listener = platform::network::listen_loopback(network::GATEWAY_PORT);
-                if (!listener) platform::exit_now(kExitSetup);
-                const int gate = platform::fork_process();
-                if (gate < 0) platform::exit_now(kExitSetup);
-                if (gate == 0) {
-                    platform::close_fd(ctl[1]);
-                    platform::close_fd(ready_fd);
-                    for (const auto& pair : {*ready_pipe, *go_pipe}) for (int fd : pair) platform::close_fd(fd);
-                    platform::close_fds(L.keep_fds);
-                    const int null = platform::open_null();
-                    const int stdio[3] = {null, null, null};
-                    platform::redirect_stdio(stdio);
-                    platform::exit_now(network::gateway_run((*proxyBridge)[1], *listener));
-                }
-                platform::close_fd(*listener);
-                platform::close_fd((*proxyBridge)[1]);
-            }
             const char ready = 1;
             (void)platform::write_fd((*ready_pipe)[1], std::string_view(&ready, 1));
             char go = 0;
@@ -363,7 +350,7 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
 
     if (proxy) platform::close_fd((*proxyBridge)[1]);
     const auto pasta_pidfile = home.run_dir(L.instance) / "pasta.pid";
-    if (nat || proxy) {
+    if (nat) {
         platform::close_fd((*ready_pipe)[1]);
         platform::close_fd((*go_pipe)[0]);
         platform::PollFd rp{ (*ready_pipe)[0] };
@@ -386,17 +373,16 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (pp > 0)
                 if (auto st = platform::wait_process(pp, true)) pasta_rc = platform::exit_code(*st);
         }
-        const char go = (ready && (proxy || pasta_rc == 0)) ? 1 : 0;
+        const char go = (ready && pasta_rc == 0) ? 1 : 0;
         (void)platform::write_fd((*go_pipe)[1], std::string_view(&go, 1));
         platform::close_fd((*go_pipe)[1]);
         platform::close_fd((*ready_pipe)[0]);
         if (!go) {
-            report(proxy ? "net=proxy: private loopback gateway was not created"
-                         : std::format("net=nat: pasta could not set up the network ({})",
+            report(std::format("net=nat: pasta could not set up the network ({})",
                                ready ? std::format("pasta exited {}", pasta_rc)
                                      : std::string("the namespace was not created")));
             audit({{"event", "session-setup-failed"}, {"session", info.id},
-                                     {"reason", proxy ? "proxy" : "pasta"}, {"exit", pasta_rc}});
+                                     {"reason", "pasta"}, {"exit", pasta_rc}});
             if (proxyBridge) platform::close_fd((*proxyBridge)[0]);
             (void)platform::wait_process(pid, true);
             std::error_code rec;
@@ -1038,6 +1024,21 @@ int session_init(std::span<const std::string> args) {
     // Neither variable means anything to the commands that run here.
     platform::unset_env_variable(std::string(kControlFdEnv));
     platform::unset_env_variable(std::string(kTtlEnv));
+
+    // net=proxy: the loopback gateway, here, in bwrap's network namespace --
+    // for this session's whole life (a thread: everything started here is
+    // forked and exec'd, so it never runs in a child).
+    if (const int bridge = env_int(kProxyFdEnv, -1); bridge >= 0) {
+        platform::unset_env_variable(std::string(kProxyFdEnv));
+        platform::set_inheritable(bridge, false);
+        (void)platform::network::enable_loopback();
+        const auto listener = platform::network::listen_loopback(network::GATEWAY_PORT);
+        if (!listener) {
+            if (ctl >= 0) (void)send_msg(ctl, {{"op", "proxy-gateway"}, {"error", listener.error()}});
+            return kExitSetup;
+        }
+        std::thread([bridge, fd = *listener] { (void)network::gateway_run(bridge, fd); }).detach();
+    }
 
     const bool rootView = env_int(kRootViewEnv, 0) == 1;
     platform::unset_env_variable(std::string(kRootViewEnv));

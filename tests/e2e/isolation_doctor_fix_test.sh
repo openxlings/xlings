@@ -11,7 +11,7 @@
 #   2. the doctor says so, names the restriction, and does not advise sysctl;
 #   3. --fix -y installs the root-owned copy and its profile;
 #   4. a sandbox now enters, through /usr/lib/xlings/bwrap.
-# xtest: covers=F12,DOC-ISOLATION requires=linux,xlings-bin,sudo,network
+# xtest: covers=F12,DOC-ISOLATION,PROXY-NET-RESTRICTED-HOST requires=linux,xlings-bin,sudo,network
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/project_test_lib.sh"
 
@@ -66,4 +66,11 @@ log "3. after: a sandbox enters through the root-owned bwrap"
 out="$(X subos exec box --sandbox -- /bin/sh -c 'echo inside=$(ls /proc | grep -c "^[0-9]*$")')"
 grep -q 'inside=' <<<"$out" || fail "no sandbox: $out"
 X self doctor --isolation --json | grep -q '"source":"root-owned"' || fail "not the root-owned bwrap"
-log "PASS: self doctor --isolation --fix makes sandboxes work with the restriction left on"
+log "4. after: net=proxy enters too -- bwrap makes its network namespace, never this client"
+# The restriction stays on: a namespace xlings made itself would get no
+# capabilities in it (an agent workspace's network is a proxy).
+X subos config box --sandbox=private --net proxy --proxy socks5h://127.0.0.1:9 >/dev/null
+out="$(X subos exec box -- /bin/sh -c 'echo ifaces=$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d " " | tr "\n" ,)' 2>&1)" \
+  || fail "net=proxy did not enter with the restriction on: $out"
+grep -q 'ifaces=lo,' <<<"$out" || fail "net=proxy: not lo only: $out"
+log "PASS: self doctor --isolation --fix makes sandboxes (and a proxy-only network) work with the restriction left on"
