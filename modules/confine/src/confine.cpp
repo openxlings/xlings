@@ -130,7 +130,9 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
             unmet.push_back({"net", "net=proxy requires a Linux network namespace", "--net none",
                              policy::Need::Must});
         } else if (const auto proxy = network::parse_proxy(i.net.proxy); !proxy) {
-            unmet.push_back({"net", proxy.error(), "set isolation.proxy to socks5h://HOST:PORT", policy::Need::Must});
+            unmet.push_back({"net", proxy.error(),
+                             std::format("xlings subos config {} --proxy socks5h://HOST:PORT", i.instance),
+                             policy::Need::Must});
         } else {
             s.unshare_net = true;
             s.net_proxy = true;

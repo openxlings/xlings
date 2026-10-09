@@ -23,6 +23,10 @@ std::string_view to_string(Place p);
 // `core` -> `subos:luban-core`; a full reference (`ns:name[@v]`) as given.
 std::string edition_ref(std::string_view edition);
 
+// Where a Luban edition (a Linux root) runs from this host when no carrier is
+// named: empty on Linux (here), wsl2 on Windows, vz on macOS.
+std::string default_carrier();
+
 // What `luban export` writes, from the file name: iso, img, qcow2, tar, dir;
 // empty when the name says nothing it knows.
 std::string export_format(std::string_view file);

@@ -260,6 +260,12 @@ std::string edition_ref(std::string_view edition) {
     return std::string(edition);
 }
 
+std::string default_carrier() {
+    if constexpr (xlings::platform::is_windows) return "wsl2";
+    else if constexpr (xlings::platform::is_macos) return "vz";
+    else return {};
+}
+
 std::string export_format(std::string_view file) {
     const auto ends = [&](std::string_view s) { return file.ends_with(s); };
     if (ends(".iso")) return "iso";
@@ -310,7 +316,11 @@ std::expected<std::vector<std::string>, std::string> to_xlings(std::span<const s
         auto edition = value("--from").value_or(positional.size() > 1 ? positional[1] : "core");
         x = {"subos", "new", positional[0], "--from", edition_ref(edition)};
         if (auto p = value("--proxy")) x.insert(x.end(), {"--proxy", *p});
+        // The same command everywhere (part 3 §5): a Luban edition is a Linux
+        // root, so on a Windows or macOS host it runs on that platform's
+        // carrier -- a WSL2 distribution of the home's own, a vz machine.
         if (auto c = value("--carrier")) x.insert(x.end(), {"--carrier", *c});
+        else if (const auto carrier = default_carrier(); !carrier.empty()) x.insert(x.end(), {"--carrier", carrier});
     } else if (cmd == "enter") {
         if (auto e = need(1, "a name")) return std::unexpected(*e);
         x = {"subos", "use", positional[0]};

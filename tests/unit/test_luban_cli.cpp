@@ -21,12 +21,19 @@ V x(std::initializer_list<std::string> args) {
 }  // namespace
 
 XTEST(LubanCli, EachCommandIsTheXlingsCommandItNames, .area = "luban", .covers = {"LUBAN-CLI-MAP"}) {
-    EXPECT_EQ(x({"new", "box"}), (V{"subos", "new", "box", "--from", "subos:luban-core"}));
+    // A Luban edition is a Linux root: on Windows and macOS it runs on that
+    // platform's carrier, with the same command.
+    auto expect_new = [](V v) {
+        if (const auto c = cli::default_carrier(); !c.empty()) v.insert(v.end(), {"--carrier", c});
+        return v;
+    };
+    EXPECT_EQ(x({"new", "box"}), expect_new(V{"subos", "new", "box", "--from", "subos:luban-core"}));
+    EXPECT_EQ(x({"new", "box", "--carrier", "local"}), (V{"subos", "new", "box", "--from", "subos:luban-core", "--carrier", "local"}));
     EXPECT_EQ(x({"new", "agent", "agent-workspace", "--proxy", "socks5h://127.0.0.1:7897"}),
-              (V{"subos", "new", "agent", "--from", "subos:luban-agent-workspace", "--proxy", "socks5h://127.0.0.1:7897"}));
+              expect_new(V{"subos", "new", "agent", "--from", "subos:luban-agent-workspace", "--proxy", "socks5h://127.0.0.1:7897"}));
     EXPECT_EQ(x({"new", "box", "--from=tiny@2026.10.20.1"}),
-              (V{"subos", "new", "box", "--from", "subos:luban-tiny@2026.10.20.1"}));
-    EXPECT_EQ(x({"new", "box", "acme:my-os"}), (V{"subos", "new", "box", "--from", "acme:my-os"}));
+              expect_new(V{"subos", "new", "box", "--from", "subos:luban-tiny@2026.10.20.1"}));
+    EXPECT_EQ(x({"new", "box", "acme:my-os"}), expect_new(V{"subos", "new", "box", "--from", "acme:my-os"}));
     EXPECT_EQ(x({"enter", "box"}), (V{"subos", "use", "box"}));
     EXPECT_EQ(x({"run", "box", "--", "ls", "-l"}), (V{"subos", "exec", "box", "--", "ls", "-l"}));
     EXPECT_EQ(x({"ls"}), (V{"subos", "list"}));
