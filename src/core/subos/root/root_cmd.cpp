@@ -29,6 +29,7 @@ import xlings.observe;
 import xlings.core.subos.ports;
 import xlings.core.xself;
 import xlings.core.xim.extract;
+import xlings.core.xim.commands;
 import xlings.subos.tools;
 import xlings.subos.caps;
 
@@ -408,12 +409,8 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
     if (declared && !declared->packages.empty()) {
         // Its packages, installed into it: the same install as any other,
         // so the generation that follows is the usual one.
-        auto bin = xself::xlings_binary_in_home(home);
-        if (bin.empty()) bin = platform::get_executable_path();
-        std::vector<std::string> argv{bin.string(), "install", "-y", "--subos", name};
-        argv.insert(argv.end(), declared->packages.begin(), declared->packages.end());
-        log::info("installing what '{}' declares: {} package(s)", name, declared->packages.size());
-        if (run_tool_(argv, stream, "installing the declared packages") != 0) {
+        log::debug("installing what '{}' declares: {} package(s)", name, declared->packages.size());
+        if (xim::cmd_install_step(declared->packages, name, stream, /*plumbing=*/false) != 0) {
             std::string list;
             for (auto& p : declared->packages) list += " " + p;
             log::info("'{}' is made but not complete: `xlings install -y --subos {}{}` finishes it, "

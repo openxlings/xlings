@@ -475,7 +475,7 @@ void dispatch_data_event(const DataEvent& e) {
     }
     else if (e.kind == "subos_forked") {
         ui::print_subos_forked(json.value("name", ""), json.value("from", ""),
-                               json.value("base", ""));
+                               json.value("dir", json.value("base", "")));
     }
     else if (e.kind == "subos_switched") {
         ui::print_subos_switched(

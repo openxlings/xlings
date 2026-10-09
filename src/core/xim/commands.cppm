@@ -148,6 +148,16 @@ int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps,
                 bool useAfterInstall = false, bool* allInStore = nullptr,
                 bool reconfig = false);
 
+// An install that is one step of another command (`subos new`): in this
+// process, into `subos` when one is named (the current scope otherwise), with
+// yes. A step that is plumbing -- a template the user never asked for by that
+// name -- shows its progress and its errors but not its own plan or summary:
+// one command, one plan. Never a child xlings: a child on the caller's
+// terminal printed a second plan and, in its own process group, was stopped
+// by the kernel the moment it probed the terminal.
+int cmd_install_step(std::span<const std::string> targets, std::string_view subos,
+                     EventStream& stream, bool plumbing);
+
 // === remove command ===
 //
 // yes: skip the interactive confirmation. Recursive calls from install hooks

@@ -348,6 +348,35 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
              bool dryRun, bool useAfterInstall, bool reconfig,
              std::vector<InstallTargetReport_>* report);
 
+int cmd_install_step(std::span<const std::string> targets, std::string_view subos,
+                     EventStream& stream, bool plumbing) {
+    EventStream step;
+    step.set_can_confirm(stream.can_confirm());
+    step.set_can_select(stream.interactive());
+    step.on_event([&](const Event& e) {
+        if (const auto* d = std::get_if<DataEvent>(&e); plumbing && d
+            && (d->kind == "install_plan" || d->kind == "install_targets"
+                || d->kind == "install_summary" || d->kind == "info_panel"))
+            return;
+        stream.emit(e);
+    });
+    // The scope, set the way `install --subos` sets it: the override
+    // recomputes the cached paths, the variable is what activation re-reads.
+    const bool scoped = !subos.empty();
+    const auto prevEnv = utils::get_env_or_default("XLINGS_ACTIVE_SUBOS");
+    std::string prevOverride;
+    if (scoped) {
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", std::string(subos));
+        prevOverride = Config::set_active_subos_override(std::string(subos));
+    }
+    const int rc = cmd_install(targets, /*yes=*/true, /*noDeps=*/false, step);
+    if (scoped) {
+        (void)Config::set_active_subos_override(prevOverride);
+        platform::set_env_variable("XLINGS_ACTIVE_SUBOS", prevEnv);
+    }
+    return rc;
+}
+
 int cmd_install(std::span<const std::string> targets, bool yes, bool noDeps, EventStream& stream, bool forceGlobal, CancellationToken* cancel, bool dryRun, bool useAfterInstall, bool* allInStore, bool reconfig) {
     std::vector<InstallTargetReport_> report;
     report.reserve(targets.size());
@@ -917,7 +946,10 @@ int install_(std::span<const std::string> targets, bool yes, bool noDeps,
                     log::warn("failed to activate {}@{} in current subos",
                               match.name, match.version);
                 }
-            } else if (!active.empty() && active != match.version) {
+            } else if (!active.empty() && !xvm::version_key_matches(match.version, active)) {
+                // `active` is the stored key: another index's package keeps
+                // its namespace in it (`subos:0.1.0`), and that is the same
+                // version, not a reason to tell the user to switch to it.
                 // Declining to switch is a decision, and it used to be a
                 // silent one: `install llvm@20.1.7` printed nothing but
                 // success while `clang++` stayed on 22.1.8, so the version

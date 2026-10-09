@@ -35,6 +35,14 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[UX-NO-HANG]
+text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
+status = "required"
+
+[UX-ONE-PLAN]
+text = "subos new from a template chain shows one plan (the declared packages), one creation line, and no hint to switch to the version it installed"
+status = "required"
+
 [PROCESS-TERMINAL-JOB]
 text = "a child run with a deadline in its own process group holds the caller's terminal while it runs, and the terminal comes back"
 status = "required"
