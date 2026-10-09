@@ -59,6 +59,22 @@ end
 )LUA");
     tk::write_file(repo / "pkgs/m/my-os.lua", template_recipe("my-os",
         Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"workspace", Json::object()}}));
+    // An agent workspace in miniature: a template that declares its policy.
+    tk::write_file(repo / "pkgs/a/agent-ws.lua", template_recipe("agent-ws",
+        Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"policy", "fixture:agent-test@1.0.0"},
+             {"workspace", Json::object()}}));
+    tk::write_file(repo / "pkgs/a/agent-test.lua", R"LUA(
+package = { spec = '1', name = 'agent-test', type = 'subos-policy', archs = {'x86_64', 'aarch64'},
+            xpm = { linux = { ['1.0.0'] = {} }, macosx = { ['1.0.0'] = {} }, windows = { ['1.0.0'] = {} } } }
+import('xim.libxpkg.pkginfo')
+function install()
+    local dir = pkginfo.install_dir()
+    os.mkdir(dir)
+    io.writefile(path.join(dir, 'policy.json'),
+        '{"extends":"private","isolation":{"net":"none"},"permissions":{"fetch":"ask"}}')
+    return true
+end
+)LUA");
     Json config{{"mirror", "GLOBAL"}, {"xim", {{"index-repo", primary.generic_string()}}},
         {"index_repos", Json::array({{{"name", "xim"}, {"url", primary.generic_string()}, {"source", "git"}},
                                     {{"name", "fixture"}, {"url", repo.generic_string()}, {"source", "git"}}})}};
@@ -149,4 +165,24 @@ XTEST(Luban, AnAgentIsNeverAskedAndAPersonIsToldTheNearestCommand,
     auto removed = luban(home, {"rm", "box", "-y"});
     EXPECT_EQ(removed.exit_code, 0) << removed.transcript();
     EXPECT_FALSE(fs::exists(home.dir() / "subos/box"));
+}
+
+XTEST(Luban, AWorkspaceIsPrivateWhenItIsMadeNotAfter,
+      .area = "luban", .cost = tk::Cost::Medium,
+      .covers = {"LUBAN-WS-POLICY-AT-NEW"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a Luban root is a Linux root";
+    const auto bin = luban_binary();
+    if (!bin) GTEST_SKIP() << "no luban beside the xlings under test (mcpp build -p luban-tool, or LUBAN_BIN)";
+    auto home = luban_home("luban-ws", *bin);
+    auto made = luban(home, {"new", "agent", "fixture:agent-ws@1.0.0", "--proxy", "socks5h://127.0.0.1:1080"});
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    // Before anything has entered it: the template's policy, selected and
+    // locked, with the proxy as its only network.
+    const auto file = home.dir() / "config/subos/agent/policy.json";
+    ASSERT_TRUE(fs::exists(file)) << made.transcript();
+    const auto doc = Json::parse(tk::read_file(file));
+    EXPECT_EQ(doc["extends"], "fixture:agent-test@1.0.0") << doc.dump();
+    EXPECT_EQ(doc["resolved"]["from"], "fixture:agent-test@1.0.0") << doc.dump();
+    EXPECT_EQ(doc["isolation"]["net"], "proxy") << doc.dump();
+    EXPECT_EQ(doc["isolation"]["proxy"], "socks5h://127.0.0.1:1080") << doc.dump();
 }

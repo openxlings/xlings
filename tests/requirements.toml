@@ -59,6 +59,10 @@ status = "required"
 text = "in agent mode a question nobody can answer is exit 2 with the answer spelled; nothing waits for input"
 status = "required"
 
+[LUBAN-WS-POLICY-AT-NEW]
+text = "a template's declared policy and `new --proxy` are selected and locked when the environment is made, before its first entry"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

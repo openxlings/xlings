@@ -1942,6 +1942,25 @@ std::string pick_subos_or_fail_(std::string_view verb, EventStream& stream,
 // named, else -- forked from a local instance -- that instance's policy, so
 // a copy is isolated as its source was. Written outside the instance and
 // audited, as `subos config` does.
+// A template's `policy` (`"policy": "xim:agent-private@2026.10.10.1"`) and
+// `subos new --proxy`: `subos config <name> --sandbox <policy> --net proxy
+// --proxy <url>`, in this process.
+int apply_declared_policy_(const std::string& name, const std::string& proxy, EventStream& stream,
+                           const std::function<void(std::string_view)>& usageError) {
+    std::ifstream in(home_view().instance(name) / ".xlings.json");
+    auto manifest = nlohmann::json::parse(in, nullptr, false);
+    const std::string declared = manifest.is_object() && manifest.contains("policy") && manifest["policy"].is_string()
+        ? manifest["policy"].get<std::string>() : std::string{};
+    if (declared.empty() && proxy.empty()) return 0;
+    std::vector<std::string> words{"xlings", "subos", "config", name};
+    if (!declared.empty()) words.insert(words.end(), {"--sandbox", declared});
+    if (!proxy.empty()) words.insert(words.end(), {"--net", "proxy", "--proxy", proxy});
+    std::vector<char*> argv;
+    for (auto& w : words) argv.push_back(w.data());
+    argv.push_back(nullptr);
+    return run_config_(static_cast<int>(words.size()), argv.data(), stream, usageError);
+}
+
 int declare_isolation_at_creation_(const std::string& name, std::optional<policy::Preset> preset,
                                    const std::string& from, EventStream& stream) {
     const auto home = home_view();
@@ -2071,9 +2090,14 @@ int run(int argc, char* argv[], EventStream& stream) {
         // --carrier / --abi (design part 3 §5.6): where it runs. Default:
         // this machine's kernel unless what it is needs another one.
         std::string requestedCarrier, abi = "native";
+        // --proxy <URL> (Luban design §C3): its network goes only through
+        // this SOCKS5h proxy, from the first time it is entered.
+        std::string proxy;
         std::vector<std::string> forwardArgs;   // what the carrier's xlings is asked
         for (int i = 3; i < argc; ++i) {
             std::string a = argv[i];
+            if (a == "--proxy" && i + 1 < argc) { proxy = argv[++i]; forwardArgs.insert(forwardArgs.end(), {a, proxy}); continue; }
+            if (a.starts_with("--proxy=")) { proxy = a.substr(8); forwardArgs.push_back(a); continue; }
             if ((a == "--carrier" || a == "--abi") && i + 1 < argc) {
                 (a == "--carrier" ? requestedCarrier : abi) = argv[++i];
                 continue;
@@ -2242,6 +2266,11 @@ int run(int argc, char* argv[], EventStream& stream) {
         if (rc != 0) return rc;
         if (auto r = declare_isolation_at_creation_(name, declared, fromSpec, stream); r != 0) return r;
         if (auto r = declare_root_at_creation_(name, rootfs, fromSpec, stream, domain); r != 0) return r;
+        // The policy its template declares, and the proxy asked for here:
+        // selected and locked before the first entry, through the same code
+        // as `subos config` -- so a workspace that is private is private from
+        // the start, with no window between "made" and "made private".
+        if (auto r = apply_declared_policy_(name, proxy, stream, usageError); r != 0) return r;
         for (auto& e : report) stream.emit(std::move(e));
         if (!requestedCarrier.empty() || abi != "native") {
             if (auto recorded = record_carrier_(name, {"local", abi}); !recorded) {
