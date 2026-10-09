@@ -43,6 +43,22 @@ status = "required"
 text = "a mistyped command or option is answered with the nearest names"
 status = "required"
 
+[LUBAN-TOOL-SHIPPED]
+text = "the release ships luban (one static binary, also luban-init), versioned as the xlings beside it"
+status = "required"
+
+[LUBAN-CLI-MAP]
+text = "each luban command is the xlings command it names; edition short names and image formats are luban's"
+status = "required"
+
+[LUBAN-CLI-E2E]
+text = "luban against a real xlings: where it is, a new environment from a template, listed and described, removed"
+status = "required"
+
+[UX-AGENT-NO-PROMPT]
+text = "in agent mode a question nobody can answer is exit 2 with the answer spelled; nothing waits for input"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

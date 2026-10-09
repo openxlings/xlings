@@ -855,11 +855,14 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                     | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                     fs::perm_options::replace, ec);
     if (!check_io()) return 1;
-    // Stage-0's own binary travels with the client it belongs to (part 3 §8).
-    if (const auto init = entry.parent_path() / "luban-init"; fs::is_regular_file(init, ec)) {
-        fs::copy_file(init, image_home / "bin" / "luban-init", fs::copy_options::overwrite_existing, ec);
+    // Stage-0's own binary and the Luban tool travel with the client they
+    // belong to (part 3 §8; Luban design §A1).
+    for (const auto* companion : {"luban-init", "luban"}) {
+        const auto from = entry.parent_path() / companion;
+        if (!fs::is_regular_file(from, ec)) { ec.clear(); continue; }
+        fs::copy_file(from, image_home / "bin" / companion, fs::copy_options::overwrite_existing, ec);
         if (!check_io()) return 1;
-        fs::permissions(image_home / "bin" / "luban-init", fs::perms::owner_all | fs::perms::group_read
+        fs::permissions(image_home / "bin" / companion, fs::perms::owner_all | fs::perms::group_read
                         | fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
                         fs::perm_options::replace, ec);
         if (!check_io()) return 1;

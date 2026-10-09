@@ -15,7 +15,7 @@
 #   carrier   -> subos: where a SubOS runs (local, wsl2, vz) and how this
 #                xlings reaches it
 #   luban     -> modules: what exists only when a SubOS is a machine --
-#                boot entries, stage-0 (apps/luban-init), the machine's /etc
+#                boot entries, stage-0 and the luban command (apps/luban), the machine's /etc
 #   testkit   -> libs: end-to-end test library (dev-dependency only)
 #   apps/gui  the GUI binary's library half
 #   apps/xdev the development tool (never linked into xlings)
@@ -36,7 +36,7 @@ members = [
     "modules/confine",
     "modules/carrier",
     "luban",
-    "apps/luban-init",
+    "apps/luban",
     "modules/testkit",
     "apps/gui",
     "apps/xdev",

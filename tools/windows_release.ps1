@@ -84,6 +84,20 @@ foreach ($d in $dirs) { New-Item -ItemType Directory -Force -Path $d | Out-Null 
 
 Copy-Item $BIN_SRC "$OUT_DIR\bin\"
 
+# luban (Luban design A1.1): the Luban OS tool, its own package (it links
+# luban and modules/, nothing of the frontend). Here it manages Luban
+# environments on this PC (through WSL2); stage-0 is a Linux machine's.
+$lubanArgs = @("build", "-p", "luban-tool", "--profile", "dist")
+if ($env:MCPP_TARGET) { $lubanArgs += @("--target", $env:MCPP_TARGET) }
+& $MCPP_BIN @lubanArgs
+if ($LASTEXITCODE -ne 0) { Fail "mcpp build -p luban-tool failed" }
+$LUBAN_FILE = Get-ChildItem "$PROJECT_DIR\target" -Recurse -Filter "luban.exe" |
+  Where-Object { $_.FullName -match "[\\/]+bin[\\/]+luban-tool[\\/]+luban\.exe$" } |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+if (-not $LUBAN_FILE) { Fail "luban.exe not found under target\*\bin\luban-tool" }
+Copy-Item $LUBAN_FILE.FullName "$OUT_DIR\bin\luban.exe"
+
 # Release packages default to GLOBAL. Users can switch mirror locally after
 # install, and CI also keeps GLOBAL for github.com endpoints.
 $MIRROR = if ($env:XLINGS_RELEASE_MIRROR) { $env:XLINGS_RELEASE_MIRROR } else { "GLOBAL" }
@@ -122,7 +136,7 @@ Info "Package assembled: $OUT_DIR"
 # -- 4. Verification ---------------------------------------------
 Info "=== Verification ==="
 
-$requiredBins = @("bin\xlings.exe")
+$requiredBins = @("bin\xlings.exe", "bin\luban.exe")
 foreach ($f in $requiredBins) {
   if (-not (Test-Path "$OUT_DIR\$f")) { Fail "$f is missing" }
 }

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# luban-init (SubOS design part 3 §8): stage-0 as its own binary, shipped in
-# the Linux release, static, linking nothing of the frontend -- and refusing to
-# run as anything but a machine's first process.
-# xtest: covers=LUBAN-INIT requires=linux
+# luban and luban-init (SubOS design part 3 §8; Luban design §A1.1): one
+# static binary, shipped in the Linux release under both names, linking
+# nothing of the frontend. As luban-init it refuses to run as anything but a
+# machine's first process; as luban it is the Luban tool, released with (and
+# versioned as) the xlings next to it.
+# xtest: covers=LUBAN-INIT,LUBAN-TOOL-SHIPPED requires=linux
 set -euo pipefail
 tarball="${1:?usage: luban_init_test.sh <release tarball>}"
 work="$(mktemp -d)"
@@ -22,4 +24,12 @@ out="$("$init" 2>&1)"; rc=$?
 set -e
 [[ $rc -ne 0 ]] || { echo "FAIL: luban-init ran as a non-PID-1 process"; exit 1; }
 [[ "$out" == *"luban-init:"*"not PID 1"* ]] || { echo "FAIL: unexpected refusal: $out"; exit 1; }
-echo "PASS: luban-init shipped, static, ${size_init} bytes (xlings ${size_xl}); refuses outside PID 1"
+luban="$(dirname "$init")/luban"
+[[ -x "$luban" ]] || { echo "FAIL: the release ships no bin/luban"; exit 1; }
+cmp -s "$luban" "$init" || { echo "FAIL: bin/luban and bin/luban-init are not the same binary"; exit 1; }
+want="$("$xl" --version | awk '{print $NF}' | head -1)"
+got="$("$luban" --version)"
+[[ "$got" == "luban $want" ]] || { echo "FAIL: luban reports '$got', the xlings beside it is $want"; exit 1; }
+help="$("$luban" --help)"
+[[ "$help" == *"new <name> [edition]"* && "$help" == *"luban help --all"* ]] || { echo "FAIL: luban --help: $help"; exit 1; }
+echo "PASS: luban / luban-init shipped, static, ${size_init} bytes (xlings ${size_xl}); refuses outside PID 1; luban $want"
