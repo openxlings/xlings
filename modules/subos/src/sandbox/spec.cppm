@@ -54,6 +54,8 @@ struct Request {
     std::string instance;                     // its name
     fs::path instance_dir;                    // <home>/subos/<name>
     std::string user;                         // login name
+    // The instance's persona host name (neutral identity); empty = its name.
+    std::string hostname;
     std::vector<std::string> argv;            // empty = the user's shell
     std::string shell { "/bin/sh" };          // $SHELL
     bool interactive { false };               // stdin is a terminal

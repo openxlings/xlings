@@ -59,7 +59,11 @@ struct Policy {
     Fetch index_update { Fetch::Auto };
     Observe observe { Observe::Basic };
     Identity identity { Identity::Host };
-    std::string tz;                          // neutral identity: default "UTC"
+    // Neutral identity's time zone: an IANA name, "UTC", or "proxy" -- the
+    // proxy's exit, asked through it (Luban design §C4). Empty: "proxy" when
+    // the network is a proxy, UTC otherwise.
+    std::string tz;
+    std::string geo_lookup;                  // where "proxy" asks; empty: https://ipinfo.io/timezone
 
     // What isolation each dimension needs; dimensions not listed are Should.
     std::map<std::string, Need, std::less<>> needs;

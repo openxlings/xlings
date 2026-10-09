@@ -66,7 +66,12 @@ XTEST(SubosPolicyE2E, ADeclaredInstanceIsIsolatedHoweverItIsEntered,
         "echo arp=$(tail -n +2 /proc/net/arp 2>/dev/null | wc -l); "
         "unshare -U true 2>/dev/null && echo nested=yes || echo nested=no"});
     EXPECT_EQ(r.exit_code, 0) << r.transcript();
-    EXPECT_NE(r.out.find("user=user host=box tz=UTC"), std::string::npos) << r.out;   // F7
+    // F7: the neutral user, the persona's host name (never the instance's
+    // name, which may be the user's own), UTC.
+    const auto persona = nlohmann::json::parse(
+        tk::read_file(box.home.dir() / "config" / "subos" / "box" / "persona.json"));
+    EXPECT_NE(r.out.find("user=user host=" + persona["hostname"].get<std::string>() + " tz=UTC"),
+              std::string::npos) << r.out;
     EXPECT_NE(r.out.find("ifaces=lo,"), std::string::npos) << r.out;                  // F5, net=none
     EXPECT_NE(r.out.find("arp=0"), std::string::npos) << r.out;                        // no neighbours
     EXPECT_NE(r.out.find("nested=no"), std::string::npos) << r.out;

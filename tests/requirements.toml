@@ -63,6 +63,18 @@ status = "required"
 text = "a template's declared policy and `new --proxy` are selected and locked when the environment is made, before its first entry"
 status = "required"
 
+[PRIVACY-PERSONA-STABLE]
+text = "a neutral identity is a persona made once per instance (host name, machine-id) and the same on every entry; a fork gets its own"
+status = "required"
+
+[PRIVACY-TZ-PROXY]
+text = "a neutral identity's zone is UTC, a chosen name, or the proxy's exit asked through the proxy; a failure is UTC, never the host's zone"
+status = "required"
+
+[PRIVACY-LEAK-PROBE]
+text = "inside a private environment nothing of the host's identity planted as a sentinel is visible: locale, secrets, host name, machine-id, devices"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

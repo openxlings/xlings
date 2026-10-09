@@ -184,8 +184,7 @@ Policy preset(Preset which) {
         p.fetch = Fetch::Ask;
         p.index_update = Fetch::Ask;
         p.observe = Observe::Standard;
-        p.identity = Identity::Neutral;
-        p.tz = "UTC";
+        p.identity = Identity::Neutral;   // tz unchosen: the proxy's exit, else UTC
         p.env_pass.assign({"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
                            "no_proxy", "NO_PROXY", "all_proxy", "ALL_PROXY"});
         p.env_explicit_any = false;
@@ -196,8 +195,7 @@ Policy preset(Preset which) {
         p.fetch = Fetch::Deny;
         p.index_update = Fetch::Deny;
         p.observe = Observe::Full;
-        p.identity = Identity::Neutral;
-        p.tz = "UTC";
+        p.identity = Identity::Neutral;   // tz unchosen: UTC (no network to ask)
         p.env_pass.clear();
         p.env_explicit_any = false;
         p.grants_allowed.clear();
@@ -386,6 +384,8 @@ std::expected<Policy, std::string> from_json(const nlohmann::json& doc) {
                         p.identity = Identity::Neutral;
                         for (auto g = fv.begin(); g != fv.end(); ++g) {
                             if (g.key() == "tz" && g.value().is_string()) p.tz = g.value().get<std::string>();
+                            else if (g.key() == "geo_lookup" && g.value().is_string())
+                                p.geo_lookup = g.value().get<std::string>();
                             else if (!free_key(g.key())) return unknown(where + "." + g.key());
                         }
                     } else {
@@ -550,8 +550,16 @@ nlohmann::json to_json(const Policy& p) {
     nlohmann::json iso;
     iso["net"] = std::string(to_string(p.net));
     if (!p.proxy.empty()) iso["proxy"] = p.proxy;
-    iso["identity"] = p.identity == Identity::Neutral
-        ? nlohmann::json{{"tz", p.tz.empty() ? "UTC" : p.tz}} : nlohmann::json("host");
+    if (p.identity == Identity::Neutral) {
+        // A zone is written only when one was chosen: an unchosen one follows
+        // the network (the proxy's exit, or UTC), and writing "UTC" here would
+        // turn that default into a choice nobody made.
+        iso["identity"] = nlohmann::json::object();
+        if (!p.tz.empty()) iso["identity"]["tz"] = p.tz;
+        if (!p.geo_lookup.empty()) iso["identity"]["geo_lookup"] = p.geo_lookup;
+    } else {
+        iso["identity"] = "host";
+    }
     iso["grants"] = std::vector<std::string>(p.grants.begin(), p.grants.end());
     iso["grants_allowed"] = std::vector<std::string>(p.grants_allowed.begin(), p.grants_allowed.end());
     iso["env_pass"] = p.env_pass;

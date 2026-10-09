@@ -141,7 +141,7 @@ std::expected<sp::SandboxSpec, sp::Refusal> compile(const policy::Policy& pol, c
         unmet.push_back({"publish", "--publish needs net=nat (a private network to publish from)",
                          "--net nat", i.need("publish")});
     if (i.id.neutral) {
-        if (kernel) s.hostname = i.instance;
+        if (kernel) s.hostname = i.id.hostname.empty() ? i.instance : i.id.hostname;
         else unmet.push_back({"identity", "the host name cannot be changed without namespaces", "",
                               i.need("identity")});
     }

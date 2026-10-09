@@ -34,6 +34,8 @@ import xlings.subos.elevation;
 import xlings.subos.tools;
 import xlings.carrier;
 import xlings.subos.userdata;
+import xlings.subos.persona;
+import xlings.platform.stream;
 
 namespace xlings::subos::sandbox {
 
@@ -482,6 +484,59 @@ int enter(const std::string& name, EventStream& stream, const std::string& prefe
     return enter(name, stream, EnterOptions{ .backend = preferred_backend, .gpu = gpu, .cmd = cmd });
 }
 
+namespace {
+std::string read_first_line_(const fs::path& file) {
+    std::ifstream in(file);
+    std::string line;
+    std::getline(in, line);
+    return line;
+}
+}  // namespace
+
+// The zone a neutral identity's TZ names (Luban design §C4). "proxy" -- or
+// nothing chosen, with a proxy for the network -- is the proxy's exit: asked
+// THROUGH the proxy (curl, from the tool table), cached in the persona per
+// proxy for a day. Anything that fails is UTC, never the host's zone.
+std::string resolve_zone_(const HomeView& home, const subos::Ports& ports, std::string_view name,
+                          const policy::Policy& pol, subos::persona::Persona& persona) {
+    const bool via_proxy = pol.tz == "proxy" || (pol.tz.empty() && pol.net == policy::Net::Proxy);
+    if (!via_proxy) {
+        const auto zone = subos::persona::normalize_zone(pol.tz);
+        return zone.empty() ? std::string("UTC") : zone;
+    }
+    if (pol.proxy.empty()) return "UTC";
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (persona.tz_proxy == pol.proxy && !persona.tz_zone.empty() && now - persona.tz_at < 86400)
+        return persona.tz_zone;
+    const auto curl = subos::tools::first("curl", home, ports);
+    if (!curl) {
+        log::warn("time zone: UTC -- the proxy's exit cannot be asked without curl ({})",
+                  subos::tools::install_hint("curl"));
+        return "UTC";
+    }
+    const auto url = pol.geo_lookup.empty() ? std::string("https://ipinfo.io/timezone") : pol.geo_lookup;
+    std::string out;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const int rc = platform::stream::run(
+        {curl->bin.string(), "-fsS", "--max-time", "8", "--proxy", pol.proxy, url},
+        [&](std::string_view channel, std::string_view bytes) { if (channel == "stdout") out.append(bytes); },
+        [&] { return std::chrono::steady_clock::now() > deadline; });
+    while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+    const auto zone = rc == 0 ? subos::persona::normalize_zone(out) : std::string{};
+    if (zone.empty()) {
+        log::warn("time zone: UTC -- the proxy's exit could not be asked ({}): {}", url,
+                  rc == 0 ? "not a zone: " + out.substr(0, 40) : std::format("exit {}", rc));
+        return "UTC";
+    }
+    persona.tz_proxy = pol.proxy;
+    persona.tz_zone = zone;
+    persona.tz_at = now;
+    if (auto w = subos::persona::write(home, name, persona); !w) log::warn("{}", w.error());
+    log::debug("time zone: {} (the exit of {})", zone, pol.proxy);
+    return zone;
+}
+
 int enter(const std::string& name, EventStream& stream, const EnterOptions& opts) {
     const auto& preferred_backend = opts.backend;
     const bool gpu = opts.gpu;
@@ -578,7 +633,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
                                 .recoverable = false });
         return kFail;
     }
-    const auto pol = std::move(*effective);
+    auto pol = std::move(*effective);
     if (policy::fetches_into_layer(pol) && !rootfs) {
         stream.emit(ErrorEvent{
             .code = ErrorCode::InvalidInput,
@@ -627,6 +682,25 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
         request.root = subos_root::tree_of(p.homeDir, name);
         if (!cmd.empty()) request.argv = {"/bin/sh", "-c", cmd};
         request.shell = "/bin/sh";
+    }
+
+    // A neutral identity is a persona (Luban design §C4): the same host name
+    // and machine-id every time this instance is entered, and a time zone
+    // that is the proxy's exit unless one was chosen.
+    if (pol.identity == policy::Identity::Neutral) {
+        auto persona = subos::persona::read_or_make(home, name);
+        if (!persona) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput, .message = persona.error(), .recoverable = false});
+            return kFail;
+        }
+        request.hostname = persona->hostname;
+        pol.tz = resolve_zone_(home, ports, name, pol, *persona);
+        if (rootfs) {
+            const auto machine_id = request.root / "etc" / "machine-id";
+            std::error_code ec;
+            if (fs::is_directory(machine_id.parent_path(), ec) && read_first_line_(machine_id) != persona->machine_id)
+                platform::write_string_to_file(machine_id.string(), persona->machine_id + "\n");
+        }
     }
 
     nlohmann::json payload;

@@ -34,6 +34,7 @@ struct Identity {
     std::string home_inside;     // /home/<user>
     fs::path etc_dir;            // the instance's passwd/group/hosts
     std::string tz;              // neutral only; empty = UTC
+    std::string hostname;        // neutral only: the persona's; empty = the instance's name
 };
 
 struct Network {
