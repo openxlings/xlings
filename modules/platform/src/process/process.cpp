@@ -275,8 +275,8 @@ int foreground_terminal_() {
 // tcsetpgrp from a background group raises SIGTTOU; a blocked one does not.
 void give_terminal_(int fd, int pgid) {
     sigset_t ttou, saved;
-    ::sigemptyset(&ttou);
-    ::sigaddset(&ttou, SIGTTOU);
+    sigemptyset(&ttou);   // unqualified: a macro on macOS
+    sigaddset(&ttou, SIGTTOU);
     ::sigprocmask(SIG_BLOCK, &ttou, &saved);
     (void)::tcsetpgrp(fd, pgid);
     ::sigprocmask(SIG_SETMASK, &saved, nullptr);
