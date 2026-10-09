@@ -35,6 +35,10 @@ status = "required"
 text = "a pty with nothing typed exposes a program that waits for input"
 status = "required"
 
+[PROCESS-TERMINAL-JOB]
+text = "a child run with a deadline in its own process group holds the caller's terminal while it runs, and the terminal comes back"
+status = "required"
+
 [TK-HOME]
 text = "an isolated home lives outside the user's home and is removed"
 status = "required"

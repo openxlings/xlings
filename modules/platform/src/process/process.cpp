@@ -265,15 +265,47 @@ void redirect_stdio(std::span<const int> fds) {
     for (int fd : fds) if (fd > 2) ::close(fd);
 }
 
+namespace {
+// The terminal this process group holds in the foreground, if any.
+int foreground_terminal_() {
+    for (int fd = 0; fd != 3; ++fd)
+        if (::isatty(fd) && ::tcgetpgrp(fd) == ::getpgrp()) return fd;
+    return -1;
+}
+// tcsetpgrp from a background group raises SIGTTOU; a blocked one does not.
+void give_terminal_(int fd, int pgid) {
+    sigset_t ttou, saved;
+    ::sigemptyset(&ttou);
+    ::sigaddset(&ttou, SIGTTOU);
+    ::sigprocmask(SIG_BLOCK, &ttou, &saved);
+    (void)::tcsetpgrp(fd, pgid);
+    ::sigprocmask(SIG_SETMASK, &saved, nullptr);
+}
+}
+
 int run_argv_with_timeout(const std::vector<std::string>& argv, std::chrono::milliseconds limit) {
     if (argv.empty()) return 127;
+    // The child gets its own process group so a late one is killed whole. A
+    // group that is not the terminal's foreground is stopped by the kernel
+    // the moment it touches the terminal (SIGTTOU/SIGTTIN) -- an install's
+    // progress, an editor -- and the deadline is all that ends it. So, as a
+    // shell does for a job: the terminal goes to the child's group while it
+    // runs (Ctrl-C reaches it) and comes back after.
+    const int terminal = foreground_terminal_();
     const int pid = fork_process();
     if (pid < 0) return 126;
     if (pid == 0) {
         ::setpgid(0, 0);
+        if (terminal >= 0) give_terminal_(terminal, ::getpgrp());
         const int e = exec_program(argv, environment());
         ::_exit(e == ENOENT ? 127 : 126);
     }
+    ::setpgid(pid, pid);
+    if (terminal >= 0) give_terminal_(terminal, pid);
+    struct Reclaim {
+        int fd;
+        ~Reclaim() { if (fd >= 0) give_terminal_(fd, ::getpgrp()); }
+    } reclaim{terminal};
     const auto deadline = std::chrono::steady_clock::now() + limit;
     while (true) {
         if (auto s = wait_process(pid, false)) return exit_code(*s);
