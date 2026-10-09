@@ -461,6 +461,8 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
     bool ctl_open = true;
     bool timed_out = false;
     std::optional<std::chrono::steady_clock::time_point> kill_at;
+    // When the proxy bridge closed while the session was not yet reaped.
+    std::optional<std::chrono::steady_clock::time_point> gateway_lost_at;
     const auto deadline = L.timeout ? std::optional(started + *L.timeout) : std::nullopt;
 
     auto finish_client = [&](Client& c, nlohmann::json reply) {
@@ -526,6 +528,11 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             platform::send_signal(pid, sig::kill);
             kill_at.reset();
         }
+        if (gateway_lost_at && !reaped && now >= *gateway_lost_at + std::chrono::seconds(1)) {
+            audit({{"event", "proxy-gateway-lost"}, {"session", info.id}}, observe::Kind::Net);
+            platform::send_signal(pid, sig::kill);
+            gateway_lost_at.reset();
+        }
         for (auto& c : clients) {
             if (c.fd >= 0 && c.exec_id && c.deadline && !c.timed_out && now >= *c.deadline) {
                 c.timed_out = true;
@@ -580,8 +587,14 @@ int supervise(const HomeView& home, Launch& L, Info& info, int listen_fd, std::a
             if (proxyBridge && p.fd == (*proxyBridge)[0]) {
                 const auto client = platform::receive_message(p.fd, 128);
                 if (!client) {
-                    audit({{"event", "proxy-gateway-lost"}, {"session", info.id}}, observe::Kind::Net);
-                    if (pid > 0) platform::send_signal(pid, sig::kill);
+                    // The bridge closes when session-init exits -- the end of
+                    // every proxy session -- and bwrap, the process waited for
+                    // here, outlives it by a moment. A SIGKILL sent at once
+                    // landed in that moment and turned the command's exit
+                    // status into 137. A gateway lost while the session runs
+                    // on is killed after a grace second instead; until then
+                    // the namespace has no gateway, so nothing leaves it.
+                    if (!reaped) gateway_lost_at = now;
                     drop((*proxyBridge)[0]);
                 } else {
                     auto descriptors = client->fds;
