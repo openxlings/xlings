@@ -3,6 +3,7 @@ export module xlings.core.subos;
 import std;
 
 import xlings.core.config;
+import xlings.libs.json;
 import xlings.core.log;
 import xlings.platform;
 import xlings.runtime;
@@ -552,6 +553,9 @@ std::optional<int> run_domain_operation_(const std::string& name,
     std::span<const std::string> arguments, EventStream& stream);
 int declare_root_at_creation_(const std::string& name, bool rootfs, const std::string& from,
                               EventStream& stream, std::string_view domain = {});
+// Whether a root of what `manifest` declares (its `abi`) can be made here;
+// the reason when not (Luban design §A5). Asked before anything is fetched.
+std::optional<std::string> root_abi_refusal_(const nlohmann::json& manifest);
 
 using UsageError = std::function<void(std::string_view)>;
 int run_exec_(int argc, char* argv[], EventStream& stream);

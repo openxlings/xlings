@@ -12,6 +12,7 @@ import xlings.testkit;
 #include "xlings/xtest.hpp"
 import std;
 import xlings.libs.json;
+import xlings.platform.target;
 
 namespace tk = xlings::testkit;
 namespace fs = std::filesystem;
@@ -132,4 +133,41 @@ XTEST(SubosNewTemplate, AHostThatCannotMakeARootIsToldBeforeAnythingIsFetched,
         EXPECT_NE(created.transcript().find("cannot enter a root yet"), std::string::npos)
             << "the cause, first\n" << created.transcript();
     }
+}
+
+XTEST(SubosNewTemplate, AnEditionDeclaresItsAbiAndOneThisMachineCannotRunIsRefusedFirst,
+      .area = "luban", .cost = tk::Cost::Medium, .covers = {"LUBAN-ABI"}, .requires_ = {"linux", "xlings-bin"}) {
+    if constexpr (!tk::is_linux) GTEST_SKIP() << "a rootfs SubOS is a Linux root";
+    auto home = fixture_home("subos-new-abi");
+    const auto bwrap = home.dir() / "data/xpkgs/xim-x-bwrap/0.11.2/bin/bwrap";
+    tk::write_file(bwrap, "#!/bin/sh\nexit 0\n");
+    fs::permissions(bwrap, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec);
+    const auto repo = home.root() / "index";
+    const std::string host = xlings::platform::host().arch;
+    const std::string other = host == "x86_64" ? "aarch64" : "x86_64";
+    auto edition = [&](std::string name, nlohmann::json abi) {
+        tk::write_file(repo / "pkgs" / name.substr(0, 1) / (name + ".lua"), template_recipe(name,
+            Json{{"subos_kind", "rootfs"}, {"packages", {"fixture:hello@1.0.0"}}, {"abi", abi},
+                 {"boot", {{"init", "/sbin/init"}, {"kernel", "xim:linux-kernel-virt"}, {"kernel_min", "5.10"}}},
+                 {"workspace", Json::object()}}));
+    };
+    edition("abi-other", other + "-linux-gnu");
+    edition("abi-musl", Json{{"arch", host}, {"kernel", "linux"}, {"libc", "musl"}});
+    edition("abi-here", host + "-linux-gnu");
+    const std::map<std::string, std::string> env{{"XLINGS_TOOLS_SEARCH", "home"}};
+    auto refused = home.xlings({"subos", "new", "a", "--from", "fixture:abi-other@1.0.0"}, env);
+    EXPECT_NE(refused.exit_code, 0) << refused.transcript();
+    EXPECT_NE(refused.transcript().find("built for " + other), std::string::npos) << refused.transcript();
+    EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/fixture-x-hello")) << "fetched for a root it then refused";
+    EXPECT_FALSE(fs::exists(home.dir() / "subos/a")) << "half-made";
+    auto musl = home.xlings({"subos", "new", "b", "--from", "fixture:abi-musl@1.0.0"}, env);
+    EXPECT_NE(musl.exit_code, 0);
+    EXPECT_NE(musl.transcript().find("libc=musl"), std::string::npos) << musl.transcript();
+    auto made = home.xlings({"subos", "new", "c", "--from", "fixture:abi-here@1.0.0"}, env);
+    ASSERT_EQ(made.exit_code, 0) << made.transcript();
+    const auto instance = Json::parse(tk::read_file(home.dir() / "config/subos/c/instance.json"));
+    EXPECT_EQ(instance["root_abi"]["arch"], host);
+    EXPECT_EQ(instance["root_abi"]["libc"], "gnu");
+    EXPECT_EQ(instance["boot"]["kernel"], "xim:linux-kernel-virt") << "a hint for an image, recorded";
+    EXPECT_FALSE(fs::exists(home.dir() / "data/xpkgs/xim-x-linux-kernel-virt")) << "never installed into the root";
 }

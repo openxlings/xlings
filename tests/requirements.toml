@@ -91,6 +91,10 @@ status = "required"
 text = "an environment exports as a drive image (GPT, a FAT system partition with limine, an ext4 root by PARTUUID) that boots on BIOS and UEFI"
 status = "required"
 
+[LUBAN-ABI]
+text = "an edition declares its ABI (arch, kernel, libc, libc floor); one this machine cannot run is refused before anything is fetched; a kernel is a hint for images, never installed into the root"
+status = "required"
+
 [UX-NO-HANG]
 text = "a command that runs other installs at a terminal finishes; nothing it starts is stopped for touching the terminal"
 status = "required"

@@ -1062,6 +1062,13 @@ int new_from(const std::string& name, const fs::path& customDir,
     if (new_from_detail_::is_pkg_spec_(fromSpec)) {
         std::ifstream manifestIn(baseDir / ".xlings.json");
         auto manifest = nlohmann::json::parse(manifestIn, nullptr, false);
+        if (auto refused = root_abi_refusal_(manifest.is_discarded() ? nlohmann::json() : manifest)) {
+            stream.emit(ErrorEvent{.code = ErrorCode::InvalidInput,
+                                   .message = std::format("'{}' cannot be made here from {}: {}", name, fromSpec, *refused),
+                                   .recoverable = false,
+                                   .hint = "an edition built for this machine"});
+            return 1;
+        }
         if (!manifest.is_discarded() && manifest.is_object() && manifest.value("subos_kind", "") == "rootfs")
             if (auto r = sandbox::prepare_root_host(yes, stream); r != 0) return r;
     }

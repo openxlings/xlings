@@ -31,6 +31,7 @@ import xlings.core.xself;
 import xlings.core.xim.extract;
 import xlings.core.xim.commands;
 import luban.image;
+import xlings.platform.target;
 import xlings.subos.tools;
 import xlings.subos.caps;
 
@@ -231,7 +232,44 @@ struct Declared {
     bool rootfs { false };
     std::vector<std::string> packages;
     std::string init;
+    // What its payloads are built for (Luban design §A5): an architecture,
+    // a kernel ABI, a libc family and its floor -- no libc is assumed.
+    nlohmann::json abi = nlohmann::json::object();
+    // The kernel a machine of it boots, and the least one its userland
+    // needs (§A6) -- hints for an image, never installed into the root.
+    nlohmann::json boot = nlohmann::json::object();
 };
+
+// An `abi` as an object, or the triple it abbreviates ("x86_64-linux-gnu").
+nlohmann::json abi_of_(const nlohmann::json& v) {
+    if (v.is_object()) return v;
+    if (!v.is_string()) return nlohmann::json::object();
+    const auto t = v.get<std::string>();
+    std::vector<std::string> parts;
+    for (const auto part : std::views::split(t, '-')) parts.emplace_back(part.begin(), part.end());
+    nlohmann::json j = nlohmann::json::object();
+    if (!parts.empty()) j["arch"] = parts[0];
+    if (parts.size() > 1) j["kernel"] = parts[1];
+    j["libc"] = parts.size() > 2 ? parts[2] : std::string("none");
+    return j;
+}
+
+// Whether this machine can make (and run) a root of that ABI here; the
+// reason when it cannot. The model takes any libc; the index publishes gnu.
+std::optional<std::string> abi_refusal_(const nlohmann::json& abi) {
+    const auto arch = abi.value("arch", std::string());
+    const auto host = platform::host().arch;
+    if (!arch.empty() && arch != host)
+        return std::format("it is built for {}, and this machine is {}", arch, host);
+    const auto kernel = abi.value("kernel", std::string());
+    if (!kernel.empty() && kernel != "linux")
+        return std::format("its kernel ABI is {}; this machine runs linux (a carrier that provides {} runs it)",
+                           kernel, kernel);
+    const auto libc = abi.value("libc", std::string());
+    if (!libc.empty() && libc != "gnu" && libc != "none")
+        return std::format("its payloads are for libc={}; the index publishes gnu ones today", libc);
+    return std::nullopt;
+}
 
 std::optional<Declared> declared_by_template_(const fs::path& instance, EventStream& stream) {
     Declared d;
@@ -269,14 +307,23 @@ std::optional<Declared> declared_by_template_(const fs::path& instance, EventStr
             if (!by_key.contains(key)) order.push_back(key);
             by_key[key] = p.get<std::string>();
         }
-        if (auto b = it->find("boot"); b != it->end() && b->is_object())
+        if (auto b = it->find("boot"); b != it->end() && b->is_object()) {
             if (auto init = b->value("init", std::string()); !init.empty()) d.init = init;
+            for (const auto* k : {"kernel", "kernel_min"})
+                if (b->contains(k) && (*b)[k].is_string()) d.boot[k] = (*b)[k];
+        }
+        if (auto a = it->find("abi"); a != it->end()) d.abi = abi_of_(*a);
     }
     for (auto& k : order) d.packages.push_back(by_key[k]);
     return d;
 }
 
 }  // namespace
+
+std::optional<std::string> root_abi_refusal_(const nlohmann::json& manifest) {
+    if (!manifest.is_object() || !manifest.contains("abi")) return std::nullopt;
+    return abi_refusal_(abi_of_(manifest["abi"]));
+}
 
 std::expected<void, std::string> preflight_domain_at_creation_(std::string_view name, bool rootfs,
     std::string_view domain, std::string_view fromSpec) {
@@ -398,10 +445,19 @@ int declare_root_at_creation_(const std::string& name, bool rootfs, const std::s
         error_(stream, d.error(), {}, ErrorCode::Internal);
         return 1;
     }
-    if (declared && !declared->init.empty()) {
+    if (declared && !declared->abi.empty()) {
+        if (auto refused = abi_refusal_(declared->abi)) {
+            error_(stream, std::format("'{}' cannot be a root here: {}", name, *refused),
+                   "an edition built for this machine, or `luban try` with an image of it");
+            return 1;
+        }
+    }
+    if (declared && (!declared->init.empty() || !declared->abi.empty() || !declared->boot.empty())) {
         const auto file = HomeView{home}.instance_file(name);
         auto j = read_json_(file);
-        j["init"] = declared->init;
+        if (!declared->init.empty()) j["init"] = declared->init;
+        if (!declared->abi.empty()) j["root_abi"] = declared->abi;
+        if (!declared->boot.empty()) j["boot"] = declared->boot;
         if (auto written = write_json_(file, j); !written) {
             error_(stream, written.error(), {}, ErrorCode::Internal);
             return 1;
@@ -608,6 +664,20 @@ int run_diff_(int argc, char* argv[], EventStream& stream, const UsageError& usa
 
 namespace {
 
+bool same_bytes_(const fs::path& a, const fs::path& b) {
+    std::error_code ec;
+    if (!fs::is_regular_file(a, ec) || !fs::is_regular_file(b, ec) || fs::file_size(a, ec) != fs::file_size(b, ec))
+        return false;
+    std::ifstream x(a, std::ios::binary), y(b, std::ios::binary);
+    std::vector<char> p(1 << 16), q(1 << 16);
+    while (x && y) {
+        x.read(p.data(), static_cast<std::streamsize>(p.size()));
+        y.read(q.data(), static_cast<std::streamsize>(q.size()));
+        if (x.gcount() != y.gcount() || !std::equal(p.begin(), p.begin() + x.gcount(), q.begin())) return false;
+    }
+    return true;
+}
+
 // A path of the image as the image sees it, resolved component by component
 // through the image's own links (an absolute link names a path of the
 // image, not of this machine) -- what the kernel does inside a chroot.
@@ -654,20 +724,49 @@ std::optional<fs::path> limine_data_(const fs::path& home, EventStream& stream) 
 
 // The kernel an image boots: --kernel, or the root's own (followed through
 // the image's links). None is refused with the route.
-std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs::path& stage, const fs::path& given) {
+// "6.8.0-71-generic" / "5.10" -> {6, 8, 0} / {5, 10}: what is compared.
+std::vector<int> version_parts_(std::string_view v) {
+    std::vector<int> out;
+    for (std::size_t i = 0; i < v.size() && out.size() < 3;) {
+        int n = 0;
+        auto [p, e] = std::from_chars(v.data() + i, v.data() + v.size(), n);
+        if (e != std::errc{}) break;
+        out.push_back(n);
+        i = static_cast<std::size_t>(p - v.data());
+        if (i >= v.size() || v[i] != '.') break;
+        ++i;
+    }
+    return out;
+}
+
+// The kernel an image boots: --kernel, or the root's own (followed through
+// the image's links). None is refused with the route -- the kernel its
+// edition recommends (boot.kernel) when it names one -- and one older than
+// what its userland needs (boot.kernel_min) is refused too (§A6).
+std::expected<fs::path, std::pair<std::string, std::string>> kernel_of_(const fs::path& stage, const fs::path& given,
+                                                                        const nlohmann::json& boot, std::string_view name) {
     std::error_code ec;
     fs::path kernel = given;
+    std::string version;
     if (kernel.empty()) {
         const auto modules = in_stage_(stage, "/usr/lib/modules");
         for (fs::directory_iterator it(modules, ec), end; !ec && it != end; it.increment(ec)) {
             const auto candidate = in_stage_(stage, fs::path("/usr/lib/modules") / it->path().filename() / "vmlinuz");
-            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; break; }
+            if (fs::is_regular_file(candidate, ec)) { kernel = candidate; version = it->path().filename().string(); break; }
         }
     }
-    if (kernel.empty() || !fs::is_regular_file(kernel, ec))
+    if (kernel.empty() || !fs::is_regular_file(kernel, ec)) {
+        const auto recommended = boot.is_object() ? boot.value("kernel", std::string("linux-kernel")) : std::string("linux-kernel");
         return std::unexpected(std::pair{
             std::string("a bootable image needs a kernel, and this root has none"),
-            std::string("install one into it (xlings install linux-kernel --subos <name>), or give --kernel <vmlinuz>")});
+            std::format("install one into it (xlings install {} --subos {}), or give --kernel <vmlinuz>", recommended, name)});
+    }
+    const auto floor = boot.is_object() ? boot.value("kernel_min", std::string()) : std::string();
+    if (!floor.empty() && !version.empty() && version_parts_(version) < version_parts_(floor))
+        return std::unexpected(std::pair{
+            std::format("its kernel is {}, and its userland needs {} or newer", version, floor),
+            std::format("a newer kernel: xlings install {} --subos {}",
+                        boot.value("kernel", std::string("linux-kernel")), name)});
     return kernel;
 }
 
@@ -691,8 +790,9 @@ std::uint64_t size_bytes_(std::string_view size) {
 // writes. The GPT and the FAT are written in-process (luban.image).
 std::expected<void, std::pair<std::string, std::string>> write_drive_(
     const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const std::string& size,
-    const fs::path& scratch, const fs::path& output, EventStream& stream) {
-    auto kernel = kernel_of_(stage, kernel_file);
+    const fs::path& scratch, const fs::path& output, const nlohmann::json& boot, std::string_view name,
+    EventStream& stream) {
+    auto kernel = kernel_of_(stage, kernel_file, boot, name);
     if (!kernel) return std::unexpected(kernel.error());
     auto limine = limine_data_(home, stream);
     std::error_code ec;
@@ -759,9 +859,9 @@ std::expected<void, std::pair<std::string, std::string>> write_drive_(
 // here.
 std::expected<void, std::pair<std::string, std::string>> write_live_iso_(
     const fs::path& stage, const fs::path& home, const fs::path& kernel_file, const fs::path& scratch,
-    EventStream& stream) {
+    const nlohmann::json& boot, std::string_view name, EventStream& stream) {
     std::error_code ec;
-    auto found = kernel_of_(stage, kernel_file);
+    auto found = kernel_of_(stage, kernel_file, boot, name);
     if (!found) return std::unexpected(found.error());
     const auto kernel = *found;
     auto limine = limine_data_(home, stream);
@@ -1084,9 +1184,16 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
     if (!check_io()) return 1;
     // Stage-0's own binary and the Luban tool travel with the client they
     // belong to (part 3 §8; Luban design §A1).
-    for (const auto* companion : {"luban-init", "luban"}) {
+    for (const auto* companion : {"luban", "luban-init"}) {
         const auto from = entry.parent_path() / companion;
         if (!fs::is_regular_file(from, ec)) { ec.clear(); continue; }
+        // One binary under two names (Luban design §A1.1): in an image --
+        // a live one is held in memory -- the second name is a link.
+        if (std::string_view(companion) == "luban-init" && same_bytes_(from, entry.parent_path() / "luban")) {
+            fs::create_symlink("luban", image_home / "bin" / companion, ec);
+            if (!check_io()) return 1;
+            continue;
+        }
         fs::copy_file(from, image_home / "bin" / companion, fs::copy_options::overwrite_existing, ec);
         if (!check_io()) return 1;
         fs::permissions(image_home / "bin" / companion, fs::perms::owner_all | fs::perms::group_read
@@ -1198,7 +1305,9 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
         rc = run_tool_(*argv, stream, "writing the disk image");
     } else if (!drive.empty() || !qcow2.empty()) {
         const auto raw = scratch->path() / (drive.empty() ? "drive.raw" : "output");
-        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw, stream); !made) {
+        if (auto made = write_drive_(stage, home, kernel_file, size, scratch->path(), raw,
+                                     read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
+                                     name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }
@@ -1209,7 +1318,9 @@ int run_export_(int argc, char* argv[], EventStream& stream, const UsageError& u
                             (scratch->path() / "output").string()}, stream, "converting to qcow2");
         }
     } else if (!iso.empty()) {
-        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(), stream); !made) {
+        if (auto made = write_live_iso_(stage, home, kernel_file, scratch->path(),
+                                        read_json_(HomeView{home}.instance_file(name)).value("boot", nlohmann::json::object()),
+                                        name, stream); !made) {
             error_(stream, made.error().first, made.error().second);
             return 1;
         }
