@@ -900,8 +900,7 @@ int enter(const std::string& name, EventStream& stream, const EnterOptions& opts
             if (opts.announce) stream.emit(DataEvent{"subos_entering", payload.dump()});
             std::fflush(nullptr);
             if (request.interactive && cmd.empty())
-                log::info("joined the running session of '{}' (job control stays with the "
-                          "terminal that started it)", name);
+                log::info("joined the running session of '{}'", name);
             auto r = session::join(home, name, session::ExecRequest{
                 .argv = sb.argv, .env = request.host_env, .tty = request.interactive });
             if (!r.phase.empty() && r.phase == "setup")

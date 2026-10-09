@@ -93,6 +93,22 @@ bool set_inheritable(int fd, bool inheritable);
 // Close-on-exec unless asked otherwise.
 std::optional<std::array<int, 2>> make_pipe(bool cloexec = true);
 bool read_exact(int fd, void* buf, std::size_t size);
+
+// ── terminals ────────────────────────────────────────────────────────
+
+// A new pseudo-terminal, {master, slave}, both close-on-exec, with the window
+// size of terminal `size_from` when that is one.
+std::optional<std::array<int, 2>> open_pty(int size_from = -1);
+// Gives terminal `to` the window size of terminal `from`; true when it changed.
+bool copy_window_size(int from, int to);
+// Puts `fd`'s terminal in raw mode; the returned state restores it. nullopt
+// when `fd` is not a terminal.
+std::optional<std::string> make_terminal_raw(int fd);
+void restore_terminal(int fd, const std::string& saved);
+// Copies `in` to the master side of a pseudo-terminal and its output to `out`
+// until the other side is closed, keeping the window size of `in` (a
+// terminal) on it. Allocates nothing.
+void relay_terminal(int master, int in, int out);
 int open_null();
 // Owner-only (0600), created when missing, appended to.
 int open_for_append(const std::filesystem::path& path);

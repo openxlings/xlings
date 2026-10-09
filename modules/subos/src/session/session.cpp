@@ -966,6 +966,15 @@ ExecResult join(const HomeView& home, std::string_view instance, const ExecReque
     const int fd = platform::unix_connect(sock_path(home, instance));
     if (fd < 0) return {kExitSetup, "setup", "no running session for '" + std::string(instance) + "'"};
 
+    // An interactive command runs on a terminal the session makes for it
+    // (session_init); this terminal only carries keystrokes to it, so it
+    // passes every byte as typed -- Ctrl-C included -- until the command ends.
+    std::optional<std::string> cooked;
+    if (r.tty) cooked = platform::make_terminal_raw(0);
+    struct Restore {
+        std::optional<std::string>& saved;
+        ~Restore() { if (saved) platform::restore_terminal(0, *saved); }
+    } restore{cooked};
     nlohmann::json req{{"op", "exec"}, {"argv", r.argv}, {"env", r.env}, {"cwd", r.cwd},
                        {"tty", r.tty}};
     if (r.timeout) req["timeout_ms"] = r.timeout->count();
@@ -1136,6 +1145,9 @@ int session_init(std::span<const std::string> args) {
     platform::ignore_signals({sig::interrupt, sig::quit, sig::pipe});
 
     std::map<int, std::int64_t> joined;
+    // The terminal relay of each interactive joined command, done when the
+    // command's side of its terminal is closed.
+    std::map<int, std::shared_ptr<std::atomic<bool>>> relays;
     auto last_activity = std::chrono::steady_clock::now();
     bool ctl_open = ctl >= 0;
 
@@ -1152,6 +1164,16 @@ int session_init(std::span<const std::string> args) {
                 main_done = true;
                 main_status = st;
             } else if (auto it = joined.find(w); it != joined.end()) {
+                // The command's last output reaches the caller's terminal
+                // before the caller hears that it ended -- not after its own
+                // prompt. Bounded: a background job of the command may hold
+                // the terminal open for longer.
+                if (auto relay = relays.find(w); relay != relays.end()) {
+                    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    while (!relay->second->load() && std::chrono::steady_clock::now() < until)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    relays.erase(relay);
+                }
                 nlohmann::json reply{{"id", it->second}};
                 if (st.exited) reply["exit"] = st.code;
                 else reply["signal"] = st.signal;
@@ -1194,18 +1216,32 @@ int session_init(std::span<const std::string> args) {
                 platform::close_fds(m->fds);
                 continue;
             }
+            // An interactive command gets a terminal of its own, made here,
+            // inside the sandbox. The caller's terminal is the controlling
+            // terminal of the caller's session and cannot be another's, so a
+            // shell handed it ran with no job control -- and fish, which
+            // needs it, exited at once ("tcgetpgrp failed"). The caller's
+            // terminal stays outside: what runs here can neither take it nor
+            // push input into it, and this process copies bytes and the
+            // window size between the two.
+            std::optional<std::array<int, 2>> pty;
+            if (tty) pty = platform::open_pty(m->fds[0]);
             const int pid = platform::fork_process();
             if (pid == 0) {
                 platform::close_fd((*report_pipe)[0]);
                 platform::close_fd(ctl);
                 platform::reset_signals();
                 // A session of its own: no controlling terminal to inject
-                // into. A terminal it was handed is tried as its controlling
-                // one; when the terminal already belongs to another session
-                // (the common case) it runs without job control.
+                // into, until the new terminal becomes its controlling one.
                 platform::new_session();
-                platform::redirect_stdio(m->fds);
-                if (tty) (void)platform::take_controlling_terminal();
+                if (pty) {
+                    platform::close_fd((*pty)[0]);
+                    const int slave[3] = {(*pty)[1], (*pty)[1], (*pty)[1]};
+                    platform::redirect_stdio(slave);
+                    (void)platform::take_controlling_terminal();
+                } else {
+                    platform::redirect_stdio(m->fds);
+                }
                 std::error_code cec;
                 fs::current_path(cwd, cec);
                 if (cec) fs::current_path("/", cec);
@@ -1215,7 +1251,26 @@ int session_init(std::span<const std::string> args) {
                 platform::exit_now(platform::is_not_found(e) ? kExitNotFound : kExitCannotRun);
             }
             platform::close_fd((*report_pipe)[1]);
-            platform::close_fds(m->fds);
+            if (pty) {
+                platform::close_fd((*pty)[1]);
+                if (pid > 0) {
+                    // Ends when the command's side of the terminal is closed;
+                    // it owns the caller's descriptors until then.
+                    auto done = std::make_shared<std::atomic<bool>>(false);
+                    relays[pid] = done;
+                    std::thread([master = (*pty)[0], fds = m->fds, done]() mutable {
+                        platform::relay_terminal(master, fds[0], fds[1]);
+                        platform::close_fd(master);
+                        platform::close_fds(fds);
+                        done->store(true);
+                    }).detach();
+                } else {
+                    platform::close_fd((*pty)[0]);
+                    platform::close_fds(m->fds);
+                }
+            } else {
+                platform::close_fds(m->fds);
+            }
             if (pid < 0) {
                 platform::close_fd((*report_pipe)[0]);
                 send_msg(ctl, {{"id", id}, {"error", "fork failed"}, {"errno", platform::last_error()}});
