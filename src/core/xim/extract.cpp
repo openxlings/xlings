@@ -309,7 +309,7 @@ extract_archive_detailed(const std::filesystem::path& archive,
             std::min<std::uint64_t>(100, consumed * 100 / totalBytes));
         if (percent == reportedPercent) return;
         reportedPercent = percent;
-        options.onProgress({ .consumed = std::min(consumed, totalBytes), .total = totalBytes });
+        options.onProgress({ .consumed = std::min<std::uint64_t>(consumed, totalBytes), .total = totalBytes });
     };
 
     // Hard links the filesystem refused and that were copied instead (X1).
